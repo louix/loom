@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { deriveStatus } from "../src/daemon/status-machine.ts";
+import type { HarnessEvent } from "../src/protocol/events.ts";
+
+const ev = (e: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent =>
+  ({ sessionId: "s", ts: 0, ...e }) as HarnessEvent;
+
+test("model activity moves starting/awaiting → running", () => {
+  assert.deepEqual(deriveStatus("starting", ev({ type: "assistant_text", text: "" })), {
+    status: "running",
+    reason: null,
+  });
+  assert.deepEqual(deriveStatus("awaiting_input", ev({ type: "tool_call", id: "1", name: "x", input: {} })), {
+    status: "running",
+    reason: null,
+  });
+});
+
+test("model activity while already running is a no-op", () => {
+  assert.equal(deriveStatus("running", ev({ type: "thinking", text: "" })), null);
+  assert.equal(deriveStatus("running", ev({ type: "tool_result", id: "1", ok: true, output: null })), null);
+});
+
+test("permission_request → awaiting_input/permission", () => {
+  assert.deepEqual(
+    deriveStatus("running", ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+    { status: "awaiting_input", reason: "permission" },
+  );
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "permission_request", id: "p2", tool: "Bash", input: {} })),
+    null,
+  );
+});
+
+test("result maps to idle on success, error on failure", () => {
+  assert.deepEqual(deriveStatus("running", ev({ type: "result", ok: true })), {
+    status: "idle",
+    reason: "result",
+  });
+  assert.deepEqual(deriveStatus("running", ev({ type: "result", ok: false })), {
+    status: "error",
+    reason: "run_error",
+  });
+});
+
+test("only fatal errors change status", () => {
+  assert.equal(deriveStatus("running", ev({ type: "error", message: "blip", fatal: false })), null);
+  assert.deepEqual(deriveStatus("running", ev({ type: "error", message: "dead", fatal: true })), {
+    status: "error",
+    reason: "dead",
+  });
+});
+
+test("usage and subagent events never move status", () => {
+  assert.equal(
+    deriveStatus("running", ev({ type: "usage", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextUsed: 0, contextLimit: 0 })),
+    null,
+  );
+  assert.equal(deriveStatus("idle", ev({ type: "subagent_started", subagentId: "a", name: "n" })), null);
+});
