@@ -364,6 +364,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
       maxTurns: row.budget_max_turns,
     },
     budgetState: (row.budget_state as SessionSnapshot["budgetState"]) ?? "ok",
+    subagents: [], // runtime overlay filled in by the daemon
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

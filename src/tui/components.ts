@@ -279,6 +279,17 @@ export function Detail({
           `▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`,
         )
       : null,
+    s.subagents.length > 0
+      ? (() => {
+          const active = s.subagents.filter((a) => a.active);
+          const names = s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
+          return h(
+            Text,
+            { color: C.dim, wrap: "truncate-end" },
+            `⑂ ${active.length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`,
+          );
+        })()
+      : null,
   );
 }
 
@@ -301,7 +312,9 @@ export function EventLog({
 }): ReactNode {
   const tagged = state.logFilter === "all";
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
-  const physical = physicalRows(visibleLog(state), inside(width), tagged);
+  const subName = new Map<string, string>();
+  for (const s of state.sessions) for (const a of s.subagents) subName.set(a.id, a.name);
+  const physical = physicalRows(visibleLog(state), inside(width), tagged, subName);
 
   const maxScroll = Math.max(0, physical.length - capacity);
   const off = Math.min(scroll, maxScroll);
@@ -338,12 +351,15 @@ function physicalRows(
   lines: readonly LogLine[],
   iw: number,
   tagged: boolean,
+  subName: Map<string, string> = new Map(),
 ): Array<{ key: string; node: ReactNode }> {
   const out: Array<{ key: string; node: ReactNode }> = [];
   for (const l of lines) {
     const ts = `${clock(l.ts)} `;
     const tag = tagged ? `${shortId(l.sessionId)} ` : "";
-    const indent = ts.length + tag.length + 2; // + "glyph "
+    // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
+    const sub = l.agentId ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
+    const indent = ts.length + tag.length + sub.length + 2; // + "glyph "
     const room = Math.max(8, iw - indent);
     const wrapped = wrapText(l.text.replace(/\s+/g, " ").trim() || "…", room);
     wrapped.forEach((seg, i) => {
@@ -355,6 +371,7 @@ function physicalRows(
                 Text,
                 { key: `${l.seq}-${l.ts}-0`, wrap: "truncate-end" },
                 h(Text, { color: C.faint }, ts + tag),
+                sub ? h(Text, { color: C.faint }, sub) : null,
                 h(Text, { color: TONE_COLOR[l.tone] }, `${l.glyph} `),
                 h(Text, { color: TONE_COLOR[l.tone] }, seg),
               )

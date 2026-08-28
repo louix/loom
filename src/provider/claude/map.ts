@@ -118,6 +118,9 @@ export class ClaudeEventMapper {
     contextLimit: 0,
   };
 
+  /** Open `Task` tool calls: tool_use id → sub-agent name. */
+  readonly #openSubagents = new Map<string, string>();
+
   constructor(sessionId: string) {
     this.#sessionId = sessionId;
   }
@@ -185,13 +188,19 @@ export class ClaudeEventMapper {
         const text = b.thinking ?? b.text ?? "";
         if (text.length > 0) out.push({ type: "thinking", ...base, text });
       } else if (b.type === "tool_use") {
-        out.push({
-          type: "tool_call",
-          ...base,
-          id: b.id ?? "",
-          name: b.name ?? "",
-          input: b.input ?? {},
-        });
+        const id = b.id ?? "";
+        out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });
+        // The `Task` tool spawns a sub-agent; its own messages then carry
+        // parent_tool_use_id === this id until the matching tool_result.
+        if (b.name === "Task" && id) {
+          const i = (b.input ?? {}) as Record<string, unknown>;
+          const name =
+            (typeof i["subagent_type"] === "string" && i["subagent_type"]) ||
+            (typeof i["description"] === "string" && i["description"]) ||
+            "task";
+          this.#openSubagents.set(id, name);
+          out.push({ type: "subagent_started", ...base, subagentId: id, name });
+        }
       }
     }
     return out;
@@ -202,13 +211,12 @@ export class ClaudeEventMapper {
     const base = this.#base(m.parent_tool_use_id);
     for (const b of blocks(m.message?.content)) {
       if (b.type === "tool_result") {
-        out.push({
-          type: "tool_result",
-          ...base,
-          id: b.tool_use_id ?? "",
-          ok: b.is_error !== true,
-          output: b.content ?? null,
-        });
+        const id = b.tool_use_id ?? "";
+        out.push({ type: "tool_result", ...base, id, ok: b.is_error !== true, output: b.content ?? null });
+        if (this.#openSubagents.has(id)) {
+          this.#openSubagents.delete(id);
+          out.push({ type: "subagent_stopped", ...base, subagentId: id });
+        }
       }
     }
     return out;

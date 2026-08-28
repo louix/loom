@@ -150,6 +150,47 @@ test("result error emits an error and a failed result", () => {
   assert.equal(res?.ok, false);
 });
 
+test("a Task tool_use raises subagent_started; its tool_result raises subagent_stopped", () => {
+  const m = new ClaudeEventMapper(SID);
+  const started = m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        { type: "tool_use", id: "task-1", name: "Task", input: { subagent_type: "code-reviewer", description: "review the diff" } },
+      ],
+    },
+  });
+  assert.equal(byType(started, "tool_call").length, 1);
+  const sub = byType(started, "subagent_started")[0];
+  assert.equal(sub?.subagentId, "task-1");
+  assert.equal(sub?.name, "code-reviewer");
+
+  // an unrelated tool_result doesn't stop it
+  const other = m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_result", tool_use_id: "bash-9", content: "ok" }] },
+  });
+  assert.equal(byType(other, "subagent_stopped").length, 0);
+
+  const stopped = m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_result", tool_use_id: "task-1", content: "looks good" }] },
+  });
+  assert.equal(byType(stopped, "tool_result").length, 1);
+  assert.equal(byType(stopped, "subagent_stopped")[0]?.subagentId, "task-1");
+
+  // stopping twice doesn't double-fire
+  const again = m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_result", tool_use_id: "task-1", content: "x" }] },
+  });
+  assert.equal(byType(again, "subagent_stopped").length, 0);
+});
+
 test("a compact_boundary system message becomes a compact event", () => {
   const m = new ClaudeEventMapper(SID);
   m.map({ type: "system", subtype: "init", session_id: "c1", model: "claude-sonnet-5" });

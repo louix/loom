@@ -5,10 +5,11 @@ isolated in its own git worktree, viewed and driven from a terminal UI. V1 runs
 on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
 as a second adapter.
 
-> Codename "Loom" — rename freely. See the design spec for the full picture;
-> this repo currently implements **milestones 1-5** of the build order.
+> Codename "Loom" — rename freely. The design is whatever's written here and in
+> `docs/roadmap.md`. This repo implements **milestones 1-9**; the ADK adapter
+> (milestone 10) is the remaining piece.
 
-## Status — milestones 1-5
+## Status — milestones 1-9
 
 **1 · daemon skeleton**
 
@@ -121,7 +122,13 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented (later milestones): sub-agent nesting.
+Not yet implemented: the ADK adapter / arbitrary OpenAI-compatible providers.
+
+**Sub-agents.** When a session's agent spawns a sub-agent (Claude's `Task`
+tool), the Detail pane shows `⑂ 1/2 sub-agents · reviewer, tester ✓` and the
+sub-agent's own event-log rows get a dim `⑂reviewer` prefix and hang one level
+in. The set (`{ id, name, active }[]`) rides on the session snapshot as a
+runtime overlay — it isn't persisted.
 
 **Plan review.** In `plan` mode the agent presents its plan through the
 harness's plan tool; instead of a generic permission prompt, the session goes
@@ -230,7 +237,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 153 cases
+npm test             # node:test — 156 cases
 ```
 
 ### Layout

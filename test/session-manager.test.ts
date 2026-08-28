@@ -309,6 +309,31 @@ test("a manual rename locks the title against the auto-titler", async () => {
   await c.close();
 });
 
+test("sub-agent start/stop events surface on the session snapshot", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+
+  fs.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
+  fs.emit({ type: "subagent_started", subagentId: "t2", name: "tester" });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).subagents.length === 2);
+
+  let snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.deepEqual(
+    snap.subagents.map((s) => [s.name, s.active]),
+    [["reviewer", true], ["tester", true]],
+  );
+
+  fs.emit({ type: "subagent_stopped", subagentId: "t1" });
+  await waitFor(async () => {
+    const s = await c.request<SessionSnapshot>("session.get", { id });
+    return s.subagents.find((x) => x.id === "t1")?.active === false;
+  });
+  snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(snap.subagents.find((x) => x.id === "t1")?.active, false);
+  assert.equal(snap.subagents.find((x) => x.id === "t2")?.active, true);
+  await c.close();
+});
+
 test("setMode updates the row and forwards to a live adapter", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

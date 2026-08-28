@@ -142,6 +142,11 @@ export class Daemon {
         if (this.#stopping || !ok) return;
         void this.#maybeAutoTitle(id);
       },
+      onSubagents: (id) => {
+        if (this.#stopping) return;
+        const snap = this.#registry.get(id);
+        if (snap) this.#emitSessionUpdated(snap);
+      },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
         this.#registry.setFields(id, { providerRef: ref });
@@ -283,11 +288,16 @@ export class Daemon {
     this.#server.broadcast(frame);
   }
 
-  /** Fill in per-session git facts from its worktree (spec §6). Cached briefly. */
+  /** Overlay runtime-only facts on a stored snapshot: git facts + live sub-agents. */
   #enrich(s: SessionSnapshot): SessionSnapshot {
-    if (!s.worktree) return s;
-    const git = this.#worktrees.facts(s.worktree, s.baseBranch);
-    return git ? { ...s, git } : s;
+    let out = s;
+    const subs = this.#sessions.subagentsOf(s.id);
+    if (subs.length > 0) out = { ...out, subagents: subs };
+    if (out.worktree) {
+      const git = this.#worktrees.facts(out.worktree, out.baseBranch);
+      if (git) out = { ...out, git };
+    }
+    return out;
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {

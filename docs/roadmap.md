@@ -245,7 +245,16 @@ review must be answered) — `i`/`f` move forward, `d` to talk.
 
 ---
 
-## Milestone 9 — sub-agent nesting
+## Milestone 9 — sub-agent nesting ✓ shipped
+
+Built as planned. The Claude mapper synthesises subagent_started (on a `Task`
+tool_use, name from `subagent_type` / `description`) and subagent_stopped (on
+the matching tool_result). SessionManager keeps a per-session
+Map<subagentId,{name,startedAt,active}> and exposes subagentsOf(); an
+onSubagents hook re-emits session_updated. Daemon.#enrich overlays
+`subagents: {id,name,active}[]` onto the snapshot (runtime-only). TUI: a Detail
+line `⑂ N/M sub-agents · names` and a dim `⑂name` prefix + hanging indent on
+sub-agent log rows (LogLine.agentId).
 
 **Goal.** Make the sub-agents a session spawns (Claude's Task tool / defined
 agents) visible.

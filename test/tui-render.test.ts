@@ -319,6 +319,31 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
   }
 });
 
+test("sub-agents show in the Detail pane and prefix their log rows", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "spawn helpers", provider: "fake" });
+  const fs = (h.daemon.providers.get("fake") as FakeProvider).session(snap.id);
+  const { stdout, app } = mount(client);
+  try {
+    await delay(150);
+    fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
+    fs?.emit({ type: "subagent_started", subagentId: "t2", name: "tester" });
+    fs?.emit({ type: "assistant_text", text: "checking imports", agentId: "t1" });
+    await delay(220);
+    assert.match(stdout.last, /2\/2 sub-agents · reviewer, tester/);
+    assert.match(stdout.last, /⑂reviewer/);
+
+    fs?.emit({ type: "subagent_stopped", subagentId: "t1" });
+    await delay(180);
+    assert.match(stdout.last, /reviewer ✓, tester/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("Tab toggles the fullscreen event log", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

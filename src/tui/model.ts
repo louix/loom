@@ -23,6 +23,8 @@ export interface DaemonInfo {
 export interface LogLine {
   seq: number;
   sessionId: string;
+  /** Sub-agent that produced the event, when applicable. */
+  agentId?: string;
   glyph: string;
   text: string;
   tone: Tone;
@@ -566,7 +568,15 @@ export function allowedActs(session: SessionSnapshot | null): Set<ActName> {
 
 export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
   const f = formatEvent(ev);
-  return { seq, sessionId: ev.sessionId, glyph: f.glyph, text: f.text, tone: f.tone, ts: ev.ts };
+  return {
+    seq,
+    sessionId: ev.sessionId,
+    ...(ev.agentId ? { agentId: ev.agentId } : {}),
+    glyph: f.glyph,
+    text: f.text,
+    tone: f.tone,
+    ts: ev.ts,
+  };
 }
 
 export interface EventFormat {
@@ -608,9 +618,9 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
         tone: "accent",
       };
     case "subagent_started":
-      return { glyph: "⤷", text: `subagent ${ev.name} started`, tone: "dim" };
+      return { glyph: "⤷", text: `sub-agent “${ev.name}” started`, tone: "dim" };
     case "subagent_stopped":
-      return { glyph: "⤴", text: `subagent ${ev.subagentId} stopped`, tone: "dim" };
+      return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
     case "status_changed":
       return { glyph: "◈", text: `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`, tone: "dim" };
     case "error":

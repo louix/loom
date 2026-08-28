@@ -29,6 +29,8 @@ export interface ManagerHooks {
   onUsage(sessionId: string, delta: UsageDelta): void;
   /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
   onResult(sessionId: string, ok: boolean): void;
+  /** The session's set of sub-agents changed (one started or stopped). */
+  onSubagents(sessionId: string): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
   log: Logger;
@@ -47,6 +49,7 @@ interface Running {
   pendingPerms: Set<string>;
   pendingQuestions: Set<string>;
   pendingPlans: Set<string>;
+  subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
   interrupting: boolean;
   ended: boolean;
   refReported: boolean;
@@ -100,6 +103,7 @@ export class SessionManager {
       pendingPerms: new Set(),
       pendingQuestions: new Set(),
       pendingPlans: new Set(),
+      subagents: new Map(),
       interrupting: false,
       ended: false,
       refReported: false,
@@ -120,6 +124,7 @@ export class SessionManager {
         this.#trackPerms(run, ev);
         this.#trackQuestions(run, ev);
         this.#trackPlans(run, ev);
+        this.#trackSubagents(id, run, ev);
         this.#trackUsage(id, ev);
         if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
         this.#trackRef(id, run);
@@ -167,6 +172,28 @@ export class SessionManager {
 
   #trackPlans(run: Running, ev: HarnessEvent): void {
     if (ev.type === "plan_review") run.pendingPlans.add(ev.id);
+  }
+
+  #trackSubagents(id: string, run: Running, ev: HarnessEvent): void {
+    if (ev.type === "subagent_started") {
+      run.subagents.set(ev.subagentId, { name: ev.name, startedAt: ev.ts, active: true });
+      this.#hooks.onSubagents(id);
+    } else if (ev.type === "subagent_stopped") {
+      const cur = run.subagents.get(ev.subagentId);
+      if (cur) {
+        run.subagents.set(ev.subagentId, { ...cur, active: false });
+        this.#hooks.onSubagents(id);
+      }
+    }
+  }
+
+  /** Sub-agents this session has spawned, oldest first. */
+  subagentsOf(id: string): Array<{ id: string; name: string; active: boolean }> {
+    const run = this.#running.get(id);
+    if (!run) return [];
+    return [...run.subagents.entries()]
+      .sort((a, b) => a[1].startedAt - b[1].startedAt)
+      .map(([subId, v]) => ({ id: subId, name: v.name, active: v.active }));
   }
 
   #trackUsage(id: string, ev: HarnessEvent): void {
