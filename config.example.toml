@@ -1,0 +1,40 @@
+# Copy to .loom/config.toml to override. Every key below is optional and shown
+# with its built-in default. Milestone 1 reads only: db, run_isolation,
+# daemon.*, base_branch, worktree_dir.
+
+base_branch   = "main"
+worktree_dir  = ".loom/trees"
+db            = ".loom/loom.db"
+run_isolation = "in-process"        # or "subprocess" (later milestones)
+
+[daemon]
+idle_shutdown_minutes = 30          # exit after N min with no sessions and no clients; 0 disables
+event_buffer_size     = 4096        # push-stream ring buffer, in frames
+
+[providers.claude]
+model              = "claude-sonnet-5"
+permission_default = "default"      # default | plan | acceptEdits | bypassPermissions
+setting_sources    = ["project"]   # loads CLAUDE.md / project settings
+disable_builtin    = ["Grep", "Glob"]
+
+[providers.adk]                     # future — not wired in V1
+model = "gemini-2.5-pro"
+auth  = "api_key"                   # or "vertex"
+
+[[mcp]]                             # mounted into every session, in order
+name    = "tilth"
+command = "tilth mcp --edit"
+
+[[mcp]]
+name    = "fff"
+command = "fff-mcp"
+
+[pricing]
+table = ".loom/models.toml"
+
+[notify]
+webhook = ""                        # best-effort POST on awaiting_input / error when no client attached
+
+[budget]
+default_max_cost_usd = 5.0
+on_breach            = "soft"       # or "hard"
