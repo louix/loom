@@ -1,6 +1,7 @@
 # Copy to .loom/config.toml to override. Every key below is optional and shown
-# with its built-in default. Milestone 1 reads only: db, run_isolation,
-# daemon.*, base_branch, worktree_dir.
+# with its built-in default. Consumed so far (milestones 1-2): db, run_isolation,
+# daemon.*, base_branch, worktree_dir, providers.claude.* and the [[mcp]] list
+# (mounted into every session). The rest is carried for later milestones.
 
 base_branch   = "main"
 worktree_dir  = ".loom/trees"

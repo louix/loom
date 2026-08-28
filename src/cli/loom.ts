@@ -11,15 +11,25 @@ const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
 usage: loom [--repo <path>] <command> [args]
 
 commands:
-  status               daemon health and counts
-  ls                   list sessions in fleet-view order
-  history <id>          status history for a session
-  ping                 round-trip latency to the daemon
-  tail                 stream the live event feed (Ctrl-C to stop)
-  stub <prompt...>     create a placeholder session   [--status S] [--provider P] [--model M]
-  set-status <id> <S>  drive a session's status       [--reason R]
-  emit <id> <type>     inject a synthetic event       [--text T]
-  stop                 shut the daemon down
+  status                 daemon health and counts
+  ls                     list sessions in fleet-view order
+  get <id>               one session's snapshot
+  history <id>           status history for a session
+  ping                   round-trip latency to the daemon
+  tail                   stream the live event feed (Ctrl-C to stop)
+
+  run <prompt...>        start a session   [--provider P] [--model M] [--mode default|plan|acceptEdits|auto]
+  send <id> <text...>    send a follow-up turn / answer
+  interrupt <id>         stop a session mid-turn
+  approve <id> <reqId>   allow an outstanding permission request
+  deny <id> <reqId>      deny it                          [--text reason]
+  mode <id> <mode>       change a session's permission mode
+  resume <id>            resume an interrupted session
+
+  stub <prompt...>       create a placeholder session     [--status S] [--provider P] [--model M]
+  set-status <id> <S>    drive a session's status         [--reason R]
+  emit <id> <type>       inject a synthetic event         [--text T]
+  stop                   shut the daemon down
 
 The daemon starts automatically on first use.`;
 
@@ -31,6 +41,7 @@ async function main(): Promise<void> {
       status: { type: "string" },
       provider: { type: "string" },
       model: { type: "string" },
+      mode: { type: "string" },
       reason: { type: "string" },
       text: { type: "string" },
       json: { type: "boolean", default: false },
@@ -63,10 +74,75 @@ async function main(): Promise<void> {
         else printSessions(rows);
         break;
       }
+      case "get": {
+        const id = need(positionals[1], "get <id>");
+        const s = await client.request("session.get", { id });
+        process.stdout.write(JSON.stringify(s, null, 2) + "\n");
+        break;
+      }
       case "history": {
         const id = need(positionals[1], "history <id>");
         const h = await client.request("session.history", { id });
         process.stdout.write(JSON.stringify(h, null, 2) + "\n");
+        break;
+      }
+      case "run": {
+        const prompt = positionals.slice(1).join(" ");
+        if (!prompt) need(undefined, "run <prompt...>");
+        const r = await client.request<SessionSnapshot>("session.create", {
+          prompt,
+          by: client.clientId,
+          ...(values.provider ? { provider: values.provider } : {}),
+          ...(values.model ? { model: values.model } : {}),
+          ...(values.mode ? { mode: values.mode } : {}),
+        });
+        process.stdout.write(`started ${r.id}  provider=${r.provider}  status=${r.status}\n`);
+        break;
+      }
+      case "send": {
+        const id = need(positionals[1], "send <id> <text...>");
+        const text = positionals.slice(2).join(" ");
+        if (!text) need(undefined, "send <id> <text...>");
+        const r = await client.request<SessionSnapshot>("session.send", { id, text });
+        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        break;
+      }
+      case "interrupt": {
+        const id = need(positionals[1], "interrupt <id>");
+        const r = await client.request<SessionSnapshot>("session.interrupt", { id });
+        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        break;
+      }
+      case "approve":
+      case "deny": {
+        const id = need(positionals[1], `${cmd} <id> <requestId>`);
+        const requestId = need(positionals[2], `${cmd} <id> <requestId>`);
+        const r = await client.request<{ ok: boolean; alreadyResolved: boolean }>(
+          "session.respondPermission",
+          {
+            id,
+            requestId,
+            decision: cmd === "approve" ? "allow" : "deny",
+            by: client.clientId,
+            ...(cmd === "deny" && values.text ? { message: values.text } : {}),
+          },
+        );
+        process.stdout.write(
+          r.alreadyResolved ? `${requestId} was already resolved\n` : `${requestId} ${cmd}d\n`,
+        );
+        break;
+      }
+      case "mode": {
+        const id = need(positionals[1], "mode <id> <mode>");
+        const mode = need(positionals[2], "mode <id> <mode>");
+        const r = await client.request<SessionSnapshot>("session.setMode", { id, mode, by: client.clientId });
+        process.stdout.write(`${r.id} mode -> ${r.mode}\n`);
+        break;
+      }
+      case "resume": {
+        const id = need(positionals[1], "resume <id>");
+        const r = await client.request<SessionSnapshot>("session.resume", { id, by: client.clientId });
+        process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "ping": {
@@ -183,7 +259,12 @@ function summarize(ev: HarnessEvent): string {
   const e = ev as unknown as Record<string, unknown>;
   if (typeof e["text"] === "string") return JSON.stringify((e["text"] as string).slice(0, 60));
   if (ev.type === "status_changed") return `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`;
-  if (ev.type === "tool_call") return ev.name;
+  if (ev.type === "tool_call") return `${ev.name} #${ev.id}`;
+  if (ev.type === "tool_result") return `#${ev.id} ${ev.ok ? "ok" : "error"}`;
+  if (ev.type === "permission_request") return `${ev.tool}  req=${ev.id}  (approve/deny)`;
+  if (ev.type === "usage") return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
+  if (ev.type === "result") return ev.ok ? "ok" : "failed";
+  if (ev.type === "error") return ev.message.slice(0, 80);
   return "";
 }
 

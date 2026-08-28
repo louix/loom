@@ -17,6 +17,15 @@ import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
+import { SessionManager } from "./session-manager.ts";
+import { ProviderRegistry } from "../provider/registry.ts";
+import {
+  isSessionMode,
+  type CreateSessionOptions,
+  type McpServerHandle,
+  type PermissionDecision,
+  type SessionMode,
+} from "../provider/types.ts";
 import {
   acquirePidfile,
   IdleTimer,
@@ -54,6 +63,8 @@ export class Daemon {
   #events: EventLog;
   #server: SocketServer;
   #dispatcher: RpcDispatcher;
+  #providers: ProviderRegistry;
+  #sessions: SessionManager;
   #idle: IdleTimer;
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
@@ -84,6 +95,22 @@ export class Daemon {
       dispatcher: this.#dispatcher,
       onClientCountChange: (n) => this.#onActivityChange(`clients=${n}`),
     });
+    this.#providers = new ProviderRegistry(this.config);
+    this.#sessions = new SessionManager({
+      emitEvent: (ev) => {
+        this.emitEvent(ev);
+      },
+      onStatus: (id, status, reason) => this.#onDerivedStatus(id, status, reason),
+      onUsage: (id, delta) => {
+        if (this.#stopping) return;
+        this.#emitSessionUpdated(this.#registry.addUsage(id, delta));
+      },
+      onProviderRef: (id, ref) => {
+        if (this.#stopping) return;
+        this.#registry.setFields(id, { providerRef: ref });
+      },
+      log: this.#log.child("sessions"),
+    });
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
       this.#log.info("idle shutdown");
       void this.stop("idle");
@@ -109,6 +136,12 @@ export class Daemon {
   }
   get events(): EventLog {
     return this.#events;
+  }
+  get providers(): ProviderRegistry {
+    return this.#providers;
+  }
+  get sessions(): SessionManager {
+    return this.#sessions;
   }
   get sockPath(): string {
     return this.paths.sock;
@@ -165,6 +198,7 @@ export class Daemon {
     for (const [sig, fn] of this.#signalHandlers) process.removeListener(sig, fn);
     this.#signalHandlers = [];
 
+    await this.#sessions.shutdown();
     await this.#server.close();
     try {
       checkpoint(this.#db);
@@ -212,6 +246,21 @@ export class Daemon {
     this.#server.broadcast(frame);
   }
 
+  /** A status transition the session manager derived from the event stream. */
+  #onDerivedStatus(id: string, status: SessionStatus, reason: string | null): void {
+    if (this.#stopping) return;
+    const snap = this.#registry.setStatus(id, status, reason);
+    this.emitEvent({
+      type: "status_changed",
+      sessionId: id,
+      status,
+      ts: Date.now(),
+      ...(reason !== null ? { reason } : {}),
+    });
+    this.#emitSessionUpdated(snap);
+    this.#onActivityChange(`status:${status}`);
+  }
+
   #onActivityChange(why: string): void {
     if (this.#stopping) return;
     const busy = this.#isBusy();
@@ -248,6 +297,8 @@ export class Daemon {
       uptimeMs: Date.now() - this.startedAt,
       repoRoot: this.repoRoot,
       sessions: this.#registry.list().length,
+      runningSessions: this.#sessions.count,
+      providers: this.#providers.live().map((p) => p.id),
       clients: this.#server.clientCount,
       connections: this.#server.connectionCount,
       eventSeq: this.#events.head,
@@ -273,6 +324,163 @@ export class Daemon {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       return this.#registry.store.statusHistory(id);
+    });
+
+    // --- session control (Claude adapter, milestone 2) --------------------
+
+    d.register("session.create", async (params) => {
+      const p = isObj(params) ? params : {};
+      const prompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
+      if (prompt === "") throw new RpcError("bad_request", "prompt is required");
+
+      const providerId =
+        typeof p["provider"] === "string" && this.#providers.has(p["provider"] as string)
+          ? (p["provider"] as string)
+          : this.#providers.defaultId;
+      const mode: SessionMode = isSessionMode(p["mode"]) ? p["mode"] : "default";
+      const model =
+        typeof p["model"] === "string"
+          ? (p["model"] as string)
+          : providerId === "claude"
+            ? this.config.providers.claude.model
+            : null;
+      const parentId = typeof p["parentId"] === "string" ? (p["parentId"] as string) : null;
+      if (parentId && !this.#registry.get(parentId)) {
+        throw new RpcError("not_found", `no such parent session: ${parentId}`);
+      }
+
+      const id = randomUUID();
+      const budget = this.#readBudget(p["budget"]);
+      this.#registry.create({
+        id,
+        provider: providerId,
+        model,
+        mode,
+        parentId,
+        title: prompt.slice(0, 200),
+        worktree: this.repoRoot,
+        ...(budget ? { budget } : {}),
+      });
+
+      const opts: CreateSessionOptions = {
+        sessionId: id,
+        cwd: this.repoRoot,
+        prompt,
+        mode,
+        mcpServers: this.#mcpHandles(),
+        disableTools: this.config.providers.claude.disableBuiltin,
+        settingSources: this.config.providers.claude.settingSources,
+        ...(model ? { model } : {}),
+        ...(parentId ? { parentId } : {}),
+        ...(budget
+          ? {
+              budget: {
+                ...(budget.maxTokens != null ? { maxTokens: budget.maxTokens } : {}),
+                ...(budget.maxCostUsd != null ? { maxCostUsd: budget.maxCostUsd } : {}),
+                ...(budget.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
+              },
+            }
+          : {}),
+      };
+
+      try {
+        await this.#sessions.create(this.#providers.get(providerId), opts);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.#registry.setStatus(id, "error", message.slice(0, 120));
+        throw new RpcError("provider_error", `could not start session: ${message}`);
+      }
+
+      const snap = this.#registry.mustGet(id);
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#onActivityChange("session-created");
+      return snap;
+    });
+
+    d.register("session.resume", async (params) => {
+      const id = reqString(params, "id");
+      const row = this.#registry.get(id);
+      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) throw new RpcError("conflict", "session is already running");
+      const providerRef = this.#registry.store.providerRef(id);
+      if (!providerRef) throw new RpcError("bad_request", "session has no provider ref to resume from");
+      if (!this.#providers.has(row.provider)) {
+        throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
+      }
+      const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
+      try {
+        await this.#sessions.resume(this.#providers.get(row.provider), {
+          sessionId: id,
+          providerRef,
+          cwd: row.worktree ?? this.repoRoot,
+          mode,
+          ...(row.model ? { model: row.model } : {}),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError("provider_error", `could not resume session: ${message}`);
+      }
+      const snap = this.#registry.setStatus(id, "running", "resumed");
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#onActivityChange("session-resumed");
+      return snap;
+    });
+
+    d.register("session.send", async (params) => {
+      const id = reqString(params, "id");
+      const text = reqString(params, "text");
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      await this.#sessions.send(id, text);
+      return this.#registry.mustGet(id);
+    });
+
+    d.register("session.interrupt", async (params) => {
+      const id = reqString(params, "id");
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      await this.#sessions.interrupt(id);
+      return this.#registry.mustGet(id);
+    });
+
+    d.register("session.respondPermission", async (params) => {
+      const id = reqString(params, "id");
+      const requestId = reqString(params, "requestId");
+      const p = isObj(params) ? params : {};
+      const behavior = p["decision"] === "allow" ? "allow" : "deny";
+      const decision: PermissionDecision =
+        behavior === "allow"
+          ? {
+              behavior: "allow",
+              ...(isObj(p["updatedInput"]) ? { updatedInput: p["updatedInput"] } : {}),
+            }
+          : {
+              behavior: "deny",
+              ...(typeof p["message"] === "string" ? { message: p["message"] as string } : {}),
+            };
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      return this.#sessions.respondToPermission(id, requestId, decision);
+    });
+
+    d.register("session.setMode", async (params) => {
+      const id = reqString(params, "id");
+      if (!isSessionMode(params && (params as Record<string, unknown>)["mode"])) {
+        throw new RpcError("bad_request", "mode must be one of default|plan|acceptEdits|auto");
+      }
+      const mode = (params as Record<string, unknown>)["mode"] as SessionMode;
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
+      const snap = this.#registry.setFields(id, { mode });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return snap;
+    });
+
+    d.register("session.setModel", async (params) => {
+      const id = reqString(params, "id");
+      const model = reqString(params, "model");
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
+      const snap = this.#registry.setFields(id, { model });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return snap;
     });
 
     // --- development / test hooks (no provider adapter yet) -----------------
@@ -382,6 +590,39 @@ export class Daemon {
       sessions: this.#registry.listSorted(),
       seq: head,
       replaying,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // helpers
+  // -------------------------------------------------------------------------
+
+  /** Vendor-neutral MCP handles from config; mounted into every session. */
+  #mcpHandles(): McpServerHandle[] {
+    return this.config.mcp.map((m) => {
+      const parts = m.command.split(/\s+/).filter((s) => s.length > 0);
+      const command = parts[0] ?? m.command;
+      return {
+        name: m.name,
+        spec: { transport: "stdio", command, args: parts.slice(1) },
+      };
+    });
+  }
+
+  #readBudget(
+    raw: unknown,
+  ): { maxTokens?: number | null; maxCostUsd?: number | null; maxTurns?: number | null } | null {
+    if (!isObj(raw)) return null;
+    const num = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+    const maxTokens = num(raw["maxTokens"]);
+    const maxCostUsd = num(raw["maxCostUsd"]);
+    const maxTurns = num(raw["maxTurns"]);
+    if (maxTokens === undefined && maxCostUsd === undefined && maxTurns === undefined) return null;
+    return {
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
     };
   }
 }

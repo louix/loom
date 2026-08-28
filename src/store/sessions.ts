@@ -195,6 +195,9 @@ export class SessionStore {
 
   addUsage(id: string, d: UsageDelta): void {
     const now = Date.now();
+    // input/output/cache/cost/turns accumulate; context_used / context_limit
+    // are absolute (last-request) and only overwritten when the delta carries
+    // them — a bare `{ turns: 1 }` must not zero the context bar.
     this.#db
       .prepare(
         `UPDATE usage SET
@@ -204,8 +207,8 @@ export class SessionStore {
            cache_write = cache_write + ?,
            cost_usd = cost_usd + ?,
            turns = turns + ?,
-           context_used = ?,
-           context_limit = ?,
+           context_used = COALESCE(?, context_used),
+           context_limit = COALESCE(?, context_limit),
            updated_at = ?
          WHERE session_id = ?`,
       )
@@ -216,11 +219,19 @@ export class SessionStore {
         d.cacheWrite ?? 0,
         d.costUsd ?? 0,
         d.turns ?? 0,
-        d.contextUsed ?? 0,
-        d.contextLimit ?? 0,
+        d.contextUsed ?? null,
+        d.contextLimit ?? null,
         now,
         id,
       );
+  }
+
+  /** The provider's own persisted session id, once the adapter reports it. */
+  providerRef(id: string): string | null {
+    const row = this.#db
+      .prepare("SELECT provider_ref FROM sessions WHERE id = ?")
+      .get(id) as { provider_ref: string | null } | undefined;
+    return row?.provider_ref ?? null;
   }
 
   statusHistory(id: string): Array<{ status: string; reason: string | null; at: number }> {

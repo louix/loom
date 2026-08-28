@@ -6,11 +6,11 @@ on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
 as a second adapter.
 
 > Codename "Loom" — rename freely. See the design spec for the full picture;
-> this repo currently implements **milestone 1** of the build order.
+> this repo currently implements **milestones 1-2** of the build order.
 
-## Status — milestone 1: daemon skeleton
+## Status — milestones 1-2
 
-Implemented:
+**1 · daemon skeleton**
 
 - **Daemon (`loomd`)** — one long-lived process per repo, listening on a Unix
   domain socket at `<repo>/.loom/daemon.sock`. Single-instance guard via a
@@ -31,16 +31,36 @@ Implemented:
 - **Thin client + `loom` CLI** — connect-or-spawn the daemon, `hello`
   handshake, request/response, automatic reconnect with gap replay.
 
-Not yet implemented (later milestones): provider adapters (Claude, then ADK),
-the worktree manager, the `loom` MCP server, the real TUI, accounting/budgets,
-plan review, sub-agent nesting. There is **no agent execution yet** — sessions
-are created through development RPC hooks.
+**2 · Claude adapter**
+
+- **Provider seam** (`src/provider/`) — the vendor-neutral `AgentProvider` /
+  `AgentSession` interfaces and the normalized `HarnessEvent` union. Nothing
+  above the adapter imports a vendor SDK.
+- **Claude adapter** — wraps `@anthropic-ai/claude-agent-sdk` in
+  streaming-input mode: one `query()` per session, `canUseTool` surfaces
+  permission prompts as events, `SDKMessage`s are normalized (text / thinking /
+  tool calls + results / usage / result), mode & model changes are live
+  control calls, and `interrupt()` stops a turn. Auth is the SDK's own OAuth in
+  `~/.claude` — Loom brokers nothing.
+- **Session manager** — one pump task per live session drains the adapter's
+  event stream into the push log, derives status from it (design spec §4), and
+  rolls usage / cost / context up into the store.
+- **`fake` provider** — a scriptable, SDK-free adapter used by the tests (and
+  `loom run --provider fake`) so the manager, status machine and rollups run
+  offline.
+
+Not yet implemented (later milestones): the worktree manager (sessions run in
+the repo root for now), the `loom` MCP server, the real TUI, price-table cost,
+budgets, plan review, sub-agent nesting.
 
 ## Requirements
 
 - Node **≥ 24** (uses native TypeScript type-stripping and `node:sqlite`; no
-  build step, no native modules).
+  build step, no native modules of our own).
 - `git` on `PATH`.
+- For the `claude` provider: Claude OAuth already set up in `~/.claude`. The
+  `@anthropic-ai/claude-agent-sdk` dependency bundles the Claude Code CLI it
+  drives.
 
 ```sh
 npm install
@@ -60,16 +80,26 @@ node src/cli/loom.ts tail            # live event feed (Ctrl-C to stop)
 node src/cli/loom.ts stop            # shut the daemon down
 ```
 
-Development hooks that stand in for a provider adapter:
+Run and drive a session (V1 provider is `claude`; needs its OAuth in `~/.claude`):
 
 ```sh
-# create a placeholder session in a given status
-node src/cli/loom.ts stub "refactor the auth module" --status awaiting_input --reason permission
+node src/cli/loom.ts run "add a --json flag to the CLI" --mode plan
+node src/cli/loom.ts tail                       # watch it; note permission req= ids
+node src/cli/loom.ts approve <id> <requestId>   # or: deny <id> <requestId> --text "why"
+node src/cli/loom.ts send <id> "also update the README"
+node src/cli/loom.ts mode <id> acceptEdits
+node src/cli/loom.ts interrupt <id>
+node src/cli/loom.ts get <id>                   # snapshot: status, usage, cost, context
+```
 
-# drive a session's status (broadcasts session_updated)
+`--provider fake` swaps in the scriptable no-SDK adapter — the session starts
+and takes turn control, but only emits events a test drives into it.
+
+Development hooks (pure event-log / registry pokes, no adapter):
+
+```sh
+node src/cli/loom.ts stub "placeholder" --status awaiting_input --reason permission
 node src/cli/loom.ts set-status <id> running
-
-# inject a synthetic event onto the push stream
 node src/cli/loom.ts emit <id> assistant_text --text "hello"
 ```
 
@@ -84,7 +114,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 28 cases
+npm test             # node:test — 55 cases
 ```
 
 ### Layout
@@ -94,8 +124,10 @@ src/
   protocol/   wire frames + the normalized HarnessEvent union
   store/      node:sqlite: schema, migrations, repositories
   config/     .loom/config.toml loader
-  daemon/     event log, RPC dispatch, socket server, registry,
-              hygiene, lifecycle, and the Daemon that wires them
+  provider/   the vendor-neutral seam; claude/ (SDK adapter + event map),
+              fake/ (scriptable test adapter), registry
+  daemon/     event log, RPC dispatch, socket server, registry, hygiene,
+              lifecycle, session manager, status machine, and the Daemon
   client/     thin client (connect-or-spawn, reconnect, gap replay)
   cli/        loom (client) and loomd (daemon) entrypoints
 ```

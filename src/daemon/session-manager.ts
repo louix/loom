@@ -1,0 +1,242 @@
+/**
+ * Owns every live adapter session: one pump task per session drains the
+ * adapter's normalized `HarnessEvent` stream, forwards each frame to the daemon,
+ * derives status (design spec §4) and rolls usage up. Turn control — send,
+ * interrupt, permission responses, mode / model — funnels through here so it is
+ * serialized per session and the daemon stays thin.
+ */
+import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
+import type { Logger } from "../util/logger.ts";
+import type { UsageDelta } from "../store/sessions.ts";
+import type {
+  AdapterSnapshot,
+  AgentProvider,
+  AgentSession,
+  CreateSessionOptions,
+  PermissionDecision,
+  SessionMode,
+  SessionRef,
+} from "../provider/types.ts";
+import { deriveStatus } from "./status-machine.ts";
+
+export interface ManagerHooks {
+  /** Forward a normalized event to the push stream + persistence. */
+  emitEvent(ev: HarnessEvent): void;
+  /** A derived status transition. */
+  onStatus(sessionId: string, status: SessionStatus, reason: string | null): void;
+  /** A usage delta to accumulate. */
+  onUsage(sessionId: string, delta: UsageDelta): void;
+  /** The provider's persisted id became known. */
+  onProviderRef(sessionId: string, providerRef: string): void;
+  log: Logger;
+}
+
+export interface RespondResult {
+  ok: boolean;
+  alreadyResolved: boolean;
+}
+
+interface Running {
+  provider: string;
+  session: AgentSession;
+  status: SessionStatus;
+  ordinal: number;
+  pendingPerms: Set<string>;
+  interrupting: boolean;
+  ended: boolean;
+  refReported: boolean;
+  pump: Promise<void>;
+}
+
+const LIVE: readonly SessionStatus[] = ["starting", "running", "awaiting_input"];
+
+export class SessionManager {
+  readonly #hooks: ManagerHooks;
+  readonly #running = new Map<string, Running>();
+
+  constructor(hooks: ManagerHooks) {
+    this.#hooks = hooks;
+  }
+
+  get count(): number {
+    return this.#running.size;
+  }
+
+  has(id: string): boolean {
+    return this.#running.has(id);
+  }
+
+  ids(): string[] {
+    return [...this.#running.keys()];
+  }
+
+  snapshot(id: string): AdapterSnapshot | null {
+    return this.#running.get(id)?.session.snapshot() ?? null;
+  }
+
+  // --- lifecycle --------------------------------------------------------
+
+  async create(provider: AgentProvider, opts: CreateSessionOptions): Promise<void> {
+    const session = await provider.createSession(opts);
+    this.#attach(provider.id, opts.sessionId, session);
+  }
+
+  async resume(provider: AgentProvider, ref: SessionRef): Promise<void> {
+    const session = await provider.resumeSession(ref);
+    this.#attach(provider.id, ref.sessionId, session);
+  }
+
+  #attach(providerId: string, id: string, session: AgentSession): void {
+    const run: Running = {
+      provider: providerId,
+      session,
+      status: "starting",
+      ordinal: 0,
+      pendingPerms: new Set(),
+      interrupting: false,
+      ended: false,
+      refReported: false,
+      pump: Promise.resolve(),
+    };
+    this.#running.set(id, run);
+    run.pump = this.#drain(id, run);
+  }
+
+  async #drain(id: string, run: Running): Promise<void> {
+    try {
+      for await (const raw of run.session.events()) {
+        const ev = { ...raw, ordinal: run.ordinal++ } as HarnessEvent;
+        this.#hooks.emitEvent(ev);
+        this.#trackPerms(run, ev);
+        this.#trackUsage(id, ev);
+        this.#trackRef(id, run);
+        this.#applyStatus(id, run, ev);
+      }
+      // The adapter stream ended. A clean run leaves status at idle/done/error;
+      // anything still live stopped without a clean finish → interrupted.
+      run.ended = true;
+      if (LIVE.includes(run.status)) {
+        this.#set(id, run, "interrupted", "stream_ended");
+      }
+    } catch (err) {
+      run.ended = true;
+      const message = err instanceof Error ? err.message : String(err);
+      this.#hooks.log.warn("session pump failed", { id, err: message });
+      this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
+      this.#set(id, run, "error", message.slice(0, 120));
+    }
+  }
+
+  #trackRef(id: string, run: Running): void {
+    if (run.refReported) return;
+    const ref = run.session.providerRef;
+    if (ref) {
+      run.refReported = true;
+      this.#hooks.onProviderRef(id, ref);
+    }
+  }
+
+  #trackPerms(run: Running, ev: HarnessEvent): void {
+    if (ev.type === "permission_request") {
+      run.pendingPerms.add(ev.id);
+    } else if (ev.type === "tool_call" || ev.type === "tool_result") {
+      run.pendingPerms.delete(ev.id);
+    }
+  }
+
+  #trackUsage(id: string, ev: HarnessEvent): void {
+    if (ev.type === "usage") {
+      this.#hooks.onUsage(id, {
+        input: ev.tokens.input,
+        output: ev.tokens.output,
+        cacheRead: ev.tokens.cacheRead,
+        cacheWrite: ev.tokens.cacheWrite,
+        costUsd: ev.costDeltaUsd ?? 0,
+        contextUsed: ev.contextUsed,
+        contextLimit: ev.contextLimit,
+      });
+    } else if (ev.type === "result") {
+      this.#hooks.onUsage(id, { turns: 1 });
+    }
+  }
+
+  #applyStatus(id: string, run: Running, ev: HarnessEvent): void {
+    // A user interrupt is sticky — don't let a trailing event undo it, unless
+    // it's a fatal error we should surface.
+    if (run.interrupting && !(ev.type === "error" && ev.fatal)) return;
+    const d = deriveStatus(run.status, ev);
+    if (!d) return;
+    this.#set(id, run, d.status, d.reason);
+  }
+
+  #set(id: string, run: Running, status: SessionStatus, reason: string | null): void {
+    if (run.status === status) {
+      // still notify on an awaiting_input reason change (permission → question)
+      if (status !== "awaiting_input") return;
+    }
+    run.status = status;
+    this.#hooks.onStatus(id, status, reason);
+  }
+
+  // --- turn control ----------------------------------------------------
+
+  async send(id: string, text: string): Promise<void> {
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    await run.session.send(text);
+    run.interrupting = false;
+    this.#set(id, run, "running", null);
+  }
+
+  async interrupt(id: string): Promise<void> {
+    const run = this.#require(id);
+    run.interrupting = true;
+    await run.session.interrupt();
+    this.#set(id, run, "interrupted", "user");
+  }
+
+  async respondToPermission(
+    id: string,
+    requestId: string,
+    decision: PermissionDecision,
+  ): Promise<RespondResult> {
+    const run = this.#require(id);
+    if (!run.pendingPerms.has(requestId)) return { ok: false, alreadyResolved: true };
+    run.pendingPerms.delete(requestId);
+    await run.session.respondToPermission(requestId, decision);
+    // Optimistic: the approved tool call will confirm `running` on its own.
+    this.#set(id, run, "running", null);
+    return { ok: true, alreadyResolved: false };
+  }
+
+  async setMode(id: string, mode: SessionMode): Promise<void> {
+    await this.#require(id).session.setMode(mode);
+  }
+
+  async setModel(id: string, model: string): Promise<void> {
+    await this.#require(id).session.setModel(model);
+  }
+
+  // --- teardown ------------------------------------------------------
+
+  async shutdown(): Promise<void> {
+    const runs = [...this.#running.values()];
+    this.#running.clear();
+    await Promise.all(
+      runs.map(async (run) => {
+        try {
+          await run.session.close();
+        } catch {
+          // best effort
+        }
+        await run.pump.catch(() => {});
+      }),
+    );
+  }
+
+  #require(id: string): Running {
+    const run = this.#running.get(id);
+    if (!run) throw new Error(`session not running: ${id}`);
+    return run;
+  }
+}
