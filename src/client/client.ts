@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
+  EventPush,
   Frame,
   HelloResult,
   PushFrame,
@@ -22,6 +23,13 @@ export interface ConnectOptions {
   autospawn?: boolean;
   /** Reconnect (with gap replay) if the connection drops. Default true. */
   reconnect?: boolean;
+  /**
+   * On the first attach, ask the daemon to replay its whole buffered push
+   * stream (`sinceSeq: 0`) instead of starting from the live head. Lets a
+   * client that just launched — the TUI — show the history the running daemon
+   * still holds. Default false; falls back to a `resync` if the buffer rolled.
+   */
+  replayHistory?: boolean;
   clientId?: string;
 }
 
@@ -46,6 +54,9 @@ export class LoomClient {
   #closed = false;
   #helloDone = false;
   #preHelloQueue: PushFrame[] = [];
+  /** Bounded ring of every event frame seen — lets a late subscriber backfill. */
+  #eventLog: EventPush[] = [];
+  #eventLogCap = 5000;
 
   sessions: SessionSnapshot[] = [];
   daemonInfo: HelloResult["daemon"] | null = null;
@@ -55,6 +66,7 @@ export class LoomClient {
     this.#opts = {
       autospawn: true,
       reconnect: true,
+      replayHistory: false,
       clientId: this.clientId,
       ...opts,
     };
@@ -63,7 +75,7 @@ export class LoomClient {
   static async connect(opts: ConnectOptions): Promise<LoomClient> {
     const c = new LoomClient(opts);
     await c.#dial(opts.autospawn ?? true);
-    await c.#handshake(undefined);
+    await c.#handshake(c.#opts.replayHistory ? 0 : undefined);
     return c;
   }
 
@@ -100,6 +112,15 @@ export class LoomClient {
 
   get lastSeq(): number {
     return this.#lastSeq;
+  }
+
+  /**
+   * Every event frame received so far (bounded), oldest first. A client that
+   * subscribes with {@link onPush} after the initial `hello` replay can seed
+   * itself from this; de-dupe live frames against it by `seq`.
+   */
+  get bufferedEvents(): readonly EventPush[] {
+    return this.#eventLog;
   }
 
   async close(): Promise<void> {
@@ -205,6 +226,12 @@ export class LoomClient {
     if (frame.type === "resync") {
       void this.#resync(frame.reason);
       return;
+    }
+    if (frame.type === "event") {
+      this.#eventLog.push(frame);
+      if (this.#eventLog.length > this.#eventLogCap) {
+        this.#eventLog.splice(0, this.#eventLog.length - this.#eventLogCap);
+      }
     }
     for (const l of this.#pushListeners) {
       try {

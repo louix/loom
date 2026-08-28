@@ -62,8 +62,14 @@ after(async () => {
   await h.cleanup();
 });
 
-function connect(): Promise<LoomClient> {
-  return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false, reconnect: true });
+function connect(replayHistory = false): Promise<LoomClient> {
+  return LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+    reconnect: true,
+    replayHistory,
+  });
 }
 
 test("renders the fleet, tracks selection by key, and shows help", async () => {
@@ -141,6 +147,38 @@ test("R raises a restart confirmation that esc dismisses", async () => {
 
   app.unmount();
   await client.close();
+});
+
+test("re-opening the TUI backfills the event log from the running daemon", async () => {
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "long-lived session",
+    status: "running",
+    provider: "fake",
+  });
+  await first.request("dev.emit", {
+    event: { sessionId: s.id, type: "assistant_text", text: "something from an earlier viewing" },
+  });
+  await delay(80);
+  await first.close();
+
+  // a brand-new client, the way `loom tui` opens one on a second run
+  const second = await connect(true);
+  const { stdout, stdin, app } = mount(second);
+  try {
+    assert.ok(
+      second.bufferedEvents.some(
+        (f) => f.event.type === "assistant_text" && f.event.text === "something from an earlier viewing",
+      ),
+      "the client replayed the daemon's buffered history",
+    );
+    stdin.feed("f"); // show all sessions — selection is unpredictable across this file's stubs
+    await delay(200);
+    assert.match(stdout.last, /something from an earlier viewing/, "the TUI seeded its log from it");
+  } finally {
+    app.unmount();
+    await second.close();
+  }
 });
 
 test("Tab toggles the fullscreen event log", async () => {

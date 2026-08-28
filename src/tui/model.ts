@@ -258,6 +258,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       // `status_changed` is already shown live in the detail / fleet panes;
       // keep it out of the log so the log reads as a transcript.
       if (ev.type === "status_changed") return { ...s, pending, notice };
+      // A frame may arrive twice around startup (history backfill overlapping
+      // the live stream) — the seq is authoritative, so drop the repeat.
+      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq)) return { ...s, pending, notice };
       const log = [...s.log, toLogLine(frame.seq, ev)];
       if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
       return { ...s, log, pending, notice };

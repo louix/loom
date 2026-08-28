@@ -72,9 +72,15 @@ async function main(): Promise<void> {
   const repoRoot = values.repo ? values.repo : findRepoRoot();
   const { sock } = loomPaths(repoRoot);
 
-  // `tail` and the TUI are the long-lived commands that want reconnect.
+  // `tail` and the TUI are the long-lived commands that want reconnect; the TUI
+  // also replays the daemon's buffered history so re-opening it isn't a blank log.
   const reconnect = cmd === "tail" || wantTui;
-  const client = await LoomClient.connect({ repoRoot, sockPath: sock, reconnect });
+  const client = await LoomClient.connect({
+    repoRoot,
+    sockPath: sock,
+    reconnect,
+    ...(wantTui ? { replayHistory: true } : {}),
+  });
 
   if (wantTui) {
     const { runTui } = await import("../tui/run.ts");

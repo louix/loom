@@ -89,6 +89,10 @@ export function App({
       client.on("resync", () => refetch()),
       client.on("close", () => dispatch({ t: "connection", value: "closed" })),
     ];
+    // Backfill the log from history the daemon replayed before this component
+    // mounted (re-opening the TUI against a live daemon); live frames that also
+    // land in this list de-dupe against it by seq.
+    for (const frame of client.bufferedEvents) dispatch({ t: "push", frame });
     return () => {
       for (const off of offs) off();
     };

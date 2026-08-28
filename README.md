@@ -84,7 +84,8 @@ as a second adapter.
 
 - **`loom` with no command** in an interactive terminal — or `loom tui`
   explicitly — opens a full-screen fleet view. It is just another client, with
-  reconnect enabled, so the daemon and its sessions outlive it.
+  reconnect enabled, so the daemon and its sessions outlive it; re-opening
+  replays the daemon's buffered event history so the log isn't blank.
 - **Fleet pane** — sessions grouped by status in fleet-view order, a braille
   spinner on running rows, cost per session; `↑`/`↓` (or `j`/`k`) moves the
   selection.
@@ -183,7 +184,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 117 cases
+npm test             # node:test — 118 cases
 ```
 
 ### Layout
