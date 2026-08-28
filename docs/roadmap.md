@@ -9,7 +9,7 @@ MCP server, terminal UI). This doc plans the next five:
 | 7 | The trio — LLM titles · price-table cost · budgets | S (one pass) | — |
 | 8 | Plan review | M | 6 (real "implement fresh") |
 | 9 | Sub-agent nesting | M | — |
-| 10 | ADK adapter + arbitrary providers | L | 6 (non-Claude context mgmt mindset) |
+| 10 | Non-Claude providers (Vercel AI SDK) | L | 6 (non-Claude context mgmt mindset) |
 
 Compaction moved to the front (user, 2026-08-28): it's self-contained, it
 unblocks the good version of plan review's *implement fresh*, and it forces the
@@ -284,53 +284,29 @@ inside a session card; child sessions are their own rows with a parent link.
 
 ---
 
-## Milestone 10 — ADK adapter + arbitrary providers
+## Milestone 10 — non-Claude providers (Vercel AI SDK)
 
-**Goal.** A second provider adapter using the **TypeScript** ADK
-(`@google/adk`, `@google/adk-devtools` — both on npm, so this is a normal Node
-dependency, no Python sidecar). ADK's `LiteLlm` model wrapper reaches any
-OpenAI-compatible endpoint, so "support GLM / DeepSeek / OpenRouter / local
-vLLM" falls out of building this — there is no separate "generic provider"
-milestone.
+**Full plan: [`m10-plan.md`](m10-plan.md).** Under review with the user.
 
-**What exists.** `[providers.adk]` config stub (`model`, `auth`),
-`ProviderRegistry` has a factory map keyed by id, and the seam
-(`AgentProvider` / `AgentSession` + normalized `HarnessEvent`) is provider-
-neutral. `defaultId` stays `"claude"`.
+The original sketch here was an **ADK adapter**, on the assumption that TS
+`@google/adk` carries Python ADK's `LiteLlm` wrapper for OpenAI-compatible
+endpoints. A spike (2026-08-29, `@google/adk@2.0.0`) killed that: no `LiteLlm`,
+no OpenAI/Anthropic model backend (Gemini/Vertex only), and 155 MB / 114
+transitive packages. Details in `m10-plan.md` §"Why not ADK".
 
-### Mapping ADK → the Loom seam
+**Direction now.** Full tool parity for non-Claude providers, built on the
+**Vercel AI SDK** (`ai` + `@ai-sdk/openai`), which reaches GLM / DeepSeek /
+OpenRouter / vLLM / Ollama via `createOpenAICompatible`. Loom owns the loop
+policy, permission gate, compaction, and message persistence; the SDK does model
+I/O, tool-call plumbing, and MCP transport. Tools: official MCP servers
+(`server-filesystem`, `-git`, `-fetch`) plus two hand-built ones (a
+persistent-shell Bash, a fuzzy-match Edit). Split into sub-milestones M10a–e
+(skeleton → MCP → hand-built tools → modes/compaction/subagents →
+provider/model switching UX); **stop for review after M10a**.
 
-| Loom seam | ADK |
-|-----------|-----|
-| `AgentProvider.createSession` | build an `LlmAgent` + `Runner` + a `SessionService` session; one runner per Loom session |
-| model | `LiteLlm({ model, api_base, api_key })` (OpenAI-compatible) or native Gemini; from `[providers.adk]` + a new `[providers.adk.litellm]` block (`base_url`, `api_key_env`) |
-| tools | Loom's `McpServerHandle[]` → ADK `McpToolset`; the in-process `loom` server (ask_user, commit) needs an ADK-native shim or an MCP bridge |
-| `events()` | `Runner.runAsync()` yields ADK `Event`s → map: content→`assistant_text`/`thinking`, `function_call`→`tool_call`, `function_response`→`tool_result`, `usage_metadata`→`usage` |
-| permissions | ADK `before_tool_callback` → Loom's permission gate → `permission_request`; the callback blocks on the resolver |
-| modes (`plan`/`acceptEdits`/`auto`) | ADK has none built-in — implement in `before_tool_callback` (plan = block mutating tools until a plan tool; acceptEdits = auto-allow edit tools; auto = allow all) |
-| compaction (M6) | ADK has no `/compact` — Loom summarises the ADK session history itself and rebuilds the session, or leans on ADK's own context management if it has one |
-| `resumeSession` | `providerRef` = ADK session id; ADK `SessionService` persistence |
-| `setModel` / `setMode` | ADK likely needs a new turn (set `capabilities.liveModeSwitch = false`) |
-| `interrupt` | cancel the `runAsync` iterator / ADK run |
-
-**Capabilities.** `{ liveModeSwitch: false, forking: false (initially),
-subagents: true, partialTokens: ? , oneShot: true }`.
-
-**Unknowns to spike before committing.**
-
-- Does the **TS** `@google/adk` have parity with Python ADK for `LiteLlm`,
-  `McpToolset`, `before_tool_callback`, and session persistence? (The Python one
-  definitely does; the TS package is newer.)
-- Streaming granularity of ADK `Event`s vs. our `HarnessEvent` expectations.
-- How `auto` / `bypassPermissions` semantics translate without an SDK that owns
-  a sandbox — Loom may need to own tool execution for non-Claude providers.
-- Compaction for a non-Claude provider (see the row above) — probably a
-  Loom-side summarise-and-rebuild.
-
-**Files.** `src/provider/adk/` (new: `adapter.ts`, `map.ts`),
-`src/provider/registry.ts` (factory entry), `src/config/config.ts`
-(`[providers.adk.litellm]`), `package.json` (`@google/adk`),
-`config.example.toml`, README.
+`[providers.adk]` config stub is retired; `[providers.<id>]` gains an `adapter`
+key (`"claude"` | `"aisdk"`) and the registry builds its factory map from
+config-declared provider profiles.
 
 ---
 
