@@ -116,7 +116,7 @@ test("esc does not quit; only overlays back out", async () => {
   stdin.feed("n");
   await delay(100);
   assert.match(stdout.last, /new session/);
-  assert.match(stdout.last, /\[default\]/);
+  assert.doesNotMatch(stdout.last, /\[default\]/, "no chip while the mode is the default");
   stdin.feed(ESC);
   await delay(100);
   assert.doesNotMatch(stdout.last, /new session/);

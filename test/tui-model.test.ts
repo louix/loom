@@ -18,7 +18,7 @@ import {
   type TuiState,
 } from "../src/tui/model.ts";
 import { buffer } from "../src/tui/editor.ts";
-import { bar, humanTokens, money, spinnerFrame, truncate } from "../src/tui/theme.ts";
+import { bar, humanTokens, money, spinnerFrame, truncate, wrapText } from "../src/tui/theme.ts";
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -278,8 +278,9 @@ test("prompt open / edit / close transitions", () => {
 test("promptCycleMode only cycles for a `new` prompt", () => {
   let s = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "new", sessionId: null, label: "new", mode: "default" }),
+    prompt: makePrompt({ kind: "new", sessionId: null, label: "new" }),
   });
+  assert.equal(s.prompt?.mode, undefined, "a fresh new-prompt carries no mode — it just uses the default");
   s = reduce(s, { t: "promptCycleMode" });
   assert.equal(s.prompt?.mode, "plan");
   s = reduce(s, { t: "promptCycleMode" });
@@ -361,6 +362,22 @@ test("theme formatting helpers", () => {
   assert.equal(money(0), "—");
   assert.equal(money(0.4), "$0.40");
   assert.equal(spinnerFrame(0), spinnerFrame(10));
+  assert.deepEqual(wrapText("the quick brown fox", 9), ["the quick", "brown fox"]);
+  assert.deepEqual(wrapText("supercalifragilistic", 6), ["superc", "alifra", "gilist", "ic"]);
+  assert.deepEqual(wrapText("short", 40), ["short"]);
+});
+
+test("status_changed events stay out of the log; result is a terse marker", () => {
+  let s = initialState();
+  s = reduce(s, { t: "push", frame: push(1, ev({ type: "assistant_text", text: "here is the answer" })) });
+  s = reduce(s, { t: "push", frame: push(2, ev({ type: "status_changed", status: "idle", reason: "result" })) });
+  s = reduce(s, { t: "push", frame: push(3, ev({ type: "result", ok: true, summary: "here is the answer" })) });
+  assert.deepEqual(
+    s.log.map((l) => l.glyph),
+    ["▪", "■"],
+    "no ◈ status line; result kept but terse",
+  );
+  assert.equal(s.log.at(-1)?.text, "turn complete");
 });
 
 test("selectedSession returns the highlighted row or null", () => {

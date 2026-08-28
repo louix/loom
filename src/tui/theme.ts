@@ -83,6 +83,36 @@ export function truncate(s: string, n: number): string {
   return s.slice(0, n - 1) + "…";
 }
 
+/** Greedy word wrap to `width` columns; hard-breaks any token longer than it. */
+export function wrapText(s: string, width: number): string[] {
+  if (width <= 0) return [s];
+  const out: string[] = [];
+  let line = "";
+  for (const word of s.split(" ")) {
+    if (word.length > width) {
+      if (line) {
+        out.push(line);
+        line = "";
+      }
+      let rest = word;
+      while (rest.length > width) {
+        out.push(rest.slice(0, width));
+        rest = rest.slice(width);
+      }
+      line = rest;
+    } else if (line === "") {
+      line = word;
+    } else if (line.length + 1 + word.length <= width) {
+      line += " " + word;
+    } else {
+      out.push(line);
+      line = word;
+    }
+  }
+  if (line) out.push(line);
+  return out.length ? out : [""];
+}
+
 /** 12345 → "12.3k", 2_000_000 → "2.0M", <1000 stays exact. */
 export function humanTokens(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "0";

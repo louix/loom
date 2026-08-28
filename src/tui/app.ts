@@ -169,7 +169,7 @@ export function App({
       if (name === "new") {
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", mode: "default" }),
+          prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
         });
       }
       if (name === "filter") {
@@ -255,7 +255,7 @@ export function App({
         const r = await client.request<SessionSnapshot>("session.create", {
           prompt: text,
           by,
-          ...(p.mode ? { mode: p.mode } : {}),
+          ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
         });
         dispatch({ t: "select", id: r.id });
         dispatch({ t: "pushHistory", text });

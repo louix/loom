@@ -253,15 +253,14 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
-      const line = toLogLine(frame.seq, ev);
-      const log = [...s.log, line];
+      const pending = trackPending(s.pending, ev);
+      const notice = noticeForEvent(s, ev) ?? s.notice;
+      // `status_changed` is already shown live in the detail / fleet panes;
+      // keep it out of the log so the log reads as a transcript.
+      if (ev.type === "status_changed") return { ...s, pending, notice };
+      const log = [...s.log, toLogLine(frame.seq, ev)];
       if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
-      return {
-        ...s,
-        log,
-        pending: trackPending(s.pending, ev),
-        notice: noticeForEvent(s, ev) ?? s.notice,
-      };
+      return { ...s, log, pending, notice };
     }
     case "session_updated": {
       const rest = s.sessions.filter((x) => x.id !== frame.session.id);
@@ -494,7 +493,9 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "error":
       return { glyph: "✕", text: oneLine(ev.message, 160), tone: "bad" };
     case "result":
-      return { glyph: "■", text: ev.ok ? oneLine(ev.summary ?? "done") : "failed", tone: ev.ok ? "good" : "bad" };
+      // The turn's text is already in the log as assistant_text; a failure gets
+      // its own `error` line. So this is just a terse end-of-turn marker.
+      return { glyph: "■", text: ev.ok ? "turn complete" : "turn failed", tone: ev.ok ? "good" : "bad" };
   }
 }
 

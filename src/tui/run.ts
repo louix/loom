@@ -44,7 +44,11 @@ export async function runTui(client: LoomClient): Promise<void> {
     } finally {
       if (stdin.isTTY) stdin.setRawMode(wasRaw);
       rmSync(dir, { recursive: true, force: true });
+      // The editor scribbled all over the screen and left Ink's cursor
+      // bookkeeping stale — hard-clear and force a full repaint from the top.
       instance.clear();
+      if (process.stdout.isTTY) process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+      instance.rerender(createElement(App, { client, openEditor }));
     }
   };
 

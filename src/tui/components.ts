@@ -29,12 +29,22 @@ import {
   STATUS,
   TONE_COLOR,
   truncate,
+  wrapText,
 } from "./theme.ts";
 
 const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
 
 /** Inner width of a `borderStyle:"round"` + `paddingX:1` box. */
 const inside = (w: number): number => Math.max(4, w - 4);
+
+/** First non-blank line of a (possibly multi-line) session title. */
+const titleLine = (t: string | null): string => {
+  for (const raw of (t ?? "").split("\n")) {
+    const line = raw.trim();
+    if (line) return line;
+  }
+  return "(untitled)";
+};
 
 // ---------------------------------------------------------------------------
 // header
@@ -135,7 +145,7 @@ function FleetRow({
   const id = shortId(s.id);
   const cost = money(s.costUsd);
   const room = Math.max(6, iw - (2 + 2 + id.length + 2 + cost.length + 1));
-  const title = truncate(s.title ?? "(untitled)", room).padEnd(room);
+  const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return h(
     Text,
@@ -190,7 +200,7 @@ export function Detail({ session, width }: { session: SessionSnapshot | null; wi
       h(Text, { color: C.dim }, `DETAIL  ${shortId(s.id)}`),
       h(Text, { color: C.faint }, `${s.provider}${s.model ? `  ${s.model}` : ""}`),
     ),
-    h(Text, { color: C.text, wrap: "truncate-end" }, truncate(s.title ?? "(untitled)", w)),
+    h(Text, { color: C.text, wrap: "truncate-end" }, truncate(titleLine(s.title), w)),
     h(
       Box,
       { marginTop: 1, gap: 2 },
@@ -249,13 +259,15 @@ export function EventLog({
   scroll?: number;
   full?: boolean;
 }): ReactNode {
-  const all = visibleLog(state);
-  const rows = Math.max(1, height - 3); // header line + top/bottom border + hint row
-  const maxScroll = Math.max(0, all.length - rows);
+  const tagged = state.logFilter === "all";
+  const capacity = Math.max(1, height - 3); // header line + top/bottom border
+  const physical = physicalRows(visibleLog(state), inside(width), tagged);
+
+  const maxScroll = Math.max(0, physical.length - capacity);
   const off = Math.min(scroll, maxScroll);
-  const end = all.length - off;
-  const lines = all.slice(Math.max(0, end - rows), end);
-  const above = Math.max(0, end - rows);
+  const end = physical.length - off;
+  const shown = physical.slice(Math.max(0, end - capacity), end);
+  const above = Math.max(0, end - capacity);
 
   return h(
     Box,
@@ -274,28 +286,50 @@ export function EventLog({
       h(
         Text,
         { color: C.faint },
-        (state.logFilter === "all" ? "all sessions" : "this session") +
-          (off > 0 ? `  ·  ↑${above} more` : ""),
+        (tagged ? "all sessions" : "this session") + (off > 0 ? `  ·  ↑${above} more` : ""),
       ),
     ),
-    ...(lines.length === 0
-      ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")]
-      : lines.map((l) => LogRow({ l, tagged: state.logFilter === "all", iw: inside(width) }))),
+    ...(shown.length === 0 ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")] : shown.map((r) => r.node)),
   );
 }
 
-function LogRow({ l, tagged, iw }: { l: LogLine; tagged: boolean; iw: number }): ReactNode {
-  const ts = `${clock(l.ts)} `;
-  const tag = tagged ? `${shortId(l.sessionId)} ` : "";
-  const room = Math.max(8, iw - ts.length - tag.length - 2);
-  return h(
-    Text,
-    { key: `${l.seq}-${l.ts}`, wrap: "truncate-end" },
-    h(Text, { color: C.faint }, ts + tag),
-    h(Text, { color: TONE_COLOR[l.tone] }, `${l.glyph} `),
-    h(Text, { color: TONE_COLOR[l.tone] }, truncate(l.text.replace(/\s+/g, " ").trim(), room)),
-  );
+/** Wrap every log line to `iw` columns; returns one entry per physical row. */
+function physicalRows(
+  lines: readonly LogLine[],
+  iw: number,
+  tagged: boolean,
+): Array<{ key: string; node: ReactNode }> {
+  const out: Array<{ key: string; node: ReactNode }> = [];
+  for (const l of lines) {
+    const ts = `${clock(l.ts)} `;
+    const tag = tagged ? `${shortId(l.sessionId)} ` : "";
+    const indent = ts.length + tag.length + 2; // + "glyph "
+    const room = Math.max(8, iw - indent);
+    const wrapped = wrapText(l.text.replace(/\s+/g, " ").trim() || "…", room);
+    wrapped.forEach((seg, i) => {
+      out.push({
+        key: `${l.seq}-${l.ts}-${i}`,
+        node:
+          i === 0
+            ? h(
+                Text,
+                { key: `${l.seq}-${l.ts}-0`, wrap: "truncate-end" },
+                h(Text, { color: C.faint }, ts + tag),
+                h(Text, { color: TONE_COLOR[l.tone] }, `${l.glyph} `),
+                h(Text, { color: TONE_COLOR[l.tone] }, seg),
+              )
+            : h(
+                Text,
+                { key: `${l.seq}-${l.ts}-${i}`, wrap: "truncate-end" },
+                h(Text, null, " ".repeat(indent)),
+                h(Text, { color: TONE_COLOR[l.tone] }, seg),
+              ),
+      });
+    });
+  }
+  return out;
 }
+
 
 // ---------------------------------------------------------------------------
 // text editor view (used by the prompt)
@@ -358,7 +392,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 
 function promptHints(p: PromptState): string {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor"];
-  if (p.kind === "new") bits.push(`⇧⇥ mode:${p.mode ?? "default"}`);
+  if (p.kind === "new") bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   bits.push("esc cancel");
   return bits.join("  ·  ");
@@ -376,7 +410,9 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
         Box,
         { gap: 1 },
         h(Text, { color: C.accent, bold: true }, p.label),
-        p.kind === "new" ? h(Text, { color: C.warn }, `[${p.mode ?? "default"}]`) : null,
+        p.kind === "new" && p.mode && p.mode !== "default"
+          ? h(Text, { color: C.warn }, `[${p.mode}]`)
+          : null,
       ),
       h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
       h(Text, { color: C.faint }, promptHints(p)),

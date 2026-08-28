@@ -91,7 +91,8 @@ as a second adapter.
 - **Detail pane** — the selected session's status / mode / model, a
   context-window meter, token and cost totals, and its worktree's git facts.
 - **Event stream** — the normalized harness events for the selected session
-  (`f` toggles to all sessions), colourised by kind. `PgUp`/`PgDn` scroll it,
+  (`f` toggles to all sessions), colourised by kind and wrapped to the pane.
+  `PgUp`/`PgDn` scroll it,
   `⇥` blows it up to fullscreen, and `⌃e` drops the visible log into `$EDITOR`
   so you can select and copy without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
@@ -182,7 +183,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 116 cases
+npm test             # node:test — 117 cases
 ```
 
 ### Layout
