@@ -35,7 +35,7 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind = "send" | "answer" | "deny" | "new" | "title";
+export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "budget";
 
 export interface PromptState {
   kind: PromptKind;
@@ -464,6 +464,7 @@ export type ActName =
   | "compact"
   | "mode"
   | "title"
+  | "budget"
   | "new"
   | "filter"
   | "help"
@@ -514,6 +515,7 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     }
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "e", label: "rename", act: "title" });
+    local.push({ keys: "b", label: "budget", act: "budget" });
   }
   return [...local, ...GLOBAL_HINTS];
 }

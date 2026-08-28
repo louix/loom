@@ -126,6 +126,8 @@ export interface SessionSnapshot {
   costSource: "table" | "provider" | "none";
   turns: number;
   budget: { maxTokens: number | null; maxCostUsd: number | null; maxTurns: number | null };
+  /** Budget enforcement state: `ok`, `warned` (soft breach), `halted` (hard breach → interrupted). */
+  budgetState: "ok" | "warned" | "halted";
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;

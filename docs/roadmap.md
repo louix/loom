@@ -142,7 +142,12 @@ Fallbacks: table → SDK's `costDeltaUsd` → `0`. Add `costSource: "table" |
 `src/protocol/wire.ts` (`costSource` on `SessionSnapshot`), TUI `Detail`
 (`~$1.20` when `costSource === "table"`), `config.example.toml`, README.
 
-### 7c · Budgets
+### 7c · Budgets ✓ shipped
+
+Built as planned: budget_state column (migration 4), Daemon.#enforceBudget on
+the usage rollup (soft → warned, hard → SessionManager.haltForBudget →
+interrupted/budget), session.setBudget RPC clears the state, config default cap
+applied at session.create. TUI `b` + a Detail budget bar; `loom budget` CLI.
 
 **Goal.** Enforce `[budget]` / per-session `SessionBudget` (`maxTokens`,
 `maxCostUsd`, `maxTurns` — already plumbed through `CreateSessionOptions.budget`).

@@ -48,6 +48,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     costSource: "none",
     turns: 0,
     budget: { maxTokens: null, maxCostUsd: null, maxTurns: null },
+    budgetState: "ok",
     git: null,
     createdAt: now,
     updatedAt: now,
@@ -215,7 +216,7 @@ test("pending question is cleared by the matching answer event", () => {
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
   // every selected session also gets mode + title, plus the global set
-  const S = ["mode", "title", "filter", "help", "new", "quit"];
+  const S = ["mode", "title", "budget", "filter", "help", "new", "quit"];
 
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),

@@ -72,4 +72,9 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE usage ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'none';
   `,
+
+  // 4 — budget enforcement state: ok | warned | halted (M7c)
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN budget_state TEXT NOT NULL DEFAULT 'ok';
+  `,
 ];

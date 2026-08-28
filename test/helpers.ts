@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "../src/daemon/daemon.ts";
@@ -17,8 +17,12 @@ export interface Harness {
 }
 
 /** A throwaway git repo with a standalone daemon running against it. */
-export async function makeHarness(opts: { git?: boolean } = {}): Promise<Harness> {
+export async function makeHarness(opts: { git?: boolean; config?: string } = {}): Promise<Harness> {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
+  if (opts.config !== undefined) {
+    mkdirSync(join(repoRoot, ".loom"), { recursive: true });
+    writeFileSync(join(repoRoot, ".loom", "config.toml"), opts.config);
+  }
   if (opts.git !== false) {
     execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
     execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);

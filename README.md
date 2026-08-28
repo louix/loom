@@ -101,8 +101,8 @@ as a second adapter.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
   answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
   the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
-  done, `e` rename, `⇧⇥` cycle the permission mode, `⌃y` copy the branch to the
-  clipboard, `n` start a new session. Sending to a session
+  done, `e` rename, `b` set a cost budget, `⇧⇥` cycle the permission mode, `⌃y`
+  copy the branch to the clipboard, `n` start a new session. Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
   automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
@@ -120,7 +120,13 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented (later milestones): budgets, plan review, sub-agent nesting.
+Not yet implemented (later milestones): plan review, sub-agent nesting.
+
+**Budgets.** `[budget]` gives every session a soft cost cap (default `$5`);
+`b` in the UI or `loom budget <id> <usd>` sets a per-session one. On breach —
+cost, token, or turn — a `soft` policy marks the session `warned` and it keeps
+going; `hard` marks it `halted` and interrupts it (`reason: budget`). Raising
+the cap clears the state and re-arms the check.
 
 **Price-table cost.** Drop a `.loom/models.toml` with per-model USD-per-million
 prices (`input` / `output` / `cache_read` / `cache_write`) and the daemon costs
@@ -214,7 +220,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 145 cases
+npm test             # node:test — 148 cases
 ```
 
 ### Layout

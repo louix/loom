@@ -256,6 +256,16 @@ export function App({
             t: "openPrompt",
             prompt: makePrompt({ kind: "title", sessionId: s.id, label: "rename", text: s.title ?? "" }),
           });
+        case "budget":
+          return void dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({
+              kind: "budget",
+              sessionId: s.id,
+              label: "budget $",
+              text: s.budget.maxCostUsd != null ? String(s.budget.maxCostUsd) : "",
+            }),
+          });
         case "interrupt":
           return perform(async () => {
             await client.request("session.interrupt", { id: s.id });
@@ -343,6 +353,12 @@ export function App({
       if (p.kind === "title" && p.sessionId) {
         await client.request("session.setTitle", { id: p.sessionId, title: text, by });
         return "renamed";
+      }
+      if (p.kind === "budget" && p.sessionId) {
+        const usd = Number.parseFloat(text);
+        if (!Number.isFinite(usd) || usd <= 0) throw new Error("budget must be a positive number");
+        await client.request("session.setBudget", { id: p.sessionId, maxCostUsd: usd, by });
+        return `budget → $${usd.toFixed(2)}`;
       }
       if (p.kind === "answer" && p.sessionId && p.requestId) {
         const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
@@ -546,6 +562,7 @@ export function App({
       x: "done",
       c: "compact",
       e: "title",
+      b: "budget",
       n: "new",
       f: "filter",
       "?": "help",

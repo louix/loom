@@ -23,6 +23,7 @@ interface SessionRow {
   budget_max_tokens: number | null;
   budget_max_cost_usd: number | null;
   budget_max_turns: number | null;
+  budget_state: string;
   created_at: number;
   updated_at: number;
 }
@@ -174,6 +175,10 @@ export class SessionStore {
       branch: string | null;
       baseBranch: string | null;
       providerRef: string | null;
+      budgetMaxTokens: number | null;
+      budgetMaxCostUsd: number | null;
+      budgetMaxTurns: number | null;
+      budgetState: string;
     }>,
   ): void {
     const cols: string[] = [];
@@ -187,6 +192,10 @@ export class SessionStore {
       branch: "branch",
       baseBranch: "base_branch",
       providerRef: "provider_ref",
+      budgetMaxTokens: "budget_max_tokens",
+      budgetMaxCostUsd: "budget_max_cost_usd",
+      budgetMaxTurns: "budget_max_turns",
+      budgetState: "budget_state",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in fields) {
@@ -354,6 +363,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
       maxCostUsd: row.budget_max_cost_usd,
       maxTurns: row.budget_max_turns,
     },
+    budgetState: (row.budget_state as SessionSnapshot["budgetState"]) ?? "ok",
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

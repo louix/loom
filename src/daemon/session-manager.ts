@@ -220,6 +220,15 @@ export class SessionManager {
     this.#set(id, run, "interrupted", "user");
   }
 
+  /** Stop a session because it breached a hard budget. */
+  async haltForBudget(id: string): Promise<void> {
+    const run = this.#running.get(id);
+    if (!run || run.ended) return;
+    run.interrupting = true;
+    await run.session.interrupt().catch(() => {});
+    this.#set(id, run, "interrupted", "budget");
+  }
+
   async respondToPermission(
     id: string,
     requestId: string,

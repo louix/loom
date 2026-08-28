@@ -133,7 +133,9 @@ export class Daemon {
       onStatus: (id, status, reason) => this.#onDerivedStatus(id, status, reason),
       onUsage: (id, delta) => {
         if (this.#stopping) return;
-        this.#emitSessionUpdated(this.#registry.addUsage(id, this.#priceUsage(id, delta)));
+        const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
+        this.#emitSessionUpdated(snap);
+        this.#enforceBudget(snap);
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
@@ -364,6 +366,34 @@ export class Daemon {
     return delta;
   }
 
+  /**
+   * Compare a session's running totals to its budget. Soft breach → mark
+   * `warned` and keep going; hard breach → mark `halted` and interrupt. A
+   * raised cap (`session.setBudget`) resets the state so this fires again.
+   */
+  #enforceBudget(snap: SessionSnapshot): void {
+    if (this.#stopping || snap.budgetState === "halted") return;
+    const b = snap.budget;
+    if (b.maxCostUsd == null && b.maxTokens == null && b.maxTurns == null) return;
+    const tokens = snap.usage.input + snap.usage.output + snap.usage.cacheRead + snap.usage.cacheWrite;
+    const breached =
+      (b.maxCostUsd != null && snap.costUsd >= b.maxCostUsd) ||
+      (b.maxTokens != null && tokens >= b.maxTokens) ||
+      (b.maxTurns != null && snap.turns >= b.maxTurns);
+    if (!breached) return;
+
+    if (this.config.budget.onBreach === "hard") {
+      this.#emitSessionUpdated(this.#registry.setFields(snap.id, { budgetState: "halted" }));
+      if (this.#sessions.has(snap.id)) {
+        void this.#sessions.haltForBudget(snap.id).catch((err) => {
+          this.#log.warn("budget halt failed", { id: snap.id, err: String(err) });
+        });
+      }
+    } else if (snap.budgetState !== "warned") {
+      this.#emitSessionUpdated(this.#registry.setFields(snap.id, { budgetState: "warned" }));
+    }
+  }
+
   #onActivityChange(why: string): void {
     if (this.#stopping) return;
     const busy = this.#isBusy();
@@ -460,7 +490,12 @@ export class Daemon {
       }
 
       const id = randomUUID();
-      const budget = this.#readBudget(p["budget"]);
+      // An explicit budget wins; otherwise fall back to the configured soft cap.
+      const budget =
+        this.#readBudget(p["budget"]) ??
+        (this.config.budget.defaultMaxCostUsd > 0
+          ? { maxCostUsd: this.config.budget.defaultMaxCostUsd }
+          : null);
 
       // Each session gets its own worktree + branch off the configured base.
       let wt;
@@ -635,6 +670,29 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return this.#enrich(snap);
+    });
+
+    d.register("session.setBudget", (params) => {
+      const id = reqString(params, "id");
+      const p = isObj(params) ? params : {};
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const pos = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+      const maxCostUsd = pos(p["maxCostUsd"]);
+      const maxTokens = pos(p["maxTokens"]);
+      const maxTurns = pos(p["maxTurns"]);
+      if (maxCostUsd === undefined && maxTokens === undefined && maxTurns === undefined) {
+        throw new RpcError("bad_request", "provide at least one of maxCostUsd / maxTokens / maxTurns");
+      }
+      // Raising a cap clears warned / halted; the enforcer re-arms on it.
+      const snap = this.#registry.setFields(id, {
+        ...(maxCostUsd !== undefined ? { budgetMaxCostUsd: maxCostUsd } : {}),
+        ...(maxTokens !== undefined ? { budgetMaxTokens: maxTokens } : {}),
+        ...(maxTurns !== undefined ? { budgetMaxTurns: maxTurns } : {}),
+        budgetState: "ok",
+      });
       this.#emitSessionUpdated(snap, clientLabel(params));
       return this.#enrich(snap);
     });

@@ -245,6 +245,24 @@ export function Detail({
         (s.costSource === "table" ? "~" : "") + money(s.costUsd),
       ),
     ),
+    s.budget.maxCostUsd != null
+      ? (() => {
+          const col =
+            s.budgetState === "halted" ? C.bad : s.budgetState === "warned" ? C.warn : C.accentDim;
+          const frac = s.budget.maxCostUsd > 0 ? s.costUsd / s.budget.maxCostUsd : 0;
+          return h(
+            Box,
+            { gap: 2 },
+            h(Text, { color: C.dim }, "budget "),
+            h(Text, { color: col }, bar(frac, 16)),
+            h(
+              Text,
+              { color: col },
+              `${money(s.costUsd)} / $${s.budget.maxCostUsd.toFixed(2)}${s.budgetState !== "ok" ? `  ${s.budgetState}` : ""}`,
+            ),
+          );
+        })()
+      : null,
     h(
       Box,
       { marginTop: 1 },
@@ -411,6 +429,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   answer: "answer",
   deny: "deny",
   title: "rename",
+  budget: "set",
 };
 
 function promptHints(p: PromptState, queued: number): string {
@@ -433,7 +452,9 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
           ? "describe the task…"
           : p.kind === "title"
             ? "session title"
-            : "type a message…";
+            : p.kind === "budget"
+              ? "max cost in USD, e.g. 2.50"
+              : "type a message…";
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
@@ -603,6 +624,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⌃x", "clear the selected session's queued messages"],
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
   ["x  ·  e", "mark the session done  ·  rename it"],
+  ["b", "set a cost budget (soft-warns or hard-halts on breach)"],
   ["⇧⇥", "cycle the selected session's permission mode"],
   ["n", "start a new session"],
   ["f", "toggle the event log between this session and all"],
