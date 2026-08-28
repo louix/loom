@@ -25,10 +25,19 @@ stale `§N` comments can be cleaned up opportunistically as each file is touched
 
 ---
 
-## Milestone 6 — context compaction
+## Milestone 6 — context compaction ✓ shipped
 
 **Goal.** Explicitly compact a running session's context when its window fills
 (the meter in `Detail`), and show when it happens.
+
+**As built.** `AgentSession.compact(instructions?)` on the seam;
+`ProviderCapabilities.compaction` flags harness-driven vs. Loom-rebuilt. The
+Claude adapter pushes `/compact [instructions]` onto the streaming input; the
+mapper turns a `compact_boundary` system message into `CompactEvent { trigger,
+before, after, summary? }` (`after` is 0 until the next turn re-measures).
+`session.compact` RPC → `SessionManager.compact` forwards and leaves status to
+the stream. TUI: `c` (offered once `contextUsed/contextLimit > 0.5`), logged as
+`⇊ context compacted …`. CLI: `loom compact <id> [steer…]`.
 
 **SDK surface.** No dedicated `compact()` on `Query`. Compaction is driven by
 sending `/compact [instructions]` as a user message on the streaming input;

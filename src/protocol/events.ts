@@ -93,6 +93,20 @@ export interface UsageEvent extends HarnessEventBase {
   costDeltaUsd?: number;
 }
 
+/**
+ * The context window was compacted (`/compact`, or an automatic threshold in
+ * the provider). `before` / `after` are the context-token counts either side of
+ * the boundary; `after` is 0 when the provider doesn't report it until the next
+ * turn. Status is unaffected.
+ */
+export interface CompactEvent extends HarnessEventBase {
+  type: "compact";
+  trigger: "manual" | "auto";
+  before: number;
+  after: number;
+  summary?: string;
+}
+
 export interface SubagentStartedEvent extends HarnessEventBase {
   type: "subagent_started";
   subagentId: string;
@@ -131,6 +145,7 @@ export type HarnessEvent =
   | QuestionEvent
   | AnswerEvent
   | UsageEvent
+  | CompactEvent
   | SubagentStartedEvent
   | SubagentStoppedEvent
   | StatusChangedEvent

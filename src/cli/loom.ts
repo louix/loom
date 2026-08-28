@@ -21,6 +21,7 @@ commands:
 
   run <prompt...>        start a session   [--provider P] [--model M] [--mode default|plan|acceptEdits|auto]
   send <id> <text...>    send a follow-up turn / answer
+  compact <id> [text...] compact the context window (optional steer for the summary)
   interrupt <id>         stop a session mid-turn
   approve <id> <reqId>   allow an outstanding permission request
   deny <id> <reqId>      deny it                          [--text reason]
@@ -138,6 +139,16 @@ async function main(): Promise<void> {
         const id = need(positionals[1], "interrupt <id>");
         const r = await client.request<SessionSnapshot>("session.interrupt", { id });
         process.stdout.write(`${r.id} -> ${r.status}\n`);
+        break;
+      }
+      case "compact": {
+        const id = need(positionals[1], "compact <id> [text...]");
+        const instructions = positionals.slice(2).join(" ");
+        const r = await client.request<SessionSnapshot>("session.compact", {
+          id,
+          ...(instructions ? { instructions } : {}),
+        });
+        process.stdout.write(`${r.id} compacting (ctx ${r.contextUsed}/${r.contextLimit})\n`);
         break;
       }
       case "approve":

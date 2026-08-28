@@ -26,6 +26,7 @@ const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
   forking: false,
   subagents: false,
+  compaction: true,
   partialTokens: false,
   permissionModes: ["default", "plan", "acceptEdits", "auto"],
   models: ["fake-1"],
@@ -43,6 +44,7 @@ export class FakeSession implements AgentSession {
 
   // recorded for test assertions
   readonly sends: string[] = [];
+  readonly compacts: Array<string | undefined> = [];
   readonly permissionResponses: Array<{ id: string; decision: PermissionDecision }> = [];
   readonly questionAnswers: Array<{ id: string; text: string }> = [];
   readonly modeChanges: SessionMode[] = [];
@@ -124,6 +126,14 @@ export class FakeSession implements AgentSession {
   async send(input: UserInput): Promise<void> {
     this.sends.push(input);
     this.#snap.status = "running";
+  }
+
+  async compact(instructions?: string): Promise<void> {
+    this.compacts.push(instructions);
+    const before = this.#snap.contextUsed || 100_000;
+    const after = Math.round(before * 0.3);
+    this.#snap.contextUsed = after;
+    this.emit({ type: "compact", trigger: "manual", before, after });
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {

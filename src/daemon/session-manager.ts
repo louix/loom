@@ -202,6 +202,14 @@ export class SessionManager {
     this.#set(id, run, "running", null);
   }
 
+  async compact(id: string, instructions?: string): Promise<void> {
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    await run.session.compact(instructions);
+    // Status is left to the event stream: `/compact` runs a turn that ends with
+    // its own `result`, and a session compacted while idle stays idle.
+  }
+
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
     run.interrupting = true;

@@ -492,6 +492,18 @@ export class Daemon {
       return this.#registry.mustGet(id);
     });
 
+    d.register("session.compact", async (params) => {
+      const id = reqString(params, "id");
+      const p = isObj(params) ? params : {};
+      const instructions =
+        typeof p["instructions"] === "string" && p["instructions"].trim() !== ""
+          ? (p["instructions"] as string).trim()
+          : undefined;
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      await this.#sessions.compact(id, instructions);
+      return this.#registry.mustGet(id);
+    });
+
     d.register("session.respondPermission", async (params) => {
       const id = reqString(params, "id");
       const requestId = reqString(params, "requestId");

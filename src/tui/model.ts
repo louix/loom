@@ -461,6 +461,7 @@ export type ActName =
   | "interrupt"
   | "resume"
   | "done"
+  | "compact"
   | "mode"
   | "title"
   | "new"
@@ -497,6 +498,13 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     }
     if (status === "running" || status === "idle") {
       local.push({ keys: "s", label: "send", act: "send" });
+    }
+    if (
+      (status === "running" || status === "idle") &&
+      session.contextLimit > 0 &&
+      session.contextUsed / session.contextLimit > 0.5
+    ) {
+      local.push({ keys: "c", label: "compact", act: "compact" });
     }
     if (status === "interrupted" || status === "error") {
       local.push({ keys: "r", label: "resume", act: "resume" });
@@ -553,6 +561,12 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
         glyph: "∑",
         text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(ev.tokens.output)}out · ctx ${humanTokens(ev.contextUsed)}/${humanTokens(ev.contextLimit)}`,
         tone: "dim",
+      };
+    case "compact":
+      return {
+        glyph: "⇊",
+        text: `context compacted ${humanTokens(ev.before)}${ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""}${ev.summary ? ` · ${oneLine(ev.summary, 80)}` : ""}`,
+        tone: "accent",
       };
     case "subagent_started":
       return { glyph: "⤷", text: `subagent ${ev.name} started`, tone: "dim" };

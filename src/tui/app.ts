@@ -261,6 +261,11 @@ export function App({
             await client.request("session.interrupt", { id: s.id });
             return "interrupted";
           });
+        case "compact":
+          return perform(async () => {
+            await client.request("session.compact", { id: s.id });
+            return "compacting context";
+          });
         case "resume":
           return perform(async () => {
             await client.request("session.resume", { id: s.id, by });
@@ -539,6 +544,7 @@ export function App({
       i: "interrupt",
       r: "resume",
       x: "done",
+      c: "compact",
       e: "title",
       n: "new",
       f: "filter",

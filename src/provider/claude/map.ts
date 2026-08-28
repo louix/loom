@@ -56,6 +56,9 @@ interface SdkMsgLite {
   usage?: RawUsage;
   modelUsage?: Record<string, ModelUsageEntry>;
   errors?: string[];
+  // compact_boundary system message
+  compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
+  summary?: string;
 }
 
 // --- accounting state ------------------------------------------------------
@@ -127,7 +130,9 @@ export class ClaudeEventMapper {
         if (m.subtype === "init") {
           if (typeof m.session_id === "string") this.state.providerRef = m.session_id;
           if (typeof m.model === "string") this.state.model = m.model;
+          return [];
         }
+        if (m.subtype === "compact_boundary") return this.#compactBoundary(m);
         return [];
       case "assistant":
         return this.#assistant(m);
@@ -147,6 +152,24 @@ export class ClaudeEventMapper {
       ts: Date.now(),
       ...(typeof agentId === "string" && agentId.length > 0 ? { agentId } : {}),
     };
+  }
+
+  #compactBoundary(m: SdkMsgLite): HarnessEvent[] {
+    const meta = m.compact_metadata ?? {};
+    const before = typeof meta.pre_tokens === "number" ? meta.pre_tokens : this.state.contextUsed;
+    const after = typeof meta.post_tokens === "number" ? meta.post_tokens : 0;
+    // The next request's usage re-measures context; here we only know it dropped.
+    if (after > 0) this.state.contextUsed = after;
+    return [
+      {
+        type: "compact",
+        ...this.#base(null),
+        trigger: meta.trigger === "auto" ? "auto" : "manual",
+        before,
+        after,
+        ...(typeof m.summary === "string" && m.summary.length > 0 ? { summary: m.summary } : {}),
+      },
+    ];
   }
 
   #assistant(m: SdkMsgLite): HarnessEvent[] {

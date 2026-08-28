@@ -99,9 +99,10 @@ as a second adapter.
   pending request — or the visible log — in `$EDITOR` read-only, so you can read
   and copy without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
-  answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume (also from
-  `error`), `x` mark done, `e` rename, `⇧⇥` cycle the permission mode, `⌃y` copy
-  the branch to the clipboard, `n` start a new session. Sending to a session
+  answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
+  the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
+  done, `e` rename, `⇧⇥` cycle the permission mode, `⌃y` copy the branch to the
+  clipboard, `n` start a new session. Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
   automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
@@ -121,6 +122,12 @@ you approve; `acceptEdits` auto-approves file edits but still gates commands;
 
 Not yet implemented (later milestones): LLM-generated session titles,
 price-table cost, budgets, plan review, sub-agent nesting.
+
+**Context compaction.** `c` on a running or idle session (or `loom compact <id>
+[steer…]`) drives the provider's own compaction — for Claude, `/compact` over
+the streaming input. When the summary boundary lands it shows in the event log
+as `⇊ context compacted 154k → …`; the context meter re-measures on the next
+turn. `session.compact` is the RPC.
 
 ## Requirements
 
@@ -162,6 +169,7 @@ node src/cli/loom.ts tail                       # watch it; note permission req=
 node src/cli/loom.ts approve <id> <requestId>   # or: deny <id> <requestId> --text "why"
 node src/cli/loom.ts answer <id> <requestId> "use sqlite"   # reply to an ask_user question
 node src/cli/loom.ts send <id> "also update the README"
+node src/cli/loom.ts compact <id> "keep the plan, drop the investigation"
 node src/cli/loom.ts mode <id> acceptEdits
 node src/cli/loom.ts interrupt <id>
 node src/cli/loom.ts get <id>                   # snapshot: status, usage, cost, context, git
@@ -195,7 +203,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 125 cases
+npm test             # node:test — 130 cases
 ```
 
 ### Layout

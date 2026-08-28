@@ -236,6 +236,14 @@ test("actionsFor keeps the salient action first", () => {
   assert.equal(first?.act, "approve");
 });
 
+test("compact only appears once the context meter passes half", () => {
+  assert.ok(!allowedActs(snap({ status: "idle", contextUsed: 40, contextLimit: 100 })).has("compact"));
+  assert.ok(allowedActs(snap({ status: "idle", contextUsed: 60, contextLimit: 100 })).has("compact"));
+  assert.ok(allowedActs(snap({ status: "running", contextUsed: 90, contextLimit: 100 })).has("compact"));
+  // not offered for a session with no live adapter
+  assert.ok(!allowedActs(snap({ status: "interrupted", contextUsed: 90, contextLimit: 100 })).has("compact"));
+});
+
 test("groupsOf only emits non-empty groups, in fleet-view order", () => {
   const g = groupsOf([snap({ status: "idle" }), snap({ status: "awaiting_input" }), snap({ status: "idle" })]);
   assert.deepEqual(g.map((x) => x.status), ["awaiting_input", "idle"]);
@@ -262,6 +270,11 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
     formatEvent(ev({ type: "usage", tokens: { input: 1200, output: 30, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1200, contextLimit: 200000 })).text,
     /ctx 1\.2k\/200\.0k/,
   );
+  const comp = formatEvent(ev({ type: "compact", trigger: "manual", before: 120000, after: 24000 }));
+  assert.equal(comp.glyph, "⇊");
+  assert.match(comp.text, /120\.0k → 24\.0k/);
+  // `after` unknown until the next turn — no arrow
+  assert.doesNotMatch(formatEvent(ev({ type: "compact", trigger: "auto", before: 120000, after: 0 })).text, /→/);
 });
 
 test("prompt open / edit / close transitions", () => {

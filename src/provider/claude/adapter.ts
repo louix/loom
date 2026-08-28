@@ -41,6 +41,7 @@ const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
   forking: true,
   subagents: true,
+  compaction: true,
   partialTokens: true,
   permissionModes: ["default", "plan", "acceptEdits", "auto"],
   models: [],
@@ -213,6 +214,18 @@ class ClaudeSession implements AgentSession {
   async send(input: UserInput): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     this.#inbox.push(userMessage(input));
+  }
+
+  /**
+   * Drive the Claude Code CLI's `/compact` command over the streaming input.
+   * The CLI treats a leading-slash user message as a command; when the summary
+   * lands it emits a `compact_boundary` system message, which the mapper turns
+   * into a `compact` event.
+   */
+  async compact(instructions?: string): Promise<void> {
+    if (this.#closing) throw new Error("session is closing");
+    const trimmed = instructions?.trim();
+    this.#inbox.push(userMessage(trimmed ? `/compact ${trimmed}` : "/compact"));
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {

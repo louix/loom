@@ -595,6 +595,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⌃y", "copy the selected session's branch to the clipboard"],
   ["a  ·  d", "approve / answer  ·  deny a permission request"],
   ["s", "send a follow-up turn (running → asap / queue for turn end)"],
+  ["c", "compact the context window (shown once the meter passes half)"],
   ["⌃x", "clear the selected session's queued messages"],
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
   ["x  ·  e", "mark the session done  ·  rename it"],

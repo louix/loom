@@ -150,6 +150,36 @@ test("result error emits an error and a failed result", () => {
   assert.equal(res?.ok, false);
 });
 
+test("a compact_boundary system message becomes a compact event", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map({ type: "system", subtype: "init", session_id: "c1", model: "claude-sonnet-5" });
+  const out = m.map({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "manual", pre_tokens: 154000 },
+  });
+  const c = byType(out, "compact")[0];
+  assert.ok(c);
+  assert.equal(c.trigger, "manual");
+  assert.equal(c.before, 154000);
+  assert.equal(c.after, 0);
+});
+
+test("compact_boundary with post_tokens updates the mapper's context estimate", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.map({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "auto", pre_tokens: 180000, post_tokens: 30000 },
+    summary: "kept the plan",
+  });
+  const c = byType(out, "compact")[0];
+  assert.equal(c?.trigger, "auto");
+  assert.equal(c?.after, 30000);
+  assert.equal(c?.summary, "kept the plan");
+  assert.equal(m.state.contextUsed, 30000);
+});
+
 test("stream_event and unknown messages map to nothing", () => {
   const m = new ClaudeEventMapper(SID);
   assert.deepEqual(m.map({ type: "stream_event", event: {} }), []);

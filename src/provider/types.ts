@@ -12,6 +12,8 @@ export interface ProviderCapabilities {
   liveModeSwitch: boolean;
   forking: boolean;
   subagents: boolean;
+  /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
+  compaction: boolean;
   /** Emits token counts before the final result (partial usage). */
   partialTokens: boolean;
   permissionModes: SessionMode[];
@@ -96,6 +98,12 @@ export interface AgentSession {
   events(): AsyncIterable<HarnessEvent>;
   /** Send a follow-up turn / answer. */
   send(input: UserInput): Promise<void>;
+  /**
+   * Compact the session's context window. Optional `instructions` steer what the
+   * summary keeps. Providers that drive this through their harness (Claude's
+   * `/compact`) emit a `compact` event when the boundary lands.
+   */
+  compact(instructions?: string): Promise<void>;
   /** Resolve an outstanding `permission_request`. First writer wins upstream. */
   respondToPermission(id: string, decision: PermissionDecision): Promise<void>;
   /** Resolve an outstanding `ask_user` question with the user's answer. */

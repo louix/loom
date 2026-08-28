@@ -163,6 +163,35 @@ test("send delivers a follow-up turn and returns the session to running", async 
   await c.close();
 });
 
+test("session.compact forwards to the adapter and streams a compact event", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, fs } = await createFake(c);
+  fs.finishTurn({ contextUsed: 80_000 });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle");
+
+  await c.request("session.compact", { id, instructions: "keep the plan" });
+  assert.deepEqual(fs.compacts, ["keep the plan"]);
+
+  await waitFor(() =>
+    frames.some((f) => f.type === "event" && f.event.type === "compact" && f.event.sessionId === id),
+  );
+  const compact = frames.find(
+    (f): f is Extract<PushFrame, { type: "event" }> => f.type === "event" && f.event.type === "compact",
+  );
+  assert.equal(compact?.event.type === "compact" && compact.event.before, 80_000);
+  // compacting an idle session leaves it idle
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "idle");
+  await c.close();
+});
+
+test("session.compact on a session that isn't running is not_found", async () => {
+  const c = await client();
+  await assert.rejects(c.request("session.compact", { id: "nope" }), /session not running/);
+  await c.close();
+});
+
 test("interrupt is sticky — a trailing stream end does not undo it", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
