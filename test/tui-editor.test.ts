@@ -57,8 +57,9 @@ test("an unbound modified key is swallowed, never inserted as the bare letter", 
   assert.deepEqual(press("hi", 2, "x", { meta: true }), { kind: "ignore" });
 });
 
-test("⌃e is left for the app to intercept (open $EDITOR)", () => {
+test("⌃e / ⌃o are left for the app to intercept ($EDITOR handoffs)", () => {
   assert.deepEqual(press("hi", 1, "e", { ctrl: true }), { kind: "ignore" });
+  assert.deepEqual(press("hi", 1, "o", { ctrl: true }), { kind: "ignore" });
 });
 
 test("a multi-line paste inserts verbatim, normalising CRLF, and stripping bracket markers", () => {

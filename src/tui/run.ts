@@ -6,11 +6,10 @@
  *
  * Ink and React are imported here and nowhere else, and this module is loaded
  * lazily by the CLI so plain commands pay nothing for it. This module also owns
- * the `$EDITOR` handoff (`⌃e`), since suspending Ink's hold on the terminal has
- * to happen around the `render()` instance.
+ * the `$EDITOR` handoff, since suspending Ink's hold on the terminal has to
+ * happen around the `render()` instance.
  */
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,24 +18,39 @@ import { render, type Instance } from "ink";
 import type { LoomClient } from "../client/client.ts";
 import { App } from "./app.ts";
 
-/** Open `text` in `$EDITOR`, blocking until it exits; returns the saved body. */
-export type EditorHandoff = (text: string, ext?: string) => string | null;
+/**
+ * Open `text` in `$EDITOR`, blocking until it exits; returns the saved body (or
+ * `null` if it couldn't run). `aside`, when given, is written as a second file
+ * passed on the command line so the editor opens it as an extra buffer to copy
+ * from — its contents are never read back.
+ */
+export type EditorHandoff = (
+  text: string,
+  opts?: { ext?: string; aside?: { name: string; body: string } },
+) => string | null;
 
 export async function runTui(client: LoomClient): Promise<void> {
   let instance: Instance;
 
-  const openEditor: EditorHandoff = (text, ext = "md") => {
+  const openEditor: EditorHandoff = (text, opts = {}) => {
+    const ext = opts.ext ?? "md";
     const editor = process.env["VISUAL"] || process.env["EDITOR"] || "vi";
     const dir = mkdtempSync(join(tmpdir(), "loom-edit-"));
     const file = join(dir, `buffer.${ext}`);
     writeFileSync(file, text);
+    const extra: string[] = [];
+    if (opts.aside) {
+      const asidePath = join(dir, opts.aside.name.replace(/[^\w.-]/g, "_"));
+      writeFileSync(asidePath, opts.aside.body);
+      extra.push(asidePath);
+    }
     const stdin = process.stdin;
     const wasRaw = stdin.isTTY ? stdin.isRaw : false;
     try {
       instance.clear();
       if (stdin.isTTY) stdin.setRawMode(false);
       const [cmd, ...pre] = editor.split(/\s+/).filter(Boolean);
-      const r = spawnSync(cmd ?? "vi", [...pre, file], { stdio: "inherit" });
+      const r = spawnSync(cmd ?? "vi", [...pre, file, ...extra], { stdio: "inherit" });
       if (r.error) return null;
       return readFileSync(file, "utf8");
     } catch {

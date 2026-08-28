@@ -136,6 +136,10 @@ test("esc does not quit; only overlays back out", async () => {
     stdin.feed(ESC);
     await delay(100);
     assert.doesNotMatch(stdout.last, /new session/);
+
+    stdin.feed("\x05"); // ⌃e in browse: there is no prompt to edit
+    await delay(80);
+    assert.match(stdout.last, /open a prompt first/);
   } finally {
     app.unmount();
     await client.close();

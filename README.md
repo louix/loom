@@ -95,18 +95,20 @@ as a second adapter.
   what's being approved / denied / asked (the command, the file, the question).
 - **Event stream** — the normalized harness events for the selected session
   (`f` toggles to all sessions), colourised by kind and wrapped to the pane.
-  `PgUp`/`PgDn` scroll it, `⇥` blows it up to fullscreen, and `⌃e` opens the
-  pending request — or the visible log — in `$EDITOR` so you can read and copy
-  without fighting the split.
+  `PgUp`/`PgDn` scroll it, `⇥` blows it up to fullscreen, and `⌃o` opens the
+  pending request — or the visible log — in `$EDITOR` read-only, so you can read
+  and copy without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
   answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume (also from
   `error`), `x` mark done, `e` rename, `⇧⇥` cycle the permission mode, `⌃y` copy
   the branch to the clipboard, `n` start a new session. Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
-  automatically and `⌃x` clears them. In any prompt, `⌃e` hands off to `$EDITOR`
-  (nothing is sent until you press enter back in the UI), `↑`/`↓` recall earlier
-  prompts, and a failed submit reopens with the text intact.
+  automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
+  `$EDITOR` (with the event log opened alongside to copy from; nothing is sent
+  until you press enter back in the UI), `⌃o` opens just the log read-only,
+  `↑`/`↓` recall earlier prompts, and a failed submit reopens with the text
+  intact.
 - **The daemon, from inside** — `R` restarts it (the client respawns one that
   inherits *this* shell's environment), `Q` quits the UI and stops it; both ask
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs

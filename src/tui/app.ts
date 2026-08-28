@@ -141,33 +141,42 @@ export function App({
     [],
   );
 
-  const runEditor = useCallback(
-    (kind: "log" | "prompt") => {
-      if (!openEditor) return note("no $EDITOR handoff in this context", "dim");
-      if (kind === "prompt" && state.prompt) {
-        const next = openEditor(state.prompt.buffer.text, state.prompt.kind === "new" ? "md" : "txt");
-        if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
-      } else {
-        // In browse: show the pending request if there is one, else the log.
-        const sel = selectedSession(state);
-        const pend = sel ? pendingFor(state, sel.id) : {};
-        if (pend.permission !== undefined) {
-          openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), "json");
-        } else if (pend.question !== undefined) {
-          openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), "md");
-        } else {
-          const tagged = state.logFilter === "all";
-          const body =
-            visibleLog(state)
-              .map((l) => `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} ${l.text}`)
-              .join("\n") || "(no events)";
-          openEditor(body, "log");
-        }
-      }
-      setTick((t) => t + 1); // force a repaint after the editor let go of the tty
-    },
-    [openEditor, note, state],
-  );
+  const logText = useCallback((): string => {
+    const tagged = state.logFilter === "all";
+    return (
+      visibleLog(state)
+        .map((l) => `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} ${l.text}`)
+        .join("\n") || "(no events)"
+    );
+  }, [state]);
+
+  /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
+  const editPrompt = useCallback(() => {
+    if (state.mode !== "prompt" || !state.prompt) return note("open a prompt first — ⌃o views the log", "dim");
+    if (!openEditor) return note("no $EDITOR available", "dim");
+    const p = state.prompt;
+    const next = openEditor(p.buffer.text, {
+      ext: p.kind === "new" ? "md" : "txt",
+      aside: { name: "events.log", body: logText() },
+    });
+    if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
+    setTick((t) => t + 1); // force a repaint after the editor let go of the tty
+  }, [state.mode, state.prompt, openEditor, note, logText]);
+
+  /** `⌃o` — open the pending request, or the event log, in `$EDITOR` read-only. */
+  const viewInEditor = useCallback(() => {
+    if (!openEditor) return note("no $EDITOR available", "dim");
+    const s = selectedSession(state);
+    const pend = s ? pendingFor(state, s.id) : {};
+    if (pend.permission !== undefined) {
+      openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), { ext: "json" });
+    } else if (pend.question !== undefined) {
+      openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
+    } else {
+      openEditor(logText(), { ext: "log" });
+    }
+    setTick((t) => t + 1);
+  }, [openEditor, note, state, logText]);
 
   const copyToClipboard = useCallback(
     (text: string, label: string) => {
@@ -452,7 +461,8 @@ export function App({
   // ---- keymap -----------------------------------------------
   useInput((input, key) => {
     if (key.ctrl && input === "c") return quitTui();
-    if (key.ctrl && input === "e") return void runEditor(state.mode === "prompt" ? "prompt" : "log");
+    if (key.ctrl && input === "e") return void editPrompt();
+    if (key.ctrl && input === "o") return void viewInEditor();
 
     if (state.mode === "prompt" && state.prompt) {
       const p = state.prompt;

@@ -410,7 +410,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 };
 
 function promptHints(p: PromptState, queued: number): string {
-  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor"];
+  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor", "⌃O log"];
   if (p.kind === "new") bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌃X clear ${queued} queued`);
@@ -550,14 +550,14 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
             )
           : null,
       ],
-      "a answer  ·  ⌃e view  ·  i interrupt",
+      "a answer  ·  ⌃o view  ·  i interrupt",
     );
   }
   if (pending.permission !== undefined) {
     return box(
       `⇱ PERMISSION — ${pending.permTool ?? "tool"}`,
       describeRequest(pending.permInput, w).map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
-      "a approve  ·  d deny  ·  ⌃e view  ·  i interrupt",
+      "a approve  ·  d deny  ·  ⌃o view  ·  i interrupt",
     );
   }
   return null;
@@ -591,7 +591,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
   ["PgUp / PgDn", "scroll the event log"],
   ["⇥", "toggle the fullscreen event log"],
-  ["⌃e", "open the pending request — or the event log — in $EDITOR"],
+  ["⌃o", "open the pending request — or the event log — in $EDITOR, read-only"],
   ["⌃y", "copy the selected session's branch to the clipboard"],
   ["a  ·  d", "approve / answer  ·  deny a permission request"],
   ["s", "send a follow-up turn (running → asap / queue for turn end)"],
@@ -609,7 +609,8 @@ const HELP_ROWS: Array<[string, string]> = [
 
 const EDIT_ROWS: Array<[string, string]> = [
   ["enter  ·  esc", "submit  ·  cancel"],
-  ["⌃e", "hand the text to $EDITOR (`:wq` to return); nothing is sent until you press enter"],
+  ["⌃e", "edit the text in $EDITOR, event log opened alongside (`:wq` to return); nothing sent until enter"],
+  ["⌃o", "open the event log in $EDITOR, read-only"],
   ["⌃a", "start of line     ⌃u / ⌃k  kill to start / end     ⌃w  delete word"],
   ["↑ / ↓  ·  ⇧⇥", "prompt history     ·     cycle the mode (new session)"],
 ];
