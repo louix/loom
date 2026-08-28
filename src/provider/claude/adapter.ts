@@ -1,0 +1,289 @@
+/**
+ * The Claude adapter — wraps `@anthropic-ai/claude-agent-sdk` (design spec §3).
+ * One `query()` per session in streaming-input mode: the prompt is an async
+ * iterable we feed follow-up turns into, `canUseTool` surfaces permission
+ * prompts as `HarnessEvent`s, and `SDKMessage`s are normalized by
+ * {@link ClaudeEventMapper}. Mode / model changes are live control calls.
+ *
+ * Auth is not brokered here — the SDK uses Claude's OAuth in `~/.claude`.
+ */
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  CanUseTool,
+  McpServerConfig,
+  Options,
+  PermissionMode,
+  PermissionResult,
+  Query,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { HarnessEvent } from "../../protocol/events.ts";
+import { makeLogger, type Logger } from "../../util/logger.ts";
+import { AsyncChannel } from "../../util/channel.ts";
+import { ClaudeEventMapper } from "./map.ts";
+import type {
+  AdapterSnapshot,
+  AgentProvider,
+  AgentSession,
+  CreateSessionOptions,
+  McpServerHandle,
+  PermissionDecision,
+  ProviderCapabilities,
+  SessionMode,
+  SessionRef,
+  UserInput,
+} from "../types.ts";
+
+const CAPS: ProviderCapabilities = {
+  liveModeSwitch: true,
+  forking: true,
+  subagents: true,
+  partialTokens: true,
+  permissionModes: ["default", "plan", "acceptEdits", "auto"],
+  models: [],
+};
+
+function toPermissionMode(mode: SessionMode): PermissionMode {
+  // Loom's modes are a subset of the SDK's; pass through.
+  return mode;
+}
+
+function userMessage(text: string): SDKUserMessage {
+  return {
+    type: "user",
+    message: { role: "user", content: text },
+    parent_tool_use_id: null,
+  } as unknown as SDKUserMessage;
+}
+
+function mcpConfig(handles: McpServerHandle[]): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const h of handles) {
+    if (h.spec.transport === "stdio") {
+      out[h.name] = {
+        type: "stdio",
+        command: h.spec.command,
+        ...(h.spec.args ? { args: h.spec.args } : {}),
+        ...(h.spec.env ? { env: h.spec.env } : {}),
+      };
+    } else {
+      out[h.name] = {
+        type: "http",
+        url: h.spec.url,
+        ...(h.spec.headers ? { headers: h.spec.headers } : {}),
+      };
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+
+class ClaudeSession implements AgentSession {
+  readonly id: string;
+
+  #query: Query | null = null;
+  #mapper: ClaudeEventMapper;
+  #log: Logger;
+  #mode: SessionMode;
+
+  /** Follow-up turns fed into the streaming-input prompt. */
+  #inbox = new AsyncChannel<SDKUserMessage>();
+  /** Normalized events out: SDK messages + permission prompts, merged. */
+  #outbox = new AsyncChannel<HarnessEvent>();
+  #pendingPerms = new Map<string, (r: PermissionResult | null) => void>();
+  #pump: Promise<void> | null = null;
+  #closing = false;
+
+  constructor(opts: CreateSessionOptions) {
+    this.id = opts.sessionId;
+    this.#mapper = new ClaudeEventMapper(opts.sessionId);
+    this.#mode = opts.mode;
+    this.#log = makeLogger("claude").child(opts.sessionId.slice(0, 8));
+  }
+
+  get providerRef(): string | null {
+    return this.#mapper.state.providerRef;
+  }
+
+  /** Build the `query()` and start pumping its messages into the outbox. */
+  start(opts: CreateSessionOptions, resume?: string): void {
+    this.#inbox.push(userMessage(opts.prompt));
+
+    const canUseTool: CanUseTool = (toolName, input, ctx) => {
+      const reqId = ctx.toolUseID || ctx.requestId;
+      return new Promise<PermissionResult | null>((resolve) => {
+        this.#pendingPerms.set(reqId, resolve);
+        this.#outbox.push({
+          type: "permission_request",
+          sessionId: this.id,
+          ts: Date.now(),
+          id: reqId,
+          tool: toolName,
+          input,
+          ...(ctx.suggestions ? { suggestions: ctx.suggestions } : {}),
+          ...(ctx.agentID ? { agentId: ctx.agentID } : {}),
+        });
+      });
+    };
+
+    const options: Options = {
+      cwd: opts.cwd,
+      permissionMode: toPermissionMode(opts.mode),
+      canUseTool,
+      includePartialMessages: false,
+      mcpServers: mcpConfig(opts.mcpServers),
+      stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(resume ? { resume } : {}),
+      ...(opts.disableTools && opts.disableTools.length > 0
+        ? { disallowedTools: opts.disableTools }
+        : {}),
+      ...(opts.settingSources
+        ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
+        : {}),
+      ...(opts.systemPromptAppend
+        ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPromptAppend } }
+        : {}),
+      ...(opts.budget?.maxTurns ? { maxTurns: opts.budget.maxTurns } : {}),
+      ...(opts.subagents && opts.subagents.length > 0
+        ? {
+            agents: Object.fromEntries(
+              opts.subagents.map((a) => [
+                a.name,
+                {
+                  description: a.description,
+                  prompt: a.prompt,
+                  ...(a.tools ? { tools: a.tools } : {}),
+                  ...(a.model ? { model: a.model } : {}),
+                },
+              ]),
+            ) as NonNullable<Options["agents"]>,
+          }
+        : {}),
+    };
+
+    this.#query = query({ prompt: this.#inbox, options });
+    this.#pump = this.#drain();
+  }
+
+  async #drain(): Promise<void> {
+    const q = this.#query;
+    if (!q) return;
+    try {
+      for await (const msg of q) {
+        for (const ev of this.#mapper.map(msg)) this.#outbox.push(ev);
+      }
+    } catch (err) {
+      if (!this.#closing) {
+        this.#outbox.push({
+          type: "error",
+          sessionId: this.id,
+          ts: Date.now(),
+          message: err instanceof Error ? err.message : String(err),
+          fatal: true,
+        });
+      }
+    } finally {
+      this.#outbox.close();
+      this.#inbox.close();
+    }
+  }
+
+  events(): AsyncIterable<HarnessEvent> {
+    return this.#outbox;
+  }
+
+  async send(input: UserInput): Promise<void> {
+    if (this.#closing) throw new Error("session is closing");
+    this.#inbox.push(userMessage(input));
+  }
+
+  async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
+    const resolve = this.#pendingPerms.get(id);
+    if (!resolve) return; // already resolved / unknown — first writer won
+    this.#pendingPerms.delete(id);
+    if (decision.behavior === "allow") {
+      resolve({
+        behavior: "allow",
+        ...(decision.updatedInput ? { updatedInput: decision.updatedInput } : {}),
+      });
+    } else {
+      resolve({ behavior: "deny", message: decision.message ?? "denied by user" });
+    }
+  }
+
+  async interrupt(): Promise<void> {
+    await this.#query?.interrupt();
+  }
+
+  async setMode(mode: SessionMode): Promise<void> {
+    this.#mode = mode;
+    await this.#query?.setPermissionMode(toPermissionMode(mode));
+  }
+
+  async setModel(model: string): Promise<void> {
+    await this.#query?.setModel(model);
+  }
+
+  snapshot(): AdapterSnapshot {
+    const s = this.#mapper.state;
+    return {
+      status: "running",
+      providerRef: s.providerRef,
+      model: s.model,
+      mode: this.#mode,
+      usage: { ...s.usage },
+      contextUsed: s.contextUsed,
+      contextLimit: s.contextLimit,
+      costUsd: s.costUsd,
+      turns: s.turns,
+    };
+  }
+
+  async close(): Promise<void> {
+    this.#closing = true;
+    for (const [, resolve] of this.#pendingPerms) resolve({ behavior: "deny", message: "session closed" });
+    this.#pendingPerms.clear();
+    try {
+      this.#query?.close();
+    } catch {
+      // best effort
+    }
+    this.#outbox.close();
+    this.#inbox.close();
+    await this.#pump?.catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+export class ClaudeProvider implements AgentProvider {
+  readonly id = "claude";
+  readonly capabilities = CAPS;
+
+  async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
+    const s = new ClaudeSession(opts);
+    s.start(opts);
+    return s;
+  }
+
+  async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    const opts: CreateSessionOptions = {
+      sessionId: ref.sessionId,
+      cwd: ref.cwd,
+      prompt: "", // resume replays in-flight state; the next real turn comes via send()
+      mode: ref.mode ?? "default",
+      mcpServers: [],
+      ...(ref.model ? { model: ref.model } : {}),
+    };
+    const s = new ClaudeSession(opts);
+    s.start(opts, ref.providerRef);
+    return s;
+  }
+
+  async listPersistedSessions(): Promise<SessionRef[]> {
+    // Wired up with the worktree manager (M3), which owns the per-session cwd.
+    return [];
+  }
+}
