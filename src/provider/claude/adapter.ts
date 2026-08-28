@@ -7,6 +7,7 @@
  *
  * Auth is not brokered here — the SDK uses Claude's OAuth in `~/.claude`.
  */
+import { randomUUID } from "node:crypto";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
@@ -22,6 +23,7 @@ import { makeLogger, type Logger } from "../../util/logger.ts";
 import { AsyncChannel } from "../../util/channel.ts";
 import { ClaudeEventMapper } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
+import { buildLoomMcpServer } from "./loom-mcp.ts";
 import type {
   AdapterSnapshot,
   AgentProvider,
@@ -93,6 +95,8 @@ class ClaudeSession implements AgentSession {
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pendingPerms = new Map<string, (r: PermissionResult | null) => void>();
+  /** Outstanding `ask_user` calls, keyed by the id on the emitted `question` event. */
+  #pendingQuestions = new Map<string, (answer: string) => void>();
   #pump: Promise<void> | null = null;
   #closing = false;
 
@@ -129,12 +133,20 @@ class ClaudeSession implements AgentSession {
       });
     };
 
+    const mcpServers = mcpConfig(opts.mcpServers);
+    if (opts.loomServer) {
+      mcpServers["loom"] = buildLoomMcpServer({
+        cwd: opts.cwd,
+        askUser: (question, context) => this.#askUser(question, context),
+      });
+    }
+
     const options: Options = {
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,
       includePartialMessages: false,
-      mcpServers: mcpConfig(opts.mcpServers),
+      mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
@@ -216,6 +228,30 @@ class ClaudeSession implements AgentSession {
     }
   }
 
+  /** loom `ask_user` handler: emit a `question` event, block until answered. */
+  #askUser(question: string, context: string | undefined): Promise<string> {
+    const id = randomUUID();
+    return new Promise<string>((resolve) => {
+      this.#pendingQuestions.set(id, resolve);
+      this.#outbox.push({
+        type: "question",
+        sessionId: this.id,
+        ts: Date.now(),
+        id,
+        question,
+        ...(context ? { context } : {}),
+      });
+    });
+  }
+
+  async answerQuestion(id: string, text: string): Promise<void> {
+    const resolve = this.#pendingQuestions.get(id);
+    if (!resolve) return; // already answered / unknown — first writer won
+    this.#pendingQuestions.delete(id);
+    this.#outbox.push({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
+    resolve(text);
+  }
+
   async interrupt(): Promise<void> {
     await this.#query?.interrupt();
   }
@@ -248,6 +284,8 @@ class ClaudeSession implements AgentSession {
     this.#closing = true;
     for (const [, resolve] of this.#pendingPerms) resolve({ behavior: "deny", message: "session closed" });
     this.#pendingPerms.clear();
+    for (const [, resolve] of this.#pendingQuestions) resolve("(the session was closed before the user answered)");
+    this.#pendingQuestions.clear();
     try {
       this.#query?.close();
     } catch {
@@ -301,6 +339,7 @@ export class ClaudeProvider implements AgentProvider {
       prompt: "", // resume replays in-flight state; the next real turn comes via send()
       mode: ref.mode ?? "default",
       mcpServers: [],
+      loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
     };
     const s = new ClaudeSession(opts);

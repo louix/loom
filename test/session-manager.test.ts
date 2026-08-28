@@ -111,6 +111,45 @@ test("permission_request blocks the session; first responder wins", async () => 
   await c.close();
 });
 
+test("an ask_user question blocks the session until session.answer resolves it", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "question", id: "q1", question: "which database?", context: "postgres or sqlite" });
+
+  await waitFor(async () => {
+    const s = await c.request<SessionSnapshot>("session.get", { id });
+    return s.status === "awaiting_input" && s.awaitReason === "question";
+  });
+
+  const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.answer", {
+    id,
+    requestId: "q1",
+    text: "sqlite",
+  });
+  assert.deepEqual(first, { ok: true, alreadyResolved: false });
+  assert.deepEqual(fs.questionAnswers, [{ id: "q1", text: "sqlite" }]);
+
+  const second = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.answer", {
+    id,
+    requestId: "q1",
+    text: "changed my mind",
+  });
+  assert.equal(second.alreadyResolved, true);
+  assert.equal(fs.questionAnswers.length, 1);
+
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await c.close();
+});
+
+test("session.answer on a session that isn't running is not_found", async () => {
+  const c = await client();
+  await assert.rejects(
+    c.request("session.answer", { id: "nope", requestId: "q1", text: "x" }),
+    /session not running/,
+  );
+  await c.close();
+});
+
 test("send delivers a follow-up turn and returns the session to running", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

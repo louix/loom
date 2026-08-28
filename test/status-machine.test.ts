@@ -33,6 +33,25 @@ test("permission_request → awaiting_input/permission", () => {
   );
 });
 
+test("question → awaiting_input/question, and is a no-op when already awaiting", () => {
+  assert.deepEqual(
+    deriveStatus("running", ev({ type: "question", id: "q1", question: "which?" })),
+    { status: "awaiting_input", reason: "question" },
+  );
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "question", id: "q2", question: "which?" })),
+    null,
+  );
+});
+
+test("answer moves awaiting_input → running", () => {
+  assert.deepEqual(deriveStatus("awaiting_input", ev({ type: "answer", id: "q1", text: "this one" })), {
+    status: "running",
+    reason: null,
+  });
+  assert.equal(deriveStatus("running", ev({ type: "answer", id: "q1", text: "this one" })), null);
+});
+
 test("result maps to idle on success, error on failure", () => {
   assert.deepEqual(deriveStatus("running", ev({ type: "result", ok: true })), {
     status: "idle",

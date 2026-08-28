@@ -23,6 +23,7 @@ commands:
   interrupt <id>         stop a session mid-turn
   approve <id> <reqId>   allow an outstanding permission request
   deny <id> <reqId>      deny it                          [--text reason]
+  answer <id> <reqId> <text...>   answer an ask_user question
   mode <id> <mode>       change a session's permission mode
   resume <id>            resume an interrupted session
   done <id>              mark a session complete (worktree kept)
@@ -133,6 +134,22 @@ async function main(): Promise<void> {
         );
         process.stdout.write(
           r.alreadyResolved ? `${requestId} was already resolved\n` : `${requestId} ${cmd}d\n`,
+        );
+        break;
+      }
+      case "answer": {
+        const id = need(positionals[1], "answer <id> <requestId> <text...>");
+        const requestId = need(positionals[2], "answer <id> <requestId> <text...>");
+        const text = positionals.slice(3).join(" ");
+        if (!text) need(undefined, "answer <id> <requestId> <text...>");
+        const r = await client.request<{ ok: boolean; alreadyResolved: boolean }>("session.answer", {
+          id,
+          requestId,
+          text,
+          by: client.clientId,
+        });
+        process.stdout.write(
+          r.alreadyResolved ? `${requestId} was already answered\n` : `${requestId} answered\n`,
         );
         break;
       }
@@ -288,6 +305,8 @@ async function runTail(client: LoomClient): Promise<void> {
 
 function summarize(ev: HarnessEvent): string {
   const e = ev as unknown as Record<string, unknown>;
+  if (ev.type === "question") return `${JSON.stringify(ev.question.slice(0, 60))}  req=${ev.id}  (answer)`;
+  if (ev.type === "answer") return `#${ev.id} ${JSON.stringify(ev.text.slice(0, 60))}`;
   if (typeof e["text"] === "string") return JSON.stringify((e["text"] as string).slice(0, 60));
   if (ev.type === "status_changed") return `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`;
   if (ev.type === "tool_call") return `${ev.name} #${ev.id}`;

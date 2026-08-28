@@ -66,6 +66,22 @@ export interface PermissionRequestEvent extends HarnessEventBase {
   suggestions?: unknown;
 }
 
+/** The agent called the loom `ask_user` tool and is blocked on a human answer. */
+export interface QuestionEvent extends HarnessEventBase {
+  type: "question";
+  id: string;
+  question: string;
+  /** Optional background the agent supplied with the question. */
+  context?: string;
+}
+
+/** A human answered an outstanding {@link QuestionEvent}; the turn resumes. */
+export interface AnswerEvent extends HarnessEventBase {
+  type: "answer";
+  id: string;
+  text: string;
+}
+
 export interface UsageEvent extends HarnessEventBase {
   type: "usage";
   tokens: TokenUsage;
@@ -112,6 +128,8 @@ export type HarnessEvent =
   | ToolCallEvent
   | ToolResultEvent
   | PermissionRequestEvent
+  | QuestionEvent
+  | AnswerEvent
   | UsageEvent
   | SubagentStartedEvent
   | SubagentStoppedEvent

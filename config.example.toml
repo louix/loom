@@ -1,7 +1,8 @@
 # Copy to .loom/config.toml to override. Every key below is optional and shown
-# with its built-in default. Consumed so far (milestones 1-3): db, run_isolation,
+# with its built-in default. Consumed so far (milestones 1-4): db, run_isolation,
 # daemon.*, base_branch, worktree_dir, providers.claude.* and the [[mcp]] list
-# (mounted into every session). The rest is carried for later milestones.
+# (mounted into every session, alongside the built-in in-process `loom` server:
+# ask_user + commit). The rest is carried for later milestones.
 
 base_branch   = "main"             # each session branches loom/<slug> off this
                                    # (falls back to HEAD if the branch is missing)
@@ -26,11 +27,11 @@ cli_path           = ""            # "" = use `claude` on PATH, else the SDK's b
 model = "gemini-2.5-pro"
 auth  = "api_key"                   # or "vertex"
 
-[[mcp]]                             # mounted into every session, in order
-name    = "tilth"
-command = "tilth mcp --edit"
-
-[[mcp]]
+[[mcp]]                             # mounted into every session, in order, after
+name    = "tilth"                   # the built-in `loom` server. The system
+command = "tilth mcp --edit"        # prompt steers file writes to tilth_write /
+                                    # tilth_edit and search to fff; Claude's own
+[[mcp]]                             # Grep / Glob are disabled outright below.
 name    = "fff"
 command = "fff-mcp"
 

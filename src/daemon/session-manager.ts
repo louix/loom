@@ -42,6 +42,7 @@ interface Running {
   status: SessionStatus;
   ordinal: number;
   pendingPerms: Set<string>;
+  pendingQuestions: Set<string>;
   interrupting: boolean;
   ended: boolean;
   refReported: boolean;
@@ -93,6 +94,7 @@ export class SessionManager {
       status: "starting",
       ordinal: 0,
       pendingPerms: new Set(),
+      pendingQuestions: new Set(),
       interrupting: false,
       ended: false,
       refReported: false,
@@ -111,6 +113,7 @@ export class SessionManager {
         }
         this.#hooks.emitEvent(ev);
         this.#trackPerms(run, ev);
+        this.#trackQuestions(run, ev);
         this.#trackUsage(id, ev);
         this.#trackRef(id, run);
         this.#applyStatus(id, run, ev);
@@ -144,6 +147,14 @@ export class SessionManager {
       run.pendingPerms.add(ev.id);
     } else if (ev.type === "tool_call" || ev.type === "tool_result") {
       run.pendingPerms.delete(ev.id);
+    }
+  }
+
+  #trackQuestions(run: Running, ev: HarnessEvent): void {
+    if (ev.type === "question") {
+      run.pendingQuestions.add(ev.id);
+    } else if (ev.type === "answer") {
+      run.pendingQuestions.delete(ev.id);
     }
   }
 
@@ -208,6 +219,17 @@ export class SessionManager {
     run.pendingPerms.delete(requestId);
     await run.session.respondToPermission(requestId, decision);
     // Optimistic: the approved tool call will confirm `running` on its own.
+    this.#set(id, run, "running", null);
+    return { ok: true, alreadyResolved: false };
+  }
+
+  async answerQuestion(id: string, questionId: string, text: string): Promise<RespondResult> {
+    const run = this.#require(id);
+    if (!run.pendingQuestions.has(questionId)) return { ok: false, alreadyResolved: true };
+    run.pendingQuestions.delete(questionId);
+    await run.session.answerQuestion(questionId, text);
+    // The `answer` event the adapter emits will also carry status back to
+    // running; set it now so a client sees the change without waiting.
     this.#set(id, run, "running", null);
     return { ok: true, alreadyResolved: false };
   }

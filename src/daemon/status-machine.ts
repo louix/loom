@@ -21,12 +21,17 @@ export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived 
     case "permission_request":
       return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "permission" };
 
+    case "question":
+      // The agent called `ask_user` and is blocked on a human answer.
+      return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "question" };
+
+    case "answer":
     case "assistant_text":
     case "thinking":
     case "tool_call":
     case "tool_result":
       // Any model activity means the turn is live again — including the tool
-      // call that follows an approved permission.
+      // call that follows an approved permission and the answer to a question.
       return current === "running" ? null : { status: "running", reason: null };
 
     case "result":

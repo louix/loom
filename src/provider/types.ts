@@ -51,6 +51,8 @@ export interface CreateSessionOptions {
   parentId?: string;
   systemPromptAppend?: string;
   mcpServers: McpServerHandle[];
+  /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */
+  loomServer?: boolean;
   subagents?: AgentDefinitionSpec[];
   budget?: SessionBudget;
   /** Built-in tools to disable (e.g. Grep / Glob — fff replaces them). */
@@ -96,6 +98,8 @@ export interface AgentSession {
   send(input: UserInput): Promise<void>;
   /** Resolve an outstanding `permission_request`. First writer wins upstream. */
   respondToPermission(id: string, decision: PermissionDecision): Promise<void>;
+  /** Resolve an outstanding `ask_user` question with the user's answer. */
+  answerQuestion(id: string, text: string): Promise<void>;
   interrupt(): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string): Promise<void>;

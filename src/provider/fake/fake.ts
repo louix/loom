@@ -44,6 +44,7 @@ export class FakeSession implements AgentSession {
   // recorded for test assertions
   readonly sends: string[] = [];
   readonly permissionResponses: Array<{ id: string; decision: PermissionDecision }> = [];
+  readonly questionAnswers: Array<{ id: string; text: string }> = [];
   readonly modeChanges: SessionMode[] = [];
   readonly modelChanges: string[] = [];
   interruptCount = 0;
@@ -127,6 +128,10 @@ export class FakeSession implements AgentSession {
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
     this.permissionResponses.push({ id, decision });
+  }
+
+  async answerQuestion(id: string, text: string): Promise<void> {
+    this.questionAnswers.push({ id, text });
   }
 
   async interrupt(): Promise<void> {

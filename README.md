@@ -6,9 +6,9 @@ on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
 as a second adapter.
 
 > Codename "Loom" — rename freely. See the design spec for the full picture;
-> this repo currently implements **milestones 1-3** of the build order.
+> this repo currently implements **milestones 1-4** of the build order.
 
-## Status — milestones 1-3
+## Status — milestones 1-4
 
 **1 · daemon skeleton**
 
@@ -65,8 +65,23 @@ as a second adapter.
 - **`gc`** — removes worktrees for sessions you've marked `done`; the session
   row and the branch are kept.
 
-Not yet implemented (later milestones): the `loom` MCP server, the real TUI,
-price-table cost, budgets, plan review, sub-agent nesting.
+**4 · loom MCP server**
+
+- **In-process `loom` server** — mounted into every Claude session (before the
+  configured stdio servers), running in the daemon so its tools reach Loom's
+  own state. Two tools:
+  - **`ask_user`** — the agent puts a question to you and blocks. Surfaces as a
+    `question` event → the session goes `awaiting_input` / `question`; you reply
+    with `loom answer <id> <reqId> <text>` and the turn resumes.
+  - **`commit`** — commits the session's worktree under its pinned
+    `Loom (claude)` identity, no shelling out to git. Returns the short hash,
+    subject and diffstat; refuses cleanly when there's nothing to commit.
+- **Tool steer** — a system-prompt append points file writes at tilth
+  (`tilth_write` / `tilth_edit`) and search at fff; Claude's built-in `Grep` /
+  `Glob` are disabled outright (`providers.claude.disable_builtin`).
+
+Not yet implemented (later milestones): the real TUI, price-table cost,
+budgets, plan review, sub-agent nesting.
 
 ## Requirements
 
@@ -101,6 +116,7 @@ Run and drive a session (V1 provider is `claude`; needs its OAuth in `~/.claude`
 node src/cli/loom.ts run "add a --json flag to the CLI" --mode plan
 node src/cli/loom.ts tail                       # watch it; note permission req= ids
 node src/cli/loom.ts approve <id> <requestId>   # or: deny <id> <requestId> --text "why"
+node src/cli/loom.ts answer <id> <requestId> "use sqlite"   # reply to an ask_user question
 node src/cli/loom.ts send <id> "also update the README"
 node src/cli/loom.ts mode <id> acceptEdits
 node src/cli/loom.ts interrupt <id>
@@ -135,7 +151,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 67 cases
+npm test             # node:test — 76 cases
 ```
 
 ### Layout
@@ -145,8 +161,9 @@ src/
   protocol/   wire frames + the normalized HarnessEvent union
   store/      node:sqlite: schema, migrations, repositories
   config/     .loom/config.toml loader
-  provider/   the vendor-neutral seam; claude/ (SDK adapter + event map),
-              fake/ (scriptable test adapter), registry
+  provider/   the vendor-neutral seam; claude/ (SDK adapter + event map +
+              in-process loom MCP server), fake/ (scriptable test adapter),
+              registry
   daemon/     event log, RPC dispatch, socket server, registry, hygiene,
               lifecycle, session manager, status machine, worktree
               manager, and the Daemon

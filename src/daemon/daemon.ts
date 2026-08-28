@@ -35,6 +35,20 @@ import {
   type PidfileInfo,
 } from "./lifecycle.ts";
 
+/**
+ * Appended to the Claude system prompt for every session (spec §11.4). Steers
+ * the agent onto the mounted MCP tools: tilth for file writes/edits, fff for
+ * search (its Grep / Glob are disabled outright), and the in-process `loom`
+ * server for committing and for asking the user when blocked.
+ */
+const TOOL_STEER = [
+  "This session runs under Loom. Prefer the mounted MCP tools over the built-ins:",
+  "- Use tilth for editing files — `tilth_write` to create or replace a file, `tilth_edit` for in-place edits. Do not use the built-in Write/Edit for changes you intend to keep.",
+  "- Use fff to find files and search code. The built-in Grep and Glob are disabled.",
+  "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
+  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping.",
+].join("\n");
+
 const VALID_STATUSES: readonly SessionStatus[] = [
   "starting",
   "awaiting_input",
@@ -320,6 +334,8 @@ export class Daemon {
       sessions: this.#registry.list().length,
       runningSessions: this.#sessions.count,
       providers: this.#providers.live().map((p) => p.id),
+      loomTools: ["ask_user", "commit"],
+      mcpMounts: this.config.mcp.map((m) => m.name),
       clients: this.#server.clientCount,
       connections: this.#server.connectionCount,
       eventSeq: this.#events.head,
@@ -395,6 +411,7 @@ export class Daemon {
         ...(budget ? { budget } : {}),
       });
 
+      const isClaude = providerId === "claude";
       const opts: CreateSessionOptions = {
         sessionId: id,
         cwd: wt.path,
@@ -403,6 +420,7 @@ export class Daemon {
         mcpServers: this.#mcpHandles(),
         disableTools: this.config.providers.claude.disableBuiltin,
         settingSources: this.config.providers.claude.settingSources,
+        ...(isClaude ? { loomServer: true, systemPromptAppend: TOOL_STEER } : {}),
         ...(model ? { model } : {}),
         ...(parentId ? { parentId } : {}),
         ...(budget
@@ -491,6 +509,15 @@ export class Daemon {
             };
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       return this.#sessions.respondToPermission(id, requestId, decision);
+    });
+
+    // Answer an outstanding `ask_user` question (loom MCP server, milestone 4).
+    d.register("session.answer", async (params) => {
+      const id = reqString(params, "id");
+      const requestId = reqString(params, "requestId");
+      const text = reqString(params, "text");
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      return this.#sessions.answerQuestion(id, requestId, text);
     });
 
     d.register("session.setMode", async (params) => {
