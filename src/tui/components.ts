@@ -10,6 +10,7 @@ import type { SessionSnapshot } from "../protocol/wire.ts";
 import { layout, type Buffer } from "./editor.ts";
 import {
   actionsFor,
+  cacheHeat,
   cacheStatus,
   clock,
   groupsOf,
@@ -96,7 +97,17 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
 // fleet list (left column)
 // ---------------------------------------------------------------------------
 
-export function Fleet({ state, tick, width }: { state: TuiState; tick: number; width: number }): ReactNode {
+export function Fleet({
+  state,
+  tick,
+  width,
+  now = Date.now(),
+}: {
+  state: TuiState;
+  tick: number;
+  width: number;
+  now?: number;
+}): ReactNode {
   const groups = groupsOf(state.sessions);
   const iw = inside(width);
 
@@ -122,7 +133,9 @@ export function Fleet({ state, tick, width }: { state: TuiState; tick: number; w
               h(Text, { color: C.dim }, g.label.toUpperCase()),
               h(Text, { color: C.faint }, `  ${g.sessions.length}`),
             ),
-            ...g.sessions.map((s) => FleetRow({ s, selected: s.id === state.selectedId, tick, iw })),
+            ...g.sessions.map((s) =>
+              FleetRow({ s, selected: s.id === state.selectedId, tick, iw, now }),
+            ),
           ),
         );
 
@@ -134,22 +147,30 @@ export function Fleet({ state, tick, width }: { state: TuiState; tick: number; w
   );
 }
 
+/** Fleet-row cache dot: `⟢` graded green → amber → red by TTL left, blank otherwise. */
+const CACHE_HEAT_COLOR = { fresh: C.good, fading: C.warn, expiring: C.bad } as const;
+
 function FleetRow({
   s,
   selected,
   tick,
   iw,
+  now,
 }: {
   s: SessionSnapshot;
   selected: boolean;
   tick: number;
   iw: number;
+  now: number;
 }): ReactNode {
   const look = STATUS[s.status];
   const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
   const id = shortId(s.id);
   const cost = money(s.costUsd);
-  const room = Math.max(6, iw - (2 + 2 + id.length + 2 + cost.length + 1));
+  const heat = cacheHeat(cacheStatus(s, now));
+  // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
+  const cacheColor = heat ? CACHE_HEAT_COLOR[heat] : null;
+  const room = Math.max(6, iw - (2 + 2 + id.length + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return h(
@@ -158,6 +179,7 @@ function FleetRow({
     h(Text, { color: selected ? C.accent : C.faint }, selected ? "▍ " : "  "),
     h(Text, { color: s.status === "running" ? C.accent : look.color }, glyph + " "),
     h(Text, { color: C.faint }, `${id}  `),
+    h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
     h(Text, { color: selected ? C.text : C.dim, bold: selected }, title),
     h(Text, { color: C.faint }, ` ${cost}`),
   );
@@ -689,6 +711,7 @@ export function SendChoice({ text, width }: { text: string; width: number }): Re
 
 const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
+  ["⟢ (fleet)", "prompt cache still warm — green → amber → red as it lapses"],
   ["PgUp / PgDn", "scroll the event log"],
   ["⇥", "toggle the fullscreen event log"],
   ["⌃o", "open the pending request — or the event log — in $EDITOR, read-only"],

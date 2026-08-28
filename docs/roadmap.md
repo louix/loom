@@ -342,7 +342,7 @@ env (which "wins" over settings) so the TTL is known exactly. migration 5 adds
 `usage.last_turn_at` / `last_cache_read` / `last_cache_write`, filled from the
 per-turn `usage` event in the rollup. `SessionSnapshot.cache = { ttlMinutes,
 lastTurnAt, lastRead, lastWrite }` — `ttlMinutes` overlaid by `Daemon.#enrich`
-(claude sessions only). `cacheStatus(snapshot, now)` selector →
+(claude sessions only). Fleet rows carry a `⟢` dot graded by TTL fraction (`cacheHeat`: fresh >0.33, fading, expiring <0.08). `cacheStatus(snapshot, now)` selector →
 warm/cold/unknown + a `hit`/`rewrote` read of the last turn's split. Detail
 line `cache ⟢ warm ~M:SS · last turn hit`. Estimate only — blind to mid-turn
 refreshes, prefix invalidation, server-side eviction.

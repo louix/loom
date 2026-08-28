@@ -683,7 +683,7 @@ export function App({
     body = h(
       Box,
       { height: bodyH, gap: 1 },
-      h(Box, { width: leftW }, h(Fleet, { state, tick, width: leftW })),
+      h(Box, { width: leftW }, h(Fleet, { state, tick, width: leftW, now: Date.now() })),
       h(
         Box,
         { width: rightW, flexDirection: "column" },

@@ -88,8 +88,9 @@ as a second adapter.
   reconnect enabled, so the daemon and its sessions outlive it; re-opening
   replays the daemon's buffered event history so the log isn't blank.
 - **Fleet pane** — sessions grouped by status in fleet-view order, a braille
-  spinner on running rows, cost per session; `↑`/`↓` (or `j`/`k`) moves the
-  selection.
+  spinner on running rows, cost per session, and a `⟢` cache dot that grades
+  green → amber → red as the prompt cache nears expiry (blank once it's cold or
+  n/a); `↑`/`↓` (or `j`/`k`) moves the selection.
 - **Detail pane** — the selected session's status / mode / model, a
   context-window meter, token and cost totals, its worktree's git facts, and any
   messages queued for it. When it's `awaiting_input` a panel spells out exactly
@@ -158,8 +159,10 @@ with `enabled = false`). Renaming it yourself (`e` in the UI / `loom` …) pins
 the title and the auto-titler leaves it alone.
 
 **Prompt-cache liveness.** The Detail pane shows `cache ⟢ warm ~47:12 · last
-turn hit` (green) or `cache ⟢ cold` once the window lapses. The countdown runs
-from the last turn against the configured `[providers.claude] prompt_cache_ttl`
+turn hit` (green) or `cache ⟢ cold` once the window lapses, and each fleet row
+carries a `⟢` dot graded green (>⅓ of the TTL left) → amber → red (<8%). The
+countdown runs from the last turn against the configured
+`[providers.claude] prompt_cache_ttl`
 (`1h` by default — Loom pins it via `CLAUDE_CODE_PROMPT_CACHE_TTL` so the timer
 is exact rather than a guess); `last turn hit` / `rewrote` is the ground truth
 from that turn's cache read/write split. It's still an estimate — a context
@@ -246,7 +249,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 160 cases
+npm test             # node:test — 161 cases
 ```
 
 ### Layout

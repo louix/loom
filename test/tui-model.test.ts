@@ -6,6 +6,7 @@ import type { EventPush } from "../src/protocol/wire.ts";
 import {
   actionsFor,
   allowedActs,
+  cacheHeat,
   cacheStatus,
   formatEvent,
   groupsOf,
@@ -290,6 +291,24 @@ test("cacheStatus: lastHit reads the read/write split", () => {
   assert.equal(mk(9000, 200), "hit"); // big read → continuation
   assert.equal(mk(0, 9000), "rewrote"); // all write → prefix was cold
   assert.equal(mk(0, 0), null);
+});
+
+test("cacheHeat bands the remaining fraction; null when not warm", () => {
+  const T0 = 1_000_000;
+  // ttl 60m; sample at minute offsets from the last turn
+  const at = (min: number) =>
+    cacheHeat(
+      cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: T0, lastRead: 9, lastWrite: 1 } }), T0 + min * 60_000),
+    );
+  assert.equal(at(0), "fresh"); // 100% left
+  assert.equal(at(30), "fresh"); // 50% left (> 33%)
+  assert.equal(at(45), "fading"); // 25% left
+  assert.equal(at(58), "expiring"); // ~3% left
+  assert.equal(at(61), null); // cold
+  assert.equal(
+    cacheHeat(cacheStatus(snap({ cache: { ttlMinutes: 0, lastTurnAt: T0, lastRead: 0, lastWrite: 0 } }), T0)),
+    null, // unknown (no pinned TTL)
+  );
 });
 
 test("compact only appears once the context meter passes half", () => {

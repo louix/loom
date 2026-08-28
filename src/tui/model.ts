@@ -467,6 +467,8 @@ export interface CacheStatus {
   state: "warm" | "cold" | "unknown";
   /** ms until the cache goes cold (0 unless warm). */
   remainingMs: number;
+  /** Fraction of the TTL still left, 0..1 (0 unless warm). */
+  fraction: number;
   /** What the last turn's read/write split says actually happened. */
   lastHit: "hit" | "rewrote" | null;
 }
@@ -479,15 +481,29 @@ export interface CacheStatus {
  */
 export function cacheStatus(s: SessionSnapshot | null, now: number): CacheStatus {
   if (!s || s.cache.ttlMinutes <= 0 || s.cache.lastTurnAt <= 0) {
-    return { state: "unknown", remainingMs: 0, lastHit: null };
+    return { state: "unknown", remainingMs: 0, fraction: 0, lastHit: null };
   }
   const { lastTurnAt, ttlMinutes, lastRead, lastWrite } = s.cache;
   const lastHit: CacheStatus["lastHit"] =
     lastRead > 0 && lastRead >= lastWrite ? "hit" : lastWrite > 0 ? "rewrote" : null;
-  const remainingMs = lastTurnAt + ttlMinutes * 60_000 - now;
+  const ttlMs = ttlMinutes * 60_000;
+  const remainingMs = lastTurnAt + ttlMs - now;
   return remainingMs > 0
-    ? { state: "warm", remainingMs, lastHit }
-    : { state: "cold", remainingMs: 0, lastHit };
+    ? { state: "warm", remainingMs, fraction: Math.min(1, remainingMs / ttlMs), lastHit }
+    : { state: "cold", remainingMs: 0, fraction: 0, lastHit };
+}
+
+/** Fraction of TTL left above which the cache dot reads as fresh / still-usable. */
+export const CACHE_FRESH_FRACTION = 0.33;
+/** …and below which it reads as about to lapse. */
+export const CACHE_EXPIRING_FRACTION = 0.08;
+
+/** Coarsen a warm {@link CacheStatus} into a heat band for the fleet dot; `null` when not warm. */
+export function cacheHeat(cs: CacheStatus): "fresh" | "fading" | "expiring" | null {
+  if (cs.state !== "warm") return null;
+  if (cs.fraction >= CACHE_FRESH_FRACTION) return "fresh";
+  if (cs.fraction >= CACHE_EXPIRING_FRACTION) return "fading";
+  return "expiring";
 }
 
 export function visibleLog(s: TuiState): LogLine[] {
