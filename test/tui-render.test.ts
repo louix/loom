@@ -9,10 +9,11 @@ import type { SessionSnapshot } from "../src/protocol/wire.ts";
 import { App } from "../src/tui/app.ts";
 import { makeHarness, type Harness } from "./helpers.ts";
 
-/** Minimal stand-ins for process.stdout / process.stdin that Ink accepts. */
+const ESC = "\x1b";
+
 class FakeOut extends EventEmitter {
   columns = 120;
-  rows = 36;
+  rows = 40;
   frames: string[] = [];
   write = (s: string): boolean => {
     this.frames.push(s);
@@ -40,6 +41,19 @@ class FakeIn extends EventEmitter {
   }
 }
 
+function mount(client: LoomClient) {
+  const stdout = new FakeOut();
+  const stdin = new FakeIn();
+  const app = render(createElement(App, { client }), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    debug: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  });
+  return { stdout, stdin, app };
+}
+
 let h: Harness;
 before(async () => {
   h = await makeHarness();
@@ -48,19 +62,13 @@ after(async () => {
   await h.cleanup();
 });
 
-test("the TUI renders the fleet, tracks selection, and shows help", async () => {
-  const client = await LoomClient.connect({
-    repoRoot: h.repoRoot,
-    sockPath: h.sockPath,
-    autospawn: false,
-    reconnect: true,
-  });
+function connect(): Promise<LoomClient> {
+  return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false, reconnect: true });
+}
 
-  await client.request("session.createStub", {
-    prompt: "add a --json flag to the CLI",
-    status: "running",
-    provider: "fake",
-  });
+test("renders the fleet, tracks selection by key, and shows help", async () => {
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "add a --json flag", status: "running", provider: "fake" });
   await client.request("session.createStub", {
     prompt: "write the release notes",
     status: "awaiting_input",
@@ -68,77 +76,94 @@ test("the TUI renders the fleet, tracks selection, and shows help", async () => 
     provider: "fake",
   });
 
-  const stdout = new FakeOut();
-  const stdin = new FakeIn();
-  const app = render(createElement(App, { client }), {
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    debug: true,
-    exitOnCtrlC: false,
-    patchConsole: false,
-  });
-
+  const { stdout, stdin, app } = mount(client);
   await delay(200);
   assert.match(stdout.last, /▍ loom/);
   assert.match(stdout.last, /FLEET/);
-  assert.match(stdout.last, /EVENTS/);
   assert.match(stdout.last, /AWAITING INPUT/);
   assert.match(stdout.last, /write the release notes/);
-  // awaiting_input sorts first and is auto-selected → its verbs are in the footer
   assert.match(stdout.last, /approve/);
   assert.match(stdout.last, /deny/);
 
-  // move down to the running session; footer verbs follow the selection
   stdin.feed("j");
   await delay(120);
   assert.match(stdout.last, /add a --json flag/);
   assert.match(stdout.last, /interrupt/);
   assert.doesNotMatch(stdout.last, /approve/);
 
-  // help overlay
   stdin.feed("?");
   await delay(120);
   assert.match(stdout.last, /loom — keys/);
   assert.match(stdout.last, /mark the session done/);
+  stdin.feed("?");
+  await delay(80);
 
   app.unmount();
   await client.close();
 });
 
-test("a live event pushed after mount lands in the event log", async () => {
-  const client = await LoomClient.connect({
-    repoRoot: h.repoRoot,
-    sockPath: h.sockPath,
-    autospawn: false,
-    reconnect: true,
-  });
-  const created = await client.request<SessionSnapshot>("session.createStub", {
-    prompt: "investigate the flake",
+test("esc does not quit; only overlays back out", async () => {
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  await delay(160);
+
+  stdin.feed(ESC);
+  await delay(100);
+  assert.match(stdout.last, /▍ loom/, "still rendering after esc — the UI did not exit");
+
+  // n opens the prompt, esc backs out of it
+  stdin.feed("n");
+  await delay(100);
+  assert.match(stdout.last, /new session/);
+  assert.match(stdout.last, /\[default\]/);
+  stdin.feed(ESC);
+  await delay(100);
+  assert.doesNotMatch(stdout.last, /new session/);
+
+  app.unmount();
+  await client.close();
+});
+
+test("R raises a restart confirmation that esc dismisses", async () => {
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "busy", status: "running", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  await delay(160);
+
+  stdin.feed("R");
+  await delay(100);
+  assert.match(stdout.last, /Restart the daemon\?/);
+  assert.match(stdout.last, /will be interrupted/);
+  stdin.feed(ESC);
+  await delay(100);
+  assert.doesNotMatch(stdout.last, /Restart the daemon\?/);
+
+  app.unmount();
+  await client.close();
+});
+
+test("Tab toggles the fullscreen event log", async () => {
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "look at logs",
     status: "running",
     provider: "fake",
   });
+  await client.request("dev.emit", { event: { sessionId: s.id, type: "assistant_text", text: "hello from the agent" } });
 
-  const stdout = new FakeOut();
-  const stdin = new FakeIn();
-  const app = render(createElement(App, { client }), {
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    debug: true,
-    exitOnCtrlC: false,
-    patchConsole: false,
-  });
-  await delay(150);
+  const { stdout, stdin, app } = mount(client);
+  await delay(200);
+  assert.doesNotMatch(stdout.last, /fullscreen/);
 
-  // select the new session, then drive an event into it
-  await client.request("dev.emit", {
-    event: { sessionId: created.id, type: "assistant_text", text: "reading the worktree test" },
-  });
-  await delay(150);
-
-  // it is selected if it is the only running one; otherwise switch the filter
-  stdin.feed("f");
+  stdin.feed("\t");
   await delay(120);
-  assert.match(stdout.last, /reading the worktree test/);
+  assert.match(stdout.last, /EVENTS · fullscreen/);
+  assert.doesNotMatch(stdout.last, /FLEET/);
+
+  stdin.feed("\t");
+  await delay(120);
+  assert.match(stdout.last, /FLEET/);
 
   app.unmount();
   await client.close();

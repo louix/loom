@@ -6,10 +6,12 @@
  */
 import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
 import type { PushFrame, SessionSnapshot } from "../protocol/wire.ts";
+import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
+import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help";
+export type UiMode = "browse" | "prompt" | "help" | "confirm";
 export type LogFilter = "selected" | "all";
 
 export interface DaemonInfo {
@@ -42,7 +44,40 @@ export interface PromptState {
   /** Permission / question id, for `answer` and `deny`. */
   requestId?: string;
   label: string;
-  value: string;
+  buffer: Buffer;
+  /** Permission mode for the session to be created — `new` only. */
+  mode?: SessionMode;
+  /** History cursor: 0 = the live buffer, 1..N = {@link TuiState.promptHistory} from newest. */
+  histIdx: number;
+  /** Live buffer text, stashed while browsing history. */
+  draft: string;
+}
+
+export function makePrompt(init: {
+  kind: PromptKind;
+  sessionId: string | null;
+  requestId?: string;
+  label: string;
+  text?: string;
+  mode?: SessionMode;
+}): PromptState {
+  return {
+    kind: init.kind,
+    sessionId: init.sessionId,
+    label: init.label,
+    ...(init.requestId ? { requestId: init.requestId } : {}),
+    ...(init.mode ? { mode: init.mode } : {}),
+    buffer: buffer(init.text ?? ""),
+    histIdx: 0,
+    draft: "",
+  };
+}
+
+export interface ConfirmState {
+  title: string;
+  body?: string;
+  danger: boolean;
+  action: "restart" | "quitAll";
 }
 
 /** Outstanding round-trips per session, recovered from the event stream. */
@@ -63,6 +98,9 @@ export interface TuiState {
   notice: Notice | null;
   mode: UiMode;
   prompt: PromptState | null;
+  confirm: ConfirmState | null;
+  /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
+  promptHistory: string[];
 }
 
 export function initialState(logCap = 400): TuiState {
@@ -78,6 +116,8 @@ export function initialState(logCap = 400): TuiState {
     notice: null,
     mode: "browse",
     prompt: null,
+    confirm: null,
+    promptHistory: [],
   };
 }
 
@@ -96,8 +136,14 @@ export type Action =
   | { t: "notice"; text: string; tone: Tone }
   | { t: "expireNotice"; now: number; ttlMs?: number }
   | { t: "openPrompt"; prompt: PromptState }
-  | { t: "promptInput"; value: string }
+  | { t: "promptSet"; buffer: Buffer }
+  | { t: "promptCycleMode" }
+  | { t: "promptHistoryNav"; dir: -1 | 1 }
+  | { t: "pushHistory"; text: string }
   | { t: "closePrompt" }
+  | { t: "echo"; line: LogLine }
+  | { t: "openConfirm"; confirm: ConfirmState }
+  | { t: "closeConfirm" }
   | { t: "help"; value: boolean };
 
 export function reduce(s: TuiState, a: Action): TuiState {
@@ -153,13 +199,50 @@ export function reduce(s: TuiState, a: Action): TuiState {
       return a.now - s.notice.at >= (a.ttlMs ?? 4000) ? { ...s, notice: null } : s;
 
     case "openPrompt":
-      return { ...s, mode: "prompt", prompt: a.prompt };
+      return { ...s, mode: "prompt", prompt: a.prompt, confirm: null };
 
-    case "promptInput":
-      return s.prompt ? { ...s, prompt: { ...s.prompt, value: a.value } } : s;
+    case "promptSet":
+      return s.prompt ? { ...s, prompt: { ...s.prompt, buffer: a.buffer } } : s;
+
+    case "promptCycleMode": {
+      if (!s.prompt || s.prompt.kind !== "new") return s;
+      const cur = s.prompt.mode ?? "default";
+      const next = SESSION_MODES[(SESSION_MODES.indexOf(cur) + 1) % SESSION_MODES.length] ?? "default";
+      return { ...s, prompt: { ...s.prompt, mode: next } };
+    }
+
+    case "promptHistoryNav": {
+      if (!s.prompt || s.promptHistory.length === 0) return s;
+      const p = s.prompt;
+      const draft = p.histIdx === 0 && a.dir === -1 ? p.buffer.text : p.draft;
+      const idx = Math.max(0, Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)));
+      const text = idx === 0 ? draft : (s.promptHistory[s.promptHistory.length - idx] ?? "");
+      return { ...s, prompt: { ...p, histIdx: idx, draft, buffer: buffer(text) } };
+    }
+
+    case "pushHistory": {
+      const t = a.text.trim();
+      if (!t) return s;
+      const hist = s.promptHistory.filter((x) => x !== t);
+      hist.push(t);
+      if (hist.length > 50) hist.splice(0, hist.length - 50);
+      return { ...s, promptHistory: hist };
+    }
 
     case "closePrompt":
       return { ...s, mode: "browse", prompt: null };
+
+    case "echo": {
+      const log = [...s.log, a.line];
+      if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
+      return { ...s, log };
+    }
+
+    case "openConfirm":
+      return { ...s, mode: "confirm", confirm: a.confirm };
+
+    case "closeConfirm":
+      return { ...s, mode: "browse", confirm: null };
 
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };
@@ -311,6 +394,7 @@ export type ActName =
   | "interrupt"
   | "resume"
   | "done"
+  | "mode"
   | "new"
   | "filter"
   | "help"
@@ -346,10 +430,13 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if (status === "running" || status === "idle") {
       local.push({ keys: "s", label: "send", act: "send" });
     }
-    if (status === "interrupted") local.push({ keys: "r", label: "resume", act: "resume" });
+    if (status === "interrupted" || status === "error") {
+      local.push({ keys: "r", label: "resume", act: "resume" });
+    }
     if (status === "idle" || status === "error" || status === "interrupted") {
       local.push({ keys: "x", label: "done", act: "done" });
     }
+    local.push({ keys: "m", label: "mode", act: "mode" });
   }
   return [...local, ...GLOBAL_HINTS];
 }

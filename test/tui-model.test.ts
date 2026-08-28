@@ -9,6 +9,7 @@ import {
   formatEvent,
   groupsOf,
   initialState,
+  makePrompt,
   pendingFor,
   reduce,
   selectedSession,
@@ -16,6 +17,7 @@ import {
   visibleLog,
   type TuiState,
 } from "../src/tui/model.ts";
+import { buffer } from "../src/tui/editor.ts";
 import { bar, humanTokens, money, spinnerFrame, truncate } from "../src/tui/theme.ts";
 
 // ---------------------------------------------------------------------------
@@ -210,19 +212,21 @@ test("pending question is cleared by the matching answer event", () => {
 
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
+  const G = ["filter", "help", "new", "quit"];
 
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
-    ["approve", "deny", "filter", "help", "interrupt", "new", "quit"].sort(),
+    ["approve", "deny", "interrupt", "mode", ...G].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "question" })].sort(),
-    ["answer", "filter", "help", "interrupt", "new", "quit"].sort(),
+    ["answer", "interrupt", "mode", ...G].sort(),
   );
-  assert.deepEqual([...acts({ status: "running" })].sort(), ["filter", "help", "interrupt", "new", "quit", "send"].sort());
-  assert.deepEqual([...acts({ status: "idle" })].sort(), ["done", "filter", "help", "new", "quit", "send"].sort());
-  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["done", "filter", "help", "new", "quit", "resume"].sort());
-  assert.deepEqual([...allowedActs(null)].sort(), ["filter", "help", "new", "quit"].sort());
+  assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", "mode", ...G].sort());
+  assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", "mode", ...G].sort());
+  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", "mode", ...G].sort());
+  assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", "mode", ...G].sort());
+  assert.deepEqual([...allowedActs(null)].sort(), G.sort());
 });
 
 test("actionsFor keeps the salient action first", () => {
@@ -259,13 +263,69 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
 });
 
 test("prompt open / edit / close transitions", () => {
-  let s = reduce(initialState(), { t: "openPrompt", prompt: { kind: "send", sessionId: "a", label: "send ›", value: "" } });
+  let s = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+  });
   assert.equal(s.mode, "prompt");
-  s = reduce(s, { t: "promptInput", value: "hello" });
-  assert.equal(s.prompt?.value, "hello");
+  s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
+  assert.equal(s.prompt?.buffer.text, "hello");
   s = reduce(s, { t: "closePrompt" });
   assert.equal(s.mode, "browse");
   assert.equal(s.prompt, null);
+});
+
+test("promptCycleMode only cycles for a `new` prompt", () => {
+  let s = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "new", sessionId: null, label: "new", mode: "default" }),
+  });
+  s = reduce(s, { t: "promptCycleMode" });
+  assert.equal(s.prompt?.mode, "plan");
+  s = reduce(s, { t: "promptCycleMode" });
+  assert.equal(s.prompt?.mode, "acceptEdits");
+
+  let t = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+  });
+  t = reduce(t, { t: "promptCycleMode" });
+  assert.equal(t.prompt?.mode, undefined);
+});
+
+test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav walks it", () => {
+  let s = initialState();
+  for (const x of ["one", "two", "one", "three"]) s = reduce(s, { t: "pushHistory", text: x });
+  assert.deepEqual(s.promptHistory, ["two", "one", "three"]);
+
+  s = reduce(s, { t: "openPrompt", prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "live" }) });
+  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
+  assert.equal(s.prompt?.buffer.text, "three");
+  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
+  assert.equal(s.prompt?.buffer.text, "one");
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  assert.equal(s.prompt?.buffer.text, "live", "returns to the stashed live draft at index 0");
+});
+
+test("echo appends a local log line that respects the cap", () => {
+  let s = initialState(2);
+  s = reduce(s, { t: "echo", line: { seq: -1, sessionId: "a", glyph: "›", text: "hi", tone: "accent", ts: 1 } });
+  s = reduce(s, { t: "echo", line: { seq: -2, sessionId: "a", glyph: "›", text: "there", tone: "accent", ts: 2 } });
+  s = reduce(s, { t: "echo", line: { seq: -3, sessionId: "a", glyph: "›", text: "again", tone: "accent", ts: 3 } });
+  assert.deepEqual(s.log.map((l) => l.text), ["there", "again"]);
+});
+
+test("confirm open / run / close", () => {
+  let s = reduce(initialState(), {
+    t: "openConfirm",
+    confirm: { title: "Restart the daemon?", danger: false, action: "restart" },
+  });
+  assert.equal(s.mode, "confirm");
+  assert.equal(s.confirm?.action, "restart");
+  s = reduce(s, { t: "closeConfirm" });
+  assert.equal(s.mode, "browse");
+  assert.equal(s.confirm, null);
 });
 
 test("help toggles the mode without disturbing the rest of the state", () => {

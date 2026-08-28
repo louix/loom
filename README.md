@@ -91,10 +91,20 @@ as a second adapter.
 - **Detail pane** — the selected session's status / mode / model, a
   context-window meter, token and cost totals, and its worktree's git facts.
 - **Event stream** — the normalized harness events for the selected session
-  (`f` toggles to all sessions), colourised by kind.
+  (`f` toggles to all sessions), colourised by kind. `PgUp`/`PgDn` scroll it,
+  `⇥` blows it up to fullscreen, and `⌃e` drops the visible log into `$EDITOR`
+  so you can select and copy without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
-  answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume, `x` mark done,
-  `n` start a new session. `?` toggles help; `q` quits the UI, never the daemon.
+  answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume (also from
+  `error`), `x` mark done, `m` / `⇧⇥` cycle the permission mode, `n` start a new
+  session. In the `new` / `send` / `answer` prompt: `⌃e` opens `$EDITOR` for a
+  long or multi-line message (nothing is sent until you press enter back in the
+  UI), `↑`/`↓` recall earlier prompts, `⇧⇥` picks the new session's mode. A
+  failed submit reopens the prompt with the text intact.
+- **The daemon, from inside** — `R` restarts it (the client respawns one that
+  inherits *this* shell's environment), `Q` quits the UI and stops it; both ask
+  first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
+  out of overlays — it never quits.
 
 Not yet implemented (later milestones): price-table cost, budgets, plan
 review, sub-agent nesting.
@@ -172,7 +182,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 99 cases
+npm test             # node:test — 116 cases
 ```
 
 ### Layout
@@ -189,7 +199,7 @@ src/
               lifecycle, session manager, status machine, worktree
               manager, and the Daemon
   client/     thin client (connect-or-spawn, reconnect, gap replay)
-  tui/        Ink fleet UI: pure model + reducer, theme, components, entry
+  tui/        Ink fleet UI: model/reducer, editor, theme, components, entry
   cli/        loom (client) and loomd (daemon) entrypoints
 ```
 
