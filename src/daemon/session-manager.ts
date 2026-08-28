@@ -26,6 +26,8 @@ export interface ManagerHooks {
   onStatus(sessionId: string, status: SessionStatus, reason: string | null): void;
   /** A usage delta to accumulate. */
   onUsage(sessionId: string, delta: UsageDelta): void;
+  /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
+  onResult(sessionId: string, ok: boolean): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
   log: Logger;
@@ -115,6 +117,7 @@ export class SessionManager {
         this.#trackPerms(run, ev);
         this.#trackQuestions(run, ev);
         this.#trackUsage(id, ev);
+        if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
         this.#trackRef(id, run);
         this.#applyStatus(id, run, ev);
       }

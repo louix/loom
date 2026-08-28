@@ -32,6 +32,12 @@ export interface LoomConfig {
     };
   };
   mcp: Array<{ name: string; command: string }>;
+  titles: {
+    /** Auto-summarise the first message into a session title after turn 1. */
+    enabled: boolean;
+    /** Model for the one-shot; empty → a per-provider cheap default. */
+    model: string;
+  };
   pricing: { table: string };
   notify: { webhook: string };
   budget: {
@@ -66,6 +72,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
     { name: "tilth", command: "tilth mcp --edit" },
     { name: "fff", command: "fff-mcp" },
   ],
+  titles: { enabled: true, model: "" },
   pricing: { table: ".loom/models.toml" },
   notify: { webhook: "" },
   budget: {
@@ -103,6 +110,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
   const adk = asRecord(providers["adk"]);
+  const titles = asRecord(r["titles"]);
   const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);
   const budget = asRecord(r["budget"]);
@@ -151,6 +159,10 @@ export function normalizeConfig(raw: unknown): LoomConfig {
       },
     },
     mcp,
+    titles: {
+      enabled: typeof titles["enabled"] === "boolean" ? titles["enabled"] : d.titles.enabled,
+      model: str(titles["model"], d.titles.model),
+    },
     pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     budget: {

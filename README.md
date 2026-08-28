@@ -120,8 +120,14 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented (later milestones): LLM-generated session titles,
-price-table cost, budgets, plan review, sub-agent nesting.
+Not yet implemented (later milestones): price-table cost, budgets, plan review,
+sub-agent nesting.
+
+**Session titles.** A session's title starts as its first message clipped to 200
+chars; after the first successful turn the daemon replaces it with a 4–6 word
+summary from a cheap one-shot through the same provider (`[titles]` config, off
+with `enabled = false`). Renaming it yourself (`e` in the UI / `loom` …) pins
+the title and the auto-titler leaves it alone.
 
 **Context compaction.** `c` on a running or idle session (or `loom compact <id>
 [steer…]`) drives the provider's own compaction — for Claude, `/compact` over
@@ -203,7 +209,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 130 cases
+npm test             # node:test — 138 cases
 ```
 
 ### Layout

@@ -19,6 +19,7 @@ import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { SessionManager } from "./session-manager.ts";
+import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager } from "./worktrees.ts";
 import { ProviderRegistry } from "../provider/registry.ts";
 import {
@@ -86,6 +87,8 @@ export class Daemon {
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
+  /** Sessions with an auto-title one-shot in flight (fire-once guard). */
+  #titling = new Set<string>();
 
   #stopping = false;
   #closed: Promise<void>;
@@ -128,6 +131,10 @@ export class Daemon {
       onUsage: (id, delta) => {
         if (this.#stopping) return;
         this.#emitSessionUpdated(this.#registry.addUsage(id, delta));
+      },
+      onResult: (id, ok) => {
+        if (this.#stopping || !ok) return;
+        void this.#maybeAutoTitle(id);
       },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
@@ -294,6 +301,43 @@ export class Daemon {
     });
     this.#emitSessionUpdated(snap);
     this.#onActivityChange(`status:${status}`);
+  }
+
+  /**
+   * After a session's first successful turn, replace the clipped-prompt title
+   * with a model-generated summary — unless the user has already renamed it.
+   */
+  async #maybeAutoTitle(id: string): Promise<void> {
+    if (!this.config.titles.enabled || this.#titling.has(id)) return;
+    const snap = this.#registry.get(id);
+    if (!snap || snap.turns !== 1 || !snap.title) return;
+    if (this.#registry.store.titleLocked(id)) return;
+    if (!this.#providers.has(snap.provider)) return;
+    const provider = this.#providers.get(snap.provider);
+    if (!provider.capabilities.oneShot) return;
+
+    this.#titling.add(id);
+    try {
+      const title = await generateTitle({
+        provider,
+        prompt: snap.title,
+        cwd: snap.worktree ?? this.repoRoot,
+        log: this.#log.child("titler"),
+        ...(this.config.titles.model
+          ? { model: this.config.titles.model }
+          : (() => {
+              const m = cheapModelFor(snap.provider);
+              return m ? { model: m } : {};
+            })()),
+      });
+      if (!title || this.#stopping) return;
+      if (this.#registry.store.titleLocked(id)) return; // raced with a manual rename
+      this.#emitSessionUpdated(this.#registry.setFields(id, { title }));
+    } catch (err) {
+      this.#log.debug("auto-title failed", { id, err: String(err) });
+    } finally {
+      this.#titling.delete(id);
+    }
   }
 
   #onActivityChange(why: string): void {
@@ -560,7 +604,8 @@ export class Daemon {
       const title = reqString(params, "title").trim().slice(0, 200);
       if (title === "") throw new RpcError("bad_request", "title must not be empty");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const snap = this.#registry.setFields(id, { title });
+      // A manual rename pins the title — the auto-titler won't touch it again.
+      const snap = this.#registry.setFields(id, { title, titleLocked: true });
       this.#emitSessionUpdated(snap, clientLabel(params));
       return this.#enrich(snap);
     });

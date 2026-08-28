@@ -78,7 +78,13 @@ Three small features that all hang off the **usage rollup** in `SessionManager`
 (`#trackUsage` / the `onUsage` hook) plus the `result` event, so they land in
 one branch / three commits.
 
-### 7a · LLM-generated session titles
+### 7a · LLM-generated session titles ✓ shipped
+
+Built as planned: `src/daemon/titler.ts` (`cleanTitle` + `generateTitle`), a
+`onResult` manager hook, `Daemon.#maybeAutoTitle` fired after the first
+successful turn, a `title_locked` column (migration 2) set by `session.setTitle`.
+`CreateSessionOptions.oneShot` + `ProviderCapabilities.oneShot` gate it.
+
 
 **Goal.** Replace `title = prompt.slice(0, 200)` with a 4–6 word summary after
 the first turn, unless the user has renamed the session.

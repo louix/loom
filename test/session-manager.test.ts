@@ -230,6 +230,32 @@ test("an abrupt stream end (still live) becomes interrupted/stream_ended", async
   await c.close();
 });
 
+test("the first successful turn auto-titles the session", async () => {
+  const c = await client();
+  fake().titleReply = "Add a websocket transport";
+  const { id, fs } = await createFake(c, "please add websockets to the transport layer");
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).title, "please add websockets to the transport layer");
+
+  fs.finishTurn();
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).title === "Add a websocket transport",
+  );
+  await c.close();
+});
+
+test("a manual rename locks the title against the auto-titler", async () => {
+  const c = await client();
+  fake().titleReply = "Should never win";
+  const { id, fs } = await createFake(c, "do a thing");
+  await c.request("session.setTitle", { id, title: "my name for it" });
+
+  fs.finishTurn();
+  // give the (suppressed) one-shot a chance to have run
+  await delay(60);
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).title, "my name for it");
+  await c.close();
+});
+
 test("setMode updates the row and forwards to a live adapter", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

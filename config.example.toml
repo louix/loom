@@ -37,6 +37,10 @@ command = "tilth mcp --edit"        # prompt steers file writes to tilth_write /
 name    = "fff"
 command = "fff-mcp"
 
+[titles]
+enabled = true                     # summarise the first message into a title after turn 1
+model   = ""                       # "" = a per-provider cheap default (Haiku for claude)
+
 [pricing]
 table = ".loom/models.toml"
 

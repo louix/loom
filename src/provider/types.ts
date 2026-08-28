@@ -14,6 +14,8 @@ export interface ProviderCapabilities {
   subagents: boolean;
   /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
   compaction: boolean;
+  /** Can run a cheap, tool-free single-turn call (used for auto-titling). */
+  oneShot: boolean;
   /** Emits token counts before the final result (partial usage). */
   partialTokens: boolean;
   permissionModes: SessionMode[];
@@ -61,6 +63,11 @@ export interface CreateSessionOptions {
   disableTools?: string[];
   /** Which settings layers to load (`project` pulls CLAUDE.md). */
   settingSources?: string[];
+  /**
+   * A throwaway single-turn call (titling, classification). Adapters should
+   * keep it cheap: no MCP, no persistence, one turn.
+   */
+  oneShot?: boolean;
 }
 
 export interface SessionRef {

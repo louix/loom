@@ -62,4 +62,9 @@ export const MIGRATIONS: string[] = [
     started_at    INTEGER NOT NULL
   );
   `,
+
+  // 2 — a manual rename locks the title against the auto-titler (M7a)
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

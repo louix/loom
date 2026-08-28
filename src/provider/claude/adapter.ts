@@ -42,6 +42,7 @@ const CAPS: ProviderCapabilities = {
   forking: true,
   subagents: true,
   compaction: true,
+  oneShot: true,
   partialTokens: true,
   permissionModes: ["default", "plan", "acceptEdits", "auto"],
   models: [],

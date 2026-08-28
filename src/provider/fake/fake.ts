@@ -27,6 +27,7 @@ const CAPS: ProviderCapabilities = {
   forking: false,
   subagents: false,
   compaction: true,
+  oneShot: true,
   partialTokens: false,
   permissionModes: ["default", "plan", "acceptEdits", "auto"],
   models: ["fake-1"],
@@ -172,10 +173,23 @@ export class FakeProvider implements AgentProvider {
   readonly id = "fake";
   readonly capabilities = CAPS;
 
+  /** What a `oneShot` session answers with (used to exercise the auto-titler). */
+  titleReply = "a concise fake title";
+
   #sessions = new Map<string, FakeSession>();
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const s = new FakeSession(opts.sessionId, { mode: opts.mode, ...(opts.model ? { model: opts.model } : {}) });
+    if (opts.oneShot) {
+      // Throwaway: answer once and finish, without joining the tracked set.
+      const reply = this.titleReply;
+      setTimeout(() => {
+        s.emit({ type: "assistant_text", text: reply });
+        s.emit({ type: "result", ok: true, summary: reply });
+        s.endStream();
+      }, 0);
+      return s;
+    }
     this.#sessions.set(s.id, s);
     return s;
   }

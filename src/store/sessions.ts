@@ -19,6 +19,7 @@ interface SessionRow {
   branch: string | null;
   base_branch: string | null;
   provider_ref: string | null;
+  title_locked: number;
   budget_max_tokens: number | null;
   budget_max_cost_usd: number | null;
   budget_max_turns: number | null;
@@ -165,6 +166,7 @@ export class SessionStore {
       model: string | null;
       mode: string;
       title: string | null;
+      titleLocked: boolean;
       worktree: string | null;
       branch: string | null;
       baseBranch: string | null;
@@ -172,11 +174,12 @@ export class SessionStore {
     }>,
   ): void {
     const cols: string[] = [];
-    const vals: Array<string | null> = [];
+    const vals: Array<string | number | null> = [];
     const map: Record<string, string> = {
       model: "model",
       mode: "mode",
       title: "title",
+      titleLocked: "title_locked",
       worktree: "worktree",
       branch: "branch",
       baseBranch: "base_branch",
@@ -185,11 +188,12 @@ export class SessionStore {
     for (const [k, col] of Object.entries(map)) {
       if (k in fields) {
         cols.push(`${col} = ?`);
-        vals.push((fields as Record<string, string | null>)[k] ?? null);
+        const v = (fields as Record<string, string | number | boolean | null>)[k];
+        vals.push(typeof v === "boolean" ? (v ? 1 : 0) : (v ?? null));
       }
     }
     if (cols.length === 0) return;
-    vals.push(String(Date.now()));
+    vals.push(Date.now());
     this.#db
       .prepare(`UPDATE sessions SET ${cols.join(", ")}, updated_at = ? WHERE id = ?`)
       .run(...vals, id);
@@ -234,6 +238,14 @@ export class SessionStore {
       .prepare("SELECT provider_ref FROM sessions WHERE id = ?")
       .get(id) as { provider_ref: string | null } | undefined;
     return row?.provider_ref ?? null;
+  }
+
+  /** True once a manual rename has pinned the title against the auto-titler. */
+  titleLocked(id: string): boolean {
+    const row = this.#db
+      .prepare("SELECT title_locked FROM sessions WHERE id = ?")
+      .get(id) as { title_locked: number } | undefined;
+    return (row?.title_locked ?? 0) !== 0;
   }
 
   statusHistory(id: string): Array<{ status: string; reason: string | null; at: number }> {
