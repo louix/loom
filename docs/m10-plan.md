@@ -52,21 +52,11 @@ MCP transport.
 No `tiktoken` — context estimate is `chars/4` against a per-model context-window
 table (see Compaction).
 
-### `decode` helper (open decision)
+### `decode` helper — deferred (decided 2026-08-29)
 
-The user likes `zod` paired with an `Either`-returning decoder:
-`<T>(codec) => Either<DecodeError, T>`. Two ways:
-
-- **Local (recommended)** — `src/util/either.ts`: `type Either<E,A> =
-  { _tag: "Left"; left: E } | { _tag: "Right"; right: A }` plus
-  `left/right/isLeft/map/flatMap/fold`, and `decode(schema, input)` wrapping
-  `schema.safeParse`. ~40 lines, no dep, matches Loom's discriminated-union
-  style (`PermissionDecision`, `PlanDecision`).
-- **`fp-ts`** — real `E.Either`, but a large API surface and a philosophy the
-  rest of the codebase doesn't use.
-
-Config parsing (`normalizeConfig`) can migrate to `decode` opportunistically;
-not required for M10.
+No `Either` / `fp-ts` / `decode` helper for M10. `zod` schemas are used directly
+(`safeParse`, fall back to default on failure — the `normalizeConfig` style).
+A codec/`Either` refactor across config + provider I/O is a separate later pass.
 
 ## Architecture
 
@@ -221,6 +211,7 @@ api_key_env = "OPENAI_API_KEY"
 model = "gpt-5"                        # default for new sessions
 models = ["gpt-5", "gpt-5-mini", "o4-mini"]   # offered in the picker
 title_model = "gpt-5-mini"            # optional; else falls back to titles.model
+tag = "oai"                           # Fleet-row label for non-default providers (optional)
 
 [providers.deepseek]
 adapter = "aisdk"
@@ -283,8 +274,9 @@ consulted at runtime.
   `engine · deepseek / deepseek-reasoner`.
 - **Fleet row** — space is tight. Show a short dim provider tag before the title
   **only when the session's provider ≠ `defaultId`**, so all-Claude fleets look
-  exactly as they do now. Exact form (glyph vs 2–3 char id) decided in M10e
-  against the real layout.
+  exactly as they do now. The tag string comes from the profile's `tag` key
+  (fallback: the provider id, truncated). Final placement tuned in M10e against
+  the real layout.
 - **Cost** — the price table is model-keyed, so a mid-session model switch
   re-prices subsequent turns with no extra work; `costSource` still reads
   `table` / `provider`.
@@ -314,13 +306,15 @@ Commit as each lands. **Stop for review after M10a.**
 | **M10d** | mode enforcement (`plan` withholds mutators + `exit_plan` → `plan_review`; `acceptEdits`; `auto`); Loom-side compaction + `tokens.ts`; `Task` subagents | plan-mode blocks Write then implements on `respondToPlan`; compaction rewrites the tail + emits `compact`; subagent start/stop on snapshot |
 | **M10e** | provider/model switching: config profiles + `adapter` key, registry from config, creation provider+model steps, `M` live-switch, `session.setModel` RPC, migration 6 (`sessions.model`), Detail `engine` line, Fleet provider tag, `loom models` CLI | config parse of profiles; registry construction; reducer for the two new creation steps + the `M` picker; RPC round-trip; render test for the `engine` line |
 
-## Open decisions
+## Decisions (resolved 2026-08-29)
 
-1. **`decode` helper** — local `Either` (recommended) vs `fp-ts`.
-2. **Fleet provider indicator** — glyph vs short id; settle against the layout in M10e.
-3. **Default-on MCP servers** — `filesystem` + `fetch` (recommended) vs also `git`.
-4. **Grep** — first-party `rg` shell-out (recommended) vs a ripgrep MCP server.
-5. **`@ai-sdk/anthropic` / `@ai-sdk/google`** — add in M10 for parity testing, or leave as trivial follow-ups (recommended: follow-ups).
+1. **`decode` helper** — no `Either` / `fp-ts` / helper for M10; use `zod`
+   directly, refactor later.
+2. **Fleet provider indicator** — a `tag` key in the provider profile
+   (alongside `base_url` / `api_key_env`); rendered for non-default providers.
+3. **Default-on MCP servers** — `filesystem` + `fetch`; `git` opt-in.
+4. **Grep** — first-party `rg` shell-out.
+5. **`@ai-sdk/anthropic` / `@ai-sdk/google`** — follow-ups, not in M10.
 
 ## Risks
 
