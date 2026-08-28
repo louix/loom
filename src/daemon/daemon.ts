@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
 import { ensureLoomDir, loomPaths, type LoomPaths } from "../util/paths.ts";
 import { loadConfig, resolveAgainstRepo, type LoomConfig } from "../config/config.ts";
+import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "../version.ts";
 import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
 import {
@@ -12,7 +13,7 @@ import {
   type SessionSnapshot,
 } from "../protocol/wire.ts";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
-import { ChildStore } from "../store/sessions.ts";
+import { ChildStore, type UsageDelta } from "../store/sessions.ts";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -84,6 +85,7 @@ export class Daemon {
   #sessions: SessionManager;
   #worktrees: WorktreeManager;
   #idle: IdleTimer;
+  #pricing: PriceTable;
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
@@ -104,6 +106,7 @@ export class Daemon {
     this.#log = makeLogger("daemon");
 
     this.config = loadConfig(this.paths.config);
+    this.#pricing = loadPriceTable(resolveAgainstRepo(opts.repoRoot, this.config.pricing.table));
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
     this.#registry = new Registry(this.#db);
@@ -130,7 +133,7 @@ export class Daemon {
       onStatus: (id, status, reason) => this.#onDerivedStatus(id, status, reason),
       onUsage: (id, delta) => {
         if (this.#stopping) return;
-        this.#emitSessionUpdated(this.#registry.addUsage(id, delta));
+        this.#emitSessionUpdated(this.#registry.addUsage(id, this.#priceUsage(id, delta)));
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
@@ -340,6 +343,27 @@ export class Daemon {
     }
   }
 
+  /**
+   * Recompute a usage delta's dollar cost from the local price table when the
+   * session's model is priced there; otherwise keep the provider's figure. Tags
+   * the delta with `costSource` so a client can flag an estimate.
+   */
+  #priceUsage(id: string, delta: UsageDelta): UsageDelta {
+    const tokens =
+      (delta.input ?? 0) + (delta.output ?? 0) + (delta.cacheRead ?? 0) + (delta.cacheWrite ?? 0);
+    if (tokens <= 0) return delta; // a bare { turns: 1 } — nothing to price
+    const model = this.#registry.get(id)?.model ?? null;
+    const tableCost = costOf(this.#pricing, model, {
+      input: delta.input ?? 0,
+      output: delta.output ?? 0,
+      cacheRead: delta.cacheRead ?? 0,
+      cacheWrite: delta.cacheWrite ?? 0,
+    });
+    if (tableCost != null) return { ...delta, costUsd: tableCost, costSource: "table" };
+    if ((delta.costUsd ?? 0) > 0) return { ...delta, costSource: "provider" };
+    return delta;
+  }
+
   #onActivityChange(why: string): void {
     if (this.#stopping) return;
     const busy = this.#isBusy();
@@ -390,6 +414,11 @@ export class Daemon {
     d.register("daemon.shutdown", () => {
       setImmediate(() => void this.stop("rpc"));
       return { ok: true };
+    });
+
+    d.register("pricing.reload", () => {
+      this.#pricing = loadPriceTable(resolveAgainstRepo(this.repoRoot, this.config.pricing.table));
+      return { models: [...this.#pricing.keys()] };
     });
 
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));

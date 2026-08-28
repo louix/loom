@@ -239,7 +239,11 @@ export function Detail({
         { color: C.faint },
         `${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`,
       ),
-      h(Text, { color: s.costUsd ? C.good : C.faint }, money(s.costUsd)),
+      h(
+        Text,
+        { color: s.costUsd ? C.good : C.faint },
+        (s.costSource === "table" ? "~" : "") + money(s.costUsd),
+      ),
     ),
     h(
       Box,

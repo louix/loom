@@ -120,8 +120,13 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented (later milestones): price-table cost, budgets, plan review,
-sub-agent nesting.
+Not yet implemented (later milestones): budgets, plan review, sub-agent nesting.
+
+**Price-table cost.** Drop a `.loom/models.toml` with per-model USD-per-million
+prices (`input` / `output` / `cache_read` / `cache_write`) and the daemon costs
+each usage delta from it instead of trusting the provider's figure; the snapshot
+carries `costSource` (`table` / `provider` / `none`) and the UI shows a `~` in
+front of a table estimate. `pricing.reload` re-reads the file without a restart.
 
 **Session titles.** A session's title starts as its first message clipped to 200
 chars; after the first successful turn the daemon replaces it with a 4–6 word
@@ -209,7 +214,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 138 cases
+npm test             # node:test — 145 cases
 ```
 
 ### Layout
@@ -243,3 +248,4 @@ Created in whatever repo the daemon runs against; all of it is gitignored:
 | `trees/<slug>/`      | one git worktree per session                     |
 | `hooks/pre-push`     | the push-blocking hook, shared by every worktree |
 | `config.toml`        | optional; falls back to built-in defaults       |
+| `models.toml`        | optional per-model price table (`pricing.reload`) |

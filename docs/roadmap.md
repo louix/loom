@@ -109,7 +109,13 @@ one-shot path (checked via a new `capabilities.oneShot?: boolean`).
 **Files.** `src/daemon/session-manager.ts` (hook the result), a small
 `src/daemon/titler.ts`, `src/config/config.ts` (`[titles]`), README.
 
-### 7b · Price-table cost
+### 7b · Price-table cost ✓ shipped
+
+Built as planned: `src/config/pricing.ts` (`loadPriceTable` / `parsePriceTable`
+/ `costOf`), computed in `Daemon.#priceUsage` on the usage rollup, `costSource`
+(migration 3, `usage.cost_source`) on the snapshot, `pricing.reload` RPC, `~`
+prefix in the Detail cost line.
+
 
 **Goal.** Compute cost from a local per-model price table instead of trusting the
 SDK's `costUsd`.

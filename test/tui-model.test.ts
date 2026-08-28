@@ -45,6 +45,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     contextUsed: 0,
     contextLimit: 0,
     costUsd: 0,
+    costSource: "none",
     turns: 0,
     budget: { maxTokens: null, maxCostUsd: null, maxTurns: null },
     git: null,

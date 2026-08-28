@@ -36,6 +36,7 @@ interface UsageRow {
   context_used: number;
   context_limit: number;
   cost_usd: number;
+  cost_source: string;
   turns: number;
   updated_at: number;
 }
@@ -65,6 +66,8 @@ export interface UsageDelta {
   cacheWrite?: number;
   turns?: number;
   costUsd?: number;
+  /** Where `costUsd` came from — overwrites the stored value when present. */
+  costSource?: "table" | "provider" | "none";
   /** Absolute values (last-request), not deltas. */
   contextUsed?: number;
   contextLimit?: number;
@@ -212,6 +215,7 @@ export class SessionStore {
            cache_read = cache_read + ?,
            cache_write = cache_write + ?,
            cost_usd = cost_usd + ?,
+           cost_source = COALESCE(?, cost_source),
            turns = turns + ?,
            context_used = COALESCE(?, context_used),
            context_limit = COALESCE(?, context_limit),
@@ -224,6 +228,7 @@ export class SessionStore {
         d.cacheRead ?? 0,
         d.cacheWrite ?? 0,
         d.costUsd ?? 0,
+        d.costSource ?? null,
         d.turns ?? 0,
         d.contextUsed ?? null,
         d.contextLimit ?? null,
@@ -342,6 +347,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     contextUsed: usage?.context_used ?? 0,
     contextLimit: usage?.context_limit ?? 0,
     costUsd: usage?.cost_usd ?? 0,
+    costSource: (usage?.cost_source as SessionSnapshot["costSource"]) ?? "none",
     turns: usage?.turns ?? 0,
     budget: {
       maxTokens: row.budget_max_tokens,

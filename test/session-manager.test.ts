@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
@@ -263,6 +265,41 @@ test("setMode updates the row and forwards to a live adapter", async () => {
   assert.equal(snap.mode, "plan");
   assert.deepEqual(fs.modeChanges, ["plan"]);
   await assert.rejects(c.request("session.setMode", { id, mode: "bogus" }), /mode must be/);
+  await c.close();
+});
+
+test("without a price table the provider's cost is kept, tagged costSource=provider", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c, "unpriced work");
+  fs.finishTurn({ usage: { input: 100, output: 20 }, costUsd: 0.02 });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1);
+  const got = await c.request<SessionSnapshot>("session.get", { id });
+  assert.ok(Math.abs(got.costUsd - 0.02) < 1e-9);
+  assert.equal(got.costSource, "provider");
+  await c.close();
+});
+
+test("a price table overrides the provider's cost, tagged costSource=table", async () => {
+  writeFileSync(join(h.repoRoot, ".loom", "models.toml"), `["fake-1"]\ninput = 3.0\noutput = 15.0\n`);
+  const c = await client();
+  const reloaded = await c.request<{ models: string[] }>("pricing.reload");
+  assert.ok(reloaded.models.includes("fake-1"));
+
+  const snap = await c.request<SessionSnapshot>("session.create", {
+    prompt: "priced work",
+    provider: "fake",
+    model: "fake-1",
+  });
+  await waitFor(() => fake().session(snap.id) !== undefined);
+  const fs = fake().session(snap.id) as FakeSession;
+
+  fs.finishTurn({ usage: { input: 1000, output: 500 }, costUsd: 0.99 });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: snap.id })).turns === 1);
+
+  const got = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+  // (1000*3 + 500*15) / 1e6 = 0.0105  — not the provider's 0.99
+  assert.ok(Math.abs(got.costUsd - 0.0105) < 1e-9);
+  assert.equal(got.costSource, "table");
   await c.close();
 });
 

@@ -67,4 +67,9 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 3 — where a session's cost figure came from (M7b)
+  /* sql */ `
+  ALTER TABLE usage ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'none';
+  `,
 ];

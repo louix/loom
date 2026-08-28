@@ -122,6 +122,8 @@ export interface SessionSnapshot {
   contextUsed: number;
   contextLimit: number;
   costUsd: number;
+  /** Where `costUsd` was computed — a local price table, the provider, or nothing yet. */
+  costSource: "table" | "provider" | "none";
   turns: number;
   budget: { maxTokens: number | null; maxCostUsd: number | null; maxTurns: number | null };
   git: GitFacts | null;
