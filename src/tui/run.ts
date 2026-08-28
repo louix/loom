@@ -10,7 +10,7 @@
  * happen around the `render()` instance.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -20,9 +20,11 @@ import { App } from "./app.ts";
 
 /**
  * Open `text` in `$EDITOR`, blocking until it exits; returns the saved body (or
- * `null` if it couldn't run). `aside`, when given, is written as a second file
- * passed on the command line so the editor opens it as an extra buffer to copy
- * from — its contents are never read back.
+ * `null` if it couldn't run). The `text` file is always the first argument, so
+ * it's the buffer the editor lands on. `aside`, when given, is written as a
+ * second file argument (mode `0444`, so the editor marks it read-only and won't
+ * let it go dirty) purely to copy from — its contents are never read back, and
+ * you only ever need to `:wq` the primary file.
  */
 export type EditorHandoff = (
   text: string,
@@ -42,6 +44,11 @@ export async function runTui(client: LoomClient): Promise<void> {
     if (opts.aside) {
       const asidePath = join(dir, opts.aside.name.replace(/[^\w.-]/g, "_"));
       writeFileSync(asidePath, opts.aside.body);
+      try {
+        chmodSync(asidePath, 0o444); // read-only: the editor won't let it go dirty
+      } catch {
+        /* best effort */
+      }
       extra.push(asidePath);
     }
     const stdin = process.stdin;
