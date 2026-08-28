@@ -47,8 +47,9 @@ const CAPS: ProviderCapabilities = {
 };
 
 function toPermissionMode(mode: SessionMode): PermissionMode {
-  // Loom's modes are a subset of the SDK's; pass through.
-  return mode;
+  // "auto" is Loom's name for "don't ask me anything"; the rest are the SDK's
+  // own permission modes and pass straight through.
+  return mode === "auto" ? "bypassPermissions" : mode;
 }
 
 function userMessage(text: string): SDKUserMessage {

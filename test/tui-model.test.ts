@@ -11,6 +11,7 @@ import {
   initialState,
   makePrompt,
   pendingFor,
+  queueFor,
   reduce,
   selectedSession,
   sortSessions,
@@ -212,21 +213,22 @@ test("pending question is cleared by the matching answer event", () => {
 
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
-  const G = ["filter", "help", "new", "quit"];
+  // every selected session also gets mode + title, plus the global set
+  const S = ["mode", "title", "filter", "help", "new", "quit"];
 
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
-    ["approve", "deny", "interrupt", "mode", ...G].sort(),
+    ["approve", "deny", "interrupt", ...S].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "question" })].sort(),
-    ["answer", "interrupt", "mode", ...G].sort(),
+    ["answer", "interrupt", ...S].sort(),
   );
-  assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", "mode", ...G].sort());
-  assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", "mode", ...G].sort());
-  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", "mode", ...G].sort());
-  assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", "mode", ...G].sort());
-  assert.deepEqual([...allowedActs(null)].sort(), G.sort());
+  assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
+  assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
+  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", ...S].sort());
+  assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", ...S].sort());
+  assert.deepEqual([...allowedActs(null)].sort(), ["filter", "help", "new", "quit"].sort());
 });
 
 test("actionsFor keeps the salient action first", () => {
@@ -315,6 +317,61 @@ test("echo appends a local log line that respects the cap", () => {
   s = reduce(s, { t: "echo", line: { seq: -2, sessionId: "a", glyph: "›", text: "there", tone: "accent", ts: 2 } });
   s = reduce(s, { t: "echo", line: { seq: -3, sessionId: "a", glyph: "›", text: "again", tone: "accent", ts: 3 } });
   assert.deepEqual(s.log.map((l) => l.text), ["there", "again"]);
+});
+
+test("enqueue / dequeue / clearQueue and queueFor", () => {
+  let s = initialState();
+  s = reduce(s, { t: "enqueue", sessionId: "a", text: "  first  " });
+  s = reduce(s, { t: "enqueue", sessionId: "a", text: "second" });
+  s = reduce(s, { t: "enqueue", sessionId: "a", text: "   " }); // blank ignored
+  assert.deepEqual(queueFor(s, "a"), ["first", "second"]);
+  s = reduce(s, { t: "dequeue", sessionId: "a" });
+  assert.deepEqual(queueFor(s, "a"), ["second"]);
+  s = reduce(s, { t: "dequeue", sessionId: "a" });
+  assert.deepEqual(queueFor(s, "a"), []);
+  assert.equal("a" in s.queue, false, "empty queue entry is removed");
+
+  s = reduce(s, { t: "enqueue", sessionId: "b", text: "x" });
+  s = reduce(s, { t: "clearQueue", sessionId: "b" });
+  assert.deepEqual(queueFor(s, "b"), []);
+});
+
+test("openSendChoice replaces the prompt; closeSendChoice returns to browse", () => {
+  let s = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "hi" }),
+  });
+  s = reduce(s, { t: "openSendChoice", sessionId: "a", text: "hi" });
+  assert.equal(s.mode, "sendChoice");
+  assert.equal(s.prompt, null);
+  assert.deepEqual(s.sendChoice, { sessionId: "a", text: "hi" });
+  s = reduce(s, { t: "closeSendChoice" });
+  assert.equal(s.mode, "browse");
+  assert.equal(s.sendChoice, null);
+});
+
+test("a permission_request stashes the tool + input; answer/leaving clears it", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "awaiting_input" })] });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm -rf x" }, sessionId: "a" })),
+  });
+  const pf = pendingFor(s, "a");
+  assert.equal(pf.permission, "p1");
+  assert.equal(pf.permTool, "Bash");
+  assert.deepEqual(pf.permInput, { command: "rm -rf x" });
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 2 },
+  });
+  assert.deepEqual(pendingFor(s, "a"), {});
+});
+
+test("queue entries are pruned when their session disappears", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "running" })] });
+  s = reduce(s, { t: "enqueue", sessionId: "a", text: "later" });
+  s = reduce(s, { t: "sessions", sessions: [] });
+  assert.deepEqual(queueFor(s, "a"), []);
 });
 
 test("confirm open / run / close", () => {

@@ -543,6 +543,16 @@ export class Daemon {
       return snap;
     });
 
+    d.register("session.setTitle", (params) => {
+      const id = reqString(params, "id");
+      const title = reqString(params, "title").trim().slice(0, 200);
+      if (title === "") throw new RpcError("bad_request", "title must not be empty");
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const snap = this.#registry.setFields(id, { title });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return this.#enrich(snap);
+    });
+
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);

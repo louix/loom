@@ -11,7 +11,7 @@ import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help" | "confirm";
+export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice";
 export type LogFilter = "selected" | "all";
 
 export interface DaemonInfo {
@@ -35,7 +35,7 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind = "send" | "answer" | "deny" | "new";
+export type PromptKind = "send" | "answer" | "deny" | "new" | "title";
 
 export interface PromptState {
   kind: PromptKind;
@@ -80,10 +80,17 @@ export interface ConfirmState {
   action: "restart" | "quitAll";
 }
 
-/** Outstanding round-trips per session, recovered from the event stream. */
+/**
+ * Outstanding round-trips per session, recovered from the event stream — the
+ * ids to answer with, plus enough of the request to show what it's asking.
+ */
 export interface Pending {
   permission?: string;
+  permTool?: string;
+  permInput?: unknown;
   question?: string;
+  questionText?: string;
+  questionContext?: string;
 }
 
 export interface TuiState {
@@ -95,10 +102,14 @@ export interface TuiState {
   logCap: number;
   logFilter: LogFilter;
   pending: Record<string, Pending>;
+  /** Follow-up messages typed at a still-running session, awaiting its next idle. */
+  queue: Record<string, string[]>;
   notice: Notice | null;
   mode: UiMode;
   prompt: PromptState | null;
   confirm: ConfirmState | null;
+  /** A composed `send` awaiting the asap / turn-end choice (target is running). */
+  sendChoice: { sessionId: string; text: string } | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
 }
@@ -113,10 +124,12 @@ export function initialState(logCap = 400): TuiState {
     logCap,
     logFilter: "selected",
     pending: {},
+    queue: {},
     notice: null,
     mode: "browse",
     prompt: null,
     confirm: null,
+    sendChoice: null,
     promptHistory: [],
   };
 }
@@ -142,6 +155,11 @@ export type Action =
   | { t: "pushHistory"; text: string }
   | { t: "closePrompt" }
   | { t: "echo"; line: LogLine }
+  | { t: "enqueue"; sessionId: string; text: string }
+  | { t: "dequeue"; sessionId: string }
+  | { t: "clearQueue"; sessionId: string }
+  | { t: "openSendChoice"; sessionId: string; text: string }
+  | { t: "closeSendChoice" }
   | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "closeConfirm" }
   | { t: "help"; value: boolean };
@@ -156,7 +174,8 @@ export function reduce(s: TuiState, a: Action): TuiState {
         daemon: a.daemon,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
-        pending: prunePending(s.pending, sessions),
+        pending: pruneByLive(s.pending, sessions),
+        queue: pruneByLive(s.queue, sessions),
       };
     }
 
@@ -166,7 +185,8 @@ export function reduce(s: TuiState, a: Action): TuiState {
         ...s,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
-        pending: prunePending(s.pending, sessions),
+        pending: pruneByLive(s.pending, sessions),
+        queue: pruneByLive(s.queue, sessions),
       };
     }
 
@@ -238,6 +258,31 @@ export function reduce(s: TuiState, a: Action): TuiState {
       return { ...s, log };
     }
 
+    case "enqueue": {
+      const t = a.text.trim();
+      if (!t) return s;
+      return { ...s, queue: { ...s.queue, [a.sessionId]: [...(s.queue[a.sessionId] ?? []), t] } };
+    }
+
+    case "dequeue": {
+      const cur = s.queue[a.sessionId];
+      if (!cur || cur.length === 0) return s;
+      const rest = cur.slice(1);
+      return {
+        ...s,
+        queue: rest.length ? { ...s.queue, [a.sessionId]: rest } : without(s.queue, a.sessionId),
+      };
+    }
+
+    case "clearQueue":
+      return a.sessionId in s.queue ? { ...s, queue: without(s.queue, a.sessionId) } : s;
+
+    case "openSendChoice":
+      return { ...s, mode: "sendChoice", sendChoice: { sessionId: a.sessionId, text: a.text }, prompt: null };
+
+    case "closeSendChoice":
+      return { ...s, mode: "browse", sendChoice: null };
+
     case "openConfirm":
       return { ...s, mode: "confirm", confirm: a.confirm };
 
@@ -282,6 +327,7 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
         pending: without(s.pending, frame.sessionId),
+        queue: without(s.queue, frame.sessionId),
       };
     }
     case "resync":
@@ -292,17 +338,30 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
 
 function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Record<string, Pending> {
   if (ev.type === "permission_request") {
-    return { ...pending, [ev.sessionId]: { ...pending[ev.sessionId], permission: ev.id } };
+    return {
+      ...pending,
+      [ev.sessionId]: { ...pending[ev.sessionId], permission: ev.id, permTool: ev.tool, permInput: ev.input },
+    };
   }
   if (ev.type === "question") {
-    return { ...pending, [ev.sessionId]: { ...pending[ev.sessionId], question: ev.id } };
+    return {
+      ...pending,
+      [ev.sessionId]: {
+        ...pending[ev.sessionId],
+        question: ev.id,
+        questionText: ev.question,
+        ...(ev.context ? { questionContext: ev.context } : {}),
+      },
+    };
   }
   if (ev.type === "answer") {
     const cur = pending[ev.sessionId];
     if (!cur) return pending;
-    const { question: _drop, ...rest } = cur;
+    const { question: _q, questionText: _qt, questionContext: _qc, ...rest } = cur;
     return { ...pending, [ev.sessionId]: rest };
   }
+  // A resolved permission is cleared wholesale when the session leaves
+  // awaiting_input — see the `session_updated` case.
   return pending;
 }
 
@@ -312,14 +371,16 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
   return rest;
 }
 
-function prunePending(
-  pending: Record<string, Pending>,
-  sessions: readonly SessionSnapshot[],
-): Record<string, Pending> {
+/** Drop entries keyed by a session that no longer exists. */
+function pruneByLive<T>(rec: Record<string, T>, sessions: readonly SessionSnapshot[]): Record<string, T> {
   const live = new Set(sessions.map((x) => x.id));
-  const out: Record<string, Pending> = {};
-  for (const [id, p] of Object.entries(pending)) if (live.has(id)) out[id] = p;
-  return out;
+  let changed = false;
+  const out: Record<string, T> = {};
+  for (const [id, v] of Object.entries(rec)) {
+    if (live.has(id)) out[id] = v;
+    else changed = true;
+  }
+  return changed ? out : rec;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +425,10 @@ export function pendingFor(s: TuiState, id: string | null): Pending {
   return (id && s.pending[id]) || {};
 }
 
+export function queueFor(s: TuiState, id: string | null): string[] {
+  return (id && s.queue[id]) || [];
+}
+
 export function visibleLog(s: TuiState): LogLine[] {
   if (s.logFilter === "all" || !s.selectedId) return s.log;
   return s.log.filter((l) => l.sessionId === s.selectedId);
@@ -397,6 +462,7 @@ export type ActName =
   | "resume"
   | "done"
   | "mode"
+  | "title"
   | "new"
   | "filter"
   | "help"
@@ -438,7 +504,8 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if (status === "idle" || status === "error" || status === "interrupted") {
       local.push({ keys: "x", label: "done", act: "done" });
     }
-    local.push({ keys: "m", label: "mode", act: "mode" });
+    local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
+    local.push({ keys: "e", label: "rename", act: "title" });
   }
   return [...local, ...GLOBAL_HINTS];
 }

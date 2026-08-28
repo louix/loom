@@ -12,10 +12,13 @@ import {
   actionsFor,
   clock,
   groupsOf,
+  pendingFor,
+  queueFor,
   selectedSession,
   visibleLog,
   type ConfirmState,
   type LogLine,
+  type Pending,
   type PromptState,
   type TuiState,
 } from "./model.ts";
@@ -162,7 +165,15 @@ function FleetRow({
 // detail (right column, top)
 // ---------------------------------------------------------------------------
 
-export function Detail({ session, width }: { session: SessionSnapshot | null; width: number }): ReactNode {
+export function Detail({
+  session,
+  width,
+  queued = [],
+}: {
+  session: SessionSnapshot | null;
+  width: number;
+  queued?: string[];
+}): ReactNode {
   if (!session) {
     return h(
       Box,
@@ -238,6 +249,13 @@ export function Detail({ session, width }: { session: SessionSnapshot | null; wi
     ),
     g?.lastCommitSubject
       ? h(Text, { color: C.faint, wrap: "truncate-end" }, `  “${truncate(g.lastCommitSubject, w - 4)}”`)
+      : null,
+    queued.length > 0
+      ? h(
+          Text,
+          { color: C.accentDim, wrap: "truncate-end" },
+          `▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`,
+        )
       : null,
   );
 }
@@ -388,12 +406,14 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   send: "send",
   answer: "answer",
   deny: "deny",
+  title: "rename",
 };
 
-function promptHints(p: PromptState): string {
+function promptHints(p: PromptState, queued: number): string {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor"];
   if (p.kind === "new") bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
+  if (p.kind === "send" && queued > 0) bits.push(`⌃X clear ${queued} queued`);
   bits.push("esc cancel");
   return bits.join("  ·  ");
 }
@@ -401,8 +421,15 @@ function promptHints(p: PromptState): string {
 export function FooterArea({ state, width }: { state: TuiState; width: number }): ReactNode {
   if (state.mode === "prompt" && state.prompt) {
     const p = state.prompt;
+    const queued = p.kind === "send" ? queueFor(state, p.sessionId).length : 0;
     const placeholder =
-      p.kind === "deny" ? "reason (optional)" : p.kind === "new" ? "describe the task…" : "type a message…";
+      p.kind === "deny"
+        ? "reason (optional)"
+        : p.kind === "new"
+          ? "describe the task…"
+          : p.kind === "title"
+            ? "session title"
+            : "type a message…";
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
@@ -415,7 +442,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
           : null,
       ),
       h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
-      h(Text, { color: C.faint }, promptHints(p)),
+      h(Text, { color: C.faint }, promptHints(p, queued)),
     );
   }
 
@@ -474,6 +501,89 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
 }
 
 // ---------------------------------------------------------------------------
+// pending request panel (what you're approving / being asked)
+// ---------------------------------------------------------------------------
+
+/** Height reserved for {@link RequestPanel} in the layout. */
+export const REQUEST_PANEL_ROWS = 8;
+
+function describeRequest(input: unknown, w: number): string[] {
+  if (input && typeof input === "object") {
+    const o = input as Record<string, unknown>;
+    if (typeof o["command"] === "string") return wrapText(o["command"], w).slice(0, 5);
+    const parts: string[] = [];
+    const path = o["file_path"] ?? o["path"] ?? o["notebook_path"];
+    if (typeof path === "string") parts.push(path);
+    if (typeof o["pattern"] === "string") parts.push(`pattern: ${o["pattern"]}`);
+    if (typeof o["url"] === "string") parts.push(String(o["url"]));
+    if (typeof o["old_string"] === "string") parts.push(`− ${String(o["old_string"]).replace(/\s+/g, " ")}`);
+    if (typeof o["new_string"] === "string") parts.push(`+ ${String(o["new_string"]).replace(/\s+/g, " ")}`);
+    if (parts.length > 0) return parts.flatMap((p) => wrapText(p, w)).slice(0, 5);
+    return wrapText(JSON.stringify(o), w).slice(0, 5);
+  }
+  return input == null ? [] : wrapText(String(input), w).slice(0, 5);
+}
+
+export function RequestPanel({ pending, width }: { pending: Pending; width: number }): ReactNode {
+  const w = inside(width);
+  const box = (title: string, body: ReactNode[], hint: string): ReactNode =>
+    h(
+      Box,
+      { width, borderStyle: "round", borderColor: C.await_, paddingX: 1, flexDirection: "column" },
+      h(Text, { color: C.await_, bold: true }, title),
+      ...body,
+      h(Text, { color: C.faint }, hint),
+    );
+
+  if (pending.question !== undefined) {
+    return box(
+      "? QUESTION",
+      [
+        ...wrapText((pending.questionText ?? "").replace(/\s+/g, " ").trim(), w)
+          .slice(0, 4)
+          .map((l, i) => h(Text, { key: i, color: C.text }, l)),
+        pending.questionContext
+          ? h(
+              Text,
+              { key: "ctx", color: C.faint, wrap: "truncate-end" },
+              truncate(pending.questionContext.replace(/\s+/g, " ").trim(), w),
+            )
+          : null,
+      ],
+      "a answer  ·  ⌃e view  ·  i interrupt",
+    );
+  }
+  if (pending.permission !== undefined) {
+    return box(
+      `⇱ PERMISSION — ${pending.permTool ?? "tool"}`,
+      describeRequest(pending.permInput, w).map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
+      "a approve  ·  d deny  ·  ⌃e view  ·  i interrupt",
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// send-choice overlay (message composed while the agent is still working)
+// ---------------------------------------------------------------------------
+
+export function SendChoice({ text, width }: { text: string; width: number }): ReactNode {
+  const w = inside(width);
+  const row = (k: string, v: string): ReactNode =>
+    h(Box, { gap: 1 }, h(Box, { width: 12 }, h(Text, { color: C.accent }, k)), h(Text, { color: C.dim }, v));
+  return h(
+    Box,
+    { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    h(Text, { color: C.accent, bold: true }, "The agent is still working — send this how?"),
+    h(Text, { color: C.dim, wrap: "truncate-end" }, `“${truncate(text.replace(/\s+/g, " ").trim(), w - 2)}”`),
+    h(Box, { height: 1 }),
+    row("a", "asap — deliver at the next tool boundary"),
+    row("t / enter", "queue until the turn ends"),
+    row("esc", "back to the message — nothing is cleared"),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // help overlay
 // ---------------------------------------------------------------------------
 
@@ -481,12 +591,14 @@ const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
   ["PgUp / PgDn", "scroll the event log"],
   ["⇥", "toggle the fullscreen event log"],
-  ["⌃e", "open the event log in $EDITOR (to copy text out)"],
+  ["⌃e", "open the pending request — or the event log — in $EDITOR"],
+  ["⌃y", "copy the selected session's branch to the clipboard"],
   ["a  ·  d", "approve / answer  ·  deny a permission request"],
-  ["s", "send a follow-up turn"],
+  ["s", "send a follow-up turn (running → asap / queue for turn end)"],
+  ["⌃x", "clear the selected session's queued messages"],
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
-  ["x", "mark the session done (worktree kept)"],
-  ["⇧⇥  ·  m", "cycle the selected session's permission mode"],
+  ["x  ·  e", "mark the session done  ·  rename it"],
+  ["⇧⇥", "cycle the selected session's permission mode"],
   ["n", "start a new session"],
   ["f", "toggle the event log between this session and all"],
   ["R", "restart the daemon (with confirmation)"],

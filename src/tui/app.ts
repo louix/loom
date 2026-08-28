@@ -30,12 +30,16 @@ import {
   Header,
   Help,
   promptRows,
+  RequestPanel,
+  REQUEST_PANEL_ROWS,
+  SendChoice,
 } from "./components.ts";
 import {
   allowedActs,
   initialState,
   makePrompt,
   pendingFor,
+  queueFor,
   reduce,
   selectedSession,
   visibleLog,
@@ -140,20 +144,41 @@ export function App({
   const runEditor = useCallback(
     (kind: "log" | "prompt") => {
       if (!openEditor) return note("no $EDITOR handoff in this context", "dim");
-      if (kind === "log") {
-        const tagged = state.logFilter === "all";
-        const body =
-          visibleLog(state)
-            .map((l) => `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} ${l.text}`)
-            .join("\n") || "(no events)";
-        openEditor(body, "log");
-      } else if (state.prompt) {
+      if (kind === "prompt" && state.prompt) {
         const next = openEditor(state.prompt.buffer.text, state.prompt.kind === "new" ? "md" : "txt");
         if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
+      } else {
+        // In browse: show the pending request if there is one, else the log.
+        const sel = selectedSession(state);
+        const pend = sel ? pendingFor(state, sel.id) : {};
+        if (pend.permission !== undefined) {
+          openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), "json");
+        } else if (pend.question !== undefined) {
+          openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), "md");
+        } else {
+          const tagged = state.logFilter === "all";
+          const body =
+            visibleLog(state)
+              .map((l) => `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} ${l.text}`)
+              .join("\n") || "(no events)";
+          openEditor(body, "log");
+        }
       }
       setTick((t) => t + 1); // force a repaint after the editor let go of the tty
     },
     [openEditor, note, state],
+  );
+
+  const copyToClipboard = useCallback(
+    (text: string, label: string) => {
+      try {
+        stdout.write(`\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`);
+        note(`copied ${label}`, "good");
+      } catch {
+        note("clipboard copy failed", "bad");
+      }
+    },
+    [stdout, note],
   );
 
   // ---- session actions ------------------------------------------
@@ -217,6 +242,11 @@ export function App({
             t: "openPrompt",
             prompt: makePrompt({ kind: "send", sessionId: s.id, label: "send" }),
           });
+        case "title":
+          return void dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({ kind: "title", sessionId: s.id, label: "rename", text: s.title ?? "" }),
+          });
         case "interrupt":
           return perform(async () => {
             await client.request("session.interrupt", { id: s.id });
@@ -244,15 +274,39 @@ export function App({
     [state, client, note, perform, quitTui],
   );
 
+  /** Fire `session.send` now, echoing into the log and history. */
+  const deliver = useCallback(
+    (sessionId: string, text: string, label = "sent") => {
+      client
+        .request("session.send", { id: sessionId, text })
+        .then(() => {
+          dispatch({ t: "pushHistory", text });
+          dispatch({ t: "echo", line: echoLine(sessionId, text) });
+          note(label, "good");
+        })
+        .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+    },
+    [client, note, echoLine],
+  );
+
   const submitPrompt = useCallback(() => {
     const p = state.prompt;
     if (!p) return;
     const text = p.buffer.text.trim();
     const by = client.clientId;
-    if ((p.kind === "new" || p.kind === "send" || p.kind === "answer") && !text) return; // keep the prompt open
-    dispatch({ t: "closePrompt" });
+    if (p.kind !== "deny" && !text) return; // keep the prompt open on an empty submit
     const reopen = () =>
       dispatch({ t: "openPrompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
+
+    // A message composed while the agent is still working: ask asap vs. turn-end.
+    if (p.kind === "send" && p.sessionId) {
+      const target = state.sessions.find((x) => x.id === p.sessionId);
+      if (target && (target.status === "running" || target.status === "starting")) {
+        return void dispatch({ t: "openSendChoice", sessionId: p.sessionId, text });
+      }
+    }
+
+    dispatch({ t: "closePrompt" });
 
     const run = async (): Promise<string> => {
       if (p.kind === "new") {
@@ -271,6 +325,10 @@ export function App({
         dispatch({ t: "pushHistory", text });
         dispatch({ t: "echo", line: echoLine(p.sessionId, text) });
         return "sent";
+      }
+      if (p.kind === "title" && p.sessionId) {
+        await client.request("session.setTitle", { id: p.sessionId, title: text, by });
+        return "renamed";
       }
       if (p.kind === "answer" && p.sessionId && p.requestId) {
         const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
@@ -300,7 +358,53 @@ export function App({
         note(e instanceof Error ? e.message : String(e), "bad");
         reopen(); // retryable — the text comes back so it can be edited and re-sent
       });
-  }, [state.prompt, state.promptHistory, client, note, echoLine]);
+  }, [state.prompt, state.promptHistory, state.sessions, client, note, echoLine]);
+
+  const runSendChoice = useCallback(
+    (choice: "asap" | "queue" | "back") => {
+      const sc = state.sendChoice;
+      if (!sc) return;
+      if (choice === "back") {
+        return void dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({ kind: "send", sessionId: sc.sessionId, label: "send", text: sc.text }),
+        });
+      }
+      dispatch({ t: "closeSendChoice" });
+      if (choice === "asap") {
+        deliver(sc.sessionId, sc.text, "sent (asap)");
+      } else {
+        dispatch({ t: "enqueue", sessionId: sc.sessionId, text: sc.text });
+        dispatch({ t: "pushHistory", text: sc.text });
+        dispatch({
+          t: "echo",
+          line: { ...echoLine(sc.sessionId, sc.text), glyph: "▸", tone: "dim", text: `queued: ${sc.text.replace(/\s+/g, " ").trim()}` },
+        });
+        note("queued for turn end", "dim");
+      }
+    },
+    [state.sendChoice, deliver, echoLine, note],
+  );
+
+  // Drain a session's queued messages once it goes idle again.
+  const draining = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const s of state.sessions) {
+      const q = state.queue[s.id];
+      if (s.status === "idle" && q && q.length > 0 && !draining.current.has(s.id)) {
+        const head = q[0] as string;
+        draining.current.add(s.id);
+        client
+          .request("session.send", { id: s.id, text: head })
+          .then(() => {
+            dispatch({ t: "dequeue", sessionId: s.id });
+            dispatch({ t: "echo", line: echoLine(s.id, head) });
+          })
+          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"))
+          .finally(() => draining.current.delete(s.id));
+      }
+    }
+  }, [state.sessions, state.queue, client, echoLine, note]);
 
   // ---- daemon lifecycle ---------------------------------------
   const liveCount = state.sessions.filter(
@@ -351,7 +455,11 @@ export function App({
     if (key.ctrl && input === "e") return void runEditor(state.mode === "prompt" ? "prompt" : "log");
 
     if (state.mode === "prompt" && state.prompt) {
-      const res = applyKey(state.prompt.buffer, input, key);
+      const p = state.prompt;
+      if (key.ctrl && input === "x" && p.kind === "send" && p.sessionId) {
+        return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
+      }
+      const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
           return void dispatch({ t: "closePrompt" });
@@ -366,6 +474,13 @@ export function App({
         case "ignore":
           return;
       }
+      return;
+    }
+
+    if (state.mode === "sendChoice") {
+      if (input === "a") return runSendChoice("asap");
+      if (input === "t" || key.return) return runSendChoice("queue");
+      if (key.escape || input === "b") return runSendChoice("back");
       return;
     }
 
@@ -392,9 +507,21 @@ export function App({
     if (input === "q") return quitTui();
     if (input === "Q") return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
     if (input === "R") return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
+
+    const sel = selectedSession(state);
+    if (key.ctrl && input === "y") {
+      if (!sel) return;
+      const name = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
+      return copyToClipboard(name, name);
+    }
+    if (key.ctrl && input === "x") {
+      return void (sel && queueFor(state, sel.id).length > 0
+        ? dispatch({ t: "clearQueue", sessionId: sel.id })
+        : undefined);
+    }
     if (key.ctrl || key.meta) return; // unbound modified key — swallow, don't fall through as the bare key
 
-    const allowed = allowedActs(selectedSession(state));
+    const allowed = allowedActs(sel);
     const map: Record<string, ActName> = {
       a: allowed.has("answer") ? "answer" : "approve",
       d: "deny",
@@ -402,7 +529,7 @@ export function App({
       i: "interrupt",
       r: "resume",
       x: "done",
-      m: "mode",
+      e: "title",
       n: "new",
       f: "filter",
       "?": "help",
@@ -413,6 +540,12 @@ export function App({
   });
 
   // ---- layout ----------------------------------------------
+  const sel = selectedSession(state);
+  const pend = sel ? pendingFor(state, sel.id) : {};
+  const showRequest =
+    !logFull && sel?.status === "awaiting_input" && (pend.permission !== undefined || pend.question !== undefined);
+  const rightLogH = Math.max(3, splitLogH - (showRequest ? REQUEST_PANEL_ROWS : 0));
+
   let body: ReactNode;
   if (state.mode === "help") {
     body = h(Box, { paddingX: 1, paddingTop: 1 }, h(Help, { width: cols - 2 }));
@@ -421,6 +554,12 @@ export function App({
       Box,
       { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
       h(Confirm, { confirm: state.confirm, width: Math.min(cols - 4, 64) }),
+    );
+  } else if (state.mode === "sendChoice" && state.sendChoice) {
+    body = h(
+      Box,
+      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
+      h(SendChoice, { text: state.sendChoice.text, width: Math.min(cols - 4, 72) }),
     );
   } else if (logFull) {
     body = h(Box, { height: bodyH }, h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }));
@@ -432,8 +571,9 @@ export function App({
       h(
         Box,
         { width: rightW, flexDirection: "column" },
-        h(Detail, { session: selectedSession(state), width: rightW }),
-        h(EventLog, { state, width: rightW, height: splitLogH, scroll: logScroll, full: false }),
+        h(Detail, { session: sel, width: rightW, queued: sel ? queueFor(state, sel.id) : [] }),
+        showRequest ? h(RequestPanel, { pending: pend, width: rightW }) : null,
+        h(EventLog, { state, width: rightW, height: rightLogH, scroll: logScroll, full: false }),
       ),
     );
   }

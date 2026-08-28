@@ -90,26 +90,35 @@ as a second adapter.
   spinner on running rows, cost per session; `↑`/`↓` (or `j`/`k`) moves the
   selection.
 - **Detail pane** — the selected session's status / mode / model, a
-  context-window meter, token and cost totals, and its worktree's git facts.
+  context-window meter, token and cost totals, its worktree's git facts, and any
+  messages queued for it. When it's `awaiting_input` a panel spells out exactly
+  what's being approved / denied / asked (the command, the file, the question).
 - **Event stream** — the normalized harness events for the selected session
   (`f` toggles to all sessions), colourised by kind and wrapped to the pane.
-  `PgUp`/`PgDn` scroll it,
-  `⇥` blows it up to fullscreen, and `⌃e` drops the visible log into `$EDITOR`
-  so you can select and copy without fighting the split.
+  `PgUp`/`PgDn` scroll it, `⇥` blows it up to fullscreen, and `⌃e` opens the
+  pending request — or the visible log — in `$EDITOR` so you can read and copy
+  without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
   answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume (also from
-  `error`), `x` mark done, `m` / `⇧⇥` cycle the permission mode, `n` start a new
-  session. In the `new` / `send` / `answer` prompt: `⌃e` opens `$EDITOR` for a
-  long or multi-line message (nothing is sent until you press enter back in the
-  UI), `↑`/`↓` recall earlier prompts, `⇧⇥` picks the new session's mode. A
-  failed submit reopens the prompt with the text intact.
+  `error`), `x` mark done, `e` rename, `⇧⇥` cycle the permission mode, `⌃y` copy
+  the branch to the clipboard, `n` start a new session. Sending to a session
+  that's still working asks first: **asap** (delivered at the next tool
+  boundary) or **queue** for when the turn ends; queued messages drain
+  automatically and `⌃x` clears them. In any prompt, `⌃e` hands off to `$EDITOR`
+  (nothing is sent until you press enter back in the UI), `↑`/`↓` recall earlier
+  prompts, and a failed submit reopens with the text intact.
 - **The daemon, from inside** — `R` restarts it (the client respawns one that
   inherits *this* shell's environment), `Q` quits the UI and stops it; both ask
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
   out of overlays — it never quits.
 
-Not yet implemented (later milestones): price-table cost, budgets, plan
-review, sub-agent nesting.
+**Permission modes** (`⇧⇥`, or `--mode` on `run`): `default` prompts for
+anything sensitive; `plan` keeps the agent read-only until it presents a plan
+you approve; `acceptEdits` auto-approves file edits but still gates commands;
+`auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
+
+Not yet implemented (later milestones): LLM-generated session titles,
+price-table cost, budgets, plan review, sub-agent nesting.
 
 ## Requirements
 
@@ -184,7 +193,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 118 cases
+npm test             # node:test — 125 cases
 ```
 
 ### Layout
