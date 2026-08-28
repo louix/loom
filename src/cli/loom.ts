@@ -11,6 +11,7 @@ const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
 usage: loom [--repo <path>] <command> [args]
 
 commands:
+  tui                    open the full-screen fleet UI (default with no command in a TTY)
   status                 daemon health and counts
   ls                     list sessions in fleet-view order
   get <id>               one session's snapshot
@@ -57,14 +58,29 @@ async function main(): Promise<void> {
 
   if (values.version) return void process.stdout.write(`loom ${LOOM_VERSION}\n`);
   const cmd = positionals[0];
-  if (values.help || !cmd) return void process.stdout.write(HELP + "\n");
+  if (values.help) return void process.stdout.write(HELP + "\n");
+
+  const isTty = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const wantTui = cmd === "tui" || (!cmd && isTty);
+  if (!cmd && !wantTui) return void process.stdout.write(HELP + "\n");
+  if (cmd === "tui" && !isTty) {
+    process.stderr.write("loom tui needs an interactive terminal (stdin/stdout must be a TTY)\n");
+    process.exitCode = 2;
+    return;
+  }
 
   const repoRoot = values.repo ? values.repo : findRepoRoot();
   const { sock } = loomPaths(repoRoot);
 
-  // `tail` is the only long-lived command and the only one wanting reconnect.
-  const reconnect = cmd === "tail";
+  // `tail` and the TUI are the long-lived commands that want reconnect.
+  const reconnect = cmd === "tail" || wantTui;
   const client = await LoomClient.connect({ repoRoot, sockPath: sock, reconnect });
+
+  if (wantTui) {
+    const { runTui } = await import("../tui/run.ts");
+    await runTui(client);
+    return;
+  }
 
   try {
     switch (cmd) {

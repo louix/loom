@@ -6,9 +6,9 @@ on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
 as a second adapter.
 
 > Codename "Loom" — rename freely. See the design spec for the full picture;
-> this repo currently implements **milestones 1-4** of the build order.
+> this repo currently implements **milestones 1-5** of the build order.
 
-## Status — milestones 1-4
+## Status — milestones 1-5
 
 **1 · daemon skeleton**
 
@@ -80,8 +80,24 @@ as a second adapter.
   (`tilth_write` / `tilth_edit`) and search at fff; Claude's built-in `Grep` /
   `Glob` are disabled outright (`providers.claude.disable_builtin`).
 
-Not yet implemented (later milestones): the real TUI, price-table cost,
-budgets, plan review, sub-agent nesting.
+**5 · terminal UI**
+
+- **`loom` with no command** in an interactive terminal — or `loom tui`
+  explicitly — opens a full-screen fleet view. It is just another client, with
+  reconnect enabled, so the daemon and its sessions outlive it.
+- **Fleet pane** — sessions grouped by status in fleet-view order, a braille
+  spinner on running rows, cost per session; `↑`/`↓` (or `j`/`k`) moves the
+  selection.
+- **Detail pane** — the selected session's status / mode / model, a
+  context-window meter, token and cost totals, and its worktree's git facts.
+- **Event stream** — the normalized harness events for the selected session
+  (`f` toggles to all sessions), colourised by kind.
+- **Acting on the selection**, from the verbs the footer offers: `a` approve or
+  answer, `d` deny, `s` send a turn, `i` interrupt, `r` resume, `x` mark done,
+  `n` start a new session. `?` toggles help; `q` quits the UI, never the daemon.
+
+Not yet implemented (later milestones): price-table cost, budgets, plan
+review, sub-agent nesting.
 
 ## Requirements
 
@@ -91,6 +107,9 @@ budgets, plan review, sub-agent nesting.
 - For the `claude` provider: Claude OAuth already set up in `~/.claude`. The
   `@anthropic-ai/claude-agent-sdk` dependency bundles the Claude Code CLI it
   drives.
+- The TUI is built with Ink (React for terminals) — the one place Loom leans on
+  a UI framework. It still runs straight through Node's type-stripping: the
+  components use `createElement`, no JSX, no build step.
 
 ```sh
 npm install
@@ -102,6 +121,8 @@ Everything is driven through `loom`; the daemon starts automatically on first
 use and writes to `<repo>/.loom/`.
 
 ```sh
+node src/cli/loom.ts                  # no command in a TTY → the fleet UI
+node src/cli/loom.ts tui             # the same, explicitly
 node src/cli/loom.ts status          # daemon health and counts
 node src/cli/loom.ts ls              # sessions, in fleet-view order
 node src/cli/loom.ts ls --json
@@ -151,7 +172,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 76 cases
+npm test             # node:test — 99 cases
 ```
 
 ### Layout
@@ -168,6 +189,7 @@ src/
               lifecycle, session manager, status machine, worktree
               manager, and the Daemon
   client/     thin client (connect-or-spawn, reconnect, gap replay)
+  tui/        Ink fleet UI: pure model + reducer, theme, components, entry
   cli/        loom (client) and loomd (daemon) entrypoints
 ```
 

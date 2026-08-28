@@ -1,8 +1,9 @@
 # Copy to .loom/config.toml to override. Every key below is optional and shown
-# with its built-in default. Consumed so far (milestones 1-4): db, run_isolation,
+# with its built-in default. Consumed so far (milestones 1-5): db, run_isolation,
 # daemon.*, base_branch, worktree_dir, providers.claude.* and the [[mcp]] list
 # (mounted into every session, alongside the built-in in-process `loom` server:
-# ask_user + commit). The rest is carried for later milestones.
+# ask_user + commit). The terminal UI (`loom` with no command in a TTY) reads no
+# config of its own. The rest is carried for later milestones.
 
 base_branch   = "main"             # each session branches loom/<slug> off this
                                    # (falls back to HEAD if the branch is missing)

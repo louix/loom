@@ -87,8 +87,8 @@ export class LoomClient {
     return () => this.#pushListeners.delete(fn);
   }
 
-  /** Events: "reconnect", "resync", "close". */
-  on(event: "reconnect" | "resync" | "close", fn: StateListener): () => void {
+  /** Events: "disconnect" (transport dropped, reconnect starting), "reconnect", "resync", "close". */
+  on(event: "disconnect" | "reconnect" | "resync" | "close", fn: StateListener): () => void {
     let set = this.#stateListeners.get(event);
     if (!set) {
       set = new Set();
@@ -241,6 +241,7 @@ export class LoomClient {
       this.#fire("close");
       return;
     }
+    this.#fire("disconnect");
     void this.#reconnectLoop();
   }
 
