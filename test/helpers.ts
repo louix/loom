@@ -20,9 +20,11 @@ export interface Harness {
 export async function makeHarness(opts: { git?: boolean } = {}): Promise<Harness> {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
   if (opts.git !== false) {
-    execFileSync("git", ["init", "-q", repoRoot]);
+    execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
     execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);
     execFileSync("git", ["-C", repoRoot, "config", "user.name", "t"]);
+    // A base commit so per-session `git worktree add -b … main` has a ref.
+    execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
   }
   const { sock } = loomPaths(repoRoot);
 

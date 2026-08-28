@@ -167,6 +167,7 @@ export class SessionStore {
       title: string | null;
       worktree: string | null;
       branch: string | null;
+      baseBranch: string | null;
       providerRef: string | null;
     }>,
   ): void {
@@ -178,6 +179,7 @@ export class SessionStore {
       title: "title",
       worktree: "worktree",
       branch: "branch",
+      baseBranch: "base_branch",
       providerRef: "provider_ref",
     };
     for (const [k, col] of Object.entries(map)) {
@@ -316,6 +318,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     title: row.title,
     worktree: row.worktree,
     branch: row.branch,
+    baseBranch: row.base_branch,
     usage: usage
       ? {
           input: usage.input,

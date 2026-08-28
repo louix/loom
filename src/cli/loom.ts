@@ -25,6 +25,8 @@ commands:
   deny <id> <reqId>      deny it                          [--text reason]
   mode <id> <mode>       change a session's permission mode
   resume <id>            resume an interrupted session
+  done <id>              mark a session complete (worktree kept)
+  gc                     remove worktrees for done sessions   [--id ONE] [--force]
 
   stub <prompt...>       create a placeholder session     [--status S] [--provider P] [--model M]
   set-status <id> <S>    drive a session's status         [--reason R]
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
       mode: { type: "string" },
       reason: { type: "string" },
       text: { type: "string" },
+      id: { type: "string" },
+      force: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
@@ -145,6 +149,21 @@ async function main(): Promise<void> {
         process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;
       }
+      case "done": {
+        const id = need(positionals[1], "done <id>");
+        const r = await client.request<SessionSnapshot>("session.markDone", { id, by: client.clientId });
+        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        break;
+      }
+      case "gc": {
+        const r = await client.request<{ removed: string[]; failed: Array<{ id: string; error: string }> }>(
+          "session.gc",
+          { ...(values.id ? { id: values.id } : {}), ...(values.force ? { force: true } : {}) },
+        );
+        process.stdout.write(`removed ${r.removed.length} worktree(s)\n`);
+        for (const f of r.failed) process.stderr.write(`  ${f.id.slice(0, 8)}: ${f.error}\n`);
+        break;
+      }
       case "ping": {
         const t0 = performance.now();
         const r = await client.request<{ uptimeMs: number }>("ping", { nonce: t0 });
@@ -224,9 +243,21 @@ function printSessions(rows: SessionSnapshot[]): void {
     }
     const id = s.id.slice(0, 8);
     const cost = s.costUsd ? `$${s.costUsd.toFixed(2)}` : "—";
-    const title = s.title ? s.title.slice(0, 48) : "(untitled)";
+    const title = s.title ? s.title.slice(0, 44) : "(untitled)";
     const reason = s.awaitReason ? ` · ${s.awaitReason}` : "";
-    process.stdout.write(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(50)} ${cost}${reason}\n`);
+    process.stdout.write(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(46)} ${cost}${reason}\n`);
+    const g = s.git;
+    if (g) {
+      const bits = [
+        g.branch ?? s.branch ?? "(detached)",
+        `${g.commits} commit${g.commits === 1 ? "" : "s"}`,
+        g.aheadOfBase ? `+${g.aheadOfBase}` : null,
+        g.behindBase ? `-${g.behindBase} behind base` : null,
+        g.dirty ? "dirty" : "clean",
+      ].filter(Boolean);
+      process.stdout.write(`            ${bits.join(" · ")}\n`);
+      if (g.lastCommitSubject) process.stdout.write(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
+    }
   }
 }
 

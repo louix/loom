@@ -117,6 +117,7 @@ export interface SessionSnapshot {
   title: string | null;
   worktree: string | null;
   branch: string | null;
+  baseBranch: string | null;
   usage: TokenUsage;
   contextUsed: number;
   contextLimit: number;

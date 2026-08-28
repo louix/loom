@@ -6,9 +6,9 @@ on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
 as a second adapter.
 
 > Codename "Loom" — rename freely. See the design spec for the full picture;
-> this repo currently implements **milestones 1-2** of the build order.
+> this repo currently implements **milestones 1-3** of the build order.
 
-## Status — milestones 1-2
+## Status — milestones 1-3
 
 **1 · daemon skeleton**
 
@@ -49,9 +49,24 @@ as a second adapter.
   `loom run --provider fake`) so the manager, status machine and rollups run
   offline.
 
-Not yet implemented (later milestones): the worktree manager (sessions run in
-the repo root for now), the `loom` MCP server, the real TUI, price-table cost,
-budgets, plan review, sub-agent nesting.
+**3 · worktree manager**
+
+- **One worktree + branch per session** — `git worktree add .loom/trees/<slug>
+  -b loom/<slug>` off the configured base (`base_branch`, else `HEAD`). The
+  slug is derived from the prompt; uniqueness is enforced with a short suffix.
+  The session's adapter runs with that worktree as its cwd.
+- **Distinct commit identity** — `git config --worktree user.name/email` set to
+  `Loom (claude) <loom+claude@localhost>` so tool commits are never confused
+  with yours.
+- **Pre-push guard** — a worktree-scoped `core.hooksPath` with a `pre-push`
+  hook that hard-fails. Loom runs no remote operations itself.
+- **Git facts on every snapshot** — branch, commit count, ahead/behind base,
+  dirty/clean, last commit subject (cached ~2s).
+- **`gc`** — removes worktrees for sessions you've marked `done`; the session
+  row and the branch are kept.
+
+Not yet implemented (later milestones): the `loom` MCP server, the real TUI,
+price-table cost, budgets, plan review, sub-agent nesting.
 
 ## Requirements
 
@@ -89,8 +104,14 @@ node src/cli/loom.ts approve <id> <requestId>   # or: deny <id> <requestId> --te
 node src/cli/loom.ts send <id> "also update the README"
 node src/cli/loom.ts mode <id> acceptEdits
 node src/cli/loom.ts interrupt <id>
-node src/cli/loom.ts get <id>                   # snapshot: status, usage, cost, context
+node src/cli/loom.ts get <id>                   # snapshot: status, usage, cost, context, git
+node src/cli/loom.ts done <id>                  # mark complete (worktree kept)
+node src/cli/loom.ts gc --force                # remove worktrees for done sessions
 ```
+
+Each session gets its own worktree under `.loom/trees/<slug>` on a
+`loom/<slug>` branch, committed under a `Loom (claude)` identity, with pushing
+blocked. Integrate the branch yourself, in your own git — Loom never does.
 
 `--provider fake` swaps in the scriptable no-SDK adapter — the session starts
 and takes turn control, but only emits events a test drives into it.
@@ -114,7 +135,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 55 cases
+npm test             # node:test — 67 cases
 ```
 
 ### Layout
@@ -127,7 +148,8 @@ src/
   provider/   the vendor-neutral seam; claude/ (SDK adapter + event map),
               fake/ (scriptable test adapter), registry
   daemon/     event log, RPC dispatch, socket server, registry, hygiene,
-              lifecycle, session manager, status machine, and the Daemon
+              lifecycle, session manager, status machine, worktree
+              manager, and the Daemon
   client/     thin client (connect-or-spawn, reconnect, gap replay)
   cli/        loom (client) and loomd (daemon) entrypoints
 ```
@@ -142,5 +164,6 @@ Created in whatever repo the daemon runs against; all of it is gitignored:
 | `daemon.pid`         | single-instance guard                           |
 | `daemon.log`         | rolling daemon log (JSON lines)                 |
 | `loom.db`            | SQLite: sessions, history, usage                |
-| `trees/`             | one git worktree per session (later milestones) |
+| `trees/<slug>/`      | one git worktree per session                     |
+| `hooks/pre-push`     | the push-blocking hook, shared by every worktree |
 | `config.toml`        | optional; falls back to built-in defaults       |

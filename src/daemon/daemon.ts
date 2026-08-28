@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
 import { ensureLoomDir, loomPaths, type LoomPaths } from "../util/paths.ts";
 import { loadConfig, resolveAgainstRepo, type LoomConfig } from "../config/config.ts";
@@ -18,6 +19,7 @@ import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { SessionManager } from "./session-manager.ts";
+import { WorktreeManager } from "./worktrees.ts";
 import { ProviderRegistry } from "../provider/registry.ts";
 import {
   isSessionMode,
@@ -65,6 +67,7 @@ export class Daemon {
   #dispatcher: RpcDispatcher;
   #providers: ProviderRegistry;
   #sessions: SessionManager;
+  #worktrees: WorktreeManager;
   #idle: IdleTimer;
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
@@ -94,6 +97,13 @@ export class Daemon {
       sockPath: this.paths.sock,
       dispatcher: this.#dispatcher,
       onClientCountChange: (n) => this.#onActivityChange(`clients=${n}`),
+    });
+    this.#worktrees = new WorktreeManager({
+      repoRoot: opts.repoRoot,
+      treesDir: resolveAgainstRepo(opts.repoRoot, this.config.worktreeDir),
+      hooksDir: join(this.paths.dir, "hooks"),
+      baseBranch: this.config.baseBranch,
+      log: this.#log.child("worktrees"),
     });
     this.#providers = new ProviderRegistry(this.config);
     this.#sessions = new SessionManager({
@@ -239,11 +249,22 @@ export class Daemon {
     const frame = this.#events.append({
       kind: "push",
       type: "session_updated",
-      session,
+      session: this.#enrich(session),
       version: this.#registry.version(session.id),
       ...(by !== undefined ? { by } : {}),
     });
     this.#server.broadcast(frame);
+  }
+
+  /** Fill in per-session git facts from its worktree (spec §6). Cached briefly. */
+  #enrich(s: SessionSnapshot): SessionSnapshot {
+    if (!s.worktree) return s;
+    const git = this.#worktrees.facts(s.worktree, s.baseBranch);
+    return git ? { ...s, git } : s;
+  }
+
+  #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
+    return list.map((s) => this.#enrich(s));
   }
 
   /** A status transition the session manager derived from the event stream. */
@@ -311,13 +332,13 @@ export class Daemon {
       return { ok: true };
     });
 
-    d.register("session.list", () => this.#registry.listSorted());
+    d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));
 
     d.register("session.get", (params) => {
       const id = reqString(params, "id");
       const s = this.#registry.get(id);
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
-      return s;
+      return this.#enrich(s);
     });
 
     d.register("session.history", (params) => {
@@ -351,6 +372,16 @@ export class Daemon {
 
       const id = randomUUID();
       const budget = this.#readBudget(p["budget"]);
+
+      // Each session gets its own worktree + branch off the configured base.
+      let wt;
+      try {
+        wt = this.#worktrees.create(prompt);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError("worktree_error", `could not create worktree: ${message}`);
+      }
+
       this.#registry.create({
         id,
         provider: providerId,
@@ -358,13 +389,15 @@ export class Daemon {
         mode,
         parentId,
         title: prompt.slice(0, 200),
-        worktree: this.repoRoot,
+        worktree: wt.path,
+        branch: wt.branch,
+        baseBranch: wt.baseRef,
         ...(budget ? { budget } : {}),
       });
 
       const opts: CreateSessionOptions = {
         sessionId: id,
-        cwd: this.repoRoot,
+        cwd: wt.path,
         prompt,
         mode,
         mcpServers: this.#mcpHandles(),
@@ -483,6 +516,41 @@ export class Daemon {
       return snap;
     });
 
+    d.register("session.markDone", async (params) => {
+      const id = reqString(params, "id");
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
+      const snap = this.#registry.setStatus(id, "done", "marked_done");
+      this.emitEvent({ type: "status_changed", sessionId: id, status: "done", ts: Date.now(), reason: "marked_done" });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#onActivityChange("marked-done");
+      return this.#enrich(snap);
+    });
+
+    // gc: remove worktrees for sessions marked done. Branches are never
+    // auto-deleted; the session row is retained as a record (spec §6).
+    d.register("session.gc", (params) => {
+      const p = isObj(params) ? params : {};
+      const only = typeof p["id"] === "string" ? (p["id"] as string) : null;
+      const force = p["force"] === true;
+      const removed: string[] = [];
+      const failed: Array<{ id: string; error: string }> = [];
+      for (const s of this.#registry.list()) {
+        if (s.status !== "done" || !s.worktree) continue;
+        if (only && s.id !== only) continue;
+        try {
+          this.#worktrees.remove(s.worktree, { force });
+          const snap = this.#registry.setFields(s.id, { worktree: null });
+          this.#emitSessionUpdated(snap, clientLabel(params));
+          removed.push(s.id);
+        } catch (err) {
+          failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      this.#worktrees.prune();
+      return { removed, failed };
+    });
+
     // --- development / test hooks (no provider adapter yet) -----------------
 
     d.register("session.createStub", (params) => {
@@ -587,7 +655,7 @@ export class Daemon {
         startedAt: this.startedAt,
         repoRoot: this.repoRoot,
       },
-      sessions: this.#registry.listSorted(),
+      sessions: this.#enrichAll(this.#registry.listSorted()),
       seq: head,
       replaying,
     };

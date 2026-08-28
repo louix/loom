@@ -1,9 +1,10 @@
 # Copy to .loom/config.toml to override. Every key below is optional and shown
-# with its built-in default. Consumed so far (milestones 1-2): db, run_isolation,
+# with its built-in default. Consumed so far (milestones 1-3): db, run_isolation,
 # daemon.*, base_branch, worktree_dir, providers.claude.* and the [[mcp]] list
 # (mounted into every session). The rest is carried for later milestones.
 
-base_branch   = "main"
+base_branch   = "main"             # each session branches loom/<slug> off this
+                                   # (falls back to HEAD if the branch is missing)
 worktree_dir  = ".loom/trees"
 db            = ".loom/loom.db"
 run_isolation = "in-process"        # or "subprocess" (later milestones)
