@@ -14,7 +14,7 @@
     "loom": "node src/cli/loom.ts",
     "daemon": "node src/cli/loomd.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "smol-toml": "^1.3.1"

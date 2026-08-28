@@ -108,6 +108,14 @@ export class LoomClient {
     this.#sock = null;
   }
 
+  /**
+   * Test hook: sever the transport without marking the client closed, so the
+   * reconnect path (with `sinceSeq` gap replay) runs. Not for production use.
+   */
+  dropForTest(): void {
+    this.#sock?.destroy();
+  }
+
   // -------------------------------------------------------------------------
   // connection management
   // -------------------------------------------------------------------------
@@ -240,7 +248,7 @@ export class LoomClient {
     let waitMs = 100;
     while (!this.#closed) {
       try {
-        await this.#spawnDaemon();
+        if (this.#opts.autospawn) await this.#spawnDaemon();
         this.#sock = await this.#connectWithRetry();
         this.#attach(this.#sock);
         await this.#handshake(this.#lastSeq);

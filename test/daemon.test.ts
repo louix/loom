@@ -1,0 +1,193 @@
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { LoomClient } from "../src/client/client.ts";
+import type { HelloResult, PushFrame, SessionSnapshot } from "../src/protocol/wire.ts";
+import { makeHarness, type Harness } from "./helpers.ts";
+
+let h: Harness;
+
+before(async () => {
+  h = await makeHarness();
+});
+after(async () => {
+  await h.cleanup();
+});
+
+async function client(reconnect = false): Promise<LoomClient> {
+  return LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+    reconnect,
+  });
+}
+
+test("hello handshake returns daemon info and an empty session list", async () => {
+  const c = await client();
+  assert.equal(c.daemonInfo?.repoRoot, h.repoRoot);
+  assert.deepEqual(c.sessions, []);
+  await c.close();
+});
+
+test("ping round-trips", async () => {
+  const c = await client();
+  const r = await c.request<{ nonce: unknown; uptimeMs: number }>("ping", { nonce: 42 });
+  assert.equal(r.nonce, 42);
+  assert.ok(r.uptimeMs >= 0);
+  await c.close();
+});
+
+test("createStub inserts a session and it shows up in the sorted list", async () => {
+  const c = await client();
+  const stub = await c.request<SessionSnapshot>("session.createStub", {
+    prompt: "do the thing",
+    status: "running",
+  });
+  assert.equal(stub.status, "running");
+  assert.equal(stub.title, "do the thing");
+
+  const list = await c.request<SessionSnapshot[]>("session.list");
+  assert.ok(list.some((s) => s.id === stub.id));
+  await c.close();
+});
+
+test("session.list is ordered by status group then recency", async () => {
+  const c = await client();
+  await c.request("session.createStub", { prompt: "idle one", status: "idle" });
+  await delay(2);
+  await c.request("session.createStub", { prompt: "running one", status: "running" });
+  await delay(2);
+  const awaiting = await c.request<SessionSnapshot>("session.createStub", {
+    prompt: "blocked one",
+    status: "awaiting_input",
+    reason: "permission",
+  });
+
+  const list = await c.request<SessionSnapshot[]>("session.list");
+  // awaiting_input group sorts ahead of running, which sorts ahead of idle
+  assert.equal(list[0]?.id, awaiting.id);
+  const groups = list.map((s) => s.status);
+  const rank = (s: string) => ["awaiting_input", "running", "interrupted", "idle", "error", "done"].indexOf(s);
+  for (let i = 1; i < groups.length; i++) {
+    assert.ok(rank(groups[i]!) >= rank(groups[i - 1]!), `group order violated at ${i}: ${groups}`);
+  }
+  await c.close();
+});
+
+test("dev.emit is broadcast to a subscribed client with a monotonic seq", async () => {
+  const c = await client();
+  const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
+
+  const got: PushFrame[] = [];
+  c.onPush((f) => got.push(f));
+
+  const r1 = await c.request<{ seq: number }>("dev.emit", {
+    event: { sessionId: stub.id, type: "assistant_text", text: "one" },
+  });
+  const r2 = await c.request<{ seq: number }>("dev.emit", {
+    event: { sessionId: stub.id, type: "thinking", text: "two" },
+  });
+  assert.ok(r2.seq > r1.seq);
+
+  await delay(20);
+  const events = got.filter((f) => f.type === "event");
+  assert.ok(events.length >= 2);
+  const texts = events.map((f) => (f.type === "event" ? (f.event as { text?: string }).text : undefined));
+  assert.ok(texts.includes("one") && texts.includes("two"));
+  await c.close();
+});
+
+test("setStatus broadcasts a session_updated with a bumped version and attribution", async () => {
+  const c = await client();
+  const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", status: "running" });
+
+  const updates: Array<{ version: number; by?: string; status: string }> = [];
+  c.onPush((f) => {
+    if (f.type === "session_updated" && f.session.id === stub.id) {
+      updates.push({ version: f.version, status: f.session.status, ...(f.by ? { by: f.by } : {}) });
+    }
+  });
+
+  await c.request("session.setStatus", { id: stub.id, status: "idle", by: "tester" });
+  await delay(20);
+
+  assert.ok(updates.length >= 1);
+  const last = updates.at(-1)!;
+  assert.equal(last.status, "idle");
+  assert.equal(last.by, "tester");
+  assert.ok(last.version >= 2);
+  await c.close();
+});
+
+test("a fresh client (no sinceSeq) is told replaying:false and gets the snapshot", async () => {
+  const c = await client();
+  const raw = await c.request<HelloResult>("hello", { protocolVersion: 1, clientId: "probe" });
+  assert.equal(raw.replaying, false);
+  assert.equal(typeof raw.seq, "number");
+  assert.ok(Array.isArray(raw.sessions));
+  await c.close();
+});
+
+test("reconnecting within the buffer replays the gap (no resync)", async () => {
+  const observer = await client(true);
+  const driver = await client();
+  const stub = await driver.request<SessionSnapshot>("session.createStub", { prompt: "gap" });
+
+  const texts: string[] = [];
+  observer.onPush((f) => {
+    if (f.type === "event") {
+      const t = (f.event as { text?: string }).text;
+      if (t) texts.push(t);
+    }
+  });
+  let reconnected = false;
+  let resynced = false;
+  observer.on("reconnect", () => {
+    reconnected = true;
+  });
+  observer.on("resync", () => {
+    resynced = true;
+  });
+
+  await driver.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "A-live" } });
+  await delay(20);
+  assert.ok(texts.includes("A-live"));
+
+  // Transport drop, then an event lands while the observer is away.
+  observer.dropForTest();
+  await driver.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "B-gap" } });
+
+  // Wait for the observer to come back and drain the replay.
+  for (let i = 0; i < 100 && !reconnected; i++) await delay(10);
+  await delay(30);
+
+  assert.equal(reconnected, true);
+  assert.equal(resynced, false, "gap was within the buffer — no resync expected");
+  assert.ok(texts.includes("B-gap"), `missed the gap event; saw ${JSON.stringify(texts)}`);
+
+  await observer.close();
+  await driver.close();
+});
+
+test("hello with a stale high sinceSeq triggers a resync push", async () => {
+  const c = await client();
+  let resynced = false;
+  c.on("resync", () => {
+    resynced = true;
+  });
+  // Ask to replay from a seq far beyond head.
+  await c.request("hello", { protocolVersion: 1, clientId: "stale", sinceSeq: 999_999 });
+  await delay(30);
+  assert.equal(resynced, true);
+  await c.close();
+});
+
+test("daemon.status reflects live counts", async () => {
+  const c = await client();
+  const s = await c.request<{ sessions: number; clients: number; eventSeq: number }>("daemon.status");
+  assert.ok(s.sessions >= 1);
+  assert.ok(s.clients >= 1);
+  assert.ok(s.eventSeq >= 1);
+  await c.close();
+});

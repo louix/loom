@@ -194,12 +194,14 @@ export class Daemon {
   // -------------------------------------------------------------------------
 
   emitEvent(event: HarnessEvent): number {
+    if (this.#stopping) return this.#events.head;
     const frame = this.#events.append({ kind: "push", type: "event", event });
     this.#server.broadcast(frame);
     return frame.seq;
   }
 
   #emitSessionUpdated(session: SessionSnapshot, by?: string): void {
+    if (this.#stopping) return;
     const frame = this.#events.append({
       kind: "push",
       type: "session_updated",
@@ -211,8 +213,10 @@ export class Daemon {
   }
 
   #onActivityChange(why: string): void {
-    this.#log.debug("activity change", { why, busy: this.#isBusy() });
-    this.#idle.poke(this.#isBusy());
+    if (this.#stopping) return;
+    const busy = this.#isBusy();
+    this.#log.debug("activity change", { why, busy });
+    this.#idle.poke(busy);
   }
 
   #isBusy(): boolean {

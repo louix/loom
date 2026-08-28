@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:net";
+import { connect, createServer, type Server } from "node:net";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { makeLogger } from "../util/logger.ts";
 import type { Frame, PushFrame } from "../protocol/wire.ts";
@@ -28,11 +28,16 @@ export class SocketServer {
     this.#opts = opts;
   }
 
-  listen(): Promise<void> {
+  async listen(): Promise<void> {
     const { sockPath } = this.#opts;
-    // Clear a stale socket file left by an unclean exit. If a live daemon is
-    // actually bound here, listen() will still fail with EADDRINUSE below.
+    // A leftover socket file is either stale (unclean exit) or a live daemon.
+    // Probe before removing it so two daemons never race for the same repo.
     if (existsSync(sockPath)) {
+      if (await isSocketLive(sockPath)) {
+        throw Object.assign(new Error(`another daemon is listening on ${sockPath}`), {
+          code: "EADDRINUSE",
+        });
+      }
       try {
         unlinkSync(sockPath);
       } catch {
@@ -120,4 +125,19 @@ export class SocketServer {
       }
     }
   }
+}
+
+/** Does something actually accept connections on this socket path right now? */
+function isSocketLive(sockPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = connect(sockPath);
+    const done = (live: boolean) => {
+      probe.removeAllListeners();
+      probe.destroy();
+      resolve(live);
+    };
+    probe.once("connect", () => done(true));
+    probe.once("error", () => done(false));
+    setTimeout(() => done(false), 500).unref();
+  });
 }
