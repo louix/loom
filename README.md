@@ -101,8 +101,9 @@ as a second adapter.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
   answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
   the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
-  done, `e` rename, `b` set a cost budget, `⇧⇥` cycle the permission mode, `⌃y`
-  copy the branch to the clipboard, `n` start a new session. Sending to a session
+  done, `e` rename, `b` set a cost budget, `a` (in `plan_review`) review the
+  plan, `⇧⇥` cycle the permission mode, `⌃y` copy the branch to the clipboard,
+  `n` start a new session. Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
   automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
@@ -120,7 +121,16 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented (later milestones): plan review, sub-agent nesting.
+Not yet implemented (later milestones): sub-agent nesting.
+
+**Plan review.** In `plan` mode the agent presents its plan through the
+harness's plan tool; instead of a generic permission prompt, the session goes
+`awaiting_input` / `plan_review` and `a` opens a review overlay with four
+choices: `i` implement (proceed here), `f` implement fresh (compact the context
+to the plan + goal first), `e` edit the plan in `$EDITOR` then implement what
+you saved, `d` discuss (send a note back; the agent keeps planning). `esc` does
+nothing — a plan review must be answered. `session.respondPlan` is the RPC;
+`loom plan <id> <reqId> implement|fresh|revise|discuss` from the CLI.
 
 **Budgets.** `[budget]` gives every session a soft cost cap (default `$5`);
 `b` in the UI or `loom budget <id> <usd>` sets a per-session one. On breach —
@@ -220,7 +230,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 148 cases
+npm test             # node:test — 153 cases
 ```
 
 ### Layout

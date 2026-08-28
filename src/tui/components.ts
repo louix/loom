@@ -430,6 +430,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   deny: "deny",
   title: "rename",
   budget: "set",
+  discuss: "send",
 };
 
 function promptHints(p: PromptState, queued: number): string {
@@ -454,7 +455,9 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
             ? "session title"
             : p.kind === "budget"
               ? "max cost in USD, e.g. 2.50"
-              : "type a message…";
+              : p.kind === "discuss"
+                ? "what should change about the plan?"
+                : "type a message…";
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
@@ -578,6 +581,15 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
       "a answer  ·  ⌃o view  ·  i interrupt",
     );
   }
+  if (pending.plan !== undefined) {
+    return box(
+      "❖ PLAN REVIEW",
+      wrapText((pending.planText ?? "").replace(/\s+/g, " ").trim(), w)
+        .slice(0, 5)
+        .map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
+      "a review  ·  ⌃o view  ·  i interrupt",
+    );
+  }
   if (pending.permission !== undefined) {
     return box(
       `⇱ PERMISSION — ${pending.permTool ?? "tool"}`,
@@ -586,6 +598,35 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
     );
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// plan-review overlay (the post-planning decision)
+// ---------------------------------------------------------------------------
+
+export function PlanReview({ text, width }: { text: string; width: number }): ReactNode {
+  const w = inside(width);
+  const lines = text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
+  const body = lines.slice(0, 16);
+  const row = (k: string, v: string): ReactNode =>
+    h(Box, { gap: 1 }, h(Box, { width: 3 }, h(Text, { color: C.accent }, k)), h(Text, { color: C.dim }, v));
+  return h(
+    Box,
+    { width, borderStyle: "round", borderColor: C.await_, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    h(Text, { color: C.await_, bold: true }, "❖ PLAN REVIEW"),
+    h(Box, { height: 1 }),
+    ...body.map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l || " ")),
+    lines.length > body.length
+      ? h(Text, { color: C.faint }, `  … ${lines.length - body.length} more lines — ⌃o to read it all`)
+      : null,
+    h(Box, { height: 1 }),
+    row("i", "implement — the agent proceeds in this context"),
+    row("f", "implement fresh — compact to the plan + goal first"),
+    row("e", "edit the plan in $EDITOR, then implement what you saved"),
+    row("d", "discuss — send a note back; the agent stays in plan mode"),
+    h(Box, { height: 1 }),
+    h(Text, { color: C.faint }, "⌃o view read-only  ·  a plan review must be answered — esc does nothing"),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +660,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⌃o", "open the pending request — or the event log — in $EDITOR, read-only"],
   ["⌃y", "copy the selected session's branch to the clipboard"],
   ["a  ·  d", "approve / answer  ·  deny a permission request"],
+  ["a (plan)", "open the plan review — then i / f / e / d to decide"],
   ["s", "send a follow-up turn (running → asap / queue for turn end)"],
   ["c", "compact the context window (shown once the meter passes half)"],
   ["⌃x", "clear the selected session's queued messages"],

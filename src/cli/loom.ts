@@ -26,6 +26,8 @@ commands:
   approve <id> <reqId>   allow an outstanding permission request
   deny <id> <reqId>      deny it                          [--text reason]
   answer <id> <reqId> <text...>   answer an ask_user question
+  plan <id> <reqId> <what> [text...]  resolve a plan review
+                         what: implement | fresh | revise <plan…> | discuss <msg…>
   mode <id> <mode>       change a session's permission mode
   budget <id> <usd>      set a cost budget (clears a warned/halted state)
   resume <id>            resume an interrupted session
@@ -185,6 +187,29 @@ async function main(): Promise<void> {
         process.stdout.write(
           r.alreadyResolved ? `${requestId} was already answered\n` : `${requestId} answered\n`,
         );
+        break;
+      }
+      case "plan": {
+        const id = need(positionals[1], "plan <id> <reqId> <what> [text...]");
+        const reqId = need(positionals[2], "plan <id> <reqId> <what> [text...]");
+        const what = need(positionals[3], "plan <id> <reqId> <what> [text...]");
+        const rest = positionals.slice(4).join(" ");
+        const params: Record<string, unknown> = { id, requestId: reqId, by: client.clientId };
+        if (what === "implement") params["action"] = "implement";
+        else if (what === "fresh") params["action"] = "implement_fresh";
+        else if (what === "revise") {
+          if (!rest) need(undefined, "plan <id> <reqId> revise <plan...>");
+          params["action"] = "revise";
+          params["plan"] = rest;
+        } else if (what === "discuss") {
+          if (!rest) need(undefined, "plan <id> <reqId> discuss <msg...>");
+          params["action"] = "discuss";
+          params["message"] = rest;
+        } else {
+          need(undefined, "plan <what> must be implement | fresh | revise | discuss");
+        }
+        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", params);
+        process.stdout.write(r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`);
         break;
       }
       case "mode": {
@@ -358,6 +383,7 @@ function summarize(ev: HarnessEvent): string {
   if (ev.type === "tool_call") return `${ev.name} #${ev.id}`;
   if (ev.type === "tool_result") return `#${ev.id} ${ev.ok ? "ok" : "error"}`;
   if (ev.type === "permission_request") return `${ev.tool}  req=${ev.id}  (approve/deny)`;
+  if (ev.type === "plan_review") return `plan  req=${ev.id}  (plan <id> ${ev.id} implement|fresh|revise|discuss)`;
   if (ev.type === "usage") return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
   if (ev.type === "result") return ev.ok ? "ok" : "failed";
   if (ev.type === "error") return ev.message.slice(0, 80);

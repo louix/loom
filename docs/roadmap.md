@@ -174,7 +174,25 @@ budget line `$1.20 / $5.00` with a bar; `b` key; footer hint), README.
 
 ---
 
-## Milestone 8 — plan review
+## Milestone 8 — plan review ✓ shipped
+
+Built as planned. `PlanReviewEvent` + `AgentSession.respondToPlan(id, decision)`
+(`PlanDecision` = implement | implement_fresh | revise{plan} | discuss{message}).
+The Claude adapter intercepts `ExitPlanMode` in `canUseTool` and emits
+`plan_review` instead of `permission_request`; `implement` resolves `allow`, the
+other three resolve `deny` and re-drive the session deterministically
+(implement_fresh runs `compact` first; revise/implement_fresh then
+`setMode("acceptEdits")` + `send`). `session.respondPlan` RPC,
+`SessionManager.respondToPlan` + `pendingPlans` set, status-machine
+`plan_review → awaiting_input/plan_review`. TUI: `a` opens a `PlanReview`
+overlay (`i`/`f`/`e`/`d`, esc inert), a request-panel plan case, `loom plan`
+CLI.
+
+**Open questions, resolved:** `plan` mode is not auto-engaged — the user picks
+it (`⇧⇥` / `--mode plan`), unchanged. Non-Claude plan-mode enforcement is
+deferred to M10 (no non-Claude provider exists yet); the fake provider just
+records the decision.
+
 
 **Goal.** In `plan` mode the agent calls `ExitPlanMode` with the plan text.
 Instead of showing that as a generic permission prompt, give it a first-class

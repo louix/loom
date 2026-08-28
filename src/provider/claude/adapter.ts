@@ -31,6 +31,7 @@ import type {
   CreateSessionOptions,
   McpServerHandle,
   PermissionDecision,
+  PlanDecision,
   ProviderCapabilities,
   SessionMode,
   SessionRef,
@@ -100,6 +101,8 @@ class ClaudeSession implements AgentSession {
   #pendingPerms = new Map<string, (r: PermissionResult | null) => void>();
   /** Outstanding `ask_user` calls, keyed by the id on the emitted `question` event. */
   #pendingQuestions = new Map<string, (answer: string) => void>();
+  /** Outstanding `ExitPlanMode` calls, keyed by the id on the emitted `plan_review` event. */
+  #pendingPlans = new Map<string, (r: PermissionResult | null) => void>();
   #pump: Promise<void> | null = null;
   #closing = false;
 
@@ -121,6 +124,23 @@ class ClaudeSession implements AgentSession {
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
       const reqId = ctx.toolUseID || ctx.requestId;
+      // In plan mode the agent presents its plan via ExitPlanMode; surface that
+      // as a first-class plan review rather than a generic permission prompt.
+      if (toolName === "ExitPlanMode" || toolName === "exit_plan_mode") {
+        const raw = (input as { plan?: unknown } | null)?.plan;
+        const plan = typeof raw === "string" && raw.trim() !== "" ? raw : JSON.stringify(input ?? {});
+        return new Promise<PermissionResult | null>((resolve) => {
+          this.#pendingPlans.set(reqId, resolve);
+          this.#outbox.push({
+            type: "plan_review",
+            sessionId: this.id,
+            ts: Date.now(),
+            id: reqId,
+            plan,
+            ...(ctx.agentID ? { agentId: ctx.agentID } : {}),
+          });
+        });
+      }
       return new Promise<PermissionResult | null>((resolve) => {
         this.#pendingPerms.set(reqId, resolve);
         this.#outbox.push({
@@ -267,6 +287,35 @@ class ClaudeSession implements AgentSession {
     resolve(text);
   }
 
+  async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
+    const resolve = this.#pendingPlans.get(id);
+    if (!resolve) return; // already resolved / unknown — first writer won
+    this.#pendingPlans.delete(id);
+
+    if (decision.action === "implement") {
+      // Native exit: the SDK leaves plan mode and the turn implements.
+      resolve({ behavior: "allow" });
+      return;
+    }
+
+    // The other three cases end the ExitPlanMode call and re-drive the session
+    // deterministically, so behaviour doesn't hinge on SDK `updatedInput` support.
+    if (decision.action === "discuss") {
+      resolve({ behavior: "deny", message: decision.message });
+      return; // stays in plan mode; the message arrives as the next user turn
+    }
+
+    resolve({ behavior: "deny", message: "Plan accepted — implementing now." });
+    if (decision.action === "implement_fresh") {
+      await this.compact(
+        "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
+      );
+    }
+    await this.setMode("acceptEdits");
+    const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";
+    await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
+  }
+
   async interrupt(): Promise<void> {
     await this.#query?.interrupt();
   }
@@ -301,6 +350,8 @@ class ClaudeSession implements AgentSession {
     this.#pendingPerms.clear();
     for (const [, resolve] of this.#pendingQuestions) resolve("(the session was closed before the user answered)");
     this.#pendingQuestions.clear();
+    for (const [, resolve] of this.#pendingPlans) resolve({ behavior: "deny", message: "session closed" });
+    this.#pendingPlans.clear();
     try {
       this.#query?.close();
     } catch {

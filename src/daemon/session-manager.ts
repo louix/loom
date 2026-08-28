@@ -14,6 +14,7 @@ import type {
   AgentSession,
   CreateSessionOptions,
   PermissionDecision,
+  PlanDecision,
   SessionMode,
   SessionRef,
 } from "../provider/types.ts";
@@ -45,6 +46,7 @@ interface Running {
   ordinal: number;
   pendingPerms: Set<string>;
   pendingQuestions: Set<string>;
+  pendingPlans: Set<string>;
   interrupting: boolean;
   ended: boolean;
   refReported: boolean;
@@ -97,6 +99,7 @@ export class SessionManager {
       ordinal: 0,
       pendingPerms: new Set(),
       pendingQuestions: new Set(),
+      pendingPlans: new Set(),
       interrupting: false,
       ended: false,
       refReported: false,
@@ -116,6 +119,7 @@ export class SessionManager {
         this.#hooks.emitEvent(ev);
         this.#trackPerms(run, ev);
         this.#trackQuestions(run, ev);
+        this.#trackPlans(run, ev);
         this.#trackUsage(id, ev);
         if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
         this.#trackRef(id, run);
@@ -159,6 +163,10 @@ export class SessionManager {
     } else if (ev.type === "answer") {
       run.pendingQuestions.delete(ev.id);
     }
+  }
+
+  #trackPlans(run: Running, ev: HarnessEvent): void {
+    if (ev.type === "plan_review") run.pendingPlans.add(ev.id);
   }
 
   #trackUsage(id: string, ev: HarnessEvent): void {
@@ -250,6 +258,19 @@ export class SessionManager {
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
     // running; set it now so a client sees the change without waiting.
+    this.#set(id, run, "running", null);
+    return { ok: true, alreadyResolved: false };
+  }
+
+  async respondToPlan(
+    id: string,
+    requestId: string,
+    decision: PlanDecision,
+  ): Promise<RespondResult> {
+    const run = this.#require(id);
+    if (!run.pendingPlans.has(requestId)) return { ok: false, alreadyResolved: true };
+    run.pendingPlans.delete(requestId);
+    await run.session.respondToPlan(requestId, decision);
     this.#set(id, run, "running", null);
     return { ok: true, alreadyResolved: false };
   }

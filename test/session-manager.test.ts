@@ -143,6 +143,57 @@ test("an ask_user question blocks the session until session.answer resolves it",
   await c.close();
 });
 
+test("a plan_review blocks the session; session.respondPlan resolves it", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "plan_review", id: "pr1", plan: "1. wire the seam\n2. add the RPC" });
+
+  await waitFor(async () => {
+    const s = await c.request<SessionSnapshot>("session.get", { id });
+    return s.status === "awaiting_input" && s.awaitReason === "plan_review";
+  });
+
+  const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPlan", {
+    id,
+    requestId: "pr1",
+    action: "implement",
+  });
+  assert.deepEqual(first, { ok: true, alreadyResolved: false });
+  assert.equal(fs.planResponses.length, 1);
+  assert.deepEqual(fs.planResponses[0]?.decision, { action: "implement" });
+
+  const second = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPlan", {
+    id,
+    requestId: "pr1",
+    action: "discuss",
+    message: "hmm",
+  });
+  assert.equal(second.alreadyResolved, true);
+
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await c.close();
+});
+
+test("session.respondPlan carries the revise plan / discuss message and validates them", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "plan_review", id: "pr2", plan: "draft" });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).awaitReason === "plan_review");
+
+  await assert.rejects(
+    c.request("session.respondPlan", { id, requestId: "pr2", action: "revise", plan: "  " }),
+    /revise needs/,
+  );
+  await assert.rejects(
+    c.request("session.respondPlan", { id, requestId: "pr2", action: "bogus" }),
+    /implement \| implement_fresh \| revise \| discuss/,
+  );
+
+  await c.request("session.respondPlan", { id, requestId: "pr2", action: "revise", plan: "final plan" });
+  assert.deepEqual(fs.planResponses.at(-1)?.decision, { action: "revise", plan: "final plan" });
+  await c.close();
+});
+
 test("session.answer on a session that isn't running is not_found", async () => {
   const c = await client();
   await assert.rejects(

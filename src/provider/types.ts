@@ -85,6 +85,22 @@ export type PermissionDecision =
   | { behavior: "allow"; updatedInput?: Record<string, unknown> }
   | { behavior: "deny"; message?: string };
 
+/**
+ * The user's answer to a `plan_review` (the agent called the harness's
+ * "present a plan" tool in `plan` mode).
+ *
+ * - `implement` — accept; the agent proceeds in the same context.
+ * - `implement_fresh` — accept, but compact the context to the plan + goal
+ *   first, so implementation starts lean.
+ * - `revise` — the user edited the plan; the agent implements *that* text.
+ * - `discuss` — send a message back; the agent iterates, staying in plan mode.
+ */
+export type PlanDecision =
+  | { action: "implement" }
+  | { action: "implement_fresh" }
+  | { action: "revise"; plan: string }
+  | { action: "discuss"; message: string };
+
 /** What an adapter can report about a live session without the daemon's help. */
 export interface AdapterSnapshot {
   status: SessionStatus;
@@ -115,6 +131,8 @@ export interface AgentSession {
   respondToPermission(id: string, decision: PermissionDecision): Promise<void>;
   /** Resolve an outstanding `ask_user` question with the user's answer. */
   answerQuestion(id: string, text: string): Promise<void>;
+  /** Resolve an outstanding `plan_review` with the user's decision. */
+  respondToPlan(id: string, decision: PlanDecision): Promise<void>;
   interrupt(): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string): Promise<void>;

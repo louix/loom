@@ -289,6 +289,36 @@ test("the pending permission is spelled out in a panel", async () => {
   }
 });
 
+test("a plan review opens an overlay; `i` sends the implement decision", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "plan this", provider: "fake" });
+  const fake = h.daemon.providers.get("fake") as FakeProvider;
+  const fs = fake.session(snap.id);
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(150);
+    fs?.emit({ type: "plan_review", id: "pr1", plan: "1. carve the seam\n2. wire the RPC\n3. paint the overlay" });
+    await delay(200);
+    // the request panel flags it
+    assert.match(stdout.last, /PLAN REVIEW/);
+
+    stdin.feed("a"); // open the overlay
+    await delay(150);
+    assert.match(stdout.last, /wire the RPC/);
+    assert.match(stdout.last, /implement fresh/);
+
+    stdin.feed("i"); // implement
+    await delay(200);
+    assert.equal(fs?.planResponses.length, 1);
+    assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement" });
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("Tab toggles the fullscreen event log", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

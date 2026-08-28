@@ -209,6 +209,27 @@ test("pending question is cleared by the matching answer event", () => {
   assert.equal(pendingFor(s, "a").question, undefined);
 });
 
+test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
+  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "push", frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "step one\nstep two", sessionId: "a" })) });
+  assert.equal(pendingFor(s, "a").plan, "pr1");
+  assert.equal(pendingFor(s, "a").planText, "step one\nstep two");
+
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
+  assert.equal(s.mode, "plan");
+  assert.equal(s.plan?.requestId, "pr1");
+
+  // the session moving on closes the overlay and clears pending
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 3 },
+  });
+  assert.equal(s.plan, null);
+  assert.equal(s.mode, "browse");
+  assert.equal(pendingFor(s, "a").plan, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // contextual actions
 // ---------------------------------------------------------------------------
@@ -225,6 +246,10 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "question" })].sort(),
     ["answer", "interrupt", ...S].sort(),
+  );
+  assert.deepEqual(
+    [...acts({ status: "awaiting_input", awaitReason: "plan_review" })].sort(),
+    ["planreview", "interrupt", ...S].sort(),
   );
   assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
@@ -272,6 +297,7 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
     formatEvent(ev({ type: "usage", tokens: { input: 1200, output: 30, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1200, contextLimit: 200000 })).text,
     /ctx 1\.2k\/200\.0k/,
   );
+  assert.match(formatEvent(ev({ type: "plan_review", id: "pr9", plan: "x" })).text, /plan ready.*req pr9/);
   const comp = formatEvent(ev({ type: "compact", trigger: "manual", before: 120000, after: 24000 }));
   assert.equal(comp.glyph, "⇊");
   assert.match(comp.text, /120\.0k → 24\.0k/);

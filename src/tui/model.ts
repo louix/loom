@@ -11,7 +11,7 @@ import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice";
+export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan";
 export type LogFilter = "selected" | "all";
 
 export interface DaemonInfo {
@@ -35,7 +35,7 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "budget";
+export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "budget" | "discuss";
 
 export interface PromptState {
   kind: PromptKind;
@@ -91,6 +91,8 @@ export interface Pending {
   question?: string;
   questionText?: string;
   questionContext?: string;
+  plan?: string;
+  planText?: string;
 }
 
 export interface TuiState {
@@ -110,6 +112,8 @@ export interface TuiState {
   confirm: ConfirmState | null;
   /** A composed `send` awaiting the asap / turn-end choice (target is running). */
   sendChoice: { sessionId: string; text: string } | null;
+  /** An open plan-review overlay: the plan text + the ids to resolve it with. */
+  plan: { sessionId: string; requestId: string; text: string } | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
 }
@@ -130,6 +134,7 @@ export function initialState(logCap = 400): TuiState {
     prompt: null,
     confirm: null,
     sendChoice: null,
+    plan: null,
     promptHistory: [],
   };
 }
@@ -160,6 +165,8 @@ export type Action =
   | { t: "clearQueue"; sessionId: string }
   | { t: "openSendChoice"; sessionId: string; text: string }
   | { t: "closeSendChoice" }
+  | { t: "openPlan"; sessionId: string; requestId: string; text: string }
+  | { t: "closePlan" }
   | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "closeConfirm" }
   | { t: "help"; value: boolean };
@@ -283,6 +290,17 @@ export function reduce(s: TuiState, a: Action): TuiState {
     case "closeSendChoice":
       return { ...s, mode: "browse", sendChoice: null };
 
+    case "openPlan":
+      return {
+        ...s,
+        mode: "plan",
+        plan: { sessionId: a.sessionId, requestId: a.requestId, text: a.text },
+        prompt: null,
+      };
+
+    case "closePlan":
+      return { ...s, mode: s.mode === "plan" ? "browse" : s.mode, plan: null };
+
     case "openConfirm":
       return { ...s, mode: "confirm", confirm: a.confirm };
 
@@ -314,20 +332,28 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       const rest = s.sessions.filter((x) => x.id !== frame.session.id);
       const sessions = sortSessions([...rest, frame.session]);
       // Any outstanding round-trip is settled once the session leaves awaiting_input.
-      const pending =
-        frame.session.status === "awaiting_input"
-          ? s.pending
-          : without(s.pending, frame.session.id);
-      return { ...s, sessions, selectedId: clampSelection(sessions, s.selectedId), pending };
+      const settled = frame.session.status !== "awaiting_input";
+      const pending = settled ? without(s.pending, frame.session.id) : s.pending;
+      // An open plan overlay for a session that has moved on is stale — drop it.
+      const planGone = settled && s.plan?.sessionId === frame.session.id;
+      return {
+        ...s,
+        sessions,
+        selectedId: clampSelection(sessions, s.selectedId),
+        pending,
+        ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
+      };
     }
     case "session_removed": {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
+      const planGone = s.plan?.sessionId === frame.sessionId;
       return {
         ...s,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
+        ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
       };
     }
     case "resync":
@@ -352,6 +378,12 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
         questionText: ev.question,
         ...(ev.context ? { questionContext: ev.context } : {}),
       },
+    };
+  }
+  if (ev.type === "plan_review") {
+    return {
+      ...pending,
+      [ev.sessionId]: { ...pending[ev.sessionId], plan: ev.id, planText: ev.plan },
     };
   }
   if (ev.type === "answer") {
@@ -462,6 +494,7 @@ export type ActName =
   | "resume"
   | "done"
   | "compact"
+  | "planreview"
   | "mode"
   | "title"
   | "budget"
@@ -490,6 +523,8 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     const { status, awaitReason } = session;
     if (status === "awaiting_input" && awaitReason === "question") {
       local.push({ keys: "a", label: "answer", act: "answer" });
+    } else if (status === "awaiting_input" && awaitReason === "plan_review") {
+      local.push({ keys: "a", label: "review plan", act: "planreview" });
     } else if (status === "awaiting_input") {
       local.push({ keys: "a", label: "approve", act: "approve" });
       local.push({ keys: "d", label: "deny", act: "deny" });
@@ -558,6 +593,8 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
       return { glyph: "?", text: `${oneLine(ev.question, 120)} · req ${ev.id}`, tone: "accent" };
     case "answer":
       return { glyph: "↩", text: oneLine(ev.text, 120), tone: "accent" };
+    case "plan_review":
+      return { glyph: "❖", text: `plan ready for review · req ${ev.id}`, tone: "accent" };
     case "usage":
       return {
         glyph: "∑",
@@ -606,6 +643,7 @@ function noticeForEvent(s: TuiState, ev: HarnessEvent): Notice | null {
   const tag = ev.sessionId === s.selectedId ? "" : ` [${shortId(ev.sessionId)}]`;
   if (ev.type === "permission_request") return { text: `${ev.tool} needs approval${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "question") return { text: `question waiting${tag}`, tone: "accent", at: Date.now() };
+  if (ev.type === "plan_review") return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "error" && ev.fatal) return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
   return null;
 }

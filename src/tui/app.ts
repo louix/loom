@@ -29,6 +29,7 @@ import {
   FooterArea,
   Header,
   Help,
+  PlanReview,
   promptRows,
   RequestPanel,
   REQUEST_PANEL_ROWS,
@@ -168,7 +169,9 @@ export function App({
     if (!openEditor) return note("no $EDITOR available", "dim");
     const s = selectedSession(state);
     const pend = s ? pendingFor(state, s.id) : {};
-    if (pend.permission !== undefined) {
+    if (pend.plan !== undefined) {
+      openEditor(pend.planText ?? "", { ext: "md" });
+    } else if (pend.permission !== undefined) {
       openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), { ext: "json" });
     } else if (pend.question !== undefined) {
       openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
@@ -266,6 +269,16 @@ export function App({
               text: s.budget.maxCostUsd != null ? String(s.budget.maxCostUsd) : "",
             }),
           });
+        case "planreview": {
+          const pend2 = pendingFor(state, s.id);
+          if (!pend2.plan) return note("no plan pending", "dim");
+          return void dispatch({
+            t: "openPlan",
+            sessionId: s.id,
+            requestId: pend2.plan,
+            text: pend2.planText ?? "",
+          });
+        }
         case "interrupt":
           return perform(async () => {
             await client.request("session.interrupt", { id: s.id });
@@ -360,6 +373,17 @@ export function App({
         await client.request("session.setBudget", { id: p.sessionId, maxCostUsd: usd, by });
         return `budget → $${usd.toFixed(2)}`;
       }
+      if (p.kind === "discuss" && p.sessionId && p.requestId) {
+        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
+          id: p.sessionId,
+          requestId: p.requestId,
+          action: "discuss",
+          message: text,
+          by,
+        });
+        dispatch({ t: "closePlan" });
+        return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
+      }
       if (p.kind === "answer" && p.sessionId && p.requestId) {
         const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
           id: p.sessionId,
@@ -415,6 +439,37 @@ export function App({
     },
     [state.sendChoice, deliver, echoLine, note],
   );
+
+  /** Resolve the open plan review with `params` (an `action` plus any payload). */
+  const respondPlan = useCallback(
+    (params: Record<string, unknown>, label: string) => {
+      const pl = state.plan;
+      if (!pl) return;
+      dispatch({ t: "closePlan" });
+      perform(async () => {
+        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
+          id: pl.sessionId,
+          requestId: pl.requestId,
+          by: client.clientId,
+          ...params,
+        });
+        return r.alreadyResolved ? "plan already resolved" : label;
+      });
+    },
+    [state.plan, client, perform],
+  );
+
+  /** `e` in the plan overlay — edit the plan in $EDITOR, then implement what was saved. */
+  const editPlan = useCallback(() => {
+    const pl = state.plan;
+    if (!pl) return;
+    if (!openEditor) return note("no $EDITOR available", "dim");
+    const edited = openEditor(pl.text, { ext: "md" });
+    setTick((t) => t + 1);
+    const plan = edited?.trim();
+    if (!plan) return note("plan unchanged — nothing sent", "dim");
+    respondPlan({ action: "revise", plan }, "implementing your edited plan");
+  }, [state.plan, openEditor, note, respondPlan]);
 
   // Drain a session's queued messages once it goes idle again.
   const draining = useRef<Set<string>>(new Set());
@@ -515,6 +570,26 @@ export function App({
       return;
     }
 
+    if (state.mode === "plan") {
+      if (input === "i") return respondPlan({ action: "implement" }, "implementing the plan");
+      if (input === "f") return respondPlan({ action: "implement_fresh" }, "compacting, then implementing");
+      if (input === "e") return void editPlan();
+      if (input === "d") {
+        const pl = state.plan;
+        if (!pl) return;
+        return void dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "discuss",
+            sessionId: pl.sessionId,
+            requestId: pl.requestId,
+            label: "discuss plan",
+          }),
+        });
+      }
+      return; // esc / everything else: a plan review must be answered
+    }
+
     if (state.mode === "confirm") {
       if (key.return) return runConfirm();
       if (key.escape || input === "q" || input === "n") return void dispatch({ t: "closeConfirm" });
@@ -554,7 +629,7 @@ export function App({
 
     const allowed = allowedActs(sel);
     const map: Record<string, ActName> = {
-      a: allowed.has("answer") ? "answer" : "approve",
+      a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
       d: "deny",
       s: "send",
       i: "interrupt",
@@ -576,7 +651,9 @@ export function App({
   const sel = selectedSession(state);
   const pend = sel ? pendingFor(state, sel.id) : {};
   const showRequest =
-    !logFull && sel?.status === "awaiting_input" && (pend.permission !== undefined || pend.question !== undefined);
+    !logFull &&
+    sel?.status === "awaiting_input" &&
+    (pend.permission !== undefined || pend.question !== undefined || pend.plan !== undefined);
   const rightLogH = Math.max(3, splitLogH - (showRequest ? REQUEST_PANEL_ROWS : 0));
 
   let body: ReactNode;
@@ -593,6 +670,12 @@ export function App({
       Box,
       { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
       h(SendChoice, { text: state.sendChoice.text, width: Math.min(cols - 4, 72) }),
+    );
+  } else if (state.mode === "plan" && state.plan) {
+    body = h(
+      Box,
+      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
+      h(PlanReview, { text: state.plan.text, width: Math.min(cols - 4, 96) }),
     );
   } else if (logFull) {
     body = h(Box, { height: bodyH }, h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }));

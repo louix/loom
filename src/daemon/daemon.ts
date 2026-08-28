@@ -28,6 +28,7 @@ import {
   type CreateSessionOptions,
   type McpServerHandle,
   type PermissionDecision,
+  type PlanDecision,
   type SessionMode,
 } from "../provider/types.ts";
 import {
@@ -629,6 +630,33 @@ export class Daemon {
             };
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       return this.#sessions.respondToPermission(id, requestId, decision);
+    });
+
+    // Resolve an outstanding `plan_review` (milestone 8).
+    d.register("session.respondPlan", async (params) => {
+      const id = reqString(params, "id");
+      const requestId = reqString(params, "requestId");
+      const p = isObj(params) ? params : {};
+      const action = p["action"];
+      let decision: PlanDecision;
+      if (action === "implement" || action === "implement_fresh") {
+        decision = { action };
+      } else if (action === "revise") {
+        const plan = typeof p["plan"] === "string" ? (p["plan"] as string) : "";
+        if (plan.trim() === "") throw new RpcError("bad_request", "revise needs a non-empty plan");
+        decision = { action: "revise", plan };
+      } else if (action === "discuss") {
+        const message = typeof p["message"] === "string" ? (p["message"] as string) : "";
+        if (message.trim() === "") throw new RpcError("bad_request", "discuss needs a message");
+        decision = { action: "discuss", message };
+      } else {
+        throw new RpcError(
+          "bad_request",
+          "action must be implement | implement_fresh | revise | discuss",
+        );
+      }
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      return this.#sessions.respondToPlan(id, requestId, decision);
     });
 
     // Answer an outstanding `ask_user` question (loom MCP server, milestone 4).

@@ -33,6 +33,17 @@ test("permission_request → awaiting_input/permission", () => {
   );
 });
 
+test("plan_review → awaiting_input/plan_review", () => {
+  assert.deepEqual(
+    deriveStatus("running", ev({ type: "plan_review", id: "pr1", plan: "do X then Y" })),
+    { status: "awaiting_input", reason: "plan_review" },
+  );
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "plan_review", id: "pr2", plan: "…" })),
+    null,
+  );
+});
+
 test("question → awaiting_input/question, and is a no-op when already awaiting", () => {
   assert.deepEqual(
     deriveStatus("running", ev({ type: "question", id: "q1", question: "which?" })),

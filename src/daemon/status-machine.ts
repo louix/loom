@@ -25,6 +25,10 @@ export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived 
       // The agent called `ask_user` and is blocked on a human answer.
       return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "question" };
 
+    case "plan_review":
+      // The agent presented a plan (ExitPlanMode) and is blocked on a decision.
+      return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "plan_review" };
+
     case "answer":
     case "assistant_text":
     case "thinking":

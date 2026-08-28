@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by Loom. Sessions must never push — integrate in your own git.
+echo "loom: push is blocked in session worktrees" >&2
+exit 1

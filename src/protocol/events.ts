@@ -82,6 +82,16 @@ export interface AnswerEvent extends HarnessEventBase {
   text: string;
 }
 
+/**
+ * In `plan` mode the agent called the harness's "present a plan" tool. The turn
+ * blocks on a {@link PlanDecision} — surfaced as `awaiting_input` / `plan_review`.
+ */
+export interface PlanReviewEvent extends HarnessEventBase {
+  type: "plan_review";
+  id: string;
+  plan: string;
+}
+
 export interface UsageEvent extends HarnessEventBase {
   type: "usage";
   tokens: TokenUsage;
@@ -144,6 +154,7 @@ export type HarnessEvent =
   | PermissionRequestEvent
   | QuestionEvent
   | AnswerEvent
+  | PlanReviewEvent
   | UsageEvent
   | CompactEvent
   | SubagentStartedEvent

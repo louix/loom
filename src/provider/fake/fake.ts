@@ -16,6 +16,7 @@ import type {
   AgentSession,
   CreateSessionOptions,
   PermissionDecision,
+  PlanDecision,
   ProviderCapabilities,
   SessionMode,
   SessionRef,
@@ -48,6 +49,7 @@ export class FakeSession implements AgentSession {
   readonly compacts: Array<string | undefined> = [];
   readonly permissionResponses: Array<{ id: string; decision: PermissionDecision }> = [];
   readonly questionAnswers: Array<{ id: string; text: string }> = [];
+  readonly planResponses: Array<{ id: string; decision: PlanDecision }> = [];
   readonly modeChanges: SessionMode[] = [];
   readonly modelChanges: string[] = [];
   interruptCount = 0;
@@ -143,6 +145,11 @@ export class FakeSession implements AgentSession {
 
   async answerQuestion(id: string, text: string): Promise<void> {
     this.questionAnswers.push({ id, text });
+  }
+
+  async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
+    this.planResponses.push({ id, decision });
+    this.#snap.status = "running";
   }
 
   async interrupt(): Promise<void> {
