@@ -157,6 +157,15 @@ summary from a cheap one-shot through the same provider (`[titles]` config, off
 with `enabled = false`). Renaming it yourself (`e` in the UI / `loom` …) pins
 the title and the auto-titler leaves it alone.
 
+**Prompt-cache liveness.** The Detail pane shows `cache ⟢ warm ~47:12 · last
+turn hit` (green) or `cache ⟢ cold` once the window lapses. The countdown runs
+from the last turn against the configured `[providers.claude] prompt_cache_ttl`
+(`1h` by default — Loom pins it via `CLAUDE_CODE_PROMPT_CACHE_TTL` so the timer
+is exact rather than a guess); `last turn hit` / `rewrote` is the ground truth
+from that turn's cache read/write split. It's still an estimate — a context
+edit, a tool-list change, or server-side eviction drops the cache regardless of
+the clock.
+
 **Context compaction.** `c` on a running or idle session (or `loom compact <id>
 [steer…]`) drives the provider's own compaction — for Claude, `/compact` over
 the streaming input. When the summary boundary lands it shows in the event log
@@ -237,7 +246,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 156 cases
+npm test             # node:test — 160 cases
 ```
 
 ### Layout

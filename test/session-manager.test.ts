@@ -216,6 +216,22 @@ test("send delivers a follow-up turn and returns the session to running", async 
   await c.close();
 });
 
+test("the usage rollup records the last turn's time and cache read/write split", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  const before = Date.now();
+  fs.finishTurn({ usage: { input: 1200, cacheRead: 9000, cacheWrite: 250 } });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1);
+
+  const snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(snap.cache.lastRead, 9000);
+  assert.equal(snap.cache.lastWrite, 250);
+  assert.ok(snap.cache.lastTurnAt >= before);
+  // a fake session isn't Claude, so the daemon doesn't overlay a cache TTL
+  assert.equal(snap.cache.ttlMinutes, 0);
+  await c.close();
+});
+
 test("session.compact forwards to the adapter and streams a compact event", async () => {
   const c = await client();
   const frames: PushFrame[] = [];

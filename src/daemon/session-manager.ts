@@ -206,6 +206,9 @@ export class SessionManager {
         costUsd: ev.costDeltaUsd ?? 0,
         contextUsed: ev.contextUsed,
         contextLimit: ev.contextLimit,
+        lastTurnAt: ev.ts,
+        lastCacheRead: ev.tokens.cacheRead,
+        lastCacheWrite: ev.tokens.cacheWrite,
       });
     } else if (ev.type === "result") {
       this.#hooks.onUsage(id, { turns: 1 });

@@ -25,6 +25,12 @@ export interface LoomConfig {
       disableBuiltin: string[];
       /** Override the Claude Code executable. Empty = discover `claude` on PATH, else the SDK's bundled binary. */
       cliPath: string;
+      /**
+       * Prompt-cache TTL for the main conversation: "5m", "1h", or "" (let the
+       * CLI decide — 1h on a subscription, 5m on an API key). Pinning it makes
+       * the TUI's cache-liveness countdown exact.
+       */
+      promptCacheTtl: "5m" | "1h" | "";
     };
     adk: {
       model: string;
@@ -62,6 +68,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       settingSources: ["project"],
       disableBuiltin: ["Grep", "Glob"],
       cliPath: "",
+      promptCacheTtl: "1h",
     },
     adk: {
       model: "gemini-2.5-pro",
@@ -152,6 +159,12 @@ export function normalizeConfig(raw: unknown): LoomConfig {
         settingSources: strArray(claude["setting_sources"], d.providers.claude.settingSources),
         disableBuiltin: strArray(claude["disable_builtin"], d.providers.claude.disableBuiltin),
         cliPath: str(claude["cli_path"], d.providers.claude.cliPath),
+        promptCacheTtl:
+          claude["prompt_cache_ttl"] === "5m" ||
+          claude["prompt_cache_ttl"] === "1h" ||
+          claude["prompt_cache_ttl"] === ""
+            ? (claude["prompt_cache_ttl"] as "5m" | "1h" | "")
+            : d.providers.claude.promptCacheTtl,
       },
       adk: {
         model: str(adk["model"], d.providers.adk.model),

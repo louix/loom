@@ -118,8 +118,11 @@ class ClaudeSession implements AgentSession {
   }
 
   /** Build the `query()` and start pumping its messages into the outbox. */
-  start(opts: CreateSessionOptions, extra: { resume?: string; cli?: string } = {}): void {
-    const { resume, cli } = extra;
+  start(
+    opts: CreateSessionOptions,
+    extra: { resume?: string; cli?: string; promptCacheTtl?: string } = {},
+  ): void {
+    const { resume, cli, promptCacheTtl } = extra;
     if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
@@ -171,6 +174,11 @@ class ClaudeSession implements AgentSession {
       includePartialMessages: false,
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
+      // `env` REPLACES the subprocess environment, so spread process.env first.
+      // Pinning the cache TTL makes the TUI's liveness countdown exact.
+      ...(promptCacheTtl
+        ? { env: { ...process.env, CLAUDE_CODE_PROMPT_CACHE_TTL: promptCacheTtl } }
+        : {}),
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(resume ? { resume } : {}),
@@ -368,6 +376,8 @@ class ClaudeSession implements AgentSession {
 export interface ClaudeProviderOptions {
   /** `providers.claude.cli_path` — "" means discover / bundled. */
   cliPath?: string;
+  /** `providers.claude.prompt_cache_ttl` — "5m" | "1h" | "" (CLI decides). */
+  promptCacheTtl?: string;
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -375,11 +385,13 @@ export class ClaudeProvider implements AgentProvider {
   readonly capabilities = CAPS;
 
   readonly #cliPathOption: string;
+  readonly #promptCacheTtl: string;
   #cli: string | undefined;
   #cliResolved = false;
 
   constructor(opts: ClaudeProviderOptions = {}) {
     this.#cliPathOption = opts.cliPath ?? "";
+    this.#promptCacheTtl = opts.promptCacheTtl ?? "";
   }
 
   #resolveCli(): string | undefined {
@@ -390,10 +402,17 @@ export class ClaudeProvider implements AgentProvider {
     return this.#cli;
   }
 
+  #extra(cli: string | undefined): { cli?: string; promptCacheTtl?: string } {
+    return {
+      ...(cli ? { cli } : {}),
+      ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
+    };
+  }
+
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const cli = this.#resolveCli();
     const s = new ClaudeSession(opts);
-    s.start(opts, { ...(cli ? { cli } : {}) });
+    s.start(opts, this.#extra(cli));
     return s;
   }
 
@@ -409,7 +428,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.model ? { model: ref.model } : {}),
     };
     const s = new ClaudeSession(opts);
-    s.start(opts, { resume: ref.providerRef, ...(cli ? { cli } : {}) });
+    s.start(opts, { resume: ref.providerRef, ...this.#extra(cli) });
     return s;
   }
 

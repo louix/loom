@@ -10,6 +10,7 @@ import type { SessionSnapshot } from "../protocol/wire.ts";
 import { layout, type Buffer } from "./editor.ts";
 import {
   actionsFor,
+  cacheStatus,
   clock,
   groupsOf,
   pendingFor,
@@ -26,6 +27,7 @@ import {
   bar,
   C,
   humanTokens,
+  mmss,
   money,
   shortId,
   spinnerFrame,
@@ -169,10 +171,12 @@ export function Detail({
   session,
   width,
   queued = [],
+  now = Date.now(),
 }: {
   session: SessionSnapshot | null;
   width: number;
   queued?: string[];
+  now?: number;
 }): ReactNode {
   if (!session) {
     return h(
@@ -230,6 +234,19 @@ export function Detail({
       h(Text, { color: ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim }, bar(ctxFrac, 16)),
       h(Text, { color: C.dim }, `${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`),
     ),
+    (() => {
+      const cs = cacheStatus(s, now);
+      if (cs.state === "unknown") return null;
+      const hit = cs.lastHit ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}` : "";
+      return h(
+        Box,
+        { gap: 2 },
+        h(Text, { color: C.dim }, "cache  "),
+        cs.state === "warm"
+          ? h(Text, { color: C.good }, `⟢ warm ~${mmss(cs.remainingMs)}${hit}`)
+          : h(Text, { color: C.faint }, `⟢ cold${hit}`),
+      );
+    })(),
     h(
       Box,
       { gap: 2 },

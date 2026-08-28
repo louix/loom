@@ -463,6 +463,33 @@ export function queueFor(s: TuiState, id: string | null): string[] {
   return (id && s.queue[id]) || [];
 }
 
+export interface CacheStatus {
+  state: "warm" | "cold" | "unknown";
+  /** ms until the cache goes cold (0 unless warm). */
+  remainingMs: number;
+  /** What the last turn's read/write split says actually happened. */
+  lastHit: "hit" | "rewrote" | null;
+}
+
+/**
+ * Prompt-cache liveness for a session, given the current time. `unknown` when
+ * the TTL isn't pinned or the session hasn't taken a turn. The countdown is an
+ * estimate — it can't see mid-turn refreshes or server-side eviction — hence
+ * `lastHit`, the ground truth from the last turn's cache read/write split.
+ */
+export function cacheStatus(s: SessionSnapshot | null, now: number): CacheStatus {
+  if (!s || s.cache.ttlMinutes <= 0 || s.cache.lastTurnAt <= 0) {
+    return { state: "unknown", remainingMs: 0, lastHit: null };
+  }
+  const { lastTurnAt, ttlMinutes, lastRead, lastWrite } = s.cache;
+  const lastHit: CacheStatus["lastHit"] =
+    lastRead > 0 && lastRead >= lastWrite ? "hit" : lastWrite > 0 ? "rewrote" : null;
+  const remainingMs = lastTurnAt + ttlMinutes * 60_000 - now;
+  return remainingMs > 0
+    ? { state: "warm", remainingMs, lastHit }
+    : { state: "cold", remainingMs: 0, lastHit };
+}
+
 export function visibleLog(s: TuiState): LogLine[] {
   if (s.logFilter === "all" || !s.selectedId) return s.log;
   return s.log.filter((l) => l.sessionId === s.selectedId);

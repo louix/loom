@@ -24,6 +24,10 @@ disable_builtin    = ["Grep", "Glob"]
 cli_path           = ""            # "" = use `claude` on PATH, else the SDK's bundled
                                    # binary. Set this where the bundled ELF won't run
                                    # (NixOS, musl, minimal containers).
+prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on a
+                                   # subscription, 5m on an API key). Pinning it makes
+                                   # the TUI's cache-liveness countdown exact; 1h cache
+                                   # writes cost more on metered billing.
 
 [providers.adk]                     # future — not wired in V1
 model = "gemini-2.5-pro"

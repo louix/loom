@@ -18,7 +18,11 @@ export class ProviderRegistry {
     this.#config = config;
     this.#factories.set(
       "claude",
-      () => new ClaudeProvider({ cliPath: config.providers.claude.cliPath }),
+      () =>
+        new ClaudeProvider({
+          cliPath: config.providers.claude.cliPath,
+          promptCacheTtl: config.providers.claude.promptCacheTtl,
+        }),
     );
     this.#factories.set("fake", () => new FakeProvider());
   }

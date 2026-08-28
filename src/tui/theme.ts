@@ -128,6 +128,13 @@ export function bar(frac: number, width = 10): string {
   return "▰".repeat(filled) + "▱".repeat(Math.max(0, width - filled));
 }
 
+/** A duration in ms → `M:SS` (minutes uncapped), for countdowns. */
+export function mmss(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  return `${m}:${String(total % 60).padStart(2, "0")}`;
+}
+
 /** ms epoch → local `HH:MM:SS`. */
 export function clock(ts: number): string {
   const d = new Date(ts);

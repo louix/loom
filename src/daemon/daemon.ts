@@ -288,16 +288,25 @@ export class Daemon {
     this.#server.broadcast(frame);
   }
 
-  /** Overlay runtime-only facts on a stored snapshot: git facts + live sub-agents. */
+  /** Overlay runtime-only facts on a stored snapshot: git facts, sub-agents, cache TTL. */
   #enrich(s: SessionSnapshot): SessionSnapshot {
     let out = s;
     const subs = this.#sessions.subagentsOf(s.id);
     if (subs.length > 0) out = { ...out, subagents: subs };
+    const ttlMinutes = s.provider === "claude" ? this.#cacheTtlMinutes : 0;
+    if (ttlMinutes !== out.cache.ttlMinutes) {
+      out = { ...out, cache: { ...out.cache, ttlMinutes } };
+    }
     if (out.worktree) {
       const git = this.#worktrees.facts(out.worktree, out.baseBranch);
       if (git) out = { ...out, git };
     }
     return out;
+  }
+
+  get #cacheTtlMinutes(): number {
+    const ttl = this.config.providers.claude.promptCacheTtl;
+    return ttl === "1h" ? 60 : ttl === "5m" ? 5 : 0;
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {

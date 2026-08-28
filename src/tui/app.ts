@@ -687,7 +687,7 @@ export function App({
       h(
         Box,
         { width: rightW, flexDirection: "column" },
-        h(Detail, { session: sel, width: rightW, queued: sel ? queueFor(state, sel.id) : [] }),
+        h(Detail, { session: sel, width: rightW, queued: sel ? queueFor(state, sel.id) : [], now: Date.now() }),
         showRequest ? h(RequestPanel, { pending: pend, width: rightW }) : null,
         h(EventLog, { state, width: rightW, height: rightLogH, scroll: logScroll, full: false }),
       ),

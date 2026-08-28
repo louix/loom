@@ -6,6 +6,7 @@ import type { EventPush } from "../src/protocol/wire.ts";
 import {
   actionsFor,
   allowedActs,
+  cacheStatus,
   formatEvent,
   groupsOf,
   initialState,
@@ -50,6 +51,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     budget: { maxTokens: null, maxCostUsd: null, maxTurns: null },
     budgetState: "ok",
     subagents: [],
+    cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     git: null,
     createdAt: now,
     updatedAt: now,
@@ -262,6 +264,32 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
 test("actionsFor keeps the salient action first", () => {
   const first = actionsFor(snap({ status: "awaiting_input", awaitReason: "permission" }))[0];
   assert.equal(first?.act, "approve");
+});
+
+test("cacheStatus: unknown without a pinned TTL or a turn", () => {
+  assert.equal(cacheStatus(null, 1000).state, "unknown");
+  assert.equal(cacheStatus(snap({ cache: { ttlMinutes: 0, lastTurnAt: 5000, lastRead: 9, lastWrite: 0 } }), 6000).state, "unknown");
+  assert.equal(cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 0, lastRead: 0, lastWrite: 0 } }), 6000).state, "unknown");
+});
+
+test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () => {
+  const c = snap({ cache: { ttlMinutes: 5, lastTurnAt: 1_000_000, lastRead: 8000, lastWrite: 300 } });
+  const warm = cacheStatus(c, 1_000_000 + 2 * 60_000);
+  assert.equal(warm.state, "warm");
+  assert.equal(warm.remainingMs, 3 * 60_000);
+  assert.equal(warm.lastHit, "hit");
+
+  const cold = cacheStatus(c, 1_000_000 + 6 * 60_000);
+  assert.equal(cold.state, "cold");
+  assert.equal(cold.remainingMs, 0);
+});
+
+test("cacheStatus: lastHit reads the read/write split", () => {
+  const mk = (lastRead: number, lastWrite: number) =>
+    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 1000, lastRead, lastWrite } }), 2000).lastHit;
+  assert.equal(mk(9000, 200), "hit"); // big read → continuation
+  assert.equal(mk(0, 9000), "rewrote"); // all write → prefix was cold
+  assert.equal(mk(0, 0), null);
 });
 
 test("compact only appears once the context meter passes half", () => {

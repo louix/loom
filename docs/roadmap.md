@@ -334,6 +334,19 @@ subagents: true, partialTokens: ? , oneShot: true }`.
 
 ---
 
+## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)
+
+User-requested. `[providers.claude] prompt_cache_ttl` (`5m` / `1h` / `""`,
+default `1h`); the adapter injects `CLAUDE_CODE_PROMPT_CACHE_TTL` into the CLI
+env (which "wins" over settings) so the TTL is known exactly. migration 5 adds
+`usage.last_turn_at` / `last_cache_read` / `last_cache_write`, filled from the
+per-turn `usage` event in the rollup. `SessionSnapshot.cache = { ttlMinutes,
+lastTurnAt, lastRead, lastWrite }` — `ttlMinutes` overlaid by `Daemon.#enrich`
+(claude sessions only). `cacheStatus(snapshot, now)` selector →
+warm/cold/unknown + a `hit`/`rewrote` read of the last turn's split. Detail
+line `cache ⟢ warm ~M:SS · last turn hit`. Estimate only — blind to mid-turn
+refreshes, prefix invalidation, server-side eviction.
+
 ## Rough sequencing notes
 
 - **6** first: self-contained, small SDK spike, and everything after it benefits

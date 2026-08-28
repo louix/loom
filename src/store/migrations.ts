@@ -77,4 +77,11 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN budget_state TEXT NOT NULL DEFAULT 'ok';
   `,
+
+  // 5 — last-turn timing + cache split, for the prompt-cache liveness gauge
+  /* sql */ `
+  ALTER TABLE usage ADD COLUMN last_turn_at    INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE usage ADD COLUMN last_cache_read  INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE usage ADD COLUMN last_cache_write INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

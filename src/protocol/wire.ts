@@ -130,6 +130,12 @@ export interface SessionSnapshot {
   budgetState: "ok" | "warned" | "halted";
   /** Sub-agents this session has spawned (Claude's Task tool). Runtime-only, not persisted. */
   subagents: Array<{ id: string; name: string; active: boolean }>;
+  /**
+   * Prompt-cache liveness inputs. `ttlMinutes` is the configured TTL (5, 60, or
+   * 0 = unknown/CLI-decides); `lastTurnAt` (epoch ms) arms a countdown; the
+   * read/write split of the last turn says whether that turn actually hit cache.
+   */
+  cache: { ttlMinutes: number; lastTurnAt: number; lastRead: number; lastWrite: number };
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;

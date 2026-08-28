@@ -39,6 +39,9 @@ interface UsageRow {
   cost_usd: number;
   cost_source: string;
   turns: number;
+  last_turn_at: number;
+  last_cache_read: number;
+  last_cache_write: number;
   updated_at: number;
 }
 
@@ -72,6 +75,11 @@ export interface UsageDelta {
   /** Absolute values (last-request), not deltas. */
   contextUsed?: number;
   contextLimit?: number;
+  /** Wall-clock of the turn this delta closed — arms the cache countdown. */
+  lastTurnAt?: number;
+  /** This turn's cache read / write token split (absolute, not accumulated). */
+  lastCacheRead?: number;
+  lastCacheWrite?: number;
 }
 
 const ZERO_USAGE: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -228,6 +236,9 @@ export class SessionStore {
            turns = turns + ?,
            context_used = COALESCE(?, context_used),
            context_limit = COALESCE(?, context_limit),
+           last_turn_at = COALESCE(?, last_turn_at),
+           last_cache_read = COALESCE(?, last_cache_read),
+           last_cache_write = COALESCE(?, last_cache_write),
            updated_at = ?
          WHERE session_id = ?`,
       )
@@ -241,6 +252,9 @@ export class SessionStore {
         d.turns ?? 0,
         d.contextUsed ?? null,
         d.contextLimit ?? null,
+        d.lastTurnAt ?? null,
+        d.lastCacheRead ?? null,
+        d.lastCacheWrite ?? null,
         now,
         id,
       );
@@ -365,6 +379,12 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     },
     budgetState: (row.budget_state as SessionSnapshot["budgetState"]) ?? "ok",
     subagents: [], // runtime overlay filled in by the daemon
+    cache: {
+      ttlMinutes: 0, // overlaid from config by the daemon
+      lastTurnAt: usage?.last_turn_at ?? 0,
+      lastRead: usage?.last_cache_read ?? 0,
+      lastWrite: usage?.last_cache_write ?? 0,
+    },
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
