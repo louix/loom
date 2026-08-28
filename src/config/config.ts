@@ -23,6 +23,8 @@ export interface LoomConfig {
       permissionDefault: "default" | "plan" | "acceptEdits" | "bypassPermissions";
       settingSources: string[];
       disableBuiltin: string[];
+      /** Override the Claude Code executable. Empty = discover `claude` on PATH, else the SDK's bundled binary. */
+      cliPath: string;
     };
     adk: {
       model: string;
@@ -53,6 +55,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       permissionDefault: "default",
       settingSources: ["project"],
       disableBuiltin: ["Grep", "Glob"],
+      cliPath: "",
     },
     adk: {
       model: "gemini-2.5-pro",
@@ -140,6 +143,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
         permissionDefault,
         settingSources: strArray(claude["setting_sources"], d.providers.claude.settingSources),
         disableBuiltin: strArray(claude["disable_builtin"], d.providers.claude.disableBuiltin),
+        cliPath: str(claude["cli_path"], d.providers.claude.cliPath),
       },
       adk: {
         model: str(adk["model"], d.providers.adk.model),

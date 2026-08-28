@@ -16,7 +16,10 @@ export class ProviderRegistry {
 
   constructor(config: LoomConfig) {
     this.#config = config;
-    this.#factories.set("claude", () => new ClaudeProvider());
+    this.#factories.set(
+      "claude",
+      () => new ClaudeProvider({ cliPath: config.providers.claude.cliPath }),
+    );
     this.#factories.set("fake", () => new FakeProvider());
   }
 

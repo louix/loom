@@ -156,10 +156,11 @@ export class ClaudeEventMapper {
       out.push({ type: "error", ...base, message: `assistant: ${m.error}`, fatal: false });
     }
     for (const b of blocks(m.message?.content)) {
-      if (b.type === "text" && typeof b.text === "string") {
+      if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
         out.push({ type: "assistant_text", ...base, text: b.text });
-      } else if (b.type === "thinking") {
-        out.push({ type: "thinking", ...base, text: b.thinking ?? b.text ?? "" });
+      } else if (b.type === "thinking" || b.type === "redacted_thinking") {
+        const text = b.thinking ?? b.text ?? "";
+        if (text.length > 0) out.push({ type: "thinking", ...base, text });
       } else if (b.type === "tool_use") {
         out.push({
           type: "tool_call",

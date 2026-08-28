@@ -17,6 +17,9 @@ model              = "claude-sonnet-5"
 permission_default = "default"      # default | plan | acceptEdits | bypassPermissions
 setting_sources    = ["project"]   # loads CLAUDE.md / project settings
 disable_builtin    = ["Grep", "Glob"]
+cli_path           = ""            # "" = use `claude` on PATH, else the SDK's bundled
+                                   # binary. Set this where the bundled ELF won't run
+                                   # (NixOS, musl, minimal containers).
 
 [providers.adk]                     # future — not wired in V1
 model = "gemini-2.5-pro"

@@ -21,6 +21,7 @@ import type { HarnessEvent } from "../../protocol/events.ts";
 import { makeLogger, type Logger } from "../../util/logger.ts";
 import { AsyncChannel } from "../../util/channel.ts";
 import { ClaudeEventMapper } from "./map.ts";
+import { resolveClaudeCli } from "./cli.ts";
 import type {
   AdapterSnapshot,
   AgentProvider,
@@ -107,8 +108,9 @@ class ClaudeSession implements AgentSession {
   }
 
   /** Build the `query()` and start pumping its messages into the outbox. */
-  start(opts: CreateSessionOptions, resume?: string): void {
-    this.#inbox.push(userMessage(opts.prompt));
+  start(opts: CreateSessionOptions, extra: { resume?: string; cli?: string } = {}): void {
+    const { resume, cli } = extra;
+    if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
       const reqId = ctx.toolUseID || ctx.requestId;
@@ -134,6 +136,7 @@ class ClaudeSession implements AgentSession {
       includePartialMessages: false,
       mcpServers: mcpConfig(opts.mcpServers),
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
+      ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(resume ? { resume } : {}),
       ...(opts.disableTools && opts.disableTools.length > 0
@@ -258,17 +261,40 @@ class ClaudeSession implements AgentSession {
 
 // ---------------------------------------------------------------------------
 
+export interface ClaudeProviderOptions {
+  /** `providers.claude.cli_path` — "" means discover / bundled. */
+  cliPath?: string;
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly id = "claude";
   readonly capabilities = CAPS;
 
+  readonly #cliPathOption: string;
+  #cli: string | undefined;
+  #cliResolved = false;
+
+  constructor(opts: ClaudeProviderOptions = {}) {
+    this.#cliPathOption = opts.cliPath ?? "";
+  }
+
+  #resolveCli(): string | undefined {
+    if (!this.#cliResolved) {
+      this.#cli = resolveClaudeCli(this.#cliPathOption);
+      this.#cliResolved = true;
+    }
+    return this.#cli;
+  }
+
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
+    const cli = this.#resolveCli();
     const s = new ClaudeSession(opts);
-    s.start(opts);
+    s.start(opts, { ...(cli ? { cli } : {}) });
     return s;
   }
 
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    const cli = this.#resolveCli();
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
       cwd: ref.cwd,
@@ -278,7 +304,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.model ? { model: ref.model } : {}),
     };
     const s = new ClaudeSession(opts);
-    s.start(opts, ref.providerRef);
+    s.start(opts, { resume: ref.providerRef, ...(cli ? { cli } : {}) });
     return s;
   }
 

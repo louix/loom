@@ -106,6 +106,9 @@ export class SessionManager {
     try {
       for await (const raw of run.session.events()) {
         const ev = { ...raw, ordinal: run.ordinal++ } as HarnessEvent;
+        if (ev.type === "error" && ev.fatal) {
+          this.#hooks.log.warn("session error", { id, message: ev.message });
+        }
         this.#hooks.emitEvent(ev);
         this.#trackPerms(run, ev);
         this.#trackUsage(id, ev);
