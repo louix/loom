@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+# Loom runtime state — created per repo the daemon runs in
+.loom/daemon.sock
+.loom/daemon.pid
+.loom/loom.db
+.loom/loom.db-journal
+.loom/loom.db-wal
+.loom/loom.db-shm
+.loom/trees/
