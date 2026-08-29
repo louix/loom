@@ -8,8 +8,9 @@ the Vercel AI SDK.
 
 > Codename "Loom" — rename freely. The design is whatever's written here and in
 > `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-9**
-> plus **milestone 10a** (aisdk provider skeleton — streaming, usage/cost,
-> cancel, resume; tools land in 10b–d).
+> plus **milestone 10a–b** (aisdk provider: streaming, usage/cost, cancel,
+> resume, and multi-step tool use through the permission gate; hand-built
+> Bash/Edit and plan mode land in 10c–d).
 
 ## Status — milestones 1-9
 
@@ -129,11 +130,19 @@ you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `[providers.<id>]` block with `adapter = "aisdk"` (base_url, api_key_env, model,
 models) registers a provider backed by the Vercel AI SDK — OpenAI, GLM, DeepSeek,
 OpenRouter, a local vLLM / Ollama. `default_provider` picks which one new
-sessions use. **10a** (shipped) covers streaming, token usage + price-table
-cost, cancel, and resume (Loom persists the transcript in `provider_messages`);
-sessions run without tools until **10b–d** add the MCP client, a hand-built Bash
-and Edit, plan mode, compaction, and sub-agents. Cache-liveness in the UI stays
-Claude-only (OpenAI-compatible endpoints cache server-side with no TTL to show).
+sessions use. Loom persists the transcript itself in `provider_messages`.
+
+- **10a** — streaming, token usage + price-table cost, cancel, resume.
+- **10b** — multi-step tool use. MCP servers (`[[mcp]]`) connect through
+  `@ai-sdk/mcp`; the `loom` `ask_user` / `commit` tools are native. Every tool
+  call runs through the same permission gate as Claude: read-ish tools pass,
+  edits and commands surface a `permission_request` (or run straight through in
+  `acceptEdits` / `auto`). A denied call is fed back as a tool error.
+- **10c–d** — a hand-built persistent-shell Bash and fuzzy-match Edit; then plan
+  mode, compaction, and sub-agents.
+
+Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
+server-side with no TTL to show).
 
 **Sub-agents.** When a session's agent spawns a sub-agent (Claude's `Task`
 tool), the Detail pane shows `⑂ 1/2 sub-agents · reviewer, tester ✓` and the
@@ -259,7 +268,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 178 cases
+npm test             # node:test — 187 cases
 ```
 
 ### Layout

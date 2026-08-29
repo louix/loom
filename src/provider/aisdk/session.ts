@@ -1,18 +1,21 @@
 /**
  * An `AgentSession` over an OpenAI-compatible model. Loom owns everything the
- * Claude CLI would otherwise own: the `ModelMessage[]`, its persistence, and
- * per-turn lifecycle. `events()` is a single channel that stays open across
- * turns and closes only on `close()`.
+ * Claude CLI would otherwise own: the `ModelMessage[]`, its persistence, tool
+ * wiring, the permission gate, and per-turn lifecycle. `events()` is a single
+ * channel that stays open across turns and closes only on `close()`.
  *
- * M10a scope: single tool-free step per turn, no compaction, no plan review.
- * Those arrive in M10b–d.
+ * M10b: multi-step turns with MCP + `loom` tools, each routed through the
+ * permission gate. Still no compaction, plan review, or sub-agents (M10d).
  */
-import type { LanguageModel, ModelMessage } from "ai";
+import { randomUUID } from "node:crypto";
+import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import type { HarnessEvent } from "../../protocol/events.ts";
 import { AsyncChannel } from "../../util/channel.ts";
+import { makeLogger, type Logger } from "../../util/logger.ts";
 import type {
   AdapterSnapshot,
   AgentSession,
+  McpServerHandle,
   PermissionDecision,
   PlanDecision,
   SessionMode,
@@ -20,10 +23,14 @@ import type {
 } from "../types.ts";
 import { AisdkEventMapper } from "./map.ts";
 import { runTurn } from "./loop.ts";
+import { McpHub } from "./mcp.ts";
+import { buildLoomTools } from "./loom-tools.ts";
+import { wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
 import { contextLimitFor } from "./tokens.ts";
 
-const MAX_STEPS_M10A = 1;
+/** Hard ceiling on tool round-trips within one turn. */
+const MAX_STEPS = 24;
 
 export interface AisdkSessionOptions {
   sessionId: string;
@@ -33,10 +40,17 @@ export interface AisdkSessionOptions {
   system: string | undefined;
   messages: ModelMessage[];
   mode: SessionMode;
+  /** The session's worktree — `cwd` for the `commit` tool. */
+  cwd: string;
+  /** Vendor-neutral MCP servers to connect for this session. */
+  mcpHandles: McpServerHandle[];
+  /** Mount the `loom` tools (ask_user, commit). */
+  loomServer: boolean;
   /** null for a throwaway one-shot. */
   store: ProviderMessageStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
   oneShot: boolean;
+  log?: Logger;
 }
 
 export class AisdkSession implements AgentSession {
@@ -47,8 +61,12 @@ export class AisdkSession implements AgentSession {
   readonly #makeModel: (id: string) => LanguageModel;
   readonly #system: string | undefined;
   #mode: SessionMode;
+  readonly #cwd: string;
+  readonly #mcpHandles: McpServerHandle[];
+  readonly #loomServer: boolean;
   readonly #store: ProviderMessageStore | null;
   readonly #oneShot: boolean;
+  readonly #log: Logger;
 
   readonly #messages: ModelMessage[];
   readonly #outbox = new AsyncChannel<HarnessEvent>();
@@ -58,6 +76,11 @@ export class AisdkSession implements AgentSession {
   #closing = false;
   #snap: AdapterSnapshot;
 
+  #hub: McpHub | null = null;
+  #toolsPromise: Promise<ToolSet> | null = null;
+  readonly #pendingPerms = new Map<string, (d: { allow: boolean; message?: string }) => void>();
+  readonly #pendingQuestions = new Map<string, (answer: string) => void>();
+
   constructor(opts: AisdkSessionOptions) {
     this.id = opts.sessionId;
     this.#modelId = opts.modelId;
@@ -65,8 +88,12 @@ export class AisdkSession implements AgentSession {
     this.#model = opts.makeModel(opts.modelId);
     this.#system = opts.system;
     this.#mode = opts.mode;
+    this.#cwd = opts.cwd;
+    this.#mcpHandles = opts.mcpHandles;
+    this.#loomServer = opts.loomServer;
     this.#store = opts.store;
     this.#oneShot = opts.oneShot;
+    this.#log = opts.log ?? makeLogger("aisdk").child(opts.sessionId.slice(0, 8));
     this.#messages = [...opts.messages];
     this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId);
     this.#snap = {
@@ -112,16 +139,27 @@ export class AisdkSession implements AgentSession {
     throw new Error("compaction for the aisdk provider lands in milestone 10d");
   }
 
-  async respondToPermission(_id: string, _decision: PermissionDecision): Promise<void> {
-    // No tools in M10a — nothing is ever pending.
+  async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
+    const resolve = this.#pendingPerms.get(id);
+    if (!resolve) return; // already resolved / unknown — first writer won
+    this.#pendingPerms.delete(id);
+    resolve(
+      decision.behavior === "allow"
+        ? { allow: true }
+        : { allow: false, ...(decision.message ? { message: decision.message } : {}) },
+    );
   }
 
-  async answerQuestion(_id: string, _text: string): Promise<void> {
-    // No `ask_user` tool in M10a.
+  async answerQuestion(id: string, text: string): Promise<void> {
+    const resolve = this.#pendingQuestions.get(id);
+    if (!resolve) return;
+    this.#pendingQuestions.delete(id);
+    this.#emit({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
+    resolve(text);
   }
 
   async respondToPlan(_id: string, _decision: PlanDecision): Promise<void> {
-    // No plan review in M10a.
+    // No plan review until M10d.
   }
 
   async interrupt(): Promise<void> {
@@ -150,6 +188,11 @@ export class AisdkSession implements AgentSession {
     this.#closing = true;
     this.#abort?.abort();
     await this.#turn?.catch(() => {});
+    for (const [, r] of this.#pendingPerms) r({ allow: false, message: "the session was closed" });
+    this.#pendingPerms.clear();
+    for (const [, r] of this.#pendingQuestions) r("(the session was closed before the user answered)");
+    this.#pendingQuestions.clear();
+    await this.#hub?.close().catch(() => {});
     this.#outbox.close();
   }
 
@@ -171,8 +214,72 @@ export class AisdkSession implements AgentSession {
     this.#outbox.push(ev);
   }
 
+  /** Connect MCP servers + assemble the gated tool set. Memoized. */
+  #ensureTools(): Promise<ToolSet> {
+    if (!this.#toolsPromise) {
+      this.#toolsPromise = (async () => {
+        const base: ToolSet = {};
+        if (this.#mcpHandles.length > 0) {
+          this.#hub = await McpHub.connect(this.#mcpHandles, this.#log);
+          Object.assign(base, this.#hub.tools);
+        }
+        if (this.#loomServer) {
+          Object.assign(
+            base,
+            buildLoomTools({
+              cwd: this.#cwd,
+              askUser: (q, c) => this.#askUser(q, c),
+            }),
+          );
+        }
+        return wrapToolSet(base, {
+          mode: () => this.#mode,
+          ask: (name, input, toolCallId) => this.#requestPermission(name, input, toolCallId),
+        });
+      })();
+    }
+    return this.#toolsPromise;
+  }
+
+  #askUser(question: string, context: string | undefined): Promise<string> {
+    const id = randomUUID();
+    return new Promise<string>((resolve) => {
+      this.#pendingQuestions.set(id, resolve);
+      this.#emit({
+        type: "question",
+        sessionId: this.id,
+        ts: Date.now(),
+        id,
+        question,
+        ...(context ? { context } : {}),
+      });
+    });
+  }
+
+  #requestPermission(
+    toolName: string,
+    input: unknown,
+    toolCallId: string,
+  ): Promise<{ allow: boolean; message?: string }> {
+    const id = toolCallId || randomUUID();
+    return new Promise((resolve) => {
+      this.#pendingPerms.set(id, resolve);
+      this.#emit({
+        type: "permission_request",
+        sessionId: this.id,
+        ts: Date.now(),
+        id,
+        tool: toolName,
+        input,
+      });
+    });
+  }
+
   async #runTurn(): Promise<void> {
     if (this.#closing) return;
+    const tools = await this.#ensureTools();
+    if (this.#closing) return;
+
     const abort = new AbortController();
     this.#abort = abort;
     this.#snap.status = "running";
@@ -182,7 +289,8 @@ export class AisdkSession implements AgentSession {
       model: this.#model,
       system: this.#system,
       messages: this.#messages,
-      maxSteps: MAX_STEPS_M10A,
+      ...(Object.keys(tools).length > 0 ? { tools } : {}),
+      maxSteps: MAX_STEPS,
       abortSignal: abort.signal,
       mapper: this.#mapper,
       hooks: {

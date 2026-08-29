@@ -80,6 +80,9 @@ export class AisdkProvider implements AgentProvider {
         system: opts.systemPromptAppend,
         messages,
         mode: opts.mode,
+        cwd: opts.cwd,
+        mcpHandles: [],
+        loomServer: false,
         store: null,
         oneShot: true,
       });
@@ -95,6 +98,9 @@ export class AisdkProvider implements AgentProvider {
       system: opts.systemPromptAppend,
       messages,
       mode: opts.mode,
+      cwd: opts.cwd,
+      mcpHandles: opts.mcpServers,
+      loomServer: opts.loomServer ?? false,
       store: this.#store,
       oneShot: false,
     });
@@ -111,6 +117,9 @@ export class AisdkProvider implements AgentProvider {
       system: undefined,
       messages,
       mode: ref.mode ?? "default",
+      cwd: ref.cwd,
+      mcpHandles: [],
+      loomServer: true,
       store: this.#store,
       oneShot: false,
     });

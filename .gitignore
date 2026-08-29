@@ -10,3 +10,5 @@ dist/
 .loom/loom.db-wal
 .loom/loom.db-shm
 .loom/trees/
+
+credentials

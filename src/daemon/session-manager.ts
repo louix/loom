@@ -157,7 +157,11 @@ export class SessionManager {
   #trackPerms(run: Running, ev: HarnessEvent): void {
     if (ev.type === "permission_request") {
       run.pendingPerms.add(ev.id);
-    } else if (ev.type === "tool_call" || ev.type === "tool_result") {
+    } else if (ev.type === "tool_result") {
+      // Not `tool_call`: the aisdk adapter emits the tool_call *before* the
+      // permission_request (the gate runs inside the tool's executor), so only
+      // the result reliably marks the request done. Claude emits them the other
+      // way round, and clearing on the result works there too.
       run.pendingPerms.delete(ev.id);
     }
   }

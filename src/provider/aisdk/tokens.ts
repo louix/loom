@@ -15,28 +15,40 @@ export const MODEL_CONTEXT: Array<[prefix: string, limit: number]> = [
   ["gpt-5", 400_000],
   ["gpt-4.1", 1_047_576],
   ["gpt-4o", 128_000],
+  ["gpt-oss", 128_000],
   ["o4", 200_000],
   ["o3", 200_000],
-  ["deepseek-reasoner", 128_000],
-  ["deepseek-chat", 128_000],
+  ["deepseek", 128_000],
   ["glm-4.6", 200_000],
-  ["glm-4.5", 128_000],
-  ["glm-4", 128_000],
-  ["qwen", 128_000],
+  ["glm-5", 200_000],
+  ["glm", 128_000],
+  ["z-ai/glm", 200_000],
+  ["qwen", 256_000],
   ["llama", 128_000],
-  ["kimi", 128_000],
-  ["moonshot", 128_000],
+  ["kimi", 256_000],
+  ["moonshot", 256_000],
+  ["minimax", 1_000_000],
   ["mistral", 128_000],
   ["gemini-2", 1_000_000],
 ];
+
+/**
+ * Model ids often arrive as `vendor/model` (OpenRouter, llmbase). Match against
+ * both the full id and the part after the last slash.
+ */
+function candidates(model: string): string[] {
+  const lower = model.toLowerCase();
+  const slash = lower.lastIndexOf("/");
+  return slash === -1 ? [lower] : [lower, lower.slice(slash + 1)];
+}
 
 export const DEFAULT_CONTEXT_LIMIT = 128_000;
 
 export function contextLimitFor(model: string | null | undefined): number {
   if (!model) return DEFAULT_CONTEXT_LIMIT;
-  const m = model.toLowerCase();
+  const names = candidates(model);
   for (const [prefix, limit] of MODEL_CONTEXT) {
-    if (m.startsWith(prefix)) return limit;
+    if (names.some((n) => n.startsWith(prefix) || n.includes(`/${prefix}`))) return limit;
   }
   return DEFAULT_CONTEXT_LIMIT;
 }

@@ -286,7 +286,7 @@ inside a session card; child sessions are their own rows with a parent link.
 
 ## Milestone 10 — non-Claude providers (Vercel AI SDK)
 
-**Full plan: [`m10-plan.md`](m10-plan.md).** M10a shipped; M10b–e under review.
+**Full plan: [`m10-plan.md`](m10-plan.md).** M10a+M10b shipped; M10c–e under review.
 
 The original sketch here was an **ADK adapter**, on the assumption that TS
 `@google/adk` carries Python ADK's `LiteLlm` wrapper for OpenAI-compatible
@@ -313,7 +313,17 @@ config-declared provider profiles.
 single tool-free `streamText` step per turn; `fullStream`→`HarnessEvent` with a
 cached-token split; `interrupt` via `AbortController`; transcript in
 `provider_messages` (migration 6), reloaded by `resumeSession`; one-shot path so
-auto-titling covers aisdk. Cost rides the existing price-table path. 178 tests.
+auto-titling covers aisdk. Cost rides the existing price-table path.
+
+**M10b — shipped.** `@ai-sdk/mcp@^0.0.31` client (`mcp.ts` `McpHub`: stdio +
+HTTP, tool merge, teardown, skip-on-failure); `loom` `ask_user`/`commit` as
+native `tool()` defs (`loom-tools.ts`); permission gate + mode filter
+(`gate.ts`: readonly/edit name heuristics, `policy`, `wrapToolSet` →
+`permission_request`, deny throws so the model sees a tool error); multi-step
+turns; daemon mounts loom + MCP for aisdk with an `AISDK_SYSTEM` prompt;
+`SessionManager.#trackPerms` clears on `tool_result` only. Verified live against
+an OpenAI-compatible endpoint editing a file via the official filesystem MCP
+server. 187 tests.
 
 ---
 

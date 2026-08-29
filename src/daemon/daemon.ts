@@ -52,6 +52,19 @@ const TOOL_STEER = [
   "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping.",
 ].join("\n");
 
+/**
+ * System prompt for aisdk (OpenAI-compatible) sessions. There is no
+ * "claude_code" base preset to append to, so this stands alone; it is followed
+ * by {@link TOOL_STEER} when MCP servers are mounted.
+ */
+const AISDK_SYSTEM = [
+  "You are a coding agent working in a git worktree under Loom, a fleet supervisor.",
+  "Work autonomously toward the user's goal: inspect the repo before changing it, make focused edits, and explain what you did concisely.",
+  "You have tools for reading and editing files, searching, and committing. Call them rather than guessing file contents.",
+  "Some tool calls need the user's approval — if one is denied, adapt instead of retrying it unchanged.",
+  "When you are blocked on a decision only the user can make, use `ask_user`.",
+].join("\n");
+
 const VALID_STATUSES: readonly SessionStatus[] = [
   "starting",
   "awaiting_input",
@@ -542,15 +555,20 @@ export class Daemon {
       });
 
       const isClaude = providerId === "claude";
+      const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
+      const mcpHandles = this.#mcpHandles();
+      const aisdkSystem =
+        mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
       const opts: CreateSessionOptions = {
         sessionId: id,
         cwd: wt.path,
         prompt,
         mode,
-        mcpServers: this.#mcpHandles(),
+        mcpServers: mcpHandles,
         disableTools: this.config.providers.claude.disableBuiltin,
         settingSources: this.config.providers.claude.settingSources,
         ...(isClaude ? { loomServer: true, systemPromptAppend: TOOL_STEER } : {}),
+        ...(isAisdk ? { loomServer: true, systemPromptAppend: aisdkSystem } : {}),
         ...(model ? { model } : {}),
         ...(parentId ? { parentId } : {}),
         ...(budget

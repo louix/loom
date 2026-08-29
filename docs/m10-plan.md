@@ -44,6 +44,7 @@ MCP transport.
 |---|---|
 | `ai` | **pinned to the v5 line** (`^5.0.249`, dist-tag `ai-v5`). v6/v7 exist but v5's `LanguageModelV2` usage is a flat `{ inputTokens, outputTokens, cachedInputTokens }` and its `fullStream` parts are stable and well-documented; bump later as a focused upgrade. `streamText`, `stepCountIs`, `tool`, `experimental_createMCPClient`. |
 | `@ai-sdk/openai-compatible` | `^1.0.52` (dist-tag `ai-v5`) — `createOpenAICompatible({ name, baseURL, apiKey })` → GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI itself. Dedicated package, cleaner than `@ai-sdk/openai`'s helper. |
+| `@ai-sdk/mcp` | `^0.0.31` (dist-tag `ai-v5` — matches `@ai-sdk/provider@2` / `-utils@3`). `experimental_createMCPClient`; stdio transport from the `@ai-sdk/mcp/mcp-stdio` subpath (`Experimental_StdioMCPTransport`). MCP moved out of `ai` core after v4. |
 | `@ai-sdk/anthropic` / `@ai-sdk/google` | follow-ups, not in M10 |
 | `zod` | **already a dependency** (`^4.4.3`) |
 | official MCP servers | `@modelcontextprotocol/server-filesystem`, `-git`, `-fetch` — spawned as subprocesses, not linked (M10b) |
@@ -303,8 +304,8 @@ Commit as each lands. **Stop for review after M10a.**
 | # | deliverable | tests |
 |---|---|---|
 | **M10a** ✓ | aisdk provider skeleton: `[providers.<id>]` profiles + `default_provider`, `AisdkProvider`/`AisdkSession` over `createOpenAICompatible`, `streamText` single-step loop, `fullStream`→`HarnessEvent` mapper, usage with cached-token split, price-table cost (existing daemon path), `interrupt` via `AbortController`, resume via `provider_messages` (migration 6), registry built from config, one-shot path so auto-titling works. **No tools.** | `test/aisdk.test.ts` (mapper shapes, `runTurn`, session create/interrupt/resume, SessionManager rollup) + `test/config.test.ts` (profile parsing). `MockLanguageModelV2` from `ai/test`. |
-| **M10b** | MCP client (`experimental_createMCPClient`), `McpServerHandle` mapping, process supervision, default server set, the `loom` server exposed as tools | fake stdio MCP server in-test; tool discovery + call + teardown; zombie check |
-| **M10c** | hand-built `bash.ts` + `edit.ts`; the `execute` wrapper (mode filter + permission gate); `Grep`/`TodoWrite` first-party; parity checklist green | Edit match tiers; Bash cwd/env persistence + timeout + cap; gate allow/deny path |
+| **M10b** ✓ | MCP client via `@ai-sdk/mcp@^0.0.31` (`experimental_createMCPClient` + `Experimental_StdioMCPTransport` from `@ai-sdk/mcp/mcp-stdio`); `McpHub` maps `McpServerHandle[]` (stdio + streamable-HTTP), merges tools (namespaced on collision), tears clients down on `close()`, skips a server that won't start. `loom` `ask_user` / `commit` as native `tool()` defs (`loom-tools.ts`, reusing `commitInWorktree`). **Permission gate + mode filter** (`gate.ts`): name-heuristic readonly/edit classification, `policy(mode,name)` → allow/ask, `wrapToolSet` routes every executable tool through a `permission_request`; a denied call throws so the model sees a tool error. Multi-step turns (`maxSteps` 24). Daemon mounts `loomServer` + MCP for aisdk with an `AISDK_SYSTEM` prompt. `SessionManager.#trackPerms` clears on `tool_result` only (aisdk emits `tool_call` before `permission_request`). | `test/aisdk-tools.test.ts` (McpHub via `test/fixtures/fake-mcp-server.mjs`; gate heuristics/policy/deny; session round-trips for a gated MCP call, a denial, `ask_user`, and `auto` mode) |
+| **M10c** | hand-built `bash.ts` + `edit.ts` on top of the M10b gate; `Grep`/`TodoWrite` first-party; parity checklist green | Edit match tiers; Bash cwd/env persistence + timeout + cap |
 | **M10d** | mode enforcement (`plan` withholds mutators + `exit_plan` → `plan_review`; `acceptEdits`; `auto`); Loom-side compaction + `tokens.ts`; `Task` subagents | plan-mode blocks Write then implements on `respondToPlan`; compaction rewrites the tail + emits `compact`; subagent start/stop on snapshot |
 | **M10e** | provider/model switching: config profiles + `adapter` key, registry from config, creation provider+model steps, `M` live-switch, `session.setModel` RPC, migration 6 (`sessions.model`), Detail `engine` line, Fleet provider tag, `loom models` CLI | config parse of profiles; registry construction; reducer for the two new creation steps + the `M` picker; RPC round-trip; render test for the `engine` line |
 
@@ -335,6 +336,10 @@ Commit as each lands. **Stop for review after M10a.**
 - **No prompt-cache control** — long non-Claude sessions cost more than the
   equivalent Claude session and the TUI can't show a cache countdown for them.
   Documented, not fixable from our side.
+- **Resume drops external MCP servers** — `resumeSession` remounts only the
+  `loom` tools, matching the Claude adapter's own limitation (`SessionRef`
+  carries no MCP handles). A resumed aisdk coding session has no filesystem
+  tools until the seam grows an `mcpServers` field. Follow-up.
 
 ## Non-goals for M10
 
