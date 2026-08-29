@@ -16,7 +16,7 @@ commands:
   ls                     list sessions in fleet-view order
   get <id>               one session's snapshot
   history <id>           status history for a session
-  providers              list configured providers (* = default)
+  providers              list configured providers
   models <provider>      query an aisdk provider's /models endpoint
   config                 lint the loaded config (exit 1 if there are warnings)
   ping                   round-trip latency to the daemon
@@ -44,7 +44,52 @@ commands:
   emit <id> <type>       inject a synthetic event         [--text T]
   stop                   shut the daemon down
 
-The daemon starts automatically on first use.`;
+The daemon starts automatically on first use.
+Run 'loom <command> --help' for detail on one command.`;
+
+/** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
+ *  here fall back to the top-level HELP. */
+const USAGE: Record<string, string> = {
+  run: `loom run <prompt...>  — start a session
+
+  --provider P                 provider id (see \`loom providers\`); default from config
+  --model M                    model id; default from the provider
+  --mode default|plan|acceptEdits|auto
+  --in-place                   work in the repo, no worktree (overrides [worktree] enabled)
+  --worktree                   force an isolated worktree + branch
+  --repo <path>                act on the daemon for another repo`,
+  providers: `loom providers  — list configured providers
+
+  one row per [providers.*] / [custom-provider.*] / [anthropic] / [google] table.
+  "[default]" marks the one \`run\` uses without --provider.
+  --json                       machine-readable`,
+  models: `loom models <provider>  — probe a provider's /models endpoint
+
+  works for openai-compatible providers ([custom-provider.*] and the built-in
+  openai profile). Prints one model id per line.  --json for an array.`,
+  config: `loom config  — lint the loaded config
+
+  reports unset api_key_env vars, providers with no key, keyless search
+  backends, and model auto-detection notes. Exit 1 if there are any warnings.`,
+  send: `loom send <id> <text...>  — send a follow-up turn, or answer a question
+
+  if the session is mid-turn the text is injected after the current tool call.`,
+  plan: `loom plan <id> <reqId> <what> [text...]  — resolve a plan review
+
+  what:
+    implement                  proceed in the current context
+    fresh                      compact to the plan + goal, then implement
+    revise <plan...>           replace the plan and implement it
+    discuss <msg...>           reply; the agent stays in plan mode`,
+  gc: `loom gc  — remove worktrees for done sessions (branches kept)
+
+  --id ONE                     just this session (may also target an error row)
+  --force                      remove even a dirty worktree`,
+  rm: `loom rm <id>  — delete a session for good
+
+  closes any live run, removes the worktree (not the repo root for an in-place
+  session), drops the row and its stored transcript. The branch is left.`,
+};
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -69,7 +114,9 @@ async function main(): Promise<void> {
 
   if (values.version) return void process.stdout.write(`loom ${LOOM_VERSION}\n`);
   const cmd = positionals[0];
-  if (values.help) return void process.stdout.write(HELP + "\n");
+  if (values.help) {
+    return void process.stdout.write((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
+  }
 
   const isTty = Boolean(process.stdout.isTTY && process.stdin.isTTY);
   const wantTui = cmd === "tui" || (!cmd && isTty);
@@ -132,7 +179,7 @@ async function main(): Promise<void> {
         else
           for (const p of rows)
             process.stdout.write(
-              `${p.isDefault ? "* " : "  "}${p.id}${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
+              `  ${p.id}${p.isDefault ? " [default]" : ""}${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
             );
         break;
       }

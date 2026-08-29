@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { deepMerge, lintConfig, loadConfig, normalizeConfig, resolveApiKey } from "../src/config/config.ts";
+import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "../src/util/paths.ts";
 
 function cfg(toml: string) {
   return normalizeConfig(parseToml(toml));
@@ -307,4 +308,29 @@ max_results = 8
   assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);
+});
+
+// --- first-run scaffold ----------------------------------------------------
+
+test("scaffoldUserConfig drops the example at the XDG path once, never overwriting", () => {
+  const saved = process.env["XDG_CONFIG_HOME"];
+  const dir = mkdtempSync(join(tmpdir(), "loom-scaffold-"));
+  process.env["XDG_CONFIG_HOME"] = dir;
+  try {
+    const dest = userConfigPath();
+    assert.ok(dest.startsWith(dir));
+
+    const created = scaffoldUserConfig();
+    assert.equal(created, dest);
+    assert.equal(readFileSync(dest, "utf8"), readFileSync(exampleConfigPath(), "utf8"));
+
+    // idempotent: a second call is a no-op and leaves edits intact
+    writeFileSync(dest, "base_branch = \"trunk\"\n");
+    assert.equal(scaffoldUserConfig(), null);
+    assert.match(readFileSync(dest, "utf8"), /trunk/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    if (saved === undefined) delete process.env["XDG_CONFIG_HOME"];
+    else process.env["XDG_CONFIG_HOME"] = saved;
+  }
 });

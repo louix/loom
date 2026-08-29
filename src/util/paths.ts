@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -11,6 +11,32 @@ import { dirname, join, resolve } from "node:path";
 export function userConfigPath(): string {
   const base = process.env["XDG_CONFIG_HOME"]?.trim() || join(homedir(), ".config");
   return join(base, "loom", "config.toml");
+}
+
+/** The `config.example.toml` shipped alongside the source. */
+export function exampleConfigPath(): string {
+  return join(import.meta.dirname, "..", "..", "config.example.toml");
+}
+
+/**
+ * First-run convenience: drop a copy of `config.example.toml` at
+ * {@link userConfigPath} when nothing is there yet, so `loom` has an obvious,
+ * annotated place to configure providers. Never overwrites an existing file.
+ * Returns the path when it created one, `null` otherwise (already present, or
+ * the example couldn't be read).
+ */
+export function scaffoldUserConfig(): string | null {
+  const dest = userConfigPath();
+  if (existsSync(dest)) return null;
+  const src = exampleConfigPath();
+  if (!existsSync(src)) return null;
+  try {
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    return dest;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
-import { ensureLoomDir, loomPaths, userConfigPath, type LoomPaths } from "../util/paths.ts";
+import {
+  ensureLoomDir,
+  loomPaths,
+  scaffoldUserConfig,
+  userConfigPath,
+  type LoomPaths,
+} from "../util/paths.ts";
 import {
   lintConfig,
   loadConfig,
@@ -152,6 +158,13 @@ export class Daemon {
     setLogFile(this.paths.log);
     this.#log = makeLogger("daemon");
 
+    // First real launch on a machine with no user config: leave an annotated
+    // starter at ~/.config/loom/config.toml. Skipped for standalone (test /
+    // embedded) daemons so an isolated XDG dir stays empty.
+    if (!this.#standalone) {
+      const created = scaffoldUserConfig();
+      if (created) this.#log.info("wrote a starter config", { path: created });
+    }
     this.config = loadConfig(this.paths.config, userConfigPath());
     this.#pricing = loadPriceTable(resolveAgainstRepo(opts.repoRoot, this.config.pricing.table));
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
