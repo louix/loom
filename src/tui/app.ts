@@ -236,6 +236,40 @@ export function App({
       if (name === "help") return void dispatch({ t: "help", value: state.mode !== "help" });
       if (name === "quit") return quitTui();
       if (!s) return;
+      if (name === "undo") {
+        const sid = s.id;
+        const turns = s.turns;
+        client
+          .request<Array<{ turn: number; userText: string; rewindCostUsd: number }>>(
+            "session.checkpoints",
+            { id: sid },
+          )
+          .then((cps) => {
+            const items = cps
+              .filter((c) => c.turn < turns)
+              .map((c) => ({
+                id: String(c.turn),
+                label: `turn ${c.turn} · ${c.userText || "(no message)"}`,
+                ...(c.rewindCostUsd > 0 ? { hint: `~$${c.rewindCostUsd.toFixed(2)} to re-prime` } : {}),
+              }));
+            if (items.length === 0) {
+              return void dispatch({ t: "notice", text: "no earlier turn to undo to", tone: "dim" });
+            }
+            dispatch({
+              t: "openPicker",
+              picker: makePicker({
+                kind: "undo",
+                title: `undo · ${shortId(sid)}`,
+                items,
+                ctx: { liveSessionId: sid },
+              }),
+            });
+          })
+          .catch((e: unknown) =>
+            dispatch({ t: "notice", text: e instanceof Error ? e.message : String(e), tone: "bad" }),
+          );
+        return;
+      }
       switch (name) {
         case "approve": {
           const requestId = pendingFor(state, s.id).permission;
@@ -376,6 +410,20 @@ export function App({
           model: cur.id,
         }),
       });
+    }
+
+    if (p.kind === "undo") {
+      const id = p.ctx?.liveSessionId;
+      const toTurn = Number(cur.id);
+      dispatch({ t: "closePicker" });
+      if (!id) return;
+      client
+        .request("session.rewind", { id, toTurn, by: client.clientId })
+        .then(() => dispatch({ t: "notice", text: `rewound to turn ${toTurn}`, tone: "good" }))
+        .catch((e: unknown) =>
+          dispatch({ t: "notice", text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+        );
+      return;
     }
 
     // find
@@ -768,6 +816,7 @@ export function App({
       r: "resume",
       x: "done",
       c: "compact",
+      u: "undo",
       e: "title",
       b: "budget",
       n: "new",

@@ -190,6 +190,16 @@ export class AisdkSession implements AgentSession {
     await this.#turn?.catch(() => {});
   }
 
+  /** Undo: keep the first `keep` messages, discard the rest (in memory + store). */
+  async rewind(keep: number): Promise<void> {
+    if (this.#closing) throw new Error("session is closing");
+    await this.#turn?.catch(() => {});
+    const n = Math.max(0, Math.min(this.#messages.length, keep));
+    this.#messages.length = n;
+    this.#store?.replaceFrom(this.id, n, []);
+    this.#snap.status = "idle";
+  }
+
   async setMode(mode: SessionMode): Promise<void> {
     this.#mode = mode;
     this.#snap.mode = mode;

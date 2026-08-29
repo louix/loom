@@ -42,6 +42,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
     id: over.id ?? `s${now}`,
     parentId: null,
+    forkTurn: null,
     provider: "fake",
     model: null,
     mode: "default",

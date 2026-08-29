@@ -41,6 +41,7 @@ import type {
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
   forking: true,
+  rewind: false, // F3: resumeSessionAt / resumeDropsTurn
   subagents: true,
   compaction: true,
   oneShot: true,
@@ -326,6 +327,10 @@ class ClaudeSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     await this.#query?.interrupt();
+  }
+
+  async rewind(_keep: number): Promise<void> {
+    throw new Error("rewind for Claude sessions lands in fork-tree F3 (resumeSessionAt)");
   }
 
   async setMode(mode: SessionMode): Promise<void> {

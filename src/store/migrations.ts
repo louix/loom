@@ -98,4 +98,22 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (session_id, seq)
   );
   `,
+
+  // 7 — per-turn checkpoints (undo / fork). One row per completed turn; the
+  // daemon writes it on each \`result\`. \`fork_point\` is what an adapter needs to
+  // rewind or branch at that turn — the provider_messages seq for aisdk, the
+  // turn's last chain UUID for the Claude adapter. \`fork_turn\` on \`sessions\`
+  // records where a hard fork branched from its parent (null = a root session).
+  /* sql */ `
+  CREATE TABLE checkpoints (
+    session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn         INTEGER NOT NULL,
+    provider_ref TEXT NOT NULL DEFAULT '',
+    fork_point   TEXT NOT NULL DEFAULT '',
+    user_text    TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (session_id, turn)
+  );
+  ALTER TABLE sessions ADD COLUMN fork_turn INTEGER;
+  `,
 ];

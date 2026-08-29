@@ -364,7 +364,16 @@ hook.
 **Resume re-mounts MCP servers (post-M10).** `SessionRef.mcpServers?`; the
 daemon's `session.resume` passes `#mcpHandles()`; both adapters use
 `ref.mcpServers ?? []` instead of a hardcoded `[]`. A resumed session gets its
-configured `[[mcp]]` servers back, not just the `loom` tools. 219 tests.
+configured `[[mcp]]` servers back, not just the `loom` tools.
+
+**Undo — fork-tree F1 (post-M10).** Full plan in
+[`fork-tree-plan.md`](fork-tree-plan.md); the interactive tree was parked
+(doesn't fit a code harness), leaving `undo` + a later `hard fork`. F1:
+migration 7 (`checkpoints` + `sessions.fork_turn`), a checkpoint per `result`,
+`AgentSession.rewind(keep)` + `capabilities.rewind` (aisdk only for now),
+`session.checkpoints` / `session.rewind` RPCs (with a server-side re-prime cost
+estimate), TUI `u` undo picker, `RewindEvent`. Conversation-only — the worktree
+is left as-is. 223 tests.
 
 ---
 

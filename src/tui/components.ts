@@ -736,6 +736,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["a (plan)", "open the plan review — then i / f / e / d to decide"],
   ["s", "send a follow-up turn (running → asap / queue for turn end)"],
   ["c", "compact the context window (shown once the meter passes half)"],
+  ["u", "undo — rewind an idle session to an earlier turn (shows the re-prime cost)"],
   ["⌃x", "clear the selected session's queued messages"],
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
   ["x  ·  e", "mark the session done  ·  rename it"],

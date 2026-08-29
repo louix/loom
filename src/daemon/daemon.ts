@@ -14,7 +14,9 @@ import {
   type SessionSnapshot,
 } from "../protocol/wire.ts";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
-import { ChildStore, type UsageDelta } from "../store/sessions.ts";
+import { ChildStore, CheckpointStore, type UsageDelta } from "../store/sessions.ts";
+import { ProviderMessageStore } from "../provider/aisdk/store.ts";
+import { estimateTokens } from "../provider/aisdk/tokens.ts";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -110,6 +112,10 @@ export class Daemon {
   #db: Db;
   #registry: Registry;
   #children: ChildStore;
+  #checkpoints: CheckpointStore;
+  #pmsgs: ProviderMessageStore;
+  /** Last text sent to each live session — the undo picker's turn snippets. */
+  readonly #lastSend = new Map<string, string>();
   #events: EventLog;
   #server: SocketServer;
   #dispatcher: RpcDispatcher;
@@ -143,6 +149,8 @@ export class Daemon {
     this.#db = openDb(dbPath);
     this.#registry = new Registry(this.#db);
     this.#children = new ChildStore(this.#db);
+    this.#checkpoints = new CheckpointStore(this.#db);
+    this.#pmsgs = new ProviderMessageStore(this.#db);
     this.#events = new EventLog(this.config.daemon.eventBufferSize);
     this.#dispatcher = new RpcDispatcher();
     this.#server = new SocketServer({
@@ -171,6 +179,7 @@ export class Daemon {
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
+        this.#recordCheckpoint(id);
         void this.#maybeAutoTitle(id);
       },
       onSubagents: (id) => {
@@ -439,6 +448,34 @@ export class Daemon {
     return delta;
   }
 
+  #isAisdk(providerId: string): boolean {
+    return this.config.providers.aisdk[providerId] !== undefined;
+  }
+
+  /** Snapshot a completed turn so it can be rewound / forked from later. */
+  #recordCheckpoint(id: string): void {
+    const snap = this.#registry.get(id);
+    if (!snap || snap.turns <= 0) return;
+    const forkPoint = this.#isAisdk(snap.provider) ? String(this.#pmsgs.count(id)) : "";
+    const userText = (this.#lastSend.get(id) ?? snap.title ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    this.#checkpoints.record(id, {
+      turn: snap.turns,
+      providerRef: this.#registry.store.providerRef(id) ?? "",
+      forkPoint,
+      userText,
+    });
+  }
+
+  /** ~cost to re-prime an aisdk transcript truncated to `keepMessages` (a cache write). */
+  #rewindCostUsd(model: string | null, keepMessages: number, id: string): number {
+    if (keepMessages <= 0) return 0;
+    const tokens = estimateTokens(this.#pmsgs.load(id).slice(0, keepMessages));
+    return costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0;
+  }
+
   /**
    * Compare a session's running totals to its budget. Soft breach → mark
    * `warned` and keep going; hard breach → mark `halted` and interrupt. A
@@ -636,6 +673,7 @@ export class Daemon {
           : {}),
       };
 
+      this.#lastSend.set(id, prompt);
       try {
         await this.#sessions.create(await this.#providers.get(providerId), opts);
       } catch (err) {
@@ -684,8 +722,54 @@ export class Daemon {
       const id = reqString(params, "id");
       const text = reqString(params, "text");
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      this.#lastSend.set(id, text);
       await this.#sessions.send(id, text);
       return this.#registry.mustGet(id);
+    });
+
+    d.register("session.checkpoints", (params) => {
+      const id = reqString(params, "id");
+      const snap = this.#registry.get(id);
+      if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
+      const model = snap.model;
+      return this.#checkpoints.list(id).map((cp) => ({
+        turn: cp.turn,
+        userText: cp.userText,
+        createdAt: cp.createdAt,
+        rewindCostUsd: this.#isAisdk(snap.provider)
+          ? this.#rewindCostUsd(model, Number(cp.forkPoint) || 0, id)
+          : 0,
+      }));
+    });
+
+    d.register("session.rewind", async (params) => {
+      const id = reqString(params, "id");
+      const toTurn = Number((isObj(params) ? params : {})["toTurn"]);
+      const snap = this.#registry.get(id);
+      if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!Number.isInteger(toTurn) || toTurn < 1 || toTurn >= snap.turns) {
+        throw new RpcError("bad_request", `toTurn must be 1..${snap.turns - 1}`);
+      }
+      if (!this.#isAisdk(snap.provider)) {
+        throw new RpcError("bad_request", "rewind is aisdk-only for now (Claude support is fork-tree F3)");
+      }
+      const cp = this.#checkpoints.at(id, toTurn);
+      if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
+      const keep = Number(cp.forkPoint) || 0;
+
+      if (this.#sessions.has(id)) {
+        await this.#sessions.rewind(id, keep);
+      } else {
+        // Not live: truncate the store directly.
+        this.#pmsgs.replaceFrom(id, keep, []);
+      }
+      this.#checkpoints.truncate(id, toTurn);
+      this.#registry.store.setTurns(id, toTurn);
+
+      this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
+      const updated = this.#registry.setStatus(id, "idle", "rewind");
+      this.#emitSessionUpdated(updated, clientLabel(params));
+      return updated;
     });
 
     d.register("session.interrupt", async (params) => {

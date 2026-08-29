@@ -24,6 +24,7 @@ interface SessionRow {
   budget_max_cost_usd: number | null;
   budget_max_turns: number | null;
   budget_state: string;
+  fork_turn: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -187,6 +188,7 @@ export class SessionStore {
       budgetMaxCostUsd: number | null;
       budgetMaxTurns: number | null;
       budgetState: string;
+      forkTurn: number | null;
     }>,
   ): void {
     const cols: string[] = [];
@@ -204,6 +206,7 @@ export class SessionStore {
       budgetMaxCostUsd: "budget_max_cost_usd",
       budgetMaxTurns: "budget_max_turns",
       budgetState: "budget_state",
+      forkTurn: "fork_turn",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in fields) {
@@ -260,6 +263,13 @@ export class SessionStore {
       );
   }
 
+  /** Set the turn counter directly — used by `undo` after truncating the transcript. */
+  setTurns(id: string, turns: number): void {
+    this.#db
+      .prepare("UPDATE usage SET turns = ?, updated_at = ? WHERE session_id = ?")
+      .run(turns, Date.now(), id);
+  }
+
   /** The provider's own persisted session id, once the adapter reports it. */
   providerRef(id: string): string | null {
     const row = this.#db
@@ -290,6 +300,66 @@ export class SessionStore {
     this.#db
       .prepare("INSERT INTO status_history (session_id, status, reason, at) VALUES (?, ?, ?, ?)")
       .run(id, status, reason, at);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// checkpoints — one per completed turn, for undo / fork
+// ---------------------------------------------------------------------------
+
+export interface Checkpoint {
+  turn: number;
+  /** Adapter transcript id at this turn (Claude session id; "" for aisdk). */
+  providerRef: string;
+  /** What an adapter needs to branch here: provider_messages seq (aisdk) or chain UUID (claude). */
+  forkPoint: string;
+  /** A snippet of the turn's user message, for the undo picker. */
+  userText: string;
+  createdAt: number;
+}
+
+export class CheckpointStore {
+  #db: Db;
+
+  constructor(db: Db) {
+    this.#db = db;
+  }
+
+  record(sessionId: string, cp: Omit<Checkpoint, "createdAt">): void {
+    this.#db
+      .prepare(
+        `INSERT INTO checkpoints (session_id, turn, provider_ref, fork_point, user_text, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, turn) DO UPDATE SET
+           provider_ref = excluded.provider_ref,
+           fork_point   = excluded.fork_point,
+           user_text    = excluded.user_text`,
+      )
+      .run(sessionId, cp.turn, cp.providerRef, cp.forkPoint, cp.userText, Date.now());
+  }
+
+  list(sessionId: string): Checkpoint[] {
+    return this.#db
+      .prepare(
+        "SELECT turn, provider_ref AS providerRef, fork_point AS forkPoint, user_text AS userText, created_at AS createdAt " +
+          "FROM checkpoints WHERE session_id = ? ORDER BY turn",
+      )
+      .all(sessionId) as unknown as Checkpoint[];
+  }
+
+  at(sessionId: string, turn: number): Checkpoint | null {
+    const row = this.#db
+      .prepare(
+        "SELECT turn, provider_ref AS providerRef, fork_point AS forkPoint, user_text AS userText, created_at AS createdAt " +
+          "FROM checkpoints WHERE session_id = ? AND turn = ?",
+      )
+      .get(sessionId, turn) as unknown as Checkpoint | undefined;
+    return row ?? null;
+  }
+
+  /** Drop checkpoints after `turn` (called after a rewind). */
+  truncate(sessionId: string, turn: number): void {
+    this.#db.prepare("DELETE FROM checkpoints WHERE session_id = ? AND turn > ?").run(sessionId, turn);
   }
 }
 
@@ -350,6 +420,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
   return {
     id: row.id,
     parentId: row.parent_id,
+    forkTurn: row.fork_turn,
     provider: row.provider,
     model: row.model,
     mode: row.mode,

@@ -146,6 +146,16 @@ export interface ResultEvent extends HarnessEventBase {
   summary?: string;
 }
 
+/**
+ * The session was rewound to an earlier turn (`undo`) — the transcript past
+ * `toTurn` was discarded. Daemon-emitted, not from an adapter. Status is left
+ * at `idle`.
+ */
+export interface RewindEvent extends HarnessEventBase {
+  type: "rewind";
+  toTurn: number;
+}
+
 export type HarnessEvent =
   | AssistantTextEvent
   | ThinkingEvent
@@ -161,6 +171,7 @@ export type HarnessEvent =
   | SubagentStoppedEvent
   | StatusChangedEvent
   | ErrorEvent
-  | ResultEvent;
+  | ResultEvent
+  | RewindEvent;
 
 export type HarnessEventType = HarnessEvent["type"];

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint, migrate, openDb } from "../src/store/db.ts";
-import { ChildStore, SessionStore } from "../src/store/sessions.ts";
+import { ChildStore, CheckpointStore, SessionStore } from "../src/store/sessions.ts";
 import { setLogLevel } from "../src/util/logger.ts";
 
 setLogLevel("error");
@@ -161,6 +161,39 @@ test("checkpoint does not throw on a live db", () => {
     const db = openDb(path);
     new SessionStore(db).create({ id: "s1", provider: "stub" });
     checkpoint(db);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("CheckpointStore records / lists / truncates; setTurns resets the counter", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const sessions = new SessionStore(db);
+    sessions.create({ id: "s1", provider: "openai" });
+
+    const cps = new CheckpointStore(db);
+    cps.record("s1", { turn: 1, providerRef: "", forkPoint: "2", userText: "first task" });
+    cps.record("s1", { turn: 2, providerRef: "", forkPoint: "6", userText: "follow up" });
+    cps.record("s1", { turn: 3, providerRef: "", forkPoint: "10", userText: "and again" });
+
+    assert.deepEqual(cps.list("s1").map((c) => c.turn), [1, 2, 3]);
+    assert.equal(cps.at("s1", 2)?.forkPoint, "6");
+    assert.equal(cps.at("s1", 9), null);
+
+    // re-record turn 2 upserts
+    cps.record("s1", { turn: 2, providerRef: "x", forkPoint: "7", userText: "edited" });
+    assert.equal(cps.at("s1", 2)?.forkPoint, "7");
+    assert.equal(cps.at("s1", 2)?.userText, "edited");
+
+    cps.truncate("s1", 1);
+    assert.deepEqual(cps.list("s1").map((c) => c.turn), [1]);
+
+    sessions.setTurns("s1", 1);
+    assert.equal(sessions.get("s1")?.turns, 1);
+
     db.close();
   } finally {
     cleanup();

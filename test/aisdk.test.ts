@@ -344,3 +344,53 @@ test("resolveModelFactory builds the right SDK client for each `sdk`", async () 
   const a = await resolveModelFactory("anthropic", { id: "claude-api", baseUrl: "", apiKey: "k" });
   assert.equal(meta(a("claude-sonnet-5")).provider, "anthropic.messages");
 });
+
+test("AisdkSession.rewind truncates the transcript in memory and in the store", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    let n = 0;
+    const make = (): LanguageModel =>
+      new MockLanguageModelV2({
+        doStream: async () => {
+          n += 1;
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start", warnings: [] },
+                { type: "text-start", id: "t" },
+                { type: "text-delta", id: "t", delta: `reply ${n}` },
+                { type: "text-end", id: "t" },
+                { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
+              ],
+            }),
+          };
+        },
+      }) as unknown as LanguageModel;
+
+    const s = await provider(make, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
+    await drain(s.events(), (e) => e.type === "result"); // turn 1: [user, assistant]
+    await s.send("second");
+    await drain(s.events(), (e) => e.type === "result"); // turn 2: + [user, assistant]
+
+    assert.equal(store.load("s1").length, 4);
+
+    await s.rewind(2); // keep just turn 1
+    assert.equal(store.load("s1").length, 2);
+    assert.deepEqual(store.load("s1").map((m) => m.role), ["user", "assistant"]);
+
+    // the next turn continues from the truncated history
+    await s.send("third");
+    await drain(s.events(), (e) => e.type === "result");
+    assert.equal(store.load("s1").length, 4);
+    await s.close();
+  } finally {
+    cleanup();
+  }
+});

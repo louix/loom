@@ -405,3 +405,28 @@ test("daemon.status reports running session and provider counts", async () => {
   assert.ok(s.providers.includes("fake"));
   await c.close();
 });
+
+test("a checkpoint is recorded per completed turn; session.checkpoints lists them", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+
+  fs.finishTurn(); // turn 1
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1);
+
+  await c.request("session.send", { id, text: "the second ask" });
+  fs.finishTurn(); // turn 2
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2);
+
+  const cps = await c.request<Array<{ turn: number; userText: string; rewindCostUsd: number }>>(
+    "session.checkpoints",
+    { id },
+  );
+  assert.deepEqual(cps.map((x) => x.turn), [1, 2]);
+  assert.equal(cps[0]?.userText, "do work"); // the create prompt
+  assert.equal(cps[1]?.userText, "the second ask");
+  assert.equal(cps[1]?.rewindCostUsd, 0); // fake isn't priced / isn't aisdk
+
+  await assert.rejects(c.request("session.rewind", { id, toTurn: 1 }), /aisdk-only/);
+  await assert.rejects(c.request("session.rewind", { id, toTurn: 9 }), /toTurn must be/);
+  await c.close();
+});

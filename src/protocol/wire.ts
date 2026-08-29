@@ -109,6 +109,8 @@ export interface GitFacts {
 export interface SessionSnapshot {
   id: string;
   parentId: string | null;
+  /** For a hard fork: the parent turn it branched at. null for a root session. */
+  forkTurn: number | null;
   provider: string;
   model: string | null;
   mode: string;

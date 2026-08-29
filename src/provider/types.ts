@@ -11,6 +11,8 @@ export interface ProviderCapabilities {
   /** Mode / model changes take effect immediately (Claude) vs. next turn (ADK). */
   liveModeSwitch: boolean;
   forking: boolean;
+  /** `rewind(keep)` can truncate the transcript to an earlier turn (undo). */
+  rewind: boolean;
   subagents: boolean;
   /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
   compaction: boolean;
@@ -136,6 +138,11 @@ export interface AgentSession {
   /** Resolve an outstanding `plan_review` with the user's decision. */
   respondToPlan(id: string, decision: PlanDecision): Promise<void>;
   interrupt(): Promise<void>;
+  /**
+   * Truncate the transcript to its first `keep` messages (undo). Only called
+   * when `capabilities.rewind` is true; others may throw.
+   */
+  rewind(keep: number): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string): Promise<void>;
   snapshot(): AdapterSnapshot;

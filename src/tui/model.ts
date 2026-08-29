@@ -96,7 +96,7 @@ export interface PickItem {
 }
 
 export interface PickerState {
-  kind: "provider" | "model" | "find";
+  kind: "provider" | "model" | "find" | "undo";
   title: string;
   items: PickItem[];
   /** Live filter text. */
@@ -693,6 +693,7 @@ export type ActName =
   | "planreview"
   | "mode"
   | "model"
+  | "undo"
   | "title"
   | "budget"
   | "new"
@@ -748,6 +749,9 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     }
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "M", label: "model", act: "model" });
+    if ((status === "idle" || status === "interrupted") && session.turns > 1) {
+      local.push({ keys: "u", label: "undo", act: "undo" });
+    }
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
   }
@@ -826,6 +830,8 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
       return { glyph: "■", text: ev.ok ? "turn complete" : "turn failed", tone: ev.ok ? "good" : "bad" };
+    case "rewind":
+      return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
   }
 }
 

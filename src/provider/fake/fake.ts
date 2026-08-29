@@ -26,6 +26,7 @@ import type {
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
   forking: false,
+  rewind: true,
   subagents: false,
   compaction: true,
   oneShot: true,
@@ -154,6 +155,12 @@ export class FakeSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     this.interruptCount += 1;
+  }
+
+  readonly rewinds: number[] = [];
+  async rewind(keep: number): Promise<void> {
+    this.rewinds.push(keep);
+    this.#snap.status = "idle";
   }
 
   async setMode(mode: SessionMode): Promise<void> {

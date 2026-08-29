@@ -452,3 +452,38 @@ test("f opens the find picker and filters the fleet by text", async () => {
     await cleanup();
   }
 });
+
+test("u opens the undo picker listing earlier turns", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "the original task", provider: "fake" });
+  const fs = (await h.daemon.providers.get("fake") as FakeProvider).session(snap.id);
+  fs?.finishTurn(); // turn 1
+  await delay(60);
+  await client.request("session.send", { id: snap.id, text: "a follow-up" });
+  fs?.finishTurn(); // turn 2
+  await delay(60);
+  await client.request("session.send", { id: snap.id, text: "one more" });
+  fs?.finishTurn(); // turn 3
+  await delay(80);
+
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(200);
+    assert.match(stdout.last, /u\b/); // footer offers undo on an idle multi-turn session
+    stdin.feed("u");
+    await delay(150);
+    assert.match(stdout.last, /UNDO/);
+    assert.match(stdout.last, /turn 1 · the original task/);
+    assert.match(stdout.last, /turn 2 · a follow-up/);
+    assert.doesNotMatch(stdout.last, /turn 3/); // can't rewind to the current turn
+
+    stdin.feed(ESC);
+    await delay(80);
+    assert.match(stdout.last, /▍ loom/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});

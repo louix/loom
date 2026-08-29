@@ -317,6 +317,16 @@ export class SessionManager {
     await this.#require(id).session.setModel(model);
   }
 
+  /** Undo: truncate the live session's transcript to its first `keep` messages. */
+  async rewind(id: string, keep: number): Promise<void> {
+    const run = this.#require(id);
+    if (run.status === "running" || run.status === "starting") {
+      throw new Error("interrupt the session before rewinding it");
+    }
+    await run.session.rewind(keep);
+    this.#set(id, run, "idle", "rewind");
+  }
+
   // --- teardown ------------------------------------------------------
 
   async shutdown(): Promise<void> {
