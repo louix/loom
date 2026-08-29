@@ -171,6 +171,12 @@ sessions use; Loom persists the transcript itself in `provider_messages`.
   the Detail pane spells out `engine · provider / model`. `loom providers` and
   `loom models <provider>` from the CLI.
 
+An aisdk profile's key is `api_key_env` (an env var) or `api_key` (inline —
+wins, but plaintext). Omit both `model` and `models` from an openai-compatible
+profile and the daemon fills them from `{base_url}/models` at start-up.
+`loom config` (also logged at launch) lints the loaded config — unset key
+vars, providers pending model auto-detection, a keyless search backend.
+
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
 
@@ -308,7 +314,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 264 cases
+npm test             # node:test — 267 cases
 ```
 
 ### Layout

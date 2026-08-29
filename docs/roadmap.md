@@ -545,9 +545,20 @@ obvious where to look.
   budget / model / rename / done in the footer. `actionsFor` already branches on
   status; formalise it so the footer, the keymap, and the help screen all read
   from one table.
-- **Write an XDG config on first launch** (`$XDG_CONFIG_HOME/loom/config.toml`)
-  from a template — daemon defaults plus a commented-out example
-  `[providers.openai]` aisdk block — so a new user has something to edit.
+- **Write an XDG config on first launch** — partly done (`loom config` lints;
+  see below). Still want: emit a starter `$XDG_CONFIG_HOME/loom/config.toml`
+  from a template when none exists.
+
+### 8 · aisdk provider config conveniences — ✓ shipped (`18305c8`)
+- **Auto model detection** — omit `model` + `models` from an openai-sdk profile
+  and the daemon probes `{base_url}/models` at start-up (`autoModels`, bounded
+  8s, best-effort). `google` / `anthropic` still need an explicit model.
+- **Inline `api_key`** — on a profile and `[search]`, alongside `api_key_env`;
+  inline wins. `resolveApiKey()` centralises inline → env → "".
+- **`lintConfig()`** — logged at daemon start + `config.check` RPC / `loom
+  config` CLI: unset key vars, providers pending auto-detect, keyless search.
+- Fixed a latent test leak: `makeHarness` now isolates `XDG_CONFIG_HOME` so the
+  dev's real `~/.config/loom/config.toml` doesn't merge into test daemons.
 
 ## Known gaps (parked)
 
