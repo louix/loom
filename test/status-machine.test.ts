@@ -22,14 +22,15 @@ test("model activity while already running is a no-op", () => {
   assert.equal(deriveStatus("running", ev({ type: "tool_result", id: "1", ok: true, output: null })), null);
 });
 
-test("permission_request → awaiting_input/permission", () => {
+test("permission_request → awaiting_input/permission (reason returned even when already awaiting)", () => {
   assert.deepEqual(
     deriveStatus("running", ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
     { status: "awaiting_input", reason: "permission" },
   );
-  assert.equal(
+  // deriveStatus reports the reason; #set dedupes an unchanged status+reason.
+  assert.deepEqual(
     deriveStatus("awaiting_input", ev({ type: "permission_request", id: "p2", tool: "Bash", input: {} })),
-    null,
+    { status: "awaiting_input", reason: "permission" },
   );
 });
 
@@ -38,20 +39,21 @@ test("plan_review → awaiting_input/plan_review", () => {
     deriveStatus("running", ev({ type: "plan_review", id: "pr1", plan: "do X then Y" })),
     { status: "awaiting_input", reason: "plan_review" },
   );
-  assert.equal(
+  assert.deepEqual(
     deriveStatus("awaiting_input", ev({ type: "plan_review", id: "pr2", plan: "…" })),
-    null,
+    { status: "awaiting_input", reason: "plan_review" },
   );
 });
 
-test("question → awaiting_input/question, and is a no-op when already awaiting", () => {
+test("question → awaiting_input/question; a permission→question reason change is surfaced", () => {
   assert.deepEqual(
     deriveStatus("running", ev({ type: "question", id: "q1", question: "which?" })),
     { status: "awaiting_input", reason: "question" },
   );
-  assert.equal(
+  // was permission, now question — the client needs the new blocked-reason
+  assert.deepEqual(
     deriveStatus("awaiting_input", ev({ type: "question", id: "q2", question: "which?" })),
-    null,
+    { status: "awaiting_input", reason: "question" },
   );
 });
 

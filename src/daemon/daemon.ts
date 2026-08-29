@@ -68,6 +68,7 @@ async function probeOpenAiModels(baseUrl: string, apiKeyEnv: string): Promise<st
   const key = apiKeyEnv ? (process.env[apiKeyEnv] ?? "") : "";
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
     headers: key ? { Authorization: `Bearer ${key}` } : {},
+    signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
@@ -129,6 +130,9 @@ export class Daemon {
   #hygiene: HygieneReport | null = null;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
+  /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
+   *  sessions (untracked by SessionManager) don't outlive the daemon. */
+  readonly #titleJobs = new Set<Promise<void>>();
 
   #stopping = false;
   #closed: Promise<void>;
@@ -186,7 +190,11 @@ export class Daemon {
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
         this.#recordCheckpoint(id);
-        void this.#maybeAutoTitle(id);
+        const job = this.#maybeAutoTitle(id).catch((err) => {
+          this.#log.debug("auto-title job failed", { id, err: String(err) });
+        });
+        this.#titleJobs.add(job);
+        void job.finally(() => this.#titleJobs.delete(job));
       },
       onSubagents: (id) => {
         if (this.#stopping) return;
@@ -287,6 +295,14 @@ export class Daemon {
     this.#signalHandlers = [];
 
     await this.#sessions.shutdown();
+    // Give in-flight auto-title jobs (one-shot titler sessions live outside the
+    // SessionManager) a brief window to finish before the DB closes under them.
+    if (this.#titleJobs.size > 0) {
+      await Promise.race([
+        Promise.allSettled([...this.#titleJobs]),
+        new Promise((r) => setTimeout(r, 2_000).unref()),
+      ]);
+    }
     await this.#server.close();
     try {
       checkpoint(this.#db);
@@ -900,6 +916,9 @@ export class Daemon {
       const id = reqString(params, "id");
       const requestId = reqString(params, "requestId");
       const p = isObj(params) ? params : {};
+      if (p["decision"] !== "allow" && p["decision"] !== "deny") {
+        throw new RpcError("bad_request", `decision must be "allow" or "deny"`);
+      }
       const behavior = p["decision"] === "allow" ? "allow" : "deny";
       const decision: PermissionDecision =
         behavior === "allow"
@@ -991,9 +1010,13 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       const pos = (v: unknown): number | undefined =>
         typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+      const posInt = (v: unknown): number | undefined => {
+        const n = pos(v);
+        return n !== undefined && Number.isInteger(n) ? n : undefined;
+      };
       const maxCostUsd = pos(p["maxCostUsd"]);
-      const maxTokens = pos(p["maxTokens"]);
-      const maxTurns = pos(p["maxTurns"]);
+      const maxTokens = posInt(p["maxTokens"]);
+      const maxTurns = posInt(p["maxTurns"]);
       if (maxCostUsd === undefined && maxTokens === undefined && maxTurns === undefined) {
         throw new RpcError("bad_request", "provide at least one of maxCostUsd / maxTokens / maxTurns");
       }
@@ -1026,6 +1049,13 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const only = typeof p["id"] === "string" ? (p["id"] as string) : null;
       const force = p["force"] === true;
+      if (only) {
+        const s = this.#registry.get(only);
+        if (!s) throw new RpcError("not_found", `no such session: ${only}`);
+        if (s.status !== "done") {
+          throw new RpcError("bad_request", `session ${only} is ${s.status}, not done — nothing to gc`);
+        }
+      }
       const removed: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
       for (const s of this.#registry.list()) {
@@ -1102,7 +1132,9 @@ export class Daemon {
       if (!isObj(raw) || typeof raw["sessionId"] !== "string" || typeof raw["type"] !== "string") {
         throw new RpcError("bad_request", "event must be an object with sessionId and type");
       }
-      const event = { ts: Date.now(), ...raw } as unknown as HarnessEvent;
+      // `ts` is "when the daemon observed the event" — a caller-supplied one
+      // doesn't get to win.
+      const event = { ...raw, ts: Date.now() } as unknown as HarnessEvent;
       const seq = this.emitEvent(event);
       return { seq };
     });
@@ -1126,15 +1158,15 @@ export class Daemon {
     let replaying = false;
     if (sinceSeq !== undefined) {
       const { frames, rolled } = this.#events.since(sinceSeq);
+      // Push synchronously (the connection is already subscribed): a
+      // setImmediate deferral let a live frame from the poll phase interleave
+      // ahead of the replayed older ones. The client buffers everything until
+      // its hello response lands, so ordering is preserved.
       if (rolled) {
-        setImmediate(() =>
-          ctx.conn.push({ kind: "push", seq: head, type: "resync", reason: "event buffer rolled past requested seq" }),
-        );
+        ctx.conn.push({ kind: "push", seq: head, type: "resync", reason: "event buffer rolled past requested seq" });
       } else if (frames.length > 0) {
         replaying = true;
-        setImmediate(() => {
-          for (const f of frames) ctx.conn.push(f);
-        });
+        for (const f of frames) ctx.conn.push(f);
       }
     }
 
@@ -1147,6 +1179,7 @@ export class Daemon {
         version: LOOM_VERSION,
         startedAt: this.startedAt,
         repoRoot: this.repoRoot,
+        epoch: this.epoch,
       },
       sessions: this.#enrichAll(this.#registry.listSorted()),
       seq: head,
@@ -1176,9 +1209,13 @@ export class Daemon {
     if (!isObj(raw)) return null;
     const num = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
-    const maxTokens = num(raw["maxTokens"]);
+    const int = (v: unknown): number | undefined => {
+      const n = num(v);
+      return n !== undefined && Number.isInteger(n) ? n : undefined;
+    };
+    const maxTokens = int(raw["maxTokens"]);
     const maxCostUsd = num(raw["maxCostUsd"]);
-    const maxTurns = num(raw["maxTurns"]);
+    const maxTurns = int(raw["maxTurns"]);
     if (maxTokens === undefined && maxCostUsd === undefined && maxTurns === undefined) return null;
     return {
       ...(maxTokens !== undefined ? { maxTokens } : {}),

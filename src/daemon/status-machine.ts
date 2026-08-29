@@ -18,16 +18,19 @@ export interface Derived {
 /** The next status, or `null` when this event leaves status unchanged. */
 export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived | null {
   switch (ev.type) {
+    // Return the new blocked-reason even when already `awaiting_input` — a
+    // session can move permission → question → plan_review without a `running`
+    // event in between, and #set propagates an awaiting_input reason change.
     case "permission_request":
-      return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "permission" };
+      return { status: "awaiting_input", reason: "permission" };
 
     case "question":
       // The agent called `ask_user` and is blocked on a human answer.
-      return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "question" };
+      return { status: "awaiting_input", reason: "question" };
 
     case "plan_review":
       // The agent presented a plan (ExitPlanMode) and is blocked on a decision.
-      return current === "awaiting_input" ? null : { status: "awaiting_input", reason: "plan_review" };
+      return { status: "awaiting_input", reason: "plan_review" };
 
     case "answer":
     case "assistant_text":

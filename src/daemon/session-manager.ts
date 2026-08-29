@@ -45,6 +45,8 @@ interface Running {
   provider: string;
   session: AgentSession;
   status: SessionStatus;
+  /** Last reason handed to onStatus, so we don't re-notify on an unchanged one. */
+  reason: string | null;
   ordinal: number;
   pendingPerms: Set<string>;
   pendingQuestions: Set<string>;
@@ -99,6 +101,7 @@ export class SessionManager {
       provider: providerId,
       session,
       status: "starting",
+      reason: null,
       ordinal: 0,
       pendingPerms: new Set(),
       pendingQuestions: new Set(),
@@ -229,11 +232,9 @@ export class SessionManager {
   }
 
   #set(id: string, run: Running, status: SessionStatus, reason: string | null): void {
-    if (run.status === status) {
-      // still notify on an awaiting_input reason change (permission → question)
-      if (status !== "awaiting_input") return;
-    }
+    if (run.status === status && run.reason === reason) return;
     run.status = status;
+    run.reason = reason;
     this.#hooks.onStatus(id, status, reason);
   }
 
@@ -270,6 +271,7 @@ export class SessionManager {
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
     run.interrupting = true;
+    this.#forgetPending(run);
     await run.session.interrupt();
     this.#set(id, run, "interrupted", "user");
   }
@@ -279,8 +281,27 @@ export class SessionManager {
     const run = this.#running.get(id);
     if (!run || run.ended) return;
     run.interrupting = true;
+    this.#forgetPending(run);
     await run.session.interrupt().catch(() => {});
     this.#set(id, run, "interrupted", "budget");
+  }
+
+  /**
+   * Drop the outstanding permission / question / plan ids so a late answer
+   * from a client whose UI still shows the prompt can't flip an
+   * already-interrupted (dead) turn back to `running`.
+   */
+  #forgetPending(run: Running): void {
+    run.pendingPerms.clear();
+    run.pendingQuestions.clear();
+    run.pendingPlans.clear();
+  }
+
+  /** Move a settled `awaiting_input` session back to `running` — unless a user
+   *  interrupt landed in between, in which case the interrupt sticks. */
+  #resumeAfterAnswer(id: string, run: Running): void {
+    if (run.interrupting) return;
+    this.#set(id, run, "running", null);
   }
 
   async respondToPermission(
@@ -293,7 +314,7 @@ export class SessionManager {
     run.pendingPerms.delete(requestId);
     await run.session.respondToPermission(requestId, decision);
     // Optimistic: the approved tool call will confirm `running` on its own.
-    this.#set(id, run, "running", null);
+    this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
   }
 
@@ -304,7 +325,7 @@ export class SessionManager {
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
     // running; set it now so a client sees the change without waiting.
-    this.#set(id, run, "running", null);
+    this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
   }
 
@@ -317,7 +338,7 @@ export class SessionManager {
     if (!run.pendingPlans.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pendingPlans.delete(requestId);
     await run.session.respondToPlan(requestId, decision);
-    this.#set(id, run, "running", null);
+    this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
   }
 

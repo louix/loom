@@ -184,6 +184,37 @@ test("hello with a stale high sinceSeq triggers a resync push", async () => {
   await c.close();
 });
 
+test("a reconnect onto a restarted daemon (new epoch) forces a resync", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+    reconnect: true,
+  });
+  try {
+    // seed a few frames so the pre-restart seq is well above the post-restart head
+    await c.request("session.createStub", { prompt: "a" });
+    await c.request("session.createStub", { prompt: "b" });
+    let resynced = false;
+    c.on("resync", () => {
+      resynced = true;
+    });
+
+    await hh.restart();
+    // new daemon does its own work so a stale in-range sinceSeq would look valid
+    const driver = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    await driver.request("session.createStub", { prompt: "c" });
+    await driver.close();
+
+    await delay(400); // client's reconnect loop + handshake
+    assert.equal(resynced, true, "epoch change must force a resync regardless of seq arithmetic");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("daemon.status reflects live counts", async () => {
   const c = await client();
   const s = await c.request<{ sessions: number; clients: number; eventSeq: number }>("daemon.status");

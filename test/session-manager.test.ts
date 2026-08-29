@@ -432,6 +432,27 @@ test("a checkpoint is recorded per completed turn; session.checkpoints lists the
   await c.close();
 });
 
+test("a permission answer that lands after an interrupt does not un-interrupt the session", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm -rf ." } });
+  await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+
+  await c.request("session.interrupt", { id });
+  await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+
+  // a client whose UI still showed the prompt clicks Allow
+  const r = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPermission", {
+    id,
+    requestId: "p1",
+    decision: "allow",
+  });
+  await delay(40);
+  assert.equal(r.alreadyResolved, true, "the pending id was dropped by the interrupt");
+  assert.equal(await statusOf(c, id), "interrupted", "a stale answer must not flip a dead turn back to running");
+  await c.close();
+});
+
 test("a compaction drops the checkpoints (their offsets are no longer valid)", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

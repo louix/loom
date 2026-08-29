@@ -175,6 +175,9 @@ export interface HelloResult {
     version: string;
     startedAt: number;
     repoRoot: string;
+    /** Per-process id. A change across a reconnect means the daemon restarted
+     *  — the client must discard its seq / version view and re-baseline. */
+    epoch: string;
   };
   /** Authoritative session list at handshake time. */
   sessions: SessionSnapshot[];

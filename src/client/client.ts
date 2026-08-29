@@ -54,6 +54,8 @@ export class LoomClient {
   #closed = false;
   #helloDone = false;
   #preHelloQueue: PushFrame[] = [];
+  /** The daemon epoch from the last hello — a change means it restarted. */
+  #daemonEpoch: string | null = null;
   /** Bounded ring of every event frame seen — lets a late subscriber backfill. */
   #eventLog: EventPush[] = [];
   #eventLogCap = 5000;
@@ -83,12 +85,27 @@ export class LoomClient {
   // public API
   // -------------------------------------------------------------------------
 
-  async request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  async request<T = unknown>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
     if (!this.#sock) throw new Error("not connected");
     const id = this.#nextId++;
     const frame: RequestFrame = { kind: "req", id, method, ...(params !== undefined ? { params } : {}) };
     const p = new Promise<unknown>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              if (this.#pending.delete(id)) reject(new Error(`request timed out: ${method}`));
+            }, timeoutMs)
+          : null;
+      this.#pending.set(id, {
+        resolve: (v) => {
+          if (timer) clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          if (timer) clearTimeout(timer);
+          reject(e);
+        },
+      });
     });
     this.#sock.write(JSON.stringify(frame) + "\n");
     return p as Promise<T>;
@@ -249,15 +266,26 @@ export class LoomClient {
       clientId: this.clientId,
       ...(sinceSeq !== undefined ? { sinceSeq } : {}),
     });
+    // A different epoch across a reconnect ⇒ the daemon restarted: its seq and
+    // in-memory version counters reset, so any replay it offered against our
+    // stale sinceSeq is meaningless. Re-baseline and tell the app to resync.
+    const restarted = this.#daemonEpoch !== null && this.#daemonEpoch !== result.daemon.epoch;
+    this.#daemonEpoch = result.daemon.epoch;
     this.daemonInfo = result.daemon;
     this.sessions = result.sessions;
-    if (sinceSeq === undefined || !result.replaying) {
+    if (restarted || sinceSeq === undefined || !result.replaying) {
       this.#lastSeq = result.seq;
     }
+    if (restarted) this.#eventLog = [];
     this.#helloDone = true;
     const queued = this.#preHelloQueue;
     this.#preHelloQueue = [];
-    for (const f of queued) this.#deliverPush(f);
+    // On a restart, drop any "replayed" frames from the old seq space.
+    for (const f of queued) {
+      if (restarted && f.seq <= result.seq) continue;
+      this.#deliverPush(f);
+    }
+    if (restarted) this.#fire("resync", { reason: "daemon restarted" });
   }
 
   #onSocketClose(): void {
@@ -276,8 +304,17 @@ export class LoomClient {
     let waitMs = 100;
     while (!this.#closed) {
       try {
-        if (this.#opts.autospawn) await this.#spawnDaemon();
-        this.#sock = await this.#connectWithRetry();
+        // Try to connect first; only fork a daemon when nothing is listening
+        // (mirrors #dial) — otherwise a briefly-unreachable daemon makes us
+        // spawn a doomed loomd per iteration.
+        try {
+          this.#sock = await tryConnect(this.#opts.sockPath);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (!this.#opts.autospawn || (code !== "ENOENT" && code !== "ECONNREFUSED")) throw err;
+          await this.#spawnDaemon();
+          this.#sock = await this.#connectWithRetry();
+        }
         this.#attach(this.#sock);
         await this.#handshake(this.#lastSeq);
         this.#fire("reconnect", { lastSeq: this.#lastSeq });
@@ -290,10 +327,24 @@ export class LoomClient {
   }
 
   async #resync(reason: string): Promise<void> {
+    // The daemon says our seq is unrecoverable (buffer rolled, or it
+    // restarted). Discard the local event-log gap and re-baseline from a
+    // fresh hello rather than carrying a stale #lastSeq / version view.
+    this.#eventLog = [];
     try {
-      this.sessions = await this.request<SessionSnapshot[]>("session.list");
+      const result = await this.request<HelloResult>("hello", {
+        protocolVersion: PROTOCOL_VERSION,
+        clientId: this.clientId,
+      });
+      this.daemonInfo = result.daemon;
+      this.sessions = result.sessions;
+      this.#lastSeq = result.seq;
     } catch {
-      /* will retry on next reconnect */
+      try {
+        this.sessions = await this.request<SessionSnapshot[]>("session.list");
+      } catch {
+        /* will retry on next reconnect */
+      }
     }
     this.#fire("resync", { reason });
   }
