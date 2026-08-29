@@ -322,15 +322,31 @@ test("interrupt aborts the running turn — no result, status not idle", async (
   }
 });
 
-test("a message sent mid-turn with no step to catch it rides the next turn", async () => {
+test("a message sent mid-turn with no step to catch it folds into the same turn", async () => {
   const { db, cleanup } = tmpDb();
   try {
     const store = new ProviderMessageStore(db);
-    let calls = 0;
-    const p = provider(() => {
-      calls += 1;
-      return textReply(`reply ${calls}`, {}, { chunkDelayInMs: 10 });
-    }, store);
+    let roundTrips = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async () => {
+        roundTrips += 1;
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunkDelayInMs: 5,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: `r${roundTrips}`, modelId: "mock", timestamp: new Date(0) },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: `reply ${roundTrips}` },
+              { type: "text-end", id: "t" },
+              { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => model, store);
     const s = await p.createSession({
       sessionId: "s1",
       cwd: "/tmp",
@@ -338,16 +354,111 @@ test("a message sent mid-turn with no step to catch it rides the next turn", asy
       mode: "default",
       mcpServers: [],
     });
-    // the turn is already running (single text step, no tool boundary)
+    // the turn is already running (single text step, no tool boundary), so
+    // "second" is queued and flushed after the turn → the loop chains one more
+    // round-trip for it without emitting a separate `result`.
+    const results: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) if (e.type === "result") results.push(e);
+    })();
     await s.send("second");
-    await drain(s.events(), (e) => e.type === "result"); // turn 1
-    await drain(s.events(), (e) => e.type === "result"); // chained turn for "second"
+    await new Promise((r) => setTimeout(r, 400));
+    await s.close();
+    await reader;
+
+    const stored = store.load("s1");
+    assert.deepEqual(stored.map((m) => m.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(stored[2]?.content, "second");
+    assert.equal(roundTrips, 2, "two model round-trips");
+    assert.equal(results.length, 1, "but a single end-of-turn result");
+    assert.equal(s.snapshot().turns, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("two near-simultaneous sends to an idle session don't double-run a turn", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    let rt = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async () => {
+        rt += 1;
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunkDelayInMs: 4,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: `r${rt}`, modelId: "mock", timestamp: new Date(0) },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: `r${rt}` },
+              { type: "text-end", id: "t" },
+              { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 } },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => model, store);
+    const s = await p.createSession({ sessionId: "s1", cwd: "/tmp", prompt: "first", mode: "default", mcpServers: [] });
+    await drain(s.events(), (e) => e.type === "result"); // turn 1 → idle
+
+    await Promise.all([s.send("A"), s.send("B")]); // fired together, not awaited apart
+    await drain(s.events(), (e) => e.type === "result"); // A's turn (B folded in)
     await s.close();
 
-    const roles = store.load("s1").map((m) => m.role);
-    assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
-    assert.equal(store.load("s1")[2]?.content, "second");
-    assert.equal(s.snapshot().turns, 2);
+    // A ran a turn; B was queued (not a second overlapping turn) and folded in.
+    assert.deepEqual(
+      store.load("s1").map((m) => m.role),
+      ["user", "assistant", "user", "assistant", "user", "assistant"],
+    );
+    const contents = store.load("s1").map((m) => m.content);
+    assert.equal(contents[2], "A");
+    assert.equal(contents[4], "B");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a turn that fails to start clears the busy flag; the next send recovers", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    let attempt = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error("transient upstream failure");
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "recovered" },
+              { type: "text-end", id: "t" },
+              { type: "finish", finishReason: "stop", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => model, store);
+    const s = await p.createSession({ sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] });
+    await drain(s.events(), (e) => e.type === "error");
+    await new Promise((r) => setTimeout(r, 20)); // let #runTurn reach its terminal branch
+    assert.notEqual(s.snapshot().status, "running");
+
+    // The session is not wedged — a fresh send starts a new turn. If the busy
+    // flag were stuck, this would queue as an injection and never run, and the
+    // drain below would hang.
+    await s.send("try again");
+    await drain(s.events(), (e) => e.type === "result");
+    assert.equal(s.snapshot().status, "idle");
+    assert.equal(store.load("s1").at(-1)?.role, "assistant");
+    await s.close();
   } finally {
     cleanup();
   }

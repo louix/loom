@@ -168,6 +168,10 @@ export class AisdkSession implements AgentSession {
       this.#injections.push(input);
       return;
     }
+    // Claim the turn *synchronously* — a second send() that arrives before the
+    // await below resolves must see `#turnRunning` and queue as an injection,
+    // not race a second overlapping #runTurn().
+    this.#turnRunning = true;
     await this.#turn?.catch(() => {});
     const msg: ModelMessage = { role: "user", content: input };
     this.#messages.push(msg);
@@ -495,92 +499,112 @@ export class AisdkSession implements AgentSession {
   }
 
   async #runTurn(): Promise<void> {
-    if (this.#closing) return;
+    // `chained` = this turn kicked a follow-up that now owns `#turnRunning`.
+    let chained = false;
+    try {
+      if (this.#closing) return;
 
-    if (
-      !this.#oneShot &&
-      this.#snap.contextLimit > 0 &&
-      estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION
-    ) {
-      await this.#doCompact(undefined, "auto");
-    }
-
-    const tools = await this.#turnToolSet();
-    if (this.#closing) return;
-
-    const abort = new AbortController();
-    this.#abort = abort;
-    this.#snap.status = "running";
-
-    const { aborted, errored } = await runTurn({
-      sessionId: this.id,
-      model: this.#model,
-      system: this.#system,
-      messages: this.#messages,
-      ...(Object.keys(tools).length > 0 ? { tools } : {}),
-      maxSteps: MAX_STEPS,
-      abortSignal: abort.signal,
-      mapper: this.#mapper,
-      drainInjections: () =>
-        this.#injections.splice(0).map((content) => ({ role: "user", content }) as ModelMessage),
-      hooks: {
-        emit: (ev) => this.#emit(ev),
-        appendMessages: (msgs) => {
-          this.#messages.push(...msgs);
-          this.#store?.append(this.id, msgs);
-        },
-      },
-    });
-
-    this.#abort = null;
-
-    if (aborted || errored) {
-      // A message injected too late for `prepareStep` rides the next turn.
-      this.#flushInjections();
-      this.#turnRunning = false;
-      this.#snap.status = aborted ? "interrupted" : "error";
-      if (this.#oneShot) this.#outbox.close();
-      return;
-    }
-
-    // A plan was approved this turn → chain straight into implementation.
-    const impl = this.#implementAfterTurn;
-    this.#implementAfterTurn = null;
-    if (impl) {
-      this.#mode = "acceptEdits";
-      this.#snap.mode = "acceptEdits";
-      if (impl.fresh) {
-        await this.#doCompact(
-          "Keep the approved plan and the original goal verbatim; drop the exploration transcript.",
-          "auto",
-        );
+      if (
+        !this.#oneShot &&
+        this.#snap.contextLimit > 0 &&
+        estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION
+      ) {
+        await this.#doCompact(undefined, "auto");
       }
-      const msg: ModelMessage = {
-        role: "user",
-        content: `The plan is approved. Implement it now:\n\n${impl.plan}`,
-      };
-      this.#messages.push(msg);
-      this.#store?.append(this.id, [msg]);
-      this.#kickTurn();
-      return;
-    }
 
-    this.#snap.turns += 1;
-    this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
-    if (this.#oneShot) {
-      this.#turnRunning = false;
-      this.#outbox.close();
-      return;
-    }
+      const tools = await this.#turnToolSet();
+      if (this.#closing) return;
 
-    // A message injected as the turn wrapped up (past the last `prepareStep`)
-    // gets its own turn rather than being stranded.
-    if (this.#flushInjections().length > 0) {
-      this.#kickTurn();
-      return;
-    }
+      const abort = new AbortController();
+      this.#abort = abort;
+      this.#snap.status = "running";
 
-    this.#turnRunning = false;
-    this.#snap.status = "idle";
+      const { aborted, errored } = await runTurn({
+        sessionId: this.id,
+        model: this.#model,
+        system: this.#system,
+        messages: this.#messages,
+        ...(Object.keys(tools).length > 0 ? { tools } : {}),
+        maxSteps: MAX_STEPS,
+        abortSignal: abort.signal,
+        mapper: this.#mapper,
+        drainInjections: () =>
+          this.#injections.splice(0).map((content) => ({ role: "user", content }) as ModelMessage),
+        hooks: {
+          emit: (ev) => this.#emit(ev),
+          appendMessages: (msgs) => {
+            this.#messages.push(...msgs);
+            this.#store?.append(this.id, msgs);
+          },
+        },
+      });
+
+      this.#abort = null;
+
+      if (aborted || errored) {
+        if (aborted) {
+          // The user interrupted — drop anything queued but not yet acted on
+          // rather than persisting it as a dangling unanswered user message.
+          this.#injections.length = 0;
+        } else {
+          // An errored turn may be resumed; keep a late injection for that.
+          this.#flushInjections();
+        }
+        this.#snap.status = aborted ? "interrupted" : "error";
+        if (this.#oneShot) this.#outbox.close();
+        return;
+      }
+
+      // A plan was approved this turn → chain straight into implementation
+      // (the exploration turn emits no `result`).
+      const impl = this.#implementAfterTurn;
+      this.#implementAfterTurn = null;
+      if (impl) {
+        this.#mode = "acceptEdits";
+        this.#snap.mode = "acceptEdits";
+        if (impl.fresh) {
+          await this.#doCompact(
+            "Keep the approved plan and the original goal verbatim; drop the exploration transcript.",
+            "auto",
+          );
+        }
+        const msg: ModelMessage = {
+          role: "user",
+          content: `The plan is approved. Implement it now:\n\n${impl.plan}`,
+        };
+        this.#messages.push(msg);
+        this.#store?.append(this.id, [msg]);
+        chained = true;
+        this.#kickTurn();
+        return;
+      }
+
+      // A message injected past the last `prepareStep` folds into this same
+      // turn — continue it rather than emitting a `result` and flapping idle.
+      if (!this.#oneShot && this.#flushInjections().length > 0) {
+        chained = true;
+        this.#kickTurn();
+        return;
+      }
+
+      this.#snap.turns += 1;
+      this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
+      this.#snap.status = "idle";
+      if (this.#oneShot) this.#outbox.close();
+    } catch (err) {
+      this.#snap.status = "error";
+      this.#emit({
+        type: "error",
+        sessionId: this.id,
+        ts: Date.now(),
+        message: err instanceof Error ? err.message : String(err),
+        fatal: true,
+      });
+      if (this.#oneShot) this.#outbox.close();
+    } finally {
+      // Guarantee the gate is released unless a follow-up turn took over —
+      // otherwise a throw before a terminal branch wedges every future send().
+      if (!chained) this.#turnRunning = false;
+    }
   }
 }
