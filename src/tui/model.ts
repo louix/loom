@@ -26,7 +26,13 @@ export interface LogLine {
   /** Sub-agent that produced the event, when applicable. */
   agentId?: string;
   glyph: string;
+  /** Compact one-liner for the log pane (may be truncated). */
   text: string;
+  /**
+   * The event's full body, newlines intact — for the fullscreen pane's wrap and
+   * the `⌃o` editor view. Omitted when it would just equal {@link text}.
+   */
+  full?: string;
   tone: Tone;
   ts: number;
 }
@@ -843,6 +849,7 @@ export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
     ...(ev.agentId ? { agentId: ev.agentId } : {}),
     glyph: f.glyph,
     text: f.text,
+    ...(f.full !== undefined && f.full !== f.text ? { full: f.full } : {}),
     tone: f.tone,
     ts: ev.ts,
   };
@@ -851,27 +858,39 @@ export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
 export interface EventFormat {
   glyph: string;
   text: string;
+  /** Untruncated body with newlines, when it differs from {@link text}. */
+  full?: string;
   tone: Tone;
 }
 
 const oneLine = (s: string, n = 200): string => truncate(s.replace(/\s+/g, " ").trim(), n);
+/** Full body: normalise newlines, trim trailing space, keep everything else. */
+const body = (s: string): string => s.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trimEnd();
 
 export function formatEvent(ev: HarnessEvent): EventFormat {
   switch (ev.type) {
     case "assistant_text":
-      return { glyph: "▪", text: oneLine(ev.text), tone: "plain" };
+      return { glyph: "▪", text: oneLine(ev.text), full: body(ev.text), tone: "plain" };
     case "thinking":
-      return { glyph: "·", text: oneLine(ev.text), tone: "think" };
+      return { glyph: "·", text: oneLine(ev.text), full: body(ev.text), tone: "think" };
     case "tool_call":
-      return { glyph: "⚙", text: `${ev.name}${summarizeInput(ev.input)}`, tone: "warn" };
-    case "tool_result":
-      return { glyph: "↳", text: ev.ok ? "ok" : `error ${oneLine(String(valueOf(ev.output)), 120)}`, tone: ev.ok ? "good" : "bad" };
+      return { glyph: "⚙", text: `${ev.name}${summarizeInput(ev.input)}`, full: toolCallFull(ev.name, ev.input), tone: "warn" };
+    case "tool_result": {
+      const raw = valueOf(ev.output);
+      const out = typeof raw === "string" ? body(raw) : "";
+      return {
+        glyph: "↳",
+        text: ev.ok ? "ok" : `error ${oneLine(out || String(raw), 120)}`,
+        ...(out ? { full: ev.ok ? out : `error\n${out}` } : {}),
+        tone: ev.ok ? "good" : "bad",
+      };
+    }
     case "permission_request":
       return { glyph: "⇱", text: `${ev.tool} needs approval · req ${ev.id}`, tone: "accent" };
     case "question":
-      return { glyph: "?", text: `${oneLine(ev.question, 120)} · req ${ev.id}`, tone: "accent" };
+      return { glyph: "?", text: `${oneLine(ev.question, 120)} · req ${ev.id}`, full: body(ev.question), tone: "accent" };
     case "answer":
-      return { glyph: "↩", text: oneLine(ev.text, 120), tone: "accent" };
+      return { glyph: "↩", text: oneLine(ev.text, 120), full: body(ev.text), tone: "accent" };
     case "plan_review":
       return { glyph: "❖", text: `plan ready for review · req ${ev.id}`, tone: "accent" };
     case "usage":
@@ -880,12 +899,15 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
         text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(ev.tokens.output)}out · ctx ${humanTokens(ev.contextUsed)}/${humanTokens(ev.contextLimit)}`,
         tone: "dim",
       };
-    case "compact":
+    case "compact": {
+      const head = `context compacted ${humanTokens(ev.before)}${ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""}`;
       return {
         glyph: "⇊",
-        text: `context compacted ${humanTokens(ev.before)}${ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""}${ev.summary ? ` · ${oneLine(ev.summary, 80)}` : ""}`,
+        text: `${head}${ev.summary ? ` · ${oneLine(ev.summary, 80)}` : ""}`,
+        ...(ev.summary ? { full: `${head}\n\n${body(ev.summary)}` } : {}),
         tone: "accent",
       };
+    }
     case "compact_progress":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
       return { glyph: "⇊", text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`, tone: "dim" };
@@ -896,7 +918,7 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "status_changed":
       return { glyph: "◈", text: `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`, tone: "dim" };
     case "error":
-      return { glyph: "✕", text: oneLine(ev.message, 160), tone: "bad" };
+      return { glyph: "✕", text: oneLine(ev.message, 160), full: body(ev.message), tone: "bad" };
     case "result":
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
@@ -907,6 +929,7 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
       return {
         glyph: ev.injected ? "»" : "›",
         text: ev.injected ? `${oneLine(ev.text, 160)} · sent mid-turn` : oneLine(ev.text, 160),
+        full: ev.injected ? `${body(ev.text)}\n\n(sent mid-turn)` : body(ev.text),
         tone: "accent",
       };
   }
@@ -920,6 +943,16 @@ function summarizeInput(input: unknown): string {
     }
   }
   return "";
+}
+
+/** Full tool-call rendering for the editor / wrapped view: name + pretty input. */
+function toolCallFull(name: string, input: unknown): string {
+  if (input == null || (typeof input === "object" && Object.keys(input as object).length === 0)) return name;
+  try {
+    return `${name}\n${JSON.stringify(input, null, 2)}`;
+  } catch {
+    return name;
+  }
 }
 
 function valueOf(x: unknown): unknown {

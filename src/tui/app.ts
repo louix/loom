@@ -18,7 +18,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "../client/client.ts";
 import type { ProviderInfo, SessionSnapshot } from "../protocol/wire.ts";
 import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
-import type { EditorHandoff } from "./run.ts";
+import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { C, clock, shortId } from "./theme.ts";
 import {
@@ -61,12 +61,13 @@ const nextMode = (m: SessionMode): SessionMode =>
 
 export function App({
   client,
-  openEditor,
+  /** Test seam: override the real `$EDITOR` handoff. */
+  openEditor: openEditorOverride,
 }: {
   client: LoomClient;
   openEditor?: EditorHandoff;
 }): ReactNode {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
   const [state, dispatch] = useReducer(reduce, undefined, () => initialState());
   const [tick, setTick] = useState(0);
@@ -163,40 +164,66 @@ export function App({
     const tagged = state.logFilter === "all";
     return (
       visibleLog(state)
-        .map((l) => `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} ${l.text}`)
+        .map((l) => {
+          const head = `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} `;
+          // `full` keeps newlines — indent continuation lines under the glyph.
+          const body = (l.full ?? l.text).split("\n");
+          return body.map((ln, i) => (i === 0 ? head + ln : " ".repeat(head.length) + ln)).join("\n");
+        })
         .join("\n") || "(no events)"
     );
   }, [state]);
 
+  /**
+   * Hand the terminal to `$EDITOR` and hand it back. `suspendTerminal` (Ink 7.1)
+   * flushes the current frame, pauses input, runs the child, then resets Ink's
+   * diff state and forces a full redraw — the thing the old manual
+   * `clear()` + `rerender()` missed, which left the screen blank until the next
+   * keypress. Bracketed paste is ours (set outside Ink in `run.ts`), so Ink's
+   * `resumeInput` won't restore it — re-assert it here.
+   */
+  const openEditor = useCallback<EditorHandoff>(
+    async (text, opts) => {
+      if (openEditorOverride) return openEditorOverride(text, opts);
+      let saved: string | null = null;
+      try {
+        await suspendTerminal(async () => {
+          saved = spawnEditor(text, opts);
+        });
+      } catch {
+        saved = null;
+      }
+      if (stdout.isTTY) stdout.write("\x1b[?2004h");
+      return saved;
+    },
+    [openEditorOverride, suspendTerminal, stdout],
+  );
+
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
-  const editPrompt = useCallback(() => {
+  const editPrompt = useCallback(async () => {
     if (state.mode !== "prompt" || !state.prompt) return note("open a prompt first — ⌃o views the log", "dim");
-    if (!openEditor) return note("no $EDITOR available", "dim");
     const p = state.prompt;
-    const next = openEditor(p.buffer.text, {
+    const next = await openEditor(p.buffer.text, {
       ext: p.kind === "new" ? "md" : "txt",
       aside: { name: "events.log", body: logText() },
     });
     if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
-    setTick((t) => t + 1); // force a repaint after the editor let go of the tty
   }, [state.mode, state.prompt, openEditor, note, logText]);
 
   /** `⌃o` — open the pending request, or the event log, in `$EDITOR` read-only. */
-  const viewInEditor = useCallback(() => {
-    if (!openEditor) return note("no $EDITOR available", "dim");
+  const viewInEditor = useCallback(async () => {
     const s = selectedSession(state);
     const pend = s ? pendingFor(state, s.id) : {};
     if (pend.plan !== undefined) {
-      openEditor(pend.planText ?? "", { ext: "md" });
+      await openEditor(pend.planText ?? "", { ext: "md" });
     } else if (pend.permission !== undefined) {
-      openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), { ext: "json" });
+      await openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), { ext: "json" });
     } else if (pend.question !== undefined) {
-      openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
+      await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
     } else {
-      openEditor(logText(), { ext: "log" });
+      await openEditor(logText(), { ext: "log" });
     }
-    setTick((t) => t + 1);
-  }, [openEditor, note, state, logText]);
+  }, [openEditor, state, logText]);
 
   const copyToClipboard = useCallback(
     (text: string, label: string) => {
@@ -645,12 +672,10 @@ export function App({
   );
 
   /** `e` in the plan overlay — edit the plan in $EDITOR, then implement what was saved. */
-  const editPlan = useCallback(() => {
+  const editPlan = useCallback(async () => {
     const pl = state.plan;
     if (!pl) return;
-    if (!openEditor) return note("no $EDITOR available", "dim");
-    const edited = openEditor(pl.text, { ext: "md" });
-    setTick((t) => t + 1);
+    const edited = await openEditor(pl.text, { ext: "md" });
     const plan = edited?.trim();
     if (!plan) return note("plan unchanged — nothing sent", "dim");
     respondPlan({ action: "revise", plan }, "implementing your edited plan");

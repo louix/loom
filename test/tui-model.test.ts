@@ -25,6 +25,7 @@ import {
   reduce,
   selectedSession,
   sortSessions,
+  toLogLine,
   visibleLog,
   type TuiState,
 } from "../src/tui/model.ts";
@@ -400,16 +401,18 @@ test("groupsOf only emits non-empty groups, in fleet-view order", () => {
 // ---------------------------------------------------------------------------
 
 test("formatEvent renders each event kind to a glyph + one-liner + tone", () => {
-  assert.deepEqual(formatEvent(ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } })), {
-    glyph: "⚙",
-    text: "Bash  npm test",
-    tone: "warn",
-  });
+  const tc = formatEvent(ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }));
+  assert.equal(tc.glyph, "⚙");
+  assert.equal(tc.text, "Bash  npm test");
+  assert.equal(tc.tone, "warn");
+  assert.match(tc.full ?? "", /"command": "npm test"/); // editor view gets the pretty input
   const okr = formatEvent(ev({ type: "tool_result", id: "1", ok: true, output: {} }));
   assert.equal(okr.tone, "good");
   assert.equal(okr.text, "ok");
+  assert.equal(okr.full, undefined); // empty object → nothing to expand
   const badr = formatEvent(ev({ type: "tool_result", id: "1", ok: false, output: { text: "nope" } }));
   assert.equal(badr.tone, "bad");
+  assert.equal(badr.full, "error\nnope");
   assert.match(formatEvent(ev({ type: "question", id: "q1", question: "which one?" })).text, /req q1/);
   assert.match(
     formatEvent(ev({ type: "usage", tokens: { input: 1200, output: 30, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1200, contextLimit: 200000 })).text,
@@ -421,6 +424,22 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
   assert.match(comp.text, /120\.0k → 24\.0k/);
   // `after` unknown until the next turn — no arrow
   assert.doesNotMatch(formatEvent(ev({ type: "compact", trigger: "auto", before: 120000, after: 0 })).text, /→/);
+});
+
+test("formatEvent keeps the full body for long / multi-line events", () => {
+  const long = "word ".repeat(120).trim(); // ~600 chars
+  const at = formatEvent(ev({ type: "assistant_text", text: long }));
+  assert.ok(at.text.length < long.length && at.text.endsWith("…"), "pane text is truncated");
+  assert.equal(at.full, long, "full body is untouched");
+
+  // newlines survive into `full` but not the pane one-liner
+  const multi = formatEvent(ev({ type: "error", message: "line one\nline two\nline three" }));
+  assert.equal(multi.full, "line one\nline two\nline three");
+  assert.doesNotMatch(multi.text, /\n/);
+
+  // a short event doesn't carry a redundant `full` on the stored LogLine
+  assert.equal(toLogLine(1, ev({ type: "assistant_text", text: "hi" })).full, undefined);
+  assert.equal(toLogLine(2, ev({ type: "assistant_text", text: long })).full, long);
 });
 
 test("prompt open / edit / close transitions", () => {

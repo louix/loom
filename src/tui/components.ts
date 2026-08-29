@@ -407,7 +407,8 @@ export function EventLog({
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
   const subName = new Map<string, string>();
   for (const s of state.sessions) for (const a of s.subagents) subName.set(a.id, a.name);
-  const physical = physicalRows(visibleLog(state), inside(width), tagged, subName);
+  // Fullscreen has room to breathe; the split pane stays terse.
+  const physical = physicalRows(visibleLog(state), inside(width), tagged, subName, full ? 40 : 10);
 
   const maxScroll = Math.max(0, physical.length - capacity);
   const off = Math.min(scroll, maxScroll);
@@ -439,12 +440,18 @@ export function EventLog({
   );
 }
 
-/** Wrap every log line to `iw` columns; returns one entry per physical row. */
+/**
+ * Wrap every log line to `iw` columns; one entry per physical row. Each event
+ * shows its full body (newlines flattened to spaces) wrapped to width — not a
+ * hard "long li…" cut — but capped at `maxRows` rows so a big tool result can't
+ * bury the rest; `⌃o` opens the whole thing in `$EDITOR`.
+ */
 function physicalRows(
   lines: readonly LogLine[],
   iw: number,
   tagged: boolean,
   subName: Map<string, string> = new Map(),
+  maxRows = 12,
 ): Array<{ key: string; node: ReactNode }> {
   const out: Array<{ key: string; node: ReactNode }> = [];
   for (const l of lines) {
@@ -454,7 +461,10 @@ function physicalRows(
     const sub = l.agentId ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
     const indent = ts.length + tag.length + sub.length + 2; // + "glyph "
     const room = Math.max(8, iw - indent);
-    const wrapped = wrapText(l.text.replace(/\s+/g, " ").trim() || "…", room);
+    const source = (l.full ?? l.text).replace(/\s+/g, " ").trim() || "…";
+    const all = wrapText(source, room);
+    const clipped = all.length > maxRows;
+    const wrapped = clipped ? all.slice(0, maxRows - 1) : all;
     wrapped.forEach((seg, i) => {
       out.push({
         key: `${l.seq}-${l.ts}-${i}`,
@@ -476,6 +486,17 @@ function physicalRows(
               ),
       });
     });
+    if (clipped) {
+      out.push({
+        key: `${l.seq}-${l.ts}-more`,
+        node: h(
+          Text,
+          { key: `${l.seq}-${l.ts}-more`, wrap: "truncate-end" },
+          h(Text, null, " ".repeat(indent)),
+          h(Text, { color: C.faint }, `… ${all.length - (maxRows - 1)} more lines — ⌃o for the full log`),
+        ),
+      });
+    }
   }
   return out;
 }
