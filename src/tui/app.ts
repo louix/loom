@@ -504,9 +504,10 @@ export function App({
         return `started ${shortId(r.id)}`;
       }
       if (p.kind === "send" && p.sessionId) {
+        // No local echo — the daemon emits a `user_message` event that every
+        // client (this one included) renders, so there's one source of truth.
         await client.request("session.send", { id: p.sessionId, text });
         dispatch({ t: "pushHistory", text });
-        dispatch({ t: "echo", line: echoLine(p.sessionId, text) });
         return "sent";
       }
       if (p.kind === "title" && p.sessionId) {
@@ -572,11 +573,16 @@ export function App({
       }
       dispatch({ t: "closeSendChoice" });
       if (choice === "asap") {
-        // No local echo — the daemon emits a `user_message` event for a
-        // mid-turn send, which every client (this one included) renders.
+        // No local echo — the daemon emits a `user_message` event that every
+        // client renders. The RPC tells us whether it actually landed mid-turn.
         client
-          .request("session.send", { id: sc.sessionId, text: sc.text })
-          .then(() => note("injected — lands after the current tool call", "good"))
+          .request<{ injected?: boolean }>("session.send", { id: sc.sessionId, text: sc.text })
+          .then((r) =>
+            note(
+              r.injected ? "injected — lands after the current tool call" : "sent",
+              "good",
+            ),
+          )
           .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
         dispatch({ t: "pushHistory", text: sc.text });
       } else {
@@ -623,25 +629,45 @@ export function App({
     respondPlan({ action: "revise", plan }, "implementing your edited plan");
   }, [state.plan, openEditor, note, respondPlan]);
 
-  // Drain a session's queued messages once it goes idle again.
+  // Drain a session's queued messages — one per turn, once it's idle again.
   const draining = useRef<Set<string>>(new Set());
+  // Sessions sent a queued item since they were last idle (so we release at
+  // most one per turn instead of flushing the whole queue in a burst).
+  const drainedThisIdle = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const s of state.sessions) {
+      if (s.status !== "idle") drainedThisIdle.current.delete(s.id);
+    }
+    // A queue on a session that won't return to idle is stranded — say so and
+    // drop it rather than showing "N queued" against a dead row forever.
+    for (const [id, q] of Object.entries(state.queue)) {
+      if (!q || q.length === 0) continue;
+      const s = state.sessions.find((x) => x.id === id);
+      if (!s || s.status === "done" || s.status === "error") {
+        note(`${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status : "gone"}`, "bad");
+        dispatch({ t: "clearQueue", sessionId: id });
+      }
+    }
+    for (const s of state.sessions) {
       const q = state.queue[s.id];
-      if (s.status === "idle" && q && q.length > 0 && !draining.current.has(s.id)) {
+      if (
+        s.status === "idle" &&
+        q &&
+        q.length > 0 &&
+        !draining.current.has(s.id) &&
+        !drainedThisIdle.current.has(s.id)
+      ) {
         const head = q[0] as string;
         draining.current.add(s.id);
+        drainedThisIdle.current.add(s.id);
         client
           .request("session.send", { id: s.id, text: head })
-          .then(() => {
-            dispatch({ t: "dequeue", sessionId: s.id });
-            dispatch({ t: "echo", line: echoLine(s.id, head) });
-          })
+          .then(() => dispatch({ t: "dequeue", sessionId: s.id })) // daemon emits the user_message echo
           .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"))
           .finally(() => draining.current.delete(s.id));
       }
     }
-  }, [state.sessions, state.queue, client, echoLine, note]);
+  }, [state.sessions, state.queue, client, note]);
 
   // ---- daemon lifecycle ---------------------------------------
   const liveCount = state.sessions.filter(

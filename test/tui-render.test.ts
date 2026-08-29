@@ -235,6 +235,37 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
   }
 });
 
+test("a queue on a session that never returns to idle is reported, not silently dropped", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "worker", provider: "fake" });
+  const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
+  const fs = fake.session(snap.id);
+  fs?.emit({ type: "assistant_text", text: "working…" }); // -> running
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(180);
+    stdin.feed("s");
+    await delay(80);
+    stdin.feed("later note");
+    await delay(80);
+    stdin.feed("\r"); // -> SendChoice
+    await delay(100);
+    stdin.feed("t"); // queue it
+    await delay(150);
+    assert.match(stdout.last, /▸ 1 queued/);
+
+    fs?.fail("upstream exploded"); // -> error, never goes idle
+    await delay(250);
+    assert.match(stdout.last, /queued message.*not sent/i, "the stranded queue is surfaced");
+    assert.doesNotMatch(stdout.last, /▸ \d+ queued/, "and cleared");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("`e` renames the selected session via session.setTitle", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

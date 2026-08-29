@@ -239,17 +239,24 @@ export class SessionManager {
 
   // --- turn control ----------------------------------------------------
 
-  async send(id: string, text: string): Promise<void> {
+  /**
+   * Deliver `text` to the session. Returns whether it was an injection into an
+   * already-live turn (`injected: true`) vs. the start of a fresh turn — read
+   * synchronously from the tracked status before handing off, since the adapter
+   * `send()` returns before any turn events land.
+   */
+  async send(id: string, text: string): Promise<{ injected: boolean }> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
+    const injected =
+      run.status === "running" || run.status === "awaiting_input" || run.status === "starting";
     await run.session.send(text);
-    // A send during a live turn is an injection — leave the status (and its
-    // reason, e.g. a pending permission) alone; the turn's own events drive it.
-    if (run.status === "running" || run.status === "awaiting_input" || run.status === "starting") {
-      return;
-    }
+    // For an injection, leave the status (and its reason, e.g. a pending
+    // permission) alone; the turn's own events drive it.
+    if (injected) return { injected };
     run.interrupting = false;
     this.#set(id, run, "running", null);
+    return { injected };
   }
 
   async compact(id: string, instructions?: string): Promise<void> {

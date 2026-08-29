@@ -722,18 +722,15 @@ export class Daemon {
       const id = reqString(params, "id");
       const text = reqString(params, "text");
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
-      // Delivered while a turn is already in flight → an injection: aisdk splices
-      // it in after the current tool result, Claude queues it for the next turn
-      // boundary. Emit it so every client (not just the sender) sees it land.
-      const busy = ["running", "awaiting_input", "starting"].includes(
-        this.#registry.get(id)?.status ?? "",
-      );
-      this.#lastSend.set(id, text);
-      await this.#sessions.send(id, text);
-      if (busy) {
-        this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: true });
-      }
-      return this.#registry.mustGet(id);
+      const { injected } = await this.#sessions.send(id, text);
+      // Always emit the message so every client renders it from one source
+      // (clients don't local-echo sends). `injected: true` = it landed in a
+      // live turn (aisdk splices after the current tool result; Claude queues
+      // for the next boundary); false = it started a fresh turn.
+      this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
+      // Only the text that *starts* a turn is the checkpoint / auto-title seed.
+      if (!injected) this.#lastSend.set(id, text);
+      return { ...this.#registry.mustGet(id), injected };
     });
 
     d.register("session.checkpoints", (params) => {
@@ -976,6 +973,7 @@ export class Daemon {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
+      this.#lastSend.delete(id);
       const snap = this.#registry.setStatus(id, "done", "marked_done");
       this.emitEvent({ type: "status_changed", sessionId: id, status: "done", ts: Date.now(), reason: "marked_done" });
       this.#emitSessionUpdated(snap, clientLabel(params));

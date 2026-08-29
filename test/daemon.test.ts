@@ -276,41 +276,39 @@ model    = "gpt-5"
   }
 });
 
-test("session.send during a live turn broadcasts an injected user_message; an idle send does not", async () => {
+test("session.send always broadcasts a user_message; injected reflects whether a turn was live", async () => {
   const hh = await makeHarness();
+  const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
     const frames: PushFrame[] = [];
     c.onPush((f) => frames.push(f));
+    const umEvents = (): Array<{ text: string; injected: boolean }> =>
+      frames
+        .filter((f) => f.type === "event" && (f.event as { type?: string }).type === "user_message")
+        .map((f) => {
+          const e = (f as { event: { text: string; injected: boolean } }).event;
+          return { text: e.text, injected: e.injected };
+        });
 
     const snap = await c.request<SessionSnapshot>("session.create", { prompt: "busy", provider: "fake" });
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
     fs?.emit({ type: "assistant_text", text: "working…" }); // → running
     await delay(80);
 
-    await c.request("session.send", { id: snap.id, text: "also handle Y" });
+    const r1 = await c.request<{ injected?: boolean }>("session.send", { id: snap.id, text: "also handle Y" });
     await delay(60);
-    const um = frames.find(
-      (f) => f.type === "event" && (f.event as { type?: string }).type === "user_message",
-    );
-    assert.ok(um, "a user_message frame was broadcast");
-    const ev = (um as { event: { text: string; injected: boolean } }).event;
-    assert.equal(ev.text, "also handle Y");
-    assert.equal(ev.injected, true);
+    assert.equal(r1.injected, true);
+    assert.deepEqual(umEvents().at(-1), { text: "also handle Y", injected: true });
 
     fs?.finishTurn(); // → idle
     await delay(60);
     frames.length = 0;
-    await c.request("session.send", { id: snap.id, text: "next turn please" });
+    const r2 = await c.request<{ injected?: boolean }>("session.send", { id: snap.id, text: "next turn please" });
     await delay(60);
-    assert.equal(
-      frames.some((f) => f.type === "event" && (f.event as { type?: string }).type === "user_message"),
-      false,
-      "an idle send is a normal turn, not an injection",
-    );
-
-    await c.close();
+    assert.equal(r2.injected, false);
+    assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
   } finally {
+    await c.close();
     await hh.cleanup();
   }
 });
