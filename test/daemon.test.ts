@@ -265,6 +265,19 @@ model    = "gpt-5"
       .prepare("SELECT COUNT(*) AS n FROM provider_messages WHERE session_id = ?")
       .get(fork.id) as { n: number };
     assert.equal(copied.n, 4);
+    // an aisdk fork gets its provider_ref written so it survives a restart
+    const ref = db
+      .prepare("SELECT provider_ref FROM sessions WHERE id = ?")
+      .get(fork.id) as { provider_ref: string };
+    assert.equal(ref.provider_ref, fork.id);
+
+    // forking a mid-turn parent is refused (dangling tool call)
+    hh.daemon.registry.setStatus(parent.id, "running", "test");
+    await assert.rejects(c.request("session.fork", { id: parent.id }), /mid-turn/);
+    // …and so is a rewind while it's not idle
+    db.prepare("UPDATE usage SET turns = 3 WHERE session_id = ?").run(parent.id);
+    await assert.rejects(c.request("session.rewind", { id: parent.id, toTurn: 1 }), /interrupt the session/);
+    hh.daemon.registry.setStatus(parent.id, "idle", "test");
 
     // fork a fake session → rejected for now
     const fk = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", provider: "fake" });

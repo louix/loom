@@ -57,6 +57,13 @@ export class ProviderMessageStore {
    * place. Used by compaction (M10d) to swap the tail for a summary.
    */
   replaceFrom(sessionId: string, fromSeq: number, messages: ModelMessage[]): void {
+    const n = this.count(sessionId);
+    if (fromSeq > n) {
+      // Would silently DELETE nothing and then append at `n` rather than at
+      // `fromSeq` — the caller's mental model (a stale/post-compaction offset)
+      // is wrong. Fail loudly instead.
+      throw new Error(`replaceFrom: fromSeq ${fromSeq} is past the end (${n} messages)`);
+    }
     this.#db
       .prepare("DELETE FROM provider_messages WHERE session_id = ? AND seq >= ?")
       .run(sessionId, fromSeq);
@@ -69,6 +76,9 @@ export class ProviderMessageStore {
 
   /** Copy `fromId`'s whole transcript into `toId` (a fresh session — a hard fork). */
   copyTo(fromId: string, toId: string): void {
+    if (this.count(toId) > 0) {
+      throw new Error(`copyTo: destination ${toId} already has messages`);
+    }
     this.#db
       .prepare(
         "INSERT INTO provider_messages (session_id, seq, role, content, created_at) " +

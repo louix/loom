@@ -168,6 +168,12 @@ export class Daemon {
     this.#providers = new ProviderRegistry(this.config, this.#db);
     this.#sessions = new SessionManager({
       emitEvent: (ev) => {
+        if (ev.type === "compact" && !this.#stopping) {
+          // A compaction rewrote the transcript; the absolute message offsets
+          // stored in the checkpoints no longer point anywhere sane, so undo
+          // past a compaction isn't recoverable — drop them.
+          this.#checkpoints.truncate(ev.sessionId, 0);
+        }
         this.emitEvent(ev);
       },
       onStatus: (id, status, reason) => this.#onDerivedStatus(id, status, reason),
@@ -471,8 +477,9 @@ export class Daemon {
 
   /** ~cost to re-prime an aisdk transcript truncated to `keepMessages` (a cache write). */
   #rewindCostUsd(model: string | null, keepMessages: number, id: string): number {
-    if (keepMessages <= 0) return 0;
-    const tokens = estimateTokens(this.#pmsgs.load(id).slice(0, keepMessages));
+    const keep = Math.min(Math.max(0, keepMessages), this.#pmsgs.count(id));
+    if (keep <= 0) return 0;
+    const tokens = estimateTokens(this.#pmsgs.load(id).slice(0, keep));
     return costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0;
   }
 
@@ -678,6 +685,15 @@ export class Daemon {
         await this.#sessions.create(await this.#providers.get(providerId), opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // Nothing ran in the worktree — reclaim it now (gc only touches `done`
+        // rows, so an `error` row's tree would leak forever). Keep the row as
+        // a record of the failure, with no worktree.
+        try {
+          this.#worktrees.remove(wt.path, { force: true });
+        } catch {
+          /* best effort */
+        }
+        this.#registry.setFields(id, { worktree: null });
         this.#registry.setStatus(id, "error", message.slice(0, 120));
         throw new RpcError("provider_error", `could not start session: ${message}`);
       }
@@ -753,11 +769,19 @@ export class Daemon {
       const toTurn = Number((isObj(params) ? params : {})["toTurn"]);
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!this.#isAisdk(snap.provider)) {
+        throw new RpcError("bad_request", "rewind is aisdk-only for now (Claude support is fork-tree F3)");
+      }
+      if (snap.turns <= 1) {
+        throw new RpcError("bad_request", "this session has no earlier turn to rewind to");
+      }
       if (!Number.isInteger(toTurn) || toTurn < 1 || toTurn >= snap.turns) {
         throw new RpcError("bad_request", `toTurn must be 1..${snap.turns - 1}`);
       }
-      if (!this.#isAisdk(snap.provider)) {
-        throw new RpcError("bad_request", "rewind is aisdk-only for now (Claude support is fork-tree F3)");
+      if (!["idle", "interrupted", "error"].includes(snap.status)) {
+        // rewind() awaits the in-flight #turn, which for a running / parked
+        // session never settles until it's interrupted → the RPC would hang.
+        throw new RpcError("bad_request", "interrupt the session before rewinding it");
       }
       const cp = this.#checkpoints.at(id, toTurn);
       if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
@@ -785,6 +809,12 @@ export class Daemon {
       if (!this.#isAisdk(parent.provider)) {
         throw new RpcError("bad_request", "hard fork is aisdk-only for now (Claude support is fork-tree F3)");
       }
+      if (!["idle", "interrupted", "done", "error"].includes(parent.status)) {
+        // Forking mid-turn copies a transcript whose last message is an
+        // assistant tool-call with no tool_result yet — the fork's first
+        // request would 400 on most endpoints.
+        throw new RpcError("bad_request", "the parent is mid-turn — interrupt it before forking");
+      }
       const p = isObj(params) ? params : {};
       const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
 
@@ -797,22 +827,24 @@ export class Daemon {
       }
 
       const newId = randomUUID();
-      this.#registry.create({
-        id: newId,
-        provider: parent.provider,
-        model: parent.model,
-        parentId: id,
-        title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
-        worktree: wt.path,
-        branch: wt.branch,
-        baseBranch: wt.baseRef,
-        ...(parent.budget.maxCostUsd != null ? { budget: { maxCostUsd: parent.budget.maxCostUsd } } : {}),
-      });
-      this.#registry.setFields(newId, { forkTurn: parent.turns });
-      this.#pmsgs.copyTo(id, newId);
-
-      const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
+      // Everything past the worktree is torn down together on any failure so a
+      // failed fork doesn't leave an orphan worktree / branch / row / rows.
       try {
+        this.#registry.create({
+          id: newId,
+          provider: parent.provider,
+          model: parent.model,
+          parentId: id,
+          title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
+          worktree: wt.path,
+          branch: wt.branch,
+          baseBranch: wt.baseRef,
+          ...(parent.budget.maxCostUsd != null ? { budget: { maxCostUsd: parent.budget.maxCostUsd } } : {}),
+        });
+        this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
+        this.#pmsgs.copyTo(id, newId);
+
+        const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
         await this.#sessions.resume(await this.#providers.get(parent.provider), {
           sessionId: newId,
           providerRef: newId,
@@ -822,8 +854,15 @@ export class Daemon {
           ...(parent.model ? { model: parent.model } : {}),
         });
       } catch (err) {
+        await this.#sessions.close(newId).catch(() => {});
+        try {
+          this.#worktrees.remove(wt.path, { force: true });
+        } catch {
+          /* best effort */
+        }
+        this.#registry.store.delete(newId); // cascades provider_messages / checkpoints
+        this.#lastSend.delete(newId);
         const m = err instanceof Error ? err.message : String(err);
-        this.#registry.setStatus(newId, "error", m.slice(0, 120));
         throw new RpcError("provider_error", `could not start the fork: ${m}`);
       }
 

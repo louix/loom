@@ -426,7 +426,29 @@ test("a checkpoint is recorded per completed turn; session.checkpoints lists the
   assert.equal(cps[1]?.userText, "the second ask");
   assert.equal(cps[1]?.rewindCostUsd, 0); // fake isn't priced / isn't aisdk
 
+  // A non-aisdk provider is refused before any range check runs.
   await assert.rejects(c.request("session.rewind", { id, toTurn: 1 }), /aisdk-only/);
-  await assert.rejects(c.request("session.rewind", { id, toTurn: 9 }), /toTurn must be/);
+  await assert.rejects(c.request("session.rewind", { id, toTurn: 9 }), /aisdk-only/);
   await c.close();
 });
+
+test("a compaction drops the checkpoints (their offsets are no longer valid)", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.finishTurn();
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1);
+  await c.request("session.send", { id, text: "more" });
+  fs.finishTurn();
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2);
+
+  let cps = await c.request<Array<{ turn: number }>>("session.checkpoints", { id });
+  assert.deepEqual(cps.map((x) => x.turn), [1, 2]);
+
+  fs.emit({ type: "compact", trigger: "manual", before: 100, after: 30 });
+  await delay(40);
+
+  cps = await c.request<Array<{ turn: number }>>("session.checkpoints", { id });
+  assert.deepEqual(cps, [], "checkpoints cleared after a compaction");
+  await c.close();
+});
+

@@ -88,6 +88,29 @@ function tmpDb() {
   };
 }
 
+test("ProviderMessageStore: replaceFrom past the end throws; copyTo refuses a non-empty target", () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    store.append("s1", [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b" },
+      { role: "user", content: "c" },
+    ]);
+    assert.doesNotThrow(() => store.replaceFrom("s1", 3, [])); // == append nothing, keep all
+    assert.doesNotThrow(() => store.replaceFrom("s1", 2, [{ role: "assistant", content: "b2" }]));
+    assert.throws(() => store.replaceFrom("s1", 99, []), /past the end/);
+
+    store.append("s2", [{ role: "user", content: "x" }]);
+    assert.throws(() => store.copyTo("s1", "s2"), /already has messages/);
+    store.clear("s2");
+    assert.doesNotThrow(() => store.copyTo("s1", "s2"));
+    assert.equal(store.count("s2"), store.count("s1"));
+  } finally {
+    cleanup();
+  }
+});
+
 async function drain(events: AsyncIterable<HarnessEvent>, until: (ev: HarnessEvent) => boolean): Promise<HarnessEvent[]> {
   const out: HarnessEvent[] = [];
   for await (const ev of events) {

@@ -341,6 +341,19 @@ export class SessionManager {
 
   // --- teardown ------------------------------------------------------
 
+  /** Close and forget a single session (e.g. tearing down a failed fork). */
+  async close(id: string): Promise<void> {
+    const run = this.#running.get(id);
+    if (!run) return;
+    this.#running.delete(id);
+    try {
+      await run.session.close();
+    } catch {
+      // best effort
+    }
+    await run.pump.catch(() => {});
+  }
+
   async shutdown(): Promise<void> {
     const runs = [...this.#running.values()];
     this.#running.clear();
