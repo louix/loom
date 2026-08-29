@@ -12,7 +12,7 @@
  */
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { commitInWorktree } from "../claude/loom-mcp.ts";
+import { commitInWorktree } from "../commit.ts";
 
 export interface LoomToolDeps {
   /** The session's worktree — `commit` runs here. */

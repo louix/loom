@@ -162,6 +162,12 @@ transcript itself in `provider_messages`.
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
 
+Provider SDKs load lazily — `ProviderRegistry` pulls each adapter's vendor
+package (`ai` / `@ai-sdk/*`, or `@anthropic-ai/claude-agent-sdk`) with a dynamic
+`import()` the first time a session uses that provider. A Claude-only daemon
+never evaluates the Vercel AI SDK, and vice versa. `test/lazy-providers.test.ts`
+enforces it with a module-resolve hook.
+
 **Sub-agents.** When a session's agent spawns a sub-agent (Claude's `Task`
 tool), the Detail pane shows `⑂ 1/2 sub-agents · reviewer, tester ✓` and the
 sub-agent's own event-log rows get a dim `⑂reviewer` prefix and hang one level
@@ -286,7 +292,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 214 cases
+npm test             # node:test — 215 cases
 ```
 
 ### Layout

@@ -1,71 +1,84 @@
 /**
- * Lazily instantiates provider adapters by id. The provider is picked per
- * session (design spec §2), so nothing is constructed until a session asks for
- * it — importing the Claude SDK has a cost, and the `fake` provider only exists
- * for tests / offline play.
+ * Instantiates provider adapters by id, on demand. The provider is picked per
+ * session (design spec §2), and each adapter's vendor SDK is loaded with a
+ * dynamic `import()` inside its factory — so a Claude-only daemon never
+ * evaluates `ai` / `@ai-sdk/*`, and an aisdk-only daemon never evaluates
+ * `@anthropic-ai/claude-agent-sdk`. Nothing in the daemon's eager graph
+ * imports a vendor SDK; the seam (`../types.ts`) is enough.
  *
- * `claude` and `fake` are always present; every `[providers.<id>]` profile with
- * `adapter = "aisdk"` adds an {@link AisdkProvider} entry under its own id.
+ * `claude` and `fake` are always available; every `[providers.<id>]` profile
+ * with `adapter = "aisdk"` adds an entry under its own id.
  */
 import type { LoomConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
-import { ClaudeProvider } from "./claude/adapter.ts";
-import { FakeProvider } from "./fake/fake.ts";
-import { AisdkProvider } from "./aisdk/adapter.ts";
-import { ProviderMessageStore } from "./aisdk/store.ts";
 import type { AgentProvider } from "./types.ts";
 
 export class ProviderRegistry {
   readonly #config: LoomConfig;
-  readonly #factories = new Map<string, () => AgentProvider>();
-  readonly #cache = new Map<string, AgentProvider>();
+  readonly #db: Db | undefined;
+  readonly #ids: Set<string>;
+  /** id → in-flight or resolved adapter; caching the promise dedupes concurrent `get`s. */
+  readonly #cache = new Map<string, Promise<AgentProvider>>();
+  /** Resolved adapters, in construction order — for `live()` / shutdown. */
+  readonly #live: AgentProvider[] = [];
 
   constructor(config: LoomConfig, db?: Db) {
     this.#config = config;
-    this.#factories.set(
-      "claude",
-      () =>
-        new ClaudeProvider({
-          cliPath: config.providers.claude.cliPath,
-          promptCacheTtl: config.providers.claude.promptCacheTtl,
-        }),
-    );
-    this.#factories.set("fake", () => new FakeProvider());
-
-    for (const [id, profile] of Object.entries(config.providers.aisdk)) {
-      this.#factories.set(id, () => {
-        if (!db) throw new Error(`aisdk provider "${id}" needs a database`);
-        const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
-        return new AisdkProvider(
-          { id, baseUrl: profile.baseUrl, apiKey, model: profile.model, models: profile.models },
-          new ProviderMessageStore(db),
-        );
-      });
-    }
+    this.#db = db;
+    this.#ids = new Set(["claude", "fake", ...Object.keys(config.providers.aisdk)]);
   }
 
   get defaultId(): string {
     const want = this.#config.defaultProvider;
-    return this.#factories.has(want) ? want : "claude";
+    return this.#ids.has(want) ? want : "claude";
   }
 
   has(id: string): boolean {
-    return this.#factories.has(id);
+    return this.#ids.has(id);
   }
 
-  get(id: string): AgentProvider {
+  /** Construct (or return the cached) adapter for `id`, loading its SDK lazily. */
+  get(id: string): Promise<AgentProvider> {
     const cached = this.#cache.get(id);
     if (cached) return cached;
-    const factory = this.#factories.get(id);
-    if (!factory) throw new Error(`unknown provider: ${id}`);
-    const provider = factory();
-    this.#cache.set(id, provider);
-    return provider;
+    if (!this.#ids.has(id)) return Promise.reject(new Error(`unknown provider: ${id}`));
+    const built = this.#build(id).then((p) => {
+      this.#live.push(p);
+      return p;
+    });
+    this.#cache.set(id, built);
+    return built;
+  }
+
+  async #build(id: string): Promise<AgentProvider> {
+    if (id === "fake") {
+      const { FakeProvider } = await import("./fake/fake.ts");
+      return new FakeProvider();
+    }
+    if (id === "claude") {
+      const { ClaudeProvider } = await import("./claude/adapter.ts");
+      return new ClaudeProvider({
+        cliPath: this.#config.providers.claude.cliPath,
+        promptCacheTtl: this.#config.providers.claude.promptCacheTtl,
+      });
+    }
+    const profile = this.#config.providers.aisdk[id];
+    if (!profile) throw new Error(`unknown provider: ${id}`);
+    if (!this.#db) throw new Error(`aisdk provider "${id}" needs a database`);
+    const [{ AisdkProvider }, { ProviderMessageStore }] = await Promise.all([
+      import("./aisdk/adapter.ts"),
+      import("./aisdk/store.ts"),
+    ]);
+    const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
+    return new AisdkProvider(
+      { id, baseUrl: profile.baseUrl, apiKey, model: profile.model, models: profile.models },
+      new ProviderMessageStore(this.#db),
+    );
   }
 
   /** Providers that have actually been constructed (for shutdown / status). */
   live(): AgentProvider[] {
-    return [...this.#cache.values()];
+    return [...this.#live];
   }
 
   get config(): LoomConfig {

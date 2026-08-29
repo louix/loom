@@ -347,6 +347,14 @@ Fleet-row session ids are coloured by provider (palette auto-assigned in config
 order, `color` to override); the Detail `engine · provider / model` line
 matches. `loom providers` / `loom models <provider>` CLI. migration-free.
 
+**Lazy vendor loading (post-M10).** `ProviderRegistry` factories use dynamic
+`import()`, so a Claude-only daemon never evaluates `ai` / `@ai-sdk/*` and an
+aisdk-only daemon never evaluates `@anthropic-ai/claude-agent-sdk` — smaller
+attack surface, faster start. `registry.get()` is now `async`;
+`commitInWorktree` moved to the SDK-free `src/provider/commit.ts`.
+`test/lazy-providers.test.ts` asserts it via a `module.registerHooks` resolve
+hook. 215 tests.
+
 ---
 
 ## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)

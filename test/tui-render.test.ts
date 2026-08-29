@@ -204,7 +204,7 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy worker", provider: "fake" });
-  const fake = h.daemon.providers.get("fake") as FakeProvider;
+  const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   const fs = fake.session(snap.id);
   fs?.emit({ type: "assistant_text", text: "working…" }); // -> running
   const { stdout, stdin, app } = mount(client);
@@ -293,7 +293,7 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", { prompt: "plan this", provider: "fake" });
-  const fake = h.daemon.providers.get("fake") as FakeProvider;
+  const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   const fs = fake.session(snap.id);
   const { stdout, stdin, app } = mount(client);
   try {
@@ -323,7 +323,7 @@ test("sub-agents show in the Detail pane and prefix their log rows", async () =>
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", { prompt: "spawn helpers", provider: "fake" });
-  const fs = (h.daemon.providers.get("fake") as FakeProvider).session(snap.id);
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
   const { stdout, app } = mount(client);
   try {
     await delay(150);

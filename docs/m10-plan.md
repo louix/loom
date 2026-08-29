@@ -63,6 +63,15 @@ A codec/`Either` refactor across config + provider I/O is a separate later pass.
 
 ## Architecture
 
+**Lazy vendor loading (post-M10).** `src/provider/registry.ts` loads each
+adapter's SDK with a dynamic `import()` inside its factory, so a Claude-only
+daemon never evaluates `ai` / `@ai-sdk/*` and an aisdk-only daemon never
+evaluates `@anthropic-ai/claude-agent-sdk`. `ProviderRegistry.get()` is `async`
+(3 daemon call sites); nothing in the daemon's eager graph imports a vendor SDK
+(`commitInWorktree` moved to the SDK-free `src/provider/commit.ts`).
+`test/lazy-providers.test.ts` proves it with a `module.registerHooks` resolve
+hook.
+
 New package `src/provider/aisdk/`:
 
 | File | Responsibility |

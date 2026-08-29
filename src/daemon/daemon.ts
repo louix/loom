@@ -389,7 +389,7 @@ export class Daemon {
     if (!snap || snap.turns !== 1 || !snap.title) return;
     if (this.#registry.store.titleLocked(id)) return;
     if (!this.#providers.has(snap.provider)) return;
-    const provider = this.#providers.get(snap.provider);
+    const provider = await this.#providers.get(snap.provider);
     if (!provider.capabilities.oneShot) return;
 
     this.#titling.add(id);
@@ -634,7 +634,7 @@ export class Daemon {
       };
 
       try {
-        await this.#sessions.create(this.#providers.get(providerId), opts);
+        await this.#sessions.create(await this.#providers.get(providerId), opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.#registry.setStatus(id, "error", message.slice(0, 120));
@@ -659,7 +659,7 @@ export class Daemon {
       }
       const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
       try {
-        await this.#sessions.resume(this.#providers.get(row.provider), {
+        await this.#sessions.resume(await this.#providers.get(row.provider), {
           sessionId: id,
           providerRef,
           cwd: row.worktree ?? this.repoRoot,

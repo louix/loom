@@ -9,9 +9,11 @@ import type { FakeProvider, FakeSession } from "../src/provider/fake/fake.ts";
 import { makeHarness, type Harness } from "./helpers.ts";
 
 let h: Harness;
+let fakeProvider: FakeProvider;
 
 before(async () => {
   h = await makeHarness();
+  fakeProvider = (await h.daemon.providers.get("fake")) as FakeProvider;
 });
 after(async () => {
   await h.cleanup();
@@ -22,7 +24,7 @@ function client(reconnect = false): Promise<LoomClient> {
 }
 
 function fake(): FakeProvider {
-  return h.daemon.providers.get("fake") as FakeProvider;
+  return fakeProvider;
 }
 
 async function waitFor(pred: () => boolean | Promise<boolean>, ms = 1000): Promise<void> {

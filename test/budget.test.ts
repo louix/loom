@@ -18,7 +18,7 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms = 1000): Promi
 async function session(h: Harness): Promise<{ c: LoomClient; id: string; fs: FakeSession }> {
   const c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
   const snap = await c.request<SessionSnapshot>("session.create", { prompt: "spend money", provider: "fake" });
-  const fake = h.daemon.providers.get("fake") as FakeProvider;
+  const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   await waitFor(() => fake.session(snap.id) !== undefined);
   return { c, id: snap.id, fs: fake.session(snap.id) as FakeSession };
 }
