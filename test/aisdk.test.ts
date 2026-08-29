@@ -12,7 +12,7 @@ import type { UsageDelta } from "../src/store/sessions.ts";
 import { openDb } from "../src/store/db.ts";
 import { SessionManager } from "../src/daemon/session-manager.ts";
 import { makeLogger, setLogLevel } from "../src/util/logger.ts";
-import { AisdkProvider, resolveModelFactory } from "../src/provider/aisdk/adapter.ts";
+import { AisdkProvider, dropDanglingToolCalls, resolveModelFactory } from "../src/provider/aisdk/adapter.ts";
 import { AisdkEventMapper } from "../src/provider/aisdk/map.ts";
 import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
 import { runTurn } from "../src/provider/aisdk/loop.ts";
@@ -500,6 +500,32 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
   } finally {
     cleanup();
   }
+});
+
+test("dropDanglingToolCalls trims an assistant turn whose tool calls were never answered", () => {
+  const user = { role: "user", content: "go" } as const;
+  const asstCalls = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "on it" },
+      { type: "tool-call", toolCallId: "a", toolName: "bash", input: {} },
+      { type: "tool-call", toolCallId: "b", toolName: "bash", input: {} },
+    ],
+  } as const;
+  const resultA = {
+    role: "tool",
+    content: [{ type: "tool-result", toolCallId: "a", toolName: "bash", output: { type: "text", value: "ok" } }],
+  } as const;
+  const resultB = { ...resultA, content: [{ ...resultA.content[0], toolCallId: "b" }] } as const;
+
+  // one result missing → the assistant turn (and the partial result) are dropped
+  assert.deepEqual(dropDanglingToolCalls([user, asstCalls, resultA] as never), [user]);
+  // fully answered → left untouched
+  const complete = [user, asstCalls, resultA, resultB] as never;
+  assert.equal(dropDanglingToolCalls(complete), complete);
+  // no tool calls at all → untouched
+  const plain = [user, { role: "assistant", content: "hi" }] as never;
+  assert.equal(dropDanglingToolCalls(plain), plain);
 });
 
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {

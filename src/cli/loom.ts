@@ -99,6 +99,12 @@ async function main(): Promise<void> {
   }
 
   try {
+    // `loom ls` prints 8-char ids; every id-taking command accepts a unique
+    // prefix and expands it to the full session id here.
+    if (cmd && ID_CMDS.has(cmd) && positionals[1]) {
+      positionals[1] = await resolveSid(client, positionals[1]);
+    }
+
     switch (cmd) {
       case "status": {
         const s = await client.request("daemon.status");
@@ -350,6 +356,21 @@ async function main(): Promise<void> {
   } finally {
     if (cmd !== "tail") await client.close();
   }
+}
+
+const ID_CMDS = new Set([
+  "get", "history", "send", "compact", "interrupt", "approve", "deny", "answer",
+  "plan", "mode", "budget", "resume", "done", "set-status", "emit",
+]);
+
+/** Expand a unique session-id prefix (as printed by `loom ls`) to the full id. */
+async function resolveSid(client: LoomClient, raw: string): Promise<string> {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(raw)) return raw; // already a full uuid
+  const sessions = await client.request<SessionSnapshot[]>("session.list");
+  const hits = sessions.filter((s) => s.id.startsWith(raw));
+  if (hits.length === 1) return hits[0]!.id;
+  if (hits.length === 0) throw new Error(`no session id starts with "${raw}"`);
+  throw new Error(`"${raw}" is ambiguous — matches ${hits.length} sessions`);
 }
 
 function need(v: string | undefined, usage: string): string {
