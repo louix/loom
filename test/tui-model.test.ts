@@ -10,6 +10,7 @@ import {
   cacheStatus,
   defaultProviderId,
   findPickItems,
+  footerHints,
   formatEvent,
   groupsOf,
   initialState,
@@ -384,20 +385,23 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
-  // every selected session also gets mode + model + title + budget, plus globals
-  const S = ["mode", "model", "fork", "title", "budget", "find", "help", "new", "quit"];
+  const G = ["find", "help", "new", "quit"]; // globals, always present
+  // a settled selected session also gets mode + model + title + budget
+  const S = ["mode", "model", "fork", "title", "budget", ...G];
 
+  // awaiting_input is "request mode" — only the keys that resolve the round-trip,
+  // plus interrupt and the globals. No mode / model / rename / budget / fork.
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
-    ["approve", "deny", "interrupt", ...S].sort(),
+    ["approve", "deny", "interrupt", ...G].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "question" })].sort(),
-    ["answer", "interrupt", ...S].sort(),
+    ["answer", "interrupt", ...G].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "plan_review" })].sort(),
-    ["planreview", "interrupt", ...S].sort(),
+    ["planreview", "interrupt", ...G].sort(),
   );
   assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
@@ -419,6 +423,24 @@ test("an in-place session offers undo but not hard fork", () => {
 test("actionsFor keeps the salient action first", () => {
   const first = actionsFor(snap({ status: "awaiting_input", awaitReason: "permission" }))[0];
   assert.equal(first?.act, "approve");
+});
+
+test("footerHints gives every overlay its own fixed key set", () => {
+  const base: TuiState = {
+    ...initialState(),
+    sessions: [snap({ id: "s1", status: "idle" })],
+    selectedId: "s1",
+  };
+  const keysFor = (mode: TuiState["mode"]) => footerHints({ ...base, mode }).map((h) => h.label);
+
+  assert.deepEqual(footerHints({ ...base, mode: "prompt" }), []); // editor draws itself
+  assert.deepEqual(keysFor("picker"), ["move", "pick", "cancel"]);
+  assert.deepEqual(keysFor("confirm"), ["confirm", "cancel"]);
+  assert.deepEqual(keysFor("sendChoice"), ["inject now", "queue", "back"]);
+  assert.deepEqual(keysFor("plan"), ["implement", "fresh", "edit", "discuss", "view"]);
+  assert.deepEqual(keysFor("help"), ["close help"]);
+  // browse delegates to the selected session's contextual actions
+  assert.ok(keysFor("browse").includes("send"));
 });
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {

@@ -962,15 +962,25 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
   const local: KeyHint[] = [];
   if (session) {
     const { status, awaitReason } = session;
-    if (status === "awaiting_input" && awaitReason === "question") {
-      local.push({ keys: "a", label: "answer", act: "answer" });
-    } else if (status === "awaiting_input" && awaitReason === "plan_review") {
-      local.push({ keys: "a", label: "review plan", act: "planreview" });
-    } else if (status === "awaiting_input") {
-      local.push({ keys: "a", label: "approve", act: "approve" });
-      local.push({ keys: "d", label: "deny", act: "deny" });
+
+    // Request mode — the turn is parked on a decision. Offer only the keys that
+    // resolve it (plus interrupt); mode / model / rename / budget / undo / fork
+    // are all noise while the agent is blocked, so they're dropped from both the
+    // footer and the permitted set the keymap checks.
+    if (status === "awaiting_input") {
+      if (awaitReason === "question") {
+        local.push({ keys: "a", label: "answer", act: "answer" });
+      } else if (awaitReason === "plan_review") {
+        local.push({ keys: "a", label: "review plan", act: "planreview" });
+      } else {
+        local.push({ keys: "a", label: "approve", act: "approve" });
+        local.push({ keys: "d", label: "deny", act: "deny" });
+      }
+      local.push({ keys: "i", label: "interrupt", act: "interrupt" });
+      return [...local, ...GLOBAL_HINTS];
     }
-    if (status === "running" || status === "starting" || status === "awaiting_input") {
+
+    if (status === "running" || status === "starting") {
       local.push({ keys: "i", label: "interrupt", act: "interrupt" });
     }
     if (status === "running" || status === "idle") {
@@ -1009,6 +1019,48 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
 /** Convenience for tests / keymap: the bare set of permitted act names. */
 export function allowedActs(session: SessionSnapshot | null): Set<ActName> {
   return new Set(actionsFor(session).map((h) => h.act));
+}
+
+/**
+ * The hint chips the footer shows for the current UI mode. `browse` delegates to
+ * {@link actionsFor} (the selected session's contextual actions); every overlay
+ * mode gets a fixed set so the footer never advertises a key the mode won't
+ * accept. `prompt` returns `[]` — {@link FooterArea} draws the editor there.
+ */
+export function footerHints(s: TuiState): Array<{ keys: string; label: string }> {
+  switch (s.mode) {
+    case "prompt":
+      return [];
+    case "picker":
+      return [
+        { keys: "↑↓", label: "move" },
+        { keys: "enter", label: "pick" },
+        { keys: "esc", label: "cancel" },
+      ];
+    case "confirm":
+      return [
+        { keys: "enter", label: "confirm" },
+        { keys: "esc", label: "cancel" },
+      ];
+    case "plan":
+      return [
+        { keys: "i", label: "implement" },
+        { keys: "f", label: "fresh" },
+        { keys: "e", label: "edit" },
+        { keys: "d", label: "discuss" },
+        { keys: "⌃o", label: "view" },
+      ];
+    case "sendChoice":
+      return [
+        { keys: "a", label: "inject now" },
+        { keys: "t", label: "queue" },
+        { keys: "esc", label: "back" },
+      ];
+    case "help":
+      return [{ keys: "? / esc", label: "close help" }];
+    case "browse":
+      return actionsFor(selectedSession(s)).map((h) => ({ keys: h.keys, label: h.label }));
+  }
 }
 
 // ---------------------------------------------------------------------------

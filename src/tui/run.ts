@@ -7,6 +7,12 @@
  * Ink and React are imported here and nowhere else, and this module is loaded
  * lazily by the CLI so plain commands pay nothing for it. The `$EDITOR` handoff
  * lives in `App`, which drives it through Ink 7.1's `useApp().suspendTerminal`.
+ *
+ * `alternateScreen` puts the whole UI on the terminal's alternate buffer, so on
+ * quit Ink restores the primary buffer exactly as it was before `loom` ran — no
+ * half-erased frame left in the scrollback. Ink itself drops out of the alt
+ * buffer around a `suspendTerminal` `$EDITOR` handoff and re-enters on return.
+ * The option is a no-op when stdout isn't an interactive TTY (tests included).
  */
 import { createElement } from "react";
 import { render } from "ink";
@@ -18,7 +24,10 @@ export async function runTui(client: LoomClient): Promise<void> {
   // chunk instead of a stream of Enter-looking carriage returns.
   if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h");
 
-  const instance = render(createElement(App, { client }), { exitOnCtrlC: false });
+  const instance = render(createElement(App, { client }), {
+    exitOnCtrlC: false,
+    alternateScreen: true,
+  });
 
   try {
     await instance.waitUntilExit();

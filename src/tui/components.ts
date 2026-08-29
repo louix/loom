@@ -9,15 +9,14 @@ import { Box, Text } from "ink";
 import type { SessionSnapshot } from "../protocol/wire.ts";
 import { layout, type Buffer } from "./editor.ts";
 import {
-  actionsFor,
   cacheHeat,
   cacheStatus,
   clock,
+  footerHints,
   groupsOf,
   pendingFor,
   pickerVisible,
   queueFor,
-  selectedSession,
   visibleLog,
   type ConfirmState,
   type LogLine,
@@ -616,7 +615,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
     );
   }
 
-  const hints = actionsFor(selectedSession(state));
+  const hints = footerHints(state);
   return h(
     Box,
     { flexDirection: "column", width },

@@ -100,6 +100,9 @@ test("renders the fleet, tracks selection by key, and shows help", async () => {
     assert.match(stdout.last, /write the release notes/);
     assert.match(stdout.last, /approve/);
     assert.match(stdout.last, /deny/);
+    // request mode: the footer drops the actions that don't resolve the request
+    assert.doesNotMatch(stdout.last, /rename/);
+    assert.doesNotMatch(stdout.last, /budget/);
 
     stdin.feed("j");
     await delay(120);

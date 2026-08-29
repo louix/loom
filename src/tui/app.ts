@@ -772,11 +772,25 @@ export function App({
     }
   }, [state.confirm, client, note, exit]);
 
+  // ---- current selection + pending round-trip (keymap + layout both read it) ----
+  const sel = selectedSession(state);
+  const pend = sel ? pendingFor(state, sel.id) : {};
+  const allowed = allowedActs(sel);
+  // The approve / answer / plan panel sits full-width just above the footer —
+  // where the eye already is for the keybinds — in the two modes whose body is
+  // the fleet split. Fullscreen log and every overlay each own the screen.
+  const showRequest =
+    (state.mode === "browse" || state.mode === "prompt") &&
+    !logFull &&
+    sel?.status === "awaiting_input" &&
+    (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
+
   // ---- layout metrics (also needed by the keymap) ----------
   const cols = Math.max(60, dims.cols);
   const rows = Math.max(16, dims.rows);
   const footerH = promptRows(state);
-  const bodyH = Math.max(6, rows - 1 - footerH);
+  const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
+  const bodyH = Math.max(6, rows - 1 - footerH - requestH);
   const leftW = Math.max(32, Math.min(52, Math.round(cols * 0.4)));
   const rightW = cols - leftW - 1;
   const splitLogH = Math.max(4, bodyH - 13);
@@ -882,18 +896,17 @@ export function App({
     if (key.pageDown) return setLogScroll((n) => Math.max(0, n - Math.max(1, logPage - 1)));
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
-    if (key.tab && key.shift) return act("mode");
-    if (key.tab) return void (selectedSession(state) ? setLogFull((v) => !v) : undefined);
+    if (key.tab && key.shift) return void (allowed.has("mode") ? act("mode") : undefined);
+    if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined);
     if (key.escape) return void (logFull ? setLogFull(false) : undefined);
 
     if (input === "q") return quitTui();
     if (input === "Q") return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
     if (input === "R") return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
     if (input === "N") return startNewFlow();
-    if (input === "M") return switchModel();
+    if (input === "M") return void (allowed.has("model") ? switchModel() : undefined);
     if (input === "F") return act("filter");
 
-    const sel = selectedSession(state);
     if (key.ctrl && input === "y") {
       if (!sel) return;
       const name = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
@@ -906,6 +919,9 @@ export function App({
       }
       if (sel.inPlace) {
         return void dispatch({ t: "notice", text: "hard fork needs a worktree — this session runs in-place", tone: "dim" });
+      }
+      if (sel.status === "awaiting_input") {
+        return void dispatch({ t: "notice", text: "answer the pending request first", tone: "dim" });
       }
       client
         .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
@@ -928,7 +944,6 @@ export function App({
     }
     if (key.ctrl || key.meta) return; // unbound modified key — swallow, don't fall through as the bare key
 
-    const allowed = allowedActs(sel);
     const map: Record<string, ActName> = {
       a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
       d: "deny",
@@ -950,14 +965,6 @@ export function App({
   });
 
   // ---- layout ----------------------------------------------
-  const sel = selectedSession(state);
-  const pend = sel ? pendingFor(state, sel.id) : {};
-  const showRequest =
-    !logFull &&
-    sel?.status === "awaiting_input" &&
-    (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
-  const rightLogH = Math.max(3, splitLogH - (showRequest ? REQUEST_PANEL_ROWS : 0));
-
   let body: ReactNode;
   if (state.mode === "help") {
     body = h(Box, { paddingX: 1, paddingTop: 1 }, h(Help, { width: cols - 2 }));
@@ -1003,8 +1010,7 @@ export function App({
           engineColor: sel ? providerColorOf(state, sel.provider) : "",
           compacting: sel ? (state.compacting[sel.id] ?? null) : null,
         }),
-        showRequest ? h(RequestPanel, { pending: pend, width: rightW }) : null,
-        h(EventLog, { state, width: rightW, height: rightLogH, scroll: logScroll, full: false }),
+        h(EventLog, { state, width: rightW, height: splitLogH, scroll: logScroll, full: false }),
       ),
     );
   }
@@ -1014,6 +1020,7 @@ export function App({
     { flexDirection: "column", width: cols },
     h(Header, { state, width: cols }),
     body,
+    showRequest ? h(RequestPanel, { pending: pend, width: cols }) : null,
     h(FooterArea, { state, width: cols }),
   );
 }
