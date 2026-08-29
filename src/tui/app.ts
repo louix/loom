@@ -20,7 +20,7 @@ import type { ProviderInfo, SessionSnapshot } from "../protocol/wire.ts";
 import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { C, clock, shortId } from "./theme.ts";
+import { C, shortId } from "./theme.ts";
 import {
   Confirm,
   Detail,
@@ -50,7 +50,8 @@ import {
   queueFor,
   reduce,
   selectedSession,
-  visibleLog,
+  sessionLog,
+  transcriptText,
   type ActName,
   type ConfirmState,
   type LogLine,
@@ -152,6 +153,7 @@ export function App({
     (sessionId: string, text: string): LogLine => ({
       seq: --echoSeq.current,
       sessionId,
+      kind: "echo",
       glyph: "›",
       text: text.replace(/\s+/g, " ").trim(),
       tone: "accent",
@@ -160,19 +162,8 @@ export function App({
     [],
   );
 
-  const logText = useCallback((): string => {
-    const tagged = state.logFilter === "all";
-    return (
-      visibleLog(state)
-        .map((l) => {
-          const head = `${clock(l.ts)}  ${tagged ? `${shortId(l.sessionId)}  ` : ""}${l.glyph} `;
-          // `full` keeps newlines — indent continuation lines under the glyph.
-          const body = (l.full ?? l.text).split("\n");
-          return body.map((ln, i) => (i === 0 ? head + ln : " ".repeat(head.length) + ln)).join("\n");
-        })
-        .join("\n") || "(no events)"
-    );
-  }, [state]);
+  /** `⌃o` dump: the selected session's whole log as a readable transcript. */
+  const logText = useCallback((): string => transcriptText(sessionLog(state)), [state]);
 
   /**
    * Hand the terminal to `$EDITOR` and hand it back. `suspendTerminal` (Ink 7.1)
@@ -258,7 +249,7 @@ export function App({
         });
       }
       if (name === "filter") {
-        return void dispatch({ t: "logFilter", value: state.logFilter === "all" ? "selected" : "all" });
+        return void dispatch({ t: "logFilter", value: state.logFilter === "chat" ? "full" : "chat" });
       }
       if (name === "find") {
         return void dispatch({

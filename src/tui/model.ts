@@ -12,7 +12,9 @@ import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone 
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
 export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan" | "picker";
-export type LogFilter = "selected" | "all";
+/** How much of the selected session's log to show: everything, or just the
+ *  conversation (tool traffic and thinking collapsed to one-line markers). */
+export type LogFilter = "full" | "chat";
 
 export interface DaemonInfo {
   pid: number;
@@ -23,14 +25,17 @@ export interface DaemonInfo {
 export interface LogLine {
   seq: number;
   sessionId: string;
+  /** The event kind, so `chat` view can collapse tool / thinking runs. */
+  kind: HarnessEvent["type"] | "echo";
   /** Sub-agent that produced the event, when applicable. */
   agentId?: string;
   glyph: string;
   /** Compact one-liner for the log pane (may be truncated). */
   text: string;
   /**
-   * The event's full body, newlines intact — for the fullscreen pane's wrap and
-   * the `⌃o` editor view. Omitted when it would just equal {@link text}.
+   * The event's full body, newlines intact — for the `⌃o` editor view. The pane
+   * itself renders it in full too (wrapped, never clipped). Omitted when it
+   * would just equal {@link text}.
    */
   full?: string;
   tone: Tone;
@@ -222,7 +227,7 @@ export function initialState(logCap = 400): TuiState {
     selectedId: null,
     log: [],
     logCap,
-    logFilter: "selected",
+    logFilter: "full",
     pending: {},
     queue: {},
     compacting: {},
@@ -679,9 +684,141 @@ export function cacheHeat(cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
   return "expiring";
 }
 
-export function visibleLog(s: TuiState): LogLine[] {
-  if (s.logFilter === "all" || !s.selectedId) return s.log;
+/** The selected session's log lines, oldest first. */
+export function sessionLog(s: TuiState): LogLine[] {
+  if (!s.selectedId) return [];
   return s.log.filter((l) => l.sessionId === s.selectedId);
+}
+
+/** What the event pane shows: the full log, or the `chat` view with tool
+ *  traffic and thinking collapsed to one-line markers. */
+export function visibleLog(s: TuiState): LogLine[] {
+  const rows = sessionLog(s);
+  return s.logFilter === "chat" ? condenseLog(rows) : rows;
+}
+
+/** `⌃E`-style: fold consecutive `thinking` into `· thought for Ns`, and
+ *  consecutive `tool_call` / `tool_result` into `⚙ N tool calls`. Everything
+ *  else passes through untouched. */
+export function condenseLog(lines: readonly LogLine[]): LogLine[] {
+  const out: LogLine[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l) break;
+    if (l.kind === "usage") {
+      i += 1; // pure metering — not conversation
+      continue;
+    }
+    if (l.kind === "thinking") {
+      let j = i;
+      while (j < lines.length && lines[j]?.kind === "thinking") j += 1;
+      const first = lines[i]!;
+      const last = lines[j - 1]!;
+      const secs = Math.round((last.ts - first.ts) / 1000);
+      out.push({
+        seq: first.seq,
+        sessionId: first.sessionId,
+        kind: "thinking",
+        ...(first.agentId ? { agentId: first.agentId } : {}),
+        glyph: "·",
+        text: secs > 0 ? `thought for ${secs}s` : "thought a moment",
+        tone: "think",
+        ts: first.ts,
+      });
+      i = j;
+      continue;
+    }
+    if (l.kind === "tool_call" || l.kind === "tool_result") {
+      let j = i;
+      let calls = 0;
+      while (j < lines.length && (lines[j]?.kind === "tool_call" || lines[j]?.kind === "tool_result")) {
+        if (lines[j]?.kind === "tool_call") calls += 1;
+        j += 1;
+      }
+      const first = lines[i]!;
+      out.push({
+        seq: first.seq,
+        sessionId: first.sessionId,
+        kind: "tool_call",
+        ...(first.agentId ? { agentId: first.agentId } : {}),
+        glyph: "⚙",
+        text: `${calls || 1} tool call${calls === 1 ? "" : "s"}`,
+        tone: "warn",
+        ts: first.ts,
+      });
+      i = j;
+      continue;
+    }
+    out.push(l);
+    i += 1;
+  }
+  return out;
+}
+
+/** Role label for a log line in the `⌃o` transcript, or null to omit it. */
+function transcriptHeader(l: LogLine): string | null {
+  const midTurn = l.glyph === "»" ? " (mid-turn)" : "";
+  switch (l.kind) {
+    case "assistant_text":
+      return "agent";
+    case "thinking":
+      return "agent (thinking)";
+    case "tool_call":
+      return `tool call: ${(l.full ?? l.text).split("\n")[0]}`;
+    case "tool_result":
+      return l.tone === "bad" ? "tool result (error)" : "tool result";
+    case "user_message":
+    case "echo":
+      return `you${midTurn}`;
+    case "question":
+      return "agent asks";
+    case "answer":
+      return "you (answer)";
+    case "plan_review":
+      return "agent (plan ready for review)";
+    case "permission_request":
+      return "agent (needs approval)";
+    case "compact":
+      return "context compacted";
+    case "error":
+      return "error";
+    case "subagent_started":
+      return "sub-agent started";
+    case "subagent_stopped":
+      return "sub-agent finished";
+    case "rewind":
+      return "rewound";
+    // metadata, not conversation
+    case "usage":
+    case "result":
+    case "status_changed":
+    case "compact_progress":
+      return null;
+  }
+}
+
+/** Body text for the `⌃o` transcript — the header already names the role. */
+function transcriptBody(l: LogLine): string {
+  const raw = (l.full ?? l.text).replace(/[ \t]+$/gm, "").trimEnd();
+  if (l.kind === "tool_call") return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
+  if (l.kind === "tool_result") return raw.replace(/^error\n/, "").trim() || (l.tone === "bad" ? "(failed)" : "ok");
+  return raw;
+}
+
+/**
+ * The selected session's log as a readable transcript for `$EDITOR`: one entry
+ * per event as `[time]  <role>` then the body, blank line between. Raw bodies,
+ * no `chat`-view collapsing — the "give me everything" view.
+ */
+export function transcriptText(lines: readonly LogLine[]): string {
+  const parts: string[] = [];
+  for (const l of lines) {
+    const header = transcriptHeader(l);
+    if (header === null) continue;
+    parts.push(`[${clock(l.ts)}]  ${header}\n${transcriptBody(l)}`);
+  }
+  return parts.join("\n\n") || "(no events)";
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +983,7 @@ export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
   return {
     seq,
     sessionId: ev.sessionId,
+    kind: ev.type,
     ...(ev.agentId ? { agentId: ev.agentId } : {}),
     glyph: f.glyph,
     text: f.text,
@@ -945,14 +1083,35 @@ function summarizeInput(input: unknown): string {
   return "";
 }
 
-/** Full tool-call rendering for the editor / wrapped view: name + pretty input. */
+/**
+ * Full tool-call rendering for the editor / wrapped view: the name, then one
+ * `key: value` line per argument — strings verbatim (multi-line ones indented
+ * under their key), anything else as compact JSON. Readable, not a raw dump.
+ */
 function toolCallFull(name: string, input: unknown): string {
-  if (input == null || (typeof input === "object" && Object.keys(input as object).length === 0)) return name;
-  try {
-    return `${name}\n${JSON.stringify(input, null, 2)}`;
-  } catch {
-    return name;
+  if (input == null || typeof input !== "object") return name;
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length === 0) return name;
+  const lines = [name];
+  for (const [k, v] of entries) {
+    if (typeof v === "string") {
+      if (v.includes("\n")) {
+        lines.push(`${k}:`);
+        for (const ln of v.split("\n")) lines.push(`  ${ln}`);
+      } else {
+        lines.push(`${k}: ${v}`);
+      }
+    } else {
+      let rendered: string;
+      try {
+        rendered = JSON.stringify(v);
+      } catch {
+        rendered = String(v);
+      }
+      lines.push(`${k}: ${rendered}`);
+    }
   }
+  return lines.join("\n");
 }
 
 function valueOf(x: unknown): unknown {

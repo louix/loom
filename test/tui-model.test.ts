@@ -22,11 +22,15 @@ import {
   providerColorOf,
   providerPickItems,
   queueFor,
+  condenseLog,
   reduce,
   selectedSession,
+  sessionLog,
   sortSessions,
   toLogLine,
+  transcriptText,
   visibleLog,
+  type LogLine,
   type TuiState,
 } from "../src/tui/model.ts";
 import { buffer } from "../src/tui/editor.ts";
@@ -238,16 +242,77 @@ test("expireNotice clears the notice only once its ttl has elapsed", () => {
   assert.equal(s.notice, null);
 });
 
-test("visibleLog respects the selected/all filter", () => {
+test("the event log always shows just the selected session", () => {
   const a = snap({ id: "a", status: "running" });
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
   s = reduce(s, { t: "select", id: "a" });
   s = reduce(s, { t: "push", frame: push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })) });
   s = reduce(s, { t: "push", frame: push(2, ev({ type: "assistant_text", text: "for b", sessionId: "b" })) });
+  assert.deepEqual(sessionLog(s).map((l) => l.text), ["for a"]);
   assert.deepEqual(visibleLog(s).map((l) => l.text), ["for a"]);
-  s = reduce(s, { t: "logFilter", value: "all" });
-  assert.deepEqual(visibleLog(s).map((l) => l.text), ["for a", "for b"]);
+});
+
+test("chat view collapses tool traffic and thinking; full view keeps everything", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "select", id: "a" });
+  const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
+    (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
+  at(1, { type: "assistant_text", text: "let me look" }, 1_000);
+  at(2, { type: "thinking", text: "hmm" }, 2_000);
+  at(3, { type: "thinking", text: "still hmm" }, 5_000); // 3s of thinking
+  at(4, { type: "tool_call", id: "t1", name: "Bash", input: {} }, 6_000);
+  at(5, { type: "tool_result", id: "t1", ok: true, output: {} }, 6_500);
+  at(6, { type: "tool_call", id: "t2", name: "Grep", input: {} }, 7_000);
+  at(7, { type: "tool_result", id: "t2", ok: true, output: {} }, 7_500);
+  at(8, { type: "assistant_text", text: "done" }, 8_000);
+
+  assert.equal(sessionLog(s).length, 8);
+
+  s = reduce(s, { t: "logFilter", value: "chat" });
+  const chat = visibleLog(s);
+  assert.deepEqual(
+    chat.map((l) => l.text),
+    ["let me look", "thought for 3s", "2 tool calls", "done"],
+  );
+
+  s = reduce(s, { t: "logFilter", value: "full" });
+  assert.equal(visibleLog(s).length, 8);
+});
+
+test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {
+  const L = [
+    toLogLine(1, { ...ev({ type: "user_message", text: "do the thing", injected: false }), ts: 5000 }),
+    toLogLine(2, { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
+    toLogLine(3, { ...ev({ type: "tool_call", id: "t", name: "Bash", input: { command: "ls -la" } }), ts: 7000 }),
+    toLogLine(4, { ...ev({ type: "tool_result", id: "t", ok: true, output: { text: "a\nb" } }), ts: 8000 }),
+    toLogLine(5, { ...ev({ type: "usage", tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1, contextLimit: 2 }), ts: 8500 }),
+    toLogLine(6, { ...ev({ type: "result", ok: true }), ts: 9000 }),
+  ];
+  const t = transcriptText(L);
+  assert.match(t, /^\[\d\d:\d\d:\d\d\]  you\ndo the thing\n\n\[\d\d:\d\d:\d\d\]  agent\non it/);
+  assert.match(t, /\]  tool call: Bash\ncommand: ls -la/);
+  assert.match(t, /\]  tool result\na\nb/);
+  assert.doesNotMatch(t, /\{|\}/, "no JSON braces");
+  assert.doesNotMatch(t, /usage|turn complete/, "metadata is skipped");
+});
+
+test("condenseLog: a lone thinking / tool line still collapses; other kinds pass through", () => {
+  const mk = (kind: LogLine["kind"], ts: number): LogLine => ({
+    seq: ts,
+    sessionId: "a",
+    kind,
+    glyph: "x",
+    text: kind,
+    tone: "plain",
+    ts,
+  });
+  const out = condenseLog([mk("thinking", 0), mk("tool_call", 100), mk("error", 200)]);
+  assert.deepEqual(
+    out.map((l) => l.text),
+    ["thought a moment", "1 tool call", "error"],
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -405,7 +470,7 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
   assert.equal(tc.glyph, "⚙");
   assert.equal(tc.text, "Bash  npm test");
   assert.equal(tc.tone, "warn");
-  assert.match(tc.full ?? "", /"command": "npm test"/); // editor view gets the pretty input
+  assert.equal(tc.full, "Bash\ncommand: npm test"); // editor view gets readable key: value, not JSON
   const okr = formatEvent(ev({ type: "tool_result", id: "1", ok: true, output: {} }));
   assert.equal(okr.tone, "good");
   assert.equal(okr.text, "ok");
@@ -491,9 +556,18 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
 
 test("echo appends a local log line that respects the cap", () => {
   let s = initialState(2);
-  s = reduce(s, { t: "echo", line: { seq: -1, sessionId: "a", glyph: "›", text: "hi", tone: "accent", ts: 1 } });
-  s = reduce(s, { t: "echo", line: { seq: -2, sessionId: "a", glyph: "›", text: "there", tone: "accent", ts: 2 } });
-  s = reduce(s, { t: "echo", line: { seq: -3, sessionId: "a", glyph: "›", text: "again", tone: "accent", ts: 3 } });
+  const echo = (seq: number, text: string, ts: number): LogLine => ({
+    seq,
+    sessionId: "a",
+    kind: "echo",
+    glyph: "›",
+    text,
+    tone: "accent",
+    ts,
+  });
+  s = reduce(s, { t: "echo", line: echo(-1, "hi", 1) });
+  s = reduce(s, { t: "echo", line: echo(-2, "there", 2) });
+  s = reduce(s, { t: "echo", line: echo(-3, "again", 3) });
   assert.deepEqual(s.log.map((l) => l.text), ["there", "again"]);
 });
 

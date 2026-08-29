@@ -306,7 +306,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 261 cases
+npm test             # node:test — 264 cases
 ```
 
 ### Layout

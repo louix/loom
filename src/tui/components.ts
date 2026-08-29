@@ -4,7 +4,7 @@
  * type-stripping with no build step — the same constraint the rest of the
  * codebase keeps. Every component is a pure projection of {@link TuiState}.
  */
-import { createElement as h, type ReactNode } from "react";
+import { createElement as h, useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { SessionSnapshot } from "../protocol/wire.ts";
 import { layout, type Buffer } from "./editor.ts";
@@ -403,12 +403,15 @@ export function EventLog({
   scroll?: number;
   full?: boolean;
 }): ReactNode {
-  const tagged = state.logFilter === "all";
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
-  const subName = new Map<string, string>();
-  for (const s of state.sessions) for (const a of s.subagents) subName.set(a.id, a.name);
-  // Fullscreen has room to breathe; the split pane stays terse.
-  const physical = physicalRows(visibleLog(state), inside(width), tagged, subName, full ? 40 : 10);
+  // Wrapping every visible line runs on each ~120ms tick; only redo it when the
+  // log, the view, the selection or the width actually changed (a big tool
+  // result would otherwise re-wrap needlessly).
+  const physical = useMemo(() => {
+    const subName = new Map<string, string>();
+    for (const s of state.sessions) for (const a of s.subagents) subName.set(a.id, a.name);
+    return physicalRows(visibleLog(state), inside(width), subName);
+  }, [state.log, state.logFilter, state.selectedId, state.sessions, width]);
 
   const maxScroll = Math.max(0, physical.length - capacity);
   const off = Math.min(scroll, maxScroll);
@@ -433,7 +436,7 @@ export function EventLog({
       h(
         Text,
         { color: C.faint },
-        (tagged ? "all sessions" : "this session") + (off > 0 ? `  ·  ↑${above} more` : ""),
+        (state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : ""),
       ),
     ),
     ...(shown.length === 0 ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")] : shown.map((r) => r.node)),
@@ -441,30 +444,26 @@ export function EventLog({
 }
 
 /**
- * Wrap every log line to `iw` columns; one entry per physical row. Each event
- * shows its full body (newlines flattened to spaces) wrapped to width — not a
- * hard "long li…" cut — but capped at `maxRows` rows so a big tool result can't
- * bury the rest; `⌃o` opens the whole thing in `$EDITOR`.
+ * Wrap every log line to `iw` columns; one entry per physical row. Each event's
+ * full body is shown, word-wrapped to width and never clipped — the pane
+ * scrolls (`chat` view collapses tool / thinking runs when the full trace is
+ * too much). Newlines in the body become their own wrapped rows.
  */
 function physicalRows(
   lines: readonly LogLine[],
   iw: number,
-  tagged: boolean,
   subName: Map<string, string> = new Map(),
-  maxRows = 12,
 ): Array<{ key: string; node: ReactNode }> {
   const out: Array<{ key: string; node: ReactNode }> = [];
   for (const l of lines) {
     const ts = `${clock(l.ts)} `;
-    const tag = tagged ? `${shortId(l.sessionId)} ` : "";
     // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
     const sub = l.agentId ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
-    const indent = ts.length + tag.length + sub.length + 2; // + "glyph "
+    const indent = ts.length + sub.length + 2; // + "glyph "
     const room = Math.max(8, iw - indent);
-    const source = (l.full ?? l.text).replace(/\s+/g, " ").trim() || "…";
-    const all = wrapText(source, room);
-    const clipped = all.length > maxRows;
-    const wrapped = clipped ? all.slice(0, maxRows - 1) : all;
+    // Wrap each source line separately so intentional newlines are kept.
+    const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
+    const wrapped = source.split("\n").flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, room));
     wrapped.forEach((seg, i) => {
       out.push({
         key: `${l.seq}-${l.ts}-${i}`,
@@ -473,7 +472,7 @@ function physicalRows(
             ? h(
                 Text,
                 { key: `${l.seq}-${l.ts}-0`, wrap: "truncate-end" },
-                h(Text, { color: C.faint }, ts + tag),
+                h(Text, { color: C.faint }, ts),
                 sub ? h(Text, { color: C.faint }, sub) : null,
                 h(Text, { color: TONE_COLOR[l.tone] }, `${l.glyph} `),
                 h(Text, { color: TONE_COLOR[l.tone] }, seg),
@@ -486,17 +485,6 @@ function physicalRows(
               ),
       });
     });
-    if (clipped) {
-      out.push({
-        key: `${l.seq}-${l.ts}-more`,
-        node: h(
-          Text,
-          { key: `${l.seq}-${l.ts}-more`, wrap: "truncate-end" },
-          h(Text, null, " ".repeat(indent)),
-          h(Text, { color: C.faint }, `… ${all.length - (maxRows - 1)} more lines — ⌃o for the full log`),
-        ),
-      });
-    }
   }
   return out;
 }
@@ -826,7 +814,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["b", "set a cost budget (soft-warns or hard-halts on breach)"],
   ["⇧⇥  ·  M", "cycle the permission mode  ·  switch the session's model (next turn)"],
   ["n  ·  N", "new session (default provider)  ·  new with a provider + model picker"],
-  ["f  ·  F", "find a session by title / message text  ·  toggle the log: this session / all"],
+  ["f  ·  F", "find a session by title / message text  ·  toggle the event log: full / chat-only"],
   ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
   ["R", "restart the daemon (with confirmation)"],
   ["Q", "quit the UI and stop the daemon (with confirmation)"],
