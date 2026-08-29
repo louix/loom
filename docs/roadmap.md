@@ -413,7 +413,12 @@ version reset was invisible to a reconnecting client (added a hello `epoch`);
 overdrew the body on a >8-line paste and overlay keys double-fired on a batched
 keypress. Path confinement for the aisdk `edit`/`bash`/`grep` tools in
 acceptEdits/auto mode is a known gap, parked by choice — see the note below.
-250 tests.
+A second round of three agents reviewed that pass's own diff (`d23c35b`) and
+caught a handful of regressions it introduced: the `bash -n` pre-check rejected
+valid extglob, the synchronous `#turnRunning` claim in `send()` could re-wedge,
+the map-flush-on-abort was dead code, `#enrich(git:false)` emitted a git-less
+snapshot, and the TUI queue-drain guard could strand an item on a rejected
+send. 252 tests.
 
 ---
 
