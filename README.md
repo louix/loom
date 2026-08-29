@@ -103,11 +103,13 @@ the Vercel AI SDK.
   context-window meter, token and cost totals, its worktree's git facts, and any
   messages queued for it. When it's `awaiting_input` a panel spells out exactly
   what's being approved / denied / asked (the command, the file, the question).
-- **Event stream** — the normalized harness events for the selected session
-  (`F` toggles to all sessions), colourised by kind and wrapped to the pane.
-  `PgUp`/`PgDn` scroll it, `⇥` blows it up to fullscreen, and `⌃o` opens the
-  pending request — or the visible log — in `$EDITOR` read-only, so you can read
-  and copy without fighting the split.
+- **Event stream** — the normalized harness events for the selected session,
+  colourised by kind and word-wrapped to the pane (never clipped — it scrolls).
+  `F` toggles `full` ↔ `chat` (conversation only: tool traffic folds to `⚙ N
+  tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
+  blows it up to fullscreen, and `⌃o` opens the pending request — or the session
+  transcript (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR`
+  read-only, so you can read and copy without fighting the split.
 - **Acting on the selection**, from the verbs the footer offers: `a` approve or
   answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
   the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
@@ -117,7 +119,7 @@ the Vercel AI SDK.
   re-prime cost), `⌃f` hard-fork it into a new session + worktree, `⌃y` copy the
   branch to the clipboard, `n` start a new session, `N` start one after picking
   a provider + model, `f` fuzzy-find a session by title or message text, `F`
-  toggle the log between this session and all.
+  toggle the event log between `full` and `chat`-only.
   Sending to a session
   that's still working asks first: **inject now** or **queue** for when the
   turn ends. On an aisdk session "inject now" splices the message into the

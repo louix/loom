@@ -431,6 +431,19 @@ slot (never logged — it's a bare heartbeat, cleared by `compact` / a fatal
 opens a one-line focus prompt (blank = full compaction) — the RPC and CLI
 already took `instructions`. 255 tests.
 
+**Worktree in-place mode + TUI log fixes (post-M10).** `[worktree] enabled =
+false` (or `session.create { worktree: false }` / `loom run --in-place`) runs a
+session in the repo working dir — no dedicated worktree, `in_place` column
+(migration 8), repo-root git facts, hard fork refused (undo still works). Then
+three TUI fixes from user feedback: (1) the blank screen after `$EDITOR` — the
+manual `clear()`+`rerender()` left Ink's diff state stale; now uses Ink 7.1's
+`useApp().suspendTerminal`, handoff moved into `App` (`editor-handoff.ts`). (2)
+the event log no longer truncates — every body word-wraps to width, pane
+scrolls, wrap memoised. (3) `F` is now `full` ↔ `chat` (tool runs →
+`⚙ N tool calls`, thinking → `· thought for Ns`), the "all sessions" log mode is
+gone, and `⌃o` writes a `[time] · role · body` transcript with `key: value` tool
+args instead of raw log lines / JSON. 264 tests.
+
 ---
 
 ## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)
