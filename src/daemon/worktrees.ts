@@ -6,6 +6,7 @@
  * done; branches are never auto-deleted.
  */
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "../util/logger.ts";
@@ -232,7 +233,7 @@ export function slugify(hint: string): string {
 }
 
 function randomSuffix(): string {
-  return Math.random().toString(16).slice(2, 8);
+  return randomBytes(3).toString("hex"); // always 6 hex chars (Math.random() could give fewer)
 }
 
 function numOr0(s: string | undefined): number {

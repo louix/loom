@@ -224,6 +224,15 @@ export class SessionStore {
 
   addUsage(id: string, d: UsageDelta): void {
     const now = Date.now();
+    // A single NaN / Infinity from a provider would bind as NULL and poison the
+    // accumulator column for the session's life (and silently disable budget
+    // enforcement). Coerce every additive field to a finite number first.
+    const acc = (v: number | undefined): number =>
+      typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+    const accFloat = (v: number | undefined): number =>
+      typeof v === "number" && Number.isFinite(v) ? v : 0;
+    const abs = (v: number | undefined): number | null =>
+      typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
     // input/output/cache/cost/turns accumulate; context_used / context_limit
     // are absolute (last-request) and only overwritten when the delta carries
     // them — a bare `{ turns: 1 }` must not zero the context bar.
@@ -246,18 +255,18 @@ export class SessionStore {
          WHERE session_id = ?`,
       )
       .run(
-        d.input ?? 0,
-        d.output ?? 0,
-        d.cacheRead ?? 0,
-        d.cacheWrite ?? 0,
-        d.costUsd ?? 0,
+        acc(d.input),
+        acc(d.output),
+        acc(d.cacheRead),
+        acc(d.cacheWrite),
+        accFloat(d.costUsd),
         d.costSource ?? null,
-        d.turns ?? 0,
-        d.contextUsed ?? null,
-        d.contextLimit ?? null,
+        acc(d.turns),
+        abs(d.contextUsed),
+        abs(d.contextLimit),
         d.lastTurnAt ?? null,
-        d.lastCacheRead ?? null,
-        d.lastCacheWrite ?? null,
+        abs(d.lastCacheRead),
+        abs(d.lastCacheWrite),
         now,
         id,
       );

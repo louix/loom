@@ -461,7 +461,7 @@ export function App({
   /** Open a live model switcher for the selected session (the `M` key). */
   const switchModel = useCallback(() => {
     const s = selectedSession(state);
-    if (!s) return;
+    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
     const models = modelPickItems(state, s.provider);
     if (models.length === 0) {
       return void dispatch({ t: "notice", text: `${s.provider} has no alternate models`, tone: "dim" });
@@ -859,9 +859,12 @@ export function App({
       return;
     }
     if (key.ctrl && input === "x") {
-      return void (sel && queueFor(state, sel.id).length > 0
-        ? dispatch({ t: "clearQueue", sessionId: sel.id })
-        : undefined);
+      if (sel && queueFor(state, sel.id).length > 0) {
+        dispatch({ t: "clearQueue", sessionId: sel.id });
+      } else {
+        dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
+      }
+      return;
     }
     if (key.ctrl || key.meta) return; // unbound modified key — swallow, don't fall through as the bare key
 

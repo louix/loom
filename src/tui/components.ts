@@ -81,7 +81,7 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
       h(Text, { color: C.accent, bold: true }, "▍ loom"),
       h(Text, { color: C.dim }, `v${state.daemon?.version ?? "?"}`),
       h(Text, { color: C.faint }, "·"),
-      h(Text, { color: C.text }, repo),
+      h(Text, { color: C.text, wrap: "truncate-end" }, repo),
     ),
     h(
       Box,
@@ -177,7 +177,7 @@ function FleetRow({
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? CACHE_HEAT_COLOR[heat] : null;
   const idColor = pcolor.get(s.provider) || C.faint;
-  const forked = s.forkTurn != null;
+  const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
   const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);

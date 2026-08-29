@@ -463,6 +463,13 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
       const planGone = s.plan?.sessionId === frame.sessionId;
       const pickerGone = s.picker?.ctx?.liveSessionId === frame.sessionId;
+      // A `find` picker lists sessions by id — drop the vanished row so `enter`
+      // can't land on a ghost.
+      let picker = s.picker;
+      if (!pickerGone && picker?.kind === "find" && picker.items.some((it) => it.id === frame.sessionId)) {
+        const items = picker.items.filter((it) => it.id !== frame.sessionId);
+        picker = { ...picker, items, index: Math.min(picker.index, Math.max(0, items.length - 1)) };
+      }
       return {
         ...s,
         sessions,
@@ -470,7 +477,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
         ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
-        ...(pickerGone ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode } : {}),
+        ...(pickerGone
+          ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }
+          : { picker }),
       };
     }
     case "resync":
@@ -759,10 +768,13 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     }
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "M", label: "model", act: "model" });
-    if ((status === "idle" || status === "interrupted") && session.turns > 1) {
+    // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
+    // don't advertise them there.
+    const canFork = session.provider !== "claude";
+    if (canFork && (status === "idle" || status === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    local.push({ keys: "⌃f", label: "fork", act: "fork" });
+    if (canFork) local.push({ keys: "⌃f", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
   }

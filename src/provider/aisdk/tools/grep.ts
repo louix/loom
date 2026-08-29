@@ -30,9 +30,18 @@ export function runRipgrep(
     const child = spawn(opts.bin ?? "rg", args, { cwd });
     let out = "";
     let err = "";
+    let capped = false;
+    const OUT_CAP = 4_000_000; // don't buffer an unbounded match-everything result
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => (out += d));
+    child.stdout.on("data", (d: string) => {
+      if (capped) return;
+      out += d;
+      if (out.length > OUT_CAP) {
+        capped = true;
+        child.kill("SIGKILL");
+      }
+    });
     child.stderr.on("data", (d: string) => (err += d));
     child.on("error", (e: NodeJS.ErrnoException) => {
       resolve({
@@ -44,12 +53,17 @@ export function runRipgrep(
       });
     });
     child.on("close", (code) => {
-      if (code === 0) {
+      if (code === 0 || capped) {
         const lines = out.split("\n").filter((l) => l !== "");
         const max = opts.maxResults ?? DEFAULT_MAX;
         const shown = lines.slice(0, max);
         const extra = lines.length - shown.length;
-        resolve({ ok: true, output: shown.join("\n") + (extra > 0 ? `\n… ${extra} more match(es)` : "") });
+        const tail = capped
+          ? "\n… output capped — narrow the pattern or pass `path` / `glob`"
+          : extra > 0
+            ? `\n… ${extra} more match(es)`
+            : "";
+        resolve({ ok: true, output: shown.join("\n") + tail });
       } else if (code === 1) {
         resolve({ ok: true, output: "(no matches)" });
       } else {

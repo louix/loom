@@ -147,8 +147,16 @@ function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
+/** A non-negative number, or the fallback (rejects `-1`, NaN, wrong type). */
+function nonNeg(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+
 function strArray(v: unknown, fallback: string[]): string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : fallback;
+  if (!Array.isArray(v)) return fallback;
+  // Keep the string entries rather than reverting the whole list (and losing an
+  // explicit `[]`) because of one stray non-string element.
+  return v.filter((x): x is string => typeof x === "string");
 }
 
 /**
@@ -169,12 +177,14 @@ function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, 
     if (sdk === "openai" && baseUrl === "") continue;
     const model = str(t["model"], "");
     const models = strArray(t["models"], model ? [model] : []);
+    if (model === "" && models.length === 0) continue; // nothing to dial
+    const effectiveModel = model || (models[0] ?? "");
     out[id] = {
       sdk,
       baseUrl,
       apiKeyEnv: str(t["api_key_env"], ""),
-      model,
-      models,
+      model: effectiveModel,
+      models: models.length > 0 ? models : [effectiveModel],
       tag: str(t["tag"], id),
       color: str(t["color"], ""),
       titleModel: str(t["title_model"], ""),
@@ -234,8 +244,8 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     runIsolation,
     defaultProvider,
     daemon: {
-      idleShutdownMinutes: num(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
-      eventBufferSize: num(daemon["event_buffer_size"], d.daemon.eventBufferSize),
+      idleShutdownMinutes: nonNeg(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
+      eventBufferSize: Math.max(1, nonNeg(daemon["event_buffer_size"], d.daemon.eventBufferSize)),
     },
     providers: {
       claude: {
@@ -261,14 +271,14 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     budget: {
-      defaultMaxCostUsd: num(budget["default_max_cost_usd"], d.budget.defaultMaxCostUsd),
+      defaultMaxCostUsd: nonNeg(budget["default_max_cost_usd"], d.budget.defaultMaxCostUsd),
       onBreach: budget["on_breach"] === "hard" ? "hard" : "soft",
     },
     search: {
       backend: search["backend"] === "brave" || search["backend"] === "tavily" ? search["backend"] : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),
       apiBase: str(search["api_base"], d.search.apiBase),
-      maxResults: num(search["max_results"], d.search.maxResults),
+      maxResults: Math.max(1, nonNeg(search["max_results"], d.search.maxResults)),
     },
   };
 }

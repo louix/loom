@@ -64,6 +64,44 @@ model    = "y"
   assert.deepEqual(c.providers.aisdk, {});
 });
 
+test("a profile with no model and no models is dropped; models fills in from model", () => {
+  const c = cfg(`
+[providers.nomodel]
+adapter  = "aisdk"
+base_url = "http://x/v1"
+
+[providers.ok]
+adapter  = "aisdk"
+base_url = "http://y/v1"
+models   = ["m1", "m2"]
+`);
+  assert.equal(c.providers.aisdk["nomodel"], undefined);
+  assert.equal(c.providers.aisdk["ok"]?.model, "m1"); // first of models
+  assert.deepEqual(c.providers.aisdk["ok"]?.models, ["m1", "m2"]);
+});
+
+test("numeric config fields reject negatives / NaN; strArray keeps the valid entries", () => {
+  const c = cfg(`
+[daemon]
+idle_shutdown_minutes = -5
+event_buffer_size     = -1
+
+[budget]
+default_max_cost_usd = -3
+
+[search]
+max_results = -2
+
+[providers.claude]
+disable_builtin = ["Grep", 5, "Glob"]
+`);
+  assert.equal(c.daemon.idleShutdownMinutes, 30); // default
+  assert.equal(c.daemon.eventBufferSize, 4096); // default (also clamped ≥ 1)
+  assert.equal(c.budget.defaultMaxCostUsd, 5.0); // default
+  assert.equal(c.search.maxResults, 5); // default
+  assert.deepEqual(c.providers.claude.disableBuiltin, ["Grep", "Glob"]); // stray 5 dropped, not the whole list
+});
+
 test("default_provider must be configured, else it falls back to claude", () => {
   assert.equal(cfg(`default_provider = "ghost"`).defaultProvider, "claude");
   assert.equal(

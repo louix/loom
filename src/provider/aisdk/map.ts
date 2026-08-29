@@ -79,6 +79,11 @@ export class AisdkEventMapper {
         ];
       case "finish-step":
         return [this.#usage(part.usage)];
+      case "abort":
+      case "finish":
+        // Flush any block still open (an abort / a stream that ended without a
+        // matching *-end) so partial assistant text isn't dropped from the feed.
+        return this.#flushOpenBlocks(ts);
       case "error":
         return [
           {
@@ -94,6 +99,25 @@ export class AisdkEventMapper {
         // file, finish, abort, raw — nothing Loom needs.
         return [];
     }
+  }
+
+  /** Public shim so callers outside the main turn (e.g. the summariser) can
+   *  meter a step's usage the same way. */
+  mapUsage(u: LanguageModelUsage): HarnessEvent[] {
+    return [this.#usage(u)];
+  }
+
+  #flushOpenBlocks(ts: number): HarnessEvent[] {
+    const out: HarnessEvent[] = [];
+    for (const [, text] of this.#text) {
+      if (text.trim() !== "") out.push({ type: "assistant_text", sessionId: this.#sessionId, ts, text });
+    }
+    for (const [, text] of this.#reasoning) {
+      if (text.trim() !== "") out.push({ type: "thinking", sessionId: this.#sessionId, ts, text });
+    }
+    this.#text.clear();
+    this.#reasoning.clear();
+    return out;
   }
 
   #usage(u: LanguageModelUsage): HarnessEvent {

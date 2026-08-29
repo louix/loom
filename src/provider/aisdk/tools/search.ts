@@ -34,8 +34,12 @@ export async function runSearch(
 ): Promise<{ ok: boolean; output: string }> {
   const n = Math.min(20, Math.max(1, maxResults ?? cfg.maxResults));
   const base = (cfg.apiBase || DEFAULT_BASE[cfg.backend]).replace(/\/$/, "");
+  const signal = AbortSignal.timeout(15_000); // a hung backend must not stall the turn
   try {
-    const hits = cfg.backend === "brave" ? await brave(base, cfg.apiKey, query, n) : await tavily(base, cfg.apiKey, query, n);
+    const hits =
+      cfg.backend === "brave"
+        ? await brave(base, cfg.apiKey, query, n, signal)
+        : await tavily(base, cfg.apiKey, query, n, signal);
     if (hits.length === 0) return { ok: true, output: "(no results)" };
     return {
       ok: true,
@@ -46,9 +50,10 @@ export async function runSearch(
   }
 }
 
-async function brave(base: string, key: string, q: string, n: number): Promise<Hit[]> {
+async function brave(base: string, key: string, q: string, n: number, signal: AbortSignal): Promise<Hit[]> {
   const res = await fetch(`${base}/web/search?q=${encodeURIComponent(q)}&count=${n}`, {
     headers: { Accept: "application/json", "X-Subscription-Token": key },
+    signal,
   });
   if (!res.ok) throw new Error(`brave search ${res.status} ${res.statusText}`);
   const body = (await res.json()) as {
@@ -61,11 +66,12 @@ async function brave(base: string, key: string, q: string, n: number): Promise<H
   }));
 }
 
-async function tavily(base: string, key: string, q: string, n: number): Promise<Hit[]> {
+async function tavily(base: string, key: string, q: string, n: number, signal: AbortSignal): Promise<Hit[]> {
   const res = await fetch(`${base}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: key, query: q, max_results: n }),
+    signal,
   });
   if (!res.ok) throw new Error(`tavily search ${res.status} ${res.statusText}`);
   const body = (await res.json()) as { results?: Array<{ title?: unknown; url?: unknown; content?: unknown }> };

@@ -491,7 +491,15 @@ export class AisdkSession implements AgentSession {
         ],
         abortSignal: AbortSignal.timeout(60_000),
       });
-      for await (const part of res.fullStream) if (part.type === "text-delta") text += part.text;
+      for await (const part of res.fullStream) {
+        if (part.type === "text-delta") {
+          text += part.text;
+        } else if (part.type === "finish-step") {
+          // Meter the summariser call — otherwise a frequently-compacting long
+          // session under-reports cost / tokens (and budget enforcement drifts).
+          for (const ev of this.#mapper.mapUsage(part.usage)) this.#emit(ev);
+        }
+      }
     } catch {
       return null;
     }
