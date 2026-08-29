@@ -559,6 +559,9 @@ obvious where to look.
   config` CLI: unset key vars, providers pending auto-detect, keyless search.
 - Fixed a latent test leak: `makeHarness` now isolates `XDG_CONFIG_HOME` so the
   dev's real `~/.config/loom/config.toml` doesn't merge into test daemons.
+- **`N` flow (`6561099`):** the model step always shows after the provider is
+  chosen (was skipped when a provider had no model list); an empty picker
+  carries an explanatory `emptyText` and Enter continues with just the provider.
 
 ## Known gaps (parked)
 
