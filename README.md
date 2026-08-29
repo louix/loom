@@ -115,9 +115,11 @@ the Vercel AI SDK.
   a provider + model, `f` fuzzy-find a session by title or message text, `F`
   toggle the log between this session and all.
   Sending to a session
-  that's still working asks first: **asap** (delivered at the next tool
-  boundary) or **queue** for when the turn ends; queued messages drain
-  automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
+  that's still working asks first: **inject now** or **queue** for when the
+  turn ends. On an aisdk session "inject now" splices the message into the
+  running turn right after the current tool result (the model sees it on its
+  next step); on a Claude session the SDK queues it for the next turn boundary.
+  Queued messages drain automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
   `$EDITOR` (with the event log opened alongside to copy from; nothing is sent
   until you press enter back in the UI), `⌃o` opens just the log read-only,
   `↑`/`↓` recall earlier prompts, and a failed submit reopens with the text
@@ -296,7 +298,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 231 cases
+npm test             # node:test — 234 cases
 ```
 
 ### Layout

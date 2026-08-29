@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
-import type { LanguageModel } from "ai";
+import { tool, type LanguageModel, type ModelMessage } from "ai";
+import { z } from "zod";
 import type { HarnessEvent, SessionStatus } from "../src/protocol/events.ts";
 import type { UsageDelta } from "../src/store/sessions.ts";
 import { openDb } from "../src/store/db.ts";
@@ -186,6 +187,73 @@ test("runTurn streams text + usage and captures the response messages", async ()
   assert.equal(appended.length >= 1, true);
 });
 
+test("runTurn splices a mid-turn injection in after the current tool result", async () => {
+  const prompts: string[][] = [];
+  let n = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (opts) => {
+      n += 1;
+      prompts.push(
+        opts.prompt.flatMap((m) =>
+          typeof m.content === "string"
+            ? [m.content]
+            : m.content.map((p) => ("text" in p && typeof p.text === "string" ? p.text : p.type)),
+        ),
+      );
+      const chunks: Chunk[] =
+        n === 1
+          ? [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: "r1", modelId: "mock", timestamp: new Date(0) },
+              { type: "tool-input-start", id: "tc1", toolName: "ping" },
+              { type: "tool-input-delta", id: "tc1", delta: "{}" },
+              { type: "tool-input-end", id: "tc1" },
+              { type: "tool-call", toolCallId: "tc1", toolName: "ping", input: "{}" },
+              { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
+            ]
+          : [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: "r2", modelId: "mock", timestamp: new Date(0) },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "on it" },
+              { type: "text-end", id: "t" },
+              { type: "finish", finishReason: "stop", usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 } },
+            ];
+      return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
+    },
+  }) as unknown as LanguageModel;
+
+  const appended: ModelMessage[] = [];
+  let handed = false;
+  const r = await runTurn({
+    sessionId: "s1",
+    model,
+    system: undefined,
+    messages: [{ role: "user", content: "start" }],
+    tools: { ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }) },
+    maxSteps: 6,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    drainInjections: () => {
+      if (handed) return [];
+      handed = true;
+      return [{ role: "user", content: "ALSO do X" }];
+    },
+    hooks: { emit: () => {}, appendMessages: (m) => appended.push(...m) },
+  });
+
+  assert.deepEqual(r, { aborted: false, errored: false });
+  // the model's second request carried the injected user message
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[1]?.includes("ALSO do X"), true);
+  // persisted order: tool call, tool result, the injection, then the reply
+  const injIdx = appended.findIndex((m) => m.content === "ALSO do X");
+  assert.equal(injIdx > 0, true);
+  assert.equal(appended[injIdx - 1]?.role, "tool");
+  assert.equal(appended.at(-1)?.role, "assistant");
+  assert.equal(appended.filter((m) => m.role === "user").length, 1);
+});
+
 // --- session via provider ------------------------------------------------
 
 test("createSession runs the first turn, emits result, and persists the transcript", async () => {
@@ -240,6 +308,37 @@ test("interrupt aborts the running turn — no result, status not idle", async (
 
     assert.equal(seen.some((e) => e.type === "result"), false);
     assert.notEqual(s.snapshot().status, "idle");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a message sent mid-turn with no step to catch it rides the next turn", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    let calls = 0;
+    const p = provider(() => {
+      calls += 1;
+      return textReply(`reply ${calls}`, {}, { chunkDelayInMs: 10 });
+    }, store);
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
+    // the turn is already running (single text step, no tool boundary)
+    await s.send("second");
+    await drain(s.events(), (e) => e.type === "result"); // turn 1
+    await drain(s.events(), (e) => e.type === "result"); // chained turn for "second"
+    await s.close();
+
+    const roles = store.load("s1").map((m) => m.role);
+    assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
+    assert.equal(store.load("s1")[2]?.content, "second");
+    assert.equal(s.snapshot().turns, 2);
   } finally {
     cleanup();
   }

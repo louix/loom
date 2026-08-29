@@ -243,6 +243,11 @@ export class SessionManager {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
     await run.session.send(text);
+    // A send during a live turn is an injection — leave the status (and its
+    // reason, e.g. a pending permission) alone; the turn's own events drive it.
+    if (run.status === "running" || run.status === "awaiting_input" || run.status === "starting") {
+      return;
+    }
     run.interrupting = false;
     this.#set(id, run, "running", null);
   }

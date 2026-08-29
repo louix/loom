@@ -156,6 +156,19 @@ export interface RewindEvent extends HarnessEventBase {
   toTurn: number;
 }
 
+/**
+ * A user message the daemon delivered while a turn was already in flight.
+ * `injected: true` means it reached the model mid-turn (aisdk: after the
+ * current tool result, before the next step); on Claude it is queued by the
+ * SDK for the next turn boundary. Emitted so every client sees it land, since
+ * the composing client's local echo doesn't reach the others.
+ */
+export interface UserMessageEvent extends HarnessEventBase {
+  type: "user_message";
+  text: string;
+  injected: boolean;
+}
+
 export type HarnessEvent =
   | AssistantTextEvent
   | ThinkingEvent
@@ -172,6 +185,7 @@ export type HarnessEvent =
   | StatusChangedEvent
   | ErrorEvent
   | ResultEvent
-  | RewindEvent;
+  | RewindEvent
+  | UserMessageEvent;
 
 export type HarnessEventType = HarnessEvent["type"];

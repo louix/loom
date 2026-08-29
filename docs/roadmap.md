@@ -387,7 +387,18 @@ and Claude sessions keep their own. `runSearch` normalises Brave
 (`GET /web/search`) and Tavily (`POST /search`) to a numbered
 title / url / snippet list; the tool is readonly (never prompts). Resolved once
 in `ProviderRegistry.#resolveSearch()` and handed to every aisdk provider.
-231 tests.
+
+**Mid-turn message injection (post-M10).** The send-choice modal's "asap" is now
+"inject now". A `session.send` while a turn is live no longer blocks: aisdk
+`AisdkSession` queues it in `#injections`, and `runTurn`'s `prepareStep` splices
+it into the messages right after the current tool result (re-applied each step —
+the AI SDK drops a `prepareStep` message override after its step) and persists
+it in order via incremental `onStepFinish` appends. A message that misses the
+last `prepareStep` rides a chained turn. Claude just streams onto `#inbox`; the
+SDK queues it for the next turn boundary. Neither path interrupts the stream.
+The daemon emits a `user_message` event (`injected: true`) so every client sees
+it land; the TUI drops its local echo on that path. `deriveStatus` unchanged —
+a send during `running` / `awaiting_input` leaves the status alone. 234 tests.
 
 ---
 
@@ -414,5 +425,5 @@ refreshes, prefix invalidation, server-side eviction.
 - **10** is the big one; keep it last and spike the TS-ADK unknowns before
   writing the adapter.
 
-Fork / undo tree ([[tui-fork-tree]]) and mid-tool steering are still on the
-backlog, after this batch.
+Fork-tree F3 (Claude rewind / fork) is paused on the backlog; mid-turn message
+injection shipped post-M10 (see above).

@@ -834,6 +834,12 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
       return { glyph: "■", text: ev.ok ? "turn complete" : "turn failed", tone: ev.ok ? "good" : "bad" };
     case "rewind":
       return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
+    case "user_message":
+      return {
+        glyph: ev.injected ? "»" : "›",
+        text: ev.injected ? `${oneLine(ev.text, 160)} · injected mid-turn` : oneLine(ev.text, 160),
+        tone: "accent",
+      };
   }
 }
 

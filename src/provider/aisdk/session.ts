@@ -91,6 +91,10 @@ export class AisdkSession implements AgentSession {
   readonly #mapper: AisdkEventMapper;
   #abort: AbortController | null = null;
   #turn: Promise<void> | null = null;
+  /** True from `#kickTurn()` until the turn (and any chained turn) settles. */
+  #turnRunning = false;
+  /** User messages sent mid-turn, drained by the loop's `prepareStep`. */
+  readonly #injections: string[] = [];
   #closing = false;
   #compacting = false;
   #implementAfterTurn: { plan: string; fresh: boolean } | null = null;
@@ -135,10 +139,16 @@ export class AisdkSession implements AgentSession {
   /** Start the session. `run` kicks the first turn (create / one-shot); resume passes false. */
   start(run: boolean): void {
     if (run && this.#lastRole() === "user") {
-      this.#turn = this.#runTurn();
+      this.#kickTurn();
     } else {
       this.#snap.status = "idle";
     }
+  }
+
+  /** Run a turn, tracking `#turnRunning` across it (and any turn it chains). */
+  #kickTurn(): void {
+    this.#turnRunning = true;
+    this.#turn = this.#runTurn();
   }
 
   get providerRef(): string {
@@ -151,11 +161,30 @@ export class AisdkSession implements AgentSession {
 
   async send(input: UserInput): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    // Mid-turn: hand the message to the running loop's `prepareStep`, which
+    // splices it in after the current tool result. The daemon emits the
+    // `user_message` event so every client sees it land.
+    if (this.#turnRunning) {
+      this.#injections.push(input);
+      return;
+    }
     await this.#turn?.catch(() => {});
     const msg: ModelMessage = { role: "user", content: input };
     this.#messages.push(msg);
     this.#store?.append(this.id, [msg]);
-    this.#turn = this.#runTurn();
+    this.#kickTurn();
+  }
+
+  /** Move any queued mid-turn messages into the transcript; returns what moved. */
+  #flushInjections(): ModelMessage[] {
+    if (this.#injections.length === 0) return [];
+    const msgs: ModelMessage[] = this.#injections.splice(0).map((content) => ({
+      role: "user",
+      content,
+    }));
+    this.#messages.push(...msgs);
+    this.#store?.append(this.id, msgs);
+    return msgs;
   }
 
   async compact(instructions?: string): Promise<void> {
@@ -492,6 +521,8 @@ export class AisdkSession implements AgentSession {
       maxSteps: MAX_STEPS,
       abortSignal: abort.signal,
       mapper: this.#mapper,
+      drainInjections: () =>
+        this.#injections.splice(0).map((content) => ({ role: "user", content }) as ModelMessage),
       hooks: {
         emit: (ev) => this.#emit(ev),
         appendMessages: (msgs) => {
@@ -504,6 +535,9 @@ export class AisdkSession implements AgentSession {
     this.#abort = null;
 
     if (aborted || errored) {
+      // A message injected too late for `prepareStep` rides the next turn.
+      this.#flushInjections();
+      this.#turnRunning = false;
       this.#snap.status = aborted ? "interrupted" : "error";
       if (this.#oneShot) this.#outbox.close();
       return;
@@ -527,13 +561,26 @@ export class AisdkSession implements AgentSession {
       };
       this.#messages.push(msg);
       this.#store?.append(this.id, [msg]);
-      this.#turn = this.#runTurn();
+      this.#kickTurn();
       return;
     }
 
     this.#snap.turns += 1;
-    this.#snap.status = "idle";
     this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
-    if (this.#oneShot) this.#outbox.close();
+    if (this.#oneShot) {
+      this.#turnRunning = false;
+      this.#outbox.close();
+      return;
+    }
+
+    // A message injected as the turn wrapped up (past the last `prepareStep`)
+    // gets its own turn rather than being stranded.
+    if (this.#flushInjections().length > 0) {
+      this.#kickTurn();
+      return;
+    }
+
+    this.#turnRunning = false;
+    this.#snap.status = "idle";
   }
 }

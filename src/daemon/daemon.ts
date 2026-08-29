@@ -722,8 +722,17 @@ export class Daemon {
       const id = reqString(params, "id");
       const text = reqString(params, "text");
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      // Delivered while a turn is already in flight → an injection: aisdk splices
+      // it in after the current tool result, Claude queues it for the next turn
+      // boundary. Emit it so every client (not just the sender) sees it land.
+      const busy = ["running", "awaiting_input", "starting"].includes(
+        this.#registry.get(id)?.status ?? "",
+      );
       this.#lastSend.set(id, text);
       await this.#sessions.send(id, text);
+      if (busy) {
+        this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: true });
+      }
       return this.#registry.mustGet(id);
     });
 

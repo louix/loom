@@ -470,21 +470,6 @@ export function App({
     });
   }, [state]);
 
-  /** Fire `session.send` now, echoing into the log and history. */
-  const deliver = useCallback(
-    (sessionId: string, text: string, label = "sent") => {
-      client
-        .request("session.send", { id: sessionId, text })
-        .then(() => {
-          dispatch({ t: "pushHistory", text });
-          dispatch({ t: "echo", line: echoLine(sessionId, text) });
-          note(label, "good");
-        })
-        .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
-    },
-    [client, note, echoLine],
-  );
-
   const submitPrompt = useCallback(() => {
     const p = state.prompt;
     if (!p) return;
@@ -587,7 +572,13 @@ export function App({
       }
       dispatch({ t: "closeSendChoice" });
       if (choice === "asap") {
-        deliver(sc.sessionId, sc.text, "sent (asap)");
+        // No local echo — the daemon emits a `user_message` event for a
+        // mid-turn send, which every client (this one included) renders.
+        client
+          .request("session.send", { id: sc.sessionId, text: sc.text })
+          .then(() => note("injected — lands after the current tool call", "good"))
+          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+        dispatch({ t: "pushHistory", text: sc.text });
       } else {
         dispatch({ t: "enqueue", sessionId: sc.sessionId, text: sc.text });
         dispatch({ t: "pushHistory", text: sc.text });
@@ -598,7 +589,7 @@ export function App({
         note("queued for turn end", "dim");
       }
     },
-    [state.sendChoice, deliver, echoLine, note],
+    [state.sendChoice, client, echoLine, note],
   );
 
   /** Resolve the open plan review with `params` (an `action` plus any payload). */

@@ -720,7 +720,7 @@ export function SendChoice({ text, width }: { text: string; width: number }): Re
     h(Text, { color: C.accent, bold: true }, "The agent is still working — send this how?"),
     h(Text, { color: C.dim, wrap: "truncate-end" }, `“${truncate(text.replace(/\s+/g, " ").trim(), w - 2)}”`),
     h(Box, { height: 1 }),
-    row("a", "asap — deliver at the next tool boundary"),
+    row("a", "inject now — lands after the current tool call (Claude: next turn)"),
     row("t / enter", "queue until the turn ends"),
     row("esc", "back to the message — nothing is cleared"),
   );
@@ -739,7 +739,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⌃y", "copy the selected session's branch to the clipboard"],
   ["a  ·  d", "approve / answer  ·  deny a permission request"],
   ["a (plan)", "open the plan review — then i / f / e / d to decide"],
-  ["s", "send a follow-up turn (running → asap / queue for turn end)"],
+  ["s", "send a follow-up turn (while running → inject now / queue for turn end)"],
   ["c", "compact the context window (shown once the meter passes half)"],
   ["u", "undo — rewind an idle session to an earlier turn (shows the re-prime cost)"],
   ["⌃f", "hard fork — a new session + worktree branched off this one (aisdk)"],

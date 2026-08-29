@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
 import type { HelloResult, PushFrame, SessionSnapshot } from "../src/protocol/wire.ts";
+import type { FakeProvider } from "../src/provider/fake/fake.ts";
 import { makeHarness, type Harness } from "./helpers.ts";
 
 let h: Harness;
@@ -268,6 +269,45 @@ model    = "gpt-5"
     // fork a fake session → rejected for now
     const fk = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", provider: "fake" });
     await assert.rejects(c.request("session.fork", { id: fk.id }), /aisdk-only/);
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
+test("session.send during a live turn broadcasts an injected user_message; an idle send does not", async () => {
+  const hh = await makeHarness();
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const frames: PushFrame[] = [];
+    c.onPush((f) => frames.push(f));
+
+    const snap = await c.request<SessionSnapshot>("session.create", { prompt: "busy", provider: "fake" });
+    const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    fs?.emit({ type: "assistant_text", text: "working…" }); // → running
+    await delay(80);
+
+    await c.request("session.send", { id: snap.id, text: "also handle Y" });
+    await delay(60);
+    const um = frames.find(
+      (f) => f.type === "event" && (f.event as { type?: string }).type === "user_message",
+    );
+    assert.ok(um, "a user_message frame was broadcast");
+    const ev = (um as { event: { text: string; injected: boolean } }).event;
+    assert.equal(ev.text, "also handle Y");
+    assert.equal(ev.injected, true);
+
+    fs?.finishTurn(); // → idle
+    await delay(60);
+    frames.length = 0;
+    await c.request("session.send", { id: snap.id, text: "next turn please" });
+    await delay(60);
+    assert.equal(
+      frames.some((f) => f.type === "event" && (f.event as { type?: string }).type === "user_message"),
+      false,
+      "an idle send is a normal turn, not an injection",
+    );
 
     await c.close();
   } finally {

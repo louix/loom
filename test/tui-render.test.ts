@@ -217,7 +217,7 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
     stdin.feed("\r"); // Enter -> the choice modal (session is running)
     await delay(120);
     assert.match(stdout.last, /still working/);
-    assert.match(stdout.last, /asap/);
+    assert.match(stdout.last, /inject now/);
     assert.match(stdout.last, /the turn ends/);
 
     stdin.feed("t"); // queue for turn end
