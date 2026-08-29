@@ -204,6 +204,80 @@ test("compact() summarises the history and rebuilds it to one message", async ()
   }
 });
 
+test("compact() emits a compact_progress heartbeat before the compact lands", async () => {
+  const { store, cleanup } = env();
+  try {
+    const model = stepModel([textStep("SUMMARY: did the thing.")]);
+    const s = await provider(() => model, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "do a long thing",
+      mode: "default",
+      mcpServers: [],
+    });
+    await pump(s.events(), {});
+
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const ev of s.events()) {
+        if (ev.type === "compact_progress" || ev.type === "compact") seen.push(ev);
+        if (ev.type === "compact") break;
+      }
+    })();
+    await s.compact();
+    await s.close();
+    await reader;
+
+    const beat = seen.find((e) => e.type === "compact_progress") as
+      | Extract<HarnessEvent, { type: "compact_progress" }>
+      | undefined;
+    assert.ok(beat, "expected a compact_progress heartbeat");
+    assert.ok(beat.before > 0);
+    assert.ok(beat.elapsedMs >= 0);
+    assert.ok(beat.generated >= 0);
+    // the heartbeat precedes the boundary
+    assert.ok(seen.findIndex((e) => e.type === "compact_progress") < seen.findIndex((e) => e.type === "compact"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("a failed summariser emits a non-fatal error and leaves the transcript intact", async () => {
+  const { store, cleanup } = env();
+  try {
+    // step 0 = the initial turn; step 1 = the summariser, which produces no text.
+    const model = stepModel([textStep("did a thing"), textStep("")]);
+    const s = await provider(() => model, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "do a long thing",
+      mode: "default",
+      mcpServers: [],
+    });
+    await pump(s.events(), {});
+    const before = store.load("s1");
+
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const ev of s.events()) {
+        seen.push(ev);
+        if (ev.type === "error") break;
+      }
+    })();
+    await s.compact();
+    await s.close();
+    await reader;
+
+    const err = seen.find((e) => e.type === "error") as Extract<HarnessEvent, { type: "error" }>;
+    assert.ok(err, "expected a non-fatal error");
+    assert.equal(err.fatal, false);
+    assert.ok(!seen.some((e) => e.type === "compact"), "no boundary on a failed compaction");
+    assert.deepEqual(store.load("s1"), before, "transcript untouched");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a bloated history auto-compacts before the next turn", async () => {
   const { store, cleanup } = env();
   try {

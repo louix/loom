@@ -164,6 +164,56 @@ test("event pushes append log lines and the ring honours logCap", () => {
   assert.deepEqual(s.log.map((l) => l.seq), [2, 3, 4]);
 });
 
+test("compact_progress drives the compacting indicator without hitting the log", () => {
+  let s = initialState();
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 4_000, generated: 128, before: 90_000 })),
+  });
+  assert.equal(s.log.length, 0, "heartbeat is not a transcript line");
+  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+
+  // a later beat refreshes it
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "compact_progress", sessionId: "s1", ts: 12_000, elapsedMs: 6_000, generated: 400, before: 90_000 })),
+  });
+  assert.equal(s.compacting["s1"]?.generated, 400);
+
+  // the boundary clears it and *is* logged
+  s = reduce(s, {
+    t: "push",
+    frame: push(3, ev({ type: "compact", sessionId: "s1", trigger: "manual", before: 90_000, after: 12_000 })),
+  });
+  assert.equal(s.compacting["s1"], undefined);
+  assert.equal(s.log.length, 1);
+  assert.match(s.log[0]?.text ?? "", /context compacted/);
+});
+
+test("an error (fatal or not) abandons the compacting indicator", () => {
+  for (const fatal of [true, false]) {
+    let s = initialState();
+    s = reduce(s, {
+      t: "push",
+      frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 0, generated: 0, before: 50_000 })),
+    });
+    assert.ok(s.compacting["s1"]);
+    s = reduce(s, { t: "push", frame: push(2, ev({ type: "error", message: "boom", fatal, sessionId: "s1" })) });
+    assert.equal(s.compacting["s1"], undefined, `fatal=${fatal}`);
+  }
+});
+
+test("resync drops all compacting indicators", () => {
+  let s = initialState();
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 0, generated: 0, before: 50_000 })),
+  });
+  assert.ok(s.compacting["s1"]);
+  s = reduce(s, { t: "push", frame: { kind: "push", seq: 2, type: "resync", reason: "rolled" } });
+  assert.deepEqual(s.compacting, {});
+});
+
 test("permission / question / fatal-error events raise a notice", () => {
   let s = initialState();
   s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })) });

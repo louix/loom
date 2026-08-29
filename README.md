@@ -218,11 +218,15 @@ from that turn's cache read/write split. It's still an estimate — a context
 edit, a tool-list change, or server-side eviction drops the cache regardless of
 the clock.
 
-**Context compaction.** `c` on a running or idle session (or `loom compact <id>
-[steer…]`) drives the provider's own compaction — for Claude, `/compact` over
-the streaming input. When the summary boundary lands it shows in the event log
-as `⇊ context compacted 154k → …`; the context meter re-measures on the next
-turn. `session.compact` is the RPC.
+**Context compaction.** `c` on a running or idle session opens a one-line focus
+prompt (blank compacts the whole history; text steers what the summary keeps) —
+or `loom compact <id> [steer…]`. It drives the provider's own compaction: for
+Claude, `/compact` over the streaming input; for aisdk sessions, a Loom-side
+summariser. Summarising a long history takes a while, so aisdk sessions tick a
+`compact_progress` heartbeat — the Detail pane shows `⇊ compacting… Ns` and the
+Fleet row a `⇊` dot — with a 15-minute hard ceiling. When the boundary lands it
+shows in the event log as `⇊ context compacted 154k → …`; the context meter
+re-measures on the next turn. `session.compact` is the RPC.
 
 ## Requirements
 
@@ -298,7 +302,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 252 cases
+npm test             # node:test — 255 cases
 ```
 
 ### Layout

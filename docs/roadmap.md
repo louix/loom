@@ -420,6 +420,17 @@ the map-flush-on-abort was dead code, `#enrich(git:false)` emitted a git-less
 snapshot, and the TUI queue-drain guard could strand an item on a rejected
 send. 252 tests.
 
+**Compaction heartbeat + steer (post-M10).** Summarising a long history is a
+single completion that can run for minutes, so `session.compact` no longer hides
+behind a short RPC timeout. The aisdk session ticks a `compact_progress` event
+(elapsed + chars-generated, backing off 2s→10s) for the duration; the TUI shows
+`⇊ compacting… Ns` in the Detail pane and a `⇊` in the Fleet row's cache-dot
+slot (never logged — it's a bare heartbeat, cleared by `compact` / a fatal
+`error` / a resync). The summariser's hard abort and the client's
+`session.compact` timeout are both 15 min (`SUMMARISE_TIMEOUT_MS`). TUI `c` now
+opens a one-line focus prompt (blank = full compaction) — the RPC and CLI
+already took `instructions`. 255 tests.
+
 ---
 
 ## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)
@@ -447,6 +458,64 @@ refreshes, prefix invalidation, server-side eviction.
 
 Fork-tree F3 (Claude rewind / fork) is paused on the backlog; mid-turn message
 injection shipped post-M10 (see above).
+
+## Backlog (2026-08-29, from the user)
+
+Ordered roughly by value / independence. Items 1–2 are in progress.
+
+### 1 · Compaction polish
+- **Heartbeat + no arbitrary timeout** — ✓ shipped (see "Compaction heartbeat +
+  steer" above). A `>15 min` hard timeout stays as the real backstop.
+- **Steer the summary** — ✓ the RPC/CLI/TUI all take a focus string now.
+- **Consequences estimate on the confirm prompt** — before compacting, show
+  projected tokens (have `estimateTokens`), the summariser call's cost (needs a
+  per-model $/Mtok table — also seeds a general cost readout), and the fact the
+  KV cache resets (next turn re-pays full input). The cache line is the point:
+  "is now the right time" ≈ "enough cache-warm turns left to amortise a bust".
+- A true percentage bar isn't possible for one streamed completion; elapsed +
+  generated-chars is the honest signal.
+
+### 2 · Worktree in-place toggle
+`[worktree] enabled = true|false` + per-session override. Off → sessions share
+the repo working dir (concurrent sessions can clobber; hard-fork / rewind stop
+making sense — same degradation Claude sessions already carry). Unblocks mentor
+mode. This session already runs in-place, so there's a live use case.
+
+### 3 · Mentor / pair mode
+A new `SessionMode`. Reuses `gate.ts` `isReadonly` to deny mutating tools
+(essentially permanent plan-mode minus the "now produce a plan" framing). System
+prompt shift: *you* do the work; the agent explains approach / which files / how
+things work, reviews your changes (a "review my diff" affordance running `git
+diff`), and never writes unless you explicitly ask or switch modes. Pairs with
+#2 (wants in-place by default).
+
+### 4 · External worktree deletion handling
+An out-of-band `git worktree remove` / `rm -rf` currently makes the pump error
+ugly. Detect worktree-gone on the next git/tool op → mark the session `error`
+with a readable reason, offer re-create or archive. Defensive; opportunistic.
+
+### 5 · Named worktree pool + rename on title-gen
+Pregenerate a wordlist; assign one memorable name per session as a stable prefix;
+when the auto-title job runs also rename the branch to `<name>/<slug>` (`git
+branch -m` always, best-effort `git worktree move` — the dir move fails if the
+user is `cd`'d in from another terminal). Update `sessions.worktree` + the
+`#worktrees` facts cache + push a `session_updated`. Collisions: large pool +
+`git branch --list` check, hex fallback when exhausted.
+
+### 6 · pnpm monorepo + plugin packages
+The provider seam (`src/provider/types.ts`) was built for this, so it's
+repackaging, not rearchitecting — but it's the biggest item and touches config
+discovery, `registry.ts`, the test layout, and versioning.
+- **Decide the plugin model first:** in-process (`import()` a package exporting
+  an `AgentProvider` factory) vs out-of-process (subprocess speaking a protocol,
+  MCP-style). Everything today is in-process; go in-process now, leave subprocess
+  isolation for untrusted plugins later.
+- No-build-step works across a pnpm workspace internally; published packages want
+  `.d.ts`, so build only at publish.
+- Connectors as packages: `gemini` (google), `claude` (claude sdk), generic /
+  openai-compatible (vercel ai sdk), `mock`, `openai` (future). North star: loom
+  ships with no connectors and near-zero deps by default.
+- `fake` → `@loom/connector-mock`, a real package the tests depend on.
 
 ## Known gaps (parked)
 

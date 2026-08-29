@@ -342,9 +342,13 @@ export function App({
             return "interrupted";
           });
         case "compact":
-          return perform(async () => {
-            await client.request("session.compact", { id: s.id });
-            return "compacting context";
+          return void dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({
+              kind: "compact",
+              sessionId: s.id,
+              label: "compact — focus (blank = full)",
+            }),
           });
         case "resume":
           return perform(async () => {
@@ -482,7 +486,9 @@ export function App({
     if (!p) return;
     const text = p.buffer.text.trim();
     const by = client.clientId;
-    if (p.kind !== "deny" && !text) return; // keep the prompt open on an empty submit
+    // `deny` and `compact` both treat an empty submit as a valid choice
+    // (no reason / compact the whole history); every other prompt needs text.
+    if (p.kind !== "deny" && p.kind !== "compact" && !text) return;
     const reopen = () =>
       dispatch({ t: "openPrompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
 
@@ -526,6 +532,13 @@ export function App({
         if (!Number.isFinite(usd) || usd <= 0) throw new Error("budget must be a positive number");
         await client.request("session.setBudget", { id: p.sessionId, maxCostUsd: usd, by });
         return `budget → $${usd.toFixed(2)}`;
+      }
+      if (p.kind === "compact" && p.sessionId) {
+        await client.request("session.compact", {
+          id: p.sessionId,
+          ...(text ? { instructions: text } : {}),
+        });
+        return text ? "compacting — focused" : "compacting context";
       }
       if (p.kind === "discuss" && p.sessionId && p.requestId) {
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
@@ -951,6 +964,7 @@ export function App({
           queued: sel ? queueFor(state, sel.id) : [],
           now: Date.now(),
           engineColor: sel ? providerColorOf(state, sel.provider) : "",
+          compacting: sel ? (state.compacting[sel.id] ?? null) : null,
         }),
         showRequest ? h(RequestPanel, { pending: pend, width: rightW }) : null,
         h(EventLog, { state, width: rightW, height: rightLogH, scroll: logScroll, full: false }),

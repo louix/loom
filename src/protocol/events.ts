@@ -117,6 +117,24 @@ export interface CompactEvent extends HarnessEventBase {
   summary?: string;
 }
 
+/**
+ * A heartbeat while a compaction is in flight. Summarising a long history can
+ * take minutes (the model rewrites the whole transcript into a summary), so the
+ * provider ticks one of these out every few seconds. `generated` is the length
+ * of summary text produced so far — a liveness proxy, not a percentage; there's
+ * no true progress number for a single streamed completion. A `compact` (or a
+ * fatal `error`) ends the run. Not persisted or shown in the transcript.
+ */
+export interface CompactProgressEvent extends HarnessEventBase {
+  type: "compact_progress";
+  /** ms since the compaction started. */
+  elapsedMs: number;
+  /** chars of summary text streamed so far. */
+  generated: number;
+  /** context-token count at the start, for a "compacting 120k" label. */
+  before: number;
+}
+
 export interface SubagentStartedEvent extends HarnessEventBase {
   type: "subagent_started";
   subagentId: string;
@@ -180,6 +198,7 @@ export type HarnessEvent =
   | PlanReviewEvent
   | UsageEvent
   | CompactEvent
+  | CompactProgressEvent
   | SubagentStartedEvent
   | SubagentStoppedEvent
   | StatusChangedEvent

@@ -37,7 +37,15 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "budget" | "discuss";
+export type PromptKind =
+  | "send"
+  | "answer"
+  | "deny"
+  | "new"
+  | "title"
+  | "budget"
+  | "discuss"
+  | "compact";
 
 export interface PromptState {
   kind: PromptKind;
@@ -183,6 +191,8 @@ export interface TuiState {
   pending: Record<string, Pending>;
   /** Follow-up messages typed at a still-running session, awaiting its next idle. */
   queue: Record<string, string[]>;
+  /** Sessions with a compaction in flight → when it started (for a live "compacting… Ns"). */
+  compacting: Record<string, { startedAt: number; generated: number; before: number }>;
   notice: Notice | null;
   mode: UiMode;
   prompt: PromptState | null;
@@ -209,6 +219,7 @@ export function initialState(logCap = 400): TuiState {
     logFilter: "selected",
     pending: {},
     queue: {},
+    compacting: {},
     notice: null,
     mode: "browse",
     prompt: null,
@@ -272,6 +283,7 @@ export function reduce(s: TuiState, a: Action): TuiState {
         selectedId: clampSelection(sessions, s.selectedId),
         pending: pruneByLive(s.pending, sessions),
         queue: pruneByLive(s.queue, sessions),
+        compacting: pruneByLive(s.compacting, sessions),
       };
     }
 
@@ -292,6 +304,7 @@ export function reduce(s: TuiState, a: Action): TuiState {
         selectedId: clampSelection(sessions, s.selectedId),
         pending: pruneByLive(s.pending, sessions),
         queue: pruneByLive(s.queue, sessions),
+        compacting: pruneByLive(s.compacting, sessions),
       };
     }
 
@@ -432,16 +445,20 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
     case "event": {
       const ev = frame.event;
       const pending = trackPending(s.pending, ev);
+      const compacting = trackCompacting(s.compacting, ev);
       const notice = noticeForEvent(s, ev) ?? s.notice;
       // `status_changed` is already shown live in the detail / fleet panes;
-      // keep it out of the log so the log reads as a transcript.
-      if (ev.type === "status_changed") return { ...s, pending, notice };
+      // keep it out of the log so the log reads as a transcript. `compact_progress`
+      // is a bare heartbeat — it drives the "compacting…" indicator, nothing more.
+      if (ev.type === "status_changed") return { ...s, pending, compacting, notice };
+      if (ev.type === "compact_progress") return { ...s, compacting, notice };
       // A frame may arrive twice around startup (history backfill overlapping
       // the live stream) — the seq is authoritative, so drop the repeat.
-      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq)) return { ...s, pending, notice };
+      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq))
+        return { ...s, pending, compacting, notice };
       const log = [...s.log, toLogLine(frame.seq, ev)];
       if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
-      return { ...s, log, pending, notice };
+      return { ...s, log, pending, compacting, notice };
     }
     case "session_updated": {
       const rest = s.sessions.filter((x) => x.id !== frame.session.id);
@@ -476,6 +493,7 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         selectedId: clampSelection(sessions, s.selectedId),
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
+        compacting: without(s.compacting, frame.sessionId),
         ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
         ...(pickerGone
           ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }
@@ -483,8 +501,10 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       };
     }
     case "resync":
-      // The client refetches and dispatches a fresh `sessions` action.
-      return s;
+      // The client refetches and dispatches a fresh `sessions` action. Drop the
+      // compacting indicators — the heartbeats that feed them were in the frames
+      // we rolled past; a still-running compaction re-announces within ~10s.
+      return { ...s, compacting: {} };
   }
 }
 
@@ -521,6 +541,29 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
   // A resolved permission is cleared wholesale when the session leaves
   // awaiting_input — see the `session_updated` case.
   return pending;
+}
+
+/** Start/refresh a "compacting…" entry on each heartbeat; clear it when the
+ *  compaction lands (`compact`) or the session reports an error — the provider
+ *  emits a non-fatal `error` if the summariser times out or fails. */
+function trackCompacting(
+  cur: TuiState["compacting"],
+  ev: HarnessEvent,
+): TuiState["compacting"] {
+  if (ev.type === "compact_progress") {
+    return {
+      ...cur,
+      [ev.sessionId]: {
+        startedAt: ev.ts - ev.elapsedMs,
+        generated: ev.generated,
+        before: ev.before,
+      },
+    };
+  }
+  if (ev.type === "compact" || ev.type === "error") {
+    return without(cur, ev.sessionId);
+  }
+  return cur;
 }
 
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -841,6 +884,9 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
         text: `context compacted ${humanTokens(ev.before)}${ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""}${ev.summary ? ` · ${oneLine(ev.summary, 80)}` : ""}`,
         tone: "accent",
       };
+    case "compact_progress":
+      // Never reaches the log (filtered in applyPush); here for exhaustiveness.
+      return { glyph: "⇊", text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`, tone: "dim" };
     case "subagent_started":
       return { glyph: "⤷", text: `sub-agent “${ev.name}” started`, tone: "dim" };
     case "subagent_stopped":

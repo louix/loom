@@ -86,9 +86,12 @@ export class LoomClient {
   // -------------------------------------------------------------------------
 
   /** Methods whose daemon-side work can legitimately exceed the default (e.g.
-   *  compaction's 60s summariser budget, or a slow MCP stdio handshake). */
+   *  a slow MCP stdio handshake). `session.compact` summarises the whole
+   *  transcript in one completion — minutes on a long history — so it gets the
+   *  same 15-minute ceiling the provider aborts at (`SUMMARISE_TIMEOUT_MS`);
+   *  `compact_progress` heartbeats show it's alive in the meantime. */
   static #SLOW_METHODS: Record<string, number> = {
-    "session.compact": 180_000,
+    "session.compact": 15 * 60_000,
     "session.create": 120_000,
     "session.fork": 120_000,
     "session.resume": 120_000,

@@ -38,6 +38,18 @@ import { contextLimitFor, estimateTokens } from "./tokens.ts";
 const MAX_STEPS = 24;
 /** Compact automatically once the estimated context exceeds this fraction. */
 const AUTO_COMPACT_FRACTION = 0.85;
+/**
+ * Hard ceiling on one summariser call. Compaction rewrites the whole transcript
+ * in a single completion, which scales with history length and can legitimately
+ * run for minutes — so this is generous. Past it the call is aborted and the
+ * compaction is abandoned (the transcript is left intact). Kept in step with the
+ * client's `session.compact` RPC timeout in `src/client/client.ts`.
+ */
+const SUMMARISE_TIMEOUT_MS = 15 * 60_000;
+/** First few heartbeats while summarising, then back off to keep the ring buffer sane. */
+const COMPACT_BEAT_FAST_MS = 2_000;
+const COMPACT_BEAT_SLOW_MS = 10_000;
+const COMPACT_BEAT_BACKOFF_AFTER_MS = 30_000;
 
 const COMPACT_PREAMBLE =
   "The earlier conversation was summarised to save context. Continue from this summary:\n\n";
@@ -459,10 +471,49 @@ export class AisdkSession implements AgentSession {
   async #doCompact(instructions: string | undefined, trigger: "manual" | "auto"): Promise<void> {
     if (this.#compacting || this.#messages.length === 0) return;
     this.#compacting = true;
+    const startedAt = Date.now();
+    const before = estimateTokens(this.#messages);
+    let generated = 0;
+    // A heartbeat so clients can show "compacting… 42s" instead of staring at a
+    // frozen UI (or hitting an arbitrary RPC timeout) during a multi-minute
+    // summarise. `generated` is a liveness proxy, not a percentage.
+    const beat = (): void =>
+      this.#emit({
+        type: "compact_progress",
+        sessionId: this.id,
+        ts: Date.now(),
+        elapsedMs: Date.now() - startedAt,
+        generated,
+        before,
+      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (): void => {
+      const slow = Date.now() - startedAt > COMPACT_BEAT_BACKOFF_AFTER_MS;
+      timer = setTimeout(() => {
+        beat();
+        schedule();
+      }, slow ? COMPACT_BEAT_SLOW_MS : COMPACT_BEAT_FAST_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    };
+    beat();
+    schedule();
     try {
-      const before = estimateTokens(this.#messages);
-      const summary = await this.#summarize(instructions);
-      if (!summary) return;
+      const summary = await this.#summarize(instructions, (n) => {
+        generated = n;
+      });
+      if (!summary) {
+        // Timed out or errored inside the summariser. Nothing was rewritten —
+        // the transcript is intact. Emit a non-fatal error so clients can clear
+        // the "compacting…" indicator and log the miss (status is unaffected).
+        this.#emit({
+          type: "error",
+          sessionId: this.id,
+          ts: Date.now(),
+          message: "compaction failed — the transcript was left as-is",
+          fatal: false,
+        });
+        return;
+      }
       const rebuilt: ModelMessage[] = [{ role: "user", content: COMPACT_PREAMBLE + summary }];
       this.#messages.length = 0;
       this.#messages.push(...rebuilt);
@@ -477,11 +528,15 @@ export class AisdkSession implements AgentSession {
         summary,
       });
     } finally {
+      if (timer) clearTimeout(timer);
       this.#compacting = false;
     }
   }
 
-  async #summarize(instructions: string | undefined): Promise<string | null> {
+  async #summarize(
+    instructions: string | undefined,
+    onProgress?: (chars: number) => void,
+  ): Promise<string | null> {
     const ask =
       instructions?.trim() ||
       "Preserve the goal, the decisions made, the files touched, and anything still open.";
@@ -497,11 +552,12 @@ export class AisdkSession implements AgentSession {
             content: `Summarise this conversation so work can continue with the summary standing in for the full history. ${ask} Respond with only the summary.`,
           },
         ],
-        abortSignal: AbortSignal.timeout(60_000),
+        abortSignal: AbortSignal.timeout(SUMMARISE_TIMEOUT_MS),
       });
       for await (const part of res.fullStream) {
         if (part.type === "text-delta") {
           text += part.text;
+          onProgress?.(text.length);
         } else if (part.type === "finish-step") {
           // Meter the summariser call — otherwise a frequently-compacting long
           // session under-reports cost / tokens (and budget enforcement drifts).

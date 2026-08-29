@@ -113,6 +113,7 @@ export function Fleet({
   const groups = groupsOf(state.sessions);
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
+  const compactingIds = new Set(Object.keys(state.compacting));
 
   const blocks =
     groups.length === 0
@@ -137,7 +138,15 @@ export function Fleet({
               h(Text, { color: C.faint }, `  ${g.sessions.length}`),
             ),
             ...g.sessions.map((s) =>
-              FleetRow({ s, selected: s.id === state.selectedId, tick, iw, now, pcolor }),
+              FleetRow({
+                s,
+                selected: s.id === state.selectedId,
+                tick,
+                iw,
+                now,
+                pcolor,
+                compacting: compactingIds.has(s.id),
+              }),
             ),
           ),
         );
@@ -160,6 +169,7 @@ function FleetRow({
   iw,
   now,
   pcolor,
+  compacting = false,
 }: {
   s: SessionSnapshot;
   selected: boolean;
@@ -168,6 +178,8 @@ function FleetRow({
   now: number;
   /** provider id → Fleet-row id colour ("" for the plain default). */
   pcolor: Map<string, string>;
+  /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
+  compacting?: boolean;
 }): ReactNode {
   const look = STATUS[s.status];
   const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
@@ -188,7 +200,9 @@ function FleetRow({
     h(Text, { color: selected ? C.accent : C.faint }, selected ? "▍ " : "  "),
     h(Text, { color: s.status === "running" ? C.accent : look.color }, glyph + " "),
     h(Text, { color: idColor }, `${idText}  `),
-    h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
+    compacting
+      ? h(Text, { color: C.accent }, "⇊ ")
+      : h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
     h(Text, { color: selected ? C.text : C.dim, bold: selected }, title),
     h(Text, { color: C.faint }, ` ${cost}`),
   );
@@ -204,6 +218,7 @@ export function Detail({
   queued = [],
   now = Date.now(),
   engineColor = "",
+  compacting = null,
 }: {
   session: SessionSnapshot | null;
   width: number;
@@ -211,6 +226,8 @@ export function Detail({
   now?: number;
   /** Ink colour for the provider/model line; matches the Fleet id colour. */
   engineColor?: string;
+  /** Set while a compaction is in flight on this session. */
+  compacting?: { startedAt: number; before: number } | null;
 }): ReactNode {
   if (!session) {
     return h(
@@ -277,6 +294,19 @@ export function Detail({
       h(Text, { color: ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim }, bar(ctxFrac, 16)),
       h(Text, { color: C.dim }, `${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`),
     ),
+    compacting
+      ? h(
+          Box,
+          { gap: 2 },
+          h(Text, { color: C.dim }, "       "),
+          h(
+            Text,
+            { color: C.accent },
+            `⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`,
+          ),
+          h(Text, { color: C.faint }, `from ${humanTokens(compacting.before)}`),
+        )
+      : null,
     (() => {
       const cs = cacheStatus(s, now);
       if (cs.state === "unknown") return null;
@@ -528,6 +558,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   title: "rename",
   budget: "set",
   discuss: "send",
+  compact: "compact",
 };
 
 function promptHints(p: PromptState, queued: number): string {
@@ -554,7 +585,9 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
               ? "max cost in USD, e.g. 2.50"
               : p.kind === "discuss"
                 ? "what should change about the plan?"
-                : "type a message…";
+                : p.kind === "compact"
+                  ? "what to keep in focus — blank compacts the whole history"
+                  : "type a message…";
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
