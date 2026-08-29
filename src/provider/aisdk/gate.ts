@@ -13,7 +13,8 @@ import type { ToolCallOptions, ToolSet } from "ai";
 import type { SessionMode } from "../types.ts";
 
 const READONLY_EXACT = new Set([
-  "ask_user",
+  "ask_user", // surfaces its own question prompt
+  "exit_plan", // surfaces its own plan-review prompt
   "list_allowed_directories",
   "directory_tree",
   "list_directory_with_sizes",

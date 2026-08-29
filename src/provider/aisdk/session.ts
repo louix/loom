@@ -1,15 +1,17 @@
 /**
  * An `AgentSession` over an OpenAI-compatible model. Loom owns everything the
  * Claude CLI would otherwise own: the `ModelMessage[]`, its persistence, tool
- * wiring, the permission gate, and per-turn lifecycle. `events()` is a single
- * channel that stays open across turns and closes only on `close()`.
+ * wiring, the permission gate, compaction, and per-turn lifecycle. `events()`
+ * is a single channel that stays open across turns and closes only on `close()`.
  *
- * M10b–c: multi-step turns with MCP tools, the `loom` tools, and a first-party
- * Bash / Edit / Grep suite — each routed through the permission gate. Still no
- * compaction, plan review, or sub-agents (M10d).
+ * M10b–d: multi-step turns with MCP tools, the `loom` tools, a first-party
+ * Bash/Edit/Grep suite, plan mode (`exit_plan` → `plan_review`), Loom-side
+ * summarise-and-rebuild compaction, and `task` sub-agents.
  */
 import { randomUUID } from "node:crypto";
+import { stepCountIs, streamText, tool } from "ai";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
+import { z } from "zod";
 import type { HarnessEvent } from "../../protocol/events.ts";
 import { AsyncChannel } from "../../util/channel.ts";
 import { makeLogger, type Logger } from "../../util/logger.ts";
@@ -27,12 +29,22 @@ import { runTurn } from "./loop.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
 import { BuiltinTools } from "./tools/builtins.ts";
-import { wrapToolSet } from "./gate.ts";
+import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
-import { contextLimitFor } from "./tokens.ts";
+import { contextLimitFor, estimateTokens } from "./tokens.ts";
 
 /** Hard ceiling on tool round-trips within one turn. */
 const MAX_STEPS = 24;
+/** Compact automatically once the estimated context exceeds this fraction. */
+const AUTO_COMPACT_FRACTION = 0.85;
+
+const COMPACT_PREAMBLE =
+  "The earlier conversation was summarised to save context. Continue from this summary:\n\n";
+
+const SUBAGENT_SYSTEM =
+  "You are a sub-agent handling one focused task delegated by a parent agent. " +
+  "You have the same tools but your own context and cannot ask questions. Do the " +
+  "task, then end with a short report of what you did and what you found.";
 
 export interface AisdkSessionOptions {
   sessionId: string;
@@ -46,7 +58,7 @@ export interface AisdkSessionOptions {
   cwd: string;
   /** Vendor-neutral MCP servers to connect for this session. */
   mcpHandles: McpServerHandle[];
-  /** Mount the `loom` tools (ask_user, commit). */
+  /** Mount the `loom` tools + first-party Bash/Edit/Grep + plan/task tools. */
   loomServer: boolean;
   /** null for a throwaway one-shot. */
   store: ProviderMessageStore | null;
@@ -76,13 +88,16 @@ export class AisdkSession implements AgentSession {
   #abort: AbortController | null = null;
   #turn: Promise<void> | null = null;
   #closing = false;
+  #compacting = false;
+  #implementAfterTurn: { plan: string; fresh: boolean } | null = null;
   #snap: AdapterSnapshot;
 
   #hub: McpHub | null = null;
   #builtins: BuiltinTools | null = null;
-  #toolsPromise: Promise<ToolSet> | null = null;
+  #baseToolsPromise: Promise<ToolSet> | null = null;
   readonly #pendingPerms = new Map<string, (d: { allow: boolean; message?: string }) => void>();
   readonly #pendingQuestions = new Map<string, (answer: string) => void>();
+  readonly #pendingPlans = new Map<string, (d: PlanDecision) => void>();
 
   constructor(opts: AisdkSessionOptions) {
     this.id = opts.sessionId;
@@ -138,8 +153,10 @@ export class AisdkSession implements AgentSession {
     this.#turn = this.#runTurn();
   }
 
-  async compact(_instructions?: string): Promise<void> {
-    throw new Error("compaction for the aisdk provider lands in milestone 10d");
+  async compact(instructions?: string): Promise<void> {
+    if (this.#closing) throw new Error("session is closing");
+    await this.#turn?.catch(() => {});
+    await this.#doCompact(instructions, "manual");
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
@@ -161,8 +178,11 @@ export class AisdkSession implements AgentSession {
     resolve(text);
   }
 
-  async respondToPlan(_id: string, _decision: PlanDecision): Promise<void> {
-    // No plan review until M10d.
+  async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
+    const resolve = this.#pendingPlans.get(id);
+    if (!resolve) return;
+    this.#pendingPlans.delete(id);
+    resolve(decision);
   }
 
   async interrupt(): Promise<void> {
@@ -195,6 +215,8 @@ export class AisdkSession implements AgentSession {
     this.#pendingPerms.clear();
     for (const [, r] of this.#pendingQuestions) r("(the session was closed before the user answered)");
     this.#pendingQuestions.clear();
+    for (const [, r] of this.#pendingPlans) r({ action: "discuss", message: "the session was closed" });
+    this.#pendingPlans.clear();
     this.#builtins?.close();
     await this.#hub?.close().catch(() => {});
     this.#outbox.close();
@@ -218,33 +240,84 @@ export class AisdkSession implements AgentSession {
     this.#outbox.push(ev);
   }
 
-  /** Connect MCP servers + assemble the gated tool set. Memoized. */
-  #ensureTools(): Promise<ToolSet> {
-    if (!this.#toolsPromise) {
-      this.#toolsPromise = (async () => {
+  /** Connect MCP servers + build the *unwrapped* base tool set. Memoized. */
+  #ensureBaseTools(): Promise<ToolSet> {
+    if (!this.#baseToolsPromise) {
+      this.#baseToolsPromise = (async () => {
         const base: ToolSet = {};
         if (this.#mcpHandles.length > 0) {
           this.#hub = await McpHub.connect(this.#mcpHandles, this.#log);
           Object.assign(base, this.#hub.tools);
         }
         if (this.#loomServer) {
-          Object.assign(
-            base,
-            buildLoomTools({
-              cwd: this.#cwd,
-              askUser: (q, c) => this.#askUser(q, c),
-            }),
-          );
+          Object.assign(base, buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }));
           this.#builtins = new BuiltinTools(this.#cwd);
           Object.assign(base, this.#builtins.tools);
+          Object.assign(base, this.#planAndTaskTools());
         }
-        return wrapToolSet(base, {
-          mode: () => this.#mode,
-          ask: (name, input, toolCallId) => this.#requestPermission(name, input, toolCallId),
-        });
+        return base;
       })();
     }
-    return this.#toolsPromise;
+    return this.#baseToolsPromise;
+  }
+
+  /** The gated tool set for a turn — plan mode withholds mutators, other modes drop `exit_plan`. */
+  async #turnToolSet(): Promise<ToolSet> {
+    const base = await this.#ensureBaseTools();
+    const picked: Record<string, unknown> = {};
+    const src = base as Record<string, unknown>;
+    for (const name of Object.keys(src)) {
+      if (this.#mode === "plan") {
+        if (name === "exit_plan" || name === "ask_user" || isReadonly(name)) picked[name] = src[name];
+      } else if (name !== "exit_plan") {
+        picked[name] = src[name];
+      }
+    }
+    return wrapToolSet(picked as ToolSet, {
+      mode: () => this.#mode,
+      ask: (name, input, toolCallId) => this.#requestPermission(name, input, toolCallId),
+    });
+  }
+
+  #planAndTaskTools(): ToolSet {
+    return {
+      exit_plan: tool({
+        description:
+          "Call this only in plan mode, once your plan is complete. Pass the full plan text; " +
+          "the user reviews it and decides whether to implement, revise, or keep discussing.",
+        inputSchema: z.object({ plan: z.string().describe("The complete implementation plan, in markdown.") }),
+        execute: async ({ plan }) => {
+          const decision = await this.#requestPlan(plan);
+          switch (decision.action) {
+            case "discuss":
+              return `The user is not ready to implement. Their note:\n\n${decision.message}\n\nStay in planning, address this, and call exit_plan again when ready.`;
+            case "revise":
+              this.#implementAfterTurn = { plan: decision.plan, fresh: false };
+              return "The user edited and approved the plan. Implementation begins now.";
+            case "implement_fresh":
+              this.#implementAfterTurn = { plan, fresh: true };
+              return "Plan approved. The context will be compacted to the plan and goal, then implementation begins.";
+            default:
+              this.#implementAfterTurn = { plan, fresh: false };
+              return "Plan approved. Implementation begins now.";
+          }
+        },
+      }),
+      task: tool({
+        description:
+          "Delegate a focused, self-contained sub-task to a fresh sub-agent that has the same " +
+          "tools but its own context. Good for a search sweep or an isolated change, so your own " +
+          "context stays lean. The sub-agent cannot ask questions. Returns its final report.",
+        inputSchema: z.object({
+          description: z.string().describe("A 3–6 word label for the sub-task."),
+          prompt: z.string().describe("Full, self-contained instructions for the sub-agent."),
+        }),
+        execute: async ({ description, prompt }) => {
+          const report = await this.#runSubagent(description, prompt);
+          return { report };
+        },
+      }),
+    };
   }
 
   #askUser(question: string, context: string | undefined): Promise<string> {
@@ -259,6 +332,14 @@ export class AisdkSession implements AgentSession {
         question,
         ...(context ? { context } : {}),
       });
+    });
+  }
+
+  #requestPlan(plan: string): Promise<PlanDecision> {
+    const id = randomUUID();
+    return new Promise<PlanDecision>((resolve) => {
+      this.#pendingPlans.set(id, resolve);
+      this.#emit({ type: "plan_review", sessionId: this.id, ts: Date.now(), id, plan });
     });
   }
 
@@ -281,9 +362,106 @@ export class AisdkSession implements AgentSession {
     });
   }
 
+  async #runSubagent(name: string, prompt: string): Promise<string> {
+    const subId = randomUUID();
+    this.#emit({ type: "subagent_started", sessionId: this.id, ts: Date.now(), subagentId: subId, name });
+
+    const base = await this.#ensureBaseTools();
+    const src = base as Record<string, unknown>;
+    const subPicked: Record<string, unknown> = {};
+    for (const n of Object.keys(src)) if (n !== "task" && n !== "exit_plan") subPicked[n] = src[n];
+    const effectiveMode: SessionMode = this.#mode === "plan" ? "default" : this.#mode;
+    const subTools = wrapToolSet(subPicked as ToolSet, {
+      mode: () => effectiveMode,
+      ask: (nm, input, id) => this.#requestPermission(`${name} › ${nm}`, input, id),
+    });
+    const subMapper = new AisdkEventMapper(this.id, this.#modelId);
+
+    let report = "";
+    try {
+      const res = streamText({
+        model: this.#model,
+        system: SUBAGENT_SYSTEM,
+        messages: [{ role: "user", content: prompt }],
+        tools: subTools,
+        stopWhen: stepCountIs(MAX_STEPS),
+        abortSignal: this.#abort?.signal ?? AbortSignal.timeout(300_000),
+      });
+      for await (const part of res.fullStream) {
+        if (part.type === "abort") break;
+        for (const ev of subMapper.map(part)) this.#emit({ ...ev, agentId: subId } as HarnessEvent);
+        if (part.type === "text-delta") report += part.text;
+      }
+    } catch (err) {
+      report = report || `sub-agent failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    this.#emit({ type: "subagent_stopped", sessionId: this.id, ts: Date.now(), subagentId: subId });
+    return report.trim() || "(the sub-agent produced no output)";
+  }
+
+  async #doCompact(instructions: string | undefined, trigger: "manual" | "auto"): Promise<void> {
+    if (this.#compacting || this.#messages.length === 0) return;
+    this.#compacting = true;
+    try {
+      const before = estimateTokens(this.#messages);
+      const summary = await this.#summarize(instructions);
+      if (!summary) return;
+      const rebuilt: ModelMessage[] = [{ role: "user", content: COMPACT_PREAMBLE + summary }];
+      this.#messages.length = 0;
+      this.#messages.push(...rebuilt);
+      this.#store?.replaceFrom(this.id, 0, rebuilt);
+      this.#emit({
+        type: "compact",
+        sessionId: this.id,
+        ts: Date.now(),
+        trigger,
+        before,
+        after: estimateTokens(rebuilt),
+        summary,
+      });
+    } finally {
+      this.#compacting = false;
+    }
+  }
+
+  async #summarize(instructions: string | undefined): Promise<string | null> {
+    const ask =
+      instructions?.trim() ||
+      "Preserve the goal, the decisions made, the files touched, and anything still open.";
+    let text = "";
+    try {
+      const res = streamText({
+        model: this.#model,
+        ...(this.#system ? { system: this.#system } : {}),
+        messages: [
+          ...this.#messages,
+          {
+            role: "user",
+            content: `Summarise this conversation so work can continue with the summary standing in for the full history. ${ask} Respond with only the summary.`,
+          },
+        ],
+        abortSignal: AbortSignal.timeout(60_000),
+      });
+      for await (const part of res.fullStream) if (part.type === "text-delta") text += part.text;
+    } catch {
+      return null;
+    }
+    return text.trim() || null;
+  }
+
   async #runTurn(): Promise<void> {
     if (this.#closing) return;
-    const tools = await this.#ensureTools();
+
+    if (
+      !this.#oneShot &&
+      this.#snap.contextLimit > 0 &&
+      estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION
+    ) {
+      await this.#doCompact(undefined, "auto");
+    }
+
+    const tools = await this.#turnToolSet();
     if (this.#closing) return;
 
     const abort = new AbortController();
@@ -310,14 +488,37 @@ export class AisdkSession implements AgentSession {
 
     this.#abort = null;
 
-    if (!aborted && !errored) {
-      this.#snap.turns += 1;
-      this.#snap.status = "idle";
-      this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
-    } else {
+    if (aborted || errored) {
       this.#snap.status = aborted ? "interrupted" : "error";
+      if (this.#oneShot) this.#outbox.close();
+      return;
     }
 
+    // A plan was approved this turn → chain straight into implementation.
+    const impl = this.#implementAfterTurn;
+    this.#implementAfterTurn = null;
+    if (impl) {
+      this.#mode = "acceptEdits";
+      this.#snap.mode = "acceptEdits";
+      if (impl.fresh) {
+        await this.#doCompact(
+          "Keep the approved plan and the original goal verbatim; drop the exploration transcript.",
+          "auto",
+        );
+      }
+      const msg: ModelMessage = {
+        role: "user",
+        content: `The plan is approved. Implement it now:\n\n${impl.plan}`,
+      };
+      this.#messages.push(msg);
+      this.#store?.append(this.id, [msg]);
+      this.#turn = this.#runTurn();
+      return;
+    }
+
+    this.#snap.turns += 1;
+    this.#snap.status = "idle";
+    this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
     if (this.#oneShot) this.#outbox.close();
   }
 }

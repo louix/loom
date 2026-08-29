@@ -48,8 +48,8 @@ export class AisdkProvider implements AgentProvider {
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
-      subagents: false, // M10d
-      compaction: false, // Loom rebuilds history (M10d), not the provider
+      subagents: true, // the `task` tool spawns a depth-1 sub-agent
+      compaction: false, // Loom summarises + rebuilds history; not the provider's own /compact
       oneShot: true,
       partialTokens: true,
       permissionModes: ["default", "plan", "acceptEdits", "auto"],

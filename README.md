@@ -8,9 +8,10 @@ the Vercel AI SDK.
 
 > Codename "Loom" — rename freely. The design is whatever's written here and in
 > `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-9**
-> plus **milestone 10a–c** (aisdk provider: streaming, usage/cost, cancel,
-> resume, multi-step tool use through the permission gate, and a first-party
-> bash/edit/grep suite; plan mode and compaction land in 10d).
+> plus **milestone 10a–d** (aisdk provider: streaming, usage/cost, cancel,
+> resume, multi-step tool use through the permission gate, a first-party
+> bash/edit/grep suite, plan mode, Loom-side compaction, and `task` sub-agents;
+> the provider/model-switching UX is 10e).
 
 ## Status — milestones 1-9
 
@@ -142,7 +143,11 @@ sessions use. Loom persists the transcript itself in `provider_messages`.
   calls), `edit` (exact then whitespace-insensitive string replacement), and
   `grep` (ripgrep) tools, mounted alongside the MCP + `loom` tools and gated the
   same way.
-- **10d** — plan mode, Loom-side compaction, and sub-agents.
+- **10d** — `plan` mode withholds the mutating tools and offers `exit_plan`;
+  approving a plan flips the session to `acceptEdits` and implements it.
+  Compaction is Loom's own: a summariser rebuilds the history to one message,
+  on demand (`c`) or automatically near the context limit. A `task` tool
+  delegates a scoped sub-task to a sub-agent whose steps nest in the log.
 
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
@@ -271,7 +276,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 198 cases
+npm test             # node:test — 203 cases
 ```
 
 ### Layout
