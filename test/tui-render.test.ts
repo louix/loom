@@ -481,7 +481,11 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
 
     stdin.feed("\r"); // pick the highlighted provider (claude — first row)
     await delay(120);
-    // claude has no model list → straight to the new prompt
+    // the model step always shows; claude has no list → an empty-state note
+    assert.match(stdout.last, /MODEL/);
+    assert.match(stdout.last, /claude uses its configured model/i);
+    stdin.feed("\r"); // enter continues to the prompt with no explicit model
+    await delay(120);
     assert.match(stdout.last, /new/i);
 
     stdin.feed(ESC);
@@ -500,6 +504,37 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     stdin.feed("\r");
     await delay(120);
     assert.match(stdout.last, /new session/i);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("N model step shows an empty state when a provider has no models", async () => {
+  const { connect, cleanup } = await harness({
+    config: `
+[providers.oai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+`,
+  });
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(220);
+    stdin.feed("N");
+    await delay(120);
+    stdin.feed("oai");
+    await delay(100);
+    stdin.feed("\r"); // pick oai
+    await delay(140);
+    assert.match(stdout.last, /MODEL/);
+    assert.match(stdout.last, /no models detected for "oai"/i);
+    stdin.feed("\r"); // enter continues anyway
+    await delay(120);
+    assert.match(stdout.last, /new/i);
   } finally {
     app.unmount();
     await client.close();

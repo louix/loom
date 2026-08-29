@@ -118,6 +118,8 @@ export interface PickerState {
   kind: "provider" | "model" | "find" | "undo";
   title: string;
   items: PickItem[];
+  /** Shown when `items` is empty (e.g. no models detected for a provider). */
+  emptyText?: string;
   /** Live filter text. */
   filter: string;
   /** Highlight into the *filtered* list. */
@@ -130,6 +132,7 @@ export function makePicker(init: {
   kind: PickerState["kind"];
   title: string;
   items: PickItem[];
+  emptyText?: string;
   ctx?: PickerState["ctx"];
 }): PickerState {
   return {
@@ -138,6 +141,7 @@ export function makePicker(init: {
     items: init.items,
     filter: "",
     index: 0,
+    ...(init.emptyText ? { emptyText: init.emptyText } : {}),
     ...(init.ctx ? { ctx: init.ctx } : {}),
   };
 }
@@ -848,6 +852,12 @@ export function providerPickItems(s: TuiState): PickItem[] {
 
 export function modelPickItems(s: TuiState, providerId: string): PickItem[] {
   return (providerInfo(s, providerId)?.models ?? []).map((m) => ({ id: m, label: m }));
+}
+
+/** Message for an empty model picker — why there's nothing to pick. */
+export function modelPickEmptyText(providerId: string): string {
+  if (providerId === "claude") return "claude uses its configured model — enter to continue";
+  return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 }
 
 /** Sessions as find targets — title + this session's log text folded into the match. */

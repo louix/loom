@@ -42,6 +42,7 @@ import {
   initialState,
   makePicker,
   makePrompt,
+  modelPickEmptyText,
   modelPickItems,
   pendingFor,
   pickerCurrent,
@@ -390,31 +391,48 @@ export function App({
     [state, client, note, perform, quitTui],
   );
 
+  /** Provider chosen → always show a model step (empty state and all). */
+  const openModelStep = useCallback(
+    (providerId: string, label: string) =>
+      dispatch({
+        t: "openPicker",
+        picker: makePicker({
+          kind: "model",
+          title: `model · ${label}`,
+          items: modelPickItems(state, providerId),
+          emptyText: modelPickEmptyText(providerId),
+          ctx: { provider: providerId },
+        }),
+      }),
+    [state],
+  );
+
   /** Resolve the open picker's highlighted item by its kind. */
   const choosePicked = useCallback(() => {
     const p = state.picker;
     if (!p || overlayActed.current === p) return;
     overlayActed.current = p;
     const cur = pickerCurrent(p);
-    if (!cur) return void dispatch({ t: "closePicker" });
 
-    if (p.kind === "provider") {
-      const models = modelPickItems(state, cur.id);
-      if (models.length > 0) {
+    // Empty model step: enter continues to the prompt with just the provider
+    // (the daemon falls back to that provider's default model).
+    if (!cur) {
+      if (p.kind === "model" && !p.ctx?.liveSessionId) {
         return void dispatch({
-          t: "openPicker",
-          picker: makePicker({
-            kind: "model",
-            title: `model · ${cur.label}`,
-            items: models,
-            ctx: { provider: cur.id },
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "new",
+            sessionId: null,
+            label: "new session",
+            ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
           }),
         });
       }
-      return void dispatch({
-        t: "openPrompt",
-        prompt: makePrompt({ kind: "new", sessionId: null, label: `new · ${cur.label}`, provider: cur.id }),
-      });
+      return void dispatch({ t: "closePicker" });
+    }
+
+    if (p.kind === "provider") {
+      return void openModelStep(cur.id, cur.label);
     }
 
     if (p.kind === "model") {
@@ -458,9 +476,11 @@ export function App({
     // find
     dispatch({ t: "select", id: cur.id });
     dispatch({ t: "closePicker" });
-  }, [state, client]);
+  }, [state, client, openModelStep]);
 
-  /** Open the provider → model → prompt flow for a new session (the `N` key). */
+  /** Open the provider → model → prompt flow for a new session (the `N` key).
+   *  Provider step is skipped when there's only one; the model step always
+   *  shows (with an empty state when nothing was detected). */
   const startNewFlow = useCallback(() => {
     const provs = state.providers;
     if (provs.length > 1) {
@@ -470,15 +490,8 @@ export function App({
       });
     }
     const only = provs[0]?.id ?? "claude";
-    const models = modelPickItems(state, only);
-    if (models.length > 0) {
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({ kind: "model", title: "model", items: models, ctx: { provider: only } }),
-      });
-    }
-    dispatch({ t: "openPrompt", prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }) });
-  }, [state]);
+    openModelStep(only, provs[0]?.tag || only);
+  }, [state, openModelStep]);
 
   /** Open a live model switcher for the selected session (the `M` key). */
   const switchModel = useCallback(() => {

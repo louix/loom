@@ -15,6 +15,7 @@ import {
   initialState,
   makePicker,
   makePrompt,
+  modelPickEmptyText,
   modelPickItems,
   pendingFor,
   pickerCurrent,
@@ -716,6 +717,10 @@ test("providers action populates state and the derived helpers", () => {
   assert.equal(providerColorOf(s, "claude"), "");
   assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
   assert.equal(providerPickItems(s).length, 3);
+  // claude has no model list → empty picker text, but a distinct message
+  assert.deepEqual(modelPickItems(s, "claude"), []);
+  assert.match(modelPickEmptyText("claude"), /configured model/);
+  assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
 });
 
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {

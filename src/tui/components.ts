@@ -865,7 +865,13 @@ export function Picker({
     ),
     h(Box, { height: 1 }),
     ...(shown.length === 0
-      ? [h(Text, { key: "none", color: C.faint }, "no matches")]
+      ? [
+          h(
+            Text,
+            { key: "none", color: C.faint, wrap: "wrap" },
+            picker.items.length === 0 ? (picker.emptyText ?? "nothing to pick") : "no matches",
+          ),
+        ]
       : shown.map((it, i) => {
           const on = start + i === picker.index;
           return h(
@@ -880,7 +886,13 @@ export function Picker({
       ? h(Text, { color: C.faint }, `  … ${vis.length - shown.length} more`)
       : null,
     h(Box, { height: 1 }),
-    h(Text, { color: C.faint }, "type to filter · ↑↓ move · enter pick · esc cancel"),
+    h(
+      Text,
+      { color: C.faint },
+      picker.items.length === 0
+        ? "enter continue · esc cancel"
+        : "type to filter · ↑↓ move · enter pick · esc cancel",
+    ),
   );
 }
 
