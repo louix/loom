@@ -84,3 +84,9 @@ webhook = ""                        # best-effort POST on awaiting_input / error
 [budget]
 default_max_cost_usd = 5.0
 on_breach            = "soft"       # or "hard"
+
+[search]                            # web_search tool for aisdk sessions (Claude
+backend     = "none"               # has its own). "none" | "brave" | "tavily".
+api_key_env = ""                   # env var with the API key; tool is off if unset
+# api_base  = ""                   # override the backend URL (proxy / self-host)
+max_results = 5

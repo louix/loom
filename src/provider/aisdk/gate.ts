@@ -15,6 +15,7 @@ import type { SessionMode } from "../types.ts";
 const READONLY_EXACT = new Set([
   "ask_user", // surfaces its own question prompt
   "exit_plan", // surfaces its own plan-review prompt
+  "web_search",
   "list_allowed_directories",
   "directory_tree",
   "list_directory_with_sizes",

@@ -194,3 +194,23 @@ model    = "m"
 `);
   assert.equal(c.providers.aisdk["weird"]?.sdk, "openai");
 });
+
+// --- [search] ---------------------------------------------------------------
+
+test("[search] parses a backend + key env + base; unknown backend → none", () => {
+  const c = cfg(`
+[search]
+backend     = "brave"
+api_key_env = "BRAVE_API_KEY"
+api_base    = "http://localhost:7777"
+max_results = 8
+`);
+  assert.equal(c.search.backend, "brave");
+  assert.equal(c.search.apiKeyEnv, "BRAVE_API_KEY");
+  assert.equal(c.search.apiBase, "http://localhost:7777");
+  assert.equal(c.search.maxResults, 8);
+
+  assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
+  assert.equal(cfg(``).search.backend, "none");
+  assert.equal(cfg(``).search.maxResults, 5);
+});

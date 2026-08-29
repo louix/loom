@@ -9,17 +9,19 @@ import type { ToolSet } from "ai";
 import { BashShell, bashTool } from "./bash.ts";
 import { editTool } from "./edit.ts";
 import { grepTool } from "./grep.ts";
+import { searchTool, type SearchConfig } from "./search.ts";
 
 export class BuiltinTools {
   readonly #shell: BashShell;
   readonly tools: ToolSet;
 
-  constructor(cwd: string) {
+  constructor(cwd: string, search?: SearchConfig) {
     this.#shell = new BashShell(cwd);
     this.tools = {
       bash: bashTool(this.#shell),
       edit: editTool(cwd),
       grep: grepTool(cwd),
+      ...(search ? { web_search: searchTool(search) } : {}),
     } as ToolSet;
   }
 

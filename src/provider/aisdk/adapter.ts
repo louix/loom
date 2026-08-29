@@ -16,6 +16,7 @@ import type {
 } from "../types.ts";
 import { AisdkSession } from "./session.ts";
 import type { ProviderMessageStore } from "./store.ts";
+import type { SearchConfig } from "./tools/search.ts";
 
 /**
  * Build a `(modelId) => LanguageModel` for a profile, dynamically importing
@@ -51,6 +52,8 @@ export interface AisdkProviderOptions {
   models: string[];
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
   makeModel: (id: string) => LanguageModel;
+  /** Resolved `web_search` config, when a backend + key are set. */
+  search?: SearchConfig;
 }
 
 export class AisdkProvider implements AgentProvider {
@@ -60,12 +63,14 @@ export class AisdkProvider implements AgentProvider {
   readonly #defaultModel: string;
   readonly #store: ProviderMessageStore;
   readonly #makeModel: (id: string) => LanguageModel;
+  readonly #search: SearchConfig | undefined;
 
   constructor(opts: AisdkProviderOptions, store: ProviderMessageStore) {
     this.id = opts.id;
     this.#defaultModel = opts.model;
     this.#store = store;
     this.#makeModel = opts.makeModel;
+    this.#search = opts.search;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
@@ -112,6 +117,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: opts.cwd,
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
+      ...(this.#search ? { search: this.#search } : {}),
       store: this.#store,
       oneShot: false,
     });
@@ -131,6 +137,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: ref.cwd,
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
+      ...(this.#search ? { search: this.#search } : {}),
       store: this.#store,
       oneShot: false,
     });

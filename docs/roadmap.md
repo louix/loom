@@ -378,7 +378,16 @@ is left as-is.
 **Hard fork — fork-tree F2 (post-M10).** `session.fork` (aisdk): a new session
 row (`parent_id` + `fork_turn`), a worktree off the parent's branch, the
 transcript copied over. `⌃f` in the TUI; the fork shows a `⑂` in the fleet and
-`forked from <id> @ turn N` in Detail. 225 tests.
+`forked from <id> @ turn N` in Detail.
+
+**`web_search` tool (post-M10).** aisdk sessions get a first-party `web_search`
+tool alongside `bash` / `edit` / `grep`, mounted only when `[search]` names a
+backend (`brave` / `tavily`) whose `api_key_env` var is set — off by default,
+and Claude sessions keep their own. `runSearch` normalises Brave
+(`GET /web/search`) and Tavily (`POST /search`) to a numbered
+title / url / snippet list; the tool is readonly (never prompts). Resolved once
+in `ProviderRegistry.#resolveSearch()` and handed to every aisdk provider.
+231 tests.
 
 ---
 

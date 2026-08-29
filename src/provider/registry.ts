@@ -12,6 +12,7 @@
 import type { LoomConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
 import type { AgentProvider } from "./types.ts";
+import type { SearchConfig } from "./aisdk/tools/search.ts";
 
 export class ProviderRegistry {
   readonly #config: LoomConfig;
@@ -71,10 +72,20 @@ export class ProviderRegistry {
     ]);
     const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
     const makeModel = await resolveModelFactory(profile.sdk, { id, baseUrl: profile.baseUrl, apiKey });
+    const search = this.#resolveSearch();
     return new AisdkProvider(
-      { id, model: profile.model, models: profile.models, makeModel },
+      { id, model: profile.model, models: profile.models, makeModel, ...(search ? { search } : {}) },
       new ProviderMessageStore(this.#db),
     );
+  }
+
+  /** `[search]` → a resolved `web_search` config, or undefined when off / keyless. */
+  #resolveSearch(): SearchConfig | undefined {
+    const s = this.#config.search;
+    if (s.backend === "none") return undefined;
+    const apiKey = s.apiKeyEnv ? (process.env[s.apiKeyEnv] ?? "") : "";
+    if (!apiKey) return undefined;
+    return { backend: s.backend, apiKey, apiBase: s.apiBase, maxResults: s.maxResults };
   }
 
   /** Providers that have actually been constructed (for shutdown / status). */

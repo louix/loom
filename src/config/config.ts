@@ -86,6 +86,18 @@ export interface LoomConfig {
     defaultMaxCostUsd: number;
     onBreach: "soft" | "hard";
   };
+  /**
+   * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
+   * backend is chosen and its key env var is set.
+   */
+  search: {
+    backend: "none" | "brave" | "tavily";
+    /** Env var holding the API key. */
+    apiKeyEnv: string;
+    /** Override the backend's base URL (a proxy, or a test stub). */
+    apiBase: string;
+    maxResults: number;
+  };
 }
 
 export const DEFAULT_CONFIG: LoomConfig = {
@@ -120,6 +132,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
     defaultMaxCostUsd: 5.0,
     onBreach: "soft",
   },
+  search: { backend: "none", apiKeyEnv: "", apiBase: "", maxResults: 5 },
 };
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -187,6 +200,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);
   const budget = asRecord(r["budget"]);
+  const search = asRecord(r["search"]);
 
   const runIsolation = r["run_isolation"] === "subprocess" ? "subprocess" : "in-process";
 
@@ -249,6 +263,12 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     budget: {
       defaultMaxCostUsd: num(budget["default_max_cost_usd"], d.budget.defaultMaxCostUsd),
       onBreach: budget["on_breach"] === "hard" ? "hard" : "soft",
+    },
+    search: {
+      backend: search["backend"] === "brave" || search["backend"] === "tavily" ? search["backend"] : "none",
+      apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),
+      apiBase: str(search["api_base"], d.search.apiBase),
+      maxResults: num(search["max_results"], d.search.maxResults),
     },
   };
 }

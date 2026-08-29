@@ -29,6 +29,7 @@ import { runTurn } from "./loop.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
 import { BuiltinTools } from "./tools/builtins.ts";
+import type { SearchConfig } from "./tools/search.ts";
 import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
 import { contextLimitFor, estimateTokens } from "./tokens.ts";
@@ -60,6 +61,8 @@ export interface AisdkSessionOptions {
   mcpHandles: McpServerHandle[];
   /** Mount the `loom` tools + first-party Bash/Edit/Grep + plan/task tools. */
   loomServer: boolean;
+  /** Resolved `web_search` config, when configured. */
+  search?: SearchConfig;
   /** null for a throwaway one-shot. */
   store: ProviderMessageStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
@@ -76,6 +79,7 @@ export class AisdkSession implements AgentSession {
   readonly #system: string | undefined;
   #mode: SessionMode;
   readonly #cwd: string;
+  readonly #search: SearchConfig | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
   readonly #store: ProviderMessageStore | null;
@@ -107,6 +111,7 @@ export class AisdkSession implements AgentSession {
     this.#system = opts.system;
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
+    this.#search = opts.search;
     this.#mcpHandles = opts.mcpHandles;
     this.#loomServer = opts.loomServer;
     this.#store = opts.store;
@@ -261,7 +266,7 @@ export class AisdkSession implements AgentSession {
         }
         if (this.#loomServer) {
           Object.assign(base, buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }));
-          this.#builtins = new BuiltinTools(this.#cwd);
+          this.#builtins = new BuiltinTools(this.#cwd, this.#search);
           Object.assign(base, this.#builtins.tools);
           Object.assign(base, this.#planAndTaskTools());
         }
