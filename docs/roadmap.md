@@ -400,6 +400,21 @@ The daemon emits a `user_message` event (`injected: true`) so every client sees
 it land; the TUI drops its local echo on that path. `deriveStatus` unchanged —
 a send during `running` / `awaiting_input` leaves the status alone. 234 tests.
 
+**Fresh-eyes review pass (post-M10).** Five parallel review agents over the whole
+codebase; ~50 findings triaged into 11 commits (`23aa4bf`..`c62a376`). Highlights:
+a `bash` spawn failure crashed the daemon (no `error` listener); the permission
+gate classed `search_and_replace` / `get_or_create` as read-only so the model
+could mutate the fs in plan mode; `#turnRunning` could stick true and wedge an
+aisdk session; the send/echo path had a TOCTOU that could drop the sender's own
+message; undo after a compaction restored a garbage transcript; a late
+permission answer un-interrupted a stopped session; a daemon restart's seq /
+version reset was invisible to a reconnecting client (added a hello `epoch`);
+`session.fork` / `session.create` leaked worktrees on failure; the TUI editor
+overdrew the body on a >8-line paste and overlay keys double-fired on a batched
+keypress. Path confinement for the aisdk `edit`/`bash`/`grep` tools in
+acceptEdits/auto mode is a known gap, parked by choice — see the note below.
+250 tests.
+
 ---
 
 ## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)
@@ -427,3 +442,20 @@ refreshes, prefix invalidation, server-side eviction.
 
 Fork-tree F3 (Claude rewind / fork) is paused on the backlog; mid-turn message
 injection shipped post-M10 (see above).
+
+## Known gaps (parked)
+
+- **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the
+  first-party `edit` / `bash` / `grep` tools run with no `cwd` sandbox — the
+  model can read or overwrite files outside the session's worktree (`~/.bashrc`,
+  etc). The permission gate is the only control and it's name-based. Deferred by
+  choice (2026-08-29); revisit with a real confinement design (reject / prompt
+  on out-of-tree paths, or a sandbox) rather than a piecemeal check.
+- **Provider credentials are read once** at provider-construction time
+  (`registry.#build` / `resolveModelFactory`), so a rotated key needs a daemon
+  restart. Consistent across all three read sites; low priority.
+- **The `pre-push` hook** installed into session worktrees is `#!/bin/sh`; on a
+  host without a POSIX `sh` (native Windows git, no Git-Bash) it can't run and
+  the "push is blocked in session worktrees" guarantee silently doesn't hold.
+- **`map.ts` treats every stream `error` part as fatal** — a transient/retryable
+  provider error tears the aisdk session down instead of surfacing a `notice`.
