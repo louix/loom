@@ -47,6 +47,11 @@ export class ProviderRegistry {
       this.#live.push(p);
       return p;
     });
+    // Don't cache a rejected build forever — a later `get()` (after the env var
+    // is set, the optional SDK is installed, …) should be able to retry.
+    built.catch(() => {
+      if (this.#cache.get(id) === built) this.#cache.delete(id);
+    });
     this.#cache.set(id, built);
     return built;
   }

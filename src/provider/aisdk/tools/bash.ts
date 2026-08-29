@@ -21,6 +21,8 @@ export class BashShell {
   #buf = "";
   #wake: (() => void) | null = null;
   #busy = false;
+  /** Set when the shell can't be spawned (bash missing, ENOMEM, sandbox). */
+  #spawnError: Error | null = null;
 
   constructor(cwd: string) {
     this.#cwd = cwd;
@@ -29,6 +31,7 @@ export class BashShell {
   #ensure(): ChildProcess {
     const c = this.#child;
     if (c && c.exitCode === null && !c.killed) return c;
+    this.#spawnError = null;
     const child = spawn("bash", ["--noprofile", "--norc"], {
       cwd: this.#cwd,
       env: { ...process.env },
@@ -42,6 +45,13 @@ export class BashShell {
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
+    // Without this, a spawn failure throws as an unhandled 'error' event and
+    // takes the whole daemon down. `run()` surfaces `#spawnError` instead.
+    child.on("error", (err) => {
+      if (this.#child === child) this.#child = null;
+      this.#spawnError = err instanceof Error ? err : new Error(String(err));
+      this.#wake?.();
+    });
     child.on("exit", () => {
       if (this.#child === child) this.#child = null;
     });
@@ -51,6 +61,28 @@ export class BashShell {
     return child;
   }
 
+  /**
+   * `bash -n` on the command alone. Catches an unbalanced quote / unterminated
+   * heredoc *before* it reaches the persistent shell, where it would swallow
+   * the sentinel `printf` and wedge the shell for the full timeout.
+   */
+  #syntaxError(command: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      let stderr = "";
+      const c = spawn("bash", ["--noprofile", "--norc", "-n", "-c", command], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      c.stderr?.setEncoding("utf8");
+      c.stderr?.on("data", (d: string) => (stderr += d));
+      c.on("error", () => resolve(null)); // can't check → let the real run surface it
+      c.on("close", (code) => resolve(code === 0 ? null : (stderr.trim() || "bash: syntax error")));
+      setTimeout(() => {
+        c.kill("SIGKILL");
+        resolve(null);
+      }, 5_000).unref();
+    });
+  }
+
   async run(
     command: string,
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
@@ -58,14 +90,19 @@ export class BashShell {
     if (this.#busy) throw new Error("the bash shell is busy with another command");
     this.#busy = true;
     try {
+      const syntax = await this.#syntaxError(command);
+      if (syntax) {
+        return { output: syntax, exitCode: 2, timedOut: false };
+      }
       const child = this.#ensure();
       const marker = `__LOOM_${randomBytes(12).toString("hex")}__`;
       const re = new RegExp(`\\n?${marker} (-?\\d+)\\n`);
       this.#buf = "";
       // Group command (not a subshell) so `cd` / `export` persist; the `}` on
-      // its own line closes it without a stray `;`. Then print the sentinel
-      // with the command's exit status.
-      child.stdin?.write(`{\n${command}\n}\nprintf '\\n%s %d\\n' '${marker}' "$?"\n`);
+      // its own line closes it without a stray `;`. Redirect the group's stdin
+      // from /dev/null so a `read` in the command gets EOF instead of eating
+      // the sentinel `printf` that follows. Then print the sentinel + exit code.
+      child.stdin?.write(`{\n${command}\n} </dev/null\nprintf '\\n%s %d\\n' '${marker}' "$?"\n`);
 
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -74,6 +111,22 @@ export class BashShell {
           const output = this.#buf.slice(0, m.index);
           this.#buf = "";
           return { output: clamp(output), exitCode: Number(m[1]), timedOut: false };
+        }
+        if (this.#spawnError) {
+          const msg = this.#spawnError.message;
+          this.#spawnError = null;
+          return { output: `bash: ${msg}`, exitCode: null, timedOut: false };
+        }
+        if (this.#child !== child || child.exitCode !== null || child.killed) {
+          // The shell died (the command ran `exit`, `kill $$`, crashed it…).
+          const partial = this.#buf;
+          this.#buf = "";
+          this.#child = null;
+          return {
+            output: `${clamp(partial)}\n[the shell exited — it was reset, so cwd and env are back to defaults]`,
+            exitCode: null,
+            timedOut: false,
+          };
         }
         if (Date.now() >= deadline) {
           const partial = this.#buf;

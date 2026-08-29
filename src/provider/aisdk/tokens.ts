@@ -18,18 +18,18 @@ export const MODEL_CONTEXT: Array<[prefix: string, limit: number]> = [
   ["gpt-oss", 128_000],
   ["o4", 200_000],
   ["o3", 200_000],
+  ["claude", 200_000], // Sonnet / Opus / Haiku, default (non-beta) window
   ["deepseek", 128_000],
   ["glm-4.6", 200_000],
   ["glm-5", 200_000],
   ["glm", 128_000],
-  ["z-ai/glm", 200_000],
   ["qwen", 256_000],
   ["llama", 128_000],
   ["kimi", 256_000],
   ["moonshot", 256_000],
   ["minimax", 1_000_000],
   ["mistral", 128_000],
-  ["gemini-2", 1_000_000],
+  ["gemini", 1_000_000], // 1.5 / 2.0 / 2.5 are all ≥ 1M
 ];
 
 /**
@@ -57,7 +57,16 @@ export function contextLimitFor(model: string | null | undefined): number {
 export function estimateTokens(messages: ModelMessage[]): number {
   let chars = 0;
   for (const m of messages) {
-    chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+    const c = m?.content;
+    if (typeof c === "string") {
+      chars += c.length;
+    } else if (c != null) {
+      try {
+        chars += JSON.stringify(c).length;
+      } catch {
+        chars += 0; // circular / unserializable — don't crash the turn over an estimate
+      }
+    }
   }
   return Math.ceil(chars / 4);
 }

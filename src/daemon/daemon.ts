@@ -398,11 +398,11 @@ export class Daemon {
     if (!snap || snap.turns !== 1 || !snap.title) return;
     if (this.#registry.store.titleLocked(id)) return;
     if (!this.#providers.has(snap.provider)) return;
-    const provider = await this.#providers.get(snap.provider);
-    if (!provider.capabilities.oneShot) return;
 
     this.#titling.add(id);
     try {
+      const provider = await this.#providers.get(snap.provider);
+      if (!provider.capabilities.oneShot) return;
       const title = await generateTitle({
         provider,
         prompt: snap.title,

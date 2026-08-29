@@ -30,6 +30,11 @@ export function applyEdit(
   if (oldString === newString) {
     return { ok: false, message: "old_string and new_string are identical", replacements: 0 };
   }
+  if (oldString === "") {
+    // The fuzzy tiers can "match" an empty needle against the phantom trailing
+    // line of a newline-terminated file and silently append. Require a target.
+    return { ok: false, message: "old_string must not be empty", replacements: 0 };
+  }
 
   let content: string;
   try {

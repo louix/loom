@@ -65,6 +65,73 @@ test("BashShell times out a slow command and resets the shell", async () => {
   }
 });
 
+test("BashShell: an unbalanced quote is caught by the syntax pre-check, not by wedging", async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const sh = new BashShell(dir);
+    const started = Date.now();
+    const r = await sh.run('echo "oops', 120_000); // would block for the full timeout without the pre-check
+    assert.equal(r.exitCode, 2);
+    assert.ok(Date.now() - started < 5_000, "returned fast instead of blocking");
+    // the persistent shell is untouched
+    await sh.run("export KEEP=1");
+    const after = await sh.run("echo [${KEEP}]");
+    assert.equal(after.output.trim(), "[1]");
+    sh.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("BashShell: a command that exits the shell doesn't block; the shell is reset", async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const sh = new BashShell(dir);
+    await sh.run("export KEEP=1");
+    const started = Date.now();
+    const r = await sh.run("exit", 120_000);
+    assert.ok(Date.now() - started < 5_000, "detected the shell exit instead of timing out");
+    assert.equal(r.exitCode, null);
+    const after = await sh.run("echo [${KEEP}]");
+    assert.equal(after.output.trim(), "[]"); // fresh shell
+    sh.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("BashShell: a `read` in the command gets EOF, not the sentinel", async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const sh = new BashShell(dir);
+    const r = await sh.run("read -r x; echo \"got:[$x]\"", 3_000);
+    assert.equal(r.timedOut, false);
+    assert.equal(r.output.trim(), "got:[]");
+    // the next command still frames cleanly
+    const next = await sh.run("echo ok");
+    assert.equal(next.output.trim(), "ok");
+    sh.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("BashShell: an unspawnable shell surfaces an error instead of crashing", async () => {
+  const { dir, cleanup } = tmp();
+  const savedPath = process.env["PATH"];
+  try {
+    process.env["PATH"] = "/nonexistent-loom-test";
+    const sh = new BashShell(dir);
+    const r = await sh.run("echo hi", 2_000);
+    assert.equal(r.exitCode, null);
+    assert.match(r.output, /ENOENT|not found|spawn/i);
+    sh.close();
+  } finally {
+    process.env["PATH"] = savedPath;
+    cleanup();
+  }
+});
+
 test("BashShell clamps very large output", async () => {
   const { dir, cleanup } = tmp();
   try {
@@ -136,6 +203,20 @@ test("applyEdit: dedented matching when indentation differs", () => {
     assert.equal(r.ok, true);
     assert.equal(r.tier, "dedented");
     assert.match(readFileSync(f, "utf8"), /return 42;/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("applyEdit: an empty old_string is rejected, not appended", () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const f = join(dir, "f.txt");
+    writeFileSync(f, "line1\nline2\n");
+    const r = applyEdit(f, "", "INSERTED", false);
+    assert.equal(r.ok, false);
+    assert.match(r.message ?? "", /must not be empty/);
+    assert.equal(readFileSync(f, "utf8"), "line1\nline2\n");
   } finally {
     cleanup();
   }

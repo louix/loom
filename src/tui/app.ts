@@ -138,7 +138,7 @@ export function App({
     [],
   );
   const quitTui = useCallback(() => {
-    void client.close();
+    client.close().catch(() => {});
     exit();
   }, [client, exit]);
   const echoLine = useCallback(

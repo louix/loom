@@ -232,9 +232,23 @@ class ClaudeSession implements AgentSession {
         });
       }
     } finally {
+      // The CLI process ended (crash / transport error) without `close()` —
+      // resolve any outstanding gate/ask_user/plan promise so the MCP tool's
+      // `execute` doesn't hang forever.
+      this.#rejectPending("the session ended before this was answered");
       this.#outbox.close();
       this.#inbox.close();
     }
+  }
+
+  /** Resolve every outstanding permission / question / plan promise. */
+  #rejectPending(reason: string): void {
+    for (const [, resolve] of this.#pendingPerms) resolve({ behavior: "deny", message: reason });
+    this.#pendingPerms.clear();
+    for (const [, resolve] of this.#pendingQuestions) resolve(`(${reason})`);
+    this.#pendingQuestions.clear();
+    for (const [, resolve] of this.#pendingPlans) resolve({ behavior: "deny", message: reason });
+    this.#pendingPlans.clear();
   }
 
   events(): AsyncIterable<HarnessEvent> {
@@ -359,12 +373,7 @@ class ClaudeSession implements AgentSession {
 
   async close(): Promise<void> {
     this.#closing = true;
-    for (const [, resolve] of this.#pendingPerms) resolve({ behavior: "deny", message: "session closed" });
-    this.#pendingPerms.clear();
-    for (const [, resolve] of this.#pendingQuestions) resolve("(the session was closed before the user answered)");
-    this.#pendingQuestions.clear();
-    for (const [, resolve] of this.#pendingPlans) resolve({ behavior: "deny", message: "session closed" });
-    this.#pendingPlans.clear();
+    this.#rejectPending("the session was closed before this was answered");
     try {
       this.#query?.close();
     } catch {

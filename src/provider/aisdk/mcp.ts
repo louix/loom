@@ -33,8 +33,9 @@ export class McpHub {
     const tools: ToolSet = {};
 
     for (const h of handles) {
+      let client: experimental_MCPClient | undefined;
       try {
-        const client = await experimental_createMCPClient({
+        client = await experimental_createMCPClient({
           transport:
             h.spec.transport === "stdio"
               ? new Experimental_StdioMCPTransport({
@@ -57,6 +58,10 @@ export class McpHub {
         clients.push(client);
         log.debug("mcp server connected", { name: h.name, tools: Object.keys(discovered).length });
       } catch (err) {
+        // The transport may already have spawned a child / opened a socket
+        // before `tools()` threw — close it so it isn't orphaned for the
+        // daemon's lifetime (it never made it into `clients`).
+        await client?.close().catch(() => {});
         log.warn("mcp server failed to start; skipping", {
           name: h.name,
           err: err instanceof Error ? err.message : String(err),

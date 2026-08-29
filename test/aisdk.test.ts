@@ -105,11 +105,20 @@ test("contextLimitFor matches on model-id prefix, falls back to 128k", () => {
   assert.equal(contextLimitFor("glm-4.6"), 200_000);
   assert.equal(contextLimitFor("something-unknown"), 128_000);
   assert.equal(contextLimitFor(null), 128_000);
+  // native anthropic / google aisdk backends
+  assert.equal(contextLimitFor("claude-sonnet-5"), 200_000);
+  assert.equal(contextLimitFor("anthropic/claude-3-5-haiku"), 200_000);
+  assert.equal(contextLimitFor("gemini-2.5-pro"), 1_000_000);
+  assert.equal(contextLimitFor("gemini-1.5-pro"), 1_000_000);
 });
 
-test("estimateTokens is chars/4 over message content", () => {
+test("estimateTokens is chars/4 over message content, and shrugs off malformed rows", () => {
   assert.equal(estimateTokens([{ role: "user", content: "12345678" }]), 2);
   assert.equal(estimateTokens([]), 0);
+  // a row with no content / a circular structure must not throw
+  const circular: Record<string, unknown> = {};
+  circular["self"] = circular;
+  assert.equal(estimateTokens([{ role: "user" } as never, { role: "user", content: circular } as never]), 0);
 });
 
 // --- mapper ------------------------------------------------------------------
