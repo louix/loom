@@ -247,6 +247,7 @@ export function Detail({
 
   const gitLine = g
     ? [
+        s.inPlace ? "in-place" : null,
         g.branch ?? s.branch ?? "(detached)",
         `${g.commits} commit${g.commits === 1 ? "" : "s"}`,
         g.aheadOfBase ? `+${g.aheadOfBase}` : null,
@@ -255,7 +256,9 @@ export function Detail({
       ]
         .filter(Boolean)
         .join("  ·  ")
-    : "no worktree";
+    : s.inPlace
+      ? "in-place — repo working dir"
+      : "no worktree";
 
   return h(
     Box,

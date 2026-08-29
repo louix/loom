@@ -363,12 +363,14 @@ export class Daemon {
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };
     }
-    if (out.worktree) {
+    // An in-place session works in the repo root; show that dir's git state.
+    const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
+    if (gitPath) {
       // `withGit` false (the per-usage stream) still carries the last-known
       // facts so the TUI's git line doesn't collapse to "no worktree" mid-turn.
       const git = withGit
-        ? this.#worktrees.facts(out.worktree, out.baseBranch)
-        : this.#worktrees.cachedFacts(out.worktree);
+        ? this.#worktrees.facts(gitPath, out.baseBranch)
+        : this.#worktrees.cachedFacts(gitPath);
       if (git) out = { ...out, git };
     }
     return out;
@@ -654,14 +656,22 @@ export class Daemon {
           ? { maxCostUsd: this.config.budget.defaultMaxCostUsd }
           : null);
 
-      // Each session gets its own worktree + branch off the configured base.
-      let wt;
-      try {
-        wt = this.#worktrees.create(prompt);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError("worktree_error", `could not create worktree: ${message}`);
+      // By default each session gets its own worktree + branch off the
+      // configured base. `[worktree] enabled = false` (or a per-session
+      // `worktree: false`) runs it in the repo working dir instead — no branch
+      // isolation, concurrent sessions can collide, hard-fork unavailable.
+      const wantWorktree =
+        typeof p["worktree"] === "boolean" ? (p["worktree"] as boolean) : this.config.worktree.enabled;
+      let wt: { path: string; branch: string; baseRef: string } | null = null;
+      if (wantWorktree) {
+        try {
+          wt = this.#worktrees.create(prompt);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          throw new RpcError("worktree_error", `could not create worktree: ${message}`);
+        }
       }
+      const cwd = wt ? wt.path : this.repoRoot;
 
       this.#registry.create({
         id,
@@ -670,9 +680,10 @@ export class Daemon {
         mode,
         parentId,
         title: prompt.slice(0, 200),
-        worktree: wt.path,
-        branch: wt.branch,
-        baseBranch: wt.baseRef,
+        worktree: wt ? wt.path : null,
+        branch: wt ? wt.branch : null,
+        baseBranch: wt ? wt.baseRef : this.config.baseBranch,
+        ...(wt ? {} : { inPlace: true }),
         ...(budget ? { budget } : {}),
       });
 
@@ -683,7 +694,7 @@ export class Daemon {
         mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
       const opts: CreateSessionOptions = {
         sessionId: id,
-        cwd: wt.path,
+        cwd,
         prompt,
         mode,
         mcpServers: mcpHandles,
@@ -711,13 +722,16 @@ export class Daemon {
         const message = err instanceof Error ? err.message : String(err);
         // Nothing ran in the worktree — reclaim it now (gc only touches `done`
         // rows, so an `error` row's tree would leak forever). Keep the row as
-        // a record of the failure, with no worktree.
-        try {
-          this.#worktrees.remove(wt.path, { force: true });
-        } catch {
-          /* best effort */
+        // a record of the failure, with no worktree. (An in-place session has
+        // no tree to reclaim.)
+        if (wt) {
+          try {
+            this.#worktrees.remove(wt.path, { force: true });
+          } catch {
+            /* best effort */
+          }
+          this.#registry.setFields(id, { worktree: null });
         }
-        this.#registry.setFields(id, { worktree: null });
         this.#registry.setStatus(id, "error", message.slice(0, 120));
         throw new RpcError("provider_error", `could not start session: ${message}`);
       }
@@ -838,6 +852,9 @@ export class Daemon {
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
       if (!this.#isAisdk(parent.provider)) {
         throw new RpcError("bad_request", "hard fork is aisdk-only for now (Claude support is fork-tree F3)");
+      }
+      if (parent.inPlace) {
+        throw new RpcError("bad_request", "the parent runs in-place (no worktree) — hard fork needs an isolated branch");
       }
       if (!["idle", "interrupted", "done", "error"].includes(parent.status)) {
         // Forking mid-turn copies a transcript whose last message is an

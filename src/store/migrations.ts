@@ -116,4 +116,13 @@ export const MIGRATIONS: string[] = [
   );
   ALTER TABLE sessions ADD COLUMN fork_turn INTEGER;
   `,
+
+  // 8 — a session that runs in the repo working dir instead of its own
+  // worktree (\`[worktree] enabled = false\`, or a per-session override). Its
+  // \`worktree\` column is NULL like a gc'd session's, so this flag is what tells
+  // them apart — the daemon shows repo-root git facts for it and refuses a
+  // hard fork.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN in_place INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

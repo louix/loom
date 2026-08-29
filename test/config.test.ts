@@ -16,6 +16,13 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
   assert.deepEqual(c.providers.aisdk, {});
 });
 
+test("[worktree] enabled defaults to true and parses a false override", () => {
+  assert.equal(cfg("").worktree.enabled, true);
+  assert.equal(cfg("[worktree]\nenabled = false\n").worktree.enabled, false);
+  // a non-boolean is ignored, not coerced
+  assert.equal(cfg('[worktree]\nenabled = "no"\n').worktree.enabled, true);
+});
+
 test("a [providers.<id>] table with adapter='aisdk' becomes a profile", () => {
   const c = cfg(`
 [providers.deepseek]

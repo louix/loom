@@ -812,12 +812,14 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "M", label: "model", act: "model" });
     // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
-    // don't advertise them there.
-    const canFork = session.provider !== "claude";
-    if (canFork && (status === "idle" || status === "interrupted") && session.turns > 1) {
+    // don't advertise them there. Hard fork additionally needs an isolated
+    // branch, which an in-place session doesn't have — undo (conversation-only)
+    // still works there.
+    const isAisdk = session.provider !== "claude";
+    if (isAisdk && (status === "idle" || status === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    if (canFork) local.push({ keys: "⌃f", label: "fork", act: "fork" });
+    if (isAisdk && !session.inPlace) local.push({ keys: "⌃f", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
   }

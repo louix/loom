@@ -475,11 +475,16 @@ Ordered roughly by value / independence. Items 1–2 are in progress.
 - A true percentage bar isn't possible for one streamed completion; elapsed +
   generated-chars is the honest signal.
 
-### 2 · Worktree in-place toggle
-`[worktree] enabled = true|false` + per-session override. Off → sessions share
-the repo working dir (concurrent sessions can clobber; hard-fork / rewind stop
-making sense — same degradation Claude sessions already carry). Unblocks mentor
-mode. This session already runs in-place, so there's a live use case.
+### 2 · Worktree in-place toggle — ✓ shipped
+`[worktree] enabled = true|false` (default true) + a per-session `worktree`
+boolean on `session.create` (`loom run --in-place` / `--worktree`). Off → the
+session runs in the repo working dir: `worktree`/`branch` null, `cwd` = repo
+root, `in_place` column (migration 8) set. No branch isolation, concurrent
+sessions can collide. Hard fork is refused (needs an isolated branch); undo
+(conversation-only) still works. The Detail pane shows the repo's own git
+state with an `in-place` tag; `⌃f` explains why it's unavailable. Unblocks
+mentor mode. Follow-up if wanted: a TUI new-prompt toggle (no free key under
+the current grammar, so left for the CLI + config for now).
 
 ### 3 · Mentor / pair mode
 A new `SessionMode`. Reuses `gate.ts` `isReadonly` to deny mutating tools

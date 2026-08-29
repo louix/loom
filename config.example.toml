@@ -12,6 +12,13 @@ worktree_dir  = ".loom/trees"
 db            = ".loom/loom.db"
 run_isolation = "in-process"        # or "subprocess" (later milestones)
 
+[worktree]
+enabled = true                     # true: each session gets its own git worktree + branch.
+                                   # false: sessions run in the repo working dir — no branch
+                                   # isolation, concurrent sessions can collide, and hard-fork
+                                   # is unavailable (undo still works). `loom run --in-place` /
+                                   # `--worktree` overrides this per session.
+
 [daemon]
 idle_shutdown_minutes = 30          # exit after N min with no sessions and no clients; 0 disables
 event_buffer_size     = 4096        # push-stream ring buffer, in frames

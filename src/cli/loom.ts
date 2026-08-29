@@ -22,6 +22,7 @@ commands:
   tail                   stream the live event feed (Ctrl-C to stop)
 
   run <prompt...>        start a session   [--provider P] [--model M] [--mode default|plan|acceptEdits|auto]
+                         [--in-place | --worktree]  override [worktree] enabled for this session
   send <id> <text...>    send a follow-up turn / answer
   compact <id> [text...] compact the context window (optional steer for the summary)
   interrupt <id>         stop a session mid-turn
@@ -59,6 +60,8 @@ async function main(): Promise<void> {
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
+      "in-place": { type: "boolean", default: false },
+      worktree: { type: "boolean", default: false },
     },
   });
 
@@ -141,14 +144,20 @@ async function main(): Promise<void> {
       case "run": {
         const prompt = positionals.slice(1).join(" ");
         if (!prompt) need(undefined, "run <prompt...>");
+        if (values["in-place"] && values.worktree) {
+          need(undefined, "run: --in-place and --worktree are mutually exclusive");
+        }
+        const worktree = values.worktree ? true : values["in-place"] ? false : undefined;
         const r = await client.request<SessionSnapshot>("session.create", {
           prompt,
           by: client.clientId,
           ...(values.provider ? { provider: values.provider } : {}),
           ...(values.model ? { model: values.model } : {}),
           ...(values.mode ? { mode: values.mode } : {}),
+          ...(worktree !== undefined ? { worktree } : {}),
         });
-        process.stdout.write(`started ${r.id}  provider=${r.provider}  status=${r.status}\n`);
+        const where = r.inPlace ? "  in-place" : "";
+        process.stdout.write(`started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`);
         break;
       }
       case "send": {

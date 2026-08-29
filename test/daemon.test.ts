@@ -326,6 +326,61 @@ model    = "gpt-5"
   }
 });
 
+test("in-place sessions: no worktree, repo-root git facts, hard fork refused", async () => {
+  const hh = await makeHarness({
+    config: `
+[worktree]
+enabled = false
+
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "gpt-5"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+
+    const getFake = async (id: string): Promise<void> => {
+      ((await hh.daemon.providers.get("fake")) as FakeProvider).session(id)?.finishTurn();
+    };
+
+    const s = await c.request<SessionSnapshot>("session.create", { prompt: "work in the repo", provider: "fake" });
+    await getFake(s.id); // settle so shutdown is clean
+    assert.equal(s.inPlace, true);
+    assert.equal(s.worktree, null);
+    assert.equal(s.branch, null);
+    assert.equal(s.baseBranch, "main");
+
+    // session.get enriches: an in-place session shows the repo root's git state
+    const got = await c.request<SessionSnapshot>("session.get", { id: s.id });
+    assert.equal(got.git?.branch, "main");
+
+    // the per-session override beats the config default
+    const iso = await c.request<SessionSnapshot>("session.create", {
+      prompt: "isolate me",
+      provider: "fake",
+      worktree: true,
+    });
+    await getFake(iso.id);
+    assert.equal(iso.inPlace, false);
+    assert.ok(iso.worktree, "explicit worktree:true still gets a tree");
+
+    // a hard fork needs an isolated branch — refused for an in-place aisdk parent
+    const ip = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "in-place aisdk",
+      status: "idle",
+      provider: "openai",
+    });
+    hh.daemon.db.prepare("UPDATE sessions SET in_place = 1, worktree = NULL WHERE id = ?").run(ip.id);
+    await assert.rejects(c.request("session.fork", { id: ip.id }), /in-place|worktree/);
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("session.send always broadcasts a user_message; injected reflects whether a turn was live", async () => {
   const hh = await makeHarness();
   const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });

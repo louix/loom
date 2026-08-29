@@ -18,6 +18,7 @@ interface SessionRow {
   worktree: string | null;
   branch: string | null;
   base_branch: string | null;
+  in_place: number;
   provider_ref: string | null;
   title_locked: number;
   budget_max_tokens: number | null;
@@ -56,6 +57,8 @@ export interface NewSession {
   worktree?: string | null;
   branch?: string | null;
   baseBranch?: string | null;
+  /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
+  inPlace?: boolean;
   providerRef?: string | null;
   budget?: {
     maxTokens?: number | null;
@@ -102,9 +105,9 @@ export class SessionStore {
       .prepare(
         `INSERT INTO sessions
            (id, parent_id, provider, model, mode, status, title, worktree, branch,
-            base_branch, provider_ref, budget_max_tokens, budget_max_cost_usd,
+            base_branch, in_place, provider_ref, budget_max_tokens, budget_max_cost_usd,
             budget_max_turns, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         s.id,
@@ -116,6 +119,7 @@ export class SessionStore {
         s.worktree ?? null,
         s.branch ?? null,
         s.baseBranch ?? null,
+        s.inPlace ? 1 : 0,
         s.providerRef ?? null,
         s.budget?.maxTokens ?? null,
         s.budget?.maxCostUsd ?? null,
@@ -443,6 +447,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     worktree: row.worktree,
     branch: row.branch,
     baseBranch: row.base_branch,
+    inPlace: row.in_place === 1,
     usage: usage
       ? {
           input: usage.input,

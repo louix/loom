@@ -120,6 +120,10 @@ export interface SessionSnapshot {
   worktree: string | null;
   branch: string | null;
   baseBranch: string | null;
+  /** Runs in the repo working dir with no dedicated worktree — no branch
+   *  isolation, and hard-fork is unavailable. Distinguishes an in-place session
+   *  from a gc'd one (both have `worktree: null`). */
+  inPlace: boolean;
   usage: TokenUsage;
   contextUsed: number;
   contextLimit: number;

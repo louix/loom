@@ -870,6 +870,9 @@ export function App({
       if (sel.provider === "claude") {
         return void dispatch({ t: "notice", text: "hard fork isn't available for Claude sessions yet", tone: "dim" });
       }
+      if (sel.inPlace) {
+        return void dispatch({ t: "notice", text: "hard fork needs a worktree — this session runs in-place", tone: "dim" });
+      }
       client
         .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
         .then((r) => {

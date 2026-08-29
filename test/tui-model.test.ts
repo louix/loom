@@ -52,6 +52,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     worktree: null,
     branch: null,
     baseBranch: null,
+    inPlace: false,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextUsed: 0,
     contextLimit: 0,
@@ -319,6 +320,16 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
   assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", ...S].sort());
   assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", ...S].sort());
   assert.deepEqual([...allowedActs(null)].sort(), ["find", "help", "new", "quit"].sort());
+});
+
+test("an in-place session offers undo but not hard fork", () => {
+  const inPlace = allowedActs(snap({ status: "idle", provider: "openai", inPlace: true, turns: 3 }));
+  assert.ok(!inPlace.has("fork"), "no worktree → no hard fork");
+  assert.ok(inPlace.has("undo"), "undo is conversation-only, still available");
+
+  const isolated = allowedActs(snap({ status: "idle", provider: "openai", inPlace: false, turns: 3 }));
+  assert.ok(isolated.has("fork"));
+  assert.ok(isolated.has("undo"));
 });
 
 test("actionsFor keeps the salient action first", () => {

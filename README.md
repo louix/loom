@@ -60,6 +60,10 @@ the Vercel AI SDK.
   -b loom/<slug>` off the configured base (`base_branch`, else `HEAD`). The
   slug is derived from the prompt; uniqueness is enforced with a short suffix.
   The session's adapter runs with that worktree as its cwd.
+- **In-place mode** — `[worktree] enabled = false` (or `loom run --in-place`)
+  runs the session directly in the repo working dir instead: no branch
+  isolation, concurrent sessions can collide, and hard fork is unavailable
+  (undo still works). The Detail pane shows the repo's own git state.
 - **Distinct commit identity** — `git config --worktree user.name/email` set to
   `Loom (claude) <loom+claude@localhost>` so tool commits are never confused
   with yours.
@@ -302,7 +306,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 255 cases
+npm test             # node:test — 260 cases
 ```
 
 ### Layout

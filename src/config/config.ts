@@ -42,6 +42,14 @@ export interface AisdkProfile {
 export interface LoomConfig {
   baseBranch: string;
   worktreeDir: string;
+  /**
+   * Worktree isolation for new sessions. `enabled` (the default) gives each
+   * session its own `git worktree` + branch off `baseBranch`. Off → sessions
+   * run directly in the repo working dir: no branch isolation, concurrent
+   * sessions can collide, and hard-fork is unavailable (undo still works).
+   * `session.create` takes a per-session `worktree` boolean that overrides it.
+   */
+  worktree: { enabled: boolean };
   db: string;
   runIsolation: "in-process" | "subprocess";
   /** Provider id new sessions use when the client doesn't name one. */
@@ -103,6 +111,7 @@ export interface LoomConfig {
 export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
+  worktree: { enabled: true },
   db: ".loom/loom.db",
   runIsolation: "in-process",
   defaultProvider: "claude",
@@ -203,6 +212,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const d = DEFAULT_CONFIG;
 
   const daemon = asRecord(r["daemon"]);
+  const worktree = asRecord(r["worktree"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
   const aisdk = parseAisdkProfiles(providers);
@@ -240,6 +250,9 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
+    worktree: {
+      enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,
+    },
     db: str(r["db"], d.db),
     runIsolation,
     defaultProvider,
