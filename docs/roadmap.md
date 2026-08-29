@@ -522,6 +522,20 @@ discovery, `registry.ts`, the test layout, and versioning.
   ships with no connectors and near-zero deps by default.
 - `fake` → `@loom/connector-mock`, a real package the tests depend on.
 
+### 7 · Approval-prompt UX (user, 2026-08-29 — "for after")
+When a session is `awaiting_input` (permission / question / plan) it's still not
+obvious where to look.
+- **Move the request to the bottom**, near where you type, rather than a panel
+  mid-screen.
+- **"TUI modes":** define a small mode per selected-session state and only show
+  the actions relevant to it — an `awaiting_input` session shouldn't offer
+  budget / model / rename / done in the footer. `actionsFor` already branches on
+  status; formalise it so the footer, the keymap, and the help screen all read
+  from one table.
+- **Write an XDG config on first launch** (`$XDG_CONFIG_HOME/loom/config.toml`)
+  from a template — daemon defaults plus a commented-out example
+  `[providers.openai]` aisdk block — so a new user has something to edit.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the
