@@ -530,6 +530,9 @@ export class Daemon {
       const id = reqString(params, "id");
       const profile = this.config.providers.aisdk[id];
       if (!profile) throw new RpcError("not_found", `no aisdk provider: ${id}`);
+      // Only OpenAI-compatible endpoints have a uniform `/models`; for the
+      // native SDKs just hand back the configured list.
+      if (profile.sdk !== "openai") return { models: profile.models };
       try {
         return { models: await probeOpenAiModels(profile.baseUrl, profile.apiKeyEnv) };
       } catch (err) {

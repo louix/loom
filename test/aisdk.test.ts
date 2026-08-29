@@ -11,7 +11,7 @@ import type { UsageDelta } from "../src/store/sessions.ts";
 import { openDb } from "../src/store/db.ts";
 import { SessionManager } from "../src/daemon/session-manager.ts";
 import { makeLogger, setLogLevel } from "../src/util/logger.ts";
-import { AisdkProvider } from "../src/provider/aisdk/adapter.ts";
+import { AisdkProvider, resolveModelFactory } from "../src/provider/aisdk/adapter.ts";
 import { AisdkEventMapper } from "../src/provider/aisdk/map.ts";
 import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
 import { runTurn } from "../src/provider/aisdk/loop.ts";
@@ -64,7 +64,7 @@ function textReply(
 
 function provider(make: (id: string) => LanguageModel, store: ProviderMessageStore): AisdkProvider {
   return new AisdkProvider(
-    { id: "openai", baseUrl: "http://x/v1", apiKey: "", model: "gpt-5", models: ["gpt-5"], makeModel: make },
+    { id: "openai", model: "gpt-5", models: ["gpt-5"], makeModel: make },
     store,
   );
 }
@@ -327,4 +327,20 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   } finally {
     cleanup();
   }
+});
+
+// --- resolveModelFactory: the @ai-sdk/* backend per profile `sdk` -----------
+
+test("resolveModelFactory builds the right SDK client for each `sdk`", async () => {
+  const meta = (m: LanguageModel) => m as unknown as { provider: string; modelId: string };
+
+  const oai = await resolveModelFactory("openai", { id: "x", baseUrl: "http://x/v1", apiKey: "k" });
+  assert.match(meta(oai("some-model")).provider, /^x\./); // openai-compatible names by `id`
+
+  const g = await resolveModelFactory("google", { id: "gemini", baseUrl: "", apiKey: "k" });
+  assert.equal(meta(g("gemini-2.5-pro")).provider, "google.generative-ai");
+  assert.equal(meta(g("gemini-2.5-pro")).modelId, "gemini-2.5-pro");
+
+  const a = await resolveModelFactory("anthropic", { id: "claude-api", baseUrl: "", apiKey: "k" });
+  assert.equal(meta(a("claude-sonnet-5")).provider, "anthropic.messages");
 });

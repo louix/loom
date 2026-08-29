@@ -7,11 +7,21 @@ import { parse as parseToml } from "smol-toml";
  * Milestone 1 only reads a handful of these; the rest are carried so the shape
  * is stable for later milestones.
  */
-/** One OpenAI-compatible provider profile (`[providers.<id>]`, `adapter = "aisdk"`). */
+export type AisdkKind = "openai" | "google" | "anthropic";
+
+/** One Vercel-AI-SDK provider profile (`[providers.<id>]`, `adapter = "aisdk"`). */
 export interface AisdkProfile {
-  /** OpenAI-compatible base URL, e.g. `https://api.deepseek.com/v1`. */
+  /**
+   * Which `@ai-sdk/*` backend: `openai` (OpenAI-compatible — the default),
+   * `google` (native Gemini), or `anthropic` (native Anthropic).
+   */
+  sdk: AisdkKind;
+  /**
+   * Base URL. Required for `sdk = "openai"`; optional for the others (their
+   * SDKs have sensible defaults, override for a proxy / gateway).
+   */
   baseUrl: string;
-  /** Env var holding the bearer token; "" for a keyless local endpoint. */
+  /** Env var holding the API key; "" for a keyless local endpoint. */
   apiKeyEnv: string;
   /** Default model id for new sessions on this provider. */
   model: string;
@@ -131,7 +141,8 @@ function strArray(v: unknown, fallback: string[]): string[] {
 /**
  * Pull every `[providers.<id>]` table with `adapter = "aisdk"` into a profile
  * map. `claude` is handled separately and never treated as an aisdk profile.
- * A profile with no `base_url` is dropped (it can't be dialled).
+ * An `sdk = "openai"` profile with no `base_url` is dropped (nothing to dial);
+ * `google` / `anthropic` profiles don't need one.
  */
 function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, AisdkProfile> {
   const out: Record<string, AisdkProfile> = {};
@@ -139,11 +150,14 @@ function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, 
     if (id === "claude") continue;
     const t = asRecord(raw);
     if (t["adapter"] !== "aisdk") continue;
+    const sdk: AisdkKind =
+      t["sdk"] === "google" || t["sdk"] === "anthropic" ? t["sdk"] : "openai";
     const baseUrl = str(t["base_url"], "");
-    if (baseUrl === "") continue;
+    if (sdk === "openai" && baseUrl === "") continue;
     const model = str(t["model"], "");
     const models = strArray(t["models"], model ? [model] : []);
     out[id] = {
+      sdk,
       baseUrl,
       apiKeyEnv: str(t["api_key_env"], ""),
       model,

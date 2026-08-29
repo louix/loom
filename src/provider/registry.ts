@@ -65,13 +65,14 @@ export class ProviderRegistry {
     const profile = this.#config.providers.aisdk[id];
     if (!profile) throw new Error(`unknown provider: ${id}`);
     if (!this.#db) throw new Error(`aisdk provider "${id}" needs a database`);
-    const [{ AisdkProvider }, { ProviderMessageStore }] = await Promise.all([
+    const [{ AisdkProvider, resolveModelFactory }, { ProviderMessageStore }] = await Promise.all([
       import("./aisdk/adapter.ts"),
       import("./aisdk/store.ts"),
     ]);
     const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
+    const makeModel = await resolveModelFactory(profile.sdk, { id, baseUrl: profile.baseUrl, apiKey });
     return new AisdkProvider(
-      { id, baseUrl: profile.baseUrl, apiKey, model: profile.model, models: profile.models },
+      { id, model: profile.model, models: profile.models, makeModel },
       new ProviderMessageStore(this.#db),
     );
   }

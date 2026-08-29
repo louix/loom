@@ -150,3 +150,47 @@ test("loadConfig works when the user file is absent", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- aisdk `sdk` backend selection --------------------------------------
+
+test("sdk defaults to openai; google/anthropic don't need a base_url", () => {
+  const c = cfg(`
+[providers.openai]
+adapter  = "aisdk"
+base_url = "https://api.openai.com/v1"
+model    = "gpt-5"
+
+[providers.gemini]
+adapter     = "aisdk"
+sdk         = "google"
+api_key_env = "GEMINI_API_KEY"
+model       = "gemini-2.5-pro"
+
+[providers.claude-api]
+adapter = "aisdk"
+sdk     = "anthropic"
+model   = "claude-sonnet-5"
+
+[providers.dropped]
+adapter = "aisdk"
+sdk     = "openai"
+model   = "x"
+`);
+  assert.equal(c.providers.aisdk["openai"]?.sdk, "openai");
+  assert.equal(c.providers.aisdk["gemini"]?.sdk, "google");
+  assert.equal(c.providers.aisdk["gemini"]?.baseUrl, "");
+  assert.equal(c.providers.aisdk["claude-api"]?.sdk, "anthropic");
+  // an openai profile with no base_url is still dropped
+  assert.equal(c.providers.aisdk["dropped"], undefined);
+});
+
+test("an unknown sdk value falls back to openai", () => {
+  const c = cfg(`
+[providers.weird]
+adapter  = "aisdk"
+sdk      = "cohere"
+base_url = "http://x/v1"
+model    = "m"
+`);
+  assert.equal(c.providers.aisdk["weird"]?.sdk, "openai");
+});

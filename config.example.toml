@@ -37,18 +37,31 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # default_provider = "claude"       # which provider new sessions use when the
                                    # client doesn't name one (must be configured)
 
-# OpenAI-compatible providers (milestone 10). Any [providers.<id>] table with
-# adapter = "aisdk" is picked up — OpenAI, GLM/Zhipu, DeepSeek, OpenRouter, a
-# local vLLM / Ollama. Repeat the block per provider.
+# Non-Claude providers (milestone 10). Any [providers.<id>] table with
+# adapter = "aisdk" is a Vercel-AI-SDK provider. `sdk` picks the backend:
+#   openai    (default) — OpenAI-compatible: OpenAI, GLM/Zhipu, DeepSeek,
+#                         OpenRouter, a local vLLM / Ollama. base_url required.
+#   google    — native Gemini (@ai-sdk/google). base_url optional.
+#   anthropic — native Anthropic (@ai-sdk/anthropic). base_url optional.
+# The @ai-sdk/* package is loaded only when a session actually uses the provider.
+# Repeat the block per provider.
 # [providers.openai]
 # adapter     = "aisdk"
+# sdk         = "openai"
 # base_url    = "https://api.openai.com/v1"
-# api_key_env = "OPENAI_API_KEY"    # env var holding the bearer token; "" if keyless
+# api_key_env = "OPENAI_API_KEY"    # env var holding the key; "" if keyless
 # model       = "gpt-5"             # default model for new sessions
 # models      = ["gpt-5", "gpt-5-mini"]   # offered in the `N` / `M` model picker
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
+#
+# [providers.gemini]
+# adapter     = "aisdk"
+# sdk         = "google"
+# api_key_env = "GEMINI_API_KEY"
+# model       = "gemini-2.5-pro"
+# models      = ["gemini-2.5-pro", "gemini-2.5-flash"]
 
 [[mcp]]                             # mounted into every session, in order, after
 name    = "tilth"                   # the built-in `loom` server. The system

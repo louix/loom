@@ -59,7 +59,7 @@ function env() {
 
 function provider(make: () => LanguageModel, store: ProviderMessageStore) {
   return new AisdkProvider(
-    { id: "openai", baseUrl: "http://x/v1", apiKey: "", model: "m", models: ["m"], makeModel: make },
+    { id: "openai", model: "m", models: ["m"], makeModel: make },
     store,
   );
 }
