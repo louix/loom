@@ -184,7 +184,7 @@ export class Daemon {
       onUsage: (id, delta) => {
         if (this.#stopping) return;
         const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
-        this.#emitSessionUpdated(snap);
+        this.#emitSessionUpdated(snap, undefined, { git: false }); // no git shell-out per usage tick
         this.#enforceBudget(snap);
       },
       onResult: (id, ok) => {
@@ -338,20 +338,24 @@ export class Daemon {
     return frame.seq;
   }
 
-  #emitSessionUpdated(session: SessionSnapshot, by?: string): void {
+  #emitSessionUpdated(session: SessionSnapshot, by?: string, opts: { git?: boolean } = {}): void {
     if (this.#stopping) return;
     const frame = this.#events.append({
       kind: "push",
       type: "session_updated",
-      session: this.#enrich(session),
+      session: this.#enrich(session, opts.git ?? true),
       version: this.#registry.version(session.id),
       ...(by !== undefined ? { by } : {}),
     });
     this.#server.broadcast(frame);
   }
 
-  /** Overlay runtime-only facts on a stored snapshot: git facts, sub-agents, cache TTL. */
-  #enrich(s: SessionSnapshot): SessionSnapshot {
+  /**
+   * Overlay runtime-only facts on a stored snapshot: git facts, sub-agents,
+   * cache TTL. `withGit` false skips the ~6 synchronous `git` calls — used for
+   * the per-`usage` update stream during a turn, where git state can't change.
+   */
+  #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
     const subs = this.#sessions.subagentsOf(s.id);
     if (subs.length > 0) out = { ...out, subagents: subs };
@@ -359,7 +363,7 @@ export class Daemon {
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };
     }
-    if (out.worktree) {
+    if (withGit && out.worktree) {
       const git = this.#worktrees.facts(out.worktree, out.baseBranch);
       if (git) out = { ...out, git };
     }

@@ -14,7 +14,7 @@ import type { GitFacts } from "../protocol/wire.ts";
 
 const IDENTITY_NAME = "Loom (claude)";
 const IDENTITY_EMAIL = "loom+claude@localhost";
-const FACTS_TTL_MS = 2000;
+const FACTS_TTL_MS = 8000;
 
 const PRE_PUSH_HOOK = `#!/bin/sh
 # Installed by Loom. Sessions must never push — integrate in your own git.

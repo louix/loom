@@ -858,7 +858,7 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "user_message":
       return {
         glyph: ev.injected ? "»" : "›",
-        text: ev.injected ? `${oneLine(ev.text, 160)} · injected mid-turn` : oneLine(ev.text, 160),
+        text: ev.injected ? `${oneLine(ev.text, 160)} · sent mid-turn` : oneLine(ev.text, 160),
         tone: "accent",
       };
   }
