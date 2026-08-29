@@ -8,11 +8,19 @@ import {
   allowedActs,
   cacheHeat,
   cacheStatus,
+  defaultProviderId,
+  findPickItems,
   formatEvent,
   groupsOf,
   initialState,
+  makePicker,
   makePrompt,
+  modelPickItems,
   pendingFor,
+  pickerCurrent,
+  pickerVisible,
+  providerColorOf,
+  providerPickItems,
   queueFor,
   reduce,
   selectedSession,
@@ -240,8 +248,8 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
-  // every selected session also gets mode + title, plus the global set
-  const S = ["mode", "title", "budget", "filter", "help", "new", "quit"];
+  // every selected session also gets mode + model + title + budget, plus globals
+  const S = ["mode", "model", "title", "budget", "find", "help", "new", "quit"];
 
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
@@ -259,7 +267,7 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
   assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", ...S].sort());
   assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", ...S].sort());
-  assert.deepEqual([...allowedActs(null)].sort(), ["filter", "help", "new", "quit"].sort());
+  assert.deepEqual([...allowedActs(null)].sort(), ["find", "help", "new", "quit"].sort());
 });
 
 test("actionsFor keeps the salient action first", () => {
@@ -530,6 +538,96 @@ test("selectedSession returns the highlighted row or null", () => {
   assert.equal(selectedSession(initialState()), null);
   const s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "z", status: "running" })] });
   assert.equal(selectedSession(s)?.id, "z");
+});
+
+// ---------------------------------------------------------------------------
+// picker: provider / model / find
+// ---------------------------------------------------------------------------
+
+const PROVIDERS = [
+  { id: "claude", models: [], tag: "claude", color: "", isDefault: true },
+  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], tag: "oai", color: "cyan", isDefault: false },
+  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], tag: "ds", color: "magenta", isDefault: false },
+];
+
+function withProviders(): TuiState {
+  return reduce(initialState(), { t: "providers", list: PROVIDERS });
+}
+
+test("providers action populates state and the derived helpers", () => {
+  const s = withProviders();
+  assert.equal(defaultProviderId(s), "claude");
+  assert.equal(providerColorOf(s, "openai"), "cyan");
+  assert.equal(providerColorOf(s, "claude"), "");
+  assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
+  assert.equal(providerPickItems(s).length, 3);
+});
+
+test("picker: open, filter narrows the list, move clamps to the filtered set", () => {
+  let s = reduce(withProviders(), {
+    t: "openPicker",
+    picker: makePicker({ kind: "model", title: "model", items: modelPickItems(withProviders(), "openai") }),
+  });
+  assert.equal(s.mode, "picker");
+  assert.equal(pickerVisible(s.picker!).length, 3);
+
+  s = reduce(s, { t: "pickerMove", delta: 5 });
+  assert.equal(s.picker!.index, 2); // clamped to last
+
+  s = reduce(s, { t: "pickerFilter", value: "mini" });
+  assert.equal(pickerVisible(s.picker!).length, 1);
+  assert.equal(s.picker!.index, 0); // reset on filter
+  assert.equal(pickerCurrent(s.picker!)?.id, "gpt-5-mini");
+
+  s = reduce(s, { t: "closePicker" });
+  assert.equal(s.mode, "browse");
+  assert.equal(s.picker, null);
+});
+
+test("find picker items fold message text into the fuzzy blob", () => {
+  let s = reduce(withProviders(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "aaa", status: "running" }), snap({ id: "bbb", status: "idle" })],
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: { type: "event", seq: 1, event: { type: "assistant_text", sessionId: "bbb", ts: 1, text: "refactor the parser module" } },
+  } as never);
+
+  const items = findPickItems(s);
+  const bbb = items.find((i) => i.id === "bbb")!;
+  assert.match(bbb.blob ?? "", /refactor the parser/);
+
+  const picker = makePicker({ kind: "find", title: "find", items });
+  const filtered = pickerVisible({ ...picker, filter: "parser" });
+  assert.deepEqual(filtered.map((i) => i.id), ["bbb"]);
+});
+
+test("a live model picker closes if its session is removed", () => {
+  let s = reduce(withProviders(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "live", status: "running", provider: "openai" })],
+  });
+  s = reduce(s, {
+    t: "openPicker",
+    picker: makePicker({
+      kind: "model",
+      title: "model",
+      items: modelPickItems(s, "openai"),
+      ctx: { provider: "openai", liveSessionId: "live" },
+    }),
+  });
+  s = reduce(s, { t: "push", frame: { type: "session_removed", seq: 2, sessionId: "live" } } as never);
+  assert.equal(s.picker, null);
+  assert.equal(s.mode, "browse");
+});
+
+test("makePrompt carries provider + model for the N flow", () => {
+  const p = makePrompt({ kind: "new", sessionId: null, label: "new", provider: "openai", model: "o4" });
+  assert.equal(p.provider, "openai");
+  assert.equal(p.model, "o4");
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks

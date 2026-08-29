@@ -5,13 +5,13 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
-import type { PushFrame, SessionSnapshot } from "../protocol/wire.ts";
+import type { ProviderInfo, PushFrame, SessionSnapshot } from "../protocol/wire.ts";
 import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
 import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan";
+export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan" | "picker";
 export type LogFilter = "selected" | "all";
 
 export interface DaemonInfo {
@@ -49,6 +49,9 @@ export interface PromptState {
   buffer: Buffer;
   /** Permission mode for the session to be created — `new` only. */
   mode?: SessionMode;
+  /** Provider / model for the session to be created — `new` via the `N` flow. */
+  provider?: string;
+  model?: string;
   /** History cursor: 0 = the live buffer, 1..N = {@link TuiState.promptHistory} from newest. */
   histIdx: number;
   /** Live buffer text, stashed while browsing history. */
@@ -62,6 +65,9 @@ export function makePrompt(init: {
   label: string;
   text?: string;
   mode?: SessionMode;
+  /** For `new`: the provider / model chosen in the `N` picker flow. */
+  provider?: string;
+  model?: string;
 }): PromptState {
   return {
     kind: init.kind,
@@ -69,10 +75,77 @@ export function makePrompt(init: {
     label: init.label,
     ...(init.requestId ? { requestId: init.requestId } : {}),
     ...(init.mode ? { mode: init.mode } : {}),
+    ...(init.provider ? { provider: init.provider } : {}),
+    ...(init.model ? { model: init.model } : {}),
     buffer: buffer(init.text ?? ""),
     histIdx: 0,
     draft: "",
   };
+}
+
+// ---------------------------------------------------------------------------
+// picker overlay — provider choice, model choice, session find
+// ---------------------------------------------------------------------------
+
+export interface PickItem {
+  id: string;
+  label: string;
+  hint?: string;
+  /** Extra text folded into the fuzzy match (message content for `find`). */
+  blob?: string;
+}
+
+export interface PickerState {
+  kind: "provider" | "model" | "find";
+  title: string;
+  items: PickItem[];
+  /** Live filter text. */
+  filter: string;
+  /** Highlight into the *filtered* list. */
+  index: number;
+  /** Carried context: provider id from the provider step; a live session for `M`. */
+  ctx?: { provider?: string; liveSessionId?: string };
+}
+
+export function makePicker(init: {
+  kind: PickerState["kind"];
+  title: string;
+  items: PickItem[];
+  ctx?: PickerState["ctx"];
+}): PickerState {
+  return {
+    kind: init.kind,
+    title: init.title,
+    items: init.items,
+    filter: "",
+    index: 0,
+    ...(init.ctx ? { ctx: init.ctx } : {}),
+  };
+}
+
+/** Case-insensitive subsequence match — every char of `q` appears in order. */
+function fuzzyMatch(hay: string, q: string): boolean {
+  if (q === "") return true;
+  const h = hay.toLowerCase();
+  let i = 0;
+  for (const ch of q.toLowerCase()) {
+    i = h.indexOf(ch, i);
+    if (i === -1) return false;
+    i += 1;
+  }
+  return true;
+}
+
+/** The picker's items narrowed to the current filter (label + blob). */
+export function pickerVisible(p: PickerState): PickItem[] {
+  if (p.filter === "") return p.items;
+  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, p.filter));
+}
+
+/** The currently-highlighted item, honouring the filter. */
+export function pickerCurrent(p: PickerState): PickItem | null {
+  const vis = pickerVisible(p);
+  return vis[Math.max(0, Math.min(vis.length - 1, p.index))] ?? null;
 }
 
 export interface ConfirmState {
@@ -100,6 +173,8 @@ export interface Pending {
 export interface TuiState {
   connection: Connection;
   daemon: DaemonInfo | null;
+  /** Configured providers, from `providers.list` at connect time. */
+  providers: ProviderInfo[];
   sessions: SessionSnapshot[];
   selectedId: string | null;
   log: LogLine[];
@@ -116,6 +191,8 @@ export interface TuiState {
   sendChoice: { sessionId: string; text: string } | null;
   /** An open plan-review overlay: the plan text + the ids to resolve it with. */
   plan: { sessionId: string; requestId: string; text: string } | null;
+  /** An open picker overlay (provider / model / find). */
+  picker: PickerState | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
 }
@@ -124,6 +201,7 @@ export function initialState(logCap = 400): TuiState {
   return {
     connection: "connecting",
     daemon: null,
+    providers: [],
     sessions: [],
     selectedId: null,
     log: [],
@@ -137,6 +215,7 @@ export function initialState(logCap = 400): TuiState {
     confirm: null,
     sendChoice: null,
     plan: null,
+    picker: null,
     promptHistory: [],
   };
 }
@@ -147,6 +226,7 @@ export function initialState(logCap = 400): TuiState {
 
 export type Action =
   | { t: "hello"; daemon: DaemonInfo; sessions: SessionSnapshot[] }
+  | { t: "providers"; list: ProviderInfo[] }
   | { t: "sessions"; sessions: SessionSnapshot[] }
   | { t: "push"; frame: PushFrame }
   | { t: "connection"; value: Connection }
@@ -171,10 +251,17 @@ export type Action =
   | { t: "closePlan" }
   | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "closeConfirm" }
+  | { t: "openPicker"; picker: PickerState }
+  | { t: "pickerFilter"; value: string }
+  | { t: "pickerMove"; delta: number }
+  | { t: "closePicker" }
   | { t: "help"; value: boolean };
 
 export function reduce(s: TuiState, a: Action): TuiState {
   switch (a.t) {
+    case "providers":
+      return { ...s, providers: a.list };
+
     case "hello": {
       const sessions = sortSessions(a.sessions);
       return {
@@ -309,6 +396,23 @@ export function reduce(s: TuiState, a: Action): TuiState {
     case "closeConfirm":
       return { ...s, mode: "browse", confirm: null };
 
+    case "openPicker":
+      return { ...s, mode: "picker", picker: a.picker, prompt: null, confirm: null, plan: null };
+
+    case "pickerFilter":
+      return s.picker ? { ...s, picker: { ...s.picker, filter: a.value, index: 0 } } : s;
+
+    case "pickerMove": {
+      if (!s.picker) return s;
+      const n = pickerVisible(s.picker).length;
+      if (n === 0) return s;
+      const next = Math.max(0, Math.min(n - 1, s.picker.index + a.delta));
+      return next === s.picker.index ? s : { ...s, picker: { ...s.picker, index: next } };
+    }
+
+    case "closePicker":
+      return { ...s, mode: s.mode === "picker" ? "browse" : s.mode, picker: null };
+
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };
   }
@@ -349,6 +453,7 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
     case "session_removed": {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
       const planGone = s.plan?.sessionId === frame.sessionId;
+      const pickerGone = s.picker?.ctx?.liveSessionId === frame.sessionId;
       return {
         ...s,
         sessions,
@@ -356,6 +461,7 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
         ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
+        ...(pickerGone ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode } : {}),
       };
     }
     case "resync":
@@ -511,6 +617,51 @@ export function visibleLog(s: TuiState): LogLine[] {
   return s.log.filter((l) => l.sessionId === s.selectedId);
 }
 
+// ---------------------------------------------------------------------------
+// provider / model / find helpers for the picker flow
+// ---------------------------------------------------------------------------
+
+/** The Ink colour a provider's session ids render in, or "" for the default. */
+export function providerColorOf(s: TuiState, providerId: string): string {
+  return s.providers.find((p) => p.id === providerId)?.color ?? "";
+}
+
+export function providerInfo(s: TuiState, providerId: string): ProviderInfo | null {
+  return s.providers.find((p) => p.id === providerId) ?? null;
+}
+
+export function defaultProviderId(s: TuiState): string {
+  return s.providers.find((p) => p.isDefault)?.id ?? "claude";
+}
+
+export function providerPickItems(s: TuiState): PickItem[] {
+  return s.providers.map((p) => ({
+    id: p.id,
+    label: p.tag || p.id,
+    hint: p.isDefault ? "default" : p.models.length ? `${p.models.length} models` : "",
+  }));
+}
+
+export function modelPickItems(s: TuiState, providerId: string): PickItem[] {
+  return (providerInfo(s, providerId)?.models ?? []).map((m) => ({ id: m, label: m }));
+}
+
+/** Sessions as find targets — title + this session's log text folded into the match. */
+export function findPickItems(s: TuiState): PickItem[] {
+  const logBySession = new Map<string, string[]>();
+  for (const l of s.log) {
+    const arr = logBySession.get(l.sessionId) ?? [];
+    arr.push(l.text);
+    logBySession.set(l.sessionId, arr);
+  }
+  return s.sessions.map((sess) => ({
+    id: sess.id,
+    label: sess.title ?? shortId(sess.id),
+    hint: `${sess.provider}${sess.model ? `/${sess.model}` : ""} · ${sess.status}`,
+    blob: (logBySession.get(sess.id) ?? []).join(" "),
+  }));
+}
+
 export interface Group {
   status: SessionStatus;
   label: string;
@@ -541,9 +692,11 @@ export type ActName =
   | "compact"
   | "planreview"
   | "mode"
+  | "model"
   | "title"
   | "budget"
   | "new"
+  | "find"
   | "filter"
   | "help"
   | "quit";
@@ -556,7 +709,7 @@ export interface KeyHint {
 
 const GLOBAL_HINTS: KeyHint[] = [
   { keys: "n", label: "new", act: "new" },
-  { keys: "f", label: "filter", act: "filter" },
+  { keys: "f", label: "find", act: "find" },
   { keys: "?", label: "help", act: "help" },
   { keys: "q", label: "quit", act: "quit" },
 ];
@@ -594,6 +747,7 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
       local.push({ keys: "x", label: "done", act: "done" });
     }
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
+    local.push({ keys: "M", label: "model", act: "model" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
   }

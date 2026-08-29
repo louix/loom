@@ -16,6 +16,8 @@ commands:
   ls                     list sessions in fleet-view order
   get <id>               one session's snapshot
   history <id>           status history for a session
+  providers              list configured providers (* = default)
+  models <provider>      query an aisdk provider's /models endpoint
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
@@ -109,6 +111,25 @@ async function main(): Promise<void> {
         const id = need(positionals[1], "get <id>");
         const s = await client.request("session.get", { id });
         process.stdout.write(JSON.stringify(s, null, 2) + "\n");
+        break;
+      }
+      case "providers": {
+        const rows = await client.request<
+          Array<{ id: string; models: string[]; color: string; isDefault: boolean }>
+        >("providers.list");
+        if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+        else
+          for (const p of rows)
+            process.stdout.write(
+              `${p.isDefault ? "* " : "  "}${p.id}${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
+            );
+        break;
+      }
+      case "models": {
+        const id = need(positionals[1], "models <provider>");
+        const r = await client.request<{ models: string[] }>("providers.probeModels", { id });
+        if (values.json) process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
+        else process.stdout.write(r.models.join("\n") + "\n");
         break;
       }
       case "history": {

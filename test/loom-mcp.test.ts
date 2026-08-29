@@ -12,6 +12,7 @@ function repo(): { root: string; git: (...a: string[]) => string; cleanup: () =>
   execFileSync("git", ["init", "-q", "-b", "main", root]);
   git("config", "user.email", "loom+claude@localhost");
   git("config", "user.name", "Loom (claude)");
+  git("config", "commit.gpgsign", "false");
   git("commit", "-q", "--allow-empty", "-m", "base");
   return { root, git, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }

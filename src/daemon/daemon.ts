@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
-import { ensureLoomDir, loomPaths, type LoomPaths } from "../util/paths.ts";
+import { ensureLoomDir, loomPaths, userConfigPath, type LoomPaths } from "../util/paths.ts";
 import { loadConfig, resolveAgainstRepo, type LoomConfig } from "../config/config.ts";
 import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "../version.ts";
@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   type HelloParams,
   type HelloResult,
+  type ProviderInfo,
   type SessionSnapshot,
 } from "../protocol/wire.ts";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
@@ -57,6 +58,23 @@ const TOOL_STEER = [
  * "claude_code" base preset to append to, so this stands alone; it is followed
  * by {@link TOOL_STEER} when MCP servers are mounted.
  */
+/** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
+const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
+
+/** `GET {base_url}/models` → sorted model ids (OpenAI list shape). */
+async function probeOpenAiModels(baseUrl: string, apiKeyEnv: string): Promise<string[]> {
+  const key = apiKeyEnv ? (process.env[apiKeyEnv] ?? "") : "";
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+    headers: key ? { Authorization: `Bearer ${key}` } : {},
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+  return (body.data ?? [])
+    .map((m) => m.id)
+    .filter((x): x is string => typeof x === "string")
+    .sort();
+}
+
 const AISDK_SYSTEM = [
   "You are a coding agent working in a git worktree under Loom, a fleet supervisor.",
   "Work autonomously toward the user's goal: inspect the repo before changing it, make focused edits, and explain what you did concisely.",
@@ -119,7 +137,7 @@ export class Daemon {
     setLogFile(this.paths.log);
     this.#log = makeLogger("daemon");
 
-    this.config = loadConfig(this.paths.config);
+    this.config = loadConfig(this.paths.config, userConfigPath());
     this.#pricing = loadPriceTable(resolveAgainstRepo(opts.repoRoot, this.config.pricing.table));
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
@@ -322,6 +340,26 @@ export class Daemon {
     return ttl === "1h" ? 60 : ttl === "5m" ? 5 : 0;
   }
 
+  /** Configured providers for the TUI's creation flow / model switcher. */
+  #providerList(): ProviderInfo[] {
+    const def = this.#providers.defaultId;
+    const out: ProviderInfo[] = [
+      { id: "claude", models: [], tag: "claude", color: "", isDefault: def === "claude" },
+    ];
+    let i = 0;
+    for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
+      out.push({
+        id,
+        models: p.models,
+        tag: p.tag || id,
+        color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
+        isDefault: def === id,
+      });
+      i += 1;
+    }
+    return out;
+  }
+
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
     return list.map((s) => this.#enrich(s));
   }
@@ -484,6 +522,19 @@ export class Daemon {
     d.register("pricing.reload", () => {
       this.#pricing = loadPriceTable(resolveAgainstRepo(this.repoRoot, this.config.pricing.table));
       return { models: [...this.#pricing.keys()] };
+    });
+
+    d.register("providers.list", () => this.#providerList());
+
+    d.register("providers.probeModels", async (params) => {
+      const id = reqString(params, "id");
+      const profile = this.config.providers.aisdk[id];
+      if (!profile) throw new RpcError("not_found", `no aisdk provider: ${id}`);
+      try {
+        return { models: await probeOpenAiModels(profile.baseUrl, profile.apiKeyEnv) };
+      } catch (err) {
+        throw new RpcError("provider_error", `could not list models: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));

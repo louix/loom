@@ -15,12 +15,14 @@ import {
   clock,
   groupsOf,
   pendingFor,
+  pickerVisible,
   queueFor,
   selectedSession,
   visibleLog,
   type ConfirmState,
   type LogLine,
   type Pending,
+  type PickerState,
   type PromptState,
   type TuiState,
 } from "./model.ts";
@@ -110,6 +112,7 @@ export function Fleet({
 }): ReactNode {
   const groups = groupsOf(state.sessions);
   const iw = inside(width);
+  const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
 
   const blocks =
     groups.length === 0
@@ -134,7 +137,7 @@ export function Fleet({
               h(Text, { color: C.faint }, `  ${g.sessions.length}`),
             ),
             ...g.sessions.map((s) =>
-              FleetRow({ s, selected: s.id === state.selectedId, tick, iw, now }),
+              FleetRow({ s, selected: s.id === state.selectedId, tick, iw, now, pcolor }),
             ),
           ),
         );
@@ -156,12 +159,15 @@ function FleetRow({
   tick,
   iw,
   now,
+  pcolor,
 }: {
   s: SessionSnapshot;
   selected: boolean;
   tick: number;
   iw: number;
   now: number;
+  /** provider id → Fleet-row id colour ("" for the plain default). */
+  pcolor: Map<string, string>;
 }): ReactNode {
   const look = STATUS[s.status];
   const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
@@ -170,6 +176,7 @@ function FleetRow({
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? CACHE_HEAT_COLOR[heat] : null;
+  const idColor = pcolor.get(s.provider) || C.faint;
   const room = Math.max(6, iw - (2 + 2 + id.length + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
@@ -178,7 +185,7 @@ function FleetRow({
     { key: s.id, wrap: "truncate-end" },
     h(Text, { color: selected ? C.accent : C.faint }, selected ? "▍ " : "  "),
     h(Text, { color: s.status === "running" ? C.accent : look.color }, glyph + " "),
-    h(Text, { color: C.faint }, `${id}  `),
+    h(Text, { color: idColor }, `${id}  `),
     h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
     h(Text, { color: selected ? C.text : C.dim, bold: selected }, title),
     h(Text, { color: C.faint }, ` ${cost}`),
@@ -194,11 +201,14 @@ export function Detail({
   width,
   queued = [],
   now = Date.now(),
+  engineColor = "",
 }: {
   session: SessionSnapshot | null;
   width: number;
   queued?: string[];
   now?: number;
+  /** Ink colour for the provider/model line; matches the Fleet id colour. */
+  engineColor?: string;
 }): ReactNode {
   if (!session) {
     return h(
@@ -235,7 +245,13 @@ export function Detail({
       Box,
       { justifyContent: "space-between" },
       h(Text, { color: C.dim }, `DETAIL  ${shortId(s.id)}`),
-      h(Text, { color: C.faint }, `${s.provider}${s.model ? `  ${s.model}` : ""}`),
+      h(
+        Text,
+        {},
+        h(Text, { color: C.faint }, "engine "),
+        h(Text, { color: engineColor || C.faint }, s.provider),
+        h(Text, { color: C.faint }, s.model ? ` / ${s.model}` : ""),
+      ),
     ),
     h(Text, { color: C.text, wrap: "truncate-end" }, truncate(titleLine(s.title), w)),
     h(
@@ -724,9 +740,10 @@ const HELP_ROWS: Array<[string, string]> = [
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
   ["x  ·  e", "mark the session done  ·  rename it"],
   ["b", "set a cost budget (soft-warns or hard-halts on breach)"],
-  ["⇧⇥", "cycle the selected session's permission mode"],
-  ["n", "start a new session"],
-  ["f", "toggle the event log between this session and all"],
+  ["⇧⇥  ·  M", "cycle the permission mode  ·  switch the session's model (next turn)"],
+  ["n  ·  N", "new session (default provider)  ·  new with a provider + model picker"],
+  ["f  ·  F", "find a session by title / message text  ·  toggle the log: this session / all"],
+  ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
   ["R", "restart the daemon (with confirmation)"],
   ["Q", "quit the UI and stop the daemon (with confirmation)"],
   ["q  ·  ⌃c", "quit the UI — the daemon keeps running"],
@@ -740,6 +757,60 @@ const EDIT_ROWS: Array<[string, string]> = [
   ["⌃a", "start of line     ⌃u / ⌃k  kill to start / end     ⌃w  delete word"],
   ["↑ / ↓  ·  ⇧⇥", "prompt history     ·     cycle the mode (new session)"],
 ];
+
+// ---------------------------------------------------------------------------
+// picker overlay — provider / model choice, session find
+// ---------------------------------------------------------------------------
+
+export function Picker({
+  picker,
+  width,
+  height,
+}: {
+  picker: PickerState;
+  width: number;
+  height: number;
+}): ReactNode {
+  const w = inside(width);
+  const vis = pickerVisible(picker);
+  const rows = Math.max(3, height - 7);
+  const start = Math.max(
+    0,
+    Math.min(Math.max(0, vis.length - rows), picker.index - Math.floor(rows / 2)),
+  );
+  const shown = vis.slice(start, start + rows);
+
+  return h(
+    Box,
+    { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    h(Text, { color: C.accent, bold: true }, `▸ ${picker.title.toUpperCase()}`),
+    h(
+      Box,
+      { gap: 1 },
+      h(Text, { color: C.faint }, "filter"),
+      h(Text, { color: C.text }, picker.filter || "…"),
+      h(Text, { color: C.faint }, `  ${vis.length}/${picker.items.length}`),
+    ),
+    h(Box, { height: 1 }),
+    ...(shown.length === 0
+      ? [h(Text, { key: "none", color: C.faint }, "no matches")]
+      : shown.map((it, i) => {
+          const on = start + i === picker.index;
+          return h(
+            Text,
+            { key: it.id, wrap: "truncate-end", color: on ? C.text : C.dim, bold: on },
+            h(Text, { color: on ? C.accent : C.faint }, on ? "▍ " : "  "),
+            truncate(it.label, Math.max(6, w - 32)),
+            it.hint ? h(Text, { color: C.faint }, `  ${truncate(it.hint, 28)}`) : null,
+          );
+        })),
+    start + shown.length < vis.length || start > 0
+      ? h(Text, { color: C.faint }, `  … ${vis.length - shown.length} more`)
+      : null,
+    h(Box, { height: 1 }),
+    h(Text, { color: C.faint }, "type to filter · ↑↓ move · enter pick · esc cancel"),
+  );
+}
 
 export function Help({ width }: { width: number }): ReactNode {
   return h(

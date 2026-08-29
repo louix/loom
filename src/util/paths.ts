@@ -1,5 +1,17 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+
+/**
+ * The user-level config file, layered *under* the per-repo `.loom/config.toml`.
+ * `$XDG_CONFIG_HOME/loom/config.toml`, falling back to `~/.config/loom/config.toml`.
+ * Provider profiles, credentials (env-var names), and keybindings live here;
+ * the per-repo file overrides model defaults, base branch, `[[mcp]]`, etc.
+ */
+export function userConfigPath(): string {
+  const base = process.env["XDG_CONFIG_HOME"]?.trim() || join(homedir(), ".config");
+  return join(base, "loom", "config.toml");
+}
 
 /**
  * Walk up from `start` until a directory containing `.git` is found.

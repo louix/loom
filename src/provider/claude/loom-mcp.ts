@@ -112,7 +112,9 @@ export function commitInWorktree(
     };
   }
 
-  const co = git(cwd, ["commit", "-m", msg]);
+  // Never sign: these are automated commits under Loom's own identity, and a
+  // machine-wide `commit.gpgsign = true` would block on a passphrase prompt.
+  const co = git(cwd, ["-c", "commit.gpgsign=false", "commit", "-m", msg]);
   if (!co.ok) return { ok: false, text: `git commit failed: ${co.err || co.out}` };
 
   const sha = git(cwd, ["rev-parse", "--short", "HEAD"]).out.trim();

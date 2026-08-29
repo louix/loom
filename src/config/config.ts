@@ -17,8 +17,14 @@ export interface AisdkProfile {
   model: string;
   /** Model ids offered in the picker (M10e). Defaults to `[model]`. */
   models: string[];
-  /** Short label shown on the Fleet row for non-default providers (M10e). */
+  /** Short label for the provider (Detail pane, `loom ls`). Defaults to the id. */
   tag: string;
+  /**
+   * Colour for this provider's session ids in the Fleet pane. One of Ink's
+   * names (cyan / magenta / yellow / green / blue / red …); "" → auto-assign
+   * from a palette in config order.
+   */
+  color: string;
   /** Cheap model for one-shot auto-titling; "" → falls back to `titles.model`. */
   titleModel: string;
 }
@@ -143,6 +149,7 @@ function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, 
       model,
       models,
       tag: str(t["tag"], id),
+      color: str(t["color"], ""),
       titleModel: str(t["title_model"], ""),
     };
   }
@@ -232,17 +239,53 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   };
 }
 
-/** Load and normalize `.loom/config.toml`; returns defaults if the file is absent. */
-export function loadConfig(configPath: string): LoomConfig {
-  let raw: unknown = {};
+function readTomlIfPresent(path: string): Record<string, unknown> | null {
   try {
-    raw = parseToml(readFileSync(configPath, "utf8"));
+    const parsed = parseToml(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
-    if (e.code !== "ENOENT") {
-      throw new Error(`failed to read ${configPath}: ${e.message}`);
+    if (e.code === "ENOENT") return null;
+    throw new Error(`failed to read ${path}: ${e.message}`);
+  }
+}
+
+/** Recursive object merge; `over` wins. Arrays and scalars are replaced wholesale. */
+export function deepMerge(
+  base: Record<string, unknown>,
+  over: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    const b = out[k];
+    if (
+      b &&
+      v &&
+      typeof b === "object" &&
+      typeof v === "object" &&
+      !Array.isArray(b) &&
+      !Array.isArray(v)
+    ) {
+      out[k] = deepMerge(b as Record<string, unknown>, v as Record<string, unknown>);
+    } else {
+      out[k] = v;
     }
   }
+  return out;
+}
+
+/**
+ * Load and normalize config. The per-repo `.loom/config.toml` is layered on top
+ * of the user-level `userConfigPath` (when given); either may be absent.
+ */
+export function loadConfig(repoConfigPath: string, userConfigPath?: string): LoomConfig {
+  let raw: Record<string, unknown> = {};
+  if (userConfigPath) {
+    const u = readTomlIfPresent(userConfigPath);
+    if (u) raw = u;
+  }
+  const r = readTomlIfPresent(repoConfigPath);
+  if (r) raw = deepMerge(raw, r);
   return normalizeConfig(raw);
 }
 

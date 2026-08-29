@@ -15,6 +15,7 @@ function repo(): { root: string; cleanup: () => void } {
   execFileSync("git", ["init", "-q", "-b", "main", root]);
   git("config", "user.email", "t@example.com");
   git("config", "user.name", "t");
+  git("config", "commit.gpgsign", "false");
   git("commit", "-q", "--allow-empty", "-m", "base");
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }

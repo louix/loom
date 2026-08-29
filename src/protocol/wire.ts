@@ -153,6 +153,19 @@ export interface HelloParams {
   sinceSeq?: number;
 }
 
+/** A configured provider, for the TUI's creation flow and model switcher. */
+export interface ProviderInfo {
+  id: string;
+  /** Models offered in the picker. Empty for `claude` (no local list). */
+  models: string[];
+  /** Short label (Detail pane, `loom ls`). */
+  tag: string;
+  /** Fleet-row id colour — an Ink colour name, or "" for the plain default. */
+  color: string;
+  /** True for the provider new sessions use when none is named. */
+  isDefault: boolean;
+}
+
 export interface HelloResult {
   protocolVersion: number;
   daemon: {

@@ -7,13 +7,13 @@ OpenAI-compatible models (GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI) via
 the Vercel AI SDK.
 
 > Codename "Loom" — rename freely. The design is whatever's written here and in
-> `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-9**
-> plus **milestone 10a–d** (aisdk provider: streaming, usage/cost, cancel,
-> resume, multi-step tool use through the permission gate, a first-party
-> bash/edit/grep suite, plan mode, Loom-side compaction, and `task` sub-agents;
-> the provider/model-switching UX is 10e).
+> `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-10**:
+> the Claude adapter plus a full OpenAI-compatible provider (streaming, tools
+> through the permission gate, a first-party bash/edit/grep suite, plan mode,
+> Loom-side compaction, `task` sub-agents) and the TUI to pick and switch
+> providers/models.
 
-## Status — milestones 1-9
+## Status — milestones 1-10
 
 **1 · daemon skeleton**
 
@@ -100,7 +100,7 @@ the Vercel AI SDK.
   messages queued for it. When it's `awaiting_input` a panel spells out exactly
   what's being approved / denied / asked (the command, the file, the question).
 - **Event stream** — the normalized harness events for the selected session
-  (`f` toggles to all sessions), colourised by kind and wrapped to the pane.
+  (`F` toggles to all sessions), colourised by kind and wrapped to the pane.
   `PgUp`/`PgDn` scroll it, `⇥` blows it up to fullscreen, and `⌃o` opens the
   pending request — or the visible log — in `$EDITOR` read-only, so you can read
   and copy without fighting the split.
@@ -108,8 +108,11 @@ the Vercel AI SDK.
   answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
   the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
   done, `e` rename, `b` set a cost budget, `a` (in `plan_review`) review the
-  plan, `⇧⇥` cycle the permission mode, `⌃y` copy the branch to the clipboard,
-  `n` start a new session. Sending to a session
+  plan, `⇧⇥` cycle the permission mode, `M` switch the session's model (applies
+  next turn), `⌃y` copy the branch to the clipboard, `n` start a new session,
+  `N` start one after picking a provider + model, `f` fuzzy-find a session by
+  title or message text, `F` toggle the log between this session and all.
+  Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
   automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
@@ -127,11 +130,13 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-**OpenAI-compatible providers (milestone 10, in progress).** Any
-`[providers.<id>]` block with `adapter = "aisdk"` (base_url, api_key_env, model,
-models) registers a provider backed by the Vercel AI SDK — OpenAI, GLM, DeepSeek,
-OpenRouter, a local vLLM / Ollama. `default_provider` picks which one new
-sessions use. Loom persists the transcript itself in `provider_messages`.
+**OpenAI-compatible providers (milestone 10).** Any `[providers.<id>]` block with
+`adapter = "aisdk"` (base_url, api_key_env, model, models) registers a provider
+backed by the Vercel AI SDK — OpenAI, GLM, DeepSeek, OpenRouter, a local
+vLLM / Ollama. Put those blocks (and credentials, as env-var *names*) in the
+user-level `~/.config/loom/config.toml`; the per-repo `.loom/config.toml` layers
+on top. `default_provider` picks which one new sessions use; Loom persists the
+transcript itself in `provider_messages`.
 
 - **10a** — streaming, token usage + price-table cost, cancel, resume.
 - **10b** — multi-step tool use. MCP servers (`[[mcp]]`) connect through
@@ -148,6 +153,11 @@ sessions use. Loom persists the transcript itself in `provider_messages`.
   Compaction is Loom's own: a summariser rebuilds the history to one message,
   on demand (`c`) or automatically near the context limit. A `task` tool
   delegates a scoped sub-task to a sub-agent whose steps nest in the log.
+- **10e** — the switching UX. `N` picks a provider then a model before the new
+  session (`n` is still one keystroke on the default). `M` switches the selected
+  session's model (next turn). Each fleet row's id is coloured by its provider;
+  the Detail pane spells out `engine · provider / model`. `loom providers` and
+  `loom models <provider>` from the CLI.
 
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
@@ -276,7 +286,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 203 cases
+npm test             # node:test — 214 cases
 ```
 
 ### Layout

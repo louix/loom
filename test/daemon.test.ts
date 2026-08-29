@@ -191,3 +191,41 @@ test("daemon.status reflects live counts", async () => {
   assert.ok(s.eventSeq >= 1);
   await c.close();
 });
+
+test("providers.list reports claude plus configured aisdk profiles with palette colours", async () => {
+  const hh = await makeHarness({
+    config: `
+default_provider = "openai"
+
+[providers.openai]
+adapter  = "aisdk"
+base_url = "https://api.openai.com/v1"
+model    = "gpt-5"
+models   = ["gpt-5", "gpt-5-mini"]
+
+[providers.deepseek]
+adapter  = "aisdk"
+base_url = "https://api.deepseek.com/v1"
+model    = "deepseek-chat"
+color    = "red"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const list = await c.request<
+      Array<{ id: string; models: string[]; color: string; isDefault: boolean }>
+    >("providers.list");
+    await c.close();
+
+    const byId = new Map(list.map((p) => [p.id, p]));
+    assert.ok(byId.has("claude"));
+    assert.deepEqual(byId.get("openai")?.models, ["gpt-5", "gpt-5-mini"]);
+    assert.equal(byId.get("openai")?.isDefault, true);
+    assert.equal(byId.get("claude")?.isDefault, false);
+    // first aisdk profile gets the first palette colour; explicit wins
+    assert.equal(byId.get("openai")?.color, "cyan");
+    assert.equal(byId.get("deepseek")?.color, "red");
+  } finally {
+    await hh.cleanup();
+  }
+});

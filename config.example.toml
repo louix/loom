@@ -29,6 +29,11 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
                                    # the TUI's cache-liveness countdown exact; 1h cache
                                    # writes cost more on metered billing.
 
+# This file is the per-repo layer. A user-level file at
+# $XDG_CONFIG_HOME/loom/config.toml (→ ~/.config/loom/config.toml) is loaded
+# *under* it — put provider profiles + credentials there and let each repo
+# override model / base_branch / [[mcp]]. Same schema; a per-repo key wins.
+
 # default_provider = "claude"       # which provider new sessions use when the
                                    # client doesn't name one (must be configured)
 
@@ -40,8 +45,9 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # base_url    = "https://api.openai.com/v1"
 # api_key_env = "OPENAI_API_KEY"    # env var holding the bearer token; "" if keyless
 # model       = "gpt-5"             # default model for new sessions
-# models      = ["gpt-5", "gpt-5-mini"]   # offered in the picker (M10e)
-# tag         = "oai"              # Fleet-row label for non-default providers (M10e)
+# models      = ["gpt-5", "gpt-5-mini"]   # offered in the `N` / `M` model picker
+# tag         = "oai"              # short label (Detail pane, `loom providers`)
+# color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
 
 [[mcp]]                             # mounted into every session, in order, after

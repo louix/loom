@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { normalizeConfig } from "../src/config/config.ts";
+import { deepMerge, loadConfig, normalizeConfig } from "../src/config/config.ts";
 
 function cfg(toml: string) {
   return normalizeConfig(parseToml(toml));
@@ -83,4 +86,67 @@ model   = "claude-sonnet-5"
 `);
   assert.deepEqual(c.providers.aisdk, {});
   assert.equal(c.providers.claude.model, "claude-sonnet-5");
+});
+
+// --- deepMerge / XDG layering --------------------------------------------
+
+test("deepMerge: over wins, objects merge, arrays/scalars replace", () => {
+  const merged = deepMerge(
+    { a: 1, nested: { x: 1, y: 2 }, list: [1, 2], keep: "me" },
+    { a: 2, nested: { y: 3, z: 4 }, list: [9] },
+  );
+  assert.deepEqual(merged, { a: 2, nested: { x: 1, y: 3, z: 4 }, list: [9], keep: "me" });
+});
+
+test("loadConfig layers the per-repo file over the user file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
+  try {
+    const userPath = join(dir, "user.toml");
+    const repoPath = join(dir, "repo.toml");
+    writeFileSync(
+      userPath,
+      `
+default_provider = "deepseek"
+base_branch = "trunk"
+
+[providers.deepseek]
+adapter     = "aisdk"
+base_url    = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+model       = "deepseek-chat"
+`,
+    );
+    writeFileSync(
+      repoPath,
+      `
+base_branch = "main"
+
+[providers.deepseek]
+model = "deepseek-reasoner"
+`,
+    );
+
+    const c = loadConfig(repoPath, userPath);
+    // repo wins on the scalar it sets
+    assert.equal(c.baseBranch, "main");
+    // user-only scalar survives
+    assert.equal(c.defaultProvider, "deepseek");
+    // the profile is merged: user's base_url + repo's model override
+    assert.equal(c.providers.aisdk["deepseek"]?.baseUrl, "https://api.deepseek.com/v1");
+    assert.equal(c.providers.aisdk["deepseek"]?.model, "deepseek-reasoner");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig works when the user file is absent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
+  try {
+    const repoPath = join(dir, "repo.toml");
+    writeFileSync(repoPath, `base_branch = "dev"\n`);
+    const c = loadConfig(repoPath, join(dir, "does-not-exist.toml"));
+    assert.equal(c.baseBranch, "dev");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

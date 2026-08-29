@@ -286,7 +286,7 @@ inside a session card; child sessions are their own rows with a parent link.
 
 ## Milestone 10 — non-Claude providers (Vercel AI SDK)
 
-**Full plan: [`m10-plan.md`](m10-plan.md).** M10a–d shipped; M10e (provider/model switching UX) under review.
+**Full plan: [`m10-plan.md`](m10-plan.md).** M10a–e shipped — milestone 10 complete.
 
 The original sketch here was an **ADK adapter**, on the assumption that TS
 `@google/adk` carries Python ADK's `LiteLlm` wrapper for OpenAI-compatible
@@ -334,7 +334,18 @@ Mounted for aisdk sessions alongside MCP + loom tools, all gated. Verified live
 against an OpenAI-compatible endpoint: model ran a script, edited it, re-ran it.
 198 tests.
 
-**M10d — shipped.** `#turnToolSet` filters tools per turn by mode: `plan` keeps only readonly + `ask_user` + `exit_plan`. `exit_plan` emits `plan_review`, blocks on `respondToPlan`, then on approval flips the session to `acceptEdits` and chains a fresh implementation turn (`implement_fresh` compacts first; `discuss` stays planning). Loom-side compaction: `session.compact` + an 0.85·limit auto-trigger run a tool-free summariser, rebuild the history to one message (`store.replaceFrom`), emit `compact`. `task` tool spawns a depth-1 sub-agent (own mapper, `agentId`-tagged events, `subagent_started/stopped`). `capabilities.subagents = true`. 203 tests.
+**M10d — shipped.** `#turnToolSet` filters tools per turn by mode: `plan` keeps only readonly + `ask_user` + `exit_plan`. `exit_plan` emits `plan_review`, blocks on `respondToPlan`, then on approval flips the session to `acceptEdits` and chains a fresh implementation turn (`implement_fresh` compacts first; `discuss` stays planning). Loom-side compaction: `session.compact` + an 0.85·limit auto-trigger run a tool-free summariser, rebuild the history to one message (`store.replaceFrom`), emit `compact`. `task` tool spawns a depth-1 sub-agent (own mapper, `agentId`-tagged events, `subagent_started/stopped`). `capabilities.subagents = true`.
+
+**M10e — shipped.** User-level config at `$XDG_CONFIG_HOME/loom/config.toml`,
+deep-merged *under* the per-repo file (`loadConfig(repo, user)` + `deepMerge`).
+`providers.list` / `providers.probeModels` RPCs; `ProviderInfo` on the wire.
+TUI: `N` runs a provider → model picker before the new-session prompt (`n`
+unchanged); `M` live-switches the selected session's model (next turn); `f` is
+now find-a-session (fuzzy over title + buffered message text), `F` took the old
+log-scope toggle. A generic `PickerState` + `Picker` overlay backs all three.
+Fleet-row session ids are coloured by provider (palette auto-assigned in config
+order, `color` to override); the Detail `engine · provider / model` line
+matches. `loom providers` / `loom models <provider>` CLI. migration-free.
 
 ---
 

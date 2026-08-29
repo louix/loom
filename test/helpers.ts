@@ -27,6 +27,9 @@ export async function makeHarness(opts: { git?: boolean; config?: string } = {})
     execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
     execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);
     execFileSync("git", ["-C", repoRoot, "config", "user.name", "t"]);
+    // Don't inherit a machine-wide commit.gpgsign — gpg has no TTY here.
+    execFileSync("git", ["-C", repoRoot, "config", "commit.gpgsign", "false"]);
+    execFileSync("git", ["-C", repoRoot, "config", "tag.gpgsign", "false"]);
     // A base commit so per-session `git worktree add -b … main` has a ref.
     execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
   }

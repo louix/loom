@@ -62,12 +62,12 @@ function mount(client: LoomClient) {
  * *before* mounting so they arrive in the `hello` snapshot; emit live events
  * *after*, once the client has subscribed.
  */
-async function harness(): Promise<{
+async function harness(opts: { config?: string } = {}): Promise<{
   h: Harness;
   connect: (replayHistory?: boolean) => Promise<LoomClient>;
   cleanup: () => Promise<void>;
 }> {
-  const h = await makeHarness();
+  const h = await makeHarness(opts);
   return {
     h,
     connect: (replayHistory = false) =>
@@ -369,6 +369,83 @@ test("Tab toggles the fullscreen event log", async () => {
     stdin.feed("\t");
     await delay(120);
     assert.match(stdout.last, /FLEET/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("N opens the provider → model picker, then the new-session prompt", async () => {
+  const { connect, cleanup } = await harness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://x/v1"
+model    = "gpt-5"
+models   = ["gpt-5", "gpt-5-mini", "o4"]
+`,
+  });
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(220);
+    stdin.feed("N");
+    await delay(120);
+    assert.match(stdout.last, /PROVIDER/);
+    assert.match(stdout.last, /openai/);
+
+    stdin.feed("\r"); // pick the highlighted provider (claude — first row)
+    await delay(120);
+    // claude has no model list → straight to the new prompt
+    assert.match(stdout.last, /new/i);
+
+    stdin.feed(ESC);
+    await delay(80);
+    stdin.feed("N");
+    await delay(100);
+    stdin.feed("openai");
+    await delay(100);
+    stdin.feed("\r"); // pick openai
+    await delay(120);
+    assert.match(stdout.last, /MODEL/);
+    assert.match(stdout.last, /gpt-5-mini/);
+
+    stdin.feed("mini");
+    await delay(100);
+    stdin.feed("\r");
+    await delay(120);
+    assert.match(stdout.last, /new session/i);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("f opens the find picker and filters the fleet by text", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "refactor the parser", status: "idle", provider: "fake" });
+  await client.request("session.createStub", { prompt: "update the docs", status: "idle", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(200);
+    stdin.feed("f");
+    await delay(120);
+    assert.match(stdout.last, /FIND SESSION/);
+    assert.match(stdout.last, /refactor the parser/);
+    assert.match(stdout.last, /update the docs/);
+
+    stdin.feed("parser");
+    await delay(120);
+    assert.match(stdout.last, /refactor the parser/);
+    assert.doesNotMatch(stdout.last, /update the docs/);
+
+    stdin.feed(ESC);
+    await delay(100);
+    assert.match(stdout.last, /▍ loom/);
   } finally {
     app.unmount();
     await client.close();

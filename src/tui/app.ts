@@ -16,7 +16,7 @@ import {
 } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "../client/client.ts";
-import type { SessionSnapshot } from "../protocol/wire.ts";
+import type { ProviderInfo, SessionSnapshot } from "../protocol/wire.ts";
 import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
 import type { EditorHandoff } from "./run.ts";
 import { applyKey, buffer } from "./editor.ts";
@@ -29,6 +29,7 @@ import {
   FooterArea,
   Header,
   Help,
+  Picker,
   PlanReview,
   promptRows,
   RequestPanel,
@@ -37,9 +38,15 @@ import {
 } from "./components.ts";
 import {
   allowedActs,
+  findPickItems,
   initialState,
+  makePicker,
   makePrompt,
+  modelPickItems,
   pendingFor,
+  pickerCurrent,
+  providerColorOf,
+  providerPickItems,
   queueFor,
   reduce,
   selectedSession,
@@ -74,6 +81,10 @@ export function App({
     void client
       .request<SessionSnapshot[]>("session.list")
       .then((sessions) => dispatch({ t: "sessions", sessions }))
+      .catch(() => {});
+    void client
+      .request<ProviderInfo[]>("providers.list")
+      .then((list) => dispatch({ t: "providers", list }))
       .catch(() => {});
   }, [client]);
 
@@ -216,6 +227,12 @@ export function App({
       if (name === "filter") {
         return void dispatch({ t: "logFilter", value: state.logFilter === "all" ? "selected" : "all" });
       }
+      if (name === "find") {
+        return void dispatch({
+          t: "openPicker",
+          picker: makePicker({ kind: "find", title: "find session", items: findPickItems(state) }),
+        });
+      }
       if (name === "help") return void dispatch({ t: "help", value: state.mode !== "help" });
       if (name === "quit") return quitTui();
       if (!s) return;
@@ -311,6 +328,100 @@ export function App({
     [state, client, note, perform, quitTui],
   );
 
+  /** Resolve the open picker's highlighted item by its kind. */
+  const choosePicked = useCallback(() => {
+    const p = state.picker;
+    if (!p) return;
+    const cur = pickerCurrent(p);
+    if (!cur) return void dispatch({ t: "closePicker" });
+
+    if (p.kind === "provider") {
+      const models = modelPickItems(state, cur.id);
+      if (models.length > 0) {
+        return void dispatch({
+          t: "openPicker",
+          picker: makePicker({
+            kind: "model",
+            title: `model · ${cur.label}`,
+            items: models,
+            ctx: { provider: cur.id },
+          }),
+        });
+      }
+      return void dispatch({
+        t: "openPrompt",
+        prompt: makePrompt({ kind: "new", sessionId: null, label: `new · ${cur.label}`, provider: cur.id }),
+      });
+    }
+
+    if (p.kind === "model") {
+      if (p.ctx?.liveSessionId) {
+        const id = p.ctx.liveSessionId;
+        dispatch({ t: "closePicker" });
+        client
+          .request("session.setModel", { id, model: cur.id, by: client.clientId })
+          .then(() => dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }))
+          .catch((e: unknown) =>
+            dispatch({ t: "notice", text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+          );
+        return;
+      }
+      return void dispatch({
+        t: "openPrompt",
+        prompt: makePrompt({
+          kind: "new",
+          sessionId: null,
+          label: "new session",
+          ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
+          model: cur.id,
+        }),
+      });
+    }
+
+    // find
+    dispatch({ t: "select", id: cur.id });
+    dispatch({ t: "closePicker" });
+  }, [state, client]);
+
+  /** Open the provider → model → prompt flow for a new session (the `N` key). */
+  const startNewFlow = useCallback(() => {
+    const provs = state.providers;
+    if (provs.length > 1) {
+      return void dispatch({
+        t: "openPicker",
+        picker: makePicker({ kind: "provider", title: "provider", items: providerPickItems(state) }),
+      });
+    }
+    const only = provs[0]?.id ?? "claude";
+    const models = modelPickItems(state, only);
+    if (models.length > 0) {
+      return void dispatch({
+        t: "openPicker",
+        picker: makePicker({ kind: "model", title: "model", items: models, ctx: { provider: only } }),
+      });
+    }
+    dispatch({ t: "openPrompt", prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }) });
+  }, [state]);
+
+  /** Open a live model switcher for the selected session (the `M` key). */
+  const switchModel = useCallback(() => {
+    const s = selectedSession(state);
+    if (!s) return;
+    const models = modelPickItems(state, s.provider);
+    if (models.length === 0) {
+      return void dispatch({ t: "notice", text: `${s.provider} has no alternate models`, tone: "dim" });
+    }
+    dispatch({
+      t: "openPicker",
+      picker: makePicker({
+        kind: "model",
+        title: `model · ${s.provider}`,
+        items: models,
+        ctx: { provider: s.provider, liveSessionId: s.id },
+      }),
+    });
+  }, [state]);
+
   /** Fire `session.send` now, echoing into the log and history. */
   const deliver = useCallback(
     (sessionId: string, text: string, label = "sent") => {
@@ -351,6 +462,8 @@ export function App({
           prompt: text,
           by,
           ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
+          ...(p.provider ? { provider: p.provider } : {}),
+          ...(p.model ? { model: p.model } : {}),
         });
         dispatch({ t: "select", id: r.id });
         dispatch({ t: "pushHistory", text });
@@ -601,6 +714,22 @@ export function App({
       return;
     }
 
+    if (state.mode === "picker" && state.picker) {
+      const p = state.picker;
+      if (key.escape) return void dispatch({ t: "closePicker" });
+      if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
+      if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
+      if (key.return) return void choosePicked();
+      if (key.backspace || key.delete) {
+        return void dispatch({ t: "pickerFilter", value: p.filter.slice(0, -1) });
+      }
+      // append printable input (single keys and fast/pasted runs alike)
+      if (input && !key.ctrl && !key.meta && !key.tab && /^[\x20-\x7e]+$/.test(input)) {
+        return void dispatch({ t: "pickerFilter", value: p.filter + input });
+      }
+      return;
+    }
+
     // ---- browse ----
     if (key.pageUp) return setLogScroll((n) => n + Math.max(1, logPage - 1));
     if (key.pageDown) return setLogScroll((n) => Math.max(0, n - Math.max(1, logPage - 1)));
@@ -613,6 +742,9 @@ export function App({
     if (input === "q") return quitTui();
     if (input === "Q") return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
     if (input === "R") return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
+    if (input === "N") return startNewFlow();
+    if (input === "M") return switchModel();
+    if (input === "F") return act("filter");
 
     const sel = selectedSession(state);
     if (key.ctrl && input === "y") {
@@ -639,12 +771,12 @@ export function App({
       e: "title",
       b: "budget",
       n: "new",
-      f: "filter",
+      f: "find",
       "?": "help",
     };
     const chosen = map[input];
     if (!chosen) return;
-    if (chosen === "new" || chosen === "filter" || chosen === "help" || allowed.has(chosen)) act(chosen);
+    if (chosen === "new" || chosen === "find" || chosen === "help" || allowed.has(chosen)) act(chosen);
   });
 
   // ---- layout ----------------------------------------------
@@ -677,6 +809,12 @@ export function App({
       { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
       h(PlanReview, { text: state.plan.text, width: Math.min(cols - 4, 96) }),
     );
+  } else if (state.mode === "picker" && state.picker) {
+    body = h(
+      Box,
+      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
+      h(Picker, { picker: state.picker, width: Math.min(cols - 4, 64), height: Math.max(6, bodyH - 2) }),
+    );
   } else if (logFull) {
     body = h(Box, { height: bodyH }, h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }));
   } else {
@@ -687,7 +825,13 @@ export function App({
       h(
         Box,
         { width: rightW, flexDirection: "column" },
-        h(Detail, { session: sel, width: rightW, queued: sel ? queueFor(state, sel.id) : [], now: Date.now() }),
+        h(Detail, {
+          session: sel,
+          width: rightW,
+          queued: sel ? queueFor(state, sel.id) : [],
+          now: Date.now(),
+          engineColor: sel ? providerColorOf(state, sel.provider) : "",
+        }),
         showRequest ? h(RequestPanel, { pending: pend, width: rightW }) : null,
         h(EventLog, { state, width: rightW, height: rightLogH, scroll: logScroll, full: false }),
       ),
