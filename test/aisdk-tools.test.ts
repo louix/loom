@@ -143,6 +143,21 @@ test("gate name heuristics: readonly vs edit", () => {
   assert.equal(isEdit("read_file"), false);
 });
 
+test("gate: a name with both a read verb and a mutation verb is a mutator", () => {
+  for (const n of [
+    "search_and_replace",
+    "find_and_replace",
+    "get_or_create_file",
+    "get_and_delete",
+    "read_and_write",
+    "mcp__fs__search_and_replace",
+  ]) {
+    assert.equal(isReadonly(n), false, `${n} must not be treated as read-only`);
+    assert.equal(policy("default", n), "ask", `${n} must prompt in default mode`);
+    assert.equal(policy("plan", n), "ask", `${n} must be gated in plan mode`);
+  }
+});
+
 test("policy: auto allows all; default asks for non-readonly; acceptEdits allows edits", () => {
   assert.equal(policy("auto", "write_file"), "allow");
   assert.equal(policy("default", "read_file"), "allow");

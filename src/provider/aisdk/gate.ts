@@ -20,17 +20,24 @@ const READONLY_EXACT = new Set([
   "directory_tree",
   "list_directory_with_sizes",
 ]);
+// Match a verb as any underscore-delimited segment of the name (`get_or_create`,
+// `search_and_replace`, `mcp__fs__search_files`), not just the leading one.
 const READONLY_RE =
-  /(^|__)(read|list|get|search|stat|tree|find|grep|glob|fetch|inspect|show|describe|view|cat|head|tail|count|exists)(_|$)/i;
+  /(^|_)(read|list|get|search|stat|tree|find|grep|glob|fetch|inspect|show|describe|view|cat|head|tail|count|exists)(_|$)/i;
 const EDIT_RE =
-  /(^|__)(write|edit|create|append|patch|apply|insert|mkdir|move|rename|copy|delete|remove|rm|touch|format|save)(_|$)/i;
-
-export function isReadonly(name: string): boolean {
-  return READONLY_EXACT.has(name) || READONLY_RE.test(name);
-}
+  /(^|_)(write|edit|create|append|patch|apply|insert|mkdir|move|rename|copy|delete|remove|rm|touch|format|save|replace|swap|set|update|upsert|sync|prune|purge|drop|truncate|clear|overwrite)(_|$)/i;
 
 export function isEdit(name: string): boolean {
   return EDIT_RE.test(name);
+}
+
+export function isReadonly(name: string): boolean {
+  if (READONLY_EXACT.has(name)) return true;
+  // A name that carries *both* a read verb and a mutation verb
+  // (`search_and_replace`, `get_or_create_file`, `read_and_write`) is a
+  // mutator — the edit verb wins the tie, so it goes through the gate and is
+  // withheld in plan mode.
+  return READONLY_RE.test(name) && !EDIT_RE.test(name);
 }
 
 /** What to do with a tool call *before* any user prompt. */
