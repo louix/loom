@@ -562,6 +562,13 @@ obvious where to look.
 - **`N` flow (`6561099`):** the model step always shows after the provider is
   chosen (was skipped when a provider had no model list); an empty picker
   carries an explanatory `emptyText` and Enter continues with just the provider.
+- **Permission prompt stuck behind `running` (`a34e1f1`):** a new aisdk session
+  making parallel tool calls never surfaced the approval panel. `deriveStatus`
+  no longer lets a content event clear `awaiting_input` (some OpenAI-compatible
+  providers flush buffered assistant text *after* the `permission_request`); the
+  aisdk mapper flushes open text/reasoning on `tool-call` + `finish-step`; and
+  parallel requests are handled — `#resumeAfterAnswer` waits for the last, the
+  TUI queues pending permissions (`Pending.permissions`) and shows "(1 of N)".
 
 ## Known gaps (parked)
 
