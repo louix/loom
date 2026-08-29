@@ -10,6 +10,13 @@
  */
 import { writeFileSync } from "node:fs";
 
+// This file is a fixture, not a test. `npm test` globs `test/*.test.ts` and
+// never loads it, but a bare `node --test` matches `**/test/**/*.mjs` and would
+// execute it — then hang forever on stdin. Bail when the test runner is our
+// parent. (When the MCP stdio transport spawns us for real, it uses a minimal
+// allow-list environment that never carries NODE_TEST_CONTEXT.)
+if (process.env["NODE_TEST_CONTEXT"]) process.exit(0);
+
 const TOOLS = [
   {
     name: "echo_text",
