@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { LoomClient } from "../src/client/client.ts";
 import type { SessionSnapshot } from "../src/protocol/wire.ts";
@@ -66,5 +67,41 @@ test("markDone then gc removes the worktree but keeps the row and branch", async
   assert.equal(after.status, "done");
   assert.equal(after.worktree, null);
   assert.equal(after.branch, "loom/cleanup-target"); // branch retained
+  await c.close();
+});
+
+test("session.remove deletes the row + worktree, keeps the branch, pushes session_removed", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", { prompt: "throwaway spike", provider: "fake" });
+  const tree = s.worktree as string;
+  assert.ok(existsSync(tree));
+
+  const removed: string[] = [];
+  c.onPush((f) => {
+    if (f.type === "session_removed") removed.push(f.sessionId);
+  });
+
+  const r = await c.request<{ removed: string }>("session.remove", { id: s.id });
+  assert.equal(r.removed, s.id);
+  assert.ok(!existsSync(tree), "worktree is gone");
+
+  await assert.rejects(c.request("session.get", { id: s.id }), /no such session/);
+  const list = await c.request<SessionSnapshot[]>("session.list");
+  assert.ok(!list.some((x) => x.id === s.id), "row is gone from the fleet");
+
+  await new Promise((res) => setTimeout(res, 50));
+  assert.deepEqual(removed, [s.id], "clients got a session_removed frame");
+
+  // branch survives the delete, like gc
+  const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", "loom/throwaway-spike"], {
+    encoding: "utf8",
+  });
+  assert.match(branches, /loom\/throwaway-spike/);
+  await c.close();
+});
+
+test("session.remove on an unknown id is a not_found", async () => {
+  const c = await client();
+  await assert.rejects(c.request("session.remove", { id: "nope" }), /no such session/);
   await c.close();
 });

@@ -386,8 +386,8 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
-  // a settled selected session also gets mode + model + title + budget
-  const S = ["mode", "model", "fork", "title", "budget", ...G];
+  // a settled selected session also gets mode + model + title + budget + delete
+  const S = ["mode", "model", "fork", "title", "budget", "delete", ...G];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
   // plus interrupt and the globals. No mode / model / rename / budget / fork.

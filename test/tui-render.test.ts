@@ -171,6 +171,40 @@ test("R raises a restart confirmation that esc dismisses", async () => {
   }
 });
 
+test("d deletes the selected session behind a confirm", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "throwaway",
+    status: "idle",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(160);
+    assert.match(stdout.last, /delete/); // footer advertises it when nothing is pending
+
+    stdin.feed("d");
+    await delay(100);
+    assert.match(stdout.last, /Delete session/);
+
+    stdin.feed(ESC);
+    await delay(80);
+    assert.doesNotMatch(stdout.last, /Delete session/);
+
+    stdin.feed("d");
+    await delay(80);
+    stdin.feed("\r"); // confirm
+    await delay(150);
+    const list = await client.request<SessionSnapshot[]>("session.list");
+    assert.ok(!list.some((x) => x.id === s.id), "the row is gone");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("re-opening the TUI backfills the event log from the running daemon", async () => {
   const { connect, cleanup } = await harness();
   const first = await connect();

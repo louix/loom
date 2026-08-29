@@ -175,7 +175,9 @@ export interface ConfirmState {
   title: string;
   body?: string;
   danger: boolean;
-  action: "restart" | "quitAll";
+  action: "restart" | "quitAll" | "deleteSession";
+  /** Target session for `deleteSession`. */
+  sessionId?: string;
 }
 
 export interface PendingPerm {
@@ -938,6 +940,7 @@ export type ActName =
   | "fork"
   | "title"
   | "budget"
+  | "delete"
   | "new"
   | "find"
   | "filter"
@@ -1012,6 +1015,8 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if (isAisdk && !session.inPlace) local.push({ keys: "⌃f", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
+    // `d` with no request pending — the keymap opens a delete confirm.
+    local.push({ keys: "d", label: "delete", act: "delete" });
   }
   return [...local, ...GLOBAL_HINTS];
 }

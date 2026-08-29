@@ -661,7 +661,15 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
       Box,
       { gap: 2 },
       h(Text, { color: C.accent }, "enter"),
-      h(Text, { color: C.dim }, confirm.action === "restart" ? "restart the daemon" : "quit and stop the daemon"),
+      h(
+        Text,
+        { color: C.dim },
+        confirm.action === "restart"
+          ? "restart the daemon"
+          : confirm.action === "deleteSession"
+            ? "delete the session"
+            : "quit and stop the daemon",
+      ),
       h(Text, { color: C.faint }, "·"),
       h(Text, { color: C.accent }, "esc"),
       h(Text, { color: C.dim }, "cancel"),
@@ -804,7 +812,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⇥", "toggle the fullscreen event log"],
   ["⌃o", "open the pending request — or the event log — in $EDITOR, read-only"],
   ["⌃y", "copy the selected session's branch to the clipboard"],
-  ["a  ·  d", "approve / answer  ·  deny a permission request"],
+  ["a  ·  d", "approve / answer  ·  deny a request — or, none pending, delete the session (confirm)"],
   ["a (plan)", "open the plan review — then i / f / e / d to decide"],
   ["s", "send a follow-up turn (while running → inject now / queue for turn end)"],
   ["c", "compact the context window (shown once the meter passes half)"],

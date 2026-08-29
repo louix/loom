@@ -743,17 +743,32 @@ export function App({
   const liveCount = state.sessions.filter(
     (s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input",
   ).length;
-  const confirmFor = (action: ConfirmState["action"]): ConfirmState => ({
+  const confirmFor = (action: "restart" | "quitAll"): ConfirmState => ({
     title: action === "restart" ? "Restart the daemon?" : "Quit the UI and stop the daemon?",
     ...(liveCount > 0 ? { body: `${liveCount} live session${liveCount === 1 ? "" : "s"} will be interrupted.` } : {}),
     danger: action === "quitAll" || liveCount > 0,
     action,
+  });
+  const confirmForDelete = (s: SessionSnapshot): ConfirmState => ({
+    title: `Delete session ${shortId(s.id)}?`,
+    body: `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}” — its worktree and stored transcript go too. The branch is kept.`,
+    danger: true,
+    action: "deleteSession",
+    sessionId: s.id,
   });
   const runConfirm = useCallback(() => {
     const c = state.confirm;
     if (!c || overlayActed.current === c) return;
     overlayActed.current = c;
     dispatch({ t: "closeConfirm" });
+    if (c.action === "deleteSession" && c.sessionId) {
+      const id = c.sessionId;
+      client
+        .request("session.remove", { id, by: client.clientId })
+        .then(() => note(`deleted ${shortId(id)}`, "good"))
+        .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+      return;
+    }
     if (c.action === "restart") {
       restarting.current = true;
       dispatch({ t: "connection", value: "reconnecting" });
@@ -944,9 +959,16 @@ export function App({
     }
     if (key.ctrl || key.meta) return; // unbound modified key — swallow, don't fall through as the bare key
 
+    // `d` denies a pending permission request; with nothing pending it deletes
+    // the selected session (behind a confirm).
+    if (input === "d") {
+      if (allowed.has("deny")) return act("deny");
+      if (sel) return void dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) });
+      return;
+    }
+
     const map: Record<string, ActName> = {
       a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
-      d: "deny",
       s: "send",
       i: "interrupt",
       r: "resume",

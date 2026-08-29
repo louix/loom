@@ -358,6 +358,12 @@ export class Daemon {
     this.#server.broadcast(frame);
   }
 
+  #emitSessionRemoved(id: string): void {
+    if (this.#stopping) return;
+    const frame = this.#events.append({ kind: "push", type: "session_removed", sessionId: id });
+    this.#server.broadcast(frame);
+  }
+
   /**
    * Overlay runtime-only facts on a stored snapshot: git facts, sub-agents,
    * cache TTL. `withGit` false skips the ~6 synchronous `git` calls — used for
@@ -1133,6 +1139,33 @@ export class Daemon {
       this.#emitSessionUpdated(snap, clientLabel(params));
       this.#onActivityChange("marked-done");
       return this.#enrich(snap);
+    });
+
+    // remove: delete a session row for good — its worktree and its stored
+    // transcript / history / checkpoints go with it (child tables cascade). The
+    // branch is left alone, like `gc`. An in-place session shares the repo
+    // working dir, so its "worktree" is never removed.
+    d.register("session.remove", async (params) => {
+      const id = reqString(params, "id");
+      const s = this.#registry.get(id);
+      if (!s) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
+      this.#lastSend.delete(id);
+      if (s.worktree) {
+        try {
+          this.#worktrees.remove(s.worktree, { force: true });
+        } catch (err) {
+          this.#log.warn("session.remove", {
+            id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      this.#registry.remove(id);
+      this.#emitSessionRemoved(id);
+      this.#worktrees.prune();
+      this.#onActivityChange("session-removed");
+      return { removed: id };
     });
 
     // gc: remove worktrees for sessions marked done. Branches are never

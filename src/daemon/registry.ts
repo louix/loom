@@ -77,6 +77,13 @@ export class Registry {
     return ids;
   }
 
+  /** Delete the row for good. Child tables cascade; a child session's
+   *  `parent_id` is nulled (see the schema). The version counter is dropped. */
+  remove(id: string): void {
+    this.#store.delete(id);
+    this.#versions.delete(id);
+  }
+
   version(id: string): number {
     return this.#versions.get(id) ?? 0;
   }

@@ -36,6 +36,7 @@ commands:
   budget <id> <usd>      set a cost budget (clears a warned/halted state)
   resume <id>            resume an interrupted session
   done <id>              mark a session complete (worktree kept)
+  rm <id>                delete a session for good (worktree + transcript; branch kept)
   gc                     remove worktrees for done sessions   [--id ONE] [--force]
 
   stub <prompt...>       create a placeholder session     [--status S] [--provider P] [--model M]
@@ -291,6 +292,12 @@ async function main(): Promise<void> {
         process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;
       }
+      case "rm": {
+        const id = need(positionals[1], "rm <id>");
+        const r = await client.request<{ removed: string }>("session.remove", { id, by: client.clientId });
+        process.stdout.write(`removed ${r.removed.slice(0, 8)}\n`);
+        break;
+      }
       case "gc": {
         const r = await client.request<{ removed: string[]; failed: Array<{ id: string; error: string }> }>(
           "session.gc",
@@ -360,7 +367,7 @@ async function main(): Promise<void> {
 
 const ID_CMDS = new Set([
   "get", "history", "send", "compact", "interrupt", "approve", "deny", "answer",
-  "plan", "mode", "budget", "resume", "done", "set-status", "emit",
+  "plan", "mode", "budget", "resume", "done", "rm", "set-status", "emit",
 ]);
 
 /** Expand a unique session-id prefix (as printed by `loom ls`) to the full id. */
