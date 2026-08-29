@@ -298,9 +298,12 @@ export class SessionManager {
   }
 
   /** Move a settled `awaiting_input` session back to `running` — unless a user
-   *  interrupt landed in between, in which case the interrupt sticks. */
+   *  interrupt landed in between (the interrupt sticks), or other requests from
+   *  the same turn are still open (parallel tool calls each raise their own
+   *  permission_request; the turn stays blocked until the last is answered). */
   #resumeAfterAnswer(id: string, run: Running): void {
     if (run.interrupting) return;
+    if (run.pendingPerms.size > 0 || run.pendingQuestions.size > 0 || run.pendingPlans.size > 0) return;
     this.#set(id, run, "running", null);
   }
 

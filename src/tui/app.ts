@@ -41,6 +41,7 @@ import {
   findPickItems,
   initialState,
   makePicker,
+  firstPerm,
   makePrompt,
   modelPickEmptyText,
   modelPickItems,
@@ -206,10 +207,11 @@ export function App({
   const viewInEditor = useCallback(async () => {
     const s = selectedSession(state);
     const pend = s ? pendingFor(state, s.id) : {};
+    const fp = firstPerm(pend);
     if (pend.plan !== undefined) {
       await openEditor(pend.planText ?? "", { ext: "md" });
-    } else if (pend.permission !== undefined) {
-      await openEditor(JSON.stringify({ tool: pend.permTool, input: pend.permInput }, null, 2), { ext: "json" });
+    } else if (fp) {
+      await openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), { ext: "json" });
     } else if (pend.question !== undefined) {
       await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
     } else {
@@ -297,8 +299,9 @@ export function App({
       }
       switch (name) {
         case "approve": {
-          const requestId = pendingFor(state, s.id).permission;
-          if (!requestId) return note("no permission request pending", "dim");
+          const fp = firstPerm(pendingFor(state, s.id));
+          if (!fp) return note("no permission request pending", "dim");
+          const requestId = fp.id;
           return perform(async () => {
             const r = await client.request<{ alreadyResolved: boolean }>("session.respondPermission", {
               id: s.id,
@@ -306,15 +309,16 @@ export function App({
               decision: "allow",
               by,
             });
+            dispatch({ t: "resolvePerm", sessionId: s.id, id: requestId });
             return r.alreadyResolved ? `${requestId} already resolved` : `approved ${requestId}`;
           });
         }
         case "deny": {
-          const requestId = pendingFor(state, s.id).permission;
-          if (!requestId) return note("no permission request pending", "dim");
+          const fp = firstPerm(pendingFor(state, s.id));
+          if (!fp) return note("no permission request pending", "dim");
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({ kind: "deny", sessionId: s.id, requestId, label: `deny ${requestId}` }),
+            prompt: makePrompt({ kind: "deny", sessionId: s.id, requestId: fp.id, label: `deny ${fp.id}` }),
           });
         }
         case "answer": {
@@ -599,6 +603,7 @@ export function App({
           by,
           ...(text ? { message: text } : {}),
         });
+        dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
         return r.alreadyResolved ? `${p.requestId} already resolved` : `denied ${p.requestId}`;
       }
       return "";
@@ -950,7 +955,7 @@ export function App({
   const showRequest =
     !logFull &&
     sel?.status === "awaiting_input" &&
-    (pend.permission !== undefined || pend.question !== undefined || pend.plan !== undefined);
+    (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
   const rightLogH = Math.max(3, splitLogH - (showRequest ? REQUEST_PANEL_ROWS : 0));
 
   let body: ReactNode;

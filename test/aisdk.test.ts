@@ -175,6 +175,21 @@ test("mapper turns reasoning into thinking and tool parts into tool_call/tool_re
   assert.equal((errp as { output: unknown }).output, "boom");
 });
 
+test("mapper flushes buffered text / reasoning before a tool_call (no text-end sent)", () => {
+  const m = new AisdkEventMapper("s1", "gpt-5");
+  m.map({ type: "reasoning-delta", id: "r", text: "let me look" } as never);
+  m.map({ type: "text-delta", id: "t", text: "I'll check the repo." } as never);
+  // provider jumps straight to the tool call without closing the blocks
+  const out = m.map({ type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "ls" } } as never);
+  assert.deepEqual(out.map((e) => e.type), ["assistant_text", "thinking", "tool_call"]);
+  assert.equal((out[0] as { text: string }).text, "I'll check the repo.");
+  // a second parallel tool call has nothing left to flush
+  assert.deepEqual(
+    m.map({ type: "tool-call", toolCallId: "c2", toolName: "bash", input: {} } as never).map((e) => e.type),
+    ["tool_call"],
+  );
+});
+
 test("mapper splits cached tokens out of input on finish-step", () => {
   const m = new AisdkEventMapper("s1", "gpt-5");
   const ev = m.map({

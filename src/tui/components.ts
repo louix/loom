@@ -732,11 +732,14 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
       "a review  ·  ⌃o view  ·  i interrupt",
     );
   }
-  if (pending.permission !== undefined) {
+  const perms = pending.permissions ?? [];
+  if (perms.length > 0) {
+    const p0 = perms[0]!;
+    const more = perms.length > 1 ? ` (1 of ${perms.length})` : "";
     return box(
-      `⇱ PERMISSION — ${pending.permTool ?? "tool"}`,
-      describeRequest(pending.permInput, w).map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
-      "a approve  ·  d deny  ·  ⌃o view  ·  i interrupt",
+      `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
+      describeRequest(p0.input, w).map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
+      `a approve  ·  d deny  ·  ⌃o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
     );
   }
   return null;

@@ -45,7 +45,11 @@ export class AisdkEventMapper {
         return text.trim() === "" ? [] : [{ type: "thinking", sessionId: this.#sessionId, ts, text }];
       }
       case "tool-call":
+        // Flush any text / reasoning still buffered so it lands *before* the
+        // tool call (and before the permission_request the call may raise) —
+        // some providers don't send a clean text-end / reasoning-end first.
         return [
+          ...this.#flushOpenBlocks(ts),
           {
             type: "tool_call",
             sessionId: this.#sessionId,
@@ -78,7 +82,8 @@ export class AisdkEventMapper {
           },
         ];
       case "finish-step":
-        return [this.#usage(part.usage)];
+        // A step boundary closes any block the provider left open.
+        return [...this.#flushOpenBlocks(ts), this.#usage(part.usage)];
       case "abort":
       case "finish":
         // Flush any block still open (an abort / a stream that ended without a

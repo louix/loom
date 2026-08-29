@@ -3,10 +3,12 @@
  * client never sets status; the daemon runs every session's `HarnessEvent`s
  * through this pure function.
  *
- *   starting ─▶ running ⇄ awaiting_input
- *   running ─▶ interrupted        (user stop / stream ended abruptly — set directly)
- *   running ─▶ idle               (clean `result`)
- *   running ─▶ error              (fatal error, or a failed `result`)
+ *   starting ─▶ running          (first model output)
+ *   running ─▶ awaiting_input    (permission_request / question / plan_review)
+ *   awaiting_input ─▶ running    (the daemon's answer/approve path, NOT this fn)
+ *   running ─▶ interrupted       (user stop / stream ended abruptly — set directly)
+ *   running ─▶ idle              (clean `result`)
+ *   running ─▶ error             (fatal error, or a failed `result`)
  */
 import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
 
@@ -37,9 +39,14 @@ export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived 
     case "thinking":
     case "tool_call":
     case "tool_result":
-      // Any model activity means the turn is live again — including the tool
-      // call that follows an approved permission and the answer to a question.
-      return current === "running" ? null : { status: "running", reason: null };
+      // First model output moves a `starting` turn to `running`. It must NOT
+      // pull the session out of `awaiting_input` — that transition is owned by
+      // the daemon's answer / approve path (`#resumeAfterAnswer`). A provider
+      // that flushes buffered assistant text *after* the `permission_request`
+      // (some OpenAI-compatible endpoints do) would otherwise clear the blocked
+      // state and hide the approval prompt while the turn is still parked on
+      // the gate. `interrupted` / `error` / `idle` are likewise left alone.
+      return current === "starting" ? { status: "running", reason: null } : null;
 
     case "result":
       return ev.ok ? { status: "idle", reason: "result" } : { status: "error", reason: "run_error" };

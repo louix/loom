@@ -178,19 +178,31 @@ export interface ConfirmState {
   action: "restart" | "quitAll";
 }
 
+export interface PendingPerm {
+  id: string;
+  tool: string;
+  input: unknown;
+}
+
 /**
  * Outstanding round-trips per session, recovered from the event stream — the
  * ids to answer with, plus enough of the request to show what it's asking.
+ * `permissions` is a queue: parallel tool calls in one step each raise their
+ * own `permission_request`, and the turn stays blocked until every one is
+ * answered. `ask_user` / `ExitPlanMode` don't parallelise, so those stay single.
  */
 export interface Pending {
-  permission?: string;
-  permTool?: string;
-  permInput?: unknown;
+  permissions?: PendingPerm[];
   question?: string;
   questionText?: string;
   questionContext?: string;
   plan?: string;
   planText?: string;
+}
+
+/** The permission request the UI should surface next (FIFO). */
+export function firstPerm(p: Pending): PendingPerm | undefined {
+  return p.permissions?.[0];
 }
 
 export interface TuiState {
@@ -281,6 +293,7 @@ export type Action =
   | { t: "pickerFilter"; value: string }
   | { t: "pickerMove"; delta: number }
   | { t: "closePicker" }
+  | { t: "resolvePerm"; sessionId: string; id: string }
   | { t: "help"; value: boolean };
 
 export function reduce(s: TuiState, a: Action): TuiState {
@@ -450,6 +463,17 @@ export function reduce(s: TuiState, a: Action): TuiState {
     case "closePicker":
       return { ...s, mode: s.mode === "picker" ? "browse" : s.mode, picker: null };
 
+    case "resolvePerm": {
+      const cur = s.pending[a.sessionId];
+      if (!cur?.permissions) return s;
+      const rest = cur.permissions.filter((p) => p.id !== a.id);
+      const { permissions: _drop, ...others } = cur;
+      return {
+        ...s,
+        pending: { ...s.pending, [a.sessionId]: rest.length ? { ...others, permissions: rest } : others },
+      };
+    }
+
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };
   }
@@ -525,9 +549,12 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
 
 function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Record<string, Pending> {
   if (ev.type === "permission_request") {
+    const cur = pending[ev.sessionId] ?? {};
+    const perms = cur.permissions ?? [];
+    if (perms.some((x) => x.id === ev.id)) return pending; // history replay
     return {
       ...pending,
-      [ev.sessionId]: { ...pending[ev.sessionId], permission: ev.id, permTool: ev.tool, permInput: ev.input },
+      [ev.sessionId]: { ...cur, permissions: [...perms, { id: ev.id, tool: ev.tool, input: ev.input }] },
     };
   }
   if (ev.type === "question") {

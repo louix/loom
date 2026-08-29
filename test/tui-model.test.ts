@@ -24,6 +24,7 @@ import {
   providerPickItems,
   queueFor,
   condenseLog,
+  firstPerm,
   reduce,
   selectedSession,
   sessionLog,
@@ -320,16 +321,32 @@ test("condenseLog: a lone thinking / tool line still collapses; other kinds pass
 // pending round-trips
 // ---------------------------------------------------------------------------
 
-test("pending permission is recorded on request and cleared when the session runs again", () => {
+test("parallel permission requests queue; each resolvePerm advances; session_updated clears", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Write", input: {}, sessionId: "a" })) });
-  assert.equal(pendingFor(s, "a").permission, "p1");
+  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: { command: "ls" }, sessionId: "a" })) });
+  s = reduce(s, { t: "push", frame: push(2, ev({ type: "permission_request", id: "p2", tool: "bash", input: { command: "pwd" }, sessionId: "a" })) });
+  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "bash", input: { command: "ls" } });
+  assert.equal(pendingFor(s, "a").permissions?.length, 2);
+
+  // a replayed request isn't double-counted
+  s = reduce(s, { t: "push", frame: push(3, ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" })) });
+  assert.equal(pendingFor(s, "a").permissions?.length, 2);
+
+  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
+  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+
+  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p2" });
+  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
+  assert.equal(pendingFor(s, "a").permissions, undefined);
+
+  // and a session moving on wipes any leftover
+  s = reduce(s, { t: "push", frame: push(4, ev({ type: "permission_request", id: "p3", tool: "bash", input: {}, sessionId: "a" })) });
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 3 },
+    frame: { kind: "push", seq: 5, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 3 },
   });
-  assert.equal(pendingFor(s, "a").permission, undefined);
+  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 });
 
 test("pending question is cleared by the matching answer event", () => {
@@ -603,16 +620,13 @@ test("openSendChoice replaces the prompt; closeSendChoice returns to browse", ()
   assert.equal(s.sendChoice, null);
 });
 
-test("a permission_request stashes the tool + input; answer/leaving clears it", () => {
+test("a permission_request stashes the tool + input; leaving awaiting_input clears it", () => {
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "awaiting_input" })] });
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm -rf x" }, sessionId: "a" })),
   });
-  const pf = pendingFor(s, "a");
-  assert.equal(pf.permission, "p1");
-  assert.equal(pf.permTool, "Bash");
-  assert.deepEqual(pf.permInput, { command: "rm -rf x" });
+  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "Bash", input: { command: "rm -rf x" } });
   s = reduce(s, {
     t: "push",
     frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 2 },

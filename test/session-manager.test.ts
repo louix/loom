@@ -115,6 +115,26 @@ test("permission_request blocks the session; first responder wins", async () => 
   await c.close();
 });
 
+test("a stray assistant_text / tool_call after permission_request doesn't unblock the session", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "permission_request", id: "p1", tool: "bash", input: { command: "ls" } });
+  await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+
+  // Some OpenAI-compatible providers flush buffered assistant text / a parallel
+  // tool call *after* the permission_request — the session must stay blocked.
+  fs.emit({ type: "assistant_text", text: "I'll look around." });
+  fs.emit({ type: "tool_call", id: "t2", name: "bash", input: { command: "pwd" } });
+  await delay(60);
+  const s = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(s.status, "awaiting_input");
+  assert.equal(s.awaitReason, "permission");
+
+  await c.request("session.respondPermission", { id, requestId: "p1", decision: "allow" });
+  await waitFor(async () => (await statusOf(c, id)) === "running");
+  await c.close();
+});
+
 test("an ask_user question blocks the session until session.answer resolves it", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
