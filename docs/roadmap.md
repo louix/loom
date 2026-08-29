@@ -353,7 +353,18 @@ aisdk-only daemon never evaluates `@anthropic-ai/claude-agent-sdk` — smaller
 attack surface, faster start. `registry.get()` is now `async`;
 `commitInWorktree` moved to the SDK-free `src/provider/commit.ts`.
 `test/lazy-providers.test.ts` asserts it via a `module.registerHooks` resolve
-hook. 215 tests.
+hook.
+
+**Native Google + Anthropic (post-M10).** An aisdk profile takes
+`sdk = "openai" | "google" | "anthropic"` (default openai). One session class;
+`resolveModelFactory` in `aisdk/adapter.ts` dynamically imports just the one
+`@ai-sdk/*` the profile needs (so Gemini's dep tree only loads if configured).
+`google` / `anthropic` profiles don't need a `base_url`.
+
+**Resume re-mounts MCP servers (post-M10).** `SessionRef.mcpServers?`; the
+daemon's `session.resume` passes `#mcpHandles()`; both adapters use
+`ref.mcpServers ?? []` instead of a hardcoded `[]`. A resumed session gets its
+configured `[[mcp]]` servers back, not just the `loom` tools. 219 tests.
 
 ---
 

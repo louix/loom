@@ -423,7 +423,7 @@ export class ClaudeProvider implements AgentProvider {
       cwd: ref.cwd,
       prompt: "", // resume replays in-flight state; the next real turn comes via send()
       mode: ref.mode ?? "default",
-      mcpServers: [],
+      mcpServers: ref.mcpServers ?? [],
       loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
     };

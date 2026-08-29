@@ -316,3 +316,36 @@ test("auto mode runs a gated tool without a permission_request", async () => {
     cleanup();
   }
 });
+
+test("resumeSession re-mounts the MCP servers from the ref", async () => {
+  const { dir, store, cleanup } = tmpEnv();
+  try {
+    // Seed a prior transcript so resume has something to load.
+    store.append("s1", [
+      { role: "user", content: "earlier" },
+      { role: "assistant", content: "ok" },
+    ]);
+
+    const model = stepModel([
+      toolCallStep("c1", "echo_text", JSON.stringify({ text: "still wired" })),
+      textStep("done"),
+    ]);
+    const s = await provider(() => model, store).resumeSession({
+      sessionId: "s1",
+      providerRef: "s1",
+      cwd: dir,
+      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+    });
+
+    const reader = collect(s.events(), (ev) => void s.respondToPermission(ev.id, { behavior: "allow" }), null);
+    await s.send("go"); // resume() doesn't auto-run; the first turn comes from send()
+    const evs = await reader;
+    await s.close();
+
+    const tr = evs.find((e) => e.type === "tool_result");
+    assert.ok(tr, "the resumed session could call the re-mounted MCP tool");
+    assert.match(JSON.stringify((tr as { output: unknown }).output), /still wired/);
+  } finally {
+    cleanup();
+  }
+});

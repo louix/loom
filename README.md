@@ -130,13 +130,14 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-**OpenAI-compatible providers (milestone 10).** Any `[providers.<id>]` block with
-`adapter = "aisdk"` (base_url, api_key_env, model, models) registers a provider
-backed by the Vercel AI SDK — OpenAI, GLM, DeepSeek, OpenRouter, a local
-vLLM / Ollama. Put those blocks (and credentials, as env-var *names*) in the
-user-level `~/.config/loom/config.toml`; the per-repo `.loom/config.toml` layers
-on top. `default_provider` picks which one new sessions use; Loom persists the
-transcript itself in `provider_messages`.
+**Non-Claude providers (milestone 10).** Any `[providers.<id>]` block with
+`adapter = "aisdk"` registers a provider backed by the Vercel AI SDK. `sdk`
+picks the backend: `openai` (default — OpenAI-compatible: OpenAI, GLM, DeepSeek,
+OpenRouter, vLLM, Ollama; needs `base_url`), `google` (native Gemini), or
+`anthropic` (native Anthropic). Put those blocks (and credentials, as env-var
+*names*) in the user-level `~/.config/loom/config.toml`; the per-repo
+`.loom/config.toml` layers on top. `default_provider` picks which one new
+sessions use; Loom persists the transcript itself in `provider_messages`.
 
 - **10a** — streaming, token usage + price-table cost, cancel, resume.
 - **10b** — multi-step tool use. MCP servers (`[[mcp]]`) connect through
@@ -292,7 +293,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 215 cases
+npm test             # node:test — 219 cases
 ```
 
 ### Layout

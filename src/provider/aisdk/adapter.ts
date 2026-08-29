@@ -128,7 +128,7 @@ export class AisdkProvider implements AgentProvider {
       messages,
       mode: ref.mode ?? "default",
       cwd: ref.cwd,
-      mcpHandles: [],
+      mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
       store: this.#store,
       oneShot: false,

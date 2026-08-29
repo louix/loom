@@ -77,6 +77,8 @@ export interface SessionRef {
   cwd: string;
   model?: string;
   mode?: SessionMode;
+  /** MCP servers to re-mount on resume (the daemon's current `[[mcp]]` list). */
+  mcpServers?: McpServerHandle[];
 }
 
 export type UserInput = string;

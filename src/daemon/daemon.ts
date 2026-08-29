@@ -667,6 +667,7 @@ export class Daemon {
           providerRef,
           cwd: row.worktree ?? this.repoRoot,
           mode,
+          mcpServers: this.#mcpHandles(),
           ...(row.model ? { model: row.model } : {}),
         });
       } catch (err) {
