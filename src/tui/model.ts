@@ -694,6 +694,7 @@ export type ActName =
   | "mode"
   | "model"
   | "undo"
+  | "fork"
   | "title"
   | "budget"
   | "new"
@@ -752,6 +753,7 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if ((status === "idle" || status === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
+    local.push({ keys: "⌃f", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
   }

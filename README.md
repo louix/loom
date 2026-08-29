@@ -110,9 +110,10 @@ the Vercel AI SDK.
   done, `e` rename, `b` set a cost budget, `a` (in `plan_review`) review the
   plan, `⇧⇥` cycle the permission mode, `M` switch the session's model (applies
   next turn), `u` undo — rewind an idle session to an earlier turn (shows the
-  re-prime cost), `⌃y` copy the branch to the clipboard, `n` start a new
-  session, `N` start one after picking a provider + model, `f` fuzzy-find a
-  session by title or message text, `F` toggle the log between this session and all.
+  re-prime cost), `⌃f` hard-fork it into a new session + worktree, `⌃y` copy the
+  branch to the clipboard, `n` start a new session, `N` start one after picking
+  a provider + model, `f` fuzzy-find a session by title or message text, `F`
+  toggle the log between this session and all.
   Sending to a session
   that's still working asks first: **asap** (delivered at the next tool
   boundary) or **queue** for when the turn ends; queued messages drain
@@ -294,7 +295,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 223 cases
+npm test             # node:test — 225 cases
 ```
 
 ### Layout

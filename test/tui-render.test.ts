@@ -487,3 +487,38 @@ test("u opens the undo picker listing earlier turns", async () => {
     await cleanup();
   }
 });
+
+test("⌃f forks the selected aisdk session; the fork shows its lineage", async () => {
+  const { h, connect, cleanup } = await harness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "gpt-5"
+`,
+  });
+  const client = await connect();
+  const parent = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "trunk work",
+    status: "idle",
+    provider: "openai",
+  });
+  const db = h.daemon.db;
+  const ins = db.prepare(
+    "INSERT INTO provider_messages (session_id, seq, role, content, created_at) VALUES (?, ?, ?, ?, 0)",
+  );
+  for (let i = 0; i < 2; i++) ins.run(parent.id, i, i % 2 ? "assistant" : "user", `"m${i}"`);
+
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(200);
+    stdin.feed("\x06"); // ⌃f
+    await delay(300);
+    assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
+    assert.match(stdout.last, /forked from .* @ turn 0/); // Detail lineage line
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});

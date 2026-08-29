@@ -800,6 +800,19 @@ export function App({
       const name = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
       return copyToClipboard(name, name);
     }
+    if (key.ctrl && input === "f") {
+      if (!sel) return;
+      client
+        .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
+        .then((r) => {
+          dispatch({ t: "select", id: r.id });
+          dispatch({ t: "notice", text: `forked → ${shortId(r.id)}`, tone: "good" });
+        })
+        .catch((e: unknown) =>
+          dispatch({ t: "notice", text: `fork failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+        );
+      return;
+    }
     if (key.ctrl && input === "x") {
       return void (sel && queueFor(state, sel.id).length > 0
         ? dispatch({ t: "clearQueue", sessionId: sel.id })

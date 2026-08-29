@@ -373,7 +373,12 @@ migration 7 (`checkpoints` + `sessions.fork_turn`), a checkpoint per `result`,
 `AgentSession.rewind(keep)` + `capabilities.rewind` (aisdk only for now),
 `session.checkpoints` / `session.rewind` RPCs (with a server-side re-prime cost
 estimate), TUI `u` undo picker, `RewindEvent`. Conversation-only — the worktree
-is left as-is. 223 tests.
+is left as-is.
+
+**Hard fork — fork-tree F2 (post-M10).** `session.fork` (aisdk): a new session
+row (`parent_id` + `fork_turn`), a worktree off the parent's branch, the
+transcript copied over. `⌃f` in the TUI; the fork shows a `⑂` in the fleet and
+`forked from <id> @ turn N` in Detail. 225 tests.
 
 ---
 

@@ -250,7 +250,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
   // every selected session also gets mode + model + title + budget, plus globals
-  const S = ["mode", "model", "title", "budget", "find", "help", "new", "quit"];
+  const S = ["mode", "model", "fork", "title", "budget", "find", "help", "new", "quit"];
 
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),

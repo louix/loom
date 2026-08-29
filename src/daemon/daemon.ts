@@ -772,6 +772,66 @@ export class Daemon {
       return updated;
     });
 
+    d.register("session.fork", async (params) => {
+      const id = reqString(params, "id");
+      const parent = this.#registry.get(id);
+      if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!this.#isAisdk(parent.provider)) {
+        throw new RpcError("bad_request", "hard fork is aisdk-only for now (Claude support is fork-tree F3)");
+      }
+      const p = isObj(params) ? params : {};
+      const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
+
+      let wt;
+      try {
+        wt = this.#worktrees.create(`${parent.title ?? id} fork`, parent.branch ?? undefined);
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
+      }
+
+      const newId = randomUUID();
+      this.#registry.create({
+        id: newId,
+        provider: parent.provider,
+        model: parent.model,
+        parentId: id,
+        title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
+        worktree: wt.path,
+        branch: wt.branch,
+        baseBranch: wt.baseRef,
+        ...(parent.budget.maxCostUsd != null ? { budget: { maxCostUsd: parent.budget.maxCostUsd } } : {}),
+      });
+      this.#registry.setFields(newId, { forkTurn: parent.turns });
+      this.#pmsgs.copyTo(id, newId);
+
+      const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
+      try {
+        await this.#sessions.resume(await this.#providers.get(parent.provider), {
+          sessionId: newId,
+          providerRef: newId,
+          cwd: wt.path,
+          mode,
+          mcpServers: this.#mcpHandles(),
+          ...(parent.model ? { model: parent.model } : {}),
+        });
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        this.#registry.setStatus(newId, "error", m.slice(0, 120));
+        throw new RpcError("provider_error", `could not start the fork: ${m}`);
+      }
+
+      this.#registry.setStatus(newId, "idle", "forked");
+      if (forkPrompt) {
+        this.#lastSend.set(newId, forkPrompt);
+        await this.#sessions.send(newId, forkPrompt);
+      }
+      const snap = this.#registry.mustGet(newId);
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#onActivityChange("session-forked");
+      return snap;
+    });
+
     d.register("session.interrupt", async (params) => {
       const id = reqString(params, "id");
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);

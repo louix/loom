@@ -84,11 +84,16 @@ export class WorktreeManager {
 
   /**
    * `git worktree add <trees>/<slug> -b loom/<slug> <base>`, then pin the
-   * commit identity and hooks path for that tree.
+   * commit identity and hooks path for that tree. `baseRefOverride` branches
+   * off something other than the configured base (a parent session's branch,
+   * for a hard fork).
    */
-  create(hint: string): WorktreeInfo {
+  create(hint: string, baseRefOverride?: string): WorktreeInfo {
     this.ensureSetup();
-    const baseRef = this.#resolveBase();
+    const baseRef =
+      baseRefOverride && this.#git(["rev-parse", "--verify", "--quiet", baseRefOverride]).ok
+        ? baseRefOverride
+        : this.#resolveBase();
     const slug = this.#uniqueSlug(hint);
     const path = join(this.#treesDir, slug);
     const branch = `loom/${slug}`;

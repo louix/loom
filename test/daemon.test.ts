@@ -229,3 +229,48 @@ color    = "red"
     await hh.cleanup();
   }
 });
+
+test("session.fork copies the transcript into a new session + worktree", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "gpt-5"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+
+    const parent = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "the trunk task",
+      status: "idle",
+      provider: "openai",
+    });
+    // seed a 4-message transcript for the parent
+    const db = hh.daemon.db;
+    const ins = db.prepare(
+      "INSERT INTO provider_messages (session_id, seq, role, content, created_at) VALUES (?, ?, ?, ?, 0)",
+    );
+    for (let i = 0; i < 4; i++) ins.run(parent.id, i, i % 2 ? "assistant" : "user", `"m${i}"`);
+
+    const fork = await c.request<SessionSnapshot>("session.fork", { id: parent.id });
+    assert.equal(fork.parentId, parent.id);
+    assert.equal(fork.forkTurn, parent.turns);
+    assert.notEqual(fork.worktree, parent.worktree);
+    assert.match(fork.title ?? "", /\(fork\)$/);
+
+    const copied = db
+      .prepare("SELECT COUNT(*) AS n FROM provider_messages WHERE session_id = ?")
+      .get(fork.id) as { n: number };
+    assert.equal(copied.n, 4);
+
+    // fork a fake session → rejected for now
+    const fk = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", provider: "fake" });
+    await assert.rejects(c.request("session.fork", { id: fk.id }), /aisdk-only/);
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});

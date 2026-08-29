@@ -177,7 +177,9 @@ function FleetRow({
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? CACHE_HEAT_COLOR[heat] : null;
   const idColor = pcolor.get(s.provider) || C.faint;
-  const room = Math.max(6, iw - (2 + 2 + id.length + 2 + 2 + cost.length + 1));
+  const forked = s.forkTurn != null;
+  const idText = forked ? `⑂${id}` : id;
+  const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return h(
@@ -185,7 +187,7 @@ function FleetRow({
     { key: s.id, wrap: "truncate-end" },
     h(Text, { color: selected ? C.accent : C.faint }, selected ? "▍ " : "  "),
     h(Text, { color: s.status === "running" ? C.accent : look.color }, glyph + " "),
-    h(Text, { color: idColor }, `${id}  `),
+    h(Text, { color: idColor }, `${idText}  `),
     h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
     h(Text, { color: selected ? C.text : C.dim, bold: selected }, title),
     h(Text, { color: C.faint }, ` ${cost}`),
@@ -254,6 +256,9 @@ export function Detail({
       ),
     ),
     h(Text, { color: C.text, wrap: "truncate-end" }, truncate(titleLine(s.title), w)),
+    s.parentId && s.forkTurn != null
+      ? h(Text, { color: C.faint }, `⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`)
+      : null,
     h(
       Box,
       { marginTop: 1, gap: 2 },
@@ -737,6 +742,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["s", "send a follow-up turn (running → asap / queue for turn end)"],
   ["c", "compact the context window (shown once the meter passes half)"],
   ["u", "undo — rewind an idle session to an earlier turn (shows the re-prime cost)"],
+  ["⌃f", "hard fork — a new session + worktree branched off this one (aisdk)"],
   ["⌃x", "clear the selected session's queued messages"],
   ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
   ["x  ·  e", "mark the session done  ·  rename it"],

@@ -66,4 +66,14 @@ export class ProviderMessageStore {
   clear(sessionId: string): void {
     this.#db.prepare("DELETE FROM provider_messages WHERE session_id = ?").run(sessionId);
   }
+
+  /** Copy `fromId`'s whole transcript into `toId` (a fresh session — a hard fork). */
+  copyTo(fromId: string, toId: string): void {
+    this.#db
+      .prepare(
+        "INSERT INTO provider_messages (session_id, seq, role, content, created_at) " +
+          "SELECT ?, seq, role, content, created_at FROM provider_messages WHERE session_id = ?",
+      )
+      .run(toId, fromId);
+  }
 }

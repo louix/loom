@@ -104,7 +104,7 @@ picks which one). `sessions` gains a `fork_turn INTEGER` column (null = root).
 | # | scope |
 |---|---|
 | **F1** ✓ | migration 7 (`checkpoints` table + `sessions.fork_turn`); daemon writes a checkpoint per `result` (turn, providerRef, `fork_point` = provider_messages count for aisdk, `user_text` snippet from the last send). `AgentSession.rewind(keep)` + `capabilities.rewind` (aisdk ✓, fake ✓, claude throws). `session.checkpoints` (with a server-computed `rewindCostUsd` per turn = `estimateTokens × cacheWrite`) + `session.rewind {id,toTurn}` RPCs. TUI: `u` on an idle multi-turn session → an undo `Picker` (`turn N · "snippet" · ~$cost`) → `session.rewind`. `RewindEvent` in the log. Verified live against an OpenAI-compatible endpoint: a two-turn session rewound one turn and the model recalled the kept turn, not the discarded one. |
-| **F2** | `session.fork` + the fleet `⑂` lineage; aisdk fork (row copy) + new worktree off the parent branch. |
+| **F2** ✓ | `session.fork {id, prompt?}` RPC — aisdk only: a new `sessions` row (`parent_id`, `fork_turn` = the parent's turn count), a worktree branched off the parent's branch HEAD (`WorktreeManager.create(hint, baseRefOverride)`), the transcript copied (`ProviderMessageStore.copyTo`), then `resume` (+ `send` if a prompt was given). TUI: `⌃f` forks the selected session and selects the new row; the fork's Fleet id carries a `⑂` glyph and Detail shows `⑂ forked from <id> @ turn N`. `SessionSnapshot.forkTurn` on the wire. |
 | **F3** | Claude rewind (`resumeSessionAt` / `resumeDropsTurn` + refusal fallback) and fork (`forkSession`); mapper captures per-turn chain UUIDs. |
 
 ## Later / not now
