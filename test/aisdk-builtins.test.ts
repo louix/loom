@@ -83,6 +83,32 @@ test("BashShell: an unbalanced quote is caught by the syntax pre-check, not by w
   }
 });
 
+test("BashShell: an unterminated heredoc is caught, but a valid extglob pattern runs", async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const sh = new BashShell(dir);
+    // unterminated heredoc → rejected fast, not a 120s wedge
+    const bad = await sh.run("cat <<EOF\nhello", 120_000);
+    assert.equal(bad.exitCode, 2);
+
+    // a plain syntax error is NOT pre-rejected — it runs and the shell reports it
+    const syn = await sh.run("if then", 3_000);
+    assert.equal(syn.timedOut, false);
+    assert.match(syn.output, /syntax error/);
+
+    // extglob after `shopt -s extglob` must NOT be blocked by the pre-check
+    await sh.run("shopt -s extglob");
+    await sh.run("touch keep.md drop.txt");
+    const ls = await sh.run("ls !(*.txt)", 3_000);
+    assert.equal(ls.timedOut, false);
+    assert.match(ls.output, /keep\.md/);
+    assert.doesNotMatch(ls.output, /drop\.txt/);
+    sh.close();
+  } finally {
+    cleanup();
+  }
+});
+
 test("BashShell: a command that exits the shell doesn't block; the shell is reset", async () => {
   const { dir, cleanup } = tmp();
   try {

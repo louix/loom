@@ -182,6 +182,12 @@ export class WorktreeManager {
     return facts;
   }
 
+  /** Last computed facts for `path`, ignoring the TTL — so a snapshot that
+   *  skips the shell-out (the per-usage stream) can still carry a git line. */
+  cachedFacts(path: string): GitFacts | null {
+    return this.#factsCache.get(path)?.facts ?? null;
+  }
+
   // --- internals -------------------------------------------------
 
   #resolveBase(): string {

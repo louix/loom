@@ -363,8 +363,12 @@ export class Daemon {
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };
     }
-    if (withGit && out.worktree) {
-      const git = this.#worktrees.facts(out.worktree, out.baseBranch);
+    if (out.worktree) {
+      // `withGit` false (the per-usage stream) still carries the last-known
+      // facts so the TUI's git line doesn't collapse to "no worktree" mid-turn.
+      const git = withGit
+        ? this.#worktrees.facts(out.worktree, out.baseBranch)
+        : this.#worktrees.cachedFacts(out.worktree);
       if (git) out = { ...out, git };
     }
     return out;
@@ -807,15 +811,21 @@ export class Daemon {
       if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
       const keep = Number(cp.forkPoint) || 0;
 
-      if (this.#sessions.has(id)) {
-        await this.#sessions.rewind(id, keep);
-      } else {
-        // Not live: truncate the store directly.
-        this.#pmsgs.replaceFrom(id, keep, []);
-      }
+      // Truncate the bookkeeping first so whichever path emits the snapshot
+      // below carries the new turn count.
       this.#checkpoints.truncate(id, toTurn);
       this.#registry.store.setTurns(id, toTurn);
 
+      if (this.#sessions.has(id)) {
+        // SessionManager.rewind → #set(idle, "rewind") already broadcasts the
+        // session_updated; don't re-emit it here.
+        await this.#sessions.rewind(id, keep);
+        this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
+        return this.#registry.mustGet(id);
+      }
+
+      // Not live: truncate the store directly and drive the status ourselves.
+      this.#pmsgs.replaceFrom(id, keep, []);
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
       const updated = this.#registry.setStatus(id, "idle", "rewind");
       this.#emitSessionUpdated(updated, clientLabel(params));
@@ -875,12 +885,25 @@ export class Daemon {
         });
       } catch (err) {
         await this.#sessions.close(newId).catch(() => {});
+        let removed = false;
         try {
           this.#worktrees.remove(wt.path, { force: true });
-        } catch {
-          /* best effort */
+          removed = true;
+        } catch (rmErr) {
+          this.#log.warn("fork cleanup: could not remove the worktree", {
+            id: newId,
+            path: wt.path,
+            err: rmErr instanceof Error ? rmErr.message : String(rmErr),
+          });
         }
-        this.#registry.store.delete(newId); // cascades provider_messages / checkpoints
+        if (removed) {
+          this.#registry.store.delete(newId); // cascades provider_messages / checkpoints
+        } else {
+          // The tree is still on disk — keep the row (worktree path intact) and
+          // mark it error so a later `session.gc { id }` can still reclaim it,
+          // rather than deleting the row and orphaning the directory.
+          this.#registry.setStatus(newId, "error", "fork start failed");
+        }
         this.#lastSend.delete(newId);
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("provider_error", `could not start the fork: ${m}`);
@@ -1053,17 +1076,22 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const only = typeof p["id"] === "string" ? (p["id"] as string) : null;
       const force = p["force"] === true;
+      // Bulk sweep: `done` only (an `error` session may still be resumable).
+      // An explicit `id` may also target an `error` row — that's how a fork
+      // whose worktree-remove failed on the error path gets reclaimed.
+      const eligible = (status: string): boolean =>
+        only ? status === "done" || status === "error" : status === "done";
       if (only) {
         const s = this.#registry.get(only);
         if (!s) throw new RpcError("not_found", `no such session: ${only}`);
-        if (s.status !== "done") {
-          throw new RpcError("bad_request", `session ${only} is ${s.status}, not done — nothing to gc`);
+        if (!eligible(s.status)) {
+          throw new RpcError("bad_request", `session ${only} is ${s.status} — nothing to gc`);
         }
       }
       const removed: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
       for (const s of this.#registry.list()) {
-        if (s.status !== "done" || !s.worktree) continue;
+        if (!eligible(s.status) || !s.worktree) continue;
         if (only && s.id !== only) continue;
         try {
           this.#worktrees.remove(s.worktree, { force });

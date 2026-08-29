@@ -613,17 +613,22 @@ export function App({
       if (!pl || overlayActed.current === pl) return;
       overlayActed.current = pl;
       dispatch({ t: "closePlan" });
-      perform(async () => {
-        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
+      client
+        .request<{ alreadyResolved: boolean }>("session.respondPlan", {
           id: pl.sessionId,
           requestId: pl.requestId,
           by: client.clientId,
           ...params,
+        })
+        .then((r) => note(r.alreadyResolved ? "plan already resolved" : label, "good"))
+        .catch((e: unknown) => {
+          note(`${e instanceof Error ? e.message : String(e)} — reopening the plan`, "bad");
+          // The daemon is still blocked on the decision; put the overlay back
+          // (fresh object, so the latch passes) so it can be retried.
+          dispatch({ t: "openPlan", sessionId: pl.sessionId, requestId: pl.requestId, text: pl.text });
         });
-        return r.alreadyResolved ? "plan already resolved" : label;
-      });
     },
-    [state.plan, client, perform],
+    [state.plan, client, note],
   );
 
   /** `e` in the plan overlay — edit the plan in $EDITOR, then implement what was saved. */
@@ -645,23 +650,23 @@ export function App({
     }
   }, [state.mode]);
 
-  // Drain a session's queued messages — one per turn, once it's idle again.
+  // Drain a session's queued messages — one per completed turn, while idle.
   const draining = useRef<Set<string>>(new Set());
-  // Sessions sent a queued item since they were last idle (so we release at
-  // most one per turn instead of flushing the whole queue in a burst).
-  const drainedThisIdle = useRef<Set<string>>(new Set());
+  // id → the `turns` value at which we last released a queued item, so the
+  // next release waits for a real turn to complete (not a burst, and robust to
+  // React batching an idle→running→idle cycle into one render).
+  const lastDrainTurn = useRef<Map<string, number>>(new Map());
   useEffect(() => {
-    for (const s of state.sessions) {
-      if (s.status !== "idle") drainedThisIdle.current.delete(s.id);
-    }
-    // A queue on a session that won't return to idle is stranded — say so and
-    // drop it rather than showing "N queued" against a dead row forever.
+    // A queue on a session that won't return to idle (done / error / gone) is
+    // stranded — say so and drop it rather than showing "N queued" forever.
+    // An `interrupted` session is left alone: a `resume` will drain it.
     for (const [id, q] of Object.entries(state.queue)) {
       if (!q || q.length === 0) continue;
       const s = state.sessions.find((x) => x.id === id);
       if (!s || s.status === "done" || s.status === "error") {
         note(`${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status : "gone"}`, "bad");
         dispatch({ t: "clearQueue", sessionId: id });
+        lastDrainTurn.current.delete(id);
       }
     }
     for (const s of state.sessions) {
@@ -671,15 +676,17 @@ export function App({
         q &&
         q.length > 0 &&
         !draining.current.has(s.id) &&
-        !drainedThisIdle.current.has(s.id)
+        s.turns > (lastDrainTurn.current.get(s.id) ?? -1)
       ) {
         const head = q[0] as string;
         draining.current.add(s.id);
-        drainedThisIdle.current.add(s.id);
         client
           .request("session.send", { id: s.id, text: head })
-          .then(() => dispatch({ t: "dequeue", sessionId: s.id })) // daemon emits the user_message echo
-          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"))
+          .then(() => {
+            lastDrainTurn.current.set(s.id, s.turns); // only gate the next one after a success
+            dispatch({ t: "dequeue", sessionId: s.id }); // daemon emits the user_message echo
+          })
+          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad")) // no gate update → retries
           .finally(() => draining.current.delete(s.id));
       }
     }
@@ -846,7 +853,10 @@ export function App({
       return copyToClipboard(name, name);
     }
     if (key.ctrl && input === "f") {
-      if (!sel) return;
+      if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+      if (sel.provider === "claude") {
+        return void dispatch({ t: "notice", text: "hard fork isn't available for Claude sessions yet", tone: "dim" });
+      }
       client
         .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
         .then((r) => {

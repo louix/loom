@@ -270,6 +270,10 @@ export class SessionStore {
         now,
         id,
       );
+    // Also bump the sessions row so a client rebasing a stale `session.list`
+    // against a fresh `session_updated` push (see the TUI reducer) doesn't
+    // regress the usage/cost/turns it just received.
+    this.#db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, id);
   }
 
   /** Set the turn counter directly — used by `undo` after truncating the transcript. */

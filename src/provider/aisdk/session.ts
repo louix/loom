@@ -172,10 +172,18 @@ export class AisdkSession implements AgentSession {
     // await below resolves must see `#turnRunning` and queue as an injection,
     // not race a second overlapping #runTurn().
     this.#turnRunning = true;
-    await this.#turn?.catch(() => {});
-    const msg: ModelMessage = { role: "user", content: input };
-    this.#messages.push(msg);
-    this.#store?.append(this.id, [msg]);
+    try {
+      await this.#turn?.catch(() => {});
+      const msg: ModelMessage = { role: "user", content: input };
+      this.#messages.push(msg);
+      this.#store?.append(this.id, [msg]);
+    } catch (err) {
+      // A throw before #kickTurn() (a DB write failing on a shutdown race, …)
+      // must release the claim — nothing else would clear it and every later
+      // send() would silently queue forever.
+      this.#turnRunning = false;
+      throw err;
+    }
     this.#kickTurn();
   }
 
@@ -436,9 +444,9 @@ export class AisdkSession implements AgentSession {
         abortSignal: this.#abort?.signal ?? AbortSignal.timeout(300_000),
       });
       for await (const part of res.fullStream) {
-        if (part.type === "abort") break;
         for (const ev of subMapper.map(part)) this.#emit({ ...ev, agentId: subId } as HarnessEvent);
         if (part.type === "text-delta") report += part.text;
+        if (part.type === "abort") break;
       }
     } catch (err) {
       report = report || `sub-agent failed: ${err instanceof Error ? err.message : String(err)}`;

@@ -107,12 +107,14 @@ export async function runTurn(args: TurnArgs): Promise<TurnResult> {
     });
 
     for await (const part of res.fullStream) {
+      if (part.type === "error") errored = true;
+      // Let the mapper see `abort` too — it flushes any half-streamed
+      // assistant text into the feed before we stop.
+      for (const ev of mapper.map(part)) hooks.emit(ev);
       if (part.type === "abort") {
         aborted = true;
         break;
       }
-      if (part.type === "error") errored = true;
-      for (const ev of mapper.map(part)) hooks.emit(ev);
     }
 
     if (aborted) return { aborted, errored };

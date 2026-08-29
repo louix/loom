@@ -193,22 +193,28 @@ test("a reconnect onto a restarted daemon (new epoch) forces a resync", async ()
     reconnect: true,
   });
   try {
-    // seed a few frames so the pre-restart seq is well above the post-restart head
+    // a couple of frames pre-restart → the old client's #lastSeq is small
     await c.request("session.createStub", { prompt: "a" });
     await c.request("session.createStub", { prompt: "b" });
-    let resynced = false;
+    const lastSeq = c.lastSeq;
+    let resyncs = 0;
     c.on("resync", () => {
-      resynced = true;
+      resyncs += 1;
     });
 
     await hh.restart();
-    // new daemon does its own work so a stale in-range sinceSeq would look valid
+    // Drive the NEW daemon's head *above* the old client's #lastSeq, so
+    // `EventLog.since(lastSeq)` returns { rolled: false } and the only thing
+    // that can trigger a resync is the epoch-mismatch branch in #handshake.
     const driver = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
-    await driver.request("session.createStub", { prompt: "c" });
+    for (let i = 0; i < lastSeq + 4; i++) {
+      await driver.request("session.createStub", { prompt: `d${i}` });
+    }
     await driver.close();
 
-    await delay(400); // client's reconnect loop + handshake
-    assert.equal(resynced, true, "epoch change must force a resync regardless of seq arithmetic");
+    await delay(500); // client's reconnect loop + handshake
+    assert.equal(resyncs, 1, "the epoch change alone must force exactly one resync");
+    assert.equal(c.lastSeq >= lastSeq, true, "re-baselined onto the new daemon's seq");
   } finally {
     await c.close();
     await hh.cleanup();

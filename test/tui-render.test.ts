@@ -224,10 +224,26 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
     await delay(150);
     assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
-    fs?.finishTurn(); // -> idle: the queued message is sent, the queue clears
+    // queue a second one while still running
+    stdin.feed("s");
+    await delay(80);
+    stdin.feed("and another");
+    await delay(80);
+    stdin.feed("\r");
+    await delay(100);
+    stdin.feed("t");
+    await delay(120);
+    assert.match(stdout.last, /▸ 2 queued/);
+
+    fs?.finishTurn(); // -> idle: only ONE queued message goes per completed turn
     await delay(300);
-    assert.doesNotMatch(stdout.last, /▸ \d+ queued/, "queue drained once the session went idle");
-    assert.deepEqual(fs?.sends, ["hold that thought"]);
+    assert.deepEqual(fs?.sends, ["hold that thought"], "one per turn, not a burst");
+    assert.match(stdout.last, /▸ 1 queued/, "the second is still queued");
+
+    fs?.finishTurn(); // the send()'s turn completes -> release the next
+    await delay(300);
+    assert.deepEqual(fs?.sends, ["hold that thought", "and another"]);
+    assert.doesNotMatch(stdout.last, /▸ \d+ queued/);
   } finally {
     app.unmount();
     await client.close();

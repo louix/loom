@@ -85,16 +85,26 @@ export class LoomClient {
   // public API
   // -------------------------------------------------------------------------
 
-  async request<T = unknown>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
+  /** Methods whose daemon-side work can legitimately exceed the default (e.g.
+   *  compaction's 60s summariser budget, or a slow MCP stdio handshake). */
+  static #SLOW_METHODS: Record<string, number> = {
+    "session.compact": 180_000,
+    "session.create": 120_000,
+    "session.fork": 120_000,
+    "session.resume": 120_000,
+  };
+
+  async request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (!this.#sock) throw new Error("not connected");
     const id = this.#nextId++;
+    const limit = timeoutMs ?? LoomClient.#SLOW_METHODS[method] ?? 30_000;
     const frame: RequestFrame = { kind: "req", id, method, ...(params !== undefined ? { params } : {}) };
     const p = new Promise<unknown>((resolve, reject) => {
       const timer =
-        timeoutMs > 0
+        limit > 0
           ? setTimeout(() => {
               if (this.#pending.delete(id)) reject(new Error(`request timed out: ${method}`));
-            }, timeoutMs)
+            }, limit)
           : null;
       this.#pending.set(id, {
         resolve: (v) => {
@@ -337,6 +347,7 @@ export class LoomClient {
         clientId: this.clientId,
       });
       this.daemonInfo = result.daemon;
+      this.#daemonEpoch = result.daemon.epoch; // keep it fresh so the next handshake doesn't false-detect a restart
       this.sessions = result.sessions;
       this.#lastSeq = result.seq;
     } catch {

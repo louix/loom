@@ -96,7 +96,7 @@ export class AisdkEventMapper {
         ];
       default:
         // start, start-step, text-start, reasoning-start, tool-input-*, source,
-        // file, finish, abort, raw — nothing Loom needs.
+        // file, raw — nothing Loom needs. (abort / finish are handled above.)
         return [];
     }
   }

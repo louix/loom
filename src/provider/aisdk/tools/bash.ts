@@ -62,11 +62,19 @@ export class BashShell {
   }
 
   /**
-   * `bash -n` on the command alone. Catches an unbalanced quote / unterminated
-   * heredoc *before* it reaches the persistent shell, where it would swallow
-   * the sentinel `printf` and wedge the shell for the full timeout.
+   * Detect an *unclosed* construct (quote / heredoc) that would make the
+   * persistent shell keep reading and never emit the sentinel — a full-timeout
+   * wedge. A plain syntax error is NOT rejected: the command group aborts,
+   * prints the error, and the sentinel still arrives, so `if;then`, an extglob
+   * pattern used after `shopt -s extglob`, etc. run in the shell as before.
    */
-  #syntaxError(command: string): Promise<string | null> {
+  #unclosedConstruct(command: string): Promise<string | null> {
+    // Only an odd quote count or a heredoc can cause the wedge — skip the fork
+    // for anything else (which is the overwhelming majority of commands).
+    const bare = command.replace(/\\./g, "");
+    const odd = (c: string): boolean => (bare.split(c).length - 1) % 2 === 1;
+    if (!odd("'") && !odd('"') && !command.includes("<<")) return Promise.resolve(null);
+
     return new Promise((resolve) => {
       let stderr = "";
       const c = spawn("bash", ["--noprofile", "--norc", "-n", "-c", command], {
@@ -75,7 +83,19 @@ export class BashShell {
       c.stderr?.setEncoding("utf8");
       c.stderr?.on("data", (d: string) => (stderr += d));
       c.on("error", () => resolve(null)); // can't check → let the real run surface it
-      c.on("close", (code) => resolve(code === 0 ? null : (stderr.trim() || "bash: syntax error")));
+      c.on("close", (code) => {
+        // An unterminated heredoc: `bash -n` exits 0 but warns.
+        if (/here-document.*delimited by end-of-file|warning: here-document/i.test(stderr)) {
+          return resolve(stderr.trim() || "bash: unterminated here-document");
+        }
+        if (code === 0) return resolve(null);
+        // Non-zero: only the "still waiting for a closing token" classes wedge.
+        return resolve(
+          /unexpected EOF|end of file|unterminated/i.test(stderr)
+            ? stderr.trim() || "bash: unterminated quote"
+            : null,
+        );
+      });
       setTimeout(() => {
         c.kill("SIGKILL");
         resolve(null);
@@ -90,9 +110,9 @@ export class BashShell {
     if (this.#busy) throw new Error("the bash shell is busy with another command");
     this.#busy = true;
     try {
-      const syntax = await this.#syntaxError(command);
-      if (syntax) {
-        return { output: syntax, exitCode: 2, timedOut: false };
+      const unclosed = await this.#unclosedConstruct(command);
+      if (unclosed) {
+        return { output: unclosed, exitCode: 2, timedOut: false };
       }
       const child = this.#ensure();
       const marker = `__LOOM_${randomBytes(12).toString("hex")}__`;

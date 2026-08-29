@@ -143,6 +143,13 @@ test("gate name heuristics: readonly vs edit", () => {
   assert.equal(isEdit("read_file"), false);
 });
 
+test("gate: `set` / `sync` as trailing nouns don't make a read tool an edit", () => {
+  assert.equal(isEdit("get_result_set"), false);
+  assert.equal(isEdit("get_sync_status"), false);
+  assert.equal(isReadonly("get_result_set"), true);
+  assert.equal(isReadonly("get_sync_status"), true);
+});
+
 test("gate: a name with both a read verb and a mutation verb is a mutator", () => {
   for (const n of [
     "search_and_replace",
