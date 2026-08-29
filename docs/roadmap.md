@@ -286,7 +286,7 @@ inside a session card; child sessions are their own rows with a parent link.
 
 ## Milestone 10 — non-Claude providers (Vercel AI SDK)
 
-**Full plan: [`m10-plan.md`](m10-plan.md).** M10a+M10b shipped; M10c–e under review.
+**Full plan: [`m10-plan.md`](m10-plan.md).** M10a–c shipped; M10d–e under review.
 
 The original sketch here was an **ADK adapter**, on the assumption that TS
 `@google/adk` carries Python ADK's `LiteLlm` wrapper for OpenAI-compatible
@@ -323,7 +323,16 @@ native `tool()` defs (`loom-tools.ts`); permission gate + mode filter
 turns; daemon mounts loom + MCP for aisdk with an `AISDK_SYSTEM` prompt;
 `SessionManager.#trackPerms` clears on `tool_result` only. Verified live against
 an OpenAI-compatible endpoint editing a file via the official filesystem MCP
-server. 187 tests.
+server.
+
+**M10c — shipped.** First-party tools under `src/provider/aisdk/tools/`:
+`bash.ts` (persistent `bash` child, sentinel-framed commands, per-command
+timeout → kill+reset, output clamp), `edit.ts` (`applyEdit` — exact →
+trailing-whitespace-insensitive → dedented tiers, uniqueness check), `grep.ts`
+(`rg` wrapper), `builtins.ts` (`BuiltinTools` owns the shell lifecycle).
+Mounted for aisdk sessions alongside MCP + loom tools, all gated. Verified live
+against an OpenAI-compatible endpoint: model ran a script, edited it, re-ran it.
+198 tests.
 
 ---
 

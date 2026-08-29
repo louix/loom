@@ -4,8 +4,9 @@
  * wiring, the permission gate, and per-turn lifecycle. `events()` is a single
  * channel that stays open across turns and closes only on `close()`.
  *
- * M10b: multi-step turns with MCP + `loom` tools, each routed through the
- * permission gate. Still no compaction, plan review, or sub-agents (M10d).
+ * M10b–c: multi-step turns with MCP tools, the `loom` tools, and a first-party
+ * Bash / Edit / Grep suite — each routed through the permission gate. Still no
+ * compaction, plan review, or sub-agents (M10d).
  */
 import { randomUUID } from "node:crypto";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
@@ -25,6 +26,7 @@ import { AisdkEventMapper } from "./map.ts";
 import { runTurn } from "./loop.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
+import { BuiltinTools } from "./tools/builtins.ts";
 import { wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
 import { contextLimitFor } from "./tokens.ts";
@@ -77,6 +79,7 @@ export class AisdkSession implements AgentSession {
   #snap: AdapterSnapshot;
 
   #hub: McpHub | null = null;
+  #builtins: BuiltinTools | null = null;
   #toolsPromise: Promise<ToolSet> | null = null;
   readonly #pendingPerms = new Map<string, (d: { allow: boolean; message?: string }) => void>();
   readonly #pendingQuestions = new Map<string, (answer: string) => void>();
@@ -192,6 +195,7 @@ export class AisdkSession implements AgentSession {
     this.#pendingPerms.clear();
     for (const [, r] of this.#pendingQuestions) r("(the session was closed before the user answered)");
     this.#pendingQuestions.clear();
+    this.#builtins?.close();
     await this.#hub?.close().catch(() => {});
     this.#outbox.close();
   }
@@ -231,6 +235,8 @@ export class AisdkSession implements AgentSession {
               askUser: (q, c) => this.#askUser(q, c),
             }),
           );
+          this.#builtins = new BuiltinTools(this.#cwd);
+          Object.assign(base, this.#builtins.tools);
         }
         return wrapToolSet(base, {
           mode: () => this.#mode,
