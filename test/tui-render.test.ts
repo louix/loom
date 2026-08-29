@@ -235,6 +235,32 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
   }
 });
 
+test("SendChoice: a doubled keypress resolves the overlay once", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy", provider: "fake" });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+  fs?.emit({ type: "assistant_text", text: "working…" });
+  const { stdin, app } = mount(client);
+  try {
+    await delay(180);
+    stdin.feed("s");
+    await delay(80);
+    stdin.feed("just once");
+    await delay(80);
+    stdin.feed("\r"); // -> SendChoice
+    await delay(120);
+    stdin.feed("a"); // resolve
+    stdin.feed("a"); // ...again before the re-render — must be a no-op
+    await delay(250);
+    assert.deepEqual(fs?.sends, ["just once"], "resolved exactly once");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("a queue on a session that never returns to idle is reported, not silently dropped", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
@@ -338,6 +364,16 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
     await delay(150);
     assert.match(stdout.last, /wire the RPC/);
     assert.match(stdout.last, /implement fresh/);
+
+    // `d` opens the discuss sub-prompt; esc backs out to the plan overlay,
+    // NOT to browse (the daemon is still blocked on the decision).
+    stdin.feed("d");
+    await delay(120);
+    assert.match(stdout.last, /discuss/i);
+    stdin.feed("\x1b"); // esc
+    await delay(120);
+    assert.match(stdout.last, /wire the RPC/, "back on the plan overlay");
+    assert.equal(fs?.planResponses.length, 0, "nothing was sent");
 
     stdin.feed("i"); // implement
     await delay(200);

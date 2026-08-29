@@ -276,7 +276,16 @@ export function reduce(s: TuiState, a: Action): TuiState {
     }
 
     case "sessions": {
-      const sessions = sortSessions(a.sessions);
+      // Rebase, don't blindly replace: a `session.list` response that was in
+      // flight while a `session_updated` push landed would otherwise overwrite
+      // the newer per-session state with the older snapshot. Keep whichever
+      // row has the more recent `updatedAt`.
+      const prev = new Map(s.sessions.map((x) => [x.id, x]));
+      const merged = a.sessions.map((next) => {
+        const cur = prev.get(next.id);
+        return cur && cur.updatedAt > next.updatedAt ? cur : next;
+      });
+      const sessions = sortSessions(merged);
       return {
         ...s,
         sessions,

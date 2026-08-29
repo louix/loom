@@ -75,6 +75,12 @@ export function App({
   const [dims, setDims] = useState(() => ({ cols: stdout.columns || 100, rows: stdout.rows || 30 }));
   const restarting = useRef(false);
   const echoSeq = useRef(0);
+  // Synchronous latch: Ink invokes the key handler once per byte of a stdin
+  // chunk before React re-renders, so a batched "aa" would resolve an overlay
+  // twice (double send / double shutdown). Holds the overlay object we already
+  // acted on — a fresh overlay (e.g. provider picker → model picker) has a new
+  // identity and passes.
+  const overlayActed = useRef<object | null>(null);
 
   // ---- client wiring --------------------------------------------------
   const refetch = useCallback(() => {
@@ -365,7 +371,8 @@ export function App({
   /** Resolve the open picker's highlighted item by its kind. */
   const choosePicked = useCallback(() => {
     const p = state.picker;
-    if (!p) return;
+    if (!p || overlayActed.current === p) return;
+    overlayActed.current = p;
     const cur = pickerCurrent(p);
     if (!cur) return void dispatch({ t: "closePicker" });
 
@@ -564,7 +571,8 @@ export function App({
   const runSendChoice = useCallback(
     (choice: "asap" | "queue" | "back") => {
       const sc = state.sendChoice;
-      if (!sc) return;
+      if (!sc || overlayActed.current === sc) return;
+      overlayActed.current = sc;
       if (choice === "back") {
         return void dispatch({
           t: "openPrompt",
@@ -602,7 +610,8 @@ export function App({
   const respondPlan = useCallback(
     (params: Record<string, unknown>, label: string) => {
       const pl = state.plan;
-      if (!pl) return;
+      if (!pl || overlayActed.current === pl) return;
+      overlayActed.current = pl;
       dispatch({ t: "closePlan" });
       perform(async () => {
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
@@ -628,6 +637,13 @@ export function App({
     if (!plan) return note("plan unchanged — nothing sent", "dim");
     respondPlan({ action: "revise", plan }, "implementing your edited plan");
   }, [state.plan, openEditor, note, respondPlan]);
+
+  // Release the overlay latch once we're no longer in an overlay mode.
+  useEffect(() => {
+    if (!["sendChoice", "confirm", "plan", "picker"].includes(state.mode)) {
+      overlayActed.current = null;
+    }
+  }, [state.mode]);
 
   // Drain a session's queued messages — one per turn, once it's idle again.
   const draining = useRef<Set<string>>(new Set());
@@ -681,8 +697,9 @@ export function App({
   });
   const runConfirm = useCallback(() => {
     const c = state.confirm;
+    if (!c || overlayActed.current === c) return;
+    overlayActed.current = c;
     dispatch({ t: "closeConfirm" });
-    if (!c) return;
     if (c.action === "restart") {
       restarting.current = true;
       dispatch({ t: "connection", value: "reconnecting" });
@@ -726,6 +743,17 @@ export function App({
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
+          // Backing out of the plan "discuss" sub-prompt returns to the plan
+          // overlay — the daemon is still blocked on the decision, so we must
+          // not drop the user into browse with the overlay gone.
+          if (p.kind === "discuss" && p.sessionId && p.requestId && state.plan) {
+            return void dispatch({
+              t: "openPlan",
+              sessionId: p.sessionId,
+              requestId: p.requestId,
+              text: state.plan.text,
+            });
+          }
           return void dispatch({ t: "closePrompt" });
         case "submit":
           return void submitPrompt();

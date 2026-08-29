@@ -452,6 +452,10 @@ function physicalRows(
 // text editor view (used by the prompt)
 // ---------------------------------------------------------------------------
 
+/** Max rows the editor draws; `promptRows` reserves the same so the footer
+ *  can't overdraw the body when a big paste / $EDITOR return lands. */
+export const MAX_EDITOR_ROWS = 8;
+
 export function EditorView({
   buf,
   width,
@@ -474,10 +478,26 @@ export function EditorView({
   const { lines, row, col } = layout(buf);
   const room = Math.max(8, width - 2);
 
+  // Window to MAX_EDITOR_ROWS around the caret so the rendered height matches
+  // what `promptRows` told the layout to reserve.
+  const start =
+    lines.length <= MAX_EDITOR_ROWS
+      ? 0
+      : Math.min(
+          Math.max(0, row - Math.floor(MAX_EDITOR_ROWS / 2)),
+          lines.length - MAX_EDITOR_ROWS,
+        );
+  const shown = lines.slice(start, start + MAX_EDITOR_ROWS);
+  const moreAbove = start > 0;
+  const moreBelow = start + MAX_EDITOR_ROWS < lines.length;
+
   return h(
     Box,
     { flexDirection: "column" },
-    ...lines.map((ln, r) => {
+    ...shown.map((ln, i) => {
+      const r = start + i;
+      const gutter =
+        (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
       let content: ReactNode;
       if (r === row) {
         const off = Math.max(0, col - (room - 1));
@@ -491,7 +511,7 @@ export function EditorView({
       } else {
         content = h(Text, { color: C.text, wrap: "truncate-end" }, ln.length ? ln : " ");
       }
-      return h(Box, { key: r }, h(Text, { color: C.accent }, "▍ "), content);
+      return h(Box, { key: r }, h(Text, { color: C.accent }, gutter), content);
     }),
   );
 }
@@ -577,7 +597,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
 /** Rows the prompt editor occupies, for the parent's height maths. */
 export function promptRows(state: TuiState): number {
   if (state.mode !== "prompt" || !state.prompt) return 2;
-  const editor = Math.min(8, Math.max(1, state.prompt.buffer.text.split("\n").length));
+  const editor = Math.min(MAX_EDITOR_ROWS, Math.max(1, state.prompt.buffer.text.split("\n").length));
   return 1 /* label */ + editor + 1 /* hints */;
 }
 
