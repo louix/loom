@@ -1,13 +1,15 @@
 # Loom
 
 A per-project daemon that runs and supervises a fleet of coding agents, each
-isolated in its own git worktree, viewed and driven from a terminal UI. V1 runs
-on the Claude Agent SDK; the provider layer is built so Google ADK can drop in
-as a second adapter.
+isolated in its own git worktree, viewed and driven from a terminal UI. The
+first-class runtime is the Claude Agent SDK; the provider layer takes
+OpenAI-compatible models (GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI) via
+the Vercel AI SDK.
 
 > Codename "Loom" — rename freely. The design is whatever's written here and in
-> `docs/roadmap.md`. This repo implements **milestones 1-9**; the ADK adapter
-> (milestone 10) is the remaining piece.
+> `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-9**
+> plus **milestone 10a** (aisdk provider skeleton — streaming, usage/cost,
+> cancel, resume; tools land in 10b–d).
 
 ## Status — milestones 1-9
 
@@ -123,7 +125,15 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-Not yet implemented: the ADK adapter / arbitrary OpenAI-compatible providers.
+**OpenAI-compatible providers (milestone 10, in progress).** Any
+`[providers.<id>]` block with `adapter = "aisdk"` (base_url, api_key_env, model,
+models) registers a provider backed by the Vercel AI SDK — OpenAI, GLM, DeepSeek,
+OpenRouter, a local vLLM / Ollama. `default_provider` picks which one new
+sessions use. **10a** (shipped) covers streaming, token usage + price-table
+cost, cancel, and resume (Loom persists the transcript in `provider_messages`);
+sessions run without tools until **10b–d** add the MCP client, a hand-built Bash
+and Edit, plan mode, compaction, and sub-agents. Cache-liveness in the UI stays
+Claude-only (OpenAI-compatible endpoints cache server-side with no TTL to show).
 
 **Sub-agents.** When a session's agent spawns a sub-agent (Claude's `Task`
 tool), the Detail pane shows `⑂ 1/2 sub-agents · reviewer, tester ✓` and the
@@ -249,7 +259,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 161 cases
+npm test             # node:test — 178 cases
 ```
 
 ### Layout

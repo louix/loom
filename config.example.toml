@@ -29,9 +29,20 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
                                    # the TUI's cache-liveness countdown exact; 1h cache
                                    # writes cost more on metered billing.
 
-[providers.adk]                     # future — not wired in V1
-model = "gemini-2.5-pro"
-auth  = "api_key"                   # or "vertex"
+# default_provider = "claude"       # which provider new sessions use when the
+                                   # client doesn't name one (must be configured)
+
+# OpenAI-compatible providers (milestone 10). Any [providers.<id>] table with
+# adapter = "aisdk" is picked up — OpenAI, GLM/Zhipu, DeepSeek, OpenRouter, a
+# local vLLM / Ollama. Repeat the block per provider.
+# [providers.openai]
+# adapter     = "aisdk"
+# base_url    = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"    # env var holding the bearer token; "" if keyless
+# model       = "gpt-5"             # default model for new sessions
+# models      = ["gpt-5", "gpt-5-mini"]   # offered in the picker (M10e)
+# tag         = "oai"              # Fleet-row label for non-default providers (M10e)
+# title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
 
 [[mcp]]                             # mounted into every session, in order, after
 name    = "tilth"                   # the built-in `loom` server. The system

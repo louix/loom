@@ -126,7 +126,7 @@ export class Daemon {
       baseBranch: this.config.baseBranch,
       log: this.#log.child("worktrees"),
     });
-    this.#providers = new ProviderRegistry(this.config);
+    this.#providers = new ProviderRegistry(this.config, this.#db);
     this.#sessions = new SessionManager({
       emitEvent: (ev) => {
         this.emitEvent(ev);
@@ -351,7 +351,9 @@ export class Daemon {
         ...(this.config.titles.model
           ? { model: this.config.titles.model }
           : (() => {
-              const m = cheapModelFor(snap.provider);
+              const m =
+                this.config.providers.aisdk[snap.provider]?.titleModel ||
+                cheapModelFor(snap.provider);
               return m ? { model: m } : {};
             })()),
       });
@@ -503,7 +505,7 @@ export class Daemon {
           ? (p["model"] as string)
           : providerId === "claude"
             ? this.config.providers.claude.model
-            : null;
+            : (this.config.providers.aisdk[providerId]?.model ?? null);
       const parentId = typeof p["parentId"] === "string" ? (p["parentId"] as string) : null;
       if (parentId && !this.#registry.get(parentId)) {
         throw new RpcError("not_found", `no such parent session: ${parentId}`);

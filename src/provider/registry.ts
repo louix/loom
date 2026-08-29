@@ -3,10 +3,16 @@
  * session (design spec §2), so nothing is constructed until a session asks for
  * it — importing the Claude SDK has a cost, and the `fake` provider only exists
  * for tests / offline play.
+ *
+ * `claude` and `fake` are always present; every `[providers.<id>]` profile with
+ * `adapter = "aisdk"` adds an {@link AisdkProvider} entry under its own id.
  */
 import type { LoomConfig } from "../config/config.ts";
+import type { Db } from "../store/db.ts";
 import { ClaudeProvider } from "./claude/adapter.ts";
 import { FakeProvider } from "./fake/fake.ts";
+import { AisdkProvider } from "./aisdk/adapter.ts";
+import { ProviderMessageStore } from "./aisdk/store.ts";
 import type { AgentProvider } from "./types.ts";
 
 export class ProviderRegistry {
@@ -14,7 +20,7 @@ export class ProviderRegistry {
   readonly #factories = new Map<string, () => AgentProvider>();
   readonly #cache = new Map<string, AgentProvider>();
 
-  constructor(config: LoomConfig) {
+  constructor(config: LoomConfig, db?: Db) {
     this.#config = config;
     this.#factories.set(
       "claude",
@@ -25,10 +31,22 @@ export class ProviderRegistry {
         }),
     );
     this.#factories.set("fake", () => new FakeProvider());
+
+    for (const [id, profile] of Object.entries(config.providers.aisdk)) {
+      this.#factories.set(id, () => {
+        if (!db) throw new Error(`aisdk provider "${id}" needs a database`);
+        const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
+        return new AisdkProvider(
+          { id, baseUrl: profile.baseUrl, apiKey, model: profile.model, models: profile.models },
+          new ProviderMessageStore(db),
+        );
+      });
+    }
   }
 
   get defaultId(): string {
-    return "claude";
+    const want = this.#config.defaultProvider;
+    return this.#factories.has(want) ? want : "claude";
   }
 
   has(id: string): boolean {

@@ -42,12 +42,14 @@ MCP transport.
 
 | Package | Notes |
 |---|---|
-| `ai` | the SDK core (`streamText`, `stepCountIs`/`stopWhen`, `tool`, `experimental_createMCPClient`) |
-| `@ai-sdk/openai` | OpenAI + `createOpenAICompatible` → GLM, DeepSeek, OpenRouter, vLLM, Ollama, LM Studio |
-| `@ai-sdk/anthropic` | optional, later — lets Anthropic models run through the same adapter for parity testing |
-| `@ai-sdk/google` | optional, later — native Gemini without ADK |
+| `ai` | **pinned to the v5 line** (`^5.0.249`, dist-tag `ai-v5`). v6/v7 exist but v5's `LanguageModelV2` usage is a flat `{ inputTokens, outputTokens, cachedInputTokens }` and its `fullStream` parts are stable and well-documented; bump later as a focused upgrade. `streamText`, `stepCountIs`, `tool`, `experimental_createMCPClient`. |
+| `@ai-sdk/openai-compatible` | `^1.0.52` (dist-tag `ai-v5`) — `createOpenAICompatible({ name, baseURL, apiKey })` → GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI itself. Dedicated package, cleaner than `@ai-sdk/openai`'s helper. |
+| `@ai-sdk/anthropic` / `@ai-sdk/google` | follow-ups, not in M10 |
 | `zod` | **already a dependency** (`^4.4.3`) |
-| official MCP servers | `@modelcontextprotocol/server-filesystem`, `-git`, `-fetch` — spawned as subprocesses, not linked |
+| official MCP servers | `@modelcontextprotocol/server-filesystem`, `-git`, `-fetch` — spawned as subprocesses, not linked (M10b) |
+
+Whole trio installs to ~18 MB / 10 packages, most of it shared with what the
+Claude SDK already pulls.
 
 No `tiktoken` — context estimate is `chars/4` against a per-model context-window
 table (see Compaction).
@@ -141,8 +143,8 @@ CREATE TABLE provider_messages (
 Append on every message; `resumeSession` loads them ordered by `seq`. Compaction
 rewrites the tail (delete from `seq >= k`, insert the summary).
 
-Also migration 6: `ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`
-(the session's current model, distinct from the provider default — see switching).
+(`sessions.model` already exists from migration 1, so migration 6 is just the
+`provider_messages` table.)
 
 ### Compaction (no SDK `/compact`)
 
@@ -300,7 +302,7 @@ Commit as each lands. **Stop for review after M10a.**
 
 | # | deliverable | tests |
 |---|---|---|
-| **M10a** | aisdk provider skeleton: one profile (`openai`), `streamText` loop, `fullStream`→events, usage + price-table cost, `interrupt`, resume via `provider_messages`. **No tools.** Registry built from config. | loop against `MockLanguageModelV2` / a tiny in-test HTTP stub: streams text, reports usage, cancels, resumes |
+| **M10a** ✓ | aisdk provider skeleton: `[providers.<id>]` profiles + `default_provider`, `AisdkProvider`/`AisdkSession` over `createOpenAICompatible`, `streamText` single-step loop, `fullStream`→`HarnessEvent` mapper, usage with cached-token split, price-table cost (existing daemon path), `interrupt` via `AbortController`, resume via `provider_messages` (migration 6), registry built from config, one-shot path so auto-titling works. **No tools.** | `test/aisdk.test.ts` (mapper shapes, `runTurn`, session create/interrupt/resume, SessionManager rollup) + `test/config.test.ts` (profile parsing). `MockLanguageModelV2` from `ai/test`. |
 | **M10b** | MCP client (`experimental_createMCPClient`), `McpServerHandle` mapping, process supervision, default server set, the `loom` server exposed as tools | fake stdio MCP server in-test; tool discovery + call + teardown; zombie check |
 | **M10c** | hand-built `bash.ts` + `edit.ts`; the `execute` wrapper (mode filter + permission gate); `Grep`/`TodoWrite` first-party; parity checklist green | Edit match tiers; Bash cwd/env persistence + timeout + cap; gate allow/deny path |
 | **M10d** | mode enforcement (`plan` withholds mutators + `exit_plan` → `plan_review`; `acceptEdits`; `auto`); Loom-side compaction + `tokens.ts`; `Task` subagents | plan-mode blocks Write then implements on `respondToPlan`; compaction rewrites the tail + emits `compact`; subagent start/stop on snapshot |

@@ -7,11 +7,29 @@ import { parse as parseToml } from "smol-toml";
  * Milestone 1 only reads a handful of these; the rest are carried so the shape
  * is stable for later milestones.
  */
+/** One OpenAI-compatible provider profile (`[providers.<id>]`, `adapter = "aisdk"`). */
+export interface AisdkProfile {
+  /** OpenAI-compatible base URL, e.g. `https://api.deepseek.com/v1`. */
+  baseUrl: string;
+  /** Env var holding the bearer token; "" for a keyless local endpoint. */
+  apiKeyEnv: string;
+  /** Default model id for new sessions on this provider. */
+  model: string;
+  /** Model ids offered in the picker (M10e). Defaults to `[model]`. */
+  models: string[];
+  /** Short label shown on the Fleet row for non-default providers (M10e). */
+  tag: string;
+  /** Cheap model for one-shot auto-titling; "" → falls back to `titles.model`. */
+  titleModel: string;
+}
+
 export interface LoomConfig {
   baseBranch: string;
   worktreeDir: string;
   db: string;
   runIsolation: "in-process" | "subprocess";
+  /** Provider id new sessions use when the client doesn't name one. */
+  defaultProvider: string;
   daemon: {
     idleShutdownMinutes: number;
     /** Capacity of the in-memory push-event ring buffer (frames). */
@@ -32,10 +50,12 @@ export interface LoomConfig {
        */
       promptCacheTtl: "5m" | "1h" | "";
     };
-    adk: {
-      model: string;
-      auth: "api_key" | "vertex";
-    };
+    /**
+     * OpenAI-compatible providers, keyed by id (the `[providers.<id>]` table
+     * name). Any provider table carrying `adapter = "aisdk"` lands here — GLM,
+     * DeepSeek, OpenRouter, a local vLLM / Ollama, OpenAI itself.
+     */
+    aisdk: Record<string, AisdkProfile>;
   };
   mcp: Array<{ name: string; command: string }>;
   titles: {
@@ -57,6 +77,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   worktreeDir: ".loom/trees",
   db: ".loom/loom.db",
   runIsolation: "in-process",
+  defaultProvider: "claude",
   daemon: {
     idleShutdownMinutes: 30,
     eventBufferSize: 4096,
@@ -70,10 +91,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       cliPath: "",
       promptCacheTtl: "1h",
     },
-    adk: {
-      model: "gemini-2.5-pro",
-      auth: "api_key",
-    },
+    aisdk: {},
   },
   mcp: [
     { name: "tilth", command: "tilth mcp --edit" },
@@ -105,6 +123,33 @@ function strArray(v: unknown, fallback: string[]): string[] {
 }
 
 /**
+ * Pull every `[providers.<id>]` table with `adapter = "aisdk"` into a profile
+ * map. `claude` is handled separately and never treated as an aisdk profile.
+ * A profile with no `base_url` is dropped (it can't be dialled).
+ */
+function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, AisdkProfile> {
+  const out: Record<string, AisdkProfile> = {};
+  for (const [id, raw] of Object.entries(providers)) {
+    if (id === "claude") continue;
+    const t = asRecord(raw);
+    if (t["adapter"] !== "aisdk") continue;
+    const baseUrl = str(t["base_url"], "");
+    if (baseUrl === "") continue;
+    const model = str(t["model"], "");
+    const models = strArray(t["models"], model ? [model] : []);
+    out[id] = {
+      baseUrl,
+      apiKeyEnv: str(t["api_key_env"], ""),
+      model,
+      models,
+      tag: str(t["tag"], id),
+      titleModel: str(t["title_model"], ""),
+    };
+  }
+  return out;
+}
+
+/**
  * Parse a raw TOML tree into a fully-populated LoomConfig, filling any missing
  * key from DEFAULT_CONFIG. Unknown keys are ignored. Enum-typed fields fall back
  * to the default when the value is not one of the permitted literals.
@@ -116,13 +161,17 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const daemon = asRecord(r["daemon"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
-  const adk = asRecord(providers["adk"]);
+  const aisdk = parseAisdkProfiles(providers);
   const titles = asRecord(r["titles"]);
   const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);
   const budget = asRecord(r["budget"]);
 
   const runIsolation = r["run_isolation"] === "subprocess" ? "subprocess" : "in-process";
+
+  // The default provider must actually be configured; fall back to claude.
+  const wantDefault = str(r["default_provider"], d.defaultProvider);
+  const defaultProvider = wantDefault === "claude" || wantDefault in aisdk ? wantDefault : "claude";
 
   const permDefault = claude["permission_default"];
   const permissionDefault =
@@ -148,6 +197,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
     db: str(r["db"], d.db),
     runIsolation,
+    defaultProvider,
     daemon: {
       idleShutdownMinutes: num(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
       eventBufferSize: num(daemon["event_buffer_size"], d.daemon.eventBufferSize),
@@ -166,10 +216,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
             ? (claude["prompt_cache_ttl"] as "5m" | "1h" | "")
             : d.providers.claude.promptCacheTtl,
       },
-      adk: {
-        model: str(adk["model"], d.providers.adk.model),
-        auth: adk["auth"] === "vertex" ? "vertex" : "api_key",
-      },
+      aisdk,
     },
     mcp,
     titles: {

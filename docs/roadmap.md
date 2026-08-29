@@ -286,7 +286,7 @@ inside a session card; child sessions are their own rows with a parent link.
 
 ## Milestone 10 — non-Claude providers (Vercel AI SDK)
 
-**Full plan: [`m10-plan.md`](m10-plan.md).** Under review with the user.
+**Full plan: [`m10-plan.md`](m10-plan.md).** M10a shipped; M10b–e under review.
 
 The original sketch here was an **ADK adapter**, on the assumption that TS
 `@google/adk` carries Python ADK's `LiteLlm` wrapper for OpenAI-compatible
@@ -295,18 +295,25 @@ no OpenAI/Anthropic model backend (Gemini/Vertex only), and 155 MB / 114
 transitive packages. Details in `m10-plan.md` §"Why not ADK".
 
 **Direction now.** Full tool parity for non-Claude providers, built on the
-**Vercel AI SDK** (`ai` + `@ai-sdk/openai`), which reaches GLM / DeepSeek /
-OpenRouter / vLLM / Ollama via `createOpenAICompatible`. Loom owns the loop
-policy, permission gate, compaction, and message persistence; the SDK does model
-I/O, tool-call plumbing, and MCP transport. Tools: official MCP servers
+**Vercel AI SDK** (`ai@^5` + `@ai-sdk/openai-compatible@^1`), which reaches GLM /
+DeepSeek / OpenRouter / vLLM / Ollama via `createOpenAICompatible`. Loom owns the
+loop policy, permission gate, compaction, and message persistence; the SDK does
+model I/O, tool-call plumbing, and MCP transport. Tools: official MCP servers
 (`server-filesystem`, `-git`, `-fetch`) plus two hand-built ones (a
-persistent-shell Bash, a fuzzy-match Edit). Split into sub-milestones M10a–e
-(skeleton → MCP → hand-built tools → modes/compaction/subagents →
-provider/model switching UX); **stop for review after M10a**.
+persistent-shell Bash, a fuzzy-match Edit). Sub-milestones M10a–e (skeleton →
+MCP → hand-built tools → modes/compaction/subagents → provider/model switching
+UX).
 
 `[providers.adk]` config stub is retired; `[providers.<id>]` gains an `adapter`
 key (`"claude"` | `"aisdk"`) and the registry builds its factory map from
 config-declared provider profiles.
+
+**M10a — shipped.** aisdk profiles + `default_provider` in config;
+`src/provider/aisdk/` (`adapter`, `session`, `loop`, `map`, `store`, `tokens`);
+single tool-free `streamText` step per turn; `fullStream`→`HarnessEvent` with a
+cached-token split; `interrupt` via `AbortController`; transcript in
+`provider_messages` (migration 6), reloaded by `resumeSession`; one-shot path so
+auto-titling covers aisdk. Cost rides the existing price-table path. 178 tests.
 
 ---
 

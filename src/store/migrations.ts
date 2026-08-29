@@ -84,4 +84,18 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE usage ADD COLUMN last_cache_read  INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE usage ADD COLUMN last_cache_write INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 6 — conversation history for providers Loom persists itself (aisdk, M10).
+  // The Claude adapter keeps its own transcript; these rows are the whole
+  // record for an OpenAI-compatible session and are what `resumeSession` reads.
+  /* sql */ `
+  CREATE TABLE provider_messages (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,          -- JSON-encoded ModelMessage
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, seq)
+  );
+  `,
 ];
