@@ -1,10 +1,30 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
 import type { HelloResult, PushFrame, SessionSnapshot } from "../src/protocol/wire.ts";
 import type { FakeProvider } from "../src/provider/fake/fake.ts";
 import { makeHarness, type Harness } from "./helpers.ts";
+
+/** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn. */
+function modelsStub(ids: string[]): Promise<{ base: string; close: () => void }> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      if ((req.url ?? "").endsWith("/models")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: ids.map((id) => ({ id })) }));
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolve({ base: `http://127.0.0.1:${port}/v1`, close: () => server.close() });
+    });
+  });
+}
 
 let h: Harness;
 
@@ -322,6 +342,41 @@ model    = "gpt-5"
 
     await c.close();
   } finally {
+    await hh.cleanup();
+  }
+});
+
+test("aisdk model auto-detection fills the picker list at start-up; config.check reports warnings", async () => {
+  const srv = await modelsStub(["z-model", "a-model", "m-model"]);
+  const hh = await makeHarness({
+    config: `
+[providers.oai]
+adapter  = "aisdk"
+base_url = "${srv.base}"
+
+[providers.needkey]
+adapter     = "aisdk"
+base_url    = "http://127.0.0.1:9/v1"
+model       = "x"
+api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+
+    // probed at start-up, sorted, and the first becomes the default model
+    const provs = await c.request<Array<{ id: string; models: string[] }>>("providers.list");
+    const oai = provs.find((p) => p.id === "oai");
+    assert.deepEqual(oai?.models, ["a-model", "m-model", "z-model"]);
+
+    // lint surfaces the unset key var; the auto profile resolved, so no note for it
+    const { warnings } = await c.request<{ warnings: string[] }>("config.check");
+    assert.ok(warnings.some((w) => /\$LOOM_TEST_UNSET_KEY_VAR is not set/.test(w)));
+    assert.ok(!warnings.some((w) => /"oai"/.test(w)));
+
+    await c.close();
+  } finally {
+    srv.close();
     await hh.cleanup();
   }
 });

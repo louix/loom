@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
 import { ensureLoomDir, loomPaths, userConfigPath, type LoomPaths } from "../util/paths.ts";
-import { loadConfig, resolveAgainstRepo, type LoomConfig } from "../config/config.ts";
+import {
+  lintConfig,
+  loadConfig,
+  resolveApiKey,
+  resolveAgainstRepo,
+  type LoomConfig,
+} from "../config/config.ts";
 import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "../version.ts";
 import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
@@ -64,10 +70,9 @@ const TOOL_STEER = [
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
 
 /** `GET {base_url}/models` → sorted model ids (OpenAI list shape). */
-async function probeOpenAiModels(baseUrl: string, apiKeyEnv: string): Promise<string[]> {
-  const key = apiKeyEnv ? (process.env[apiKeyEnv] ?? "") : "";
+async function probeOpenAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-    headers: key ? { Authorization: `Bearer ${key}` } : {},
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -271,6 +276,9 @@ export class Daemon {
       this.#emitSessionUpdated(this.#registry.mustGet(id));
     }
 
+    for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+    await this.#resolveAutoModels();
+
     await this.#server.listen();
 
     if (!this.#standalone) this.#installSignalHandlers();
@@ -379,6 +387,36 @@ export class Daemon {
   get #cacheTtlMinutes(): number {
     const ttl = this.config.providers.claude.promptCacheTtl;
     return ttl === "1h" ? 60 : ttl === "5m" ? 5 : 0;
+  }
+
+  /**
+   * Fill `model` / `models` for aisdk profiles that configured neither, by
+   * probing `{base_url}/models`. Best-effort and bounded — a black-hole
+   * endpoint logs a warning and leaves the profile model-less (session creation
+   * on it then fails with a clear message). Mutates `this.config` in place so
+   * the registry (which reads the profile by reference) sees the result.
+   */
+  async #resolveAutoModels(): Promise<void> {
+    const pending = Object.entries(this.config.providers.aisdk).filter(([, p]) => p.autoModels);
+    if (pending.length === 0) return;
+    await Promise.all(
+      pending.map(async ([id, p]) => {
+        try {
+          const models = await probeOpenAiModels(p.baseUrl, resolveApiKey(p));
+          if (models.length === 0) throw new Error("endpoint returned no models");
+          p.models = models;
+          p.model = models[0] ?? "";
+          p.autoModels = false;
+          this.#log.info("auto-detected models", { provider: id, count: models.length, model: p.model });
+        } catch (err) {
+          this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
+            provider: id,
+            baseUrl: p.baseUrl,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }),
+    );
   }
 
   /** Configured providers for the TUI's creation flow / model switcher. */
@@ -604,11 +642,13 @@ export class Daemon {
       // native SDKs just hand back the configured list.
       if (profile.sdk !== "openai") return { models: profile.models };
       try {
-        return { models: await probeOpenAiModels(profile.baseUrl, profile.apiKeyEnv) };
+        return { models: await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile)) };
       } catch (err) {
         throw new RpcError("provider_error", `could not list models: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
+
+    d.register("config.check", () => ({ warnings: lintConfig(this.config) }));
 
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));
 
@@ -643,6 +683,14 @@ export class Daemon {
           : providerId === "claude"
             ? this.config.providers.claude.model
             : (this.config.providers.aisdk[providerId]?.model ?? null);
+      const aisdkProfile = this.config.providers.aisdk[providerId];
+      if (aisdkProfile && !model) {
+        throw new RpcError(
+          "bad_request",
+          `provider "${providerId}" has no model — auto-detection from ${aisdkProfile.baseUrl}/models ` +
+            "failed; set `model` / `models` in the config, or pass an explicit model",
+        );
+      }
       const parentId = typeof p["parentId"] === "string" ? (p["parentId"] as string) : null;
       if (parentId && !this.#registry.get(parentId)) {
         throw new RpcError("not_found", `no such parent session: ${parentId}`);

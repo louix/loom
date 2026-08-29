@@ -8,6 +8,12 @@ import { setLogLevel } from "../src/util/logger.ts";
 
 setLogLevel("error"); // keep test output quiet
 
+// Isolate the user-level config: without this, the developer's real
+// ~/.config/loom/config.toml is deep-merged into every harness daemon (extra
+// providers, live credentials, start-up network probes). Point XDG at an empty
+// dir so tests see only the per-repo config they pass in.
+process.env["XDG_CONFIG_HOME"] = mkdtempSync(join(tmpdir(), "loom-xdg-"));
+
 export interface Harness {
   repoRoot: string;
   sockPath: string;

@@ -18,6 +18,7 @@ commands:
   history <id>           status history for a session
   providers              list configured providers (* = default)
   models <provider>      query an aisdk provider's /models endpoint
+  config                 lint the loaded config (exit 1 if there are warnings)
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
@@ -133,6 +134,17 @@ async function main(): Promise<void> {
         const r = await client.request<{ models: string[] }>("providers.probeModels", { id });
         if (values.json) process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
         else process.stdout.write(r.models.join("\n") + "\n");
+        break;
+      }
+      case "config": {
+        const r = await client.request<{ warnings: string[] }>("config.check");
+        if (values.json) process.stdout.write(JSON.stringify(r, null, 2) + "\n");
+        else if (r.warnings.length === 0) process.stdout.write("config looks good\n");
+        else {
+          process.stdout.write(`${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`);
+          for (const line of r.warnings) process.stdout.write(`  ! ${line}\n`);
+          process.exitCode = 1;
+        }
         break;
       }
       case "history": {

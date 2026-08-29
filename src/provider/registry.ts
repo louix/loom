@@ -9,7 +9,7 @@
  * `claude` and `fake` are always available; every `[providers.<id>]` profile
  * with `adapter = "aisdk"` adds an entry under its own id.
  */
-import type { LoomConfig } from "../config/config.ts";
+import { resolveApiKey, type LoomConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
 import type { AgentProvider } from "./types.ts";
 import type { SearchConfig } from "./aisdk/tools/search.ts";
@@ -75,7 +75,13 @@ export class ProviderRegistry {
       import("./aisdk/adapter.ts"),
       import("./aisdk/store.ts"),
     ]);
-    const apiKey = profile.apiKeyEnv ? (process.env[profile.apiKeyEnv] ?? "") : "";
+    const apiKey = resolveApiKey(profile);
+    if (!profile.model) {
+      throw new Error(
+        `provider "${id}" has no model — auto-detection from ${profile.baseUrl}/models ` +
+          `failed or hasn't run; set \`model\` or \`models\` in the config`,
+      );
+    }
     const makeModel = await resolveModelFactory(profile.sdk, { id, baseUrl: profile.baseUrl, apiKey });
     const search = this.#resolveSearch();
     return new AisdkProvider(
@@ -88,7 +94,7 @@ export class ProviderRegistry {
   #resolveSearch(): SearchConfig | undefined {
     const s = this.#config.search;
     if (s.backend === "none") return undefined;
-    const apiKey = s.apiKeyEnv ? (process.env[s.apiKeyEnv] ?? "") : "";
+    const apiKey = resolveApiKey(s);
     if (!apiKey) return undefined;
     return { backend: s.backend, apiKey, apiBase: s.apiBase, maxResults: s.maxResults };
   }

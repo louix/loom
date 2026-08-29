@@ -23,10 +23,22 @@ export interface AisdkProfile {
   baseUrl: string;
   /** Env var holding the API key; "" for a keyless local endpoint. */
   apiKeyEnv: string;
+  /**
+   * API key given literally in the config. Wins over `apiKeyEnv`. Convenient,
+   * but it's a plaintext secret in a file — prefer `api_key_env` for anything
+   * that might get committed or shared.
+   */
+  apiKey: string;
   /** Default model id for new sessions on this provider. */
   model: string;
   /** Model ids offered in the picker (M10e). Defaults to `[model]`. */
   models: string[];
+  /**
+   * Neither `model` nor `models` was configured — the daemon fills them from
+   * `{base_url}/models` at start-up (openai-compatible endpoints only). Cleared
+   * once resolved.
+   */
+  autoModels: boolean;
   /** Short label for the provider (Detail pane, `loom ls`). Defaults to the id. */
   tag: string;
   /**
@@ -102,6 +114,8 @@ export interface LoomConfig {
     backend: "none" | "brave" | "tavily";
     /** Env var holding the API key. */
     apiKeyEnv: string;
+    /** Literal API key; wins over `apiKeyEnv`. Prefer the env var. */
+    apiKey: string;
     /** Override the backend's base URL (a proxy, or a test stub). */
     apiBase: string;
     maxResults: number;
@@ -141,7 +155,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
     defaultMaxCostUsd: 5.0,
     onBreach: "soft",
   },
-  search: { backend: "none", apiKeyEnv: "", apiBase: "", maxResults: 5 },
+  search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
 };
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -171,8 +185,10 @@ function strArray(v: unknown, fallback: string[]): string[] {
 /**
  * Pull every `[providers.<id>]` table with `adapter = "aisdk"` into a profile
  * map. `claude` is handled separately and never treated as an aisdk profile.
- * An `sdk = "openai"` profile with no `base_url` is dropped (nothing to dial);
- * `google` / `anthropic` profiles don't need one.
+ * An `sdk = "openai"` profile with no `base_url` is dropped (nothing to dial).
+ * A profile with no `model` / `models` is kept for `openai` (the daemon probes
+ * `{base_url}/models` at start-up, `autoModels`) but dropped for `google` /
+ * `anthropic`, which have no uniform model-list endpoint.
  */
 function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, AisdkProfile> {
   const out: Record<string, AisdkProfile> = {};
@@ -186,20 +202,70 @@ function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, 
     if (sdk === "openai" && baseUrl === "") continue;
     const model = str(t["model"], "");
     const models = strArray(t["models"], model ? [model] : []);
-    if (model === "" && models.length === 0) continue; // nothing to dial
+    const autoModels = model === "" && models.length === 0;
+    if (autoModels && sdk !== "openai") continue; // can't auto-detect; nothing to dial
     const effectiveModel = model || (models[0] ?? "");
     out[id] = {
       sdk,
       baseUrl,
       apiKeyEnv: str(t["api_key_env"], ""),
+      apiKey: str(t["api_key"], ""),
       model: effectiveModel,
-      models: models.length > 0 ? models : [effectiveModel],
+      models: models.length > 0 ? models : effectiveModel ? [effectiveModel] : [],
+      autoModels,
       tag: str(t["tag"], id),
       color: str(t["color"], ""),
       titleModel: str(t["title_model"], ""),
     };
   }
   return out;
+}
+
+/**
+ * The API key for an aisdk profile / `[search]`: an inline `api_key` wins,
+ * else `api_key_env` is looked up in the environment, else "" (a keyless
+ * local endpoint).
+ */
+export function resolveApiKey(
+  src: { apiKey?: string; apiKeyEnv?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (src.apiKey) return src.apiKey;
+  if (src.apiKeyEnv) return env[src.apiKeyEnv] ?? "";
+  return "";
+}
+
+/**
+ * Human-readable warnings about the loaded config — misconfigured providers,
+ * env vars that aren't set, models that will be auto-detected, a keyless search
+ * backend. `normalizeConfig` has already coerced an unknown `default_provider`
+ * to `claude`, so that's not re-checked here. Logged at daemon start-up and
+ * available over `config.check` / `loom config`.
+ */
+export function lintConfig(cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env): string[] {
+  const w: string[] = [];
+  for (const [id, p] of Object.entries(cfg.providers.aisdk)) {
+    if (p.sdk === "openai" && p.baseUrl === "") {
+      w.push(`provider "${id}": sdk = "openai" needs a base_url`);
+    }
+    if (!p.apiKey && p.apiKeyEnv && !env[p.apiKeyEnv]) {
+      w.push(`provider "${id}": $${p.apiKeyEnv} is not set`);
+    }
+    if (!p.apiKey && !p.apiKeyEnv && p.sdk !== "openai") {
+      w.push(`provider "${id}": sdk = "${p.sdk}" needs an api_key / api_key_env`);
+    }
+    if (p.autoModels) {
+      w.push(`provider "${id}": no model configured — will auto-detect from ${p.baseUrl}/models at start-up`);
+    }
+  }
+  if (cfg.search.backend !== "none" && !cfg.search.apiKey) {
+    if (!cfg.search.apiKeyEnv) {
+      w.push(`search: backend = "${cfg.search.backend}" but no api_key / api_key_env — web_search stays disabled`);
+    } else if (!env[cfg.search.apiKeyEnv]) {
+      w.push(`search: $${cfg.search.apiKeyEnv} is not set — web_search stays disabled`);
+    }
+  }
+  return w;
 }
 
 /**
@@ -290,6 +356,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     search: {
       backend: search["backend"] === "brave" || search["backend"] === "tavily" ? search["backend"] : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),
+      apiKey: str(search["api_key"], d.search.apiKey),
       apiBase: str(search["api_base"], d.search.apiBase),
       maxResults: Math.max(1, nonNeg(search["max_results"], d.search.maxResults)),
     },

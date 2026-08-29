@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { deepMerge, loadConfig, normalizeConfig } from "../src/config/config.ts";
+import { deepMerge, lintConfig, loadConfig, normalizeConfig, resolveApiKey } from "../src/config/config.ts";
 
 function cfg(toml: string) {
   return normalizeConfig(parseToml(toml));
@@ -71,20 +71,69 @@ model    = "y"
   assert.deepEqual(c.providers.aisdk, {});
 });
 
-test("a profile with no model and no models is dropped; models fills in from model", () => {
+test("an openai profile with no model/models is kept for auto-detection; google/anthropic dropped", () => {
   const c = cfg(`
-[providers.nomodel]
+[providers.auto]
 adapter  = "aisdk"
 base_url = "http://x/v1"
+
+[providers.gem]
+adapter = "aisdk"
+sdk     = "google"
 
 [providers.ok]
 adapter  = "aisdk"
 base_url = "http://y/v1"
 models   = ["m1", "m2"]
 `);
-  assert.equal(c.providers.aisdk["nomodel"], undefined);
+  assert.equal(c.providers.aisdk["auto"]?.autoModels, true);
+  assert.equal(c.providers.aisdk["auto"]?.model, "");
+  assert.deepEqual(c.providers.aisdk["auto"]?.models, []);
+  assert.equal(c.providers.aisdk["gem"], undefined); // can't probe → dropped
   assert.equal(c.providers.aisdk["ok"]?.model, "m1"); // first of models
+  assert.equal(c.providers.aisdk["ok"]?.autoModels, false);
   assert.deepEqual(c.providers.aisdk["ok"]?.models, ["m1", "m2"]);
+});
+
+test("resolveApiKey: inline api_key wins over api_key_env; else env; else empty", () => {
+  const env = { MYKEY: "from-env" } as unknown as NodeJS.ProcessEnv;
+  assert.equal(resolveApiKey({ apiKey: "inline", apiKeyEnv: "MYKEY" }, env), "inline");
+  assert.equal(resolveApiKey({ apiKey: "", apiKeyEnv: "MYKEY" }, env), "from-env");
+  assert.equal(resolveApiKey({ apiKey: "", apiKeyEnv: "MISSING" }, env), "");
+  assert.equal(resolveApiKey({}, env), "");
+});
+
+test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
+  const c = cfg(`
+[providers.p]
+adapter     = "aisdk"
+base_url    = "http://x/v1"
+api_key_env = "DEFINITELY_UNSET_VAR"
+
+[providers.auto]
+adapter  = "aisdk"
+base_url = "http://y/v1"
+
+[search]
+backend = "brave"
+`);
+  const w = lintConfig(c, {} as NodeJS.ProcessEnv);
+  assert.ok(w.some((l) => /\$DEFINITELY_UNSET_VAR is not set/.test(l)));
+  assert.ok(w.some((l) => /provider "auto".*auto-detect/.test(l)));
+  assert.ok(w.some((l) => /search:.*web_search stays disabled/.test(l)));
+
+  // an inline api_key silences the env-var warning
+  const c2 = cfg(`
+[providers.p]
+adapter  = "aisdk"
+base_url = "http://x/v1"
+api_key  = "sk-inline"
+model    = "m"
+`);
+  assert.deepEqual(lintConfig(c2, {} as NodeJS.ProcessEnv), []);
+
+  // a clean config lints clean
+  assert.deepEqual(lintConfig(cfg("")), []);
 });
 
 test("numeric config fields reject negatives / NaN; strArray keeps the valid entries", () => {

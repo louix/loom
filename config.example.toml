@@ -57,8 +57,11 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # sdk         = "openai"
 # base_url    = "https://api.openai.com/v1"
 # api_key_env = "OPENAI_API_KEY"    # env var holding the key; "" if keyless
-# model       = "gpt-5"             # default model for new sessions
-# models      = ["gpt-5", "gpt-5-mini"]   # offered in the `N` / `M` model picker
+# api_key     = ""                  # or the key inline — wins over api_key_env,
+#                                   # but it's a plaintext secret; prefer the env var
+# model       = "gpt-5"             # default model for new sessions. Omit BOTH
+# models      = ["gpt-5", "gpt-5-mini"]   # model + models and Loom probes
+#                                   # {base_url}/models at start-up (openai sdk only)
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
