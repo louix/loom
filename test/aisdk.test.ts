@@ -641,6 +641,7 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
       },
       onSubagents: () => {},
       onProviderRef: () => {},
+      onMode: () => {},
       log: makeLogger("test"),
     });
 

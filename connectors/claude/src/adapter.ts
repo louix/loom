@@ -330,7 +330,16 @@ class ClaudeSession implements AgentSession {
     this.#pendingPlans.delete(id);
 
     if (decision.action === "implement") {
-      // Native exit: the SDK leaves plan mode and the turn implements.
+      // Native exit: the SDK leaves plan mode and the turn implements. Mirror
+      // that into our own mode so `snapshot()` (and the daemon registry that
+      // reads it) stops reporting "plan" once the turn is already executing.
+      try {
+        await this.setMode("default");
+      } catch (err) {
+        this.#log.warn("failed to sync mode after plan exit", {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
       resolve({ behavior: "allow" });
       return;
     }

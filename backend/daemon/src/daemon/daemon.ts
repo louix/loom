@@ -243,6 +243,11 @@ export class Daemon {
         if (this.#stopping) return;
         this.#registry.setFields(id, { providerRef: ref });
       },
+      onMode: (id, mode) => {
+        if (this.#stopping) return;
+        const snap = this.#registry.setFields(id, { mode });
+        this.#emitSessionUpdated(snap);
+      },
       log: this.#log.child("sessions"),
     });
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {

@@ -33,6 +33,8 @@ export interface ManagerHooks {
   onSubagents(sessionId: string): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
+  /** The adapter's own mode changed outside of an explicit `session.setMode` call. */
+  onMode(sessionId: string, mode: SessionMode): void;
   log: Logger;
 }
 
@@ -341,6 +343,10 @@ export class SessionManager {
     if (!run.pendingPlans.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pendingPlans.delete(requestId);
     await run.session.respondToPlan(requestId, decision);
+    // Every branch of respondToPlan either leaves plan mode or (for `discuss`)
+    // stays in it deliberately; either way, push whatever the adapter landed
+    // on into the registry so clients stop seeing a stale "plan" chip.
+    this.#hooks.onMode(id, run.session.snapshot().mode);
     this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
   }
