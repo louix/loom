@@ -129,12 +129,6 @@ export interface LoomConfig {
   };
   pricing: { table: string };
   notify: { webhook: string };
-  budget: {
-    defaultMaxCostUsd: number;
-    /** Overrides `defaultMaxCostUsd` for specific provider ids (`claude`, an aisdk profile id, …). */
-    perProviderMaxCostUsd: Record<string, number>;
-    onBreach: "soft" | "hard";
-  };
   /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
    * backend is chosen and its key env var is set.
@@ -181,15 +175,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   titles: { enabled: true, model: "" },
   pricing: { table: ".loom/models.toml" },
   notify: { webhook: "" },
-  budget: {
-    // 0 = no cap applied unless the user opts in (`[budget]` / `b` /
-    // `loom budget`) — there's no real number to default this to: Loom has no
-    // way to know what any given provider or account should be spending, so a
-    // built-in figure is just a guess dressed up as a limit.
-    defaultMaxCostUsd: 0,
-    perProviderMaxCostUsd: {},
-    onBreach: "soft",
-  },
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
 };
 
@@ -208,20 +193,6 @@ function num(v: unknown, fallback: number): number {
 /** A non-negative number, or the fallback (rejects `-1`, NaN, wrong type). */
 function nonNeg(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
-}
-
-/**
- * A table of positive numbers keyed by id (e.g. `[budget.per_provider]`),
- * merged over `fallback` so an explicit entry overrides just that key rather
- * than discarding the rest of the built-in map.
- */
-function numRecord(v: unknown, fallback: Record<string, number>): Record<string, number> {
-  const t = asRecord(v);
-  const out = { ...fallback };
-  for (const [k, val] of Object.entries(t)) {
-    if (typeof val === "number" && Number.isFinite(val) && val > 0) out[k] = val;
-  }
-  return out;
 }
 
 function strArray(v: unknown, fallback: string[]): string[] {
@@ -372,7 +343,6 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const titles = asRecord(r["titles"]);
   const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);
-  const budget = asRecord(r["budget"]);
   const search = asRecord(r["search"]);
 
   const runIsolation = r["run_isolation"] === "subprocess" ? "subprocess" : "in-process";
@@ -438,11 +408,6 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     },
     pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
-    budget: {
-      defaultMaxCostUsd: nonNeg(budget["default_max_cost_usd"], d.budget.defaultMaxCostUsd),
-      perProviderMaxCostUsd: numRecord(budget["per_provider"], d.budget.perProviderMaxCostUsd),
-      onBreach: budget["on_breach"] === "hard" ? "hard" : "soft",
-    },
     search: {
       backend: search["backend"] === "brave" || search["backend"] === "tavily" ? search["backend"] : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),

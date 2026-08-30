@@ -143,4 +143,13 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX session_events_session_idx ON session_events(session_id, id);
   `,
+
+  // 10 — drop the budget feature: there was no sane number to default a cost /
+  // token / turn cap to, and Loom can't fetch a real one from any provider.
+  /* sql */ `
+  ALTER TABLE sessions DROP COLUMN budget_max_tokens;
+  ALTER TABLE sessions DROP COLUMN budget_max_cost_usd;
+  ALTER TABLE sessions DROP COLUMN budget_max_turns;
+  ALTER TABLE sessions DROP COLUMN budget_state;
+  `,
 ];

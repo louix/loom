@@ -40,12 +40,6 @@ export interface AgentDefinitionSpec {
   model?: string;
 }
 
-export interface SessionBudget {
-  maxTokens?: number;
-  maxCostUsd?: number;
-  maxTurns?: number;
-}
-
 export interface CreateSessionOptions {
   /** Loom's session id. The adapter tags the provider's own id separately. */
   sessionId: string;
@@ -60,7 +54,6 @@ export interface CreateSessionOptions {
   /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */
   loomServer?: boolean;
   subagents?: AgentDefinitionSpec[];
-  budget?: SessionBudget;
   /** Built-in tools to disable (e.g. Grep / Glob — fff replaces them). */
   disableTools?: string[];
   /** Which settings layers to load (`project` pulls CLAUDE.md). */

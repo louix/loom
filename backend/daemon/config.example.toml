@@ -103,17 +103,6 @@ table = ".loom/models.toml"
 [notify]
 webhook = ""                        # best-effort POST on awaiting_input / error when no client attached
 
-[budget]
-# 0 = no cap unless a session sets its own (`b` in the UI / `loom budget <id> <usd>`).
-# Loom has no way to know what a provider or account *should* spend, so there's
-# no sane number to ship as a default — set one only if you want every new
-# session capped from the start.
-default_max_cost_usd = 0
-on_breach            = "soft"       # or "hard"
-
-# [budget.per_provider]              # override default_max_cost_usd per provider id
-# claude = 20.0
-
 [search]                            # web_search tool for aisdk sessions (Claude
 backend     = "none"               # has its own). "none" | "brave" | "tavily".
 api_key_env = ""                   # env var with the API key; tool is off if unset

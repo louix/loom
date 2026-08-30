@@ -34,7 +34,6 @@ commands:
   plan <id> <reqId> <what> [text...]  resolve a plan review
                          what: implement | fresh | revise <plan…> | discuss <msg…>
   mode <id> <mode>       change a session's permission mode
-  budget <id> <usd>      set a cost budget (clears a warned/halted state)
   resume <id>            resume an interrupted session
   done <id>              mark a session complete (worktree kept)
   rm <id>                delete a session for good (worktree + transcript)   [--delete-branch]
@@ -324,18 +323,6 @@ async function main(): Promise<void> {
         process.stdout.write(`${r.id} mode -> ${r.mode}\n`);
         break;
       }
-      case "budget": {
-        const id = need(positionals[1], "budget <id> <usd>");
-        const usd = Number.parseFloat(need(positionals[2], "budget <id> <usd>"));
-        if (!Number.isFinite(usd) || usd <= 0) need(undefined, "budget <id> <usd>  (usd must be > 0)");
-        const r = await client.request<SessionSnapshot>("session.setBudget", {
-          id,
-          maxCostUsd: usd,
-          by: client.clientId,
-        });
-        process.stdout.write(`${r.id} budget -> $${(r.budget.maxCostUsd ?? 0).toFixed(2)} (${r.budgetState})\n`);
-        break;
-      }
       case "resume": {
         const id = need(positionals[1], "resume <id>");
         const r = await client.request<SessionSnapshot>("session.resume", { id, by: client.clientId });
@@ -429,7 +416,7 @@ async function main(): Promise<void> {
 
 const ID_CMDS = new Set([
   "get", "history", "send", "compact", "interrupt", "approve", "deny", "answer",
-  "plan", "mode", "budget", "resume", "done", "rm", "set-status", "emit",
+  "plan", "mode", "resume", "done", "rm", "set-status", "emit",
 ]);
 
 /** Expand a unique session-id prefix (as printed by `loom ls`) to the full id. */

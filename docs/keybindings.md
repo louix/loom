@@ -62,7 +62,6 @@ Consequences:
 | `⌥m` | switch the session's model — applies next turn |
 | `u` | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
 | `e` | rename the session |
-| `b` | set a cost budget (soft-warns, then hard-halts) |
 | `y` | copy the session's branch name to the clipboard |
 | `o` | open the pending request — or the transcript — in `$EDITOR`, read-only |
 | `v` | event log: everything ↔ chat only |

@@ -305,16 +305,6 @@ export class SessionManager {
     this.#set(id, run, "interrupted", "user");
   }
 
-  /** Stop a session because it breached a hard budget. */
-  async haltForBudget(id: string): Promise<void> {
-    const run = this.#running.get(id);
-    if (!run || run.ended) return;
-    run.interrupting = true;
-    this.#forgetPending(run);
-    await run.session.interrupt().catch(() => {});
-    this.#set(id, run, "interrupted", "budget");
-  }
-
   /**
    * Drop the outstanding permission / question / plan ids so a late answer
    * from a client whose UI still shows the prompt can't flip an

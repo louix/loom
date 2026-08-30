@@ -223,7 +223,6 @@ export class Daemon {
         if (this.#stopping) return;
         const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
         this.#emitSessionUpdated(snap, undefined, { git: false }); // no git shell-out per usage tick
-        this.#enforceBudget(snap);
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
@@ -751,34 +750,6 @@ export class Daemon {
     return costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0;
   }
 
-  /**
-   * Compare a session's running totals to its budget. Soft breach → mark
-   * `warned` and keep going; hard breach → mark `halted` and interrupt. A
-   * raised cap (`session.setBudget`) resets the state so this fires again.
-   */
-  #enforceBudget(snap: SessionSnapshot): void {
-    if (this.#stopping || snap.budgetState === "halted") return;
-    const b = snap.budget;
-    if (b.maxCostUsd == null && b.maxTokens == null && b.maxTurns == null) return;
-    const tokens = snap.usage.input + snap.usage.output + snap.usage.cacheRead + snap.usage.cacheWrite;
-    const breached =
-      (b.maxCostUsd != null && snap.costUsd >= b.maxCostUsd) ||
-      (b.maxTokens != null && tokens >= b.maxTokens) ||
-      (b.maxTurns != null && snap.turns >= b.maxTurns);
-    if (!breached) return;
-
-    if (this.config.budget.onBreach === "hard") {
-      this.#emitSessionUpdated(this.#registry.setFields(snap.id, { budgetState: "halted" }));
-      if (this.#sessions.has(snap.id)) {
-        void this.#sessions.haltForBudget(snap.id).catch((err) => {
-          this.#log.warn("budget halt failed", { id: snap.id, err: String(err) });
-        });
-      }
-    } else if (snap.budgetState !== "warned") {
-      this.#emitSessionUpdated(this.#registry.setFields(snap.id, { budgetState: "warned" }));
-    }
-  }
-
   #onActivityChange(why: string): void {
     if (this.#stopping) return;
     const busy = this.#isBusy();
@@ -845,7 +816,6 @@ export class Daemon {
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     this.config.worktree = next.worktree;
-    this.config.budget = next.budget;
     this.config.notify = next.notify;
     this.config.titles = next.titles;
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
@@ -1018,12 +988,6 @@ export class Daemon {
       }
 
       const id = randomUUID();
-      // An explicit budget wins; otherwise fall back to the configured soft cap
-      // — a per-provider override if one is set, else the flat default.
-      const defaultMaxCostUsd =
-        this.config.budget.perProviderMaxCostUsd[providerId] ?? this.config.budget.defaultMaxCostUsd;
-      const budget =
-        this.#readBudget(p["budget"]) ?? (defaultMaxCostUsd > 0 ? { maxCostUsd: defaultMaxCostUsd } : null);
 
       // By default each session gets its own worktree + branch off the
       // configured base. `[worktree] enabled = false` (or a per-session
@@ -1053,7 +1017,6 @@ export class Daemon {
         branch: wt ? wt.branch : null,
         baseBranch: wt ? wt.baseRef : this.config.baseBranch,
         ...(wt ? {} : { inPlace: true }),
-        ...(budget ? { budget } : {}),
       });
 
       // Remember what this session was created with, so the next `new`
@@ -1081,15 +1044,6 @@ export class Daemon {
         ...(isAisdk ? { loomServer: true, systemPromptAppend: aisdkSystem } : {}),
         ...(model ? { model } : {}),
         ...(parentId ? { parentId } : {}),
-        ...(budget
-          ? {
-              budget: {
-                ...(budget.maxTokens != null ? { maxTokens: budget.maxTokens } : {}),
-                ...(budget.maxCostUsd != null ? { maxCostUsd: budget.maxCostUsd } : {}),
-                ...(budget.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
-              },
-            }
-          : {}),
       };
 
       this.#lastSend.set(id, prompt);
@@ -1253,7 +1207,6 @@ export class Daemon {
           worktree: wt.path,
           branch: wt.branch,
           baseBranch: wt.baseRef,
-          ...(parent.budget.maxCostUsd != null ? { budget: { maxCostUsd: parent.budget.maxCostUsd } } : {}),
         });
         this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
         this.#pmsgs.copyTo(id, newId);
@@ -1422,32 +1375,6 @@ export class Daemon {
       return this.#enrich(snap);
     });
 
-    d.register("session.setBudget", (params) => {
-      const id = reqString(params, "id");
-      const p = isObj(params) ? params : {};
-      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const pos = (v: unknown): number | undefined =>
-        typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
-      const posInt = (v: unknown): number | undefined => {
-        const n = pos(v);
-        return n !== undefined && Number.isInteger(n) ? n : undefined;
-      };
-      const maxCostUsd = pos(p["maxCostUsd"]);
-      const maxTokens = posInt(p["maxTokens"]);
-      const maxTurns = posInt(p["maxTurns"]);
-      if (maxCostUsd === undefined && maxTokens === undefined && maxTurns === undefined) {
-        throw new RpcError("bad_request", "provide at least one of maxCostUsd / maxTokens / maxTurns");
-      }
-      // Raising a cap clears warned / halted; the enforcer re-arms on it.
-      const snap = this.#registry.setFields(id, {
-        ...(maxCostUsd !== undefined ? { budgetMaxCostUsd: maxCostUsd } : {}),
-        ...(maxTokens !== undefined ? { budgetMaxTokens: maxTokens } : {}),
-        ...(maxTurns !== undefined ? { budgetMaxTurns: maxTurns } : {}),
-        budgetState: "ok",
-      });
-      this.#emitSessionUpdated(snap, clientLabel(params));
-      return this.#enrich(snap);
-    });
 
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
@@ -1661,26 +1588,6 @@ export class Daemon {
     });
   }
 
-  #readBudget(
-    raw: unknown,
-  ): { maxTokens?: number | null; maxCostUsd?: number | null; maxTurns?: number | null } | null {
-    if (!isObj(raw)) return null;
-    const num = (v: unknown): number | undefined =>
-      typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
-    const int = (v: unknown): number | undefined => {
-      const n = num(v);
-      return n !== undefined && Number.isInteger(n) ? n : undefined;
-    };
-    const maxTokens = int(raw["maxTokens"]);
-    const maxCostUsd = num(raw["maxCostUsd"]);
-    const maxTurns = int(raw["maxTurns"]);
-    if (maxTokens === undefined && maxCostUsd === undefined && maxTurns === undefined) return null;
-    return {
-      ...(maxTokens !== undefined ? { maxTokens } : {}),
-      ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
-      ...(maxTurns !== undefined ? { maxTurns } : {}),
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -62,7 +62,6 @@ export type PromptKind =
   | "deny"
   | "new"
   | "title"
-  | "budget"
   | "discuss"
   | "compact";
 
@@ -1031,7 +1030,6 @@ export type ActName =
   | "undo"
   | "fork"
   | "title"
-  | "budget"
   | "delete"
   | "copybranch"
   | "viewlog"
@@ -1068,8 +1066,8 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     const { status, awaitReason } = session;
 
     // Request mode — the turn is parked on a decision. Offer only the keys that
-    // resolve it (plus interrupt); mode / model / rename / budget / undo / fork
-    // are all noise while the agent is blocked, so they're dropped from both the
+    // resolve it (plus interrupt); mode / model / rename / undo / fork are all
+    // noise while the agent is blocked, so they're dropped from both the
     // footer and the permitted set the keymap checks.
     if (status === "awaiting_input") {
       if (awaitReason === "question") {
@@ -1118,7 +1116,6 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     }
     if (isAisdk && !session.inPlace) local.push({ keys: "F", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
-    local.push({ keys: "b", label: "budget", act: "budget" });
     if (session.branch || session.worktree) {
       local.push({ keys: "y", label: "copy branch", act: "copybranch" });
     }

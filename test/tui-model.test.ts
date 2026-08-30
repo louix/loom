@@ -71,8 +71,6 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     costUsd: 0,
     costSource: "none",
     turns: 0,
-    budget: { maxTokens: null, maxCostUsd: null, maxTurns: null },
-    budgetState: "ok",
     subagents: [],
     rateLimits: {},
     cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
@@ -412,11 +410,11 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
-  // a settled selected session also gets mode + model + title + budget + delete
-  const S = ["mode", "model", "fork", "title", "budget", "delete", ...G];
+  // a settled selected session also gets mode + model + title + delete
+  const S = ["mode", "model", "fork", "title", "delete", ...G];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
-  // plus interrupt and the globals. No mode / model / rename / budget / fork.
+  // plus interrupt and the globals. No mode / model / rename / fork.
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
     ["approve", "deny", "interrupt", ...G].sort(),
@@ -489,7 +487,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   };
   const ids = commandsFor(base).map((c) => c.id);
   // contextual session verbs (idle aisdk session, >1 turn)
-  for (const v of ["send", "done", "mode", "model", "undo", "fork", "title", "budget", "delete"]) {
+  for (const v of ["send", "done", "mode", "model", "undo", "fork", "title", "delete"]) {
     assert.ok(ids.includes(v as any), `missing ${v}`);
   }
   // app / view commands that never earn a footer slot

@@ -344,24 +344,6 @@ export function Detail({
         (s.costSource === "table" ? "~" : "") + money(s.costUsd),
       ),
     ),
-    s.budget.maxCostUsd != null
-      ? (() => {
-          const col =
-            s.budgetState === "halted" ? C.bad : s.budgetState === "warned" ? C.warn : C.accentDim;
-          const frac = s.budget.maxCostUsd > 0 ? s.costUsd / s.budget.maxCostUsd : 0;
-          return h(
-            Box,
-            { gap: 2 },
-            h(Text, { color: C.dim }, "budget "),
-            h(Text, { color: col }, bar(frac, 16)),
-            h(
-              Text,
-              { color: col },
-              `${money(s.costUsd)} / $${s.budget.maxCostUsd.toFixed(2)}${s.budgetState !== "ok" ? `  ${s.budgetState}` : ""}`,
-            ),
-          );
-        })()
-      : null,
     Object.keys(s.rateLimits).length > 0
       ? h(
           Box,
@@ -587,7 +569,6 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   answer: "answer",
   deny: "deny",
   title: "rename",
-  budget: "set",
   discuss: "send",
   compact: "compact",
 };
@@ -628,13 +609,11 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
           ? "describe the task…"
           : p.kind === "title"
             ? "session title"
-            : p.kind === "budget"
-              ? "max cost in USD, e.g. 2.50"
-              : p.kind === "discuss"
-                ? "what should change about the plan?"
-                : p.kind === "compact"
-                  ? "what to keep in focus — blank compacts the whole history"
-                  : "type a message…";
+            : p.kind === "discuss"
+              ? "what should change about the plan?"
+              : p.kind === "compact"
+                ? "what to keep in focus — blank compacts the whole history"
+                : "type a message…";
     const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
     // A send prompt re-modes / re-models its target with ⇧⇥ / ⌥m, so it shows
     // the session's current mode chip too.
@@ -865,7 +844,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["⏎  ·  i", "send a message to the selected session (revives a stopped one)  ·  interrupt its turn"],
   ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
   ["u  ·  ⇧⇥  ·  ⌥m", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)"],
-  ["e  ·  b  ·  y", "rename  ·  set a cost budget  ·  copy the branch name to the clipboard"],
+  ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
   ["o  ·  v  ·  ⇥", "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log"],
   ["n  ·  f", "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session"],
   ["F  ·  X", "hard fork — new session + worktree off this one (aisdk)  ·  delete the session (confirm)"],

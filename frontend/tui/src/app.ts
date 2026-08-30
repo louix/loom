@@ -455,16 +455,6 @@ export function App({
             t: "openPrompt",
             prompt: makePrompt({ kind: "title", sessionId: s.id, label: "rename", text: s.title ?? "" }),
           });
-        case "budget":
-          return void dispatch({
-            t: "openPrompt",
-            prompt: makePrompt({
-              kind: "budget",
-              sessionId: s.id,
-              label: "budget $",
-              text: s.budget.maxCostUsd != null ? String(s.budget.maxCostUsd) : "",
-            }),
-          });
         case "planreview": {
           const pend2 = pendingFor(state, s.id);
           if (!pend2.plan) return note("no plan pending", "dim");
@@ -713,12 +703,6 @@ export function App({
       if (p.kind === "title" && p.sessionId) {
         await client.request("session.setTitle", { id: p.sessionId, title: text, by });
         return "renamed";
-      }
-      if (p.kind === "budget" && p.sessionId) {
-        const usd = Number.parseFloat(text);
-        if (!Number.isFinite(usd) || usd <= 0) throw new Error("budget must be a positive number");
-        await client.request("session.setBudget", { id: p.sessionId, maxCostUsd: usd, by });
-        return `budget → $${usd.toFixed(2)}`;
       }
       if (p.kind === "compact" && p.sessionId) {
         await client.request("session.compact", {
@@ -1217,7 +1201,6 @@ export function App({
       c: "compact",
       u: "undo",
       e: "title",
-      b: "budget",
       y: "copybranch",
       o: "viewlog",
       v: "filter",

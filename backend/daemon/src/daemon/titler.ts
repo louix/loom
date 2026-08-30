@@ -103,7 +103,6 @@ export async function generateTitle(req: TitleRequest): Promise<string | null> {
       disableTools: NO_TOOLS,
       settingSources: [],
       systemPromptAppend: SYSTEM,
-      budget: { maxTurns: 1 },
       ...(model ? { model } : {}),
     });
   } catch (err) {

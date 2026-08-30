@@ -201,12 +201,6 @@ class ClaudeSession implements AgentSession {
       ...(opts.systemPromptAppend
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPromptAppend } }
         : {}),
-      ...(opts.budget?.maxTurns ? { maxTurns: opts.budget.maxTurns } : {}),
-      // Native, mid-turn enforcement — stops the query itself (a clean
-      // `error_max_budget_usd` result) instead of waiting for Loom's own
-      // post-turn check, which can't catch an overrun until a turn already
-      // driving many internal tool-calling round trips finishes.
-      ...(opts.budget?.maxCostUsd ? { maxBudgetUsd: opts.budget.maxCostUsd } : {}),
       ...(opts.subagents && opts.subagents.length > 0
         ? {
             agents: Object.fromEntries(

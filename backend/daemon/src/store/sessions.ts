@@ -21,10 +21,6 @@ interface SessionRow {
   in_place: number;
   provider_ref: string | null;
   title_locked: number;
-  budget_max_tokens: number | null;
-  budget_max_cost_usd: number | null;
-  budget_max_turns: number | null;
-  budget_state: string;
   fork_turn: number | null;
   created_at: number;
   updated_at: number;
@@ -60,11 +56,6 @@ export interface NewSession {
   /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
   inPlace?: boolean;
   providerRef?: string | null;
-  budget?: {
-    maxTokens?: number | null;
-    maxCostUsd?: number | null;
-    maxTurns?: number | null;
-  };
 }
 
 export interface UsageDelta {
@@ -105,9 +96,8 @@ export class SessionStore {
       .prepare(
         `INSERT INTO sessions
            (id, parent_id, provider, model, mode, status, title, worktree, branch,
-            base_branch, in_place, provider_ref, budget_max_tokens, budget_max_cost_usd,
-            budget_max_turns, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            base_branch, in_place, provider_ref, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         s.id,
@@ -121,9 +111,6 @@ export class SessionStore {
         s.baseBranch ?? null,
         s.inPlace ? 1 : 0,
         s.providerRef ?? null,
-        s.budget?.maxTokens ?? null,
-        s.budget?.maxCostUsd ?? null,
-        s.budget?.maxTurns ?? null,
         now,
         now,
       );
@@ -188,10 +175,6 @@ export class SessionStore {
       branch: string | null;
       baseBranch: string | null;
       providerRef: string | null;
-      budgetMaxTokens: number | null;
-      budgetMaxCostUsd: number | null;
-      budgetMaxTurns: number | null;
-      budgetState: string;
       forkTurn: number | null;
     }>,
   ): void {
@@ -206,10 +189,6 @@ export class SessionStore {
       branch: "branch",
       baseBranch: "base_branch",
       providerRef: "provider_ref",
-      budgetMaxTokens: "budget_max_tokens",
-      budgetMaxCostUsd: "budget_max_cost_usd",
-      budgetMaxTurns: "budget_max_turns",
-      budgetState: "budget_state",
       forkTurn: "fork_turn",
     };
     for (const [k, col] of Object.entries(map)) {
@@ -532,12 +511,6 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     costUsd: usage?.cost_usd ?? 0,
     costSource: (usage?.cost_source as SessionSnapshot["costSource"]) ?? "none",
     turns: usage?.turns ?? 0,
-    budget: {
-      maxTokens: row.budget_max_tokens,
-      maxCostUsd: row.budget_max_cost_usd,
-      maxTurns: row.budget_max_turns,
-    },
-    budgetState: (row.budget_state as SessionSnapshot["budgetState"]) ?? "ok",
     subagents: [], // runtime overlay filled in by the daemon
     rateLimits: {}, // runtime overlay filled in by the daemon
     cache: {

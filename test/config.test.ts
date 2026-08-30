@@ -209,9 +209,6 @@ test("numeric config fields reject negatives / NaN; strArray keeps the valid ent
 idle_shutdown_minutes = -5
 event_buffer_size     = -1
 
-[budget]
-default_max_cost_usd = -3
-
 [search]
 max_results = -2
 
@@ -220,7 +217,6 @@ disable_builtin = ["Grep", 5, "Glob"]
 `);
   assert.equal(c.daemon.idleShutdownMinutes, 30); // default
   assert.equal(c.daemon.eventBufferSize, 4096); // default (also clamped ≥ 1)
-  assert.equal(c.budget.defaultMaxCostUsd, 0); // default: no cap unless configured
   assert.equal(c.search.maxResults, 5); // default
   assert.deepEqual(c.providers.claude.disableBuiltin, ["Grep", "Glob"]); // stray 5 dropped, not the whole list
 });

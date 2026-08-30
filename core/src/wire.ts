@@ -149,9 +149,6 @@ export interface SessionSnapshot {
   /** Where `costUsd` was computed — a local price table, the provider, or nothing yet. */
   costSource: "table" | "provider" | "none";
   turns: number;
-  budget: { maxTokens: number | null; maxCostUsd: number | null; maxTurns: number | null };
-  /** Budget enforcement state: `ok`, `warned` (soft breach), `halted` (hard breach → interrupted). */
-  budgetState: "ok" | "warned" | "halted";
   /** Sub-agents this session has spawned (Claude's Task tool). Runtime-only, not persisted. */
   subagents: Array<{ id: string; name: string; active: boolean }>;
   /**
