@@ -13,6 +13,7 @@
     "loom": "node cli/src/loom.ts",
     "daemon": "node cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
+    "watch": "tsc --noEmit --watch",
     "test": "node --test \"test/*.test.ts\""
   },
   "devDependencies": {
@@ -34,7 +35,7 @@
     "ink": "7.1.1",
     "react": "19.2.8",
     "smol-toml": "1.8.0",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "zod": "4.4.3"
   }
 }
