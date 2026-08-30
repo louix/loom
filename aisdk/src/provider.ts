@@ -1,12 +1,13 @@
 /**
- * The aisdk adapter — one `AgentProvider` per configured `[providers.<id>]`
- * profile (`adapter = "aisdk"`). One session class over any Vercel AI SDK
- * backend; {@link resolveModelFactory} picks `@ai-sdk/openai-compatible`,
- * `@ai-sdk/google`, or `@ai-sdk/anthropic` from the profile's `sdk`. Loom
- * persists the transcript itself — see {@link ProviderMessageStore}.
+ * The shared Vercel-AI-SDK provider — one `AgentProvider` over any `@ai-sdk/*`
+ * backend. It is SDK-agnostic: a connector package (`@loom/connector-generic`,
+ * `@loom/connector-gemini`) supplies `makeModel`, the one `(id) => LanguageModel`
+ * factory built from its own `@ai-sdk/*` import. Loom persists the transcript
+ * itself — see {@link TranscriptStore}.
  */
 import type { LanguageModel, ModelMessage } from "ai";
-import type { AisdkKind } from "../../config/config.ts";
+import type { SearchConfig } from "@loom/core/connector";
+import type { TranscriptStore } from "@loom/core/transcript";
 import type {
   AgentProvider,
   AgentSession,
@@ -15,36 +16,9 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import { AisdkSession } from "./session.ts";
-import type { ProviderMessageStore } from "./store.ts";
-import type { SearchConfig } from "./tools/search.ts";
-
-/**
- * Build a `(modelId) => LanguageModel` for a profile, dynamically importing
- * only the one `@ai-sdk/*` package its `sdk` needs — so a daemon that never
- * uses Gemini never evaluates `@ai-sdk/google` (and its dependency avalanche).
- */
-export async function resolveModelFactory(
-  sdk: AisdkKind,
-  opts: { id: string; baseUrl: string; apiKey: string },
-): Promise<(modelId: string) => LanguageModel> {
-  const key = opts.apiKey ? { apiKey: opts.apiKey } : {};
-  if (sdk === "google") {
-    const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-    const g = createGoogleGenerativeAI({ ...key, ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}) });
-    return (id) => g(id);
-  }
-  if (sdk === "anthropic") {
-    const { createAnthropic } = await import("@ai-sdk/anthropic");
-    const a = createAnthropic({ ...key, ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}) });
-    return (id) => a(id);
-  }
-  const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
-  const p = createOpenAICompatible({ name: opts.id, baseURL: opts.baseUrl, ...key });
-  return (id) => p(id);
-}
 
 export interface AisdkProviderOptions {
-  /** The `[providers.<id>]` table name — also this provider's `id`. */
+  /** The provider id this instance serves. */
   id: string;
   /** Default model id for new sessions. */
   model: string;
@@ -63,12 +37,12 @@ export class AisdkProvider implements AgentProvider {
   readonly capabilities: ProviderCapabilities;
 
   readonly #defaultModel: string;
-  readonly #store: ProviderMessageStore;
+  readonly #store: TranscriptStore;
   readonly #makeModel: (id: string) => LanguageModel;
   readonly #search: SearchConfig | undefined;
   readonly #maxSteps: number | undefined;
 
-  constructor(opts: AisdkProviderOptions, store: ProviderMessageStore) {
+  constructor(opts: AisdkProviderOptions, store: TranscriptStore) {
     this.id = opts.id;
     this.#defaultModel = opts.model;
     this.#store = store;
@@ -131,7 +105,9 @@ export class AisdkProvider implements AgentProvider {
   }
 
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
-    const loaded = this.#store.load(ref.sessionId);
+    // The transcript rows are opaque JSON to `@loom/core`; here they are the
+    // `ModelMessage[]` this connector wrote — an unavoidable store boundary cast.
+    const loaded = this.#store.load(ref.sessionId) as ModelMessage[];
     const messages = dropDanglingToolCalls(loaded);
     if (messages.length !== loaded.length) {
       this.#store.replaceFrom(ref.sessionId, messages.length, []);
@@ -158,6 +134,15 @@ export class AisdkProvider implements AgentProvider {
   async listPersistedSessions(): Promise<SessionRef[]> {
     return [];
   }
+}
+
+/**
+ * Construct an aisdk provider. A connector calls this with the `makeModel`
+ * factory it built from its own `@ai-sdk/*` import and the daemon's transcript
+ * store.
+ */
+export function makeAisdkProvider(opts: AisdkProviderOptions, store: TranscriptStore): AisdkProvider {
+  return new AisdkProvider(opts, store);
 }
 
 /**

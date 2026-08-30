@@ -8,27 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@ai-sdk/anthropic':
-        specifier: 2.0.99
-        version: 2.0.99(zod@4.4.3)
-      '@ai-sdk/google':
-        specifier: 2.0.94
-        version: 2.0.94(zod@4.4.3)
-      '@ai-sdk/mcp':
-        specifier: 0.0.31
-        version: 0.0.31(zod@4.4.3)
-      '@ai-sdk/openai-compatible':
-        specifier: 1.0.52
-        version: 1.0.52(zod@4.4.3)
-      '@anthropic-ai/claude-agent-sdk':
-        specifier: 0.3.251
-        version: 0.3.251(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
       '@loom/core':
         specifier: workspace:*
         version: link:core
-      ai:
-        specifier: 5.0.249
-        version: 5.0.249(zod@4.4.3)
       ink:
         specifier: 7.1.1
         version: 7.1.1(@types/react@19.2.18)(react@19.2.8)
@@ -38,13 +20,25 @@ importers:
       smol-toml:
         specifier: 1.8.0
         version: 1.8.0
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
     devDependencies:
       '@ai-sdk/provider':
         specifier: 2.0.3
         version: 2.0.3
+      '@loom/aisdk':
+        specifier: workspace:*
+        version: link:aisdk
+      '@loom/connector-claude':
+        specifier: workspace:*
+        version: link:connectors/claude
+      '@loom/connector-gemini':
+        specifier: workspace:*
+        version: link:connectors/gemini
+      '@loom/connector-generic':
+        specifier: workspace:*
+        version: link:connectors/generic
+      '@loom/connector-mock':
+        specifier: workspace:*
+        version: link:connectors/mock
       '@loom/harness':
         specifier: workspace:*
         version: link:harness
@@ -54,9 +48,81 @@ importers:
       '@types/react':
         specifier: 19.2.18
         version: 19.2.18
+      ai:
+        specifier: 5.0.249
+        version: 5.0.249(zod@4.4.3)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  aisdk:
+    dependencies:
+      '@ai-sdk/mcp':
+        specifier: 0.0.31
+        version: 0.0.31(zod@4.4.3)
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      ai:
+        specifier: 5.0.249
+        version: 5.0.249(zod@4.4.3)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  connectors/claude:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: 0.3.251
+        version: 0.3.251(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  connectors/gemini:
+    dependencies:
+      '@ai-sdk/google':
+        specifier: 2.0.94
+        version: 2.0.94(zod@4.4.3)
+      '@loom/aisdk':
+        specifier: workspace:*
+        version: link:../../aisdk
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../core
+      ai:
+        specifier: 5.0.249
+        version: 5.0.249(zod@4.4.3)
+
+  connectors/generic:
+    dependencies:
+      '@ai-sdk/anthropic':
+        specifier: 2.0.99
+        version: 2.0.99(zod@4.4.3)
+      '@ai-sdk/openai-compatible':
+        specifier: 1.0.52
+        version: 1.0.52(zod@4.4.3)
+      '@loom/aisdk':
+        specifier: workspace:*
+        version: link:../../aisdk
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../core
+      ai:
+        specifier: 5.0.249
+        version: 5.0.249(zod@4.4.3)
+
+  connectors/mock:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../core
 
   core: {}
 

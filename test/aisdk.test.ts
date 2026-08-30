@@ -12,10 +12,11 @@ import type { UsageDelta } from "../src/store/sessions.ts";
 import { openDb } from "../src/store/db.ts";
 import { SessionManager } from "../src/daemon/session-manager.ts";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
-import { AisdkProvider, dropDanglingToolCalls, resolveModelFactory } from "../src/provider/aisdk/adapter.ts";
-import { AisdkEventMapper } from "../src/provider/aisdk/map.ts";
-import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
-import { runTurn } from "../src/provider/aisdk/loop.ts";
+import { AisdkProvider, dropDanglingToolCalls } from "@loom/aisdk/provider";
+import { resolveModelFactory } from "@loom/connector-generic";
+import { AisdkEventMapper } from "@loom/aisdk/map";
+import { ProviderMessageStore } from "../src/store/provider-messages.ts";
+import { runTurn } from "@loom/aisdk/loop";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 
 setLogLevel("error");
@@ -659,15 +660,16 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   }
 });
 
-// --- resolveModelFactory: the @ai-sdk/* backend per profile `sdk` -----------
+// --- resolveModelFactory: the @ai-sdk/* backend per connector --------------
 
-test("resolveModelFactory builds the right SDK client for each `sdk`", async () => {
+test("connector-generic / -gemini build the right SDK client for each `sdk`", async () => {
+  const { resolveModelFactory: geminiFactory } = await import("@loom/connector-gemini");
   const meta = (m: LanguageModel) => m as unknown as { provider: string; modelId: string };
 
   const oai = await resolveModelFactory("openai", { id: "x", baseUrl: "http://x/v1", apiKey: "k" });
   assert.match(meta(oai("some-model")).provider, /^x\./); // openai-compatible names by `id`
 
-  const g = await resolveModelFactory("google", { id: "gemini", baseUrl: "", apiKey: "k" });
+  const g = await geminiFactory({ baseUrl: "", apiKey: "k" });
   assert.equal(meta(g("gemini-2.5-pro")).provider, "google.generative-ai");
   assert.equal(meta(g("gemini-2.5-pro")).modelId, "gemini-2.5-pro");
 

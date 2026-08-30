@@ -35,7 +35,7 @@ import {
   ProviderDefaultStore,
   type UsageDelta,
 } from "../store/sessions.ts";
-import { ProviderMessageStore } from "../provider/aisdk/store.ts";
+import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { estimateTokens } from "@loom/core/tokens";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
@@ -45,7 +45,8 @@ import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { SessionManager } from "./session-manager.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager } from "./worktrees.ts";
-import { ProviderRegistry } from "../provider/registry.ts";
+import { ProviderRegistry } from "./provider-registry.ts";
+import type { ConnectorManifest } from "@loom/core/connector";
 import {
   isSessionMode,
   normalizeSessionMode,
@@ -121,6 +122,8 @@ const VALID_STATUSES: readonly SessionStatus[] = [
 
 export interface DaemonStartOptions {
   repoRoot: string;
+  /** Connector packages this daemon can load, keyed by package name. Supplied by the CLI. */
+  connectors: ConnectorManifest;
   /** Skip pidfile acquisition and signal handlers (used by tests). */
   standalone?: boolean;
 }
@@ -206,7 +209,7 @@ export class Daemon {
       baseBranch: this.config.baseBranch,
       log: this.#log.child("worktrees"),
     });
-    this.#providers = new ProviderRegistry(this.config, this.#db);
+    this.#providers = new ProviderRegistry(this.config, this.#pmsgs, opts.connectors);
     this.#sessions = new SessionManager({
       emitEvent: (ev) => {
         if (ev.type === "compact" && !this.#stopping) {

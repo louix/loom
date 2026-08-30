@@ -9,8 +9,8 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { LanguageModel } from "ai";
 import { setLogLevel } from "@loom/core/logger";
 import { openDb } from "../src/store/db.ts";
-import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
-import { AisdkProvider } from "../src/provider/aisdk/adapter.ts";
+import { ProviderMessageStore } from "../src/store/provider-messages.ts";
+import { AisdkProvider } from "@loom/aisdk/provider";
 import type { HarnessEvent } from "@loom/core/events";
 
 setLogLevel("error");

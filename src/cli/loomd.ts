@@ -5,6 +5,7 @@ import { setLogLevel } from "@loom/core/logger";
 import { Daemon } from "../daemon/daemon.ts";
 import { DaemonAlreadyRunning } from "../daemon/lifecycle.ts";
 import { LOOM_VERSION } from "@loom/core/version";
+import { CONNECTORS } from "./connectors.ts";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
 
   let daemon: Daemon;
   try {
-    daemon = await Daemon.start({ repoRoot });
+    daemon = await Daemon.start({ repoRoot, connectors: CONNECTORS });
   } catch (err) {
     if (err instanceof DaemonAlreadyRunning) {
       process.stderr.write(`${err.message}\n`);

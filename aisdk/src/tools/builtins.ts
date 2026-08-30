@@ -6,10 +6,11 @@
  * every other tool.
  */
 import type { ToolSet } from "ai";
+import type { SearchConfig } from "@loom/core/connector";
 import { BashShell, bashTool } from "./bash.ts";
 import { editTool } from "./edit.ts";
 import { grepTool } from "./grep.ts";
-import { searchTool, type SearchConfig } from "./search.ts";
+import { searchTool } from "./search.ts";
 
 export class BuiltinTools {
   readonly #shell: BashShell;

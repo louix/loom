@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "../../src/daemon/daemon.ts";
 import { loomPaths } from "../../src/util/paths.ts";
+import { CONNECTORS } from "../../src/cli/connectors.ts";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error"); // keep test output quiet
@@ -41,7 +42,7 @@ export async function makeHarness(opts: { git?: boolean; config?: string } = {})
   }
   const { sock } = loomPaths(repoRoot);
 
-  let daemon = await Daemon.start({ repoRoot, standalone: true });
+  let daemon = await Daemon.start({ repoRoot, standalone: true, connectors: CONNECTORS });
 
   const h: Harness = {
     repoRoot,
@@ -51,7 +52,7 @@ export async function makeHarness(opts: { git?: boolean; config?: string } = {})
     },
     async restart() {
       await daemon.stop("test-restart");
-      daemon = await Daemon.start({ repoRoot, standalone: true });
+      daemon = await Daemon.start({ repoRoot, standalone: true, connectors: CONNECTORS });
       return daemon;
     },
     async cleanup() {

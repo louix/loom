@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
 import type { HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
-import type { FakeProvider } from "../src/provider/fake/fake.ts";
+import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 /** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn. */

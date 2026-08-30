@@ -8,7 +8,7 @@ import { render } from "ink";
 import { LoomClient } from "../src/client/client.ts";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "../src/tui/app.ts";
-import type { FakeProvider } from "../src/provider/fake/fake.ts";
+import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 const ESC = "\x1b";

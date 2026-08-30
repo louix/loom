@@ -29,9 +29,9 @@ import { runTurn } from "./loop.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
 import { BuiltinTools } from "./tools/builtins.ts";
-import type { SearchConfig } from "./tools/search.ts";
+import type { SearchConfig } from "@loom/core/connector";
 import { isReadonly, wrapToolSet } from "./gate.ts";
-import type { ProviderMessageStore } from "./store.ts";
+import type { TranscriptStore } from "@loom/core/transcript";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 
 /**
@@ -89,7 +89,7 @@ export interface AisdkSessionOptions {
   /** Resolved `web_search` config, when configured. */
   search?: SearchConfig;
   /** null for a throwaway one-shot. */
-  store: ProviderMessageStore | null;
+  store: TranscriptStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
   oneShot: boolean;
   /** Per-segment step ceiling. Defaults to {@link DEFAULT_MAX_STEPS}. */
@@ -109,7 +109,7 @@ export class AisdkSession implements AgentSession {
   readonly #search: SearchConfig | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
-  readonly #store: ProviderMessageStore | null;
+  readonly #store: TranscriptStore | null;
   readonly #oneShot: boolean;
   readonly #maxSteps: number;
   /** Consecutive step-ceiling continuations in the current user turn. */

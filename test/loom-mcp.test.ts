@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildLoomMcpServer, commitInWorktree } from "../src/provider/claude/loom-mcp.ts";
+import { buildLoomMcpServer, commitInWorktree } from "@loom/connector-claude/loom-mcp";
 
 function repo(): { root: string; git: (...a: string[]) => string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "loom-mcp-"));

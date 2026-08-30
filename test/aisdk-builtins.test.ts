@@ -3,9 +3,9 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BashShell } from "../src/provider/aisdk/tools/bash.ts";
-import { applyEdit } from "../src/provider/aisdk/tools/edit.ts";
-import { runRipgrep } from "../src/provider/aisdk/tools/grep.ts";
+import { BashShell } from "@loom/aisdk/tools/bash";
+import { applyEdit } from "@loom/aisdk/tools/edit";
+import { runRipgrep } from "@loom/aisdk/tools/grep";
 
 function tmp(): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "loom-builtins-"));

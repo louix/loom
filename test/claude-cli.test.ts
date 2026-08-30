@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveClaudeCli } from "../src/provider/claude/cli.ts";
+import { resolveClaudeCli } from "@loom/connector-claude/cli";
 
 test("an explicit executable path is used as-is", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cli-"));

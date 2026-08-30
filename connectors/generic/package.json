@@ -1,0 +1,16 @@
+{
+  "name": "@loom/connector-generic",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/aisdk": "workspace:*",
+    "@ai-sdk/anthropic": "2.0.99",
+    "@ai-sdk/openai-compatible": "1.0.52",
+    "ai": "5.0.249"
+  }
+}

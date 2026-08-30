@@ -1,19 +1,19 @@
 /**
- * Conversation persistence for the aisdk provider. Unlike the Claude adapter —
- * where the CLI owns the transcript and `resume` replays it — an
- * OpenAI-compatible session has no server-side memory, so Loom keeps the whole
- * `ModelMessage[]` here. `providerRef` for these sessions is just the Loom
- * session id; `resumeSession` rebuilds the array from these rows.
+ * Conversation persistence for connectors whose provider keeps no server-side
+ * memory (the aisdk case) — Loom keeps the whole message array here.
+ * `providerRef` for those sessions is just the Loom session id; the connector's
+ * `resumeSession` rebuilds the array from these rows. This is the concrete
+ * {@link TranscriptStore} the daemon hands a connector in its `ConnectorContext`.
  */
-import type { ModelMessage } from "ai";
-import type { Db } from "../../store/db.ts";
+import type { TranscriptMessage, TranscriptStore } from "@loom/core/transcript";
+import type { Db } from "./db.ts";
 
 interface Row {
   seq: number;
   content: string;
 }
 
-export class ProviderMessageStore {
+export class ProviderMessageStore implements TranscriptStore {
   readonly #db: Db;
 
   constructor(db: Db) {
@@ -21,11 +21,11 @@ export class ProviderMessageStore {
   }
 
   /** The session's messages in order. */
-  load(sessionId: string): ModelMessage[] {
+  load(sessionId: string): TranscriptMessage[] {
     const rows = this.#db
       .prepare("SELECT seq, content FROM provider_messages WHERE session_id = ? ORDER BY seq")
       .all(sessionId) as unknown as Row[];
-    return rows.map((r) => JSON.parse(r.content) as ModelMessage);
+    return rows.map((r) => JSON.parse(r.content) as TranscriptMessage);
   }
 
   /** How many messages are stored for the session. */
@@ -37,7 +37,7 @@ export class ProviderMessageStore {
   }
 
   /** Append messages after whatever is already stored. */
-  append(sessionId: string, messages: ModelMessage[]): void {
+  append(sessionId: string, messages: readonly TranscriptMessage[]): void {
     if (messages.length === 0) return;
     const startRow = this.#db
       .prepare("SELECT COALESCE(MAX(seq), -1) AS max FROM provider_messages WHERE session_id = ?")
@@ -56,7 +56,7 @@ export class ProviderMessageStore {
    * Drop every message from `fromSeq` onward, then append `messages` in its
    * place. Used by compaction (M10d) to swap the tail for a summary.
    */
-  replaceFrom(sessionId: string, fromSeq: number, messages: ModelMessage[]): void {
+  replaceFrom(sessionId: string, fromSeq: number, messages: readonly TranscriptMessage[]): void {
     const n = this.count(sessionId);
     if (fromSeq > n) {
       // Would silently DELETE nothing and then append at `n` rather than at

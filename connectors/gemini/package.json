@@ -1,0 +1,15 @@
+{
+  "name": "@loom/connector-gemini",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/aisdk": "workspace:*",
+    "@ai-sdk/google": "2.0.94",
+    "ai": "5.0.249"
+  }
+}

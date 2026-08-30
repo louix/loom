@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ClaudeEventMapper } from "../src/provider/claude/map.ts";
+import { ClaudeEventMapper } from "@loom/connector-claude/map";
 import type { HarnessEvent } from "@loom/core/events";
 
 const SID = "loom-1";

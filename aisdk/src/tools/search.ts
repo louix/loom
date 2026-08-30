@@ -6,15 +6,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-
-export interface SearchConfig {
-  backend: "brave" | "tavily";
-  /** Resolved API key (not the env-var name). */
-  apiKey: string;
-  /** Base URL override — "" uses the backend default. */
-  apiBase: string;
-  maxResults: number;
-}
+import type { SearchConfig } from "@loom/core/connector";
 
 const DEFAULT_BASE = {
   brave: "https://api.search.brave.com/res/v1",

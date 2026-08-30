@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { test } from "node:test";
-import { runSearch, type SearchConfig } from "../src/provider/aisdk/tools/search.ts";
-import { BuiltinTools } from "../src/provider/aisdk/tools/builtins.ts";
-import { isReadonly } from "../src/provider/aisdk/gate.ts";
+import type { SearchConfig } from "@loom/core/connector";
+import { runSearch } from "@loom/aisdk/tools/search";
+import { BuiltinTools } from "@loom/aisdk/tools/builtins";
+import { isReadonly } from "@loom/aisdk/gate";
 
 /** A one-request stub server; returns the base URL. */
 function stub(handler: (req: import("node:http").IncomingMessage, body: string) => { status?: number; json: unknown }): Promise<{ base: string; close: () => void; hits: Array<{ url: string; body: string }> }> {

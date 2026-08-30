@@ -20,20 +20,20 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
-    "@ai-sdk/anthropic": "2.0.99",
-    "@ai-sdk/google": "2.0.94",
-    "@ai-sdk/mcp": "0.0.31",
-    "@ai-sdk/openai-compatible": "1.0.52",
-    "@anthropic-ai/claude-agent-sdk": "0.3.251",
-    "ai": "5.0.249",
     "ink": "7.1.1",
     "react": "19.2.8",
-    "smol-toml": "1.8.0",
-    "zod": "4.4.3"
+    "smol-toml": "1.8.0"
   },
   "devDependencies": {
+    "@loom/aisdk": "workspace:*",
+    "@loom/connector-claude": "workspace:*",
+    "@loom/connector-gemini": "workspace:*",
+    "@loom/connector-generic": "workspace:*",
+    "@loom/connector-mock": "workspace:*",
     "@loom/harness": "workspace:*",
     "@ai-sdk/provider": "2.0.3",
+    "ai": "5.0.249",
+    "zod": "4.4.3",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "typescript": "5.9.3"

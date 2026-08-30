@@ -10,10 +10,10 @@ import { tool, type LanguageModel } from "ai";
 import { z } from "zod";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
 import { openDb } from "../src/store/db.ts";
-import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
-import { AisdkProvider } from "../src/provider/aisdk/adapter.ts";
-import { McpHub } from "../src/provider/aisdk/mcp.ts";
-import { isReadonly, isEdit, policy, wrapToolSet, PermissionDenied } from "../src/provider/aisdk/gate.ts";
+import { ProviderMessageStore } from "../src/store/provider-messages.ts";
+import { AisdkProvider } from "@loom/aisdk/provider";
+import { McpHub } from "@loom/aisdk/mcp";
+import { isReadonly, isEdit, policy, wrapToolSet, PermissionDenied } from "@loom/aisdk/gate";
 import type { HarnessEvent } from "@loom/core/events";
 
 setLogLevel("error");

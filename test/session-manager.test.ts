@@ -5,7 +5,7 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
-import type { FakeProvider, FakeSession } from "../src/provider/fake/fake.ts";
+import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;

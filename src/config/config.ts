@@ -65,6 +65,12 @@ export interface AisdkProfile {
   color: string;
   /** Cheap model for one-shot auto-titling; "" → falls back to `titles.model`. */
   titleModel: string;
+  /**
+   * Connector package that serves this profile. "" → routed by `sdk`
+   * (`google` → `@loom/connector-gemini`, else `@loom/connector-generic`).
+   * Set it to point at an out-of-tree connector.
+   */
+  connector: string;
 }
 
 export interface LoomConfig {
@@ -236,6 +242,7 @@ function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKin
     tag: str(t["tag"], id),
     color: str(t["color"], ""),
     titleModel: str(t["title_model"], ""),
+    connector: str(t["connector"], ""),
   };
 }
 
