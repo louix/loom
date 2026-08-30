@@ -2,6 +2,9 @@ node_modules/
 dist/
 *.log
 
+# nix + direnv
+.direnv/
+
 # Loom runtime state — created per repo the daemon runs in
 .loom/daemon.sock
 .loom/daemon.pid
