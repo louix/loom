@@ -520,20 +520,38 @@ user is `cd`'d in from another terminal). Update `sessions.worktree` + the
 `#worktrees` facts cache + push a `session_updated`. Collisions: large pool +
 `git branch --list` check, hex fallback when exhausted.
 
-### 6 · pnpm monorepo + plugin packages
-The provider seam (`src/provider/types.ts`) was built for this, so it's
-repackaging, not rearchitecting — but it's the biggest item and touches config
-discovery, `registry.ts`, the test layout, and versioning.
-- **Decide the plugin model first:** in-process (`import()` a package exporting
-  an `AgentProvider` factory) vs out-of-process (subprocess speaking a protocol,
-  MCP-style). Everything today is in-process; go in-process now, leave subprocess
-  isolation for untrusted plugins later.
-- No-build-step works across a pnpm workspace internally; published packages want
-  `.d.ts`, so build only at publish.
-- Connectors as packages: `gemini` (google), `claude` (claude sdk), generic /
-  openai-compatible (vercel ai sdk), `mock`, `openai` (future). North star: loom
-  ships with no connectors and near-zero deps by default.
-- `fake` → `@loom/connector-mock`, a real package the tests depend on.
+### 6 · pnpm monorepo + plugin packages — ✓ shipped (2026-08-30)
+
+Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at each.
+
+- **pnpm.** `packageManager: pnpm@11.24.0` (corepack), `.npmrc save-exact`,
+  `pnpm-workspace.yaml` with `virtualStoreType: global` (one CAS store shared
+  across git worktrees — `pnpm install` in a fresh worktree is ~0.3 s, symlinks
+  into `~/.local/share/pnpm`), `minimumReleaseAge: 10080`. All deps exact-pinned
+  at the versions npm had resolved (the fresh `@ai-sdk/*` / `ai` are grandfathered
+  in `minimumReleaseAgeExclude` until >7 days old). No build step — Node 24
+  type-strips `.ts` across the workspace through the `node_modules` symlink;
+  `.d.ts` is publish-only.
+- **11 packages** (see README "Layout"): `@loom/core` (the seam + zero-dep
+  helpers, no model SDK), `@loom/client`, `@loom/aisdk` (the shared Vercel AI SDK
+  engine + `makeAisdkProvider`), `@loom/daemon` (`backend/daemon/`), `@loom/tui`
+  (`frontend/tui/`), `@loom/connector-{mock,claude,generic,gemini}`, `loom`
+  (`cli/`, the bins), `@loom/harness` (test-only).
+- **Plugin model: in-process**, as planned. Each connector exports
+  `createProvider(ctx: ConnectorContext)`. The CLI hands `Daemon.start` a
+  `ConnectorManifest` of lazy `() => import("@loom/connector-*")` thunks;
+  `ProviderRegistry` invokes only the one a session's provider needs. The daemon
+  package names connectors as strings only — the lazy-SDK guarantee is now
+  structural. `[providers.<id>] connector = "@scope/pkg"` points at an
+  out-of-tree connector. Contract: `docs/connectors.md`.
+- **Near-zero deps by default:** `loom`'s connectors are `optionalDependencies`;
+  `pnpm add @loom/connector-*` to add one. A missing one → a readable
+  "not installed" error only if a session asks for that provider.
+- `fake` → `@loom/connector-mock` (a devDependency the tests import).
+- **Deferred:** publishing (packages are all `private`); `.d.ts` build configs;
+  physically relocating `test/` into each package (kept as one cross-package
+  suite at the root); a dedicated `openai` connector (`connector-generic` covers
+  OpenAI itself via its base URL).
 
 ### 7 · Approval-prompt UX (user, 2026-08-29 — "for after") — ✓ shipped (2026-08-30)
 - **Request panel at the bottom** — `RequestPanel` renders full-width just above

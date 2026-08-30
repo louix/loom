@@ -38,9 +38,9 @@ the Vercel AI SDK.
 
 **2 · Claude adapter**
 
-- **Provider seam** (`src/provider/`) — the vendor-neutral `AgentProvider` /
+- **Provider seam** (`@loom/core`) — the vendor-neutral `AgentProvider` /
   `AgentSession` interfaces and the normalized `HarnessEvent` union. Nothing
-  above the adapter imports a vendor SDK.
+  above the connector packages imports a vendor SDK.
 - **Claude adapter** — wraps `@anthropic-ai/claude-agent-sdk` in
   streaming-input mode: one `query()` per session, `canUseTool` surfaces
   permission prompts as events, `SDKMessage`s are normalized (text / thinking /
@@ -296,11 +296,33 @@ re-measures on the next turn. `session.compact` is the RPC.
   drives.
 - The TUI is built with Ink (React for terminals) — the one place Loom leans on
   a UI framework. It still runs straight through Node's type-stripping: the
-  components use `createElement`, no JSX, no build step.
+  components use `createElement`, no JSX, no build step. Type-stripping works
+  across the pnpm workspace too — packages import each other as `.ts` through
+  their `node_modules` symlink; `.d.ts` is a publish-only concern.
+- **pnpm ≥ 11.23** — provisioned by corepack (`corepack enable`, once per
+  machine; the version is pinned in `packageManager`). Where corepack can't
+  write a global shim, run it as `corepack pnpm …` or install pnpm standalone.
 
 ```sh
-npm install
+pnpm install
 ```
+
+`virtualStoreType: global` (in `pnpm-workspace.yaml`) keeps one content-addressable
+store shared across every git worktree of the repo, so `pnpm install` in a fresh
+worktree is near-instant and near-free on disk. Keep worktrees on the same
+filesystem as `~/.local/share/pnpm` or the store falls back to copying.
+
+**Providers ship as separate packages.** A production install of `loom` has no
+connector and no model SDK — add what you use:
+
+```sh
+pnpm add @loom/connector-claude    # Claude, via @anthropic-ai/claude-agent-sdk
+pnpm add @loom/connector-generic   # any OpenAI-compatible endpoint + native Anthropic
+pnpm add @loom/connector-gemini    # Google Gemini
+```
+
+New dependencies observe a 7-day release cooldown (`minimumReleaseAge` in
+`pnpm-workspace.yaml`) and pin exact (`save-exact` in `.npmrc`).
 
 ## Usage
 
@@ -308,30 +330,30 @@ Everything is driven through `loom`; the daemon starts automatically on first
 use and writes to `<repo>/.loom/`.
 
 ```sh
-node src/cli/loom.ts                  # no command in a TTY → the fleet UI
-node src/cli/loom.ts tui             # the same, explicitly
-node src/cli/loom.ts status          # daemon health and counts
-node src/cli/loom.ts ls              # sessions, in fleet-view order
-node src/cli/loom.ts ls --json
-node src/cli/loom.ts ping            # round-trip latency
-node src/cli/loom.ts tail            # live event feed (Ctrl-C to stop)
-node src/cli/loom.ts stop            # shut the daemon down
+loom                  # no command in a TTY → the fleet UI  (or: pnpm loom)
+loom tui             # the same, explicitly
+loom status          # daemon health and counts
+loom ls              # sessions, in fleet-view order
+loom ls --json
+loom ping            # round-trip latency
+loom tail            # live event feed (Ctrl-C to stop)
+loom stop            # shut the daemon down
 ```
 
 Run and drive a session (V1 provider is `claude`; needs its OAuth in `~/.claude`):
 
 ```sh
-node src/cli/loom.ts run "add a --json flag to the CLI" --mode plan
-node src/cli/loom.ts tail                       # watch it; note permission req= ids
-node src/cli/loom.ts approve <id> <requestId>   # or: deny <id> <requestId> --text "why"
-node src/cli/loom.ts answer <id> <requestId> "use sqlite"   # reply to an ask_user question
-node src/cli/loom.ts send <id> "also update the README"
-node src/cli/loom.ts compact <id> "keep the plan, drop the investigation"
-node src/cli/loom.ts mode <id> acceptEdits
-node src/cli/loom.ts interrupt <id>
-node src/cli/loom.ts get <id>                   # snapshot: status, usage, cost, context, git
-node src/cli/loom.ts done <id>                  # mark complete (worktree kept)
-node src/cli/loom.ts gc --force                # remove worktrees for done sessions
+loom run "add a --json flag to the CLI" --mode plan
+loom tail                       # watch it; note permission req= ids
+loom approve <id> <requestId>   # or: deny <id> <requestId> --text "why"
+loom answer <id> <requestId> "use sqlite"   # reply to an ask_user question
+loom send <id> "also update the README"
+loom compact <id> "keep the plan, drop the investigation"
+loom mode <id> acceptEdits
+loom interrupt <id>
+loom get <id>                   # snapshot: status, usage, cost, context, git
+loom done <id>                  # mark complete (worktree kept)
+loom gc --force                # remove worktrees for done sessions
 ```
 
 Each session gets its own worktree under `.loom/trees/<slug>` on a
@@ -344,42 +366,53 @@ and takes turn control, but only emits events a test drives into it.
 Development hooks (pure event-log / registry pokes, no adapter):
 
 ```sh
-node src/cli/loom.ts stub "placeholder" --status awaiting_input --reason permission
-node src/cli/loom.ts set-status <id> running
-node src/cli/loom.ts emit <id> assistant_text --text "hello"
+loom stub "placeholder" --status awaiting_input --reason permission
+loom set-status <id> running
+loom emit <id> assistant_text --text "hello"
 ```
 
 Run the daemon in the foreground (normally auto-spawned) — useful with
 `--log-level debug`:
 
 ```sh
-node src/cli/loomd.ts --repo . --log-level debug
+loomd --repo . --log-level debug
 ```
 
 ## Development
 
 ```sh
-npm run typecheck    # tsc --noEmit
-npm test             # node:test — 305 cases
+pnpm run typecheck   # tsc --noEmit across the workspace
+pnpm test            # node:test — 305 cases
 ```
 
-### Layout
+### Layout — a pnpm workspace
 
 ```
-src/
-  protocol/   wire frames + the normalized HarnessEvent union
-  store/      node:sqlite: schema, migrations, repositories
-  config/     .loom/config.toml loader
-  provider/   the vendor-neutral seam; claude/ (SDK adapter + event map +
-              in-process loom MCP server), fake/ (scriptable test adapter),
-              registry
-  daemon/     event log, RPC dispatch, socket server, registry, hygiene,
-              lifecycle, session manager, status machine, worktree
-              manager, and the Daemon
-  client/     thin client (connect-or-spawn, reconnect, gap replay)
-  tui/        Ink fleet UI: model/reducer, editor, theme, components, entry
-  cli/        loom (client) and loomd (daemon) entrypoints
+core/                @loom/core   the seam + zero-dep helpers, no model SDK —
+                     events, wire, provider types, connector contract,
+                     TranscriptStore, AsyncChannel, logger, commit, tokens, paths
+client/              @loom/client   thin daemon client (connect-or-spawn, reconnect)
+aisdk/               @loom/aisdk    the shared Vercel AI SDK engine — session/loop/
+                     map/mcp/gate/tools + makeAisdkProvider; deps `ai` + `@ai-sdk/mcp`
+backend/daemon/      @loom/daemon   src/{daemon,store,config}/ — RPC, socket server,
+                     event log, session manager, status machine, worktree manager,
+                     the Daemon, the SQLite store, the config loader, provider-registry
+frontend/tui/        @loom/tui      Ink fleet UI: model/reducer, editor, theme, components
+connectors/
+  mock/              @loom/connector-mock      the scriptable SDK-free provider (tests)
+  claude/            @loom/connector-claude     @anthropic-ai/claude-agent-sdk
+  generic/           @loom/connector-generic    OpenAI-compatible + native Anthropic
+  gemini/            @loom/connector-gemini     Google Gemini (@ai-sdk/google)
+cli/                 loom           the `loom` + `loomd` bins; builds the connector manifest
+harness/             @loom/harness  makeHarness — a private devDependency of the tests
+test/                the cross-package integration suite (`node --test`)
 ```
+
+Connectors are `optionalDependencies` of `loom`: dev and CI get all of them, a
+`--prod` / `--no-optional` install gets none. `ProviderRegistry` loads one lazily
+by package name from a manifest the CLI supplies — the daemon package names
+connectors only as strings, so it never evaluates a model SDK it doesn't use.
+See [`docs/connectors.md`](docs/connectors.md) for the `createProvider` contract.
 
 ### `.loom/` runtime directory
 
