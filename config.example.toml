@@ -44,34 +44,35 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # default_provider = "claude"       # which provider new sessions use when the
                                    # client doesn't name one (must be configured)
 
-# Non-Claude providers (milestone 10). Any [providers.<id>] table with
-# adapter = "aisdk" is a Vercel-AI-SDK provider. `sdk` picks the backend:
-#   openai    (default) — OpenAI-compatible: OpenAI, GLM/Zhipu, DeepSeek,
-#                         OpenRouter, a local vLLM / Ollama. base_url required.
-#   google    — native Gemini (@ai-sdk/google). base_url optional.
-#   anthropic — native Anthropic (@ai-sdk/anthropic). base_url optional.
-# The @ai-sdk/* package is loaded only when a session actually uses the provider.
-# Repeat the block per provider.
-# [providers.openai]
-# adapter     = "aisdk"
-# sdk         = "openai"
-# base_url    = "https://api.openai.com/v1"
+# Non-Claude providers (milestone 10) run on the Vercel AI SDK. The @ai-sdk/*
+# package for a backend is loaded only when a session actually uses it.
+#
+# [custom-provider.<id>] — an OpenAI-compatible endpoint (OpenAI itself,
+# GLM/Zhipu, DeepSeek, OpenRouter, a local vLLM / Ollama). One block per
+# endpoint; <id> is the provider id you pass to `loom run --provider`.
+# [custom-provider.openai]
+# base_url    = "https://api.openai.com/v1"   # required
 # api_key_env = "OPENAI_API_KEY"    # env var holding the key; "" if keyless
 # api_key     = ""                  # or the key inline — wins over api_key_env,
 #                                   # but it's a plaintext secret; prefer the env var
 # model       = "gpt-5"             # default model for new sessions. Omit BOTH
 # models      = ["gpt-5", "gpt-5-mini"]   # model + models and Loom probes
-#                                   # {base_url}/models at start-up (openai sdk only)
+#                                   # {base_url}/models at start-up
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
 #
-# [providers.gemini]
-# adapter     = "aisdk"
-# sdk         = "google"
+# [google] / [anthropic] — one native profile each (@ai-sdk/google,
+# @ai-sdk/anthropic). The provider id is "google" / "anthropic". base_url is
+# optional (override for a proxy); a model is required (no /models probe).
+# [google]
 # api_key_env = "GEMINI_API_KEY"
 # model       = "gemini-2.5-pro"
 # models      = ["gemini-2.5-pro", "gemini-2.5-flash"]
+#
+# Low-level escape hatch, if you need several native profiles or an unusual
+# combination: [providers.<id>] with adapter = "aisdk" and sdk =
+# "openai" | "google" | "anthropic". Same fields as above plus `sdk`.
 
 [[mcp]]                             # mounted into every session, in order, after
 name    = "tilth"                   # the built-in `loom` server. The system

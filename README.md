@@ -140,14 +140,22 @@ anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
 
-**Non-Claude providers (milestone 10).** Any `[providers.<id>]` block with
-`adapter = "aisdk"` registers a provider backed by the Vercel AI SDK. `sdk`
-picks the backend: `openai` (default — OpenAI-compatible: OpenAI, GLM, DeepSeek,
-OpenRouter, vLLM, Ollama; needs `base_url`), `google` (native Gemini), or
-`anthropic` (native Anthropic). Put those blocks (and credentials, as env-var
-*names*) in the user-level `~/.config/loom/config.toml`; the per-repo
-`.loom/config.toml` layers on top. `default_provider` picks which one new
-sessions use; Loom persists the transcript itself in `provider_messages`.
+**Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
+in the user-level `~/.config/loom/config.toml` (the per-repo `.loom/config.toml`
+layers on top); credentials go in as env-var *names* via `api_key_env`, or
+inline with `api_key`.
+
+- `[custom-provider.<id>]` — an OpenAI-compatible endpoint (OpenAI, GLM,
+  DeepSeek, OpenRouter, vLLM, Ollama). `base_url` required; `<id>` is the
+  provider id. This is the form that becomes a plugin.
+- `[google]` / `[anthropic]` — one native profile each (`@ai-sdk/google`,
+  `@ai-sdk/anthropic`); the provider id is the vendor name.
+- `[providers.<id>]` with `adapter = "aisdk"` and `sdk =
+  "openai" | "google" | "anthropic"` — the low-level escape hatch, kept for
+  several native profiles or unusual setups.
+
+`default_provider` picks which one new sessions use; Loom persists the
+transcript itself in `provider_messages`.
 
 - **10a** — streaming, token usage + price-table cost, cancel, resume.
 - **10b** — multi-step tool use. MCP servers (`[[mcp]]`) connect through
@@ -171,11 +179,12 @@ sessions use; Loom persists the transcript itself in `provider_messages`.
   the Detail pane spells out `engine · provider / model`. `loom providers` and
   `loom models <provider>` from the CLI.
 
-An aisdk profile's key is `api_key_env` (an env var) or `api_key` (inline —
-wins, but plaintext). Omit both `model` and `models` from an openai-compatible
-profile and the daemon fills them from `{base_url}/models` at start-up.
-`loom config` (also logged at launch) lints the loaded config — unset key
-vars, providers pending model auto-detection, a keyless search backend.
+Omit both `model` and `models` from an OpenAI-compatible profile and the daemon
+fills them from `{base_url}/models` at start-up (the native SDKs have no such
+probe — give them a `model`). `loom config` (also logged at launch) lints the
+loaded config — unset key vars, providers pending model auto-detection, a
+keyless search backend. A first launch with no `~/.config/loom/config.toml`
+drops an annotated copy of `config.example.toml` there.
 
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
@@ -314,7 +323,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 276 cases
+npm test             # node:test — 280 cases
 ```
 
 ### Layout

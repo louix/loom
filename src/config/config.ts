@@ -9,7 +9,11 @@ import { parse as parseToml } from "smol-toml";
  */
 export type AisdkKind = "openai" | "google" | "anthropic";
 
-/** One Vercel-AI-SDK provider profile (`[providers.<id>]`, `adapter = "aisdk"`). */
+/**
+ * One Vercel-AI-SDK provider profile. Configured as `[custom-provider.<id>]`
+ * (OpenAI-compatible), `[google]` / `[anthropic]` (one per vendor), or the
+ * low-level `[providers.<id>]` with `adapter = "aisdk"`.
+ */
 export interface AisdkProfile {
   /**
    * Which `@ai-sdk/*` backend: `openai` (OpenAI-compatible — the default),
@@ -87,9 +91,10 @@ export interface LoomConfig {
       promptCacheTtl: "5m" | "1h" | "";
     };
     /**
-     * OpenAI-compatible providers, keyed by id (the `[providers.<id>]` table
-     * name). Any provider table carrying `adapter = "aisdk"` lands here — GLM,
-     * DeepSeek, OpenRouter, a local vLLM / Ollama, OpenAI itself.
+     * Vercel-AI-SDK providers, keyed by id. Fed by `[custom-provider.<id>]`
+     * (OpenAI-compatible — GLM, DeepSeek, OpenRouter, a local vLLM / Ollama),
+     * `[google]` / `[anthropic]` (native), and the low-level
+     * `[providers.<id>] adapter = "aisdk"` escape hatch.
      */
     aisdk: Record<string, AisdkProfile>;
   };
@@ -183,41 +188,69 @@ function strArray(v: unknown, fallback: string[]): string[] {
 }
 
 /**
- * Pull every `[providers.<id>]` table with `adapter = "aisdk"` into a profile
- * map. `claude` is handled separately and never treated as an aisdk profile.
- * An `sdk = "openai"` profile with no `base_url` is dropped (nothing to dial).
- * A profile with no `model` / `models` is kept for `openai` (the daemon probes
- * `{base_url}/models` at start-up, `autoModels`) but dropped for `google` /
- * `anthropic`, which have no uniform model-list endpoint.
+ * Build one aisdk profile from a config table. `sdk = "openai"` with no
+ * `base_url` is dropped (nothing to dial). No `model` / `models` is kept for
+ * `openai` (the daemon probes `{base_url}/models` at start-up, `autoModels`)
+ * but dropped for `google` / `anthropic`, which have no uniform model-list
+ * endpoint. Returns `null` when the table can't yield a usable profile.
  */
-function parseAisdkProfiles(providers: Record<string, unknown>): Record<string, AisdkProfile> {
+function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKind): AisdkProfile | null {
+  const baseUrl = str(t["base_url"], "");
+  if (sdk === "openai" && baseUrl === "") return null;
+  const model = str(t["model"], "");
+  const models = strArray(t["models"], model ? [model] : []);
+  const autoModels = model === "" && models.length === 0;
+  if (autoModels && sdk !== "openai") return null; // can't auto-detect; nothing to dial
+  const effectiveModel = model || (models[0] ?? "");
+  return {
+    sdk,
+    baseUrl,
+    apiKeyEnv: str(t["api_key_env"], ""),
+    apiKey: str(t["api_key"], ""),
+    model: effectiveModel,
+    models: models.length > 0 ? models : effectiveModel ? [effectiveModel] : [],
+    autoModels,
+    tag: str(t["tag"], id),
+    color: str(t["color"], ""),
+    titleModel: str(t["title_model"], ""),
+  };
+}
+
+/**
+ * Every aisdk provider profile, from all the namespaces, keyed by id:
+ *  - `[custom-provider.<id>]`   — an OpenAI-compatible endpoint (implicit sdk);
+ *    the form that will become a plugin. `base_url` + `api_key` / `api_key_env`.
+ *  - `[google]` / `[anthropic]` — one native profile each, id = the vendor.
+ *  - `[providers.<id>]` with `adapter = "aisdk"` — the low-level escape hatch;
+ *    its `sdk` key still selects the backend. Wins a duplicate id.
+ * `claude` is reserved for the native CLI provider and is never an aisdk id.
+ */
+function parseAisdkProfiles(raw: Record<string, unknown>): Record<string, AisdkProfile> {
   const out: Record<string, AisdkProfile> = {};
-  for (const [id, raw] of Object.entries(providers)) {
-    if (id === "claude") continue;
-    const t = asRecord(raw);
-    if (t["adapter"] !== "aisdk") continue;
-    const sdk: AisdkKind =
-      t["sdk"] === "google" || t["sdk"] === "anthropic" ? t["sdk"] : "openai";
-    const baseUrl = str(t["base_url"], "");
-    if (sdk === "openai" && baseUrl === "") continue;
-    const model = str(t["model"], "");
-    const models = strArray(t["models"], model ? [model] : []);
-    const autoModels = model === "" && models.length === 0;
-    if (autoModels && sdk !== "openai") continue; // can't auto-detect; nothing to dial
-    const effectiveModel = model || (models[0] ?? "");
-    out[id] = {
-      sdk,
-      baseUrl,
-      apiKeyEnv: str(t["api_key_env"], ""),
-      apiKey: str(t["api_key"], ""),
-      model: effectiveModel,
-      models: models.length > 0 ? models : effectiveModel ? [effectiveModel] : [],
-      autoModels,
-      tag: str(t["tag"], id),
-      color: str(t["color"], ""),
-      titleModel: str(t["title_model"], ""),
-    };
+  const put = (id: string, p: AisdkProfile | null): void => {
+    if (p && id !== "claude" && !(id in out)) out[id] = p;
+  };
+
+  // [google] / [anthropic] — one profile per vendor, id = the vendor name.
+  for (const sdk of ["google", "anthropic"] as const) {
+    if (raw[sdk] && typeof raw[sdk] === "object") put(sdk, buildAisdkProfile(sdk, asRecord(raw[sdk]), sdk));
   }
+
+  // [custom-provider.<id>] — OpenAI-compatible, no adapter / sdk keys.
+  for (const [id, t] of Object.entries(asRecord(raw["custom-provider"]))) {
+    put(id, buildAisdkProfile(id, asRecord(t), "openai"));
+  }
+
+  // [providers.<id>] adapter = "aisdk" — kept, and wins a duplicate id.
+  for (const [id, t0] of Object.entries(asRecord(raw["providers"]))) {
+    if (id === "claude") continue;
+    const t = asRecord(t0);
+    if (t["adapter"] !== "aisdk") continue;
+    const sdk: AisdkKind = t["sdk"] === "google" || t["sdk"] === "anthropic" ? t["sdk"] : "openai";
+    delete out[id]; // legacy form overrides the same id from the sugar namespaces
+    put(id, buildAisdkProfile(id, t, sdk));
+  }
+
   return out;
 }
 
@@ -281,7 +314,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const worktree = asRecord(r["worktree"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
-  const aisdk = parseAisdkProfiles(providers);
+  const aisdk = parseAisdkProfiles(r);
   const titles = asRecord(r["titles"]);
   const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);

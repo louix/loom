@@ -72,6 +72,62 @@ model    = "y"
   assert.deepEqual(c.providers.aisdk, {});
 });
 
+test("[custom-provider.<id>] is an OpenAI-compatible profile — no adapter / sdk keys", () => {
+  const c = cfg(`
+[custom-provider.llmbase]
+base_url = "https://api.llmbase.ai/v1"
+api_key  = "sk-xyz"
+models   = ["big", "small"]
+tag      = "lb"
+`);
+  const p = c.providers.aisdk["llmbase"];
+  assert.ok(p);
+  assert.equal(p.sdk, "openai");
+  assert.equal(p.baseUrl, "https://api.llmbase.ai/v1");
+  assert.equal(p.apiKey, "sk-xyz");
+  assert.deepEqual(p.models, ["big", "small"]);
+  assert.equal(p.model, "big");
+  assert.equal(p.tag, "lb");
+
+  // no base_url → nothing to dial → dropped
+  assert.deepEqual(cfg(`[custom-provider.x]\nmodel = "m"\n`).providers.aisdk, {});
+  // model-less is still kept for auto-detection
+  assert.equal(cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels, true);
+});
+
+test("[google] / [anthropic] are one native profile each, id = the vendor", () => {
+  const c = cfg(`
+[google]
+api_key_env = "GEMINI_KEY"
+model       = "gemini-2.5-pro"
+
+[anthropic]
+api_key = "sk-ant"
+model   = "claude-opus-5"
+`);
+  assert.equal(c.providers.aisdk["google"]?.sdk, "google");
+  assert.equal(c.providers.aisdk["google"]?.model, "gemini-2.5-pro");
+  assert.equal(c.providers.aisdk["anthropic"]?.sdk, "anthropic");
+  assert.equal(c.providers.aisdk["anthropic"]?.model, "claude-opus-5");
+  // native SDKs still need a model (no /models probe)
+  assert.deepEqual(cfg(`[google]\napi_key = "k"\n`).providers.aisdk, {});
+});
+
+test("legacy [providers.<id>] adapter='aisdk' still works and wins a duplicate id", () => {
+  const c = cfg(`
+[custom-provider.dup]
+base_url = "http://sugar/v1"
+model    = "sugar-model"
+
+[providers.dup]
+adapter  = "aisdk"
+base_url = "http://legacy/v1"
+model    = "legacy-model"
+`);
+  assert.equal(c.providers.aisdk["dup"]?.baseUrl, "http://legacy/v1");
+  assert.equal(c.providers.aisdk["dup"]?.model, "legacy-model");
+});
+
 test("an openai profile with no model/models is kept for auto-detection; google/anthropic dropped", () => {
   const c = cfg(`
 [providers.auto]
