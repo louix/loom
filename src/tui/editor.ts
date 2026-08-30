@@ -1,11 +1,15 @@
 /**
  * A small pure text-buffer editor for the TUI's prompt line. In-TUI it stays
  * single-line — Enter submits, there is no newline key — but it carries the
- * readline motions people expect (`⌃a` line start, `⌃u`/`⌃k`/`⌃w` kills, arrow
- * navigation) and renders fine when multi-line text arrives from a paste or the
- * `⌃e` `$EDITOR` handoff. No React or Ink dependency: `applyKey` maps one
- * keypress to an {@link EditResult}; the component renders {@link Buffer} and
- * re-dispatches the result. `⌃e` is intercepted by the app before this runs.
+ * readline motions people expect (`⌃a`/`⌃e` line ends, `⌃b`/`⌃f` char steps,
+ * `⌃u`/`⌃k`/`⌃w` kills, arrow navigation) and renders fine when multi-line text
+ * arrives from a paste or the `⌥e` `$EDITOR` handoff. No React or Ink
+ * dependency: `applyKey` maps one keypress to an {@link EditResult}; the
+ * component renders {@link Buffer} and re-dispatches the result.
+ *
+ * Grammar: `Ctrl` is the text-editing modifier and nothing else — every `⌃`
+ * combo here is a readline motion. The app's `⌥`-prefixed prompt actions
+ * ($EDITOR, view log, provider/model, mode) are intercepted before this runs.
  */
 
 export interface Buffer {
@@ -39,7 +43,6 @@ export type EditResult =
   | { kind: "submit" }
   | { kind: "cancel" }
   | { kind: "history"; dir: -1 | 1 }
-  | { kind: "mode" }
   | { kind: "ignore" };
 
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -85,16 +88,21 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
   const { text, cursor } = buf;
 
   if (key.escape) return { kind: "cancel" };
-  if (key.tab) return key.shift ? { kind: "mode" } : { kind: "ignore" }; // ⇧⇥ cycles mode; ⇥ is inert here
-  if (key.return) return { kind: "submit" }; // single-line: ⌃e hands off to $EDITOR for multi-line
+  if (key.tab) return { kind: "ignore" }; // Tab is navigation-only; mode cycles on ⌥m (app-intercepted)
+  if (key.return) return { kind: "submit" }; // single-line: ⌥e hands off to $EDITOR for multi-line
 
   if (key.ctrl) {
+    // Ctrl is the text-editing modifier: readline motions only, nothing app-level.
     const { start, end } = lineBounds(text, cursor);
     switch (input) {
       case "a":
         return edit(text, start);
       case "e":
-        return { kind: "ignore" }; // the app intercepts ⌃e (open $EDITOR) before this runs
+        return edit(text, end);
+      case "b":
+        return edit(text, cursor - 1);
+      case "f":
+        return edit(text, cursor + 1);
       case "u":
         return edit(text.slice(0, start) + text.slice(cursor), start);
       case "k":
@@ -109,7 +117,7 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
         return { kind: "ignore" }; // an unbound ⌃combo — swallow, never insert
     }
   }
-  if (key.meta) return { kind: "ignore" }; // unbound alt-combo
+  if (key.meta) return { kind: "ignore" }; // ⌥ combos are app-intercepted before this runs
 
   if (key.backspace || key.delete) {
     if (cursor === 0) return { kind: "ignore" };

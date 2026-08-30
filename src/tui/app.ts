@@ -39,6 +39,7 @@ import {
 } from "./components.ts";
 import {
   allowedActs,
+  commandsFor,
   defaultModelOf,
   defaultProviderId,
   findPickItems,
@@ -875,20 +876,85 @@ export function App({
   const logH = logFull ? bodyH : splitLogH;
   const logPage = Math.max(1, logH - 3);
 
+  /**
+   * Run a named action — the single dispatch point shared by the browse keymap
+   * and the `Space` command palette. Session verbs and the always-on globals go
+   * through {@link act} (gated by {@link allowed}); the app / view / structural
+   * commands are handled here.
+   */
+  const runAct = (name: ActName): void => {
+    switch (name) {
+      case "viewlog":
+        return void viewInEditor();
+      case "model":
+        return void switchModel();
+      case "fullscreen":
+        return void (sel ? setLogFull((v) => !v) : undefined);
+      case "restart":
+        return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
+      case "quitall":
+        return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
+      case "delete":
+        return void (sel ? dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) }) : undefined);
+      case "copybranch": {
+        if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+        const nm = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
+        return copyToClipboard(nm, nm);
+      }
+      case "clearqueue":
+        if (sel && queueFor(state, sel.id).length > 0) {
+          return void dispatch({ t: "clearQueue", sessionId: sel.id });
+        }
+        return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
+      case "fork": {
+        if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+        if (sel.provider === "claude") {
+          return void dispatch({ t: "notice", text: "hard fork isn't available for Claude sessions yet", tone: "dim" });
+        }
+        if (sel.inPlace) {
+          return void dispatch({ t: "notice", text: "hard fork needs a worktree — this session runs in-place", tone: "dim" });
+        }
+        if (sel.status === "awaiting_input") {
+          return void dispatch({ t: "notice", text: "answer the pending request first", tone: "dim" });
+        }
+        client
+          .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
+          .then((r) => {
+            dispatch({ t: "select", id: r.id });
+            dispatch({ t: "notice", text: `forked → ${shortId(r.id)}`, tone: "good" });
+          })
+          .catch((e: unknown) =>
+            dispatch({ t: "notice", text: `fork failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+          );
+        return;
+      }
+      default:
+        // new / find / help / quit / filter are always allowed; the rest are
+        // session verbs gated by the selected session's state.
+        if (["new", "find", "help", "quit", "filter"].includes(name) || allowed.has(name)) {
+          return void act(name);
+        }
+    }
+  };
+
   // ---- keymap -----------------------------------------------
   useInput((input, key) => {
     if (key.ctrl && input === "c") return quitTui();
-    if (key.ctrl && input === "e") return void editPrompt();
-    if (key.ctrl && input === "o") return void viewInEditor();
 
     if (state.mode === "prompt" && state.prompt) {
       const p = state.prompt;
-      if (key.ctrl && input === "x" && p.kind === "send" && p.sessionId) {
-        return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
+      // ⌥-prefixed prompt actions — "step out to a bigger tool" without losing
+      // what's typed. Ctrl is reserved for readline motions (applyKey).
+      if (key.meta && input === "e") return void editPrompt();
+      if (key.meta && input === "o") return void viewInEditor();
+      if (key.meta && input === "m" && p.kind === "new") {
+        return void dispatch({ t: "promptCycleMode" });
       }
-      // ⌃P on a new-session prompt: choose provider / model, keeping what's typed.
-      if (key.ctrl && input === "p" && p.kind === "new") {
+      if (key.meta && input === "p" && p.kind === "new") {
         return void pickProviderModel(p.buffer.text);
+      }
+      if (key.meta && input === "x" && p.kind === "send" && p.sessionId) {
+        return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
       }
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
@@ -909,8 +975,6 @@ export function App({
           return void submitPrompt();
         case "buffer":
           return void dispatch({ t: "promptSet", buffer: res.buffer });
-        case "mode":
-          return void dispatch({ t: "promptCycleMode" });
         case "history":
           return void dispatch({ t: "promptHistoryNav", dir: res.dir });
         case "ignore":
@@ -965,7 +1029,17 @@ export function App({
       if (key.escape) return void dispatch({ t: "closePicker" });
       if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
-      if (key.return) return void choosePicked();
+      if (key.return) {
+        // The command palette runs an action through the shared dispatcher; the
+        // provider / model / find / undo pickers resolve by kind in choosePicked.
+        if (p.kind === "command") {
+          const cur = pickerCurrent(p);
+          dispatch({ t: "closePicker" });
+          if (cur) runAct(cur.id as ActName);
+          return;
+        }
+        return void choosePicked();
+      }
       if (key.backspace || key.delete) {
         return void dispatch({ t: "pickerFilter", value: p.filter.slice(0, -1) });
       }
@@ -981,78 +1055,48 @@ export function App({
     if (key.pageDown) return setLogScroll((n) => Math.max(0, n - Math.max(1, logPage - 1)));
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
-    if (key.tab && key.shift) return void (allowed.has("mode") ? act("mode") : undefined);
-    if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined);
+    if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined); // Tab = navigation only
     if (key.escape) return void (logFull ? setLogFull(false) : undefined);
+    if (key.ctrl || key.meta) return; // Ctrl / Alt do nothing outside the prompt — swallow
+
+    // Space → the command palette: every action valid right now, fuzzy, with its key.
+    if (input === " ") {
+      return void dispatch({
+        t: "openPicker",
+        picker: makePicker({ kind: "command", title: "commands", items: commandsFor(state) }),
+      });
+    }
+
+    // Shift = the heavier / structural sibling of its lowercase.
+    if (input === "Q") return runAct("quitall");
+    if (input === "R") return runAct("restart");
+    if (input === "X") return runAct("delete");
+    if (input === "F") return runAct("fork");
+    if (input === "M") return runAct("model");
 
     if (input === "q") return quitTui();
-    if (input === "Q") return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
-    if (input === "R") return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
-    if (input === "M") return void (allowed.has("model") ? switchModel() : undefined);
-    if (input === "F") return act("filter");
-
-    if (key.ctrl && input === "y") {
-      if (!sel) return;
-      const name = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
-      return copyToClipboard(name, name);
-    }
-    if (key.ctrl && input === "f") {
-      if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-      if (sel.provider === "claude") {
-        return void dispatch({ t: "notice", text: "hard fork isn't available for Claude sessions yet", tone: "dim" });
-      }
-      if (sel.inPlace) {
-        return void dispatch({ t: "notice", text: "hard fork needs a worktree — this session runs in-place", tone: "dim" });
-      }
-      if (sel.status === "awaiting_input") {
-        return void dispatch({ t: "notice", text: "answer the pending request first", tone: "dim" });
-      }
-      client
-        .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
-        .then((r) => {
-          dispatch({ t: "select", id: r.id });
-          dispatch({ t: "notice", text: `forked → ${shortId(r.id)}`, tone: "good" });
-        })
-        .catch((e: unknown) =>
-          dispatch({ t: "notice", text: `fork failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
-        );
-      return;
-    }
-    if (key.ctrl && input === "x") {
-      if (sel && queueFor(state, sel.id).length > 0) {
-        dispatch({ t: "clearQueue", sessionId: sel.id });
-      } else {
-        dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
-      }
-      return;
-    }
-    if (key.ctrl || key.meta) return; // unbound modified key — swallow, don't fall through as the bare key
-
-    // `d` denies a pending permission request; with nothing pending it deletes
-    // the selected session (behind a confirm).
-    if (input === "d") {
-      if (allowed.has("deny")) return act("deny");
-      if (sel) return void dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) });
-      return;
-    }
 
     const map: Record<string, ActName> = {
       a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
+      d: "deny", // deny-only now — never delete (that's X)
       s: "send",
       i: "interrupt",
       r: "resume",
       x: "done",
       c: "compact",
       u: "undo",
+      m: "mode",
       e: "title",
       b: "budget",
+      y: "copybranch",
+      o: "viewlog",
+      v: "filter",
       n: "new",
       f: "find",
       "?": "help",
     };
     const chosen = map[input];
-    if (!chosen) return;
-    if (chosen === "new" || chosen === "find" || chosen === "help" || allowed.has(chosen)) act(chosen);
+    if (chosen) return runAct(chosen);
   });
 
   // ---- layout ----------------------------------------------

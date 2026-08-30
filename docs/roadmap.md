@@ -616,6 +616,41 @@ From a user brain-dump. 287 → 294 tests.
   worktree is gone, returns `branchDeleted`. `loom rm --delete-branch`.
 - `loom providers` prints the resolved default model: `<id> [default]  <model>  (N models)`.
 
+### 10 · Keybinding grammar rebuild — ✓ shipped (2026-08-30)
+
+Full reference: `docs/keybindings.md`. The old keymap grew ad-hoc: `⌃e`
+collided (line-end vs $EDITOR), `Ctrl` was used for app actions, `Shift` was
+arbitrary (`Q`/`R` daemon-wide but `M`/`F` just "variant"), `d` flipped between
+deny and delete, `Alt` was unused, discovery was a 24-row `?` dump.
+
+- **Five-rule grammar.** bare = act on the selection / move · `Shift` = the
+  heavier structural sibling (`Q` quit-all, `R` restart, `X` delete, `F` fork) ·
+  `Ctrl` = readline motions, prompt-only, `⌃c` quits · `Alt` = run a prompt
+  action without leaving it · `Space` = command palette. Stated as a doc-comment
+  at the top of `model.ts`.
+- **`⌃e` freed.** `editor.ts`: `⌃e` = line-end, `⌃b`/`⌃f` = char steps added;
+  `⇧⇥`→mode dropped (Tab is navigation-only); `EditResult` loses `"mode"`.
+- **`Alt` prompt actions** (`app.ts`, intercepted before `applyKey`): `⌥e`
+  $EDITOR · `⌥o` view log · `⌥p` provider/model · `⌥m` cycle mode · `⌥x` clear
+  queue. Replaces the old in-prompt `⌃e`/`⌃o`/`⌃p`/`⌃x`/`⇧⇥`.
+- **`Space` command palette.** New `PickerState` kind `"command"`;
+  `commandsFor(state)` = `actionsFor(sel)` (every contextual verb) + a fixed
+  tail of app/view commands (`viewlog`, `filter`, `fullscreen`, `restart`,
+  `quitall`, and `clearqueue` when a queue exists), each row carrying its key as
+  the hint. `Enter` routes through a shared `runAct(name)` in `app.ts` — the one
+  dispatch point the browse keymap also uses.
+- **Footer trims.** `KeyHint.footer?: boolean`; `footerHints` browse case shows
+  only the flagged verbs + `␣ more`. Second-tier verbs (`m` mode, `M` model,
+  `u` undo, `e` rename, `b` budget, `y` copy-branch, `o` view-log, `v` filter,
+  `F` fork, `X` delete) work but live in the palette + `?`.
+- **`d` is deny-only**; `X` deletes (was `d`-with-nothing-pending). `F` = hard
+  fork (was `⌃f`), `y` = copy branch (was `⌃y`), `v` = full/chat (was `F`),
+  `m` = mode (was `⇧⇥`), `o` = view log (was `⌃o`), `M` = model (unchanged).
+- **`?` help** gains a grammar block (`GRAMMAR_ROWS`); `HELP_ROWS`/`EDIT_ROWS`
+  rewritten to the new keys.
+- Tests: `tui-editor` (⌃e/⌃b/⌃f, Tab inert), `tui-model` (`commandsFor`, footer
+  trim), `tui-render` (`X` delete, `⌥p` flow, `F` fork, `Space` palette). 294 → 296.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

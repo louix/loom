@@ -141,9 +141,10 @@ test("esc does not quit; only overlays back out", async () => {
     await delay(100);
     assert.doesNotMatch(stdout.last, /new session/);
 
-    stdin.feed("\x05"); // ⌃e in browse: there is no prompt to edit
+    stdin.feed("\x05"); // ⌃e outside the prompt: Ctrl is editing-only, inert here
     await delay(80);
-    assert.match(stdout.last, /open a prompt first/);
+    assert.match(stdout.last, /▍ loom/, "still rendering — ⌃e did nothing in browse");
+    assert.doesNotMatch(stdout.last, /new session/);
   } finally {
     app.unmount();
     await client.close();
@@ -172,7 +173,7 @@ test("R raises a restart confirmation that esc dismisses", async () => {
   }
 });
 
-test("d deletes the selected session behind a confirm", async () => {
+test("X deletes the selected session behind a confirm", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   const s = await client.request<SessionSnapshot>("session.createStub", {
@@ -183,9 +184,10 @@ test("d deletes the selected session behind a confirm", async () => {
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(160);
-    assert.match(stdout.last, /delete/); // footer advertises it when nothing is pending
+    // delete is second-tier — reachable via X (or the palette), not the footer
+    assert.doesNotMatch(stdout.last, /delete/);
 
-    stdin.feed("d");
+    stdin.feed("X");
     await delay(100);
     assert.match(stdout.last, /Delete session/);
 
@@ -194,7 +196,7 @@ test("d deletes the selected session behind a confirm", async () => {
     assert.doesNotMatch(stdout.last, /Delete session/);
 
     // a stub has no branch → the confirm offers no branch toggle
-    stdin.feed("d");
+    stdin.feed("X");
     await delay(80);
     assert.doesNotMatch(stdout.last, /also delete branch/i);
 
@@ -209,7 +211,7 @@ test("d deletes the selected session behind a confirm", async () => {
   }
 });
 
-test("d on a branched session offers a branch toggle; b arms it", async () => {
+test("X on a branched session offers a branch toggle; b arms it", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const s = await client.request<SessionSnapshot>("session.create", {
@@ -221,7 +223,7 @@ test("d on a branched session offers a branch toggle; b arms it", async () => {
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(200);
-    stdin.feed("d");
+    stdin.feed("X");
     await delay(100);
     assert.match(stdout.last, /Delete session/);
     assert.match(stdout.last, /also delete branch/i);
@@ -238,6 +240,44 @@ test("d on a branched session offers a branch toggle; b arms it", async () => {
       encoding: "utf8",
     });
     assert.equal(branches.trim(), "", "branch was deleted too");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("Space opens the command palette; a filtered pick runs the action", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "rename me via the palette",
+    status: "idle",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(160);
+    stdin.feed(" "); // leader
+    await delay(100);
+    assert.match(stdout.last, /COMMANDS/);
+    assert.match(stdout.last, /rename/);
+
+    stdin.feed("rename");
+    await delay(80);
+    stdin.feed("\r"); // run it
+    await delay(120);
+    assert.match(stdout.last, /rename/); // the rename prompt is now open
+    assert.doesNotMatch(stdout.last, /COMMANDS/);
+
+    stdin.feed("\x15"); // ⌃u clear the prefilled title
+    await delay(40);
+    stdin.feed("palette win");
+    await delay(80);
+    stdin.feed("\r");
+    await delay(200);
+    const after = await client.request<SessionSnapshot>("session.get", { id: s.id });
+    assert.equal(after.title, "palette win");
   } finally {
     app.unmount();
     await client.close();
@@ -536,7 +576,7 @@ test("Tab toggles the fullscreen event log", async () => {
   }
 });
 
-test("n shows the provider / model; ⌃P opens the chooser and returns to the prompt", async () => {
+test("n shows the provider / model; ⌥p opens the chooser and returns to the prompt", async () => {
   const { connect, cleanup } = await harness({
     config: `
 [providers.openai]
@@ -558,7 +598,7 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     assert.match(stdout.last, /claude/);
     assert.match(stdout.last, /claude-sonnet-5/);
 
-    stdin.feed("\x10"); // ⌃P → provider chooser
+    stdin.feed("\x1bp"); // ⌥p → provider chooser
     await delay(120);
     assert.match(stdout.last, /PROVIDER/);
     assert.match(stdout.last, /openai/);
@@ -572,7 +612,7 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     await delay(120);
     assert.match(stdout.last, /new session/i);
 
-    stdin.feed("\x10"); // ⌃P again
+    stdin.feed("\x1bp"); // ⌥p again
     await delay(100);
     stdin.feed("openai");
     await delay(100);
@@ -594,7 +634,7 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
   }
 });
 
-test("⌃P model step shows an empty state when a provider has no models", async () => {
+test("⌥p model step shows an empty state when a provider has no models", async () => {
   const { connect, cleanup } = await harness({
     config: `
 [providers.oai]
@@ -609,7 +649,7 @@ base_url = "http://127.0.0.1:9/v1"
     await delay(220);
     stdin.feed("n");
     await delay(120);
-    stdin.feed("\x10"); // ⌃P
+    stdin.feed("\x1bp"); // ⌥p
     await delay(120);
     stdin.feed("oai");
     await delay(100);
@@ -627,7 +667,7 @@ base_url = "http://127.0.0.1:9/v1"
   }
 });
 
-test("⌃P keeps what's already typed in the new-session prompt", async () => {
+test("⌥p keeps what's already typed in the new-session prompt", async () => {
   const { connect, cleanup } = await harness({
     config: `
 [providers.openai]
@@ -646,7 +686,7 @@ models   = ["gpt-5", "gpt-5-mini"]
     await delay(120);
     stdin.feed("fix the parser bug");
     await delay(100);
-    stdin.feed("\x10"); // ⌃P
+    stdin.feed("\x1bp"); // ⌥p
     await delay(120);
     stdin.feed("openai");
     await delay(100);
@@ -709,8 +749,7 @@ test("u opens the undo picker listing earlier turns", async () => {
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(200);
-    assert.match(stdout.last, /u\b/); // footer offers undo on an idle multi-turn session
-    stdin.feed("u");
+    stdin.feed("u"); // undo is second-tier (palette / help), but the key still works
     await delay(150);
     assert.match(stdout.last, /UNDO/);
     assert.match(stdout.last, /turn 1 · the original task/);
@@ -727,7 +766,7 @@ test("u opens the undo picker listing earlier turns", async () => {
   }
 });
 
-test("⌃f forks the selected aisdk session; the fork shows its lineage", async () => {
+test("F forks the selected aisdk session; the fork shows its lineage", async () => {
   const { h, connect, cleanup } = await harness({
     config: `
 [providers.openai]
@@ -751,7 +790,7 @@ model    = "gpt-5"
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(200);
-    stdin.feed("\x06"); // ⌃f
+    stdin.feed("F"); // hard fork
     await delay(300);
     assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
     assert.match(stdout.last, /forked from .* @ turn 0/); // Detail lineage line

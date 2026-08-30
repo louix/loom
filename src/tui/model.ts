@@ -12,6 +12,14 @@ import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone 
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
 export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan" | "picker";
+/**
+ * Keybinding grammar (see docs/keybindings.md):
+ *   • bare key  → act on the selected session, or move
+ *   • Shift+key → the heavier / structural sibling (Q quit-all · R restart · X delete · F fork)
+ *   • Ctrl+key  → text editing only, inside the prompt (⌃a/⌃e/⌃b/⌃f/⌃u/⌃k/⌃w); ⌃c quits
+ *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥x)
+ *   • Space     → the command palette: everything valid right now, fuzzy, with its key
+ */
 /** How much of the selected session's log to show: everything, or just the
  *  conversation (tool traffic and thinking collapsed to one-line markers). */
 export type LogFilter = "full" | "chat";
@@ -115,7 +123,7 @@ export interface PickItem {
 }
 
 export interface PickerState {
-  kind: "provider" | "model" | "find" | "undo";
+  kind: "provider" | "model" | "find" | "undo" | "command";
   title: string;
   items: PickItem[];
   /** Shown when `items` is empty (e.g. no models detected for a provider). */
@@ -968,6 +976,12 @@ export type ActName =
   | "title"
   | "budget"
   | "delete"
+  | "copybranch"
+  | "viewlog"
+  | "fullscreen"
+  | "clearqueue"
+  | "restart"
+  | "quitall"
   | "new"
   | "find"
   | "filter"
@@ -978,13 +992,16 @@ export interface KeyHint {
   keys: string;
   label: string;
   act: ActName;
+  /** Shown on the footer (the few most pertinent). Everything else is
+   *  palette-and-help only — see {@link commandsFor}. */
+  footer?: boolean;
 }
 
 const GLOBAL_HINTS: KeyHint[] = [
-  { keys: "n", label: "new", act: "new" },
-  { keys: "f", label: "find", act: "find" },
-  { keys: "?", label: "help", act: "help" },
-  { keys: "q", label: "quit", act: "quit" },
+  { keys: "n", label: "new", act: "new", footer: true },
+  { keys: "f", label: "find", act: "find", footer: true },
+  { keys: "?", label: "help", act: "help", footer: true },
+  { keys: "q", label: "quit", act: "quit", footer: true },
 ];
 
 /** The actions valid for the given session, most salient first, then globals. */
@@ -999,37 +1016,39 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     // footer and the permitted set the keymap checks.
     if (status === "awaiting_input") {
       if (awaitReason === "question") {
-        local.push({ keys: "a", label: "answer", act: "answer" });
+        local.push({ keys: "a", label: "answer", act: "answer", footer: true });
       } else if (awaitReason === "plan_review") {
-        local.push({ keys: "a", label: "review plan", act: "planreview" });
+        local.push({ keys: "a", label: "review plan", act: "planreview", footer: true });
       } else {
-        local.push({ keys: "a", label: "approve", act: "approve" });
-        local.push({ keys: "d", label: "deny", act: "deny" });
+        local.push({ keys: "a", label: "approve", act: "approve", footer: true });
+        local.push({ keys: "d", label: "deny", act: "deny", footer: true });
       }
-      local.push({ keys: "i", label: "interrupt", act: "interrupt" });
+      local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
       return [...local, ...GLOBAL_HINTS];
     }
 
     if (status === "running" || status === "starting") {
-      local.push({ keys: "i", label: "interrupt", act: "interrupt" });
+      local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
     }
     if (status === "running" || status === "idle") {
-      local.push({ keys: "s", label: "send", act: "send" });
+      local.push({ keys: "s", label: "send", act: "send", footer: true });
     }
     if (
       (status === "running" || status === "idle") &&
       session.contextLimit > 0 &&
       session.contextUsed / session.contextLimit > 0.5
     ) {
-      local.push({ keys: "c", label: "compact", act: "compact" });
+      local.push({ keys: "c", label: "compact", act: "compact", footer: true });
     }
     if (status === "interrupted" || status === "error") {
-      local.push({ keys: "r", label: "resume", act: "resume" });
+      local.push({ keys: "r", label: "resume", act: "resume", footer: true });
     }
     if (status === "idle" || status === "error" || status === "interrupted") {
-      local.push({ keys: "x", label: "done", act: "done" });
+      local.push({ keys: "x", label: "done", act: "done", footer: true });
     }
-    local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
+    // Second tier — palette / help only (see the grammar note at the top of the
+    // file). `m` cycles the permission mode, `M` its rarer sibling the model.
+    local.push({ keys: "m", label: "mode", act: "mode" });
     local.push({ keys: "M", label: "model", act: "model" });
     // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
     // don't advertise them there. Hard fork additionally needs an isolated
@@ -1039,11 +1058,15 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if (isAisdk && (status === "idle" || status === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    if (isAisdk && !session.inPlace) local.push({ keys: "⌃f", label: "fork", act: "fork" });
+    if (isAisdk && !session.inPlace) local.push({ keys: "F", label: "fork", act: "fork" });
     local.push({ keys: "e", label: "rename", act: "title" });
     local.push({ keys: "b", label: "budget", act: "budget" });
-    // `d` with no request pending — the keymap opens a delete confirm.
-    local.push({ keys: "d", label: "delete", act: "delete" });
+    if (session.branch || session.worktree) {
+      local.push({ keys: "y", label: "copy branch", act: "copybranch" });
+    }
+    // `X` — a destructive, structural op (worktree + transcript go); `d` is
+    // deny-only now, never delete.
+    local.push({ keys: "X", label: "delete", act: "delete" });
   }
   return [...local, ...GLOBAL_HINTS];
 }
@@ -1051,6 +1074,37 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
 /** Convenience for tests / keymap: the bare set of permitted act names. */
 export function allowedActs(session: SessionSnapshot | null): Set<ActName> {
   return new Set(actionsFor(session).map((h) => h.act));
+}
+
+/**
+ * Every action reachable right now, for the `Space` command palette — the
+ * selected session's contextual verbs ({@link actionsFor}) plus the app / view
+ * commands that never earn a footer slot. One entry per act; `hint` is its key.
+ */
+export function commandsFor(s: TuiState): PickItem[] {
+  const seen = new Set<ActName>();
+  const items: PickItem[] = [];
+  for (const h of actionsFor(selectedSession(s))) {
+    if (seen.has(h.act)) continue;
+    seen.add(h.act);
+    items.push({ id: h.act, label: h.label, hint: h.keys });
+  }
+  const extra: Array<[ActName, string, string]> = [
+    ["viewlog", "view the log in $EDITOR", "o"],
+    ["filter", s.logFilter === "chat" ? "event log: show everything" : "event log: chat only", "v"],
+    ["fullscreen", "fullscreen the event log", "⇥"],
+    ["restart", "restart the daemon", "R"],
+    ["quitall", "quit and stop the daemon", "Q"],
+  ];
+  for (const [id, label, key] of extra) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    items.push({ id, label, hint: key });
+  }
+  if (s.selectedId && (s.queue[s.selectedId]?.length ?? 0) > 0) {
+    items.push({ id: "clearqueue", label: "clear the queued messages", hint: "⌥x" });
+  }
+  return items;
 }
 
 /**
@@ -1093,8 +1147,12 @@ export function footerHints(s: TuiState): Array<{ keys: string; label: string }>
       ];
     case "help":
       return [{ keys: "? / esc", label: "close help" }];
-    case "browse":
-      return actionsFor(selectedSession(s)).map((h) => ({ keys: h.keys, label: h.label }));
+    case "browse": {
+      const hints = actionsFor(selectedSession(s))
+        .filter((h) => h.footer)
+        .map((h) => ({ keys: h.keys, label: h.label }));
+      return [...hints, { keys: "␣", label: "more" }];
+    }
   }
 }
 

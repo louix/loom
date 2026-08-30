@@ -574,13 +574,13 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 };
 
 function promptHints(p: PromptState, queued: number): string {
-  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor", "⌃O log"];
+  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥e editor", "⌥o log"];
   if (p.kind === "new") {
-    bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
-    bits.push("⌃P provider/model");
+    bits.push(p.mode && p.mode !== "default" ? `⌥m mode:${p.mode}` : "⌥m mode");
+    bits.push("⌥p provider/model");
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
-  if (p.kind === "send" && queued > 0) bits.push(`⌃X clear ${queued} queued`);
+  if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
   bits.push("esc cancel");
   return bits.join("  ·  ");
 }
@@ -621,7 +621,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
               `${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`,
             )
           : null,
-        p.kind === "new" ? h(Text, { color: C.faint }, "⌃P change") : null,
+        p.kind === "new" ? h(Text, { color: C.faint }, "⌥p change") : null,
       ),
       h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
       h(Text, { color: C.faint }, promptHints(p, queued)),
@@ -834,40 +834,39 @@ export function SendChoice({ text, width }: { text: string; width: number }): Re
 // help overlay
 // ---------------------------------------------------------------------------
 
+/** The grammar in one screen — the five rules, then the keys they generate. */
+const GRAMMAR_ROWS: Array<[string, string]> = [
+  ["bare key", "act on the selected session, or move"],
+  ["Shift + key", "the heavier / structural sibling — Q quit-all · R restart · X delete · F fork"],
+  ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
+  ["Alt + key", "run a prompt action without leaving it — ⌥e ⌥o ⌥p ⌥m ⌥x"],
+  ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
+];
+
 const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
+  ["Space", "command palette — search and run any action available here"],
+  ["a  ·  d", "approve / answer / review a request  ·  deny it (deny-only — never deletes)"],
+  ["s  ·  i  ·  r", "send a follow-up  ·  interrupt the turn  ·  resume an interrupted / errored session"],
+  ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
+  ["u  ·  m  ·  M", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model"],
+  ["e  ·  b  ·  y", "rename  ·  set a cost budget  ·  copy the branch name to the clipboard"],
+  ["o  ·  v  ·  ⇥", "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log"],
+  ["n  ·  f", "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session"],
+  ["F  ·  X", "hard fork — new session + worktree off this one (aisdk)  ·  delete the session (confirm)"],
+  ["R  ·  Q", "restart the daemon  ·  quit the UI and stop the daemon  (both confirm)"],
+  ["q  ·  ⌃c  ·  esc", "quit the UI, daemon keeps running  ·  quit  ·  back out of any overlay"],
   ["⟢ (fleet)", "prompt cache still warm — green → amber → red as it lapses"],
-  ["PgUp / PgDn", "scroll the event log"],
-  ["⇥", "toggle the fullscreen event log"],
-  ["⌃o", "open the pending request — or the event log — in $EDITOR, read-only"],
-  ["⌃y", "copy the selected session's branch to the clipboard"],
-  ["a  ·  d", "approve / answer  ·  deny a request — or, none pending, delete the session (confirm)"],
-  ["a (plan)", "open the plan review — then i / f / e / d to decide"],
-  ["s", "send a follow-up turn (while running → inject now / queue for turn end)"],
-  ["c", "compact the context window (shown once the meter passes half)"],
-  ["u", "undo — rewind an idle session to an earlier turn (shows the re-prime cost)"],
-  ["⌃f", "hard fork — a new session + worktree branched off this one (aisdk)"],
-  ["⌃x", "clear the selected session's queued messages"],
-  ["i  ·  r", "interrupt the turn  ·  resume an interrupted / errored session"],
-  ["x  ·  e", "mark the session done  ·  rename it"],
-  ["b", "set a cost budget (soft-warns or hard-halts on breach)"],
-  ["⇧⇥  ·  M", "cycle the permission mode  ·  switch the session's model (next turn)"],
-  ["n", "new session — the prompt shows the provider / model; ⌃P to change them"],
-  ["f  ·  F", "find a session by title / message text  ·  toggle the event log: full / chat-only"],
   ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
-  ["R", "restart the daemon (with confirmation)"],
-  ["Q", "quit the UI and stop the daemon (with confirmation)"],
-  ["q  ·  ⌃c", "quit the UI — the daemon keeps running"],
-  ["?  ·  esc", "toggle this help  ·  back out of any overlay"],
 ];
 
 const EDIT_ROWS: Array<[string, string]> = [
   ["enter  ·  esc", "submit  ·  cancel"],
-  ["⌃e", "edit the text in $EDITOR, event log opened alongside (`:wq` to return); nothing sent until enter"],
-  ["⌃o", "open the event log in $EDITOR, read-only"],
-  ["⌃a", "start of line     ⌃u / ⌃k  kill to start / end     ⌃w  delete word"],
-  ["↑ / ↓  ·  ⇧⇥", "prompt history     ·     cycle the mode (new session)"],
-  ["⌃P", "pick the provider / model for a new session"],
+  ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
+  ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
+  ["⌥e  ·  ⌥o", "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only"],
+  ["⌥p  ·  ⌥m", "pick the provider / model  ·  cycle the mode   (both new-session only)"],
+  ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -941,6 +940,16 @@ export function Help({ width }: { width: number }): ReactNode {
     Box,
     { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
     h(Text, { color: C.accent, bold: true }, "loom — keys"),
+    h(Box, { height: 1 }),
+    h(Text, { color: C.dim, bold: true }, "the grammar"),
+    ...GRAMMAR_ROWS.map(([k, v], i) =>
+      h(
+        Box,
+        { key: `g${i}`, gap: 2 },
+        h(Box, { width: 16 }, h(Text, { color: C.accent }, k)),
+        h(Text, { color: C.dim }, v),
+      ),
+    ),
     h(Box, { height: 1 }),
     ...HELP_ROWS.map(([k, v], i) =>
       h(

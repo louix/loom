@@ -24,8 +24,11 @@ test("left / right arrows move the cursor and clamp at the ends", () => {
   assert.equal((press("abc", 3, "", { rightArrow: true }) as any).buffer.cursor, 3);
 });
 
-test("⌃a / ⌃u / ⌃k / ⌃w motions", () => {
+test("⌃a / ⌃e / ⌃b / ⌃f / ⌃u / ⌃k / ⌃w motions", () => {
   assert.equal((press("one two three", 7, "a", { ctrl: true }) as any).buffer.cursor, 0);
+  assert.equal((press("one two three", 7, "e", { ctrl: true }) as any).buffer.cursor, 13);
+  assert.equal((press("one two three", 7, "b", { ctrl: true }) as any).buffer.cursor, 6);
+  assert.equal((press("one two three", 7, "f", { ctrl: true }) as any).buffer.cursor, 8);
   assert.deepEqual(press("one two three", 7, "u", { ctrl: true }), {
     kind: "buffer",
     buffer: { text: " three", cursor: 0 },
@@ -40,10 +43,10 @@ test("⌃a / ⌃u / ⌃k / ⌃w motions", () => {
   });
 });
 
-test("Enter submits; Escape cancels; ⇧⇥ asks for a mode change; bare ⇥ is inert", () => {
+test("Enter submits; Escape cancels; Tab (either form) is navigation-only, inert here", () => {
   assert.deepEqual(press("hi", 2, "", { return: true }), { kind: "submit" });
   assert.deepEqual(press("hi", 2, "", { escape: true }), { kind: "cancel" });
-  assert.deepEqual(press("hi", 2, "", { tab: true, shift: true }), { kind: "mode" });
+  assert.deepEqual(press("hi", 2, "", { tab: true, shift: true }), { kind: "ignore" });
   assert.deepEqual(press("hi", 2, "", { tab: true }), { kind: "ignore" });
 });
 
@@ -53,12 +56,12 @@ test("there is no newline key — Enter never inserts", () => {
 });
 
 test("an unbound modified key is swallowed, never inserted as the bare letter", () => {
-  assert.deepEqual(press("hi", 2, "b", { ctrl: true }), { kind: "ignore" });
-  assert.deepEqual(press("hi", 2, "x", { meta: true }), { kind: "ignore" });
+  assert.deepEqual(press("hi", 2, "z", { ctrl: true }), { kind: "ignore" });
+  assert.deepEqual(press("hi", 2, "x", { meta: true }), { kind: "ignore" }); // ⌥ combos: app-intercepted
 });
 
-test("⌃e / ⌃o are left for the app to intercept ($EDITOR handoffs)", () => {
-  assert.deepEqual(press("hi", 1, "e", { ctrl: true }), { kind: "ignore" });
+test("⌃e is line-end (Ctrl is editing-only); ⌃o is unbound here — the app owns ⌥o", () => {
+  assert.deepEqual(press("hi", 1, "e", { ctrl: true }), { kind: "buffer", buffer: { text: "hi", cursor: 2 } });
   assert.deepEqual(press("hi", 1, "o", { ctrl: true }), { kind: "ignore" });
 });
 

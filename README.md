@@ -107,32 +107,43 @@ the Vercel AI SDK.
   what's being approved / denied / asked (the command, the file, the question).
 - **Event stream** — the normalized harness events for the selected session,
   colourised by kind and word-wrapped to the pane (never clipped — it scrolls).
-  `F` toggles `full` ↔ `chat` (conversation only: tool traffic folds to `⚙ N
+  `v` toggles `full` ↔ `chat` (conversation only: tool traffic folds to `⚙ N
   tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
-  blows it up to fullscreen, and `⌃o` opens the pending request — or the session
+  blows it up to fullscreen, and `o` opens the pending request — or the session
   transcript (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR`
   read-only, so you can read and copy without fighting the split.
-- **Acting on the selection**, from the verbs the footer offers: `a` approve or
-  answer, `d` deny, `s` send a turn, `c` compact the context window (offered once
+
+**Keybinding grammar** (full table in [`docs/keybindings.md`](docs/keybindings.md), or press `?`):
+
+| modifier | means |
+|----------|-------|
+| bare key | act on the selected session, or move |
+| `Shift`+key | the heavier / structural sibling — `Q` quit-all · `R` restart · `X` delete · `F` fork |
+| `Ctrl`+key | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w`); `⌃c` quits |
+| `Alt`+key | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥m` `⌥x` |
+| `Space` | the command palette — every action valid right now, fuzzy, with its key |
+
+- **Acting on the selection**, from the verbs the footer offers (the rest live
+  in the `Space` palette): `a` approve / answer / review, `d` deny (deny-only —
+  `X` deletes), `s` send a turn, `c` compact the context window (offered once
   the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
-  done, `e` rename, `b` set a cost budget, `a` (in `plan_review`) review the
-  plan, `⇧⇥` cycle the permission mode, `M` switch the session's model (applies
-  next turn), `u` undo — rewind an idle session to an earlier turn (shows the
-  re-prime cost), `⌃f` hard-fork it into a new session + worktree, `⌃y` copy the
-  branch to the clipboard, `n` start a new session — the prompt shows which
-  provider / model it will use and `⌃P` changes them, `f` fuzzy-find a session
-  by title or message text, `F` toggle the event log between `full` and
-  `chat`-only.
-  `d` with nothing pending deletes the session (behind a confirm; `b` there also
-  deletes its branch).
-  Sending to a session
-  that's still working asks first: **inject now** or **queue** for when the
-  turn ends. On an aisdk session "inject now" splices the message into the
-  running turn right after the current tool result (the model sees it on its
-  next step); on a Claude session the SDK queues it for the next turn boundary.
-  Queued messages drain automatically and `⌃x` clears them. In a prompt, `⌃e` hands the text to
-  `$EDITOR` (with the event log opened alongside to copy from; nothing is sent
-  until you press enter back in the UI), `⌃o` opens just the log read-only,
+  done. Second-tier, on the palette and `?` help: `m` cycle the permission mode,
+  `M` switch the model (next turn), `u` undo — rewind an idle session to an
+  earlier turn (shows the re-prime cost), `e` rename, `b` set a cost budget,
+  `y` copy the branch, `o` view the log in `$EDITOR`, `v` full / chat,
+  `F` hard-fork into a new session + worktree, `X` delete (behind a confirm;
+  `b` there also deletes the branch). `n` starts a new session — the prompt
+  shows the provider / model and `⌥p` changes them; `f` fuzzy-finds a session by
+  title or message text.
+  Sending to a session that's still working asks first: **inject now** or
+  **queue** for when the turn ends. On an aisdk session "inject now" splices the
+  message into the running turn right after the current tool result (the model
+  sees it on its next step); on a Claude session the SDK queues it for the next
+  turn boundary. Queued messages drain automatically and `⌥x` (in the send
+  prompt) or the palette clears them. In a prompt, `Ctrl` carries the readline
+  motions; `⌥e` hands the text to `$EDITOR` (event log alongside to copy from;
+  nothing is sent until you press enter back in the UI), `⌥o` opens just the log
+  read-only, `⌥p` / `⌥m` pick the provider-model / mode for a new session,
   `↑`/`↓` recall earlier prompts, and a failed submit reopens with the text
   intact.
 - **The daemon, from inside** — `R` restarts it (the client respawns one that
@@ -140,7 +151,7 @@ the Vercel AI SDK.
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
   out of overlays — it never quits.
 
-**Permission modes** (`⇧⇥`, or `--mode` on `run`): `default` prompts for
+**Permission modes** (`m`, or `--mode` on `run`): `default` prompts for
 anything sensitive; `plan` keeps the agent read-only until it presents a plan
 you approve; `acceptEdits` auto-approves file edits but still gates commands;
 `auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
@@ -179,7 +190,7 @@ transcript itself in `provider_messages`.
   on demand (`c`) or automatically near the context limit. A `task` tool
   delegates a scoped sub-task to a sub-agent whose steps nest in the log.
 - **10e** — the switching UX. `n` opens the new-session prompt with the provider
-  and model it will use shown inline; `⌃P` there walks a provider → model picker
+  and model it will use shown inline; `⌥p` there walks a provider → model picker
   and drops back on the prompt with what you'd typed intact. `M` switches the
   selected session's model (next turn). Each fleet row's id is coloured by its
   provider; the Detail pane spells out `engine · provider / model`.
@@ -334,7 +345,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 294 cases
+npm test             # node:test — 296 cases
 ```
 
 ### Layout

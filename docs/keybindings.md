@@ -1,0 +1,125 @@
+# Loom TUI — keybindings
+
+A small, consistent grammar. Learn the five rules and the keys fall out of them.
+Press `?` in the TUI for the same thing on one screen; press `Space` for a
+fuzzy, searchable list of every action valid right where you are.
+
+## The grammar
+
+| modifier | means |
+|----------|-------|
+| **bare key** | act on the selected session, or move the selection |
+| **`Shift`+key** | the heavier / structural sibling of the lowercase — creates or destroys session / daemon state |
+| **`Ctrl`+key** | text editing only, and only inside the prompt — the readline motions. `⌃c` quits (the one universal exception) |
+| **`Alt`+key** | run an action *without leaving the prompt* — "step out to a bigger tool" |
+| **`Space`** | the command palette: everything valid right now, fuzzy-filtered, each row showing its key |
+
+Consequences:
+
+- `Ctrl` never triggers an app action, so `⌃e` is line-end again (it used to be
+  stolen for "$EDITOR").
+- `Shift` is never a decorative "variant of" — it always means *bigger blast
+  radius*: `q`→`Q` (also stops the daemon), `r`→`R` (restarts the daemon), `x`
+  (mark done, reversible) →`X` (delete, permanent). `F` (hard fork) stands with
+  them as a structural op.
+- Rare actions don't need a memorised key — they're one `Space`, a few letters,
+  `Enter` away, and the palette teaches you the key for next time.
+- The footer only ever shows the few most pertinent verbs for the current state,
+  plus `␣ more`.
+
+## Browse (the fleet view)
+
+### Navigation
+
+| key | action |
+|-----|--------|
+| `↑` / `↓`, `j` / `k` | move the selection |
+| `PgUp` / `PgDn` | scroll the event log |
+| `⇥` | fullscreen the event log (and back) |
+| `Esc` | leave fullscreen / back out of an overlay — never quits |
+| `Space` | open the command palette |
+| `?` | keys & the grammar |
+
+### Acting on the selected session (footer verbs)
+
+| key | action |
+|-----|--------|
+| `a` | approve a permission · answer a question · review a plan — whatever is pending |
+| `d` | deny the pending request (**deny-only** — never deletes) |
+| `s` | send a follow-up turn |
+| `i` | interrupt the current turn |
+| `r` | resume an interrupted / errored session |
+| `c` | compact the context window (offered once the meter passes half) |
+| `x` | mark the session done |
+
+### Second tier (palette + `?` only)
+
+| key | action |
+|-----|--------|
+| `m` | cycle the permission mode (`default` → `plan` → `acceptEdits` → `auto`) |
+| `M` | switch the session's model — applies next turn |
+| `u` | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
+| `e` | rename the session |
+| `b` | set a cost budget (soft-warns, then hard-halts) |
+| `y` | copy the session's branch name to the clipboard |
+| `o` | open the pending request — or the transcript — in `$EDITOR`, read-only |
+| `v` | event log: everything ↔ chat only |
+
+### Structural (`Shift`)
+
+| key | action |
+|-----|--------|
+| `F` | hard fork — a new session + worktree branched off this one (aisdk only) |
+| `X` | delete the session — worktree + transcript go too (confirm; `b` there also drops the branch) |
+| `R` | restart the daemon (confirm) |
+| `Q` | quit the UI **and stop the daemon** (confirm) |
+
+### Always
+
+| key | action |
+|-----|--------|
+| `n` | new session — the prompt shows the provider / model; `⌥p` changes them |
+| `f` | fuzzy-find a session by title or message text |
+| `q` / `⌃c` | quit the UI — the daemon keeps running |
+
+## In the prompt
+
+`Ctrl` carries the readline motions and nothing else:
+
+| key | motion |
+|-----|--------|
+| `⌃a` / `⌃e` | start / end of line |
+| `⌃b` / `⌃f` | one char back / forward |
+| `⌃u` / `⌃k` | kill to start / end of line |
+| `⌃w` | delete the word before the cursor |
+| `↑` / `↓` | walk the prompt history (vertical caret move in multi-line text) |
+| `Enter` | submit · `Esc` cancel |
+
+`Alt` runs an action without dropping what you've typed:
+
+| key | action |
+|-----|--------|
+| `⌥e` | edit the text in `$EDITOR`, event log opened alongside (`:wq` to return); nothing is sent until `Enter` back in the UI |
+| `⌥o` | open the event log in `$EDITOR`, read-only |
+| `⌥p` | pick the provider / model  *(new-session prompt only)* |
+| `⌥m` | cycle the permission mode  *(new-session prompt only)* |
+| `⌥x` | clear the session's queued messages  *(send prompt only)* |
+
+There is no newline key in the prompt — `⌥e` is the way to compose multi-line
+text.
+
+## Overlays
+
+Each overlay owns the screen and shows its own fixed key set on the footer:
+
+- **Command palette / pickers** — type to filter, `↑↓` move, `Enter` pick, `Esc` cancel.
+- **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
+- **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⌥o`/`o` view. A plan review must be answered — `Esc` does nothing.
+- **Send-while-running** — `a` inject now · `t` / `Enter` queue for turn end · `Esc` back to the message.
+
+## Notes on terminals
+
+`Alt`+key is delivered as an `Esc`-prefixed sequence (`ESC e` for `⌥e`), which
+Ink parses as a meta keypress. If your terminal instead sends the high-bit form
+(`Meta sends 8-bit`), the `⌥` prompt actions won't register — switch it to
+"`Esc`+" / "meta sends escape".

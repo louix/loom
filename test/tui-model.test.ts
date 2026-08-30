@@ -6,6 +6,7 @@ import type { EventPush } from "../src/protocol/wire.ts";
 import {
   actionsFor,
   allowedActs,
+  commandsFor,
   cacheHeat,
   cacheStatus,
   defaultModelOf,
@@ -451,6 +452,35 @@ test("footerHints gives every overlay its own fixed key set", () => {
   assert.deepEqual(keysFor("help"), ["close help"]);
   // browse delegates to the selected session's contextual actions
   assert.ok(keysFor("browse").includes("send"));
+  // …trimmed to the footer subset, then the palette pointer
+  assert.equal(keysFor("browse").at(-1), "more");
+  assert.ok(!keysFor("browse").includes("rename"), "second-tier verbs stay off the footer");
+});
+
+test("commandsFor lists every action valid now — session verbs plus the app commands", () => {
+  const base: TuiState = {
+    ...initialState(),
+    sessions: [snap({ id: "s1", status: "idle", provider: "openai", turns: 3 })],
+    selectedId: "s1",
+  };
+  const ids = commandsFor(base).map((c) => c.id);
+  // contextual session verbs (idle aisdk session, >1 turn)
+  for (const v of ["send", "done", "mode", "model", "undo", "fork", "title", "budget", "delete"]) {
+    assert.ok(ids.includes(v as any), `missing ${v}`);
+  }
+  // app / view commands that never earn a footer slot
+  for (const v of ["viewlog", "filter", "fullscreen", "restart", "quitall", "new", "find", "help"]) {
+    assert.ok(ids.includes(v as any), `missing ${v}`);
+  }
+  // no duplicates, and each carries its key as the hint
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(commandsFor(base).find((c) => c.id === "delete")?.hint, "X");
+  assert.equal(commandsFor(base).find((c) => c.id === "fork")?.hint, "F");
+
+  // clearqueue only shows when the selected session actually has a queue
+  assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
+  const withQueue: TuiState = { ...base, queue: { s1: ["pending note"] } };
+  assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
 });
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {
