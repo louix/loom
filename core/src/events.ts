@@ -195,6 +195,24 @@ export interface UserMessageEvent extends HarnessEventBase {
   injected: boolean;
 }
 
+/**
+ * The provider's own account-plan usage, for a subscription session (not an
+ * API-key one, which has no such window). One event covers one window
+ * (`rateLimitType`) — e.g. Claude reports `five_hour` and `seven_day`
+ * separately, so a consumer should key state by `rateLimitType` and merge
+ * rather than overwrite.
+ */
+export interface RateLimitEvent extends HarnessEventBase {
+  type: "rate_limit";
+  status: "allowed" | "allowed_warning" | "rejected";
+  /** The usage window this reading is for, e.g. `five_hour` / `seven_day`. Absent when the provider doesn't distinguish windows. */
+  window?: string;
+  /** Percentage of the window used, 0-100+. */
+  utilization?: number;
+  /** When the window resets (epoch ms). */
+  resetsAt?: number;
+}
+
 export type HarnessEvent =
   | AssistantTextEvent
   | ThinkingEvent
@@ -213,6 +231,7 @@ export type HarnessEvent =
   | ErrorEvent
   | ResultEvent
   | RewindEvent
-  | UserMessageEvent;
+  | UserMessageEvent
+  | RateLimitEvent;
 
 export type HarnessEventType = HarnessEvent["type"];

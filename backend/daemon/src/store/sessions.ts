@@ -539,6 +539,7 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     },
     budgetState: (row.budget_state as SessionSnapshot["budgetState"]) ?? "ok",
     subagents: [], // runtime overlay filled in by the daemon
+    rateLimits: {}, // runtime overlay filled in by the daemon
     cache: {
       ttlMinutes: 0, // overlaid from config by the daemon
       lastTurnAt: usage?.last_turn_at ?? 0,

@@ -74,6 +74,7 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     budget: { maxTokens: null, maxCostUsd: null, maxTurns: null },
     budgetState: "ok",
     subagents: [],
+    rateLimits: {},
     cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     git: null,
     createdAt: now,

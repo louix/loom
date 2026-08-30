@@ -43,6 +43,13 @@ export interface RespondResult {
   alreadyResolved: boolean;
 }
 
+/** One account-plan usage window, e.g. Claude's `five_hour` / `seven_day`. */
+export interface RateLimitWindow {
+  status: "allowed" | "allowed_warning" | "rejected";
+  utilization?: number;
+  resetsAt?: number;
+}
+
 interface Running {
   provider: string;
   session: AgentSession;
@@ -54,6 +61,8 @@ interface Running {
   pendingQuestions: Set<string>;
   pendingPlans: Set<string>;
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
+  /** Latest reading per window (`rate_limit` events carry one window each — merge, don't overwrite). */
+  rateLimits: Map<string, RateLimitWindow>;
   interrupting: boolean;
   ended: boolean;
   refReported: boolean;
@@ -109,6 +118,7 @@ export class SessionManager {
       pendingQuestions: new Set(),
       pendingPlans: new Set(),
       subagents: new Map(),
+      rateLimits: new Map(),
       interrupting: false,
       ended: false,
       refReported: false,
@@ -130,6 +140,7 @@ export class SessionManager {
         this.#trackQuestions(run, ev);
         this.#trackPlans(run, ev);
         this.#trackSubagents(id, run, ev);
+        this.#trackRateLimit(run, ev);
         this.#trackUsage(id, ev);
         if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
         this.#trackRef(id, run);
@@ -203,6 +214,22 @@ export class SessionManager {
     return [...run.subagents.entries()]
       .sort((a, b) => a[1].startedAt - b[1].startedAt)
       .map(([subId, v]) => ({ id: subId, name: v.name, active: v.active }));
+  }
+
+  #trackRateLimit(run: Running, ev: HarnessEvent): void {
+    if (ev.type !== "rate_limit") return;
+    run.rateLimits.set(ev.window ?? "default", {
+      status: ev.status,
+      ...(ev.utilization != null ? { utilization: ev.utilization } : {}),
+      ...(ev.resetsAt != null ? { resetsAt: ev.resetsAt } : {}),
+    });
+  }
+
+  /** The provider's account-plan usage windows last reported for this session, keyed by window name. */
+  rateLimitsOf(id: string): Record<string, RateLimitWindow> {
+    const run = this.#running.get(id);
+    if (!run || run.rateLimits.size === 0) return {};
+    return Object.fromEntries(run.rateLimits);
   }
 
   #trackUsage(id: string, ev: HarnessEvent): void {

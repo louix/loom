@@ -27,8 +27,21 @@ async function get(c: LoomClient, id: string): Promise<SessionSnapshot> {
   return c.request<SessionSnapshot>("session.get", { id });
 }
 
+test("no cap is applied by default — there's no real number to guess", async () => {
+  const h = await makeHarness();
+  try {
+    const { c, id } = await session(h);
+    const created = await get(c, id);
+    assert.equal(created.budget.maxCostUsd, null);
+    assert.equal(created.budgetState, "ok");
+    await c.close();
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("a soft breach warns but keeps the session running", async () => {
-  const h = await makeHarness(); // default: $5 cap, on_breach = soft
+  const h = await makeHarness({ config: "[budget]\ndefault_max_cost_usd = 5.0\n" }); // on_breach defaults to soft
   try {
     const { c, id, fs } = await session(h);
     const created = await get(c, id);

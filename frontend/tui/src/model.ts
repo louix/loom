@@ -537,6 +537,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       // is a bare heartbeat — it drives the "compacting…" indicator, nothing more.
       if (ev.type === "status_changed") return { ...s, pending, compacting, notice };
       if (ev.type === "compact_progress") return { ...s, compacting, notice };
+      // Account-plan usage — surfaced live via the session snapshot's
+      // `rateLimits`, not the transcript; it isn't a conversational entry.
+      if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
       // A frame may arrive twice around startup (history backfill overlapping
       // the live stream) — the seq is authoritative, so drop the repeat.
       if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq))
@@ -893,6 +896,7 @@ function transcriptHeader(l: LogLine): string | null {
     case "result":
     case "status_changed":
     case "compact_progress":
+    case "rate_limit":
       return null;
   }
 }
@@ -1288,6 +1292,9 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "compact_progress":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
       return { glyph: "⇊", text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`, tone: "dim" };
+    case "rate_limit":
+      // Never reaches the log (filtered in applyPush); here for exhaustiveness.
+      return { glyph: "◷", text: `${ev.window ?? "plan"} ${ev.utilization ?? "?"}%`, tone: "dim" };
     case "subagent_started":
       return { glyph: "⤷", text: `sub-agent “${ev.name}” started`, tone: "dim" };
     case "subagent_stopped":

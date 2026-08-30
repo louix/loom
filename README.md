@@ -250,16 +250,24 @@ you saved, `d` discuss (send a note back; the agent keeps planning). `esc` does
 nothing — a plan review must be answered. `session.respondPlan` is the RPC;
 `loom plan <id> <reqId> implement|fresh|revise|discuss` from the CLI.
 
-**Budgets.** `[budget]` gives every session a soft cost cap — `default_max_cost_usd`
-(`$5`) unless `[budget.per_provider]` names the session's provider (Claude
-defaults to `$750`: its turns routinely run $1-3 apiece with long context and
-caching, so the flat fallback trips almost immediately); `b` in the UI or
-`loom budget <id> <usd>` sets a per-session one. On breach — cost, token, or
-turn — a `soft` policy marks the session `warned` and it keeps going; `hard`
-marks it `halted` and interrupts it (`reason: budget`). Raising the cap clears
-the state and re-arms the check. For Claude, the cost cap also rides along as
-the SDK's own `maxBudgetUsd`, so a single runaway turn is cut off mid-flight
+**Budgets.** No session is capped by default — Loom has no way to know what a
+provider or account should be spending, so it doesn't invent a number and
+call it a limit. `b` in the UI or `loom budget <id> <usd>` sets a cost /
+token / turn cap on a session; `[budget] default_max_cost_usd` (optionally
+overridden per provider under `[budget.per_provider]`) applies one to every
+new session if you want that instead. On breach a `soft` policy (the default)
+marks the session `warned` and it keeps going; `hard` marks it `halted` and
+interrupts it (`reason: budget`). Raising the cap clears the state and
+re-arms the check. For Claude, the cost cap also rides along as the SDK's own
+`maxBudgetUsd`, so a single runaway turn is cut off mid-flight
 (`error_max_budget_usd`) instead of only being caught after it finishes.
+Without an explicit cap, the Detail pane just shows the running cost.
+
+**Plan usage.** For a claude.ai subscription session (not an API key), the
+Detail pane also shows the account's rate-limit windows (`five_hour`,
+`seven_day`, …) as Claude itself reports them — the same data behind
+Claude Code's own `/usage`. API-key / Bedrock / Vertex sessions have no such
+window and show nothing here.
 
 **Price-table cost.** Drop a `.loom/models.toml` with per-model USD-per-million
 prices (`input` / `output` / `cache_read` / `cache_write`) and the daemon costs

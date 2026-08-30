@@ -393,6 +393,25 @@ test("sub-agent start/stop events surface on the session snapshot", async () => 
   await c.close();
 });
 
+test("rate_limit events surface on the session snapshot, keyed by window", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+
+  fs.emit({ type: "rate_limit", status: "allowed", window: "five_hour", utilization: 42, resetsAt: 1000 });
+  await waitFor(async () => Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length === 1);
+
+  // A different window merges in rather than clobbering the first.
+  fs.emit({ type: "rate_limit", status: "allowed_warning", window: "seven_day", utilization: 88, resetsAt: 2000 });
+  await waitFor(
+    async () => Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length === 2,
+  );
+
+  const snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.deepEqual(snap.rateLimits.five_hour, { status: "allowed", utilization: 42, resetsAt: 1000 });
+  assert.deepEqual(snap.rateLimits.seven_day, { status: "allowed_warning", utilization: 88, resetsAt: 2000 });
+  await c.close();
+});
+
 test("setMode updates the row and forwards to a live adapter", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

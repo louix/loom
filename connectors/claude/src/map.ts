@@ -62,6 +62,13 @@ interface SdkMsgLite {
   // compact_boundary system message
   compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
   summary?: string;
+  // rate_limit_event
+  rate_limit_info?: {
+    status?: string;
+    rateLimitType?: string;
+    utilization?: number;
+    resetsAt?: number;
+  };
 }
 
 // --- accounting state ------------------------------------------------------
@@ -146,6 +153,8 @@ export class ClaudeEventMapper {
         return this.#user(m);
       case "result":
         return this.#result(m);
+      case "rate_limit_event":
+        return this.#rateLimit(m);
       default:
         // stream_event (partials, not requested), tool_progress, notifications, …
         return [];
@@ -158,6 +167,22 @@ export class ClaudeEventMapper {
       ts: Date.now(),
       ...(typeof agentId === "string" && agentId.length > 0 ? { agentId } : {}),
     };
+  }
+
+  #rateLimit(m: SdkMsgLite): HarnessEvent[] {
+    const info = m.rate_limit_info;
+    if (!info) return [];
+    const status = info.status === "allowed_warning" || info.status === "rejected" ? info.status : "allowed";
+    return [
+      {
+        type: "rate_limit",
+        ...this.#base(null),
+        status,
+        ...(info.rateLimitType ? { window: info.rateLimitType } : {}),
+        ...(typeof info.utilization === "number" ? { utilization: info.utilization } : {}),
+        ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt } : {}),
+      },
+    ];
   }
 
   #compactBoundary(m: SdkMsgLite): HarnessEvent[] {

@@ -29,6 +29,7 @@ import {
 import {
   bar,
   C,
+  humanDuration,
   humanTokens,
   mmss,
   modeLabel,
@@ -360,6 +361,19 @@ export function Detail({
             ),
           );
         })()
+      : null,
+    Object.keys(s.rateLimits).length > 0
+      ? h(
+          Box,
+          { gap: 2 },
+          h(Text, { color: C.dim }, "plan "),
+          ...Object.entries(s.rateLimits).map(([window, w]) => {
+            const col = w.status === "rejected" ? C.bad : w.status === "allowed_warning" ? C.warn : C.faint;
+            const pct = w.utilization != null ? `${Math.round(w.utilization)}%` : "?%";
+            const resets = w.resetsAt != null ? `  ⟳ ${humanDuration(w.resetsAt - now)}` : "";
+            return h(Text, { key: window, color: col }, `${window} ${pct}${resets}`);
+          }),
+        )
       : null,
     h(
       Box,

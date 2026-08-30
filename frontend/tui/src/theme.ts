@@ -135,6 +135,17 @@ export function mmss(ms: number): string {
   return `${m}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/** A duration in ms → `Nd Nh` / `Nh Nm` / `Nm`, for "resets in …" labels. */
+export function humanDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 60_000)); // minutes
+  const d = Math.floor(total / 1440);
+  const h = Math.floor((total % 1440) / 60);
+  const m = total % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 /** ms epoch → local `HH:MM:SS`. */
 export function clock(ts: number): string {
   const d = new Date(ts);

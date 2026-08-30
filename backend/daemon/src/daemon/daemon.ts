@@ -431,6 +431,8 @@ export class Daemon {
     let out = s;
     const subs = this.#sessions.subagentsOf(s.id);
     if (subs.length > 0) out = { ...out, subagents: subs };
+    const rateLimits = this.#sessions.rateLimitsOf(s.id);
+    if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
     const ttlMinutes = s.provider === "claude" ? this.#cacheTtlMinutes : 0;
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };

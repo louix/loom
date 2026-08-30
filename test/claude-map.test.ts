@@ -260,6 +260,25 @@ test("compact_boundary with post_tokens updates the mapper's context estimate", 
   assert.equal(m.state.contextUsed, 30000);
 });
 
+test("a rate_limit_event becomes a rate_limit event", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.map({
+    type: "rate_limit_event",
+    rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 82, resetsAt: 12345 },
+  });
+  const ev = byType(out, "rate_limit")[0];
+  assert.ok(ev);
+  assert.equal(ev.status, "allowed_warning");
+  assert.equal(ev.window, "five_hour");
+  assert.equal(ev.utilization, 82);
+  assert.equal(ev.resetsAt, 12345);
+});
+
+test("a rate_limit_event with no info maps to nothing", () => {
+  const m = new ClaudeEventMapper(SID);
+  assert.deepEqual(m.map({ type: "rate_limit_event" }), []);
+});
+
 test("stream_event and unknown messages map to nothing", () => {
   const m = new ClaudeEventMapper(SID);
   assert.deepEqual(m.map({ type: "stream_event", event: {} }), []);

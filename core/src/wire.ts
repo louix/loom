@@ -155,6 +155,12 @@ export interface SessionSnapshot {
   /** Sub-agents this session has spawned (Claude's Task tool). Runtime-only, not persisted. */
   subagents: Array<{ id: string; name: string; active: boolean }>;
   /**
+   * The provider's account-plan usage windows (Claude: `five_hour` / `seven_day`),
+   * keyed by window name. Empty for API-key sessions, which have no such plan.
+   * Runtime-only, not persisted.
+   */
+  rateLimits: Record<string, { status: "allowed" | "allowed_warning" | "rejected"; utilization?: number; resetsAt?: number }>;
+  /**
    * Prompt-cache liveness inputs. `ttlMinutes` is the configured TTL (5, 60, or
    * 0 = unknown/CLI-decides); `lastTurnAt` (epoch ms) arms a countdown; the
    * read/write split of the last turn says whether that turn actually hit cache.

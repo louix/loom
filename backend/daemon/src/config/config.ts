@@ -182,12 +182,12 @@ export const DEFAULT_CONFIG: LoomConfig = {
   pricing: { table: ".loom/models.toml" },
   notify: { webhook: "" },
   budget: {
-    defaultMaxCostUsd: 5.0,
-    // Claude turns routinely run $1-3 apiece (long context, prompt caching); the
-    // flat $5 fallback trips almost immediately. aisdk providers vary far more
-    // (a local model costs nothing, a frontier one costs plenty) so they keep
-    // the conservative flat default unless configured otherwise.
-    perProviderMaxCostUsd: { claude: 750.0 },
+    // 0 = no cap applied unless the user opts in (`[budget]` / `b` /
+    // `loom budget`) — there's no real number to default this to: Loom has no
+    // way to know what any given provider or account should be spending, so a
+    // built-in figure is just a guess dressed up as a limit.
+    defaultMaxCostUsd: 0,
+    perProviderMaxCostUsd: {},
     onBreach: "soft",
   },
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
