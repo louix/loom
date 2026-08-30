@@ -776,6 +776,23 @@ steps), and silent truncation reported as success is a bug at any number.
   then stops with `stopReason: "step_limit"` + the non-fatal heads-up, one
   completed turn, still idle; `max_steps` parse + clamp. 303 pass.
 
+### 15 · send-while-running: no modal, `⌥⏎` queues — ✓ shipped (2026-08-30)
+
+The `sendChoice` modal (`a` inject now / `t` queue / `Esc` back) added a step
+between typing and sending whenever the target was `running` / `starting`.
+Folded the choice into the keys already at hand instead.
+
+- **Bare `Enter` on a `send` prompt now always sends immediately**, whether or
+  not the target is busy — `submitPrompt`'s `send` branch surfaces
+  `session.send`'s `injected` flag in the note either way, so the busy and
+  idle paths are one code path.
+- **`⌥⏎` queues for turn end** when the target is `running` / `starting` —
+  intercepted in the keymap before `applyKey`, so it overrides `⌥⏎`'s usual
+  "insert a newline" meaning for exactly that case (`⇧⏎` still inserts a
+  newline there if your terminal sends a distinct code for it).
+- `sendChoice` mode, state, actions (`openSendChoice`/`closeSendChoice`), and
+  the `SendChoice` component are removed.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

@@ -96,8 +96,9 @@ Consequences:
 | `⌃u` / `⌃k` | kill to start / end of line |
 | `⌃w` | delete the word before the cursor |
 | `↑` / `↓` | walk the prompt history (vertical caret move in multi-line text) |
-| `Enter` | submit · `Esc` cancel |
-| `⇧⏎` / `⌥⏎` | insert a newline (Shift+Enter only in terminals that send a distinct code; Alt+Enter always) |
+| `Enter` | submit · `Esc` cancel — on a *send* prompt targeting a still-running session, sends now (lands after the current tool call) |
+| `⇧⏎` | insert a newline (only in terminals that send a distinct code for Shift+Enter) |
+| `⌥⏎` | insert a newline — except on a *send* prompt targeting a still-running session, where it queues the message for turn end instead |
 
 `Alt` runs an action without dropping what you've typed:
 
@@ -120,7 +121,6 @@ Each overlay owns the screen and shows its own fixed key set on the footer:
 - **Command palette / pickers** — type to filter, `↑↓` move, `Enter` pick, `Esc` cancel.
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
 - **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⌥o`/`o` view. A plan review must be answered — `Esc` does nothing.
-- **Send-while-running** — `a` inject now · `t` / `Enter` queue for turn end · `Esc` back to the message.
 
 ## Notes on terminals
 

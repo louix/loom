@@ -138,12 +138,12 @@ the Vercel AI SDK.
   `b` there also deletes the branch). `n` starts a new session — the prompt
   shows the provider / model and `⌥p` changes them; `f` fuzzy-finds a session by
   title or message text.
-  Sending to a session that's still working asks first: **inject now** or
-  **queue** for when the turn ends. On an aisdk session "inject now" splices the
-  message into the running turn right after the current tool result (the model
-  sees it on its next step); on a Claude session the SDK queues it for the next
-  turn boundary. Queued messages drain automatically and `⌥x` (in the send
-  prompt) or the palette clears them. In a prompt, `Ctrl` carries the readline
+  Sending to a session that's still working: `Enter` sends now, `⌥⏎` queues it
+  for when the turn ends. On an aisdk session "sends now" splices the message
+  into the running turn right after the current tool result (the model sees it
+  on its next step); on a Claude session the SDK queues it for the next turn
+  boundary. Queued messages drain automatically and `⌥x` (in the send prompt)
+  or the palette clears them. In a prompt, `Ctrl` carries the readline
   motions; `⌥e` hands the text to `$EDITOR` (event log alongside to copy from;
   nothing is sent until you press enter back in the UI), `⌥o` opens just the log
   read-only, `⌥p` picks the provider-model for a new session, `⇧⇥` / `⌥m` change

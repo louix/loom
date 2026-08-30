@@ -35,7 +35,6 @@ import {
   promptRows,
   RequestPanel,
   REQUEST_PANEL_ROWS,
-  SendChoice,
 } from "./components.ts";
 import {
   allowedActs,
@@ -655,14 +654,6 @@ export function App({
     const reopen = () =>
       dispatch({ t: "openPrompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
 
-    // A message composed while the agent is still working: ask asap vs. turn-end.
-    if (p.kind === "send" && p.sessionId) {
-      const target = state.sessions.find((x) => x.id === p.sessionId);
-      if (target && (target.status === "running" || target.status === "starting")) {
-        return void dispatch({ t: "openSendChoice", sessionId: p.sessionId, text });
-      }
-    }
-
     dispatch({ t: "closePrompt" });
 
     const run = async (): Promise<string> => {
@@ -683,9 +674,10 @@ export function App({
       if (p.kind === "send" && p.sessionId) {
         // No local echo — the daemon emits a `user_message` event that every
         // client (this one included) renders, so there's one source of truth.
-        await client.request("session.send", { id: p.sessionId, text });
+        // The RPC tells us whether it actually landed mid-turn.
+        const r = await client.request<{ injected?: boolean }>("session.send", { id: p.sessionId, text });
         dispatch({ t: "pushHistory", text });
-        return "sent";
+        return r.injected ? "injected — lands after the current tool call" : "sent";
       }
       if (p.kind === "title" && p.sessionId) {
         await client.request("session.setTitle", { id: p.sessionId, title: text, by });
@@ -746,42 +738,20 @@ export function App({
       });
   }, [state.prompt, state.promptHistory, state.sessions, client, note, echoLine]);
 
-  const runSendChoice = useCallback(
-    (choice: "asap" | "queue" | "back") => {
-      const sc = state.sendChoice;
-      if (!sc || overlayActed.current === sc) return;
-      overlayActed.current = sc;
-      if (choice === "back") {
-        return void dispatch({
-          t: "openPrompt",
-          prompt: makePrompt({ kind: "send", sessionId: sc.sessionId, label: "send", text: sc.text }),
-        });
-      }
-      dispatch({ t: "closeSendChoice" });
-      if (choice === "asap") {
-        // No local echo — the daemon emits a `user_message` event that every
-        // client renders. The RPC tells us whether it actually landed mid-turn.
-        client
-          .request<{ injected?: boolean }>("session.send", { id: sc.sessionId, text: sc.text })
-          .then((r) =>
-            note(
-              r.injected ? "injected — lands after the current tool call" : "sent",
-              "good",
-            ),
-          )
-          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
-        dispatch({ t: "pushHistory", text: sc.text });
-      } else {
-        dispatch({ t: "enqueue", sessionId: sc.sessionId, text: sc.text });
-        dispatch({ t: "pushHistory", text: sc.text });
-        dispatch({
-          t: "echo",
-          line: { ...echoLine(sc.sessionId, sc.text), glyph: "▸", tone: "dim", text: `queued: ${sc.text.replace(/\s+/g, " ").trim()}` },
-        });
-        note("queued for turn end", "dim");
-      }
+  // ⌥⏎ on a `send` prompt targeting a running/starting session: queue for
+  // turn end instead of the normal bare-⏎ "send now" path.
+  const queueSend = useCallback(
+    (sessionId: string, text: string) => {
+      dispatch({ t: "closePrompt" });
+      dispatch({ t: "enqueue", sessionId, text });
+      dispatch({ t: "pushHistory", text });
+      dispatch({
+        t: "echo",
+        line: { ...echoLine(sessionId, text), glyph: "▸", tone: "dim", text: `queued: ${text.replace(/\s+/g, " ").trim()}` },
+      });
+      note("queued for turn end", "dim");
     },
-    [state.sendChoice, client, echoLine, note],
+    [echoLine, note],
   );
 
   /** Resolve the open plan review with `params` (an `action` plus any payload). */
@@ -821,7 +791,7 @@ export function App({
 
   // Release the overlay latch once we're no longer in an overlay mode.
   useEffect(() => {
-    if (!["sendChoice", "confirm", "plan", "picker"].includes(state.mode)) {
+    if (!["confirm", "plan", "picker"].includes(state.mode)) {
       overlayActed.current = null;
     }
   }, [state.mode]);
@@ -1055,6 +1025,16 @@ export function App({
       if (key.meta && input === "x" && p.kind === "send" && p.sessionId) {
         return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
       }
+      // ⌥⏎ while the target is still working queues for turn end instead of
+      // its usual "insert a newline" meaning; bare ⏎ below (via `applyKey` →
+      // "submit" → `submitPrompt`) sends now regardless of session status.
+      if (key.meta && key.return && p.kind === "send" && p.sessionId) {
+        const target = state.sessions.find((x) => x.id === p.sessionId);
+        if (target && (target.status === "running" || target.status === "starting")) {
+          const text = p.buffer.text.trim();
+          return void (text && queueSend(p.sessionId, text));
+        }
+      }
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
@@ -1079,13 +1059,6 @@ export function App({
         case "ignore":
           return;
       }
-      return;
-    }
-
-    if (state.mode === "sendChoice") {
-      if (input === "a") return runSendChoice("asap");
-      if (input === "t" || key.return) return runSendChoice("queue");
-      if (key.escape || input === "b") return runSendChoice("back");
       return;
     }
 
@@ -1219,12 +1192,6 @@ export function App({
       Box,
       { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
       h(Confirm, { confirm: state.confirm, width: Math.min(cols - 4, 64) }),
-    );
-  } else if (state.mode === "sendChoice" && state.sendChoice) {
-    body = h(
-      Box,
-      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
-      h(SendChoice, { text: state.sendChoice.text, width: Math.min(cols - 4, 72) }),
     );
   } else if (state.mode === "plan" && state.plan) {
     body = h(

@@ -449,7 +449,6 @@ test("footerHints gives every overlay its own fixed key set", () => {
     }).map((h) => h.label),
     ["confirm", "+ branch", "cancel"],
   );
-  assert.deepEqual(keysFor("sendChoice"), ["inject now", "queue", "back"]);
   assert.deepEqual(keysFor("plan"), ["implement", "fresh", "edit", "discuss", "view"]);
   assert.deepEqual(keysFor("help"), ["close help"]);
   // browse delegates to the selected session's contextual actions
@@ -668,20 +667,6 @@ test("enqueue / dequeue / clearQueue and queueFor", () => {
   s = reduce(s, { t: "enqueue", sessionId: "b", text: "x" });
   s = reduce(s, { t: "clearQueue", sessionId: "b" });
   assert.deepEqual(queueFor(s, "b"), []);
-});
-
-test("openSendChoice replaces the prompt; closeSendChoice returns to browse", () => {
-  let s = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "hi" }),
-  });
-  s = reduce(s, { t: "openSendChoice", sessionId: "a", text: "hi" });
-  assert.equal(s.mode, "sendChoice");
-  assert.equal(s.prompt, null);
-  assert.deepEqual(s.sendChoice, { sessionId: "a", text: "hi" });
-  s = reduce(s, { t: "closeSendChoice" });
-  assert.equal(s.mode, "browse");
-  assert.equal(s.sendChoice, null);
 });
 
 test("a permission_request stashes the tool + input; leaving awaiting_input clears it", () => {

@@ -829,26 +829,6 @@ export function PlanReview({ text, width }: { text: string; width: number }): Re
 }
 
 // ---------------------------------------------------------------------------
-// send-choice overlay (message composed while the agent is still working)
-// ---------------------------------------------------------------------------
-
-export function SendChoice({ text, width }: { text: string; width: number }): ReactNode {
-  const w = inside(width);
-  const row = (k: string, v: string): ReactNode =>
-    h(Box, { gap: 1 }, h(Box, { width: 12 }, h(Text, { color: C.accent }, k)), h(Text, { color: C.dim }, v));
-  return h(
-    Box,
-    { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
-    h(Text, { color: C.accent, bold: true }, "The agent is still working — send this how?"),
-    h(Text, { color: C.dim, wrap: "truncate-end" }, `“${truncate(text.replace(/\s+/g, " ").trim(), w - 2)}”`),
-    h(Box, { height: 1 }),
-    row("a", "inject now — lands after the current tool call (Claude: next turn)"),
-    row("t / enter", "queue until the turn ends"),
-    row("esc", "back to the message — nothing is cleared"),
-  );
-}
-
-// ---------------------------------------------------------------------------
 // help overlay
 // ---------------------------------------------------------------------------
 

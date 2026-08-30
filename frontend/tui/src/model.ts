@@ -11,7 +11,7 @@ import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help" | "confirm" | "sendChoice" | "plan" | "picker";
+export type UiMode = "browse" | "prompt" | "help" | "confirm" | "plan" | "picker";
 /**
  * Keybinding grammar (see docs/keybindings.md):
  *   • bare key  → act on the selected session, or move
@@ -240,8 +240,6 @@ export interface TuiState {
   mode: UiMode;
   prompt: PromptState | null;
   confirm: ConfirmState | null;
-  /** A composed `send` awaiting the asap / turn-end choice (target is running). */
-  sendChoice: { sessionId: string; text: string } | null;
   /** An open plan-review overlay: the plan text + the ids to resolve it with. */
   plan: { sessionId: string; requestId: string; text: string } | null;
   /** An open picker overlay (provider / model / find). */
@@ -267,7 +265,6 @@ export function initialState(logCap = 400): TuiState {
     mode: "browse",
     prompt: null,
     confirm: null,
-    sendChoice: null,
     plan: null,
     picker: null,
     promptHistory: [],
@@ -320,8 +317,6 @@ export type Action =
   | { t: "enqueue"; sessionId: string; text: string }
   | { t: "dequeue"; sessionId: string }
   | { t: "clearQueue"; sessionId: string }
-  | { t: "openSendChoice"; sessionId: string; text: string }
-  | { t: "closeSendChoice" }
   | { t: "openPlan"; sessionId: string; requestId: string; text: string }
   | { t: "closePlan" }
   | { t: "openConfirm"; confirm: ConfirmState }
@@ -463,12 +458,6 @@ export function reduce(s: TuiState, a: Action): TuiState {
 
     case "clearQueue":
       return a.sessionId in s.queue ? { ...s, queue: without(s.queue, a.sessionId) } : s;
-
-    case "openSendChoice":
-      return { ...s, mode: "sendChoice", sendChoice: { sessionId: a.sessionId, text: a.text }, prompt: null };
-
-    case "closeSendChoice":
-      return { ...s, mode: "browse", sendChoice: null };
 
     case "openPlan":
       return {
@@ -1172,12 +1161,6 @@ export function footerHints(s: TuiState): Array<{ keys: string; label: string }>
         { keys: "e", label: "edit" },
         { keys: "d", label: "discuss" },
         { keys: "⌃o", label: "view" },
-      ];
-    case "sendChoice":
-      return [
-        { keys: "a", label: "inject now" },
-        { keys: "t", label: "queue" },
-        { keys: "esc", label: "back" },
       ];
     case "help":
       return [{ keys: "? / esc", label: "close help" }];

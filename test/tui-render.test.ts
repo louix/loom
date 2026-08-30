@@ -392,7 +392,7 @@ test("re-opening the TUI backfills the event log from the running daemon", async
   }
 });
 
-test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
+test("a running session's send prompt: bare Enter sends now, ⌥⏎ queues for turn end", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy worker", provider: "fake" });
@@ -406,62 +406,23 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
     await delay(100);
     stdin.feed("hold that thought");
     await delay(100);
-    stdin.feed("\r"); // Enter -> the choice modal (session is running)
-    await delay(120);
-    assert.match(stdout.last, /still working/);
-    assert.match(stdout.last, /inject now/);
-    assert.match(stdout.last, /the turn ends/);
-
-    stdin.feed("t"); // queue for turn end
+    stdin.feed("\r"); // bare Enter — sends now, no overlay
     await delay(150);
-    assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
+    assert.deepEqual(fs?.sends, ["hold that thought"]);
 
-    // queue a second one while still running
+    // queue one while still running, via ⌥⏎
     stdin.feed("\r"); // Enter opens the send prompt
     await delay(80);
     stdin.feed("and another");
     await delay(80);
-    stdin.feed("\r");
-    await delay(100);
-    stdin.feed("t");
+    stdin.feed("\x1b\r"); // ⌥⏎ — queue for turn end
     await delay(120);
-    assert.match(stdout.last, /▸ 2 queued/);
+    assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
-    fs?.finishTurn(); // -> idle: only ONE queued message goes per completed turn
-    await delay(300);
-    assert.deepEqual(fs?.sends, ["hold that thought"], "one per turn, not a burst");
-    assert.match(stdout.last, /▸ 1 queued/, "the second is still queued");
-
-    fs?.finishTurn(); // the send()'s turn completes -> release the next
+    fs?.finishTurn(); // -> idle: the queued message goes
     await delay(300);
     assert.deepEqual(fs?.sends, ["hold that thought", "and another"]);
     assert.doesNotMatch(stdout.last, /▸ \d+ queued/);
-  } finally {
-    app.unmount();
-    await client.close();
-    await cleanup();
-  }
-});
-
-test("SendChoice: a doubled keypress resolves the overlay once", async () => {
-  const { h, connect, cleanup } = await harness();
-  const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy", provider: "fake" });
-  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
-  fs?.emit({ type: "assistant_text", text: "working…" });
-  const { stdin, app } = mount(client);
-  try {
-    await delay(180);
-    stdin.feed("\r"); // Enter opens the send prompt
-    await delay(80);
-    stdin.feed("just once");
-    await delay(80);
-    stdin.feed("\r"); // -> SendChoice
-    await delay(120);
-    stdin.feed("a"); // resolve
-    stdin.feed("a"); // ...again before the re-render — must be a no-op
-    await delay(250);
-    assert.deepEqual(fs?.sends, ["just once"], "resolved exactly once");
   } finally {
     app.unmount();
     await client.close();
@@ -483,9 +444,7 @@ test("a queue on a session that never returns to idle is reported, not silently 
     await delay(80);
     stdin.feed("later note");
     await delay(80);
-    stdin.feed("\r"); // -> SendChoice
-    await delay(100);
-    stdin.feed("t"); // queue it
+    stdin.feed("\x1b\r"); // ⌥⏎ — queue for turn end
     await delay(150);
     assert.match(stdout.last, /▸ 1 queued/);
 
