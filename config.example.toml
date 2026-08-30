@@ -61,6 +61,9 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
+# max_steps   = 50                  # tool round-trips per turn segment (1–500). Not a
+#                                   # hard limit — a turn still working continues past
+#                                   # it; raise for a model that takes many small steps
 #
 # The model list comes from {base_url}/models, and a new session defaults to the
 # last model this provider ran (remembered in the db). Pin one only if the

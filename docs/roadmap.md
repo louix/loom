@@ -724,6 +724,40 @@ A 7-item brain-dump. 296 → 298 tests.
   `actionsFor` resume hint are removed from the TUI; the `session.resume` RPC +
   `loom resume` stay. `send` keyhint key is now `⏎`.
 
+### 14 · aisdk step ceiling → soft, self-continuing, configurable — ✓ shipped (2026-08-30)
+
+Investigating a GLM-Flash session that "finished" a turn mid-exploration: the
+turn had run exactly `MAX_STEPS = 24` tool round-trips and the AI SDK's
+`stopWhen: stepCountIs(24)` halted the loop. The stream ended with no `abort` /
+`error`, so `#runTurn` emitted `result { ok: true }` and went idle —
+indistinguishable from the model finishing on its own. A fixed step count can't
+be right across models (Claude batches; small open models take many small
+steps), and silent truncation reported as success is a bug at any number.
+
+- **`runTurn` reports why it stopped.** `TurnResult` gains `hitStepLimit` — set
+  when the stream ends with the last `finish-step`'s `finishReason ===
+  "tool-calls"` (the model wanted to keep going; only `stopWhen` stopped it).
+  Always `false` on abort / error.
+- **The ceiling is now per-*segment*, not per-turn.** When a segment hits it
+  with `hitStepLimit`, `#runTurn` continues the same turn with a fresh budget
+  (`#kickTurn()`, the path injection-folding already uses) instead of emitting
+  `result`. `#segmentsRun` counts consecutive step-ceiling continuations and
+  resets on any other outcome (new `send`, natural finish, injection / plan
+  chain, abort, error).
+- **Runaway backstop.** After `MAX_TURN_SEGMENTS = 5` segments the turn stops:
+  a non-fatal `error` ("likely a loop — send to continue") plus `result { ok:
+  true, stopReason: "step_limit" }`. Status stays `idle`, so a plain `send`
+  continues it. `ResultEvent.stopReason?: "step_limit"` is the new wire field;
+  the TUI renders the result line as `turn paused — step ceiling hit repeatedly`
+  and raises a matching notice.
+- **`DEFAULT_MAX_STEPS` 24 → 50**, and overridable per provider with
+  `max_steps` in `[custom-provider.<id>]` / `[providers.<id>]` (`AisdkProfile.
+  maxSteps`, clamped 1–500, threaded provider → `AisdkProviderOptions` →
+  `AisdkSessionOptions`). Sub-agent turns use the same ceiling.
+- Tests: `runTurn` flags `hitStepLimit`; a tool-stuck session auto-continues 5×
+  then stops with `stopReason: "step_limit"` + the non-fatal heads-up, one
+  completed turn, still idle; `max_steps` parse + clamp. 303 pass.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

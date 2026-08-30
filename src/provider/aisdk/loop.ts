@@ -47,12 +47,22 @@ export interface TurnArgs {
 export interface TurnResult {
   aborted: boolean;
   errored: boolean;
+  /**
+   * The stream ended with the last step still finishing on `tool-calls` — i.e.
+   * the model wanted to keep going and only `stopWhen: stepCountIs(maxSteps)`
+   * halted it. The caller decides whether to continue the turn with a fresh
+   * step budget. Always `false` when `aborted` or `errored`.
+   */
+  hitStepLimit: boolean;
 }
 
 export async function runTurn(args: TurnArgs): Promise<TurnResult> {
   const { sessionId, model, system, messages, mapper, hooks } = args;
   let aborted = false;
   let errored = false;
+  // Finish reason of the last completed step. `tool-calls` when the stream ends
+  // means the loop was cut by `stopWhen`, not by the model deciding it was done.
+  let lastStepReason: string | undefined;
 
   // Generated messages already handed to the store. `onStepFinish` reports the
   // running total, so we persist the fresh tail each step — which also keeps
@@ -108,6 +118,10 @@ export async function runTurn(args: TurnArgs): Promise<TurnResult> {
 
     for await (const part of res.fullStream) {
       if (part.type === "error") errored = true;
+      if (part.type === "finish-step") {
+        const r = (part as { finishReason?: string }).finishReason;
+        if (r) lastStepReason = r;
+      }
       // Let the mapper see `abort` too — it flushes any half-streamed
       // assistant text into the feed before we stop.
       for (const ev of mapper.map(part)) hooks.emit(ev);
@@ -117,7 +131,7 @@ export async function runTurn(args: TurnArgs): Promise<TurnResult> {
       }
     }
 
-    if (aborted) return { aborted, errored };
+    if (aborted) return { aborted, errored, hitStepLimit: false };
 
     try {
       // Surface a late failure the stream didn't already report; messages were
@@ -137,5 +151,6 @@ export async function runTurn(args: TurnArgs): Promise<TurnResult> {
     });
   }
 
-  return { aborted, errored };
+  const hitStepLimit = !aborted && !errored && lastStepReason === "tool-calls";
+  return { aborted, errored, hitStepLimit };
 }

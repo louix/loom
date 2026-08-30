@@ -162,6 +162,14 @@ export interface ResultEvent extends HarnessEventBase {
   type: "result";
   ok: boolean;
   summary?: string;
+  /**
+   * Why the turn ended, when it wasn't the model stopping on its own.
+   * `step_limit` — the aisdk per-segment step ceiling tripped
+   * `MAX_TURN_SEGMENTS` times without the turn completing (probable loop). The
+   * session is left `idle`, so a plain `send` continues it. Absent on a normal
+   * finish.
+   */
+  stopReason?: "step_limit";
 }
 
 /**

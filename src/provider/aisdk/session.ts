@@ -34,8 +34,21 @@ import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
 import { contextLimitFor, estimateTokens } from "./tokens.ts";
 
-/** Hard ceiling on tool round-trips within one turn. */
-const MAX_STEPS = 24;
+/**
+ * Default per-*segment* ceiling on tool round-trips. It is not a hard turn
+ * limit: when a segment hits it with the model still working (its last step
+ * finished on tool calls), the turn auto-continues with a fresh budget, up to
+ * `MAX_TURN_SEGMENTS` times — so a model that takes many small steps isn't cut
+ * off mid-task. Override per provider with `max_steps` in the config.
+ */
+const DEFAULT_MAX_STEPS = 50;
+/**
+ * How many step-ceiling segments one turn may burn before Loom stops it and
+ * flags the `result` with `stopReason: "step_limit"`. A turn that reaches this
+ * is almost certainly looping; the session is left `idle` so a `send` can still
+ * continue it.
+ */
+const MAX_TURN_SEGMENTS = 5;
 /** Compact automatically once the estimated context exceeds this fraction. */
 const AUTO_COMPACT_FRACTION = 0.85;
 /**
@@ -79,6 +92,8 @@ export interface AisdkSessionOptions {
   store: ProviderMessageStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
   oneShot: boolean;
+  /** Per-segment step ceiling. Defaults to {@link DEFAULT_MAX_STEPS}. */
+  maxSteps?: number;
   log?: Logger;
 }
 
@@ -96,6 +111,9 @@ export class AisdkSession implements AgentSession {
   readonly #loomServer: boolean;
   readonly #store: ProviderMessageStore | null;
   readonly #oneShot: boolean;
+  readonly #maxSteps: number;
+  /** Consecutive step-ceiling continuations in the current user turn. */
+  #segmentsRun = 0;
   readonly #log: Logger;
 
   readonly #messages: ModelMessage[];
@@ -132,6 +150,7 @@ export class AisdkSession implements AgentSession {
     this.#loomServer = opts.loomServer;
     this.#store = opts.store;
     this.#oneShot = opts.oneShot;
+    this.#maxSteps = Math.max(1, Math.trunc(opts.maxSteps ?? DEFAULT_MAX_STEPS));
     this.#log = opts.log ?? makeLogger("aisdk").child(opts.sessionId.slice(0, 8));
     this.#messages = [...opts.messages];
     this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId);
@@ -196,6 +215,7 @@ export class AisdkSession implements AgentSession {
       this.#turnRunning = false;
       throw err;
     }
+    this.#segmentsRun = 0; // a fresh user turn — reset the step-ceiling counter
     this.#kickTurn();
   }
 
@@ -452,7 +472,7 @@ export class AisdkSession implements AgentSession {
         system: SUBAGENT_SYSTEM,
         messages: [{ role: "user", content: prompt }],
         tools: subTools,
-        stopWhen: stepCountIs(MAX_STEPS),
+        stopWhen: stepCountIs(this.#maxSteps),
         abortSignal: this.#abort?.signal ?? AbortSignal.timeout(300_000),
       });
       for await (const part of res.fullStream) {
@@ -591,13 +611,13 @@ export class AisdkSession implements AgentSession {
       this.#abort = abort;
       this.#snap.status = "running";
 
-      const { aborted, errored } = await runTurn({
+      const { aborted, errored, hitStepLimit } = await runTurn({
         sessionId: this.id,
         model: this.#model,
         system: this.#system,
         messages: this.#messages,
         ...(Object.keys(tools).length > 0 ? { tools } : {}),
-        maxSteps: MAX_STEPS,
+        maxSteps: this.#maxSteps,
         abortSignal: abort.signal,
         mapper: this.#mapper,
         drainInjections: () =>
@@ -622,6 +642,7 @@ export class AisdkSession implements AgentSession {
           // An errored turn may be resumed; keep a late injection for that.
           this.#flushInjections();
         }
+        this.#segmentsRun = 0;
         this.#snap.status = aborted ? "interrupted" : "error";
         if (this.#oneShot) this.#outbox.close();
         return;
@@ -646,6 +667,7 @@ export class AisdkSession implements AgentSession {
         };
         this.#messages.push(msg);
         this.#store?.append(this.id, [msg]);
+        this.#segmentsRun = 0;
         chained = true;
         this.#kickTurn();
         return;
@@ -654,11 +676,47 @@ export class AisdkSession implements AgentSession {
       // A message injected past the last `prepareStep` folds into this same
       // turn — continue it rather than emitting a `result` and flapping idle.
       if (!this.#oneShot && this.#flushInjections().length > 0) {
+        this.#segmentsRun = 0;
         chained = true;
         this.#kickTurn();
         return;
       }
 
+      // The per-segment step ceiling stopped the loop while the model was still
+      // working (its last step ended on tool calls). Continue the same turn with
+      // a fresh budget rather than emitting `result` and flapping to idle
+      // mid-task — the transcript already ends with the tool results it needs to
+      // react to. `MAX_TURN_SEGMENTS` is the runaway-loop backstop.
+      if (!this.#oneShot && hitStepLimit) {
+        this.#segmentsRun += 1;
+        if (this.#segmentsRun < MAX_TURN_SEGMENTS) {
+          chained = true;
+          this.#kickTurn();
+          return;
+        }
+        this.#emit({
+          type: "error",
+          sessionId: this.id,
+          ts: Date.now(),
+          message:
+            `turn stopped after ${this.#segmentsRun}×${this.#maxSteps} steps without completing — ` +
+            `likely a loop. The session is idle; send a message to continue it.`,
+          fatal: false,
+        });
+        this.#segmentsRun = 0;
+        this.#snap.turns += 1;
+        this.#emit({
+          type: "result",
+          sessionId: this.id,
+          ts: Date.now(),
+          ok: true,
+          stopReason: "step_limit",
+        });
+        this.#snap.status = "idle";
+        return;
+      }
+
+      this.#segmentsRun = 0;
       this.#snap.turns += 1;
       this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
       this.#snap.status = "idle";

@@ -182,7 +182,11 @@ transcript itself in `provider_messages`.
   `@ai-sdk/mcp`; the `loom` `ask_user` / `commit` tools are native. Every tool
   call runs through the same permission gate as Claude: read-ish tools pass,
   edits and commands surface a `permission_request` (or run straight through in
-  `acceptEdits` / `auto`). A denied call is fed back as a tool error.
+  `acceptEdits` / `auto`). A denied call is fed back as a tool error. A turn
+  runs up to `max_steps` tool round-trips (default 50, per provider) — but if
+  the model is still working when that trips, the turn continues with a fresh
+  budget rather than ending; only after five such segments does it stop, with a
+  `step_limit` end marker and the session left idle so a message resumes it.
 - **10c** — first-party `bash` (persistent shell — cwd and env persist between
   calls), `edit` (exact then whitespace-insensitive string replacement), and
   `grep` (ripgrep) tools, mounted alongside the MCP + `loom` tools and gated the

@@ -1274,6 +1274,8 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "result":
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
+      if (ev.stopReason === "step_limit")
+        return { glyph: "■", text: "turn paused — step ceiling hit repeatedly (send to continue)", tone: "warn" };
       return { glyph: "■", text: ev.ok ? "turn complete" : "turn failed", tone: ev.ok ? "good" : "bad" };
     case "rewind":
       return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
@@ -1341,6 +1343,8 @@ function noticeForEvent(s: TuiState, ev: HarnessEvent): Notice | null {
   if (ev.type === "question") return { text: `question waiting${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "plan_review") return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "error" && ev.fatal) return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
+  if (ev.type === "result" && ev.stopReason === "step_limit")
+    return { text: `turn paused at the step ceiling${tag} — send to continue`, tone: "accent", at: Date.now() };
   return null;
 }
 

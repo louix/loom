@@ -43,6 +43,13 @@ export interface AisdkProfile {
   /** Optional explicit picker list, when `/models` can't be trusted. Defaults to `[model]`. */
   models: string[];
   /**
+   * Per-segment ceiling on tool round-trips in one turn (`max_steps`). Not a
+   * hard turn limit — a turn whose model is still working continues past it
+   * automatically — so this is a granularity knob: raise it for a model that
+   * takes many small steps, lower it to rein one in. Default 50; clamped 1–500.
+   */
+  maxSteps: number;
+  /**
    * Neither `model` nor `models` was configured (the normal case) — the daemon
    * fills `models` from `{base_url}/models` at start-up (openai-compatible
    * endpoints only). Cleared once resolved; stays true if detection failed.
@@ -204,6 +211,10 @@ function strArray(v: unknown, fallback: string[]): string[] {
  * but dropped for `google` / `anthropic`, which have no uniform model-list
  * endpoint. Returns `null` when the table can't yield a usable profile.
  */
+/** Default per-segment step ceiling; kept in step with `DEFAULT_MAX_STEPS` in
+ *  `src/provider/aisdk/session.ts`. */
+const DEFAULT_AISDK_MAX_STEPS = 50;
+
 function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKind): AisdkProfile | null {
   const baseUrl = str(t["base_url"], "");
   if (sdk === "openai" && baseUrl === "") return null;
@@ -212,6 +223,7 @@ function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKin
   const autoModels = model === "" && models.length === 0;
   if (autoModels && sdk !== "openai") return null; // can't auto-detect; nothing to dial
   const effectiveModel = model || (models[0] ?? "");
+  const rawSteps = num(t["max_steps"], DEFAULT_AISDK_MAX_STEPS);
   return {
     sdk,
     baseUrl,
@@ -220,6 +232,7 @@ function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKin
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModel ? [effectiveModel] : [],
     autoModels,
+    maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),
     color: str(t["color"], ""),
     titleModel: str(t["title_model"], ""),

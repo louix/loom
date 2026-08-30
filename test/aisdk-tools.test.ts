@@ -339,6 +339,58 @@ test("auto mode runs a gated tool without a permission_request", async () => {
   }
 });
 
+test("a turn stuck calling tools auto-continues past the step ceiling, then stops with stopReason step_limit", async () => {
+  const { dir, store, cleanup } = tmpEnv();
+  try {
+    // The model never stops calling a tool — every step ends on `tool-calls`.
+    let step = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async () => {
+        step += 1;
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: `r${step}`, modelId: "mock", timestamp: new Date(0) },
+              { type: "tool-call", toolCallId: `c${step}`, toolName: "echo_text", input: JSON.stringify({ text: `t${step}` }) },
+              { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    // maxSteps 2 per segment; MAX_TURN_SEGMENTS is 5 → 10 model round-trips.
+    const p = new AisdkProvider(
+      { id: "openai", model: "m", models: ["m"], maxSteps: 2, makeModel: () => model },
+      store,
+    );
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "loop",
+      mode: "auto",
+      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+    });
+
+    const evs = await collect(s.events(), () => {}, null);
+    await s.close();
+
+    const result = evs.find((e) => e.type === "result") as Extract<HarnessEvent, { type: "result" }> | undefined;
+    assert.equal(result?.ok, true);
+    assert.equal(result?.stopReason, "step_limit");
+    // a loud, non-fatal heads-up landed before the result
+    assert.equal(evs.some((e) => e.type === "error" && !e.fatal && /loop/.test((e as { message: string }).message)), true);
+    // exactly one completed turn; session stays usable
+    assert.equal(s.snapshot().turns, 1);
+    assert.equal(s.snapshot().status, "idle");
+    // 5 segments × maxSteps 2
+    assert.equal(step, 10);
+  } finally {
+    cleanup();
+  }
+});
+
 test("resumeSession re-mounts the MCP servers from the ref", async () => {
   const { dir, store, cleanup } = tmpEnv();
   try {

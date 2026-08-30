@@ -227,7 +227,7 @@ test("runTurn streams text + usage and captures the response messages", async ()
     mapper,
     hooks: { emit: (e) => events.push(e), appendMessages: (m) => appended.push(...m) },
   });
-  assert.deepEqual(r, { aborted: false, errored: false });
+  assert.deepEqual(r, { aborted: false, errored: false, hitStepLimit: false });
   assert.equal(events.find((e) => e.type === "assistant_text") !== undefined, true);
   const usage = events.find((e) => e.type === "usage");
   assert.equal((usage as { tokens: { output: number } } | undefined)?.tokens.output, 2);
@@ -289,7 +289,7 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     hooks: { emit: () => {}, appendMessages: (m) => appended.push(...m) },
   });
 
-  assert.deepEqual(r, { aborted: false, errored: false });
+  assert.deepEqual(r, { aborted: false, errored: false, hitStepLimit: false });
   // the model's second request carried the injected user message
   assert.equal(prompts.length, 2);
   assert.equal(prompts[1]?.includes("ALSO do X"), true);
@@ -299,6 +299,53 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
   assert.equal(appended[injIdx - 1]?.role, "tool");
   assert.equal(appended.at(-1)?.role, "assistant");
   assert.equal(appended.filter((m) => m.role === "user").length, 1);
+});
+
+test("runTurn flags hitStepLimit when the model is still calling tools at the ceiling", async () => {
+  let step = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      step += 1;
+      return {
+        stream: simulateReadableStream({
+          initialDelayInMs: 0,
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "response-metadata", id: `r${step}`, modelId: "mock", timestamp: new Date(0) },
+            { type: "tool-call", toolCallId: `c${step}`, toolName: "ping", input: "{}" },
+            { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+          ],
+        }),
+      };
+    },
+  }) as unknown as LanguageModel;
+
+  const stop = await runTurn({
+    sessionId: "s1",
+    model,
+    system: undefined,
+    messages: [{ role: "user", content: "go" }],
+    tools: { ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }) },
+    maxSteps: 3,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    hooks: { emit: () => {}, appendMessages: () => {} },
+  });
+  assert.deepEqual(stop, { aborted: false, errored: false, hitStepLimit: true });
+  assert.equal(step, 3);
+
+  // A turn that ends on its own text is not flagged.
+  const done = await runTurn({
+    sessionId: "s1",
+    model: textReply("all done"),
+    system: undefined,
+    messages: [{ role: "user", content: "go" }],
+    maxSteps: 3,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    hooks: { emit: () => {}, appendMessages: () => {} },
+  });
+  assert.equal(done.hitStepLimit, false);
 });
 
 // --- session via provider ------------------------------------------------

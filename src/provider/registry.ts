@@ -85,7 +85,7 @@ export class ProviderRegistry {
     const makeModel = await resolveModelFactory(profile.sdk, { id, baseUrl: profile.baseUrl, apiKey });
     const search = this.#resolveSearch();
     return new AisdkProvider(
-      { id, model: profile.model, models: profile.models, makeModel, ...(search ? { search } : {}) },
+      { id, model: profile.model, models: profile.models, maxSteps: profile.maxSteps, makeModel, ...(search ? { search } : {}) },
       new ProviderMessageStore(this.#db),
     );
   }

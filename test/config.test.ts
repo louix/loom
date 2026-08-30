@@ -95,6 +95,16 @@ tag      = "lb"
   assert.equal(cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels, true);
 });
 
+test("max_steps defaults to 50 and is clamped to 1–500", () => {
+  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\nmodel = "m"\n`;
+  assert.equal(cfg(base).providers.aisdk["p"]?.maxSteps, 50);
+  assert.equal(cfg(base + `max_steps = 120\n`).providers.aisdk["p"]?.maxSteps, 120);
+  assert.equal(cfg(base + `max_steps = 0\n`).providers.aisdk["p"]?.maxSteps, 1);
+  assert.equal(cfg(base + `max_steps = 9999\n`).providers.aisdk["p"]?.maxSteps, 500);
+  assert.equal(cfg(base + `max_steps = 12.9\n`).providers.aisdk["p"]?.maxSteps, 12);
+  assert.equal(cfg(base + `max_steps = "nope"\n`).providers.aisdk["p"]?.maxSteps, 50);
+});
+
 test("[google] / [anthropic] are one native profile each, id = the vendor", () => {
   const c = cfg(`
 [google]

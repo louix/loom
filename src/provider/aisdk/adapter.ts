@@ -50,6 +50,8 @@ export interface AisdkProviderOptions {
   model: string;
   /** Model ids offered in the picker (M10e). */
   models: string[];
+  /** Per-segment step ceiling for turns (`max_steps`); undefined → session default. */
+  maxSteps?: number;
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
   makeModel: (id: string) => LanguageModel;
   /** Resolved `web_search` config, when a backend + key are set. */
@@ -64,6 +66,7 @@ export class AisdkProvider implements AgentProvider {
   readonly #store: ProviderMessageStore;
   readonly #makeModel: (id: string) => LanguageModel;
   readonly #search: SearchConfig | undefined;
+  readonly #maxSteps: number | undefined;
 
   constructor(opts: AisdkProviderOptions, store: ProviderMessageStore) {
     this.id = opts.id;
@@ -71,6 +74,7 @@ export class AisdkProvider implements AgentProvider {
     this.#store = store;
     this.#makeModel = opts.makeModel;
     this.#search = opts.search;
+    this.#maxSteps = opts.maxSteps;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
@@ -118,6 +122,7 @@ export class AisdkProvider implements AgentProvider {
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
       ...(this.#search ? { search: this.#search } : {}),
+      ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
       oneShot: false,
     });
@@ -142,6 +147,7 @@ export class AisdkProvider implements AgentProvider {
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
       ...(this.#search ? { search: this.#search } : {}),
+      ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
       oneShot: false,
     });
