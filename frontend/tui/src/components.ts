@@ -259,7 +259,9 @@ export function Detail({
         .join("  ·  ")
     : s.inPlace
       ? "in-place — repo working dir"
-      : "no worktree";
+      : s.branch
+        ? `${s.branch}  ·  no worktree (gc'd)`
+        : "no worktree";
 
   return h(
     Box,
