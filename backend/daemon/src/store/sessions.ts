@@ -430,14 +430,16 @@ export class ChildStore {
 }
 
 // ---------------------------------------------------------------------------
-// meta — the per-provider "last model used", the default for new sessions
+// meta — "last used" values that seed the next new session's defaults
 // ---------------------------------------------------------------------------
 
 /**
- * Remembers the last model each provider ran, so a new session on that provider
- * defaults to it without the model being pinned in config. Stored as
- * `default_model:<providerId>` rows in the always-present `meta` key/value
- * table (no migration needed). A `""` value is treated as unset.
+ * Remembers the last model each provider ran, plus the last provider and
+ * permission mode picked at session creation, so the next `new` defaults to
+ * whatever was last used without any of it being pinned in config. Stored as
+ * `default_model:<providerId>` / `last_provider` / `last_mode` rows in the
+ * always-present `meta` key/value table (no migration needed). An `""` value
+ * is treated as unset.
  */
 export class ProviderDefaultStore {
   #db: Db;
@@ -446,27 +448,55 @@ export class ProviderDefaultStore {
     this.#db = db;
   }
 
+  #get(key: string): string | null {
+    const row = this.#db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row && row.value ? row.value : null;
+  }
+
+  #set(key: string, value: string): void {
+    if (!value) return;
+    this.#db
+      .prepare(
+        "INSERT INTO meta (key, value) VALUES (?, ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(key, value);
+  }
+
   #key(providerId: string): string {
     return `default_model:${providerId}`;
   }
 
   /** The remembered model for `providerId`, or null if none has run yet. */
   model(providerId: string): string | null {
-    const row = this.#db
-      .prepare("SELECT value FROM meta WHERE key = ?")
-      .get(this.#key(providerId)) as { value: string } | undefined;
-    return row && row.value ? row.value : null;
+    return this.#get(this.#key(providerId));
   }
 
   /** Record `model` as the provider's new default. No-op for an empty model. */
   remember(providerId: string, model: string): void {
-    if (!model) return;
-    this.#db
-      .prepare(
-        "INSERT INTO meta (key, value) VALUES (?, ?) " +
-          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      )
-      .run(this.#key(providerId), model);
+    this.#set(this.#key(providerId), model);
+  }
+
+  /** The last provider picked at session creation, or null if none yet. */
+  provider(): string | null {
+    return this.#get("last_provider");
+  }
+
+  /** Record `providerId` as the default for the next new session. */
+  rememberProvider(providerId: string): void {
+    this.#set("last_provider", providerId);
+  }
+
+  /** The last permission mode picked at session creation, or null if none yet. */
+  mode(): string | null {
+    return this.#get("last_mode");
+  }
+
+  /** Record `mode` as the default for the next new session. */
+  rememberMode(mode: string): void {
+    this.#set("last_mode", mode);
   }
 }
 

@@ -504,7 +504,8 @@ export class Daemon {
 
   /** Configured providers for the TUI's creation flow / model switcher. */
   #providerList(): ProviderInfo[] {
-    const def = this.#providers.defaultId;
+    const def = this.#defaultProviderId();
+    const mode = this.#defaultMode();
     const claude = this.config.providers.claude;
     const out: ProviderInfo[] = [
       {
@@ -514,6 +515,7 @@ export class Daemon {
         models: claude.models.length ? claude.models : claude.model ? [claude.model] : [],
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
         defaultModel: this.#defaultModelFor("claude"),
+        defaultMode: mode,
         tag: "claude",
         color: "",
         isDefault: def === "claude",
@@ -525,6 +527,7 @@ export class Daemon {
         id,
         models: p.models,
         defaultModel: this.#defaultModelFor(id),
+        defaultMode: mode,
         tag: p.tag || id,
         color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
         isDefault: def === id,
@@ -532,6 +535,28 @@ export class Daemon {
       i += 1;
     }
     return out;
+  }
+
+  /**
+   * The provider a new session uses when the caller names none: the last
+   * provider a session was created with (persisted in `meta`), else the
+   * configured `default_provider`. A remembered provider that's no longer
+   * configured is ignored.
+   */
+  #defaultProviderId(): string {
+    const remembered = this.#providerDefaults.provider();
+    if (remembered && this.#providers.has(remembered)) return remembered;
+    return this.#providers.defaultId;
+  }
+
+  /**
+   * The permission mode a new session uses when the caller names none: the
+   * last mode a session was created with (persisted in `meta`), else `default`
+   * (manual).
+   */
+  #defaultMode(): SessionMode {
+    const remembered = this.#providerDefaults.mode();
+    return remembered && isSessionMode(remembered) ? remembered : "default";
   }
 
   /**
@@ -933,8 +958,8 @@ export class Daemon {
       const providerId =
         typeof p["provider"] === "string" && this.#providers.has(p["provider"] as string)
           ? (p["provider"] as string)
-          : this.#providers.defaultId;
-      const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? "default";
+          : this.#defaultProviderId();
+      const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? this.#defaultMode();
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
       // Tell the operator once when the model we'd have reused has dropped out of
@@ -1003,11 +1028,13 @@ export class Daemon {
         ...(budget ? { budget } : {}),
       });
 
-      // Remember what this provider just ran, so the next `new` on it defaults
-      // here without the model being pinned in config.
+      // Remember what this session was created with, so the next `new`
+      // defaults here without any of it being pinned in config.
       if (model && (aisdkProfile || providerId === "claude")) {
         this.#providerDefaults.remember(providerId, model);
       }
+      this.#providerDefaults.rememberProvider(providerId);
+      this.#providerDefaults.rememberMode(mode);
 
       const isClaude = providerId === "claude";
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
@@ -1335,6 +1362,8 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
       const snap = this.#registry.setFields(id, { mode });
+      // A deliberate switch is also "the last mode used" for the next new session.
+      this.#providerDefaults.rememberMode(mode);
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;
     });

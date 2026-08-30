@@ -184,6 +184,38 @@ test("ProviderDefaultStore remembers the last model per provider, ignores emptie
   }
 });
 
+test("ProviderDefaultStore remembers the last provider and mode picked at creation", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const pd = new ProviderDefaultStore(db);
+
+    assert.equal(pd.provider(), null);
+    assert.equal(pd.mode(), null);
+
+    pd.rememberProvider("openai");
+    pd.rememberMode("acceptEdits");
+    assert.equal(pd.provider(), "openai");
+    assert.equal(pd.mode(), "acceptEdits");
+
+    // last write wins
+    pd.rememberProvider("deepseek");
+    pd.rememberMode("plan");
+    assert.equal(pd.provider(), "deepseek");
+    assert.equal(pd.mode(), "plan");
+
+    // an empty value is a no-op, not a wipe
+    pd.rememberProvider("");
+    pd.rememberMode("");
+    assert.equal(pd.provider(), "deepseek");
+    assert.equal(pd.mode(), "plan");
+
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
 test("checkpoint does not throw on a live db", () => {
   const { path, cleanup } = tmpDb();
   try {

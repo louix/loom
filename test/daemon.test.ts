@@ -332,6 +332,48 @@ models   = ["pin-a", "pin-b"]
   }
 });
 
+test("the provider and mode a session was created with become the default for the next new session", async () => {
+  const hh = await makeHarness({ config: `default_provider = "claude"\n` });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+
+    // Nothing has run yet → the configured default provider, manual mode.
+    let list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+      "providers.list",
+    );
+    assert.equal(list.find((p) => p.isDefault)?.id, "claude");
+    assert.equal(list[0]?.defaultMode, "default");
+
+    // Creating a session on another provider, in another mode, remembers both.
+    await c.request<SessionSnapshot>("session.create", {
+      prompt: "x",
+      provider: "fake",
+      mode: "acceptEdits",
+    });
+
+    list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+      "providers.list",
+    );
+    assert.equal(list[0]?.defaultMode, "acceptEdits");
+
+    // A later session.create with nothing named picks up both remembered values.
+    const s = await c.request<SessionSnapshot>("session.create", { prompt: "y" });
+    assert.equal(s.provider, "fake");
+    assert.equal(s.mode, "acceptEdits");
+
+    // A deliberate session.setMode also updates the remembered default.
+    await c.request("session.setMode", { id: s.id, mode: "plan", by: "t" });
+    list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+      "providers.list",
+    );
+    assert.equal(list[0]?.defaultMode, "plan");
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("session.fork copies the transcript into a new session + worktree", async () => {
   const hh = await makeHarness({
     config: `

@@ -793,6 +793,34 @@ Folded the choice into the keys already at hand instead.
 - `sendChoice` mode, state, actions (`openSendChoice`/`closeSendChoice`), and
   the `SendChoice` component are removed.
 
+### 16 · new-session provider/mode remembered like the model already was — ✓ shipped (2026-08-30)
+
+The model a provider last ran was already remembered (`ProviderDefaultStore`,
+milestone 9) so a `new` session defaults to it; the *provider* and *permission
+mode* picked at creation weren't — `new` always fell back to config's
+`default_provider` and `default` (manual) mode.
+
+- **`ProviderDefaultStore` gains `last_provider` / `last_mode` rows**,
+  alongside the existing `default_model:<id>` ones, in the same `meta` table.
+  `rememberProvider` / `rememberMode` write them; `provider()` / `mode()` read
+  them back (`""` treated as unset, same as before).
+- **`session.create`** resolves an unnamed provider via `#defaultProviderId()`
+  (remembered, if still configured, else `#providers.defaultId`) and an
+  unnamed mode via `#defaultMode()` (remembered, else `default`) — then
+  records whatever it ran with, implicit or explicit, same as the model.
+  `session.setMode` on a live session records the switch too (mirrors
+  `session.setModel`).
+- **`ProviderInfo.defaultMode`** (wire) carries the resolved mode to the TUI so
+  the `n` prompt shows the mode chip it'll actually create with, not always
+  "manual"; `providers.list`'s `isDefault` now reflects the remembered
+  provider too. `defaultModeOf()` in `model.ts` reads it for the `new` action.
+- Not threaded through the `⌥p` / `⌥m` provider-model detour mid-prompt — a
+  pre-existing gap (that flow already dropped a `⇧⇥`-picked mode); picking up
+  the remembered default has the same limitation, not a new regression.
+- Tests: `ProviderDefaultStore` provider/mode remember + no-op-on-empty;
+  `session.create` / `session.setMode` round-trip through `providers.list`;
+  `defaultModeOf`. 306 → 309 pass.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

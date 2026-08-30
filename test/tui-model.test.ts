@@ -9,6 +9,7 @@ import {
   commandsFor,
   cacheHeat,
   cacheStatus,
+  defaultModeOf,
   defaultModelOf,
   defaultProviderId,
   findPickItems,
@@ -798,12 +799,13 @@ const PROVIDERS: ProviderInfo[] = [
       { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     ],
     defaultModel: "claude-sonnet-5",
+    defaultMode: "default",
     tag: "claude",
     color: "",
     isDefault: true,
   },
-  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", tag: "oai", color: "cyan", isDefault: false },
-  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", tag: "ds", color: "magenta", isDefault: false },
+  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", defaultMode: "default", tag: "oai", color: "cyan", isDefault: false },
+  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", defaultMode: "default", tag: "ds", color: "magenta", isDefault: false },
 ];
 
 function withProviders(): TuiState {
@@ -912,6 +914,15 @@ test("defaultModelOf reads the provider's advertised default model", () => {
   assert.equal(defaultModelOf(s, "openai"), "gpt-5");
   assert.equal(defaultModelOf(s, "claude"), "claude-sonnet-5");
   assert.equal(defaultModelOf(s, "nope"), "");
+});
+
+test("defaultModeOf reads the daemon's remembered mode, not per-provider", () => {
+  assert.equal(defaultModeOf(initialState()), "default");
+  const s = reduce(initialState(), {
+    t: "providers",
+    list: PROVIDERS.map((p) => ({ ...p, defaultMode: "acceptEdits" })),
+  });
+  assert.equal(defaultModeOf(s), "acceptEdits");
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks

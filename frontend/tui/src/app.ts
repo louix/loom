@@ -39,6 +39,7 @@ import {
 import {
   allowedActs,
   commandsFor,
+  defaultModeOf,
   defaultModelOf,
   defaultProviderId,
   findPickItems,
@@ -325,6 +326,7 @@ export function App({
       if (name === "new") {
         const pid = defaultProviderId(state);
         const dm = defaultModelOf(state, pid);
+        const mode = defaultModeOf(state);
         return void dispatch({
           t: "openPrompt",
           prompt: makePrompt({
@@ -332,6 +334,7 @@ export function App({
             sessionId: null,
             label: "new session",
             provider: pid,
+            mode,
             ...(dm ? { model: dm } : {}),
           }),
         });

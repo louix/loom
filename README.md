@@ -176,8 +176,11 @@ inline with `api_key`.
   "openai" | "google" | "anthropic"` — the low-level escape hatch, kept for
   several native profiles or unusual setups.
 
-`default_provider` picks which one new sessions use; Loom persists the
-transcript itself in `provider_messages`.
+`default_provider` picks which one new sessions use until a session is
+actually created — from then on the provider, model, and permission mode it
+was created with (or later switched to) become the default for the *next*
+`new`, remembered across restarts. Loom persists the transcript itself in
+`provider_messages`.
 
 - **10a** — streaming, token usage + price-table cost, cancel, resume.
 - **10b** — multi-step tool use. MCP servers (`[[mcp]]`) connect through

@@ -918,6 +918,12 @@ export function defaultModelOf(s: TuiState, providerId: string): string {
   return providerInfo(s, providerId)?.defaultModel ?? "";
 }
 
+/** The permission mode a new session will use unless changed — the daemon's
+ *  remembered "last used", or `default` (manual). Not per-provider. */
+export function defaultModeOf(s: TuiState): SessionMode {
+  return s.providers[0]?.defaultMode ?? "default";
+}
+
 export function providerPickItems(s: TuiState): PickItem[] {
   return s.providers.map((p) => ({
     id: p.id,

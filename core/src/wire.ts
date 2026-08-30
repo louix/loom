@@ -1,4 +1,5 @@
 import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
+import type { SessionMode } from "./types.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -201,6 +202,12 @@ export interface ProviderInfo {
    * detected model. "" when nothing is known yet.
    */
   defaultModel: string;
+  /**
+   * Permission mode a new session gets when none is chosen: the last one a
+   * session was created with (remembered across restarts), else `default`
+   * (manual). Same value on every entry — it isn't per-provider.
+   */
+  defaultMode: SessionMode;
   /** Short label (Detail pane, `loom ls`). */
   tag: string;
   /** Fleet-row id colour — an Ink colour name, or "" for the plain default. */
