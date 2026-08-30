@@ -73,6 +73,19 @@ test("a hard breach halts and interrupts the session; setBudget clears it", asyn
   }
 });
 
+test("a per-provider default overrides the flat default_max_cost_usd", async () => {
+  const h = await makeHarness({
+    config: "[budget]\ndefault_max_cost_usd = 5.0\n\n[budget.per_provider]\nfake = 750.0\n",
+  });
+  try {
+    const { c, id } = await session(h);
+    assert.equal((await get(c, id)).budget.maxCostUsd, 750);
+    await c.close();
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("session.setBudget rejects a call with no fields", async () => {
   const h = await makeHarness();
   try {

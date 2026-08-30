@@ -104,8 +104,11 @@ table = ".loom/models.toml"
 webhook = ""                        # best-effort POST on awaiting_input / error when no client attached
 
 [budget]
-default_max_cost_usd = 5.0
+default_max_cost_usd = 5.0          # fallback for any provider without an override below
 on_breach            = "soft"       # or "hard"
+
+[budget.per_provider]               # override the flat default per provider id
+claude = 750.0                      # Claude turns routinely run $1-3 apiece (long context, caching)
 
 [search]                            # web_search tool for aisdk sessions (Claude
 backend     = "none"               # has its own). "none" | "brave" | "tavily".

@@ -990,12 +990,12 @@ export class Daemon {
       }
 
       const id = randomUUID();
-      // An explicit budget wins; otherwise fall back to the configured soft cap.
+      // An explicit budget wins; otherwise fall back to the configured soft cap
+      // — a per-provider override if one is set, else the flat default.
+      const defaultMaxCostUsd =
+        this.config.budget.perProviderMaxCostUsd[providerId] ?? this.config.budget.defaultMaxCostUsd;
       const budget =
-        this.#readBudget(p["budget"]) ??
-        (this.config.budget.defaultMaxCostUsd > 0
-          ? { maxCostUsd: this.config.budget.defaultMaxCostUsd }
-          : null);
+        this.#readBudget(p["budget"]) ?? (defaultMaxCostUsd > 0 ? { maxCostUsd: defaultMaxCostUsd } : null);
 
       // By default each session gets its own worktree + branch off the
       // configured base. `[worktree] enabled = false` (or a per-session

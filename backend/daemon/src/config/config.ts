@@ -131,6 +131,8 @@ export interface LoomConfig {
   notify: { webhook: string };
   budget: {
     defaultMaxCostUsd: number;
+    /** Overrides `defaultMaxCostUsd` for specific provider ids (`claude`, an aisdk profile id, …). */
+    perProviderMaxCostUsd: Record<string, number>;
     onBreach: "soft" | "hard";
   };
   /**
@@ -181,6 +183,11 @@ export const DEFAULT_CONFIG: LoomConfig = {
   notify: { webhook: "" },
   budget: {
     defaultMaxCostUsd: 5.0,
+    // Claude turns routinely run $1-3 apiece (long context, prompt caching); the
+    // flat $5 fallback trips almost immediately. aisdk providers vary far more
+    // (a local model costs nothing, a frontier one costs plenty) so they keep
+    // the conservative flat default unless configured otherwise.
+    perProviderMaxCostUsd: { claude: 750.0 },
     onBreach: "soft",
   },
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
@@ -201,6 +208,20 @@ function num(v: unknown, fallback: number): number {
 /** A non-negative number, or the fallback (rejects `-1`, NaN, wrong type). */
 function nonNeg(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+
+/**
+ * A table of positive numbers keyed by id (e.g. `[budget.per_provider]`),
+ * merged over `fallback` so an explicit entry overrides just that key rather
+ * than discarding the rest of the built-in map.
+ */
+function numRecord(v: unknown, fallback: Record<string, number>): Record<string, number> {
+  const t = asRecord(v);
+  const out = { ...fallback };
+  for (const [k, val] of Object.entries(t)) {
+    if (typeof val === "number" && Number.isFinite(val) && val > 0) out[k] = val;
+  }
+  return out;
 }
 
 function strArray(v: unknown, fallback: string[]): string[] {
@@ -419,6 +440,7 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     budget: {
       defaultMaxCostUsd: nonNeg(budget["default_max_cost_usd"], d.budget.defaultMaxCostUsd),
+      perProviderMaxCostUsd: numRecord(budget["per_provider"], d.budget.perProviderMaxCostUsd),
       onBreach: budget["on_breach"] === "hard" ? "hard" : "soft",
     },
     search: {
