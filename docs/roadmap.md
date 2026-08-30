@@ -704,6 +704,26 @@ A 7-item brain-dump. 296 → 298 tests.
   message; a one-word prompt skips the model call. Real trigger: prompt "hi" →
   model replied "What task would you like me to label? Please describe it".
 
+### 13 · model-picker polish, Enter=send, no resume — ✓ shipped (2026-08-30)
+
+- **Richer model picker.** `AgentProvider.listModels()` returns
+  `DiscoveredModel[]` (`{id, label?, context?}`); the Claude adapter reads
+  `ModelInfo.displayName`, parses a `[1m]` / `[200k]` context tag off the value,
+  drops the bare `default` row, dedupes by resolved id. `ProviderInfo` gains
+  `modelChoices?: ModelChoice[]` (parallel to `models`); `modelPickItems` uses
+  it for the label + a `1.0M ctx` hint, bare id fallback for aisdk.
+- **`⇧⏎` / `⌥⏎` insert a newline** in the prompt (`applyKey`: `key.return &&
+  (key.shift || key.meta)`). Shift+Enter needs a terminal that sends a distinct
+  code; Alt+Enter is portable. Plain / `⌃⏎` still submit.
+- **Enter = the "talk to this session" verb; `resume` retired.** `s` is gone —
+  browse `key.return` opens the message prompt for the selection (a pending
+  question / plan too; a pending permission still needs explicit `a`).
+  `#reviveSession` (factored out of the `session.resume` handler) is called by
+  `session.send` when the session isn't live, so an interrupted / errored
+  session just takes a message. `ActName."resume"`, the `r` key, and the
+  `actionsFor` resume hint are removed from the TUI; the `session.resume` RPC +
+  `loom resume` stay. `send` keyhint key is now `⏎`.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the
