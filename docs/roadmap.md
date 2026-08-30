@@ -685,6 +685,25 @@ A 7-item brain-dump. 296 → 298 tests.
 - **Picker filter reads as an input** — block caret + "type to search"
   placeholder, "N/M matches" line (find / command / model pickers).
 
+### 12 · `manual` mode, prompt-on-log, titler robustness — ✓ shipped (2026-08-30)
+
+- **`default` mode reads as `manual`.** The wire / SDK / DB value stays
+  `"default"` (the SDK's name); the TUI renders `manual` (`modeLabel()` in
+  theme.ts — Detail, the new-prompt chip, `⌥m` hint). `normalizeSessionMode()`
+  in provider/types accepts `"manual"` as an alias in `session.create` /
+  `session.setMode`, config `permission_default`, and `loom run --mode`.
+- **The opening prompt is on the event stream.** `session.create` emits a
+  `user_message` event for it (parallel to `session.send`), so it's in the log /
+  `⌥o` transcript and survives a reopen. The TUI dropped its local `new` echo.
+  `reduce`'s `select` is optimistic now — a just-created id sticks even if its
+  `session_updated` push trails the RPC response.
+- **Auto-titler won't converse.** `titler.ts`: system prompt reframed as a
+  labelling function (never a question, always a best-guess noun phrase);
+  `cleanTitle` rejects a chat-turn reply (`looksConversational` — ends with `?`,
+  or opens with what/could you/sorry/I'm…) and the daemon keeps the clipped
+  message; a one-word prompt skips the model call. Real trigger: prompt "hi" →
+  model replied "What task would you like me to label? Please describe it".
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the
