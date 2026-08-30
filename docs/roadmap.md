@@ -651,6 +651,34 @@ deny and delete, `Alt` was unused, discovery was a 24-row `?` dump.
 - Tests: `tui-editor` (⌃e/⌃b/⌃f, Tab inert), `tui-model` (`commandsFor`, footer
   trim), `tui-render` (`X` delete, `⌥p` flow, `F` fork, `Space` palette). 294 → 296.
 
+### 11 · TUI edge cases + Claude model/mode — ✓ shipped (2026-08-30)
+
+A 7-item brain-dump. 296 → 298 tests.
+
+- **Mismatched-daemon restart is now consent-gated.** `reconcileVersion` queries
+  `daemon.status` (`connections`, `runningSessions`) and routes through a pure
+  `versionMismatchAction()`: alone + idle → auto-restart (as before); other
+  clients or live turns → a confirm ("restart anyway" / esc keeps the old
+  daemon, press R later); already handled → a nag notice.
+- **Claude model list.** `[providers.claude] models` (default
+  `["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]`) — Claude
+  has no `/models` endpoint. `providers.list` reports it, so `M` and `⌥p` open a
+  real picker instead of "0 models · uses its configured model".
+  `#defaultModelFor("claude")` = remembered → config `model` → `models[0]`;
+  `session.create` / `setModel` remember Claude's last model too.
+- **Per-provider permission-mode cycle.** New `ProviderInfo.permissionModes`;
+  Claude omits `auto` (the SDK throws on a post-launch switch to
+  `bypassPermissions`) → cycles default/plan/acceptEdits only; aisdk keeps
+  `auto`. `session.setMode` / `session.create` reject an unsupported mode with a
+  clean `bad_request`; the Claude adapter wraps a rejected `setPermissionMode`.
+  Fixes "stuck in acceptEdits" and the raw bypassPermissions error.
+- **No invisible mode.** The new-session prompt always shows the mode chip,
+  `[default]` included; `⌥m mode:<name>` likewise.
+- **`⌥o` (view log) is inert on the new-session prompt** — no session/log yet;
+  it's a dim notice and off that prompt's hint line.
+- **Picker filter reads as an input** — block caret + "type to search"
+  placeholder, "N/M matches" line (find / command / model pickers).
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

@@ -194,7 +194,10 @@ transcript itself in `provider_messages`.
   and drops back on the prompt with what you'd typed intact. `M` switches the
   selected session's model (next turn). Each fleet row's id is coloured by its
   provider; the Detail pane spells out `engine · provider / model`.
-  `loom providers` and `loom models <provider>` from the CLI.
+  `loom providers` and `loom models <provider>` from the CLI. Claude has no
+  discovery endpoint, so its picker list is the curated `[providers.claude]
+  models`; its permission-mode cycle is `default → plan → acceptEdits` (no
+  `auto` — the SDK can't switch to it after launch).
 
 OpenAI-compatible profiles need no `model`: the picker list comes from
 `{base_url}/models`, and a new session defaults to the last model that provider
@@ -345,7 +348,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 296 cases
+npm test             # node:test — 298 cases
 ```
 
 ### Layout
