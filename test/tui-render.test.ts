@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { render } from "ink";
@@ -192,12 +193,51 @@ test("d deletes the selected session behind a confirm", async () => {
     await delay(80);
     assert.doesNotMatch(stdout.last, /Delete session/);
 
+    // a stub has no branch → the confirm offers no branch toggle
     stdin.feed("d");
     await delay(80);
+    assert.doesNotMatch(stdout.last, /also delete branch/i);
+
     stdin.feed("\r"); // confirm
     await delay(150);
     const list = await client.request<SessionSnapshot[]>("session.list");
     assert.ok(!list.some((x) => x.id === s.id), "the row is gone");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("d on a branched session offers a branch toggle; b arms it", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.create", {
+    prompt: "kill this branch",
+    provider: "fake",
+  });
+  const branch = s.branch as string;
+  assert.ok(branch);
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(200);
+    stdin.feed("d");
+    await delay(100);
+    assert.match(stdout.last, /Delete session/);
+    assert.match(stdout.last, /also delete branch/i);
+
+    stdin.feed("b"); // arm it
+    await delay(80);
+    assert.match(stdout.last, /will also delete branch/i);
+
+    stdin.feed("\r"); // confirm
+    await delay(200);
+    const list = await client.request<SessionSnapshot[]>("session.list");
+    assert.ok(!list.some((x) => x.id === s.id));
+    const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", branch], {
+      encoding: "utf8",
+    });
+    assert.equal(branches.trim(), "", "branch was deleted too");
   } finally {
     app.unmount();
     await client.close();
@@ -496,7 +536,7 @@ test("Tab toggles the fullscreen event log", async () => {
   }
 });
 
-test("N opens the provider → model picker, then the new-session prompt", async () => {
+test("n shows the provider / model; ⌃P opens the chooser and returns to the prompt", async () => {
   const { connect, cleanup } = await harness({
     config: `
 [providers.openai]
@@ -511,7 +551,14 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(220);
-    stdin.feed("N");
+    stdin.feed("n");
+    await delay(120);
+    // the prompt names the provider it will use and its default model
+    assert.match(stdout.last, /new session/i);
+    assert.match(stdout.last, /claude/);
+    assert.match(stdout.last, /claude-sonnet-5/);
+
+    stdin.feed("\x10"); // ⌃P → provider chooser
     await delay(120);
     assert.match(stdout.last, /PROVIDER/);
     assert.match(stdout.last, /openai/);
@@ -521,13 +568,11 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     // the model step always shows; claude has no list → an empty-state note
     assert.match(stdout.last, /MODEL/);
     assert.match(stdout.last, /claude uses its configured model/i);
-    stdin.feed("\r"); // enter continues to the prompt with no explicit model
+    stdin.feed("\r"); // enter continues back to the prompt with no explicit model
     await delay(120);
-    assert.match(stdout.last, /new/i);
+    assert.match(stdout.last, /new session/i);
 
-    stdin.feed(ESC);
-    await delay(80);
-    stdin.feed("N");
+    stdin.feed("\x10"); // ⌃P again
     await delay(100);
     stdin.feed("openai");
     await delay(100);
@@ -541,6 +586,7 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     stdin.feed("\r");
     await delay(120);
     assert.match(stdout.last, /new session/i);
+    assert.match(stdout.last, /gpt-5-mini/);
   } finally {
     app.unmount();
     await client.close();
@@ -548,7 +594,7 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
   }
 });
 
-test("N model step shows an empty state when a provider has no models", async () => {
+test("⌃P model step shows an empty state when a provider has no models", async () => {
   const { connect, cleanup } = await harness({
     config: `
 [providers.oai]
@@ -561,7 +607,9 @@ base_url = "http://127.0.0.1:9/v1"
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(220);
-    stdin.feed("N");
+    stdin.feed("n");
+    await delay(120);
+    stdin.feed("\x10"); // ⌃P
     await delay(120);
     stdin.feed("oai");
     await delay(100);
@@ -572,6 +620,42 @@ base_url = "http://127.0.0.1:9/v1"
     stdin.feed("\r"); // enter continues anyway
     await delay(120);
     assert.match(stdout.last, /new/i);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("⌃P keeps what's already typed in the new-session prompt", async () => {
+  const { connect, cleanup } = await harness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://x/v1"
+model    = "gpt-5"
+models   = ["gpt-5", "gpt-5-mini"]
+`,
+  });
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(220);
+    stdin.feed("n");
+    await delay(120);
+    stdin.feed("fix the parser bug");
+    await delay(100);
+    stdin.feed("\x10"); // ⌃P
+    await delay(120);
+    stdin.feed("openai");
+    await delay(100);
+    stdin.feed("\r"); // pick openai
+    await delay(120);
+    stdin.feed("\r"); // pick the first model
+    await delay(120);
+    assert.match(stdout.last, /new session/i);
+    assert.match(stdout.last, /fix the parser bug/);
   } finally {
     app.unmount();
     await client.close();

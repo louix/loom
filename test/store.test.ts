@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint, migrate, openDb } from "../src/store/db.ts";
-import { ChildStore, CheckpointStore, SessionStore } from "../src/store/sessions.ts";
+import {
+  ChildStore,
+  CheckpointStore,
+  ProviderDefaultStore,
+  SessionStore,
+} from "../src/store/sessions.ts";
 import { setLogLevel } from "../src/util/logger.ts";
 
 setLogLevel("error");
@@ -149,6 +154,30 @@ test("ChildStore records, lists by epoch, and forgets", () => {
 
     children.forget(111);
     assert.equal(children.all().length, 2);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("ProviderDefaultStore remembers the last model per provider, ignores empties", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const pd = new ProviderDefaultStore(db);
+
+    assert.equal(pd.model("openai"), null);
+    pd.remember("openai", "gpt-5");
+    assert.equal(pd.model("openai"), "gpt-5");
+    // last write wins; providers are independent
+    pd.remember("openai", "gpt-5-mini");
+    pd.remember("deepseek", "deepseek-chat");
+    assert.equal(pd.model("openai"), "gpt-5-mini");
+    assert.equal(pd.model("deepseek"), "deepseek-chat");
+    // an empty model is a no-op, not a wipe
+    pd.remember("openai", "");
+    assert.equal(pd.model("openai"), "gpt-5-mini");
+
     db.close();
   } finally {
     cleanup();

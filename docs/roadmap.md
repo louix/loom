@@ -590,6 +590,32 @@ discovery, `registry.ts`, the test layout, and versioning.
   parallel requests are handled — `#resumeAfterAnswer` waits for the last, the
   TUI queues pending permissions (`Pending.permissions`) and shows "(1 of N)".
 
+### 9 · Provider / model UX + lifecycle — ✓ shipped (2026-08-30)
+From a user brain-dump. 287 → 294 tests.
+- **`N` merged into `n`.** The new-session prompt now shows the provider and
+  model it will use (`ProviderInfo.defaultModel` on the wire); `⌃P` in that
+  prompt walks the provider → model picker and returns to the prompt with what
+  you'd typed intact (`PickerState.ctx.draft`). The standalone `N` key is gone.
+- **No `model` needed in config.** OpenAI-compatible profiles rely on the
+  `{base_url}/models` probe for the list; a new session defaults to the **last
+  model that provider ran**, persisted as `default_model:<id>` in the `meta`
+  key/value table (`ProviderDefaultStore`, no migration). `session.create`
+  (implicit or explicit model) and `session.setModel` both record it;
+  `#defaultModelFor()` resolves remembered → config pin → first detected.
+  `model` / `models` stay parseable as an optional pin (kept in
+  `config.example.toml` as a commented "only if /models is wrong" note).
+- **Stale default handling.** A remembered / row model that has dropped out of
+  the detected list is skipped: `session.create` emits a `NoticePush` and falls
+  back; `session.resume` swaps the row to the current default (notice) instead
+  of failing turn 1. `lintConfig`'s auto-detect line now fires only on a *failed*
+  probe (moved after `#resolveAutoModels` at start-up) and is worded as an error.
+- **`d` can also delete the branch.** The delete confirm carries a `b` toggle
+  when the session has a branch (`ConfirmState.branchName` / `deleteBranch`,
+  `toggleConfirmBranch` action); `session.remove` takes `deleteBranch` and runs
+  `WorktreeManager.deleteBranch()` (`git branch -D`, best-effort) after the
+  worktree is gone, returns `branchDeleted`. `loom rm --delete-branch`.
+- `loom providers` prints the resolved default model: `<id> [default]  <model>  (N models)`.
+
 ## Known gaps (parked)
 
 - **aisdk tool path confinement.** In `acceptEdits` / `auto` mode the

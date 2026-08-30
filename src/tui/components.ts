@@ -16,6 +16,7 @@ import {
   groupsOf,
   pendingFor,
   pickerVisible,
+  providerInfo,
   queueFor,
   visibleLog,
   type ConfirmState,
@@ -574,7 +575,10 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 
 function promptHints(p: PromptState, queued: number): string {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌃E editor", "⌃O log"];
-  if (p.kind === "new") bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
+  if (p.kind === "new") {
+    bits.push(p.mode && p.mode !== "default" ? `⇧⇥ mode:${p.mode}` : "⇧⇥ mode");
+    bits.push("⌃P provider/model");
+  }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌃X clear ${queued} queued`);
   bits.push("esc cancel");
@@ -599,6 +603,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
                 : p.kind === "compact"
                   ? "what to keep in focus — blank compacts the whole history"
                   : "type a message…";
+    const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
@@ -609,6 +614,14 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
         p.kind === "new" && p.mode && p.mode !== "default"
           ? h(Text, { color: C.warn }, `[${p.mode}]`)
           : null,
+        p.kind === "new"
+          ? h(
+              Text,
+              { color: prov?.color || C.faint },
+              `${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`,
+            )
+          : null,
+        p.kind === "new" ? h(Text, { color: C.faint }, "⌃P change") : null,
       ),
       h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
       h(Text, { color: C.faint }, promptHints(p, queued)),
@@ -656,6 +669,20 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
     { width, borderStyle: "round", borderColor: accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
     h(Text, { color: accent, bold: true }, confirm.title),
     confirm.body ? h(Text, { color: C.warn }, confirm.body) : null,
+    confirm.branchName
+      ? h(
+          Box,
+          { gap: 1, marginTop: 1 },
+          h(Text, { color: C.accent }, "b"),
+          h(
+            Text,
+            { color: confirm.deleteBranch ? C.bad : C.dim },
+            confirm.deleteBranch
+              ? `will also delete branch ${confirm.branchName}`
+              : `also delete branch ${confirm.branchName}`,
+          ),
+        )
+      : null,
     h(Box, { height: 1 }),
     h(
       Box,
@@ -667,7 +694,9 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
         confirm.action === "restart"
           ? "restart the daemon"
           : confirm.action === "deleteSession"
-            ? "delete the session"
+            ? confirm.deleteBranch
+              ? "delete the session + branch"
+              : "delete the session"
             : "quit and stop the daemon",
       ),
       h(Text, { color: C.faint }, "·"),
@@ -823,7 +852,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["x  ·  e", "mark the session done  ·  rename it"],
   ["b", "set a cost budget (soft-warns or hard-halts on breach)"],
   ["⇧⇥  ·  M", "cycle the permission mode  ·  switch the session's model (next turn)"],
-  ["n  ·  N", "new session (default provider)  ·  new with a provider + model picker"],
+  ["n", "new session — the prompt shows the provider / model; ⌃P to change them"],
   ["f  ·  F", "find a session by title / message text  ·  toggle the event log: full / chat-only"],
   ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
   ["R", "restart the daemon (with confirmation)"],
@@ -838,6 +867,7 @@ const EDIT_ROWS: Array<[string, string]> = [
   ["⌃o", "open the event log in $EDITOR, read-only"],
   ["⌃a", "start of line     ⌃u / ⌃k  kill to start / end     ⌃w  delete word"],
   ["↑ / ↓  ·  ⇧⇥", "prompt history     ·     cycle the mode (new session)"],
+  ["⌃P", "pick the provider / model for a new session"],
 ];
 
 // ---------------------------------------------------------------------------

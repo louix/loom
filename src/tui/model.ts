@@ -124,8 +124,9 @@ export interface PickerState {
   filter: string;
   /** Highlight into the *filtered* list. */
   index: number;
-  /** Carried context: provider id from the provider step; a live session for `M`. */
-  ctx?: { provider?: string; liveSessionId?: string };
+  /** Carried context: provider id from the provider step; a live session for
+   *  `M`; the half-typed prompt to restore after the provider/model detour. */
+  ctx?: { provider?: string; liveSessionId?: string; draft?: string };
 }
 
 export function makePicker(init: {
@@ -178,6 +179,10 @@ export interface ConfirmState {
   action: "restart" | "quitAll" | "deleteSession";
   /** Target session for `deleteSession`. */
   sessionId?: string;
+  /** `deleteSession`: the session's branch, when it has one — `b` toggles
+   *  whether it's deleted along with the row + worktree. */
+  branchName?: string;
+  deleteBranch?: boolean;
 }
 
 export interface PendingPerm {
@@ -290,6 +295,7 @@ export type Action =
   | { t: "openPlan"; sessionId: string; requestId: string; text: string }
   | { t: "closePlan" }
   | { t: "openConfirm"; confirm: ConfirmState }
+  | { t: "toggleConfirmBranch" }
   | { t: "closeConfirm" }
   | { t: "openPicker"; picker: PickerState }
   | { t: "pickerFilter"; value: string }
@@ -444,6 +450,11 @@ export function reduce(s: TuiState, a: Action): TuiState {
 
     case "openConfirm":
       return { ...s, mode: "confirm", confirm: a.confirm };
+
+    case "toggleConfirmBranch":
+      return s.confirm && s.confirm.branchName
+        ? { ...s, confirm: { ...s.confirm, deleteBranch: !s.confirm.deleteBranch } }
+        : s;
 
     case "closeConfirm":
       return { ...s, mode: "browse", confirm: null };
@@ -879,11 +890,19 @@ export function defaultProviderId(s: TuiState): string {
   return s.providers.find((p) => p.isDefault)?.id ?? "claude";
 }
 
+/** The model a new session on `providerId` will use unless changed — the
+ *  daemon's remembered "last used", a config pin, or the first detected id. */
+export function defaultModelOf(s: TuiState, providerId: string): string {
+  return providerInfo(s, providerId)?.defaultModel ?? "";
+}
+
 export function providerPickItems(s: TuiState): PickItem[] {
   return s.providers.map((p) => ({
     id: p.id,
     label: p.tag || p.id,
-    hint: p.isDefault ? "default" : p.models.length ? `${p.models.length} models` : "",
+    hint: [p.isDefault ? "default" : "", p.defaultModel || (p.models.length ? `${p.models.length} models` : "")]
+      .filter(Boolean)
+      .join(" · "),
   }));
 }
 
@@ -1053,6 +1072,9 @@ export function footerHints(s: TuiState): Array<{ keys: string; label: string }>
     case "confirm":
       return [
         { keys: "enter", label: "confirm" },
+        ...(s.confirm?.branchName
+          ? [{ keys: "b", label: s.confirm.deleteBranch ? "keep branch" : "+ branch" }]
+          : []),
         { keys: "esc", label: "cancel" },
       ];
     case "plan":

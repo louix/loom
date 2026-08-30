@@ -100,6 +100,30 @@ test("session.remove deletes the row + worktree, keeps the branch, pushes sessio
   await c.close();
 });
 
+test("session.remove --delete-branch also drops the branch", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "branch goes too",
+    provider: "fake",
+  });
+  const tree = s.worktree as string;
+  assert.ok(existsSync(tree));
+
+  const r = await c.request<{ removed: string; branchDeleted: boolean }>("session.remove", {
+    id: s.id,
+    deleteBranch: true,
+  });
+  assert.equal(r.removed, s.id);
+  assert.equal(r.branchDeleted, true);
+  assert.ok(!existsSync(tree));
+
+  const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", "loom/branch-goes-too"], {
+    encoding: "utf8",
+  });
+  assert.equal(branches.trim(), "", "branch is gone");
+  await c.close();
+});
+
 test("session.remove on an unknown id is a not_found", async () => {
   const c = await client();
   await assert.rejects(c.request("session.remove", { id: "nope" }), /no such session/);

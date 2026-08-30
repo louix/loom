@@ -134,6 +134,24 @@ export class WorktreeManager {
     this.#git(["worktree", "prune"]);
   }
 
+  /**
+   * `git branch -D <branch>` in the repo root. Best-effort: returns false (and
+   * logs) if the branch is missing, checked out elsewhere, or git refuses —
+   * `session.remove` still succeeds. Call after the worktree is gone.
+   */
+  deleteBranch(branch: string): boolean {
+    const res = this.#git(["branch", "-D", branch]);
+    if (!res.ok) {
+      this.#log.warn("branch delete failed", {
+        branch,
+        error: res.stderr.trim() || res.stdout.trim(),
+      });
+      return false;
+    }
+    this.#log.info("branch deleted", { branch });
+    return true;
+  }
+
   /** Parsed `git worktree list --porcelain`. */
   list(): Array<{ path: string; branch: string | null; head: string | null }> {
     const res = this.#git(["worktree", "list", "--porcelain"]);

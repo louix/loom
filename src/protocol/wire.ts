@@ -181,6 +181,12 @@ export interface ProviderInfo {
   id: string;
   /** Models offered in the picker. Empty for `claude` (no local list). */
   models: string[];
+  /**
+   * Model a new session gets when none is chosen: the last one run on this
+   * provider (remembered across restarts), else a config pin, else the first
+   * detected model. "" when nothing is known yet.
+   */
+  defaultModel: string;
   /** Short label (Detail pane, `loom ls`). */
   tag: string;
   /** Fleet-row id colour — an Ink colour name, or "" for the plain default. */

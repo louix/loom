@@ -36,7 +36,7 @@ commands:
   budget <id> <usd>      set a cost budget (clears a warned/halted state)
   resume <id>            resume an interrupted session
   done <id>              mark a session complete (worktree kept)
-  rm <id>                delete a session for good (worktree + transcript; branch kept)
+  rm <id>                delete a session for good (worktree + transcript)   [--delete-branch]
   gc                     remove worktrees for done sessions   [--id ONE] [--force]
 
   stub <prompt...>       create a placeholder session     [--status S] [--provider P] [--model M]
@@ -60,8 +60,10 @@ const USAGE: Record<string, string> = {
   --repo <path>                act on the daemon for another repo`,
   providers: `loom providers  — list configured providers
 
-  one row per [providers.*] / [custom-provider.*] / [anthropic] / [google] table.
-  "[default]" marks the one \`run\` uses without --provider.
+  one row per [providers.*] / [custom-provider.*] / [anthropic] / [google] table:
+  "<id> [default]  <model>  (N models)". The model shown is what a new session
+  gets without --model — the last one run on that provider, else a config pin,
+  else the first auto-detected id.
   --json                       machine-readable`,
   models: `loom models <provider>  — probe a provider's /models endpoint
 
@@ -88,7 +90,8 @@ const USAGE: Record<string, string> = {
   rm: `loom rm <id>  — delete a session for good
 
   closes any live run, removes the worktree (not the repo root for an in-place
-  session), drops the row and its stored transcript. The branch is left.`,
+  session), drops the row and its stored transcript. The branch is left unless:
+  --delete-branch              also \`git branch -D\` the session's branch`,
 };
 
 async function main(): Promise<void> {
@@ -109,6 +112,7 @@ async function main(): Promise<void> {
       version: { type: "boolean", default: false },
       "in-place": { type: "boolean", default: false },
       worktree: { type: "boolean", default: false },
+      "delete-branch": { type: "boolean", default: false },
     },
   });
 
@@ -173,13 +177,15 @@ async function main(): Promise<void> {
       }
       case "providers": {
         const rows = await client.request<
-          Array<{ id: string; models: string[]; color: string; isDefault: boolean }>
+          Array<{ id: string; models: string[]; defaultModel: string; color: string; isDefault: boolean }>
         >("providers.list");
         if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
         else
           for (const p of rows)
             process.stdout.write(
-              `  ${p.id}${p.isDefault ? " [default]" : ""}${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
+              `  ${p.id}${p.isDefault ? " [default]" : ""}` +
+                `${p.defaultModel ? `  ${p.defaultModel}` : ""}` +
+                `${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
             );
         break;
       }
@@ -341,8 +347,14 @@ async function main(): Promise<void> {
       }
       case "rm": {
         const id = need(positionals[1], "rm <id>");
-        const r = await client.request<{ removed: string }>("session.remove", { id, by: client.clientId });
-        process.stdout.write(`removed ${r.removed.slice(0, 8)}\n`);
+        const r = await client.request<{ removed: string; branchDeleted?: boolean }>("session.remove", {
+          id,
+          by: client.clientId,
+          ...(values["delete-branch"] ? { deleteBranch: true } : {}),
+        });
+        process.stdout.write(
+          `removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`,
+        );
         break;
       }
       case "gc": {

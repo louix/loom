@@ -430,6 +430,47 @@ export class ChildStore {
 }
 
 // ---------------------------------------------------------------------------
+// meta — the per-provider "last model used", the default for new sessions
+// ---------------------------------------------------------------------------
+
+/**
+ * Remembers the last model each provider ran, so a new session on that provider
+ * defaults to it without the model being pinned in config. Stored as
+ * `default_model:<providerId>` rows in the always-present `meta` key/value
+ * table (no migration needed). A `""` value is treated as unset.
+ */
+export class ProviderDefaultStore {
+  #db: Db;
+
+  constructor(db: Db) {
+    this.#db = db;
+  }
+
+  #key(providerId: string): string {
+    return `default_model:${providerId}`;
+  }
+
+  /** The remembered model for `providerId`, or null if none has run yet. */
+  model(providerId: string): string | null {
+    const row = this.#db
+      .prepare("SELECT value FROM meta WHERE key = ?")
+      .get(this.#key(providerId)) as { value: string } | undefined;
+    return row && row.value ? row.value : null;
+  }
+
+  /** Record `model` as the provider's new default. No-op for an empty model. */
+  remember(providerId: string, model: string): void {
+    if (!model) return;
+    this.#db
+      .prepare(
+        "INSERT INTO meta (key, value) VALUES (?, ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(this.#key(providerId), model);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

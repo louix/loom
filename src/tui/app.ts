@@ -39,6 +39,8 @@ import {
 } from "./components.ts";
 import {
   allowedActs,
+  defaultModelOf,
+  defaultProviderId,
   findPickItems,
   initialState,
   makePicker,
@@ -274,9 +276,17 @@ export function App({
       const s = selectedSession(state);
       const by = client.clientId;
       if (name === "new") {
+        const pid = defaultProviderId(state);
+        const dm = defaultModelOf(state, pid);
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
+          prompt: makePrompt({
+            kind: "new",
+            sessionId: null,
+            label: "new session",
+            provider: pid,
+            ...(dm ? { model: dm } : {}),
+          }),
         });
       }
       if (name === "filter") {
@@ -423,9 +433,10 @@ export function App({
     [state, client, note, perform, quitTui],
   );
 
-  /** Provider chosen → always show a model step (empty state and all). */
+  /** Provider chosen → always show a model step (empty state and all).
+   *  `draft` carries a half-typed `new` prompt through the detour. */
   const openModelStep = useCallback(
-    (providerId: string, label: string) =>
+    (providerId: string, label: string, draft?: string) =>
       dispatch({
         t: "openPicker",
         picker: makePicker({
@@ -433,7 +444,7 @@ export function App({
           title: `model · ${label}`,
           items: modelPickItems(state, providerId),
           emptyText: modelPickEmptyText(providerId),
-          ctx: { provider: providerId },
+          ctx: { provider: providerId, ...(draft !== undefined ? { draft } : {}) },
         }),
       }),
     [state],
@@ -457,6 +468,7 @@ export function App({
             sessionId: null,
             label: "new session",
             ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
+            ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
           }),
         });
       }
@@ -464,7 +476,7 @@ export function App({
     }
 
     if (p.kind === "provider") {
-      return void openModelStep(cur.id, cur.label);
+      return void openModelStep(cur.id, cur.label, p.ctx?.draft);
     }
 
     if (p.kind === "model") {
@@ -486,6 +498,7 @@ export function App({
           sessionId: null,
           label: "new session",
           ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
+          ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
           model: cur.id,
         }),
       });
@@ -510,20 +523,28 @@ export function App({
     dispatch({ t: "closePicker" });
   }, [state, client, openModelStep]);
 
-  /** Open the provider → model → prompt flow for a new session (the `N` key).
-   *  Provider step is skipped when there's only one; the model step always
-   *  shows (with an empty state when nothing was detected). */
-  const startNewFlow = useCallback(() => {
-    const provs = state.providers;
-    if (provs.length > 1) {
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({ kind: "provider", title: "provider", items: providerPickItems(state) }),
-      });
-    }
-    const only = provs[0]?.id ?? "claude";
-    openModelStep(only, provs[0]?.tag || only);
-  }, [state, openModelStep]);
+  /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
+   *  only one), then the model, then land back on the prompt with `draft`
+   *  restored and the choice applied. */
+  const pickProviderModel = useCallback(
+    (draft: string) => {
+      const provs = state.providers;
+      if (provs.length > 1) {
+        return void dispatch({
+          t: "openPicker",
+          picker: makePicker({
+            kind: "provider",
+            title: "provider",
+            items: providerPickItems(state),
+            ctx: { draft },
+          }),
+        });
+      }
+      const only = provs[0]?.id ?? "claude";
+      openModelStep(only, provs[0]?.tag || only, draft);
+    },
+    [state, openModelStep],
+  );
 
   /** Open a live model switcher for the selected session (the `M` key). */
   const switchModel = useCallback(() => {
@@ -777,13 +798,20 @@ export function App({
     danger: action === "quitAll" || liveCount > 0,
     action,
   });
-  const confirmForDelete = (s: SessionSnapshot): ConfirmState => ({
-    title: `Delete session ${shortId(s.id)}?`,
-    body: `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}” — its worktree and stored transcript go too. The branch is kept.`,
-    danger: true,
-    action: "deleteSession",
-    sessionId: s.id,
-  });
+  const confirmForDelete = (s: SessionSnapshot): ConfirmState => {
+    const name = `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}”`;
+    const canBranch = !s.inPlace && !!s.branch;
+    return {
+      title: `Delete session ${shortId(s.id)}?`,
+      body: canBranch
+        ? `${name} — its worktree and stored transcript go too. Its branch is kept unless you add it below.`
+        : `${name} — its worktree and stored transcript go too.`,
+      danger: true,
+      action: "deleteSession",
+      sessionId: s.id,
+      ...(canBranch ? { branchName: s.branch as string, deleteBranch: false } : {}),
+    };
+  };
   const runConfirm = useCallback(() => {
     const c = state.confirm;
     if (!c || overlayActed.current === c) return;
@@ -791,9 +819,16 @@ export function App({
     dispatch({ t: "closeConfirm" });
     if (c.action === "deleteSession" && c.sessionId) {
       const id = c.sessionId;
+      const alsoBranch = c.deleteBranch === true;
       client
-        .request("session.remove", { id, by: client.clientId })
-        .then(() => note(`deleted ${shortId(id)}`, "good"))
+        .request<{ removed: string; branchDeleted?: boolean }>("session.remove", {
+          id,
+          by: client.clientId,
+          ...(alsoBranch ? { deleteBranch: true } : {}),
+        })
+        .then((r) =>
+          note(r.branchDeleted ? `deleted ${shortId(id)} + branch` : `deleted ${shortId(id)}`, "good"),
+        )
         .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
       return;
     }
@@ -850,6 +885,10 @@ export function App({
       const p = state.prompt;
       if (key.ctrl && input === "x" && p.kind === "send" && p.sessionId) {
         return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
+      }
+      // ⌃P on a new-session prompt: choose provider / model, keeping what's typed.
+      if (key.ctrl && input === "p" && p.kind === "new") {
+        return void pickProviderModel(p.buffer.text);
       }
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
@@ -909,6 +948,9 @@ export function App({
 
     if (state.mode === "confirm") {
       if (key.return) return runConfirm();
+      if (input === "b" && state.confirm?.branchName) {
+        return void dispatch({ t: "toggleConfirmBranch" });
+      }
       if (key.escape || input === "q" || input === "n") return void dispatch({ t: "closeConfirm" });
       return;
     }
@@ -946,7 +988,6 @@ export function App({
     if (input === "q") return quitTui();
     if (input === "Q") return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
     if (input === "R") return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
-    if (input === "N") return startNewFlow();
     if (input === "M") return void (allowed.has("model") ? switchModel() : undefined);
     if (input === "F") return act("filter");
 

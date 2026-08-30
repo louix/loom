@@ -33,14 +33,19 @@ export interface AisdkProfile {
    * that might get committed or shared.
    */
   apiKey: string;
-  /** Default model id for new sessions on this provider. */
+  /**
+   * Optional model pin. Normally left unset: the picker's model list comes from
+   * `{base_url}/models` and a new session defaults to the last model this
+   * provider ran (remembered in the db). Set it only to force a specific model
+   * on an endpoint whose `/models` is missing or wrong.
+   */
   model: string;
-  /** Model ids offered in the picker (M10e). Defaults to `[model]`. */
+  /** Optional explicit picker list, when `/models` can't be trusted. Defaults to `[model]`. */
   models: string[];
   /**
-   * Neither `model` nor `models` was configured — the daemon fills them from
-   * `{base_url}/models` at start-up (openai-compatible endpoints only). Cleared
-   * once resolved.
+   * Neither `model` nor `models` was configured (the normal case) — the daemon
+   * fills `models` from `{base_url}/models` at start-up (openai-compatible
+   * endpoints only). Cleared once resolved; stays true if detection failed.
    */
   autoModels: boolean;
   /** Short label for the provider (Detail pane, `loom ls`). Defaults to the id. */
@@ -287,8 +292,11 @@ export function lintConfig(cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env
     if (!p.apiKey && !p.apiKeyEnv && p.sdk !== "openai") {
       w.push(`provider "${id}": sdk = "${p.sdk}" needs an api_key / api_key_env`);
     }
-    if (p.autoModels) {
-      w.push(`provider "${id}": no model configured — will auto-detect from ${p.baseUrl}/models at start-up`);
+    if (p.autoModels && p.model === "" && p.models.length === 0) {
+      w.push(
+        `provider "${id}": no models — auto-detection from ${p.baseUrl}/models found none ` +
+          "(endpoint unreachable, or it has no /models); set `model` / `models` to pin one",
+      );
     }
   }
   if (cfg.search.backend !== "none" && !cfg.search.apiKey) {

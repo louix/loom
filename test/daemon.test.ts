@@ -275,18 +275,55 @@ color    = "red"
   try {
     const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
     const list = await c.request<
-      Array<{ id: string; models: string[]; color: string; isDefault: boolean }>
+      Array<{ id: string; models: string[]; defaultModel: string; color: string; isDefault: boolean }>
     >("providers.list");
     await c.close();
 
     const byId = new Map(list.map((p) => [p.id, p]));
     assert.ok(byId.has("claude"));
     assert.deepEqual(byId.get("openai")?.models, ["gpt-5", "gpt-5-mini"]);
+    // no model has run yet → the config pin is the default
+    assert.equal(byId.get("openai")?.defaultModel, "gpt-5");
+    assert.equal(byId.get("claude")?.defaultModel, "claude-sonnet-5");
     assert.equal(byId.get("openai")?.isDefault, true);
     assert.equal(byId.get("claude")?.isDefault, false);
     // first aisdk profile gets the first palette colour; explicit wins
     assert.equal(byId.get("openai")?.color, "cyan");
     assert.equal(byId.get("deepseek")?.color, "red");
+  } finally {
+    await hh.cleanup();
+  }
+});
+
+test("the last model a provider ran becomes its default for new sessions", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.local]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "pin-a"
+models   = ["pin-a", "pin-b"]
+`,
+  });
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+
+    // Nothing has run yet → providers.list falls back to the config pin.
+    let list = await c.request<Array<{ id: string; defaultModel: string }>>("providers.list");
+    assert.equal(list.find((p) => p.id === "local")?.defaultModel, "pin-a");
+
+    // Switching a session's model on this provider records it as "last used".
+    const s = await c.request<{ id: string }>("session.createStub", {
+      prompt: "x",
+      provider: "local",
+      model: "pin-a",
+    });
+    await c.request("session.setModel", { id: s.id, model: "pin-b", by: "t" });
+
+    list = await c.request<Array<{ id: string; defaultModel: string }>>("providers.list");
+    assert.equal(list.find((p) => p.id === "local")?.defaultModel, "pin-b");
+
+    await c.close();
   } finally {
     await hh.cleanup();
   }

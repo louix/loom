@@ -8,6 +8,7 @@ import {
   allowedActs,
   cacheHeat,
   cacheStatus,
+  defaultModelOf,
   defaultProviderId,
   findPickItems,
   footerHints,
@@ -436,6 +437,15 @@ test("footerHints gives every overlay its own fixed key set", () => {
   assert.deepEqual(footerHints({ ...base, mode: "prompt" }), []); // editor draws itself
   assert.deepEqual(keysFor("picker"), ["move", "pick", "cancel"]);
   assert.deepEqual(keysFor("confirm"), ["confirm", "cancel"]);
+  // a delete confirm that carries a branch gets the extra toggle
+  assert.deepEqual(
+    footerHints({
+      ...base,
+      mode: "confirm",
+      confirm: { title: "x", danger: true, action: "deleteSession", sessionId: "s1", branchName: "loom/x" },
+    }).map((h) => h.label),
+    ["confirm", "+ branch", "cancel"],
+  );
   assert.deepEqual(keysFor("sendChoice"), ["inject now", "queue", "back"]);
   assert.deepEqual(keysFor("plan"), ["implement", "fresh", "edit", "discuss", "view"]);
   assert.deepEqual(keysFor("help"), ["close help"]);
@@ -675,6 +685,32 @@ test("confirm open / run / close", () => {
   assert.equal(s.confirm, null);
 });
 
+test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", () => {
+  let s = reduce(initialState(), {
+    t: "openConfirm",
+    confirm: {
+      title: "Delete?",
+      danger: true,
+      action: "deleteSession",
+      sessionId: "s1",
+      branchName: "loom/x",
+      deleteBranch: false,
+    },
+  });
+  s = reduce(s, { t: "toggleConfirmBranch" });
+  assert.equal(s.confirm?.deleteBranch, true);
+  s = reduce(s, { t: "toggleConfirmBranch" });
+  assert.equal(s.confirm?.deleteBranch, false);
+
+  // no branchName (in-place / gc'd session) → the toggle is inert
+  let t = reduce(initialState(), {
+    t: "openConfirm",
+    confirm: { title: "Delete?", danger: true, action: "deleteSession", sessionId: "s2" },
+  });
+  t = reduce(t, { t: "toggleConfirmBranch" });
+  assert.equal(t.confirm?.deleteBranch, undefined);
+});
+
 test("help toggles the mode without disturbing the rest of the state", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
@@ -737,9 +773,9 @@ test("selectedSession returns the highlighted row or null", () => {
 // ---------------------------------------------------------------------------
 
 const PROVIDERS = [
-  { id: "claude", models: [], tag: "claude", color: "", isDefault: true },
-  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], tag: "oai", color: "cyan", isDefault: false },
-  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], tag: "ds", color: "magenta", isDefault: false },
+  { id: "claude", models: [], defaultModel: "claude-sonnet-5", tag: "claude", color: "", isDefault: true },
+  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", tag: "oai", color: "cyan", isDefault: false },
+  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", tag: "ds", color: "magenta", isDefault: false },
 ];
 
 function withProviders(): TuiState {
@@ -820,10 +856,17 @@ test("a live model picker closes if its session is removed", () => {
   assert.equal(s.mode, "browse");
 });
 
-test("makePrompt carries provider + model for the N flow", () => {
+test("makePrompt carries provider + model for the ⌃P chooser flow", () => {
   const p = makePrompt({ kind: "new", sessionId: null, label: "new", provider: "openai", model: "o4" });
   assert.equal(p.provider, "openai");
   assert.equal(p.model, "o4");
+});
+
+test("defaultModelOf reads the provider's advertised default model", () => {
+  const s = withProviders();
+  assert.equal(defaultModelOf(s, "openai"), "gpt-5");
+  assert.equal(defaultModelOf(s, "claude"), "claude-sonnet-5");
+  assert.equal(defaultModelOf(s, "nope"), "");
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks

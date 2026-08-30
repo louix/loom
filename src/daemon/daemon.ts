@@ -28,7 +28,12 @@ import {
   type SessionSnapshot,
 } from "../protocol/wire.ts";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
-import { ChildStore, CheckpointStore, type UsageDelta } from "../store/sessions.ts";
+import {
+  ChildStore,
+  CheckpointStore,
+  ProviderDefaultStore,
+  type UsageDelta,
+} from "../store/sessions.ts";
 import { ProviderMessageStore } from "../provider/aisdk/store.ts";
 import { estimateTokens } from "../provider/aisdk/tokens.ts";
 import { EventLog } from "./event-log.ts";
@@ -128,6 +133,7 @@ export class Daemon {
   #children: ChildStore;
   #checkpoints: CheckpointStore;
   #pmsgs: ProviderMessageStore;
+  #providerDefaults: ProviderDefaultStore;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   #events: EventLog;
@@ -178,6 +184,7 @@ export class Daemon {
     this.#children = new ChildStore(this.#db);
     this.#checkpoints = new CheckpointStore(this.#db);
     this.#pmsgs = new ProviderMessageStore(this.#db);
+    this.#providerDefaults = new ProviderDefaultStore(this.#db);
     this.#events = new EventLog(this.config.daemon.eventBufferSize);
     this.#dispatcher = new RpcDispatcher();
     this.#server = new SocketServer({
@@ -294,8 +301,10 @@ export class Daemon {
       this.#emitSessionUpdated(this.#registry.mustGet(id));
     }
 
-    for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
     await this.#resolveAutoModels();
+    // Lint after detection so an auto-detect provider that resolved fine isn't
+    // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
+    for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
 
     await this.#server.listen();
 
@@ -457,13 +466,21 @@ export class Daemon {
   #providerList(): ProviderInfo[] {
     const def = this.#providers.defaultId;
     const out: ProviderInfo[] = [
-      { id: "claude", models: [], tag: "claude", color: "", isDefault: def === "claude" },
+      {
+        id: "claude",
+        models: [],
+        defaultModel: this.config.providers.claude.model,
+        tag: "claude",
+        color: "",
+        isDefault: def === "claude",
+      },
     ];
     let i = 0;
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
       out.push({
         id,
         models: p.models,
+        defaultModel: this.#defaultModelFor(id),
         tag: p.tag || id,
         color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
         isDefault: def === id,
@@ -471,6 +488,21 @@ export class Daemon {
       i += 1;
     }
     return out;
+  }
+
+  /**
+   * The model a new session on `providerId` uses when the caller names none:
+   * the last model run on it (persisted in `meta`), else a config `model` pin,
+   * else the first auto-detected model. A remembered model that has dropped out
+   * of the provider's detected list is ignored.
+   */
+  #defaultModelFor(providerId: string): string {
+    if (providerId === "claude") return this.config.providers.claude.model;
+    const p = this.config.providers.aisdk[providerId];
+    if (!p) return "";
+    const remembered = this.#providerDefaults.model(providerId);
+    if (remembered && (p.models.length === 0 || p.models.includes(remembered))) return remembered;
+    return p.model || p.models[0] || "";
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
@@ -792,13 +824,27 @@ export class Daemon {
           ? (p["provider"] as string)
           : this.#providers.defaultId;
       const mode: SessionMode = isSessionMode(p["mode"]) ? p["mode"] : "default";
-      const model =
-        typeof p["model"] === "string"
-          ? (p["model"] as string)
-          : providerId === "claude"
-            ? this.config.providers.claude.model
-            : (this.config.providers.aisdk[providerId]?.model ?? null);
       const aisdkProfile = this.config.providers.aisdk[providerId];
+      const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
+      // Tell the operator once when the model we'd have reused has dropped out of
+      // the endpoint's list since it last ran (item: "handle when the default is
+      // no longer there").
+      if (!explicitModel && aisdkProfile) {
+        const remembered = this.#providerDefaults.model(providerId);
+        if (remembered && aisdkProfile.models.length > 0 && !aisdkProfile.models.includes(remembered)) {
+          this.#emitNotice(
+            `${providerId}: last model "${remembered}" is no longer offered — using ${
+              this.#defaultModelFor(providerId) || "the provider default"
+            }`,
+            "warn",
+          );
+        }
+      }
+      const model =
+        explicitModel ??
+        (providerId === "claude"
+          ? this.config.providers.claude.model
+          : this.#defaultModelFor(providerId) || null);
       if (aisdkProfile && !model) {
         throw new RpcError(
           "bad_request",
@@ -849,6 +895,10 @@ export class Daemon {
         ...(wt ? {} : { inPlace: true }),
         ...(budget ? { budget } : {}),
       });
+
+      // Remember what this provider just ran, so the next `new` on it defaults
+      // here without the model being pinned in config.
+      if (aisdkProfile && model) this.#providerDefaults.remember(providerId, model);
 
       const isClaude = providerId === "claude";
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
@@ -916,6 +966,21 @@ export class Daemon {
         throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
       }
       const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
+      // If the model this session ran on has since dropped out of the endpoint's
+      // list, resume on the current default instead of failing the first turn.
+      let model = row.model;
+      const prof = this.config.providers.aisdk[row.provider];
+      if (prof && model && prof.models.length > 0 && !prof.models.includes(model)) {
+        const swap = this.#defaultModelFor(row.provider);
+        if (swap && swap !== model) {
+          this.#emitNotice(
+            `${row.provider}: model "${model}" is no longer offered — resuming ${id.slice(0, 8)} on "${swap}"`,
+            "warn",
+          );
+          this.#registry.setFields(id, { model: swap });
+          model = swap;
+        }
+      }
       try {
         await this.#sessions.resume(await this.#providers.get(row.provider), {
           sessionId: id,
@@ -923,7 +988,7 @@ export class Daemon {
           cwd: row.worktree ?? this.repoRoot,
           mode,
           mcpServers: this.#mcpHandles(),
-          ...(row.model ? { model: row.model } : {}),
+          ...(model ? { model } : {}),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1193,9 +1258,14 @@ export class Daemon {
     d.register("session.setModel", async (params) => {
       const id = reqString(params, "id");
       const model = reqString(params, "model");
-      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const row = this.#registry.get(id);
+      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
       const snap = this.#registry.setFields(id, { model });
+      // A deliberate switch is also "the last model used" for this provider.
+      if (this.config.providers.aisdk[row.provider]) {
+        this.#providerDefaults.remember(row.provider, model);
+      }
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;
     });
@@ -1251,11 +1321,14 @@ export class Daemon {
     });
 
     // remove: delete a session row for good — its worktree and its stored
-    // transcript / history / checkpoints go with it (child tables cascade). The
-    // branch is left alone, like `gc`. An in-place session shares the repo
-    // working dir, so its "worktree" is never removed.
+    // transcript / history / checkpoints go with it (child tables cascade).
+    // The branch is left alone (like `gc`) unless `deleteBranch` is set. An
+    // in-place session shares the repo working dir, so its "worktree" is never
+    // removed and it has no branch to delete.
     d.register("session.remove", async (params) => {
       const id = reqString(params, "id");
+      const p = isObj(params) ? params : {};
+      const alsoBranch = p["deleteBranch"] === true;
       const s = this.#registry.get(id);
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
@@ -1270,11 +1343,16 @@ export class Daemon {
           });
         }
       }
+      let branchDeleted = false;
+      if (alsoBranch && s.branch && !s.inPlace) {
+        this.#worktrees.prune(); // release the worktree's hold on the branch first
+        branchDeleted = this.#worktrees.deleteBranch(s.branch);
+      }
       this.#registry.remove(id);
       this.#emitSessionRemoved(id);
       this.#worktrees.prune();
       this.#onActivityChange("session-removed");
-      return { removed: id };
+      return { removed: id, branchDeleted };
     });
 
     // gc: remove worktrees for sessions marked done. Branches are never

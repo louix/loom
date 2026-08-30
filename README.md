@@ -119,9 +119,12 @@ the Vercel AI SDK.
   plan, `⇧⇥` cycle the permission mode, `M` switch the session's model (applies
   next turn), `u` undo — rewind an idle session to an earlier turn (shows the
   re-prime cost), `⌃f` hard-fork it into a new session + worktree, `⌃y` copy the
-  branch to the clipboard, `n` start a new session, `N` start one after picking
-  a provider + model, `f` fuzzy-find a session by title or message text, `F`
-  toggle the event log between `full` and `chat`-only.
+  branch to the clipboard, `n` start a new session — the prompt shows which
+  provider / model it will use and `⌃P` changes them, `f` fuzzy-find a session
+  by title or message text, `F` toggle the event log between `full` and
+  `chat`-only.
+  `d` with nothing pending deletes the session (behind a confirm; `b` there also
+  deletes its branch).
   Sending to a session
   that's still working asks first: **inject now** or **queue** for when the
   turn ends. On an aisdk session "inject now" splices the message into the
@@ -175,16 +178,22 @@ transcript itself in `provider_messages`.
   Compaction is Loom's own: a summariser rebuilds the history to one message,
   on demand (`c`) or automatically near the context limit. A `task` tool
   delegates a scoped sub-task to a sub-agent whose steps nest in the log.
-- **10e** — the switching UX. `N` picks a provider then a model before the new
-  session (`n` is still one keystroke on the default). `M` switches the selected
-  session's model (next turn). Each fleet row's id is coloured by its provider;
-  the Detail pane spells out `engine · provider / model`. `loom providers` and
-  `loom models <provider>` from the CLI.
+- **10e** — the switching UX. `n` opens the new-session prompt with the provider
+  and model it will use shown inline; `⌃P` there walks a provider → model picker
+  and drops back on the prompt with what you'd typed intact. `M` switches the
+  selected session's model (next turn). Each fleet row's id is coloured by its
+  provider; the Detail pane spells out `engine · provider / model`.
+  `loom providers` and `loom models <provider>` from the CLI.
 
-Omit both `model` and `models` from an OpenAI-compatible profile and the daemon
-fills them from `{base_url}/models` at start-up (the native SDKs have no such
-probe — give them a `model`). `loom config` (also logged at launch) lints the
-loaded config — unset key vars, providers pending model auto-detection, a
+OpenAI-compatible profiles need no `model`: the picker list comes from
+`{base_url}/models`, and a new session defaults to the last model that provider
+ran (remembered in the db, shown by `loom providers`). A model that has since
+dropped out of the endpoint's list is skipped, with a notice. Pin `model` /
+`models` only for an endpoint whose `/models` is missing or wrong; the native
+SDKs (`[google]` / `[anthropic]`) still need a `model` (no probe).
+`loom config` (also logged at launch) lints the
+loaded config — unset key vars, providers whose model auto-detection found
+nothing, a
 keyless search backend. A first launch with no `~/.config/loom/config.toml`
 drops an annotated copy of `config.example.toml` there.
 
@@ -325,7 +334,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 287 cases
+npm test             # node:test — 294 cases
 ```
 
 ### Layout

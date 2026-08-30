@@ -55,12 +55,15 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # api_key_env = "OPENAI_API_KEY"    # env var holding the key; "" if keyless
 # api_key     = ""                  # or the key inline — wins over api_key_env,
 #                                   # but it's a plaintext secret; prefer the env var
-# model       = "gpt-5"             # default model for new sessions. Omit BOTH
-# models      = ["gpt-5", "gpt-5-mini"]   # model + models and Loom probes
-#                                   # {base_url}/models at start-up
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
 # title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
+#
+# The model list comes from {base_url}/models, and a new session defaults to the
+# last model this provider ran (remembered in the db). Pin one only if the
+# endpoint's /models is missing or wrong:
+# model  = "gpt-5"                  # force this model
+# models = ["gpt-5", "gpt-5-mini"]  # or a fixed picker list
 #
 # [google] / [anthropic] — one native profile each (@ai-sdk/google,
 # @ai-sdk/anthropic). The provider id is "google" / "anthropic". base_url is
