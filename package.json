@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "description": "Per-project daemon that runs and supervises a fleet of coding agents, each in its own git worktree.",
+  "packageManager": "pnpm@11.24.0",
   "bin": {
     "loom": "./src/cli/loom.ts"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "pnpm": ">=11.23.0"
   },
   "scripts": {
     "loom": "node src/cli/loom.ts",
@@ -17,20 +19,21 @@
     "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.99",
-    "@ai-sdk/google": "^2.0.94",
-    "@ai-sdk/mcp": "^0.0.31",
-    "@ai-sdk/openai-compatible": "^1.0.52",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.250",
-    "ai": "^5.0.249",
-    "ink": "^7.1.1",
-    "react": "^19.2.8",
-    "smol-toml": "^1.3.1",
-    "zod": "^4.4.3"
+    "@ai-sdk/anthropic": "2.0.99",
+    "@ai-sdk/google": "2.0.94",
+    "@ai-sdk/mcp": "0.0.31",
+    "@ai-sdk/openai-compatible": "1.0.52",
+    "@anthropic-ai/claude-agent-sdk": "0.3.251",
+    "ai": "5.0.249",
+    "ink": "7.1.1",
+    "react": "19.2.8",
+    "smol-toml": "1.8.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
-    "@types/react": "^19.2.18",
-    "typescript": "^5.9.2"
+    "@ai-sdk/provider": "2.0.3",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "typescript": "5.9.3"
   }
 }
