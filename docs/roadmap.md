@@ -660,18 +660,24 @@ A 7-item brain-dump. 296 → 298 tests.
   `versionMismatchAction()`: alone + idle → auto-restart (as before); other
   clients or live turns → a confirm ("restart anyway" / esc keeps the old
   daemon, press R later); already handled → a nag notice.
-- **Claude model list.** `[providers.claude] models` (default
-  `["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]`) — Claude
-  has no `/models` endpoint. `providers.list` reports it, so `M` and `⌥p` open a
-  real picker instead of "0 models · uses its configured model".
-  `#defaultModelFor("claude")` = remembered → config `model` → `models[0]`;
-  `session.create` / `setModel` remember Claude's last model too.
-- **Per-provider permission-mode cycle.** New `ProviderInfo.permissionModes`;
-  Claude omits `auto` (the SDK throws on a post-launch switch to
-  `bypassPermissions`) → cycles default/plan/acceptEdits only; aisdk keeps
-  `auto`. `session.setMode` / `session.create` reject an unsupported mode with a
-  clean `bad_request`; the Claude adapter wraps a rejected `setPermissionMode`.
-  Fixes "stuck in acceptEdits" and the raw bypassPermissions error.
+- **Claude model list — discovered, not hard-coded** (revised in `aed44ab`).
+  Optional `AgentProvider.listModels()`; `ClaudeProvider` runs a throwaway
+  `query()` whose prompt never yields — the `initialize` handshake carries the
+  catalog. The daemon probes once at start-up (`#resolveClaudeModels`,
+  non-standalone, best-effort, 10s cap) unless `[providers.claude] models` is
+  pinned; `providers.probeModels` / `loom models claude` use it too.
+  `providers.list` falls back to the single configured `model` so `M` / `⌥p` are
+  never empty. `#defaultModelFor("claude")` = remembered → config `model` →
+  `models[0]`; `session.create` / `setModel` remember Claude's last model too.
+- **`auto` mode passthrough** (revised in `aed44ab`). The Claude SDK's
+  `PermissionMode` has its own `'auto'` (proceeds, still prompts for anything it
+  judges unsafe) — *not* `bypassPermissions` (the flag-gated one Loom never
+  uses). `toPermissionMode` passes all four `SessionMode`s straight through
+  (compile-checked subset), so Claude cycles default → plan → acceptEdits → auto
+  like every provider — fixing "stuck in acceptEdits" / the raw
+  bypassPermissions error. An earlier cut of this batch added a per-provider
+  `permissionModes` wire field + cycle plumbing to exclude `auto` for Claude;
+  reverted — no provider needs a different set.
 - **No invisible mode.** The new-session prompt always shows the mode chip,
   `[default]` included; `⌥m mode:<name>` likewise.
 - **`⌥o` (view log) is inert on the new-session prompt** — no session/log yet;
