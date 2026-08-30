@@ -132,9 +132,10 @@ export interface PickerState {
   filter: string;
   /** Highlight into the *filtered* list. */
   index: number;
-  /** Carried context: provider id from the provider step; a live session for
-   *  `M`; the half-typed prompt to restore after the provider/model detour. */
-  ctx?: { provider?: string; liveSessionId?: string; draft?: string };
+  /** Carried context: provider id from the provider step; `liveSessionId` for a
+   *  live `⌥m` model switch; `draft` restores a half-typed prompt after the
+   *  detour; `reopenSend` returns to that session's send prompt afterwards. */
+  ctx?: { provider?: string; liveSessionId?: string; draft?: string; reopenSend?: string };
 }
 
 export function makePicker(init: {
@@ -1079,9 +1080,10 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
       local.push({ keys: "x", label: "done", act: "done", footer: true });
     }
     // Second tier — palette / help only (see the grammar note at the top of the
-    // file). `m` cycles the permission mode, `M` its rarer sibling the model.
-    local.push({ keys: "m", label: "mode", act: "mode" });
-    local.push({ keys: "M", label: "model", act: "model" });
+    // file). `⇧⇥` cycles the permission mode, `⌥m` its rarer sibling the model;
+    // both also work inside a prompt, so you can re-mode / re-model mid-message.
+    local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
+    local.push({ keys: "⌥m", label: "model", act: "model" });
     // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
     // don't advertise them there. Hard fork additionally needs an isolated
     // branch, which an in-place session doesn't have — undo (conversation-only)

@@ -21,7 +21,7 @@ import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
 import { LOOM_VERSION } from "../version.ts";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { C, shortId } from "./theme.ts";
+import { C, modeLabel, shortId } from "./theme.ts";
 import {
   Confirm,
   Detail,
@@ -525,7 +525,17 @@ export function App({
     if (p.kind === "model") {
       if (p.ctx?.liveSessionId) {
         const id = p.ctx.liveSessionId;
+        const back = p.ctx.reopenSend;
+        const draft = p.ctx.draft;
         dispatch({ t: "closePicker" });
+        // Came from a `send` prompt (⌥m mid-message) → drop the user back into
+        // it with the half-typed text intact once the switch is away.
+        if (back !== undefined) {
+          dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({ kind: "send", sessionId: back, label: "send", ...(draft !== undefined ? { text: draft } : {}) }),
+          });
+        }
         client
           .request("session.setModel", { id, model: cur.id, by: client.clientId })
           .then(() => dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }))
@@ -589,24 +599,50 @@ export function App({
     [state, openModelStep],
   );
 
-  /** Open a live model switcher for the selected session (the `M` key). */
-  const switchModel = useCallback(() => {
-    const s = selectedSession(state);
-    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-    const models = modelPickItems(state, s.provider);
-    if (models.length === 0) {
-      return void dispatch({ t: "notice", text: `${s.provider} has no alternate models`, tone: "dim" });
-    }
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "model",
-        title: `model · ${s.provider}`,
-        items: models,
-        ctx: { provider: s.provider, liveSessionId: s.id },
-      }),
-    });
-  }, [state]);
+  /** Open a live model switcher (`⌥m`): the selected session, or an explicit
+   *  one. From a `send` prompt, pass `draft` so the picker drops you back into
+   *  the half-typed message afterwards. */
+  const switchModel = useCallback(
+    (sessionId?: string, draft?: string) => {
+      const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+      if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+      const models = modelPickItems(state, s.provider);
+      if (models.length === 0) {
+        return void dispatch({ t: "notice", text: `${s.provider} has no alternate models`, tone: "dim" });
+      }
+      dispatch({
+        t: "openPicker",
+        picker: makePicker({
+          kind: "model",
+          title: `model · ${s.provider}`,
+          items: models,
+          ctx: {
+            provider: s.provider,
+            liveSessionId: s.id,
+            ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
+          },
+        }),
+      });
+    },
+    [state],
+  );
+
+  /** `⇧⇥` inside a `send` prompt: cycle the target session's permission mode on
+   *  the daemon, leaving the half-typed message untouched. */
+  const cyclePromptSessionMode = useCallback(
+    (sessionId: string) => {
+      const s = state.sessions.find((x) => x.id === sessionId);
+      if (!s) return void dispatch({ t: "notice", text: "session is gone", tone: "dim" });
+      const target = nextMode(s.mode as SessionMode);
+      client
+        .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
+        .then(() => dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" }))
+        .catch((e: unknown) =>
+          dispatch({ t: "notice", text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+        );
+    },
+    [state.sessions, client],
+  );
 
   const submitPrompt = useCallback(() => {
     const p = state.prompt;
@@ -995,8 +1031,23 @@ export function App({
           ? dispatch({ t: "notice", text: "no log yet — you're starting a new session", tone: "dim" })
           : viewInEditor());
       }
-      if (key.meta && input === "m" && p.kind === "new") {
-        return void dispatch({ t: "promptCycleMode" });
+      // ⇧⇥ cycles the permission mode without leaving the prompt: the
+      // not-yet-created session's, or the live session you're messaging.
+      if (key.tab && key.shift) {
+        if (p.kind === "new") return void dispatch({ t: "promptCycleMode" });
+        if (p.kind === "send" && p.sessionId) return void cyclePromptSessionMode(p.sessionId);
+        return;
+      }
+      // ⌥m swaps the model without leaving the prompt: a model step for the
+      // not-yet-created session, or a live switch on the one you're messaging.
+      if (key.meta && input === "m") {
+        if (p.kind === "new") {
+          const pid = p.provider ?? state.providers[0]?.id ?? "claude";
+          const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
+          return void openModelStep(pid, tag, p.buffer.text);
+        }
+        if (p.kind === "send" && p.sessionId) return void switchModel(p.sessionId, p.buffer.text);
+        return;
       }
       if (key.meta && input === "p" && p.kind === "new") {
         return void pickProviderModel(p.buffer.text);
@@ -1105,7 +1156,9 @@ export function App({
     if (key.pageDown) return setLogScroll((n) => Math.max(0, n - Math.max(1, logPage - 1)));
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
-    if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined); // Tab = navigation only
+    // ⇧⇥ cycles the permission mode; plain Tab fullscreens the event log.
+    if (key.tab && key.shift) return void (sel ? runAct("mode") : undefined);
+    if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined);
     if (key.escape) return void (logFull ? setLogFull(false) : undefined);
     // Enter on a fleet row = act on it: compose a message (running / idle /
     // stopped), or take up a pending question / plan. A pending *permission*
@@ -1116,7 +1169,10 @@ export function App({
       if (allowed.has("planreview")) return runAct("planreview");
       return;
     }
-    if (key.ctrl || key.meta) return; // Ctrl / Alt do nothing outside the prompt — swallow
+    // ⌥m switches the selected session's model — the one Alt key that also acts
+    // from the fleet view (its sibling ⇧⇥ does the same for the mode).
+    if (key.meta && input === "m") return void (sel ? runAct("model") : undefined);
+    if (key.ctrl || key.meta) return; // Ctrl / Alt otherwise do nothing outside the prompt — swallow
 
     // Space → the command palette: every action valid right now, fuzzy, with its key.
     if (input === " ") {
@@ -1131,7 +1187,6 @@ export function App({
     if (input === "R") return runAct("restart");
     if (input === "X") return runAct("delete");
     if (input === "F") return runAct("fork");
-    if (input === "M") return runAct("model");
 
     if (input === "q") return quitTui();
 
@@ -1142,7 +1197,6 @@ export function App({
       x: "done",
       c: "compact",
       u: "undo",
-      m: "mode",
       e: "title",
       b: "budget",
       y: "copybranch",

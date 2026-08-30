@@ -88,7 +88,7 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
   const { text, cursor } = buf;
 
   if (key.escape) return { kind: "cancel" };
-  if (key.tab) return { kind: "ignore" }; // Tab is navigation-only; mode cycles on ⌥m (app-intercepted)
+  if (key.tab) return { kind: "ignore" }; // Tab is navigation-only; ⇧⇥ (mode) is app-intercepted before this
   if (key.return) {
     // ⇧⏎ / ⌥⏎ insert a newline; bare ⏎ submits. (Shift+Enter only reaches us in
     // terminals that send a distinct code — Alt+Enter is the portable one; ⌥e

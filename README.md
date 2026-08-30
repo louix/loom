@@ -120,7 +120,8 @@ the Vercel AI SDK.
 | bare key | act on the selected session, or move |
 | `Shift`+key | the heavier / structural sibling — `Q` quit-all · `R` restart · `X` delete · `F` fork |
 | `Ctrl`+key | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w`); `⌃c` quits |
-| `Alt`+key | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥m` `⌥x` |
+| `Alt`+key | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥x`; `⌥m` (switch model) also acts from the fleet view |
+| `⇧⇥` | cycle the permission mode — on the selection, or inside a prompt (mid-message) |
 | `Space` | the command palette — every action valid right now, fuzzy, with its key |
 
 - **Acting on the selection**, from the verbs the footer offers (the rest live
@@ -129,8 +130,8 @@ the Vercel AI SDK.
   resume) or take up a pending question / plan; `a` approve a pending permission
   (kept explicit — Enter won't), `d` deny (deny-only — `X` deletes), `c` compact
   the context window (offered once the meter passes half), `i` interrupt, `x`
-  mark done. Second-tier, on the palette and `?` help: `m` cycle the permission mode,
-  `M` switch the model (next turn), `u` undo — rewind an idle session to an
+  mark done. Second-tier, on the palette and `?` help: `⇧⇥` cycle the permission
+  mode, `⌥m` switch the model (next turn), `u` undo — rewind an idle session to an
   earlier turn (shows the re-prime cost), `e` rename, `b` set a cost budget,
   `y` copy the branch, `o` view the log in `$EDITOR`, `v` full / chat,
   `F` hard-fork into a new session + worktree, `X` delete (behind a confirm;
@@ -145,15 +146,16 @@ the Vercel AI SDK.
   prompt) or the palette clears them. In a prompt, `Ctrl` carries the readline
   motions; `⌥e` hands the text to `$EDITOR` (event log alongside to copy from;
   nothing is sent until you press enter back in the UI), `⌥o` opens just the log
-  read-only, `⌥p` / `⌥m` pick the provider-model / mode for a new session,
-  `↑`/`↓` recall earlier prompts, and a failed submit reopens with the text
-  intact.
+  read-only, `⌥p` picks the provider-model for a new session, `⇧⇥` / `⌥m` change
+  the mode / model (a new session's, or — from a send prompt — the one you're
+  messaging, live), `↑`/`↓` recall earlier prompts, and a failed submit reopens
+  with the text intact.
 - **The daemon, from inside** — `R` restarts it (the client respawns one that
   inherits *this* shell's environment), `Q` quits the UI and stops it; both ask
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
   out of overlays — it never quits.
 
-**Permission modes** (`m`, or `--mode` on `run`): `manual` prompts for anything
+**Permission modes** (`⇧⇥`, or `--mode` on `run`): `manual` prompts for anything
 sensitive (the wire / SDK value is still `default`); `plan` keeps the agent
 read-only until it presents a plan you approve; `acceptEdits` auto-approves file
 edits but still gates commands; `auto` lets the agent proceed on its own but
@@ -199,8 +201,9 @@ transcript itself in `provider_messages`.
   delegates a scoped sub-task to a sub-agent whose steps nest in the log.
 - **10e** — the switching UX. `n` opens the new-session prompt with the provider
   and model it will use shown inline; `⌥p` there walks a provider → model picker
-  and drops back on the prompt with what you'd typed intact. `M` switches the
-  selected session's model (next turn). Each fleet row's id is coloured by its
+  and drops back on the prompt with what you'd typed intact. `⌥m` switches the
+  selected session's model (next turn) — from the fleet view or mid-message in a
+  send prompt; `⇧⇥` does the same for the permission mode. Each fleet row's id is coloured by its
   provider; the Detail pane spells out `engine · provider / model`.
   `loom providers` and `loom models <provider>` from the CLI. Claude's picker
   list is the CLI's own model catalog, fetched once at daemon start-up (pin
@@ -357,7 +360,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 300 cases
+npm test             # node:test — 305 cases
 ```
 
 ### Layout

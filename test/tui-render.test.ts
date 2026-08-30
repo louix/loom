@@ -152,6 +152,81 @@ test("esc does not quit; only overlays back out", async () => {
   }
 });
 
+const OAI_CFG = `
+[providers.oai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+models   = ["m1", "m2"]
+`;
+
+test("⇧⇥ cycles the mode and ⌥m opens the model picker on the selected session", async () => {
+  const { connect, cleanup } = await harness({ config: OAI_CFG });
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "oai",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(180);
+    assert.match(stdout.last, /\[manual\]/, "Detail shows the mode as a bracketed chip");
+
+    stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the permission mode
+    await delay(160);
+    const after = await client.request<SessionSnapshot[]>("session.list");
+    assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "⇧⇥ cycled manual → plan");
+    assert.match(stdout.last, /\[plan\]/, "the Detail chip follows the change");
+
+    stdin.feed("\x1bm"); // ⌥m — the model switcher (M is retired)
+    await delay(140);
+    assert.match(stdout.last, /model · oai/i, "⌥m opened the model picker");
+    assert.match(stdout.last, /m1/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send prompt", async () => {
+  const { connect, cleanup } = await harness({ config: OAI_CFG });
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "oai",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(180);
+    stdin.feed("\r"); // Enter opens the send prompt
+    await delay(100);
+    stdin.feed("switch to plan first");
+    await delay(80);
+    assert.match(stdout.last, /\[manual\]/, "the send prompt shows the session's current mode");
+
+    stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
+    await delay(160);
+    const after = await client.request<SessionSnapshot[]>("session.list");
+    assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "the session was re-moded from the prompt");
+    assert.match(stdout.last, /\[plan\]/, "the prompt chip reflects it");
+    assert.match(stdout.last, /switch to plan first/, "the half-typed message survived");
+
+    stdin.feed("\x1bm"); // ⌥m — model picker for the target
+    await delay(140);
+    assert.match(stdout.last, /model · oai/i, "⌥m opened the model picker for the target");
+
+    stdin.feed("\r"); // pick m1 → back to the send prompt with the draft
+    await delay(160);
+    assert.match(stdout.last, /switch to plan first/, "the draft comes back after the model switch");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("R raises a restart confirmation that esc dismisses", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

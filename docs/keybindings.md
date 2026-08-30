@@ -26,6 +26,9 @@ Consequences:
   `Enter` away, and the palette teaches you the key for next time.
 - The footer only ever shows the few most pertinent verbs for the current state,
   plus `␣ more`.
+- Two session-control keys work **both** in browse and inside a prompt, so you
+  can change your mind mid-message: `⇧⇥` cycles the permission mode, `⌥m` swaps
+  the model. (`⌥m` is the one `Alt` key that also acts from the fleet view.)
 
 ## Browse (the fleet view)
 
@@ -55,8 +58,8 @@ Consequences:
 
 | key | action |
 |-----|--------|
-| `m` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`) |
-| `M` | switch the session's model — applies next turn |
+| `⇧⇥` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`) |
+| `⌥m` | switch the session's model — applies next turn |
 | `u` | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
 | `e` | rename the session |
 | `b` | set a cost budget (soft-warns, then hard-halts) |
@@ -101,8 +104,9 @@ Consequences:
 |-----|--------|
 | `⌥e` | edit the text in `$EDITOR`, event log opened alongside (`:wq` to return); nothing is sent until `Enter` back in the UI |
 | `⌥o` | open the event log in `$EDITOR`, read-only |
+| `⇧⇥` | cycle the permission mode — the new session's *(new prompt)*, or the one you're messaging, live *(send prompt)* |
+| `⌥m` | switch the model — a model step for the new session *(new prompt)*, or a live switch on the one you're messaging *(send prompt, draft kept)* |
 | `⌥p` | pick the provider / model  *(new-session prompt only)* |
-| `⌥m` | cycle the permission mode  *(new-session prompt only)* |
 | `⌥x` | clear the session's queued messages  *(send prompt only)* |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`

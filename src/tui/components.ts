@@ -288,7 +288,9 @@ export function Detail({
         { color: look.color, bold: true },
         `${look.glyph} ${look.label}${s.awaitReason ? ` · ${s.awaitReason}` : ""}`,
       ),
-      h(Text, { color: C.dim }, `mode ${modeLabel(s.mode)}`),
+      // `[mode]` in the same gold the event log gives tool commands — the one
+      // thing on this row you change mid-session, so it should catch the eye.
+      h(Text, {}, h(Text, { color: C.dim }, "mode "), h(Text, { color: C.warn }, `[${modeLabel(s.mode)}]`)),
       h(Text, { color: C.dim }, `${s.turns} turn${s.turns === 1 ? "" : "s"}`),
     ),
     h(
@@ -574,12 +576,24 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   compact: "compact",
 };
 
-function promptHints(p: PromptState, queued: number): string {
+/** The `[mode]` chip: gold once it's off the mundane `manual` default, faint
+ *  otherwise — the same chip the Detail pane shows for a live session. */
+function modeChip(mode: string | null | undefined): ReactNode {
+  return h(Text, { color: mode && mode !== "default" ? C.warn : C.faint }, `[${modeLabel(mode)}]`);
+}
+
+function promptHints(p: PromptState, queued: number, sessionMode?: string | null): string {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥⏎ newline", "⌥e editor"];
   if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
   if (p.kind === "new") {
-    bits.push(`⌥m mode:${modeLabel(p.mode)}`);
+    // ⇧⇥ cycles the mode the session starts in; ⌥m / ⌥p pick its model.
+    bits.push(`⇧⇥ mode:${modeLabel(p.mode)}`);
     bits.push("⌥p provider/model");
+  } else if (p.kind === "send") {
+    // ⇧⇥ re-modes the live session, ⌥m swaps its model — both without leaving
+    // the half-typed message.
+    bits.push(`⇧⇥ mode:${modeLabel(sessionMode)}`);
+    bits.push("⌥m model");
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
@@ -606,6 +620,10 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
                   ? "what to keep in focus — blank compacts the whole history"
                   : "type a message…";
     const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
+    // A send prompt re-modes / re-models its target with ⇧⇥ / ⌥m, so it shows
+    // the session's current mode chip too.
+    const sendSess =
+      p.kind === "send" && p.sessionId ? state.sessions.find((x) => x.id === p.sessionId) : null;
     return h(
       Box,
       { flexDirection: "column", width, paddingX: 1 },
@@ -613,13 +631,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
         Box,
         { gap: 1 },
         h(Text, { color: C.accent, bold: true }, p.label),
-        p.kind === "new"
-          ? h(
-              Text,
-              { color: p.mode && p.mode !== "default" ? C.warn : C.faint },
-              `[${modeLabel(p.mode)}]`,
-            )
-          : null,
+        p.kind === "new" ? modeChip(p.mode) : sendSess ? modeChip(sendSess.mode) : null,
         p.kind === "new"
           ? h(
               Text,
@@ -630,7 +642,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
         p.kind === "new" ? h(Text, { color: C.faint }, "⌥p change") : null,
       ),
       h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
-      h(Text, { color: C.faint }, promptHints(p, queued)),
+      h(Text, { color: C.faint }, promptHints(p, queued, sendSess?.mode)),
     );
   }
 
@@ -845,7 +857,8 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
   ["bare key", "act on the selected session, or move"],
   ["Shift + key", "the heavier / structural sibling — Q quit-all · R restart · X delete · F fork"],
   ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
-  ["Alt + key", "run a prompt action without leaving it — ⌥e ⌥o ⌥p ⌥m ⌥x"],
+  ["Alt + key", "run an action without leaving the prompt — ⌥e ⌥o ⌥p ⌥x; ⌥m switches the model (also from the fleet view)"],
+  ["⇧⇥", "cycle the permission mode — on the selection, or inside a prompt (mid-message)"],
   ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
 ];
 
@@ -855,7 +868,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["a / ⏎  ·  d", "approve a request (`a` only) · answer / review it (`⏎` too)  ·  `d` deny (deny-only — never deletes)"],
   ["⏎  ·  i", "send a message to the selected session (revives a stopped one)  ·  interrupt its turn"],
   ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
-  ["u  ·  m  ·  M", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model"],
+  ["u  ·  ⇧⇥  ·  ⌥m", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)"],
   ["e  ·  b  ·  y", "rename  ·  set a cost budget  ·  copy the branch name to the clipboard"],
   ["o  ·  v  ·  ⇥", "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log"],
   ["n  ·  f", "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session"],
@@ -872,7 +885,8 @@ const EDIT_ROWS: Array<[string, string]> = [
   ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
   ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
   ["⌥e  ·  ⌥o", "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only"],
-  ["⌥p  ·  ⌥m", "pick the provider / model  ·  cycle the mode   (both new-session only)"],
+  ["⇧⇥  ·  ⌥m", "cycle the permission mode  ·  switch the model — the new session's, or the one you're messaging"],
+  ["⌥p", "provider / model picker   (new-session prompt only)"],
   ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
 ];
 
