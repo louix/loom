@@ -879,12 +879,12 @@ export function App({
     return {
       title: `Delete session ${shortId(s.id)}?`,
       body: canBranch
-        ? `${name} — its worktree and stored transcript go too. Its branch is kept unless you add it below.`
+        ? `${name} — its worktree, stored transcript, and branch go too. Press b to keep the branch.`
         : `${name} — its worktree and stored transcript go too.`,
       danger: true,
       action: "deleteSession",
       sessionId: s.id,
-      ...(canBranch ? { branchName: s.branch as string, deleteBranch: false } : {}),
+      ...(canBranch ? { branchName: s.branch as string, deleteBranch: true } : {}),
     };
   };
   const runConfirm = useCallback(() => {

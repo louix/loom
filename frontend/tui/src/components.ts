@@ -697,7 +697,7 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
             { color: confirm.deleteBranch ? C.bad : C.dim },
             confirm.deleteBranch
               ? `will also delete branch ${confirm.branchName}`
-              : `also delete branch ${confirm.branchName}`,
+              : `keep branch ${confirm.branchName}`,
           ),
         )
       : null,
