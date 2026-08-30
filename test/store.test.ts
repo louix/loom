@@ -10,6 +10,7 @@ import {
   ProviderDefaultStore,
   SessionStore,
 } from "@loom/daemon/store/sessions";
+import { SessionEventStore } from "@loom/daemon/store/session-events";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -254,6 +255,45 @@ test("CheckpointStore records / lists / truncates; setTurns resets the counter",
 
     sessions.setTurns("s1", 1);
     assert.equal(sessions.get("s1")?.turns, 1);
+
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("SessionEventStore: append/list preserves order, respects limit, cascades on session delete", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const sessions = new SessionStore(db);
+    sessions.create({ id: "s1", provider: "claude" });
+
+    const events = new SessionEventStore(db);
+    events.append("s1", 10, { type: "assistant_text", sessionId: "s1", ts: 1, text: "one" });
+    events.append("s1", 11, { type: "assistant_text", sessionId: "s1", ts: 2, text: "two" });
+    events.append("s1", 12, { type: "assistant_text", sessionId: "s1", ts: 3, text: "three" });
+
+    const all = events.list("s1");
+    assert.deepEqual(
+      all.map((f) => [f.seq, (f.event as { text: string }).text]),
+      [
+        [10, "one"],
+        [11, "two"],
+        [12, "three"],
+      ],
+    );
+    assert.ok(all.every((f) => f.kind === "push" && f.type === "event"));
+
+    // limit keeps the most recent N, still oldest-first
+    const capped = events.list("s1", { limit: 2 });
+    assert.deepEqual(
+      capped.map((f) => (f.event as { text: string }).text),
+      ["two", "three"],
+    );
+
+    sessions.delete("s1");
+    assert.deepEqual(events.list("s1"), []);
 
     db.close();
   } finally {

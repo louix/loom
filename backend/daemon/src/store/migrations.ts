@@ -125,4 +125,22 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN in_place INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 9 — durable per-session event history. The cross-session in-memory
+  // `EventLog` ring (daemon.ts) only covers a live client's reconnect gap and
+  // is shared by every session, so a busy session can evict a quiet one's
+  // history outright; nothing there survives a restart either. `seq` mirrors
+  // the EventLog frame's own seq so a replayed row dedupes identically to a
+  // live push on the client.
+  /* sql */ `
+  CREATE TABLE session_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    ts          INTEGER NOT NULL
+  );
+  CREATE INDEX session_events_session_idx ON session_events(session_id, id);
+  `,
 ];

@@ -123,6 +123,38 @@ test("dev.emit is broadcast to a subscribed client with a monotonic seq", async 
   await c.close();
 });
 
+test("session.events returns a session's durable history, oldest first, excluding status/compact heartbeats", async () => {
+  const c = await client();
+  const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
+
+  await c.request("dev.emit", { event: { sessionId: stub.id, type: "assistant_text", text: "one" } });
+  await c.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "two" } });
+  // neither of these should end up in the durable history — the TUI never
+  // renders them either (see `applyPush` in the frontend model)
+  await c.request("dev.emit", { event: { sessionId: stub.id, type: "status_changed", status: "running" } });
+  await c.request("dev.emit", {
+    event: { sessionId: stub.id, type: "compact_progress", elapsedMs: 100, generated: 10, before: 1000 },
+  });
+
+  const events = await c.request<Array<{ seq: number; type: string; event: { text?: string; type: string } }>>(
+    "session.events",
+    { id: stub.id },
+  );
+  assert.deepEqual(
+    events.map((f) => f.event.text),
+    ["one", "two"],
+  );
+  assert.ok(events.every((f) => f.type === "event"));
+  assert.ok(events[0]!.seq < events[1]!.seq);
+
+  // a capped fetch keeps the most recent N, still oldest-first
+  const capped = await c.request<Array<{ event: { text?: string } }>>("session.events", { id: stub.id, limit: 1 });
+  assert.deepEqual(capped.map((f) => f.event.text), ["two"]);
+
+  await assert.rejects(c.request("session.events", { id: "no-such-session" }));
+  await c.close();
+});
+
 test("setStatus broadcasts a session_updated with a bumped version and attribution", async () => {
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", status: "running" });

@@ -31,6 +31,7 @@ import {
   type UsageDelta,
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../store/provider-messages.ts";
+import { SessionEventStore } from "../store/session-events.ts";
 import { estimateTokens } from "@loom/core/tokens";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
@@ -136,6 +137,7 @@ export class Daemon {
   #children: ChildStore;
   #checkpoints: CheckpointStore;
   #pmsgs: ProviderMessageStore;
+  #sessionEvents: SessionEventStore;
   #providerDefaults: ProviderDefaultStore;
   /** Claude's CLI-reported model catalog, discovered once at start-up. */
   #claudeChoices: ModelChoice[] | null = null;
@@ -189,6 +191,7 @@ export class Daemon {
     this.#children = new ChildStore(this.#db);
     this.#checkpoints = new CheckpointStore(this.#db);
     this.#pmsgs = new ProviderMessageStore(this.#db);
+    this.#sessionEvents = new SessionEventStore(this.#db);
     this.#providerDefaults = new ProviderDefaultStore(this.#db);
     this.#events = new EventLog(this.config.daemon.eventBufferSize);
     this.#dispatcher = new RpcDispatcher();
@@ -379,6 +382,13 @@ export class Daemon {
   emitEvent(event: HarnessEvent): number {
     if (this.#stopping) return this.#events.head;
     const frame = this.#events.append({ kind: "push", type: "event", event });
+    // `status_changed` is redundant with `status_history`; `compact_progress`
+    // is a heartbeat the TUI never renders (see `applyPush` in the frontend
+    // model) — skip both so the durable log only holds what a client would
+    // ever actually backfill.
+    if (event.type !== "status_changed" && event.type !== "compact_progress") {
+      this.#sessionEvents.append(event.sessionId, frame.seq, event);
+    }
     this.#server.broadcast(frame);
     return frame.seq;
   }
@@ -946,6 +956,17 @@ export class Daemon {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       return this.#registry.store.statusHistory(id);
+    });
+
+    // The durable counterpart to the cross-session `EventLog` ring — lets a
+    // client backfill a session's own history once it's fallen out of that
+    // ring (busy neighbour sessions, or a daemon restart).
+    d.register("session.events", (params) => {
+      const id = reqString(params, "id");
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const p = isObj(params) ? params : {};
+      const limit = typeof p["limit"] === "number" ? p["limit"] : 500;
+      return this.#sessionEvents.list(id, { limit });
     });
 
     // --- session control (Claude adapter, milestone 2) --------------------

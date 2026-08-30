@@ -392,7 +392,41 @@ test("re-opening the TUI backfills the event log from the running daemon", async
   }
 });
 
-test("a running session's send prompt: bare Enter sends now, ⌥⏎ queues for turn end", async () => {
+test("selecting a session backfills its durable history when the live ring doesn't have it", async () => {
+  const { connect, cleanup } = await harness();
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "long-lived session",
+    status: "running",
+    provider: "fake",
+  });
+  await first.request("dev.emit", {
+    event: { sessionId: s.id, type: "assistant_text", text: "persisted from a prior turn" },
+  });
+  await delay(80);
+  await first.close();
+
+  // No replayHistory: unlike the test above, this client's own ring starts
+  // empty, so the old client's history can only reach the TUI via the new
+  // per-session `session.events` fetch triggered by selecting the session.
+  const second = await connect(false);
+  assert.equal(second.bufferedEvents.length, 0);
+  const { stdout, app } = mount(second);
+  try {
+    await delay(200);
+    assert.match(
+      stdout.last,
+      /persisted from a prior turn/,
+      "the TUI fetched the session's durable history on selection",
+    );
+  } finally {
+    app.unmount();
+    await second.close();
+    await cleanup();
+  }
+});
+
+test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy worker", provider: "fake" });

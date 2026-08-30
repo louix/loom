@@ -16,7 +16,7 @@ import {
 } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "@loom/client";
-import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
@@ -91,6 +91,9 @@ export function App({
   // acted on — a fresh overlay (e.g. provider picker → model picker) has a new
   // identity and passes.
   const overlayActed = useRef<object | null>(null);
+  // Sessions already backfilled from `session.events` this attach — a session
+  // switch shouldn't re-fetch what's already in `state.log`.
+  const historyBackfilled = useRef(new Set<string>());
 
   // ---- client wiring --------------------------------------------------
   const refetch = useCallback(() => {
@@ -219,6 +222,24 @@ export function App({
 
   // snap the log back to the live tail when the view changes underneath it
   useEffect(() => setLogScroll(0), [state.selectedId, state.logFilter]);
+
+  // The first time a session is selected this attach, backfill its durable
+  // history — the live/replayed push ring is cross-session and bounded, so a
+  // quiet session's events can be long gone from it even though the daemon
+  // still has them on disk (`session.events`). Frames carry the same global
+  // seq the ring uses, so dispatching them as ordinary pushes de-dupes for
+  // free against anything the ring already delivered.
+  useEffect(() => {
+    const id = state.selectedId;
+    if (!id || historyBackfilled.current.has(id)) return;
+    historyBackfilled.current.add(id);
+    client
+      .request<EventPush[]>("session.events", { id })
+      .then((frames) => {
+        for (const frame of frames) dispatch({ t: "push", frame });
+      })
+      .catch(() => {}); // an older daemon without this RPC just backfills nothing
+  }, [state.selectedId, client]);
 
   // ---- helpers ----------------------------------------------------
   const note = useCallback(
