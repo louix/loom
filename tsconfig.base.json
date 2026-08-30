@@ -6,6 +6,9 @@
     "moduleResolution": "nodenext",
     "types": ["node"],
 
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,

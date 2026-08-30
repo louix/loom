@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/run.ts",
-    "./run": "./src/run.ts",
+    ".": "./src/run.tsx",
+    "./run": "./src/run.tsx",
     "./app": "./src/app.ts",
     "./model": "./src/model.ts",
-    "./components": "./src/components.ts",
+    "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",
     "./editor-handoff": "./src/editor-handoff.ts",
     "./theme": "./src/theme.ts"

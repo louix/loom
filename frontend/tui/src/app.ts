@@ -1,7 +1,7 @@
 /**
  * Root Ink component: binds a {@link LoomClient} to the TUI model, owns the
  * keymap, and turns key presses into daemon RPCs. Rendering delegates to the
- * pure components in `./components.ts`; state logic lives in `./model.ts`;
+ * pure components in `./components.tsx`; state logic lives in `./model.ts`;
  * single-key text editing lives in `./editor.ts`. Written with `createElement`
  * (no JSX) to keep the no-build-step constraint.
  */
@@ -35,7 +35,7 @@ import {
   promptRows,
   RequestPanel,
   REQUEST_PANEL_ROWS,
-} from "./components.ts";
+} from "./components.tsx";
 import {
   allowedActs,
   commandsFor,

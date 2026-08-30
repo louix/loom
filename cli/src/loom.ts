@@ -178,16 +178,15 @@ async function main(): Promise<void> {
         break;
       }
       case "providers": {
-        const rows =
-          await client.request<
-            Array<{
-              id: string;
-              models: string[];
-              defaultModel: string;
-              color: string;
-              isDefault: boolean;
-            }>
-          >("providers.list");
+        const rows = await client.request<
+          Array<{
+            id: string;
+            models: string[];
+            defaultModel: string;
+            color: string;
+            isDefault: boolean;
+          }>
+        >("providers.list");
         if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
         else
           for (const p of rows)

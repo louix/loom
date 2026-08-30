@@ -12,6 +12,7 @@
     "harness/src/**/*.ts",
     "backend/daemon/src/**/*.ts",
     "frontend/tui/src/**/*.ts",
+    "frontend/tui/src/**/*.tsx",
     "connectors/*/src/**/*.ts",
     "cli/src/**/*.ts"
   ],

@@ -341,16 +341,15 @@ color    = "red"
       sockPath: hh.sockPath,
       autospawn: false,
     });
-    const list =
-      await c.request<
-        Array<{
-          id: string;
-          models: string[];
-          defaultModel: string;
-          color: string;
-          isDefault: boolean;
-        }>
-      >("providers.list");
+    const list = await c.request<
+      Array<{
+        id: string;
+        models: string[];
+        defaultModel: string;
+        color: string;
+        isDefault: boolean;
+      }>
+    >("providers.list");
     await c.close();
 
     const byId = new Map(list.map((p) => [p.id, p]));

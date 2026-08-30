@@ -9,7 +9,7 @@
     "daemon": "oxnode cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
     "watch": "tsc --noEmit --watch",
-    "test": "node --test \"test/*.test.ts\"",
+    "test": "node --import @oxc-node/core/register --test \"test/*.test.ts\"",
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."

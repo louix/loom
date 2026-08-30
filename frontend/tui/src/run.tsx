@@ -14,7 +14,6 @@
  * buffer around a `suspendTerminal` `$EDITOR` handoff and re-enters on return.
  * The option is a no-op when stdout isn't an interactive TTY (tests included).
  */
-import { createElement } from "react";
 import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.ts";
@@ -27,7 +26,7 @@ export async function runTui(client: LoomClient): Promise<void> {
   // the alt screen, which App's keymap reads as fleet-selection movement.
   if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
-  const instance = render(createElement(App, { client }), {
+  const instance = render(<App client={client} />, {
     exitOnCtrlC: false,
     alternateScreen: true,
   });

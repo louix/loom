@@ -43,6 +43,20 @@ class FakeIn extends EventEmitter {
   }
 }
 
+/**
+ * Poll the newest frame until it matches, or fail after `timeoutMs`. Steadier
+ * than a fixed `delay` for actions that spawn a worktree — the `@oxc-node/core`
+ * register hook adds enough per-import cost to blow a tight fixed wait.
+ */
+async function waitFor(stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (re.test(stdout.last)) return;
+    await delay(25);
+  }
+  assert.match(stdout.last, re);
+}
+
 function mount(client: LoomClient) {
   const stdout = new FakeOut();
   const stdin = new FakeIn();
@@ -933,9 +947,8 @@ model    = "gpt-5"
   try {
     await delay(200);
     stdin.feed("F"); // hard fork
-    await delay(300);
+    await waitFor(stdout, /forked from .* @ turn 0/); // Detail lineage line
     assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
-    assert.match(stdout.last, /forked from .* @ turn 0/); // Detail lineage line
   } finally {
     app.unmount();
     await client.close();

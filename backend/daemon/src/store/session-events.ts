@@ -40,13 +40,11 @@ export class SessionEventStore {
         "SELECT seq, payload FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
       )
       .all(sessionId, limit) as unknown as Row[];
-    return rows
-      .reverse()
-      .map((r) => ({
-        kind: "push",
-        type: "event",
-        seq: r.seq,
-        event: JSON.parse(r.payload) as HarnessEvent,
-      }));
+    return rows.reverse().map((r) => ({
+      kind: "push",
+      type: "event",
+      seq: r.seq,
+      event: JSON.parse(r.payload) as HarnessEvent,
+    }));
   }
 }
