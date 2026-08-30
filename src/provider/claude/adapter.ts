@@ -46,19 +46,16 @@ const CAPS: ProviderCapabilities = {
   compaction: true,
   oneShot: true,
   partialTokens: true,
-  // No "auto": it maps to the SDK's `bypassPermissions`, which the query can
-  // only enter if the CLI was *launched* with --dangerously-skip-permissions —
-  // `setPermissionMode("bypassPermissions")` throws afterwards. So Claude
-  // sessions cycle default → plan → acceptEdits only.
-  permissionModes: ["default", "plan", "acceptEdits"],
+  // All four map 1:1 onto the SDK's PermissionMode. In particular `auto` is the
+  // SDK's own "auto" (Claude proceeds, but still prompts for anything it judges
+  // unsafe) — *not* `bypassPermissions`, which is the one that needs the CLI to
+  // be launched with --dangerously-skip-permissions and which Loom never uses.
+  permissionModes: ["default", "plan", "acceptEdits", "auto"],
   models: [],
 };
 
-function toPermissionMode(mode: SessionMode): PermissionMode {
-  // "auto" is Loom's name for "don't ask me anything" — unreachable for Claude
-  // (see CAPS.permissionModes), but map it defensively for any stray call.
-  return mode === "auto" ? "bypassPermissions" : mode;
-}
+/** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
+const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
 
 function userMessage(text: string): SDKUserMessage {
   return {
@@ -356,8 +353,7 @@ class ClaudeSession implements AgentSession {
       await this.#query?.setPermissionMode(toPermissionMode(mode));
       this.#mode = mode;
     } catch (err) {
-      // e.g. bypassPermissions without the launch flag — keep the old mode and
-      // give the caller a readable reason rather than the raw SDK message.
+      // Keep the old mode and give the caller a readable reason.
       const raw = err instanceof Error ? err.message : String(err);
       throw new Error(`Claude rejected the "${mode}" permission mode: ${raw}`);
     }
@@ -460,5 +456,26 @@ export class ClaudeProvider implements AgentProvider {
   async listPersistedSessions(): Promise<SessionRef[]> {
     // Wired up with the worktree manager (M3), which owns the per-session cwd.
     return [];
+  }
+
+  /**
+   * The model catalog the CLI reports — no hard-coded list. A throwaway
+   * `query()` whose prompt never yields: the `initialize` handshake carries
+   * `models`, so we read it and close without running a turn.
+   */
+  async listModels(): Promise<string[]> {
+    const cli = this.#resolveCli();
+    const q = query({
+      prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
+      options: { ...(cli ? { pathToClaudeCodeExecutable: cli } : {}) },
+    });
+    try {
+      const init = await q.initializationResult();
+      return init.models
+        .map((m) => m.value)
+        .filter((v): v is string => typeof v === "string" && v.length > 0);
+    } finally {
+      await Promise.resolve(q.close?.()).catch(() => {});
+    }
   }
 }

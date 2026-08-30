@@ -17,7 +17,7 @@ commands:
   get <id>               one session's snapshot
   history <id>           status history for a session
   providers              list configured providers
-  models <provider>      query an aisdk provider's /models endpoint
+  models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   config                 lint the loaded config (exit 1 if there are warnings)
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -65,10 +65,11 @@ const USAGE: Record<string, string> = {
   gets without --model — the last one run on that provider, else a config pin,
   else the first auto-detected id.
   --json                       machine-readable`,
-  models: `loom models <provider>  — probe a provider's /models endpoint
+  models: `loom models <provider>  — list a provider's available models
 
-  works for openai-compatible providers ([custom-provider.*] and the built-in
-  openai profile). Prints one model id per line.  --json for an array.`,
+  \`claude\` asks the Claude CLI for its catalog; openai-compatible providers
+  ([custom-provider.*] and the built-in openai profile) are probed at
+  {base_url}/models. Prints one model id per line.  --json for an array.`,
   config: `loom config  — lint the loaded config
 
   reports unset api_key_env vars, providers with no key, keyless search

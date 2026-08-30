@@ -52,7 +52,6 @@ import {
   pendingFor,
   pickerCurrent,
   providerColorOf,
-  providerInfo,
   providerPickItems,
   queueFor,
   reduce,
@@ -65,8 +64,8 @@ import {
   type LogLine,
 } from "./model.ts";
 
-const nextMode = (m: SessionMode, modes: readonly SessionMode[] = SESSION_MODES): SessionMode =>
-  modes[(modes.indexOf(m) + 1) % modes.length] ?? "default";
+const nextMode = (m: SessionMode): SessionMode =>
+  SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
 
 export function App({
   client,
@@ -471,8 +470,7 @@ export function App({
             return "marked done";
           });
         case "mode": {
-          const modes = providerInfo(state, s.provider)?.permissionModes ?? SESSION_MODES;
-          const target = nextMode(s.mode as SessionMode, modes);
+          const target = nextMode(s.mode as SessionMode);
           return perform(async () => {
             await client.request("session.setMode", { id: s.id, mode: target, by });
             return `mode → ${target}`;

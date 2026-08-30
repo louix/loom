@@ -24,7 +24,6 @@ import {
   pickerCurrent,
   pickerVisible,
   providerColorOf,
-  providerInfo,
   providerPickItems,
   versionMismatchAction,
   queueFor,
@@ -804,11 +803,10 @@ test("selectedSession returns the highlighted row or null", () => {
 // picker: provider / model / find
 // ---------------------------------------------------------------------------
 
-const M4 = ["default", "plan", "acceptEdits", "auto"] as const;
 const PROVIDERS: ProviderInfo[] = [
-  { id: "claude", models: ["claude-opus-5", "claude-sonnet-5"], defaultModel: "claude-sonnet-5", permissionModes: ["default", "plan", "acceptEdits"], tag: "claude", color: "", isDefault: true },
-  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", permissionModes: [...M4], tag: "oai", color: "cyan", isDefault: false },
-  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", permissionModes: [...M4], tag: "ds", color: "magenta", isDefault: false },
+  { id: "claude", models: ["claude-opus-5", "claude-sonnet-5"], defaultModel: "claude-sonnet-5", tag: "claude", color: "", isDefault: true },
+  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", tag: "oai", color: "cyan", isDefault: false },
+  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", tag: "ds", color: "magenta", isDefault: false },
 ];
 
 function withProviders(): TuiState {
@@ -822,13 +820,10 @@ test("providers action populates state and the derived helpers", () => {
   assert.equal(providerColorOf(s, "claude"), "");
   assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
   assert.equal(providerPickItems(s).length, 3);
-  // claude now carries a curated model list too
+  // claude carries a model list too (the daemon fills it from the CLI catalog)
   assert.deepEqual(modelPickItems(s, "claude").map((i) => i.id), ["claude-opus-5", "claude-sonnet-5"]);
   assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
   assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
-  // claude drops `auto` from its permission-mode cycle
-  assert.deepEqual(providerInfo(s, "claude")?.permissionModes, ["default", "plan", "acceptEdits"]);
-  assert.deepEqual(providerInfo(s, "openai")?.permissionModes, ["default", "plan", "acceptEdits", "auto"]);
 });
 
 test("versionMismatchAction: bounce only when alone, otherwise prompt then nag", () => {

@@ -47,7 +47,6 @@ import { WorktreeManager } from "./worktrees.ts";
 import { ProviderRegistry } from "../provider/registry.ts";
 import {
   isSessionMode,
-  SESSION_MODES,
   type CreateSessionOptions,
   type McpServerHandle,
   type PermissionDecision,
@@ -303,6 +302,7 @@ export class Daemon {
     }
 
     await this.#resolveAutoModels();
+    await this.#resolveClaudeModels();
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
@@ -463,15 +463,46 @@ export class Daemon {
     );
   }
 
+  /**
+   * Ask the Claude CLI for its model catalog once at start-up, so `M` / `⌥p`
+   * offer real choices without a hard-coded list. Skipped when the user pinned
+   * `[providers.claude] models`, in standalone/test daemons, or when the
+   * provider has no `listModels`. Best-effort and bounded — a failure just
+   * leaves the list empty and `#providerList` falls back to the single pin.
+   */
+  async #resolveClaudeModels(): Promise<void> {
+    if (this.#standalone) return;
+    if (this.config.providers.claude.models.length > 0) return;
+    try {
+      const provider = await this.#providers.get("claude");
+      if (!provider.listModels) return;
+      const models = await Promise.race([
+        provider.listModels(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("timed out after 10s")), 10_000).unref?.(),
+        ),
+      ]);
+      if (models.length === 0) return;
+      this.config.providers.claude.models = models;
+      this.#log.info("claude models discovered", { count: models.length });
+    } catch (err) {
+      this.#log.warn("claude model discovery failed — set `[providers.claude] models` to pin a list", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   /** Configured providers for the TUI's creation flow / model switcher. */
   #providerList(): ProviderInfo[] {
     const def = this.#providers.defaultId;
+    const claude = this.config.providers.claude;
     const out: ProviderInfo[] = [
       {
         id: "claude",
-        models: this.config.providers.claude.models,
+        // Discovered catalog if we have it, else the single configured pin so
+        // the picker isn't empty.
+        models: claude.models.length ? claude.models : claude.model ? [claude.model] : [],
         defaultModel: this.#defaultModelFor("claude"),
-        permissionModes: this.#permissionModesFor("claude"),
         tag: "claude",
         color: "",
         isDefault: def === "claude",
@@ -483,7 +514,6 @@ export class Daemon {
         id,
         models: p.models,
         defaultModel: this.#defaultModelFor(id),
-        permissionModes: this.#permissionModesFor(id),
         tag: p.tag || id,
         color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
         isDefault: def === id,
@@ -491,18 +521,6 @@ export class Daemon {
       i += 1;
     }
     return out;
-  }
-
-  /**
-   * Permission modes a provider can actually run, in cycle order. Mirrors the
-   * adapter `CAPS.permissionModes` without instantiating the (lazy) provider:
-   * Claude drops `auto` because the SDK can't switch to `bypassPermissions`
-   * after launch; aisdk providers gate `auto` themselves and keep it.
-   */
-  #permissionModesFor(providerId: string): SessionMode[] {
-    return providerId === "claude"
-      ? ["default", "plan", "acceptEdits"]
-      : [...SESSION_MODES];
   }
 
   /**
@@ -803,6 +821,18 @@ export class Daemon {
 
     d.register("providers.probeModels", async (params) => {
       const id = reqString(params, "id");
+      if (id === "claude") {
+        try {
+          const provider = await this.#providers.get("claude");
+          const models = (await provider.listModels?.()) ?? this.config.providers.claude.models;
+          return { models };
+        } catch (err) {
+          throw new RpcError(
+            "provider_error",
+            `could not list models: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       const profile = this.config.providers.aisdk[id];
       if (!profile) throw new RpcError("not_found", `no aisdk provider: ${id}`);
       // Only OpenAI-compatible endpoints have a uniform `/models`; for the
@@ -844,12 +874,6 @@ export class Daemon {
           ? (p["provider"] as string)
           : this.#providers.defaultId;
       const mode: SessionMode = isSessionMode(p["mode"]) ? p["mode"] : "default";
-      if (!this.#permissionModesFor(providerId).includes(mode)) {
-        throw new RpcError(
-          "bad_request",
-          `${providerId} sessions don't support "${mode}" mode`,
-        );
-      }
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
       // Tell the operator once when the model we'd have reused has dropped out of
@@ -1272,14 +1296,7 @@ export class Daemon {
         throw new RpcError("bad_request", "mode must be one of default|plan|acceptEdits|auto");
       }
       const mode = (params as Record<string, unknown>)["mode"] as SessionMode;
-      const modeRow = this.#registry.get(id);
-      if (!modeRow) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!this.#permissionModesFor(modeRow.provider).includes(mode)) {
-        throw new RpcError(
-          "bad_request",
-          `${modeRow.provider} sessions can't switch to "${mode}" mode`,
-        );
-      }
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
       const snap = this.#registry.setFields(id, { mode });
       this.#emitSessionUpdated(snap, clientLabel(params));

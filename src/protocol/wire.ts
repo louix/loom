@@ -1,5 +1,4 @@
 import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
-import type { SessionMode } from "../provider/types.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -180,13 +179,10 @@ export interface HelloParams {
 /** A configured provider, for the TUI's creation flow and model switcher. */
 export interface ProviderInfo {
   id: string;
-  /** Models offered in the picker (`M` / `⌥p`). Claude has no discovery
-   *  endpoint, so its list is the curated `[providers.claude] models`. */
+  /** Models offered in the picker (`M` / `⌥p`). For `claude` this is the
+   *  CLI-reported catalog (discovered at daemon start-up); for aisdk it's the
+   *  configured / `/models`-probed list. */
   models: string[];
-  /** Permission modes this provider can actually run, in cycle order — the
-   *  TUI's `m` / `⌥m` rotate through exactly this. Claude omits `auto`
-   *  (the SDK can't switch to `bypassPermissions` after launch). */
-  permissionModes: SessionMode[];
   /**
    * Model a new session gets when none is chosen: the last one run on this
    * provider (remembered across restarts), else a config pin, else the first

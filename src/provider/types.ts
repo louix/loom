@@ -155,6 +155,12 @@ export interface AgentProvider {
   createSession(opts: CreateSessionOptions): Promise<AgentSession>;
   resumeSession(ref: SessionRef): Promise<AgentSession>;
   listPersistedSessions(): Promise<SessionRef[]>;
+  /**
+   * Models this provider can run right now, discovered live (e.g. the Claude
+   * CLI's own catalog, an OpenAI `/models` probe). Optional — a provider with
+   * no catalog omits it and callers fall back to configured `models`.
+   */
+  listModels?(): Promise<string[]>;
 }
 
 /** Map a Loom session mode to the closest provider permission mode label. */

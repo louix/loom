@@ -25,9 +25,9 @@ event_buffer_size     = 4096        # push-stream ring buffer, in frames
 
 [providers.claude]
 model              = "claude-sonnet-5"
-models             = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
-                                   # curated picker list (M / ⌥p) — Claude has no
-                                   # discovery endpoint. `model` above is the default.
+# models           = ["opus", "sonnet", "haiku"]
+                                   # the M / ⌥p picker list. Omit it and the daemon
+                                   # asks the Claude CLI for its catalog at start-up.
 permission_default = "default"      # default | plan | acceptEdits | bypassPermissions
 setting_sources    = ["project"]   # loads CLAUDE.md / project settings
 disable_builtin    = ["Grep", "Glob"]

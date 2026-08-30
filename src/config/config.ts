@@ -83,8 +83,9 @@ export interface LoomConfig {
   providers: {
     claude: {
       model: string;
-      /** Models offered in the TUI picker (`M` / `⌥p`). Claude has no local
-       *  discovery endpoint, so this is a curated list; override per-repo. */
+      /** Models offered in the TUI picker (`M` / `⌥p`). Empty = the daemon asks
+       *  the Claude CLI for its catalog at start-up; set it to pin a curated
+       *  list and skip that probe. */
       models: string[];
       permissionDefault: "default" | "plan" | "acceptEdits" | "bypassPermissions";
       settingSources: string[];
@@ -149,7 +150,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   providers: {
     claude: {
       model: "claude-sonnet-5",
-      models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+      models: [],
       permissionDefault: "default",
       settingSources: ["project"],
       disableBuiltin: ["Grep", "Glob"],
