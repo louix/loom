@@ -146,3 +146,9 @@ export function clock(ts: number): string {
 export function money(usd: number): string {
   return usd && Number.isFinite(usd) ? `$${usd.toFixed(2)}` : "—";
 }
+
+/** How a permission mode reads in the UI. The wire / SDK value stays `default`;
+ *  we call it `manual` — you approve everything yourself. */
+export function modeLabel(mode: string | null | undefined): string {
+  return !mode || mode === "default" ? "manual" : mode;
+}

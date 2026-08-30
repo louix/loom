@@ -136,7 +136,7 @@ test("esc does not quit; only overlays back out", async () => {
     stdin.feed("n");
     await delay(100);
     assert.match(stdout.last, /new session/);
-    assert.match(stdout.last, /\[default\]/, "the mode chip is always shown — no invisible mode");
+    assert.match(stdout.last, /\[manual\]/, "the mode chip is always shown (default reads as 'manual')");
     stdin.feed(ESC);
     await delay(100);
     assert.doesNotMatch(stdout.last, /new session/);

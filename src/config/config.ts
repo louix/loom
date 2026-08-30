@@ -340,7 +340,8 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const wantDefault = str(r["default_provider"], d.defaultProvider);
   const defaultProvider = wantDefault === "claude" || wantDefault in aisdk ? wantDefault : "claude";
 
-  const permDefault = claude["permission_default"];
+  // "manual" is the user-facing name for "default" (you approve everything).
+  const permDefault = claude["permission_default"] === "manual" ? "default" : claude["permission_default"];
   const permissionDefault =
     permDefault === "plan" ||
     permDefault === "acceptEdits" ||

@@ -31,6 +31,7 @@ import {
   C,
   humanTokens,
   mmss,
+  modeLabel,
   money,
   shortId,
   spinnerFrame,
@@ -287,7 +288,7 @@ export function Detail({
         { color: look.color, bold: true },
         `${look.glyph} ${look.label}${s.awaitReason ? ` · ${s.awaitReason}` : ""}`,
       ),
-      h(Text, { color: C.dim }, `mode ${s.mode}`),
+      h(Text, { color: C.dim }, `mode ${modeLabel(s.mode)}`),
       h(Text, { color: C.dim }, `${s.turns} turn${s.turns === 1 ? "" : "s"}`),
     ),
     h(
@@ -577,7 +578,7 @@ function promptHints(p: PromptState, queued: number): string {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥e editor"];
   if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
   if (p.kind === "new") {
-    bits.push(`⌥m mode:${p.mode ?? "default"}`);
+    bits.push(`⌥m mode:${modeLabel(p.mode)}`);
     bits.push("⌥p provider/model");
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
@@ -616,7 +617,7 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
           ? h(
               Text,
               { color: p.mode && p.mode !== "default" ? C.warn : C.faint },
-              `[${p.mode ?? "default"}]`,
+              `[${modeLabel(p.mode)}]`,
             )
           : null,
         p.kind === "new"

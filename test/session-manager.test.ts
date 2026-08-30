@@ -76,10 +76,15 @@ test("create registers a session, streams its events, and derives running → id
   assert.ok(Math.abs(done.costUsd - 0.03) < 1e-9);
   assert.equal(done.contextUsed, 500);
 
-  // events carry a per-session ordinal
+  // the opening prompt lands on the stream as a user_message; the pump's own
+  // events then carry a per-session ordinal starting at 0
   const evs = frames.filter((f) => f.type === "event" && f.event.sessionId === id);
   assert.ok(evs.length >= 3);
-  assert.equal((evs[0] as { event: { ordinal?: number } }).event.ordinal, 0);
+  assert.equal((evs[0] as { event: { type: string } }).event.type, "user_message");
+  const firstOrdinal = evs.find(
+    (f) => (f as { event: { ordinal?: number } }).event.ordinal !== undefined,
+  );
+  assert.equal((firstOrdinal as { event: { ordinal?: number } }).event.ordinal, 0);
 
   await c.close();
 });

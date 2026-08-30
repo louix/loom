@@ -22,7 +22,7 @@ commands:
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
-  run <prompt...>        start a session   [--provider P] [--model M] [--mode default|plan|acceptEdits|auto]
+  run <prompt...>        start a session   [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
                          [--in-place | --worktree]  override [worktree] enabled for this session
   send <id> <text...>    send a follow-up turn / answer
   compact <id> [text...] compact the context window (optional steer for the summary)
@@ -54,7 +54,7 @@ const USAGE: Record<string, string> = {
 
   --provider P                 provider id (see \`loom providers\`); default from config
   --model M                    model id; default from the provider
-  --mode default|plan|acceptEdits|auto
+  --mode manual|plan|acceptEdits|auto
   --in-place                   work in the repo, no worktree (overrides [worktree] enabled)
   --worktree                   force an isolated worktree + branch
   --repo <path>                act on the daemon for another repo`,

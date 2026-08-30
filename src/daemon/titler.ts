@@ -9,10 +9,25 @@ import type { AgentProvider } from "../provider/types.ts";
 import type { Logger } from "../util/logger.ts";
 
 const SYSTEM =
-  "You label software tasks. Reply with ONLY a 4–6 word title in plain text: " +
-  "no quotes, no trailing punctuation, no preamble.";
+  "You are a labelling function, not an assistant. Given a task description, " +
+  "output ONLY a 4–6 word title for it in plain text — no quotes, no trailing " +
+  "punctuation, no preamble. Never ask a question, never address the user, " +
+  "never refuse. If the description is vague, terse, or nonsensical, still " +
+  "produce your best-guess noun phrase (e.g. \"Casual greeting from the user\").";
 
-const INSTRUCTION = "Give a short title for this task:";
+const INSTRUCTION = "Title for this task (label only, no questions):";
+
+/**
+ * A reply that's a chat turn, not a label — a question back to the user, an
+ * apology, or a refusal. We'd rather keep the clipped first message than show
+ * one of these. (Merely *long* replies aren't rejected — they get capped.)
+ */
+function looksConversational(firstLine: string, cleaned: string): boolean {
+  if (firstLine.trim().endsWith("?")) return true;
+  return /^(?:i['’]?m |i am |i |sorry\b|could you|can you|please\b|what |which |who |when |where |why |how |tell me|provide |describe |hello\b|hey\b)/i.test(
+    cleaned,
+  );
+}
 
 /** Built-ins a titling turn has no business touching. */
 const NO_TOOLS = [
@@ -51,8 +66,11 @@ export function cleanTitle(raw: string): string | null {
     .replace(/^(?:title|task)\s*[:\-–]\s*/i, "") // a "Title: …" preamble
     .replace(/[\s*"'`“”.!?,;:]+$/, "") // trailing wrappers + punctuation
     .trim();
+  if (t.length === 0) return null;
+  // A chat turn slipped through the system prompt — don't use it as a title.
+  if (looksConversational(firstLine, t)) return null;
   if (t.length > 72) t = t.slice(0, 71).trimEnd() + "…";
-  return t.length > 0 ? t : null;
+  return t;
 }
 
 export interface TitleRequest {
@@ -69,6 +87,9 @@ export interface TitleRequest {
 export async function generateTitle(req: TitleRequest): Promise<string | null> {
   const { provider, prompt, cwd, model, log } = req;
   if (!provider.capabilities.oneShot) return null;
+  // A single word (a greeting, "hi", "help") has nothing to summarise and tends
+  // to make the model converse — keep the clipped message as the title.
+  if (prompt.trim().split(/\s+/).filter(Boolean).length < 2) return null;
 
   let session;
   try {

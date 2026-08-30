@@ -389,7 +389,10 @@ export function reduce(s: TuiState, a: Action): TuiState {
     }
 
     case "select":
-      return s.sessions.some((x) => x.id === a.id) ? { ...s, selectedId: a.id } : s;
+      // Optimistic: a freshly-created / forked session may not be in `sessions`
+      // yet (its `session_updated` push can trail the RPC response). Any later
+      // `clampSelection` keeps this id if it's real, or falls back to the head.
+      return a.id === s.selectedId ? s : { ...s, selectedId: a.id };
 
     case "logFilter":
       return { ...s, logFilter: a.value };

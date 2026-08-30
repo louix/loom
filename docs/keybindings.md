@@ -56,7 +56,7 @@ Consequences:
 
 | key | action |
 |-----|--------|
-| `m` | cycle the permission mode (`default` → `plan` → `acceptEdits` → `auto`) |
+| `m` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`) |
 | `M` | switch the session's model — applies next turn |
 | `u` | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
 | `e` | rename the session |

@@ -151,10 +151,12 @@ the Vercel AI SDK.
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
   out of overlays — it never quits.
 
-**Permission modes** (`m`, or `--mode` on `run`): `default` prompts for
-anything sensitive; `plan` keeps the agent read-only until it presents a plan
-you approve; `acceptEdits` auto-approves file edits but still gates commands;
-`auto` runs everything without asking (maps to the SDK's `bypassPermissions`).
+**Permission modes** (`m`, or `--mode` on `run`): `manual` prompts for anything
+sensitive (the wire / SDK value is still `default`); `plan` keeps the agent
+read-only until it presents a plan you approve; `acceptEdits` auto-approves file
+edits but still gates commands; `auto` lets the agent proceed on its own but
+still stops for anything it judges unsafe (the Claude SDK's own `auto` — not
+the flag-gated `bypassPermissions`, which Loom never uses).
 
 **Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
 in the user-level `~/.config/loom/config.toml` (the per-repo `.loom/config.toml`

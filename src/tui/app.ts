@@ -645,7 +645,8 @@ export function App({
         });
         dispatch({ t: "select", id: r.id });
         dispatch({ t: "pushHistory", text });
-        dispatch({ t: "echo", line: echoLine(r.id, text) });
+        // No local echo — the daemon emits a `user_message` for the opening
+        // prompt too, so it's in the log for every client and after a reopen.
         return `started ${shortId(r.id)}`;
       }
       if (p.kind === "send" && p.sessionId) {

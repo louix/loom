@@ -170,4 +170,14 @@ export function isSessionMode(v: unknown): v is SessionMode {
   return typeof v === "string" && (SESSION_MODES as readonly string[]).includes(v);
 }
 
+/**
+ * Resolve a mode string, accepting `"manual"` as the user-facing alias for
+ * `"default"` (the SDK's own name — you approve everything). Returns `null` for
+ * anything unrecognised.
+ */
+export function normalizeSessionMode(v: unknown): SessionMode | null {
+  if (v === "manual") return "default";
+  return isSessionMode(v) ? v : null;
+}
+
 export type { HarnessEvent };

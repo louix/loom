@@ -28,7 +28,7 @@ model              = "claude-sonnet-5"
 # models           = ["opus", "sonnet", "haiku"]
                                    # the M / ⌥p picker list. Omit it and the daemon
                                    # asks the Claude CLI for its catalog at start-up.
-permission_default = "default"      # default | plan | acceptEdits | bypassPermissions
+permission_default = "manual"       # manual (aka default) | plan | acceptEdits | auto
 setting_sources    = ["project"]   # loads CLAUDE.md / project settings
 disable_builtin    = ["Grep", "Glob"]
 cli_path           = ""            # "" = use `claude` on PATH, else the SDK's bundled

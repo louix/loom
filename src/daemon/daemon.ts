@@ -47,6 +47,7 @@ import { WorktreeManager } from "./worktrees.ts";
 import { ProviderRegistry } from "../provider/registry.ts";
 import {
   isSessionMode,
+  normalizeSessionMode,
   type CreateSessionOptions,
   type McpServerHandle,
   type PermissionDecision,
@@ -873,7 +874,7 @@ export class Daemon {
         typeof p["provider"] === "string" && this.#providers.has(p["provider"] as string)
           ? (p["provider"] as string)
           : this.#providers.defaultId;
-      const mode: SessionMode = isSessionMode(p["mode"]) ? p["mode"] : "default";
+      const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? "default";
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
       // Tell the operator once when the model we'd have reused has dropped out of
@@ -996,6 +997,11 @@ export class Daemon {
         this.#registry.setStatus(id, "error", message.slice(0, 120));
         throw new RpcError("provider_error", `could not start session: ${message}`);
       }
+
+      // The opening prompt is a user message like any follow-up — put it on the
+      // event stream so it's in the log / transcript and survives a reconnect
+      // (clients no longer local-echo it).
+      this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text: prompt, injected: false });
 
       const snap = this.#registry.mustGet(id);
       this.#emitSessionUpdated(snap, clientLabel(params));
@@ -1292,10 +1298,10 @@ export class Daemon {
 
     d.register("session.setMode", async (params) => {
       const id = reqString(params, "id");
-      if (!isSessionMode(params && (params as Record<string, unknown>)["mode"])) {
-        throw new RpcError("bad_request", "mode must be one of default|plan|acceptEdits|auto");
+      const mode = normalizeSessionMode(params && (params as Record<string, unknown>)["mode"]);
+      if (!mode) {
+        throw new RpcError("bad_request", "mode must be one of manual|plan|acceptEdits|auto");
       }
-      const mode = (params as Record<string, unknown>)["mode"] as SessionMode;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
       const snap = this.#registry.setFields(id, { mode });
