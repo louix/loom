@@ -43,6 +43,13 @@ test("⌃a / ⌃e / ⌃b / ⌃f / ⌃u / ⌃k / ⌃w motions", () => {
   });
 });
 
+test("⌃← / ⌃→ move by word, skipping runs of whitespace", () => {
+  assert.equal((press("one two three", 7, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor, 4);
+  assert.equal((press("one two three", 7, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor, 13);
+  assert.equal((press("one   two", 9, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor, 6);
+  assert.equal((press("one   two", 0, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor, 3);
+});
+
 test("Enter submits; Escape cancels; Tab (either form) is navigation-only, inert here", () => {
   assert.deepEqual(press("hi", 2, "", { return: true }), { kind: "submit" });
   assert.deepEqual(press("hi", 2, "", { escape: true }), { kind: "cancel" });

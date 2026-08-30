@@ -2,7 +2,7 @@
  * A small pure text-buffer editor for the TUI's prompt line. In-TUI it stays
  * single-line — Enter submits, there is no newline key — but it carries the
  * readline motions people expect (`⌃a`/`⌃e` line ends, `⌃b`/`⌃f` char steps,
- * `⌃u`/`⌃k`/`⌃w` kills, arrow navigation) and renders fine when multi-line text
+ * `⌃u`/`⌃k`/`⌃w` kills, `⌃←`/`⌃→` word steps, arrow navigation) and renders fine when multi-line text
  * arrives from a paste or the `⌥e` `$EDITOR` handoff. No React or Ink
  * dependency: `applyKey` maps one keypress to an {@link EditResult}; the
  * component renders {@link Buffer} and re-dispatches the result.
@@ -70,6 +70,22 @@ function verticalTarget(text: string, cursor: number, dir: -1 | 1): number | nul
   return nextStart + Math.min(col, nextLen);
 }
 
+/** Offset one word back from `cursor` (skips trailing whitespace, then the word). */
+function wordLeft(text: string, cursor: number): number {
+  let i = cursor;
+  while (i > 0 && /\s/.test(text.charAt(i - 1))) i--;
+  while (i > 0 && !/\s/.test(text.charAt(i - 1))) i--;
+  return i;
+}
+
+/** Offset one word forward from `cursor` (skips leading whitespace, then the word). */
+function wordRight(text: string, cursor: number): number {
+  let i = cursor;
+  while (i < text.length && /\s/.test(text.charAt(i))) i++;
+  while (i < text.length && !/\s/.test(text.charAt(i))) i++;
+  return i;
+}
+
 function edit(text: string, cursor: number): EditResult {
   return { kind: "buffer", buffer: { text, cursor: clamp(cursor, 0, text.length) } };
 }
@@ -102,6 +118,8 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
   if (key.ctrl) {
     // Ctrl is the text-editing modifier: readline motions only, nothing app-level.
     const { start, end } = lineBounds(text, cursor);
+    if (key.leftArrow) return edit(text, wordLeft(text, cursor));
+    if (key.rightArrow) return edit(text, wordRight(text, cursor));
     switch (input) {
       case "a":
         return edit(text, start);
@@ -116,9 +134,7 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
       case "k":
         return edit(text.slice(0, cursor) + text.slice(end), cursor);
       case "w": {
-        let i = cursor;
-        while (i > 0 && /\s/.test(text.charAt(i - 1))) i--;
-        while (i > 0 && !/\s/.test(text.charAt(i - 1))) i--;
+        const i = wordLeft(text, cursor);
         return edit(text.slice(0, i) + text.slice(cursor), i);
       }
       default:

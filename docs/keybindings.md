@@ -92,6 +92,7 @@ Consequences:
 |-----|--------|
 | `⌃a` / `⌃e` | start / end of line |
 | `⌃b` / `⌃f` | one char back / forward |
+| `⌃←` / `⌃→` | one word back / forward |
 | `⌃u` / `⌃k` | kill to start / end of line |
 | `⌃w` | delete the word before the cursor |
 | `↑` / `↓` | walk the prompt history (vertical caret move in multi-line text) |

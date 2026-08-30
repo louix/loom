@@ -119,7 +119,7 @@ the Vercel AI SDK.
 |----------|-------|
 | bare key | act on the selected session, or move |
 | `Shift`+key | the heavier / structural sibling — `Q` quit-all · `R` restart · `X` delete · `F` fork |
-| `Ctrl`+key | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w`); `⌃c` quits |
+| `Ctrl`+key | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃← ⌃→ ⌃u ⌃k ⌃w`); `⌃c` quits |
 | `Alt`+key | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥x`; `⌥m` (switch model) also acts from the fleet view |
 | `⇧⇥` | cycle the permission mode — on the selection, or inside a prompt (mid-message) |
 | `Space` | the command palette — every action valid right now, fuzzy, with its key |

@@ -883,6 +883,7 @@ const EDIT_ROWS: Array<[string, string]> = [
   ["enter  ·  esc", "submit  ·  cancel"],
   ["⇧⏎ / ⌥⏎", "insert a newline (⇧⏎ needs a terminal that sends a distinct code; ⌥⏎ always works)"],
   ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
+  ["⌃← / ⌃→", "word back / forward"],
   ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
   ["⌥e  ·  ⌥o", "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only"],
   ["⇧⇥  ·  ⌥m", "cycle the permission mode  ·  switch the model — the new session's, or the one you're messaging"],
