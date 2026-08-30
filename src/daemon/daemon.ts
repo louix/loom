@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { dirname, join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
 import {
   ensureLoomDir,
@@ -139,6 +140,8 @@ export class Daemon {
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
+  #configWatchers: FSWatcher[] = [];
+  #reloadTimer: NodeJS.Timeout | null = null;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
   /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
@@ -294,6 +297,7 @@ export class Daemon {
 
     await this.#server.listen();
 
+    this.#watchConfig();
     if (!this.#standalone) this.#installSignalHandlers();
     this.#idle.poke(this.#isBusy());
 
@@ -312,6 +316,9 @@ export class Daemon {
     this.#log.info("daemon stopping", { reason });
 
     this.#idle.stop();
+    if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
+    for (const w of this.#configWatchers) w.close();
+    this.#configWatchers = [];
     for (const [sig, fn] of this.#signalHandlers) process.removeListener(sig, fn);
     this.#signalHandlers = [];
 
@@ -375,6 +382,12 @@ export class Daemon {
     if (this.#stopping) return;
     const frame = this.#events.append({ kind: "push", type: "session_removed", sessionId: id });
     this.#server.broadcast(frame);
+  }
+
+  /** A daemon-level advisory for the operator (config reload feedback). */
+  #emitNotice(text: string, tone: "info" | "warn"): void {
+    if (this.#stopping) return;
+    this.#server.broadcast(this.#events.append({ kind: "push", type: "notice", text, tone }));
   }
 
   /**
@@ -606,6 +619,87 @@ export class Daemon {
     return this.#registry
       .list()
       .some((s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input");
+  }
+
+  // -------------------------------------------------------------------------
+  // live config reload
+  // -------------------------------------------------------------------------
+
+  /** Watch the repo and user config files for changes; debounce into a reload. */
+  #watchConfig(): void {
+    const dirs = new Set<string>();
+    for (const file of [this.paths.config, userConfigPath()]) {
+      const dir = dirname(file);
+      if (dirs.has(dir) || !existsSync(dir)) continue;
+      dirs.add(dir);
+      try {
+        const w = watch(dir, (_evt, name) => {
+          if (name && name.toString() === "config.toml") this.#scheduleReload();
+        });
+        w.unref();
+        this.#configWatchers.push(w);
+      } catch (err) {
+        this.#log.warn("config watch failed", { dir, err: String(err) });
+      }
+    }
+  }
+
+  #scheduleReload(): void {
+    if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
+    this.#reloadTimer = setTimeout(() => {
+      this.#reloadTimer = null;
+      this.#reloadConfig();
+    }, 250);
+    this.#reloadTimer.unref();
+  }
+
+  /**
+   * Re-read config on the fly. Fields that only steer *new* sessions or a timer
+   * are hot-applied; a change to the provider set / base branch / dirs / buffer
+   * size / mcp list needs a restart, so the operator gets a nudge instead.
+   */
+  #reloadConfig(): void {
+    if (this.#stopping) return;
+    let next: LoomConfig;
+    try {
+      next = loadConfig(this.paths.config, userConfigPath());
+    } catch (err) {
+      this.#log.warn("config reload failed — keeping the running config", { err: String(err) });
+      this.#emitNotice("config has a syntax error — kept the running one", "warn");
+      return;
+    }
+    const before = this.config;
+    if (JSON.stringify(next) === JSON.stringify(before)) return;
+
+    // Hot-apply: these are read afresh when a session starts, or drive a timer.
+    this.config.worktree = next.worktree;
+    this.config.budget = next.budget;
+    this.config.notify = next.notify;
+    this.config.titles = next.titles;
+    if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
+      this.config.daemon = { ...this.config.daemon, idleShutdownMinutes: next.daemon.idleShutdownMinutes };
+      this.#idle.setMinutes(next.daemon.idleShutdownMinutes);
+      this.#idle.poke(this.#isBusy());
+    }
+
+    for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+
+    const needsRestart =
+      JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
+      next.baseBranch !== before.baseBranch ||
+      next.worktreeDir !== before.worktreeDir ||
+      next.db !== before.db ||
+      next.runIsolation !== before.runIsolation ||
+      next.daemon.eventBufferSize !== before.daemon.eventBufferSize ||
+      JSON.stringify(next.mcp) !== JSON.stringify(before.mcp);
+
+    this.#log.info("config reloaded", { needsRestart });
+    this.#emitNotice(
+      needsRestart
+        ? "config changed — press R to restart the daemon and apply provider / mcp changes"
+        : "config reloaded",
+      needsRestart ? "warn" : "info",
+    );
   }
 
   // -------------------------------------------------------------------------

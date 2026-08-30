@@ -546,6 +546,14 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       // compacting indicators — the heartbeats that feed them were in the frames
       // we rolled past; a still-running compaction re-announces within ~10s.
       return { ...s, compacting: {} };
+
+    case "notice":
+      // A daemon-level advisory (config reload). Transient — same channel as a
+      // local notice, styled by tone.
+      return {
+        ...s,
+        notice: { text: frame.text, tone: frame.tone === "warn" ? "bad" : "accent", at: Date.now() },
+      };
   }
 }
 

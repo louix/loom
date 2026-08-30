@@ -482,6 +482,8 @@ async function runTail(client: LoomClient): Promise<void> {
       process.stdout.write(`#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`);
     } else if (f.type === "session_removed") {
       process.stdout.write(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
+    } else if (f.type === "notice") {
+      process.stdout.write(`#${f.seq} notice           ${f.tone}: ${f.text}\n`);
     }
   });
   await new Promise<void>((resolve) => {

@@ -97,6 +97,13 @@ export class IdleTimer {
     this.#timer.unref();
   }
 
+  /** Re-arm with a new interval (config reload). Clears any running countdown;
+   *  the next `poke(false)` starts a fresh one. */
+  setMinutes(minutes: number): void {
+    this.#ms = minutes > 0 ? minutes * 60_000 : 0;
+    this.#clear();
+  }
+
   stop(): void {
     this.#clear();
   }

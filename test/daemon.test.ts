@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
@@ -47,6 +49,8 @@ async function client(reconnect = false): Promise<LoomClient> {
 test("hello handshake returns daemon info and an empty session list", async () => {
   const c = await client();
   assert.equal(c.daemonInfo?.repoRoot, h.repoRoot);
+  // the TUI's version-mismatch auto-respawn keys off this field
+  assert.match(c.daemonInfo?.version ?? "", /^\d+\.\d+\.\d+/);
   assert.deepEqual(c.sessions, []);
   await c.close();
 });
@@ -469,6 +473,62 @@ test("session.send always broadcasts a user_message; injected reflects whether a
     assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
   } finally {
     await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("editing config.toml hot-applies [worktree] enabled and pushes a notice", async () => {
+  const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
+  const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const notices: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "notice") notices.push(f.text);
+    });
+
+    // a session before the edit gets a worktree
+    const a = await c.request<SessionSnapshot>("session.create", { prompt: "before edit", provider: "fake" });
+    assert.ok(a.worktree && !a.inPlace);
+
+    writeFileSync(cfgPath, `[worktree]\nenabled = false\n`);
+    await delay(500); // debounce (250ms) + reload
+
+    assert.ok(notices.some((t) => /config reloaded/.test(t)), `got notices: ${JSON.stringify(notices)}`);
+
+    // a session after the edit runs in-place — the reload took effect with no restart
+    const b = await c.request<SessionSnapshot>("session.create", { prompt: "after edit", provider: "fake" });
+    assert.equal(b.inPlace, true);
+    assert.equal(b.worktree, null);
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
+test("a provider-set change on disk asks for a restart rather than applying live", async () => {
+  const hh = await makeHarness({ config: `base_branch = "main"\n` });
+  const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
+  try {
+    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const notices: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "notice") notices.push(f.text);
+    });
+
+    writeFileSync(
+      cfgPath,
+      `base_branch = "main"\n\n[custom-provider.local]\nbase_url = "http://localhost:1234/v1"\nmodel = "m"\n`,
+    );
+    await delay(500);
+
+    assert.ok(notices.some((t) => /restart the daemon/.test(t)), `got notices: ${JSON.stringify(notices)}`);
+    // the running provider list is unchanged until a restart
+    const list = await c.request<Array<{ id: string }>>("providers.list");
+    assert.ok(!list.some((p) => p.id === "local"));
+    await c.close();
+  } finally {
     await hh.cleanup();
   }
 });

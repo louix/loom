@@ -18,6 +18,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "../client/client.ts";
 import type { ProviderInfo, SessionSnapshot } from "../protocol/wire.ts";
 import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
+import { LOOM_VERSION } from "../version.ts";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { C, shortId } from "./theme.ts";
@@ -78,6 +79,7 @@ export function App({
   const [logFull, setLogFull] = useState(false);
   const [dims, setDims] = useState(() => ({ cols: stdout.columns || 100, rows: stdout.rows || 30 }));
   const restarting = useRef(false);
+  const versionRestartTried = useRef(false);
   const echoSeq = useRef(0);
   // Synchronous latch: Ink invokes the key handler once per byte of a stdin
   // chunk before React re-renders, so a batched "aa" would resolve an overlay
@@ -98,9 +100,34 @@ export function App({
       .catch(() => {});
   }, [client]);
 
+  /**
+   * The daemon should be invisible: if it's an older build than this UI (the
+   * usual cause is a rebuild while the old daemon kept running), bounce it once.
+   * `daemon.shutdown` + the client's reconnect/autospawn brings up a fresh one;
+   * sessions persist and resume. A second mismatch after that just warns.
+   */
+  const reconcileVersion = useCallback(() => {
+    const dv = client.daemonInfo?.version;
+    if (!dv || dv === LOOM_VERSION || restarting.current) return;
+    if (versionRestartTried.current) {
+      dispatch({
+        t: "notice",
+        text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — press R to restart it`,
+        tone: "bad",
+      });
+      return;
+    }
+    versionRestartTried.current = true;
+    restarting.current = true;
+    dispatch({ t: "connection", value: "reconnecting" });
+    dispatch({ t: "notice", text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — respawning`, tone: "dim" });
+    client.request("daemon.shutdown").catch(() => {});
+  }, [client]);
+
   useEffect(() => {
     if (client.daemonInfo) dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
     refetch();
+    reconcileVersion();
     const offs = [
       client.onPush((frame) => dispatch({ t: "push", frame })),
       client.on("disconnect", () => dispatch({ t: "connection", value: "reconnecting" })),
@@ -111,6 +138,7 @@ export function App({
           restarting.current = false;
           dispatch({ t: "notice", text: "daemon restarted", tone: "good" });
         }
+        reconcileVersion();
       }),
       client.on("resync", () => refetch()),
       client.on("close", () => dispatch({ t: "connection", value: "closed" })),
@@ -122,7 +150,7 @@ export function App({
     return () => {
       for (const off of offs) off();
     };
-  }, [client, refetch]);
+  }, [client, refetch, reconcileVersion]);
 
   // ---- tickers ------------------------------------------------------
   useEffect(() => {

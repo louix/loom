@@ -89,7 +89,24 @@ export interface ResyncPush {
   reason: string;
 }
 
-export type PushFrame = EventPush | SessionUpdatedPush | SessionRemovedPush | ResyncPush;
+/**
+ * A daemon-originated advisory for the operator — not tied to a session. The
+ * TUI shows it as a transient notice. Used for config-reload feedback.
+ */
+export interface NoticePush {
+  kind: "push";
+  seq: number;
+  type: "notice";
+  text: string;
+  tone: "info" | "warn";
+}
+
+export type PushFrame =
+  | EventPush
+  | SessionUpdatedPush
+  | SessionRemovedPush
+  | ResyncPush
+  | NoticePush;
 
 export type Frame = RequestFrame | ResponseFrame | PushFrame;
 

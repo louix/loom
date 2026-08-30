@@ -5,7 +5,8 @@ export type UnsequencedPush =
   | Omit<Extract<PushFrame, { type: "event" }>, "seq">
   | Omit<Extract<PushFrame, { type: "session_updated" }>, "seq">
   | Omit<Extract<PushFrame, { type: "session_removed" }>, "seq">
-  | Omit<Extract<PushFrame, { type: "resync" }>, "seq">;
+  | Omit<Extract<PushFrame, { type: "resync" }>, "seq">
+  | Omit<Extract<PushFrame, { type: "notice" }>, "seq">;
 
 export interface ReplayResult {
   /** Buffered frames strictly after the requested seq, in order. */
