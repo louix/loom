@@ -535,19 +535,39 @@ discovery, `registry.ts`, the test layout, and versioning.
   ships with no connectors and near-zero deps by default.
 - `fake` → `@loom/connector-mock`, a real package the tests depend on.
 
-### 7 · Approval-prompt UX (user, 2026-08-29 — "for after")
-When a session is `awaiting_input` (permission / question / plan) it's still not
-obvious where to look.
-- **Move the request to the bottom**, near where you type, rather than a panel
-  mid-screen.
-- **"TUI modes":** define a small mode per selected-session state and only show
-  the actions relevant to it — an `awaiting_input` session shouldn't offer
-  budget / model / rename / done in the footer. `actionsFor` already branches on
-  status; formalise it so the footer, the keymap, and the help screen all read
-  from one table.
-- **Write an XDG config on first launch** — partly done (`loom config` lints;
-  see below). Still want: emit a starter `$XDG_CONFIG_HOME/loom/config.toml`
-  from a template when none exists.
+### 7 · Approval-prompt UX (user, 2026-08-29 — "for after") — ✓ shipped (2026-08-30)
+- **Request panel at the bottom** — `RequestPanel` renders full-width just above
+  the footer (in `browse` / `prompt` modes), where the eye already is for the
+  keybinds; body height reserves `REQUEST_PANEL_ROWS` for it.
+- **"TUI modes"** — `footerHints(state)` is the one table the footer reads:
+  every overlay (`picker` / `confirm` / `plan` / `sendChoice` / `help`) has a
+  fixed key set; `browse` delegates to `actionsFor`, which now early-returns for
+  `awaiting_input` with just approve/answer/deny + interrupt + globals. ⇧⇥ / M /
+  ⌃f are gated on `allowed` so the keymap matches the footer.
+- **Starter XDG config** — `scaffoldUserConfig()` copies `config.example.toml`
+  to `$XDG_CONFIG_HOME/loom/config.toml` on the first non-standalone daemon
+  launch when none exists.
+
+### 7b · More seamless-daemon + TUI polish — ✓ shipped (2026-08-30)
+- **Alt-screen exit** — the TUI renders with Ink 7.1 `alternateScreen: true`;
+  quitting restores the primary buffer with no half-drawn frame left behind.
+- **`d` deletes a session** — new `session.remove` RPC (closes the run, removes
+  the worktree — not the repo root for in-place — drops the row + cascades,
+  broadcasts `session_removed`). TUI `d` with nothing pending → delete confirm;
+  `loom rm <id>` on the CLI. The branch is kept, like `gc`.
+- **`loom <cmd> --help`** — per-command `USAGE` blurbs; `loom providers` shows
+  `[default]` instead of a `* ` gutter.
+- **`[custom-provider.<id>]` + `[google]` / `[anthropic]`** config namespaces —
+  the OpenAI-compatible case drops `adapter` / `sdk`; `[providers.<id>]
+  adapter = "aisdk"` stays as the escape hatch and wins a duplicate id.
+  `custom-provider` is the future plugin seam.
+- **Live config reload** — the daemon watches repo + user config.toml;
+  `[worktree] enabled` / `[budget]` / `[notify]` / `[titles]` / idle minutes
+  hot-apply, anything structural pushes a "press R to restart" `NoticePush`.
+- **Version-mismatch auto-respawn** — the TUI bounces the daemon once when
+  `daemon.version` != its own `LOOM_VERSION` (rebuild while the old one ran).
+- **tilth npx fallback** — `resolveMcpCommand` rewrites a missing `tilth` to
+  `npx -y tilth@0.9.0`; falls through to the built-ins if npx is missing too.
 
 ### 8 · aisdk provider config conveniences — ✓ shipped (`18305c8`)
 - **Auto model detection** — omit `model` + `models` from an openai-sdk profile
