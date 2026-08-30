@@ -21,8 +21,11 @@ import { App } from "./app.ts";
 
 export async function runTui(client: LoomClient): Promise<void> {
   // Ask the terminal to bracket pastes so a multi-line paste arrives as one
-  // chunk instead of a stream of Enter-looking carriage returns.
-  if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h");
+  // chunk instead of a stream of Enter-looking carriage returns. Also turn on
+  // SGR mouse reporting so the wheel arrives as its own escape sequence —
+  // without it, terminals translate wheel scroll into Up/Down arrow keys on
+  // the alt screen, which App's keymap reads as fleet-selection movement.
+  if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
   const instance = render(createElement(App, { client }), {
     exitOnCtrlC: false,
@@ -32,7 +35,7 @@ export async function runTui(client: LoomClient): Promise<void> {
   try {
     await instance.waitUntilExit();
   } finally {
-    if (process.stdout.isTTY) process.stdout.write("\x1b[?2004l");
+    if (process.stdout.isTTY) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
     await client.close();
   }
 }

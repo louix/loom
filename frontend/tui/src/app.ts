@@ -286,7 +286,7 @@ export function App({
         saved = null;
         note(e instanceof Error ? e.message : String(e), "bad");
       }
-      if (stdout.isTTY) stdout.write("\x1b[?2004h");
+      if (stdout.isTTY) stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
       return saved;
     },
     [openEditorOverride, suspendTerminal, stdout, note],
@@ -1020,6 +1020,21 @@ export function App({
   // ---- keymap -----------------------------------------------
   useInput((input, key) => {
     if (key.ctrl && input === "c") return quitTui();
+
+    // Mouse wheel → always scrolls the event log, never the fleet list.
+    // `run.ts` turns on SGR mouse reporting (`\x1b[?1000h\x1b[?1006h`) so the
+    // wheel arrives as its own `[<Cb;Cx;Cy(M|m)` sequence — Ink's keypress
+    // parser doesn't recognize it as any named key, so it passes it through
+    // as raw `input` with every `key.*` flag false. Without mouse reporting,
+    // terminals translate the wheel into Up/Down arrow keys on the alt
+    // screen, which the browse keymap below reads as fleet navigation.
+    const wheel = /^\[<(\d+);\d+;\d+[Mm]/.exec(input);
+    if (wheel) {
+      const base = Number(wheel[1]) & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
+      if (base === 64) return setLogScroll((n) => n + 3); // wheel up → back in history
+      if (base === 65) return setLogScroll((n) => Math.max(0, n - 3)); // wheel down → toward live tail
+      return; // horizontal wheel / click / drag — ignore
+    }
 
     if (state.mode === "prompt" && state.prompt) {
       const p = state.prompt;
