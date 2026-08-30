@@ -273,6 +273,27 @@ export function initialState(logCap = 400): TuiState {
   };
 }
 
+/**
+ * What a TUI should do when it finds the daemon on a different build than
+ * itself. A restart fixes the mismatch but interrupts *every* attached client
+ * and running turn, so it's only unattended when this UI is alone with no live
+ * work. `nag` = we already prompted/tried once; just remind.
+ */
+export type VersionAction = "ok" | "auto-restart" | "prompt" | "nag";
+
+export function versionMismatchAction(o: {
+  daemonVersion: string | null | undefined;
+  uiVersion: string;
+  otherClients: number;
+  liveSessions: number;
+  alreadyHandled: boolean;
+}): VersionAction {
+  if (!o.daemonVersion || o.daemonVersion === o.uiVersion) return "ok";
+  if (o.alreadyHandled) return "nag";
+  if (o.otherClients > 0 || o.liveSessions > 0) return "prompt";
+  return "auto-restart";
+}
+
 // ---------------------------------------------------------------------------
 // actions
 // ---------------------------------------------------------------------------

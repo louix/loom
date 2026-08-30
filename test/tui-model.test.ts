@@ -26,6 +26,7 @@ import {
   providerColorOf,
   providerInfo,
   providerPickItems,
+  versionMismatchAction,
   queueFor,
   condenseLog,
   firstPerm,
@@ -828,6 +829,18 @@ test("providers action populates state and the derived helpers", () => {
   // claude drops `auto` from its permission-mode cycle
   assert.deepEqual(providerInfo(s, "claude")?.permissionModes, ["default", "plan", "acceptEdits"]);
   assert.deepEqual(providerInfo(s, "openai")?.permissionModes, ["default", "plan", "acceptEdits", "auto"]);
+});
+
+test("versionMismatchAction: bounce only when alone, otherwise prompt then nag", () => {
+  const base = { daemonVersion: "1.2.0", uiVersion: "1.3.0", otherClients: 0, liveSessions: 0, alreadyHandled: false };
+  assert.equal(versionMismatchAction({ ...base, daemonVersion: "1.3.0" }), "ok");
+  assert.equal(versionMismatchAction({ ...base, daemonVersion: null }), "ok");
+  assert.equal(versionMismatchAction(base), "auto-restart");
+  assert.equal(versionMismatchAction({ ...base, otherClients: 1 }), "prompt");
+  assert.equal(versionMismatchAction({ ...base, liveSessions: 2 }), "prompt");
+  // once we've prompted / tried, don't keep interrupting — just remind
+  assert.equal(versionMismatchAction({ ...base, otherClients: 1, alreadyHandled: true }), "nag");
+  assert.equal(versionMismatchAction({ ...base, alreadyHandled: true }), "nag");
 });
 
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {

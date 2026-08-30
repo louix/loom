@@ -59,6 +59,7 @@ import {
   selectedSession,
   sessionLog,
   transcriptText,
+  versionMismatchAction,
   type ActName,
   type ConfirmState,
   type LogLine,
@@ -105,22 +106,68 @@ export function App({
   }, [client]);
 
   /**
-   * The daemon should be invisible: if it's an older build than this UI (the
-   * usual cause is a rebuild while the old daemon kept running), bounce it once.
-   * `daemon.shutdown` + the client's reconnect/autospawn brings up a fresh one;
-   * sessions persist and resume. A second mismatch after that just warns.
+   * The daemon should be invisible: if it's an older build than this UI (usually
+   * a rebuild while the old daemon kept running), bounce it once —
+   * `daemon.shutdown` + the client's reconnect/autospawn brings up a fresh one
+   * and sessions resume. But a restart interrupts *every* attached client and
+   * every running turn, so when another client or a live session is present we
+   * ask first instead. A second mismatch after that just nags.
    */
-  const reconcileVersion = useCallback(() => {
+  const reconcileVersion = useCallback(async () => {
     const dv = client.daemonInfo?.version;
-    if (!dv || dv === LOOM_VERSION || restarting.current) return;
-    if (versionRestartTried.current) {
+    if (restarting.current || !dv || dv === LOOM_VERSION) return;
+
+    let otherClients = 0;
+    let liveSessions = 0;
+    try {
+      const st = await client.request<{ connections?: number; runningSessions?: number }>(
+        "daemon.status",
+      );
+      otherClients = Math.max(0, (st.connections ?? 1) - 1); // minus this UI's own socket
+      liveSessions = st.runningSessions ?? 0;
+    } catch {
+      /* old daemon without these fields → treat as safe to bounce */
+    }
+
+    const action = versionMismatchAction({
+      daemonVersion: dv,
+      uiVersion: LOOM_VERSION,
+      otherClients,
+      liveSessions,
+      alreadyHandled: versionRestartTried.current,
+    });
+    if (action === "ok") return;
+
+    if (action === "nag") {
       dispatch({
         t: "notice",
-        text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — press R to restart it`,
+        text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — press R to restart it once the others are done`,
         tone: "bad",
       });
       return;
     }
+
+    if (action === "prompt") {
+      versionRestartTried.current = true;
+      const who = [
+        otherClients > 0 ? `${otherClients} other client${otherClients === 1 ? "" : "s"}` : "",
+        liveSessions > 0 ? `${liveSessions} live session${liveSessions === 1 ? "" : "s"}` : "",
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      dispatch({
+        t: "openConfirm",
+        confirm: {
+          title: `Daemon is v${dv}, this UI is v${LOOM_VERSION}`,
+          body: `${who} attached — restarting interrupts them. Esc keeps the old daemon (this UI may misbehave); press R to restart later.`,
+          danger: true,
+          action: "restart",
+        },
+      });
+      return;
+    }
+
+    // action === "auto-restart"
     versionRestartTried.current = true;
     restarting.current = true;
     dispatch({ t: "connection", value: "reconnecting" });
@@ -131,7 +178,7 @@ export function App({
   useEffect(() => {
     if (client.daemonInfo) dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
     refetch();
-    reconcileVersion();
+    void reconcileVersion();
     const offs = [
       client.onPush((frame) => dispatch({ t: "push", frame })),
       client.on("disconnect", () => dispatch({ t: "connection", value: "reconnecting" })),
@@ -142,7 +189,7 @@ export function App({
           restarting.current = false;
           dispatch({ t: "notice", text: "daemon restarted", tone: "good" });
         }
-        reconcileVersion();
+        void reconcileVersion();
       }),
       client.on("resync", () => refetch()),
       client.on("close", () => dispatch({ t: "connection", value: "closed" })),
