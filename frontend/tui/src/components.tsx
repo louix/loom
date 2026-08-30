@@ -1,10 +1,10 @@
 /**
- * Ink components for the TUI. Written with `createElement` (aliased `h`) rather
- * than JSX so the files run straight through Node's native TypeScript
- * type-stripping with no build step — the same constraint the rest of the
- * codebase keeps. Every component is a pure projection of {@link TuiState}.
+ * Ink components for the TUI. Written in JSX and run with no bundler — `@oxc-node`
+ * transforms `.tsx` on the fly (the `loom`/`loomd` bins and the test runner both
+ * load its hook), so the only build step is still "none". Every component is a
+ * pure projection of {@link TuiState}.
  */
-import { createElement as h, useMemo, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { layout, type Buffer } from "./editor.ts";
@@ -62,13 +62,15 @@ const titleLine = (t: string | null): string => {
 
 export function Header({ state, width }: { state: TuiState; width: number }): ReactNode {
   const lamp =
-    state.connection === "live"
-      ? h(Text, { color: C.good }, "● live")
-      : state.connection === "reconnecting"
-        ? h(Text, { color: C.warn }, "◍ reconnecting")
-        : state.connection === "closed"
-          ? h(Text, { color: C.bad }, "○ offline")
-          : h(Text, { color: C.dim }, "◌ connecting");
+    state.connection === "live" ? (
+      <Text color={C.good}>{"● live"}</Text>
+    ) : state.connection === "reconnecting" ? (
+      <Text color={C.warn}>{"◍ reconnecting"}</Text>
+    ) : state.connection === "closed" ? (
+      <Text color={C.bad}>{"○ offline"}</Text>
+    ) : (
+      <Text color={C.dim}>{"◌ connecting"}</Text>
+    );
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
   const running = state.sessions.filter(
@@ -76,26 +78,26 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
   ).length;
   const waiting = state.sessions.filter((s) => s.status === "awaiting_input").length;
 
-  return h(
-    Box,
-    { width, justifyContent: "space-between", paddingX: 1 },
-    h(
-      Box,
-      { gap: 1 },
-      h(Text, { color: C.accent, bold: true }, "▍ loom"),
-      h(Text, { color: C.dim }, `v${state.daemon?.version ?? "?"}`),
-      h(Text, { color: C.faint }, "·"),
-      h(Text, { color: C.text, wrap: "truncate-end" }, repo),
-    ),
-    h(
-      Box,
-      { gap: 1 },
-      h(Text, { color: C.dim }, `${state.sessions.length} sessions`),
-      waiting ? h(Text, { color: C.await_ }, `◆ ${waiting}`) : null,
-      running ? h(Text, { color: C.accent }, `● ${running}`) : null,
-      h(Text, { color: C.faint }, "·"),
-      lamp,
-    ),
+  return (
+    <Box width={width} justifyContent="space-between" paddingX={1}>
+      <Box gap={1}>
+        <Text color={C.accent} bold>
+          {"▍ loom"}
+        </Text>
+        <Text color={C.dim}>{`v${state.daemon?.version ?? "?"}`}</Text>
+        <Text color={C.faint}>{"·"}</Text>
+        <Text color={C.text} wrap="truncate-end">
+          {repo}
+        </Text>
+      </Box>
+      <Box gap={1}>
+        <Text color={C.dim}>{`${state.sessions.length} sessions`}</Text>
+        {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
+        {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
+        <Text color={C.faint}>{"·"}</Text>
+        {lamp}
+      </Box>
+    </Box>
   );
 }
 
@@ -122,26 +124,20 @@ export function Fleet({
   const blocks =
     groups.length === 0
       ? [
-          h(
-            Text,
-            { key: "empty", color: C.dim },
-            "no sessions yet — press ",
-            h(Text, { color: C.accent }, "n"),
-            " to start one",
-          ),
+          <Text key="empty" color={C.dim}>
+            {"no sessions yet — press "}
+            <Text color={C.accent}>{"n"}</Text>
+            {" to start one"}
+          </Text>,
         ]
-      : groups.map((g, i) =>
-          h(
-            Box,
-            { key: g.status, flexDirection: "column", marginTop: i ? 1 : 0 },
-            h(
-              Text,
-              { bold: true },
-              h(Text, { color: STATUS[g.status].color }, STATUS[g.status].glyph + " "),
-              h(Text, { color: C.dim }, g.label.toUpperCase()),
-              h(Text, { color: C.faint }, `  ${g.sessions.length}`),
-            ),
-            ...g.sessions.map((s) =>
+      : groups.map((g, i) => (
+          <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
+            <Text bold>
+              <Text color={STATUS[g.status].color}>{STATUS[g.status].glyph + " "}</Text>
+              <Text color={C.dim}>{g.label.toUpperCase()}</Text>
+              <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
+            </Text>
+            {g.sessions.map((s) =>
               FleetRow({
                 s,
                 selected: s.id === state.selectedId,
@@ -151,15 +147,23 @@ export function Fleet({
                 pcolor,
                 compacting: compactingIds.has(s.id),
               }),
-            ),
-          ),
-        );
+            )}
+          </Box>
+        ));
 
-  return h(
-    Box,
-    { flexDirection: "column", width, borderStyle: "round", borderColor: C.faint, paddingX: 1 },
-    h(Text, { color: C.dim }, "FLEET"),
-    h(Box, { flexDirection: "column", marginTop: 1 }, ...blocks),
+  return (
+    <Box
+      flexDirection="column"
+      width={width}
+      borderStyle="round"
+      borderColor={C.faint}
+      paddingX={1}
+    >
+      <Text color={C.dim}>{"FLEET"}</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {blocks}
+      </Box>
+    </Box>
   );
 }
 
@@ -198,17 +202,21 @@ function FleetRow({
   const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
-  return h(
-    Text,
-    { key: s.id, wrap: "truncate-end" },
-    h(Text, { color: selected ? C.accent : C.faint }, selected ? "▍ " : "  "),
-    h(Text, { color: s.status === "running" ? C.accent : look.color }, glyph + " "),
-    h(Text, { color: idColor }, `${idText}  `),
-    compacting
-      ? h(Text, { color: C.accent }, "⇊ ")
-      : h(Text, { color: cacheColor ?? C.faint }, cacheColor ? "⟢ " : "  "),
-    h(Text, { color: selected ? C.text : C.dim, bold: selected }, title),
-    h(Text, { color: C.faint }, ` ${cost}`),
+  return (
+    <Text key={s.id} wrap="truncate-end">
+      <Text color={selected ? C.accent : C.faint}>{selected ? "▍ " : "  "}</Text>
+      <Text color={s.status === "running" ? C.accent : look.color}>{glyph + " "}</Text>
+      <Text color={idColor}>{`${idText}  `}</Text>
+      {compacting ? (
+        <Text color={C.accent}>{"⇊ "}</Text>
+      ) : (
+        <Text color={cacheColor ?? C.faint}>{cacheColor ? "⟢ " : "  "}</Text>
+      )}
+      <Text color={selected ? C.text : C.dim} bold={selected}>
+        {title}
+      </Text>
+      <Text color={C.faint}>{` ${cost}`}</Text>
+    </Text>
   );
 }
 
@@ -234,11 +242,17 @@ export function Detail({
   compacting?: { startedAt: number; before: number } | null;
 }): ReactNode {
   if (!session) {
-    return h(
-      Box,
-      { width, borderStyle: "round", borderColor: C.faint, paddingX: 1, flexDirection: "column" },
-      h(Text, { color: C.dim }, "DETAIL"),
-      h(Text, { color: C.faint }, "select a session with ↑/↓"),
+    return (
+      <Box
+        width={width}
+        borderStyle="round"
+        borderColor={C.faint}
+        paddingX={1}
+        flexDirection="column"
+      >
+        <Text color={C.dim}>{"DETAIL"}</Text>
+        <Text color={C.faint}>{"select a session with ↑/↓"}</Text>
+      </Box>
     );
   }
 
@@ -266,146 +280,128 @@ export function Detail({
         ? `${s.branch}  ·  no worktree (gc'd)`
         : "no worktree";
 
-  return h(
-    Box,
-    { width, borderStyle: "round", borderColor: look.color, paddingX: 1, flexDirection: "column" },
-    h(
-      Box,
-      { justifyContent: "space-between" },
-      h(Text, { color: C.dim }, `DETAIL  ${shortId(s.id)}`),
-      h(
-        Text,
-        {},
-        h(Text, { color: C.faint }, "engine "),
-        h(Text, { color: engineColor || C.faint }, s.provider),
-        h(Text, { color: C.faint }, s.model ? ` / ${s.model}` : ""),
-      ),
-    ),
-    h(Text, { color: C.text, wrap: "truncate-end" }, truncate(titleLine(s.title), w)),
-    s.parentId && s.forkTurn != null
-      ? h(Text, { color: C.faint }, `⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`)
-      : null,
-    h(
-      Box,
-      { marginTop: 1, gap: 2 },
-      h(
-        Text,
-        { color: look.color, bold: true },
-        `${look.glyph} ${look.label}${s.awaitReason ? ` · ${s.awaitReason}` : ""}`,
-      ),
-      // `[mode]` in the same gold the event log gives tool commands — the one
-      // thing on this row you change mid-session, so it should catch the eye.
-      h(
-        Text,
-        {},
-        h(Text, { color: C.dim }, "mode "),
-        h(Text, { color: C.warn }, `[${modeLabel(s.mode)}]`),
-      ),
-      h(Text, { color: C.dim }, `${s.turns} turn${s.turns === 1 ? "" : "s"}`),
-    ),
-    h(
-      Box,
-      { marginTop: 1, gap: 2 },
-      h(Text, { color: C.dim }, "context"),
-      h(
-        Text,
-        { color: ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim },
-        bar(ctxFrac, 16),
-      ),
-      h(
-        Text,
-        { color: C.dim },
-        `${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`,
-      ),
-    ),
-    compacting
-      ? h(
-          Box,
-          { gap: 2 },
-          h(Text, { color: C.dim }, "       "),
-          h(
-            Text,
-            { color: C.accent },
-            `⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`,
-          ),
-          h(Text, { color: C.faint }, `from ${humanTokens(compacting.before)}`),
-        )
-      : null,
-    (() => {
-      const cs = cacheStatus(s, now);
-      if (cs.state === "unknown") return null;
-      const hit = cs.lastHit
-        ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
-        : "";
-      return h(
-        Box,
-        { gap: 2 },
-        h(Text, { color: C.dim }, "cache  "),
-        cs.state === "warm"
-          ? h(Text, { color: C.good }, `⟢ warm ~${mmss(cs.remainingMs)}${hit}`)
-          : h(Text, { color: C.faint }, `⟢ cold${hit}`),
-      );
-    })(),
-    h(
-      Box,
-      { gap: 2 },
-      h(Text, { color: C.dim }, "tokens "),
-      h(
-        Text,
-        { color: C.faint },
-        `${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`,
-      ),
-      h(
-        Text,
-        { color: s.costUsd ? C.good : C.faint },
-        (s.costSource === "table" ? "~" : "") + money(s.costUsd),
-      ),
-    ),
-    Object.keys(s.rateLimits).length > 0
-      ? h(
-          Box,
-          { gap: 2 },
-          h(Text, { color: C.dim }, "plan "),
-          ...Object.entries(s.rateLimits).map(([window, w]) => {
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={look.color}
+      paddingX={1}
+      flexDirection="column"
+    >
+      <Box justifyContent="space-between">
+        <Text color={C.dim}>{`DETAIL  ${shortId(s.id)}`}</Text>
+        <Text>
+          <Text color={C.faint}>{"engine "}</Text>
+          <Text color={engineColor || C.faint}>{s.provider}</Text>
+          <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
+        </Text>
+      </Box>
+      <Text color={C.text} wrap="truncate-end">
+        {truncate(titleLine(s.title), w)}
+      </Text>
+      {s.parentId && s.forkTurn != null ? (
+        <Text color={C.faint}>{`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}</Text>
+      ) : null}
+      <Box marginTop={1} gap={2}>
+        <Text color={look.color} bold>
+          {`${look.glyph} ${look.label}${s.awaitReason ? ` · ${s.awaitReason}` : ""}`}
+        </Text>
+        {/* `[mode]` in the same gold the event log gives tool commands — the one */}
+        {/* thing on this row you change mid-session, so it should catch the eye. */}
+        <Text>
+          <Text color={C.dim}>{"mode "}</Text>
+          <Text color={C.warn}>{`[${modeLabel(s.mode)}]`}</Text>
+        </Text>
+        <Text color={C.dim}>{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Text>
+      </Box>
+      <Box marginTop={1} gap={2}>
+        <Text color={C.dim}>{"context"}</Text>
+        <Text color={ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim}>
+          {bar(ctxFrac, 16)}
+        </Text>
+        <Text color={C.dim}>
+          {`${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
+        </Text>
+      </Box>
+      {compacting ? (
+        <Box gap={2}>
+          <Text color={C.dim}>{"       "}</Text>
+          <Text color={C.accent}>
+            {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
+          </Text>
+          <Text color={C.faint}>{`from ${humanTokens(compacting.before)}`}</Text>
+        </Box>
+      ) : null}
+      {(() => {
+        const cs = cacheStatus(s, now);
+        if (cs.state === "unknown") return null;
+        const hit = cs.lastHit
+          ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
+          : "";
+        return (
+          <Box gap={2}>
+            <Text color={C.dim}>{"cache  "}</Text>
+            {cs.state === "warm" ? (
+              <Text color={C.good}>{`⟢ warm ~${mmss(cs.remainingMs)}${hit}`}</Text>
+            ) : (
+              <Text color={C.faint}>{`⟢ cold${hit}`}</Text>
+            )}
+          </Box>
+        );
+      })()}
+      <Box gap={2}>
+        <Text color={C.dim}>{"tokens "}</Text>
+        <Text color={C.faint}>
+          {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`}
+        </Text>
+        <Text color={s.costUsd ? C.good : C.faint}>
+          {(s.costSource === "table" ? "~" : "") + money(s.costUsd)}
+        </Text>
+      </Box>
+      {Object.keys(s.rateLimits).length > 0 ? (
+        <Box gap={2}>
+          <Text color={C.dim}>{"plan "}</Text>
+          {Object.entries(s.rateLimits).map(([window, w]) => {
             const col =
               w.status === "rejected" ? C.bad : w.status === "allowed_warning" ? C.warn : C.faint;
             const pct = w.utilization != null ? `${Math.round(w.utilization)}%` : "?%";
             const resets = w.resetsAt != null ? `  ⟳ ${humanDuration(w.resetsAt - now)}` : "";
-            return h(Text, { key: window, color: col }, `${window} ${pct}${resets}`);
-          }),
-        )
-      : null,
-    h(
-      Box,
-      { marginTop: 1 },
-      h(Text, { color: C.faint }, "⌥ "),
-      h(Text, { color: C.dim, wrap: "truncate-end" }, gitLine),
-    ),
-    g?.lastCommitSubject
-      ? h(
-          Text,
-          { color: C.faint, wrap: "truncate-end" },
-          `  “${truncate(g.lastCommitSubject, w - 4)}”`,
-        )
-      : null,
-    queued.length > 0
-      ? h(
-          Text,
-          { color: C.accentDim, wrap: "truncate-end" },
-          `▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`,
-        )
-      : null,
-    s.subagents.length > 0
-      ? (() => {
-          const active = s.subagents.filter((a) => a.active);
-          const names = s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
-          return h(
-            Text,
-            { color: C.dim, wrap: "truncate-end" },
-            `⑂ ${active.length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`,
-          );
-        })()
-      : null,
+            return (
+              <Text key={window} color={col}>
+                {`${window} ${pct}${resets}`}
+              </Text>
+            );
+          })}
+        </Box>
+      ) : null}
+      <Box marginTop={1}>
+        <Text color={C.faint}>{"⌥ "}</Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {gitLine}
+        </Text>
+      </Box>
+      {g?.lastCommitSubject ? (
+        <Text color={C.faint} wrap="truncate-end">
+          {`  “${truncate(g.lastCommitSubject, w - 4)}”`}
+        </Text>
+      ) : null}
+      {queued.length > 0 ? (
+        <Text color={C.accentDim} wrap="truncate-end">
+          {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
+        </Text>
+      ) : null}
+      {s.subagents.length > 0
+        ? (() => {
+            const active = s.subagents.filter((a) => a.active);
+            const names = s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
+            return (
+              <Text color={C.dim} wrap="truncate-end">
+                {`⑂ ${active.length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
+              </Text>
+            );
+          })()
+        : null}
+    </Box>
   );
 }
 
@@ -442,29 +438,29 @@ export function EventLog({
   const shown = physical.slice(Math.max(0, end - capacity), end);
   const above = Math.max(0, end - capacity);
 
-  return h(
-    Box,
-    {
-      width,
-      borderStyle: "round",
-      borderColor: off > 0 ? C.accentDim : C.faint,
-      paddingX: 1,
-      flexDirection: "column",
-      flexGrow: 1,
-    },
-    h(
-      Box,
-      { justifyContent: "space-between" },
-      h(Text, { color: C.dim }, full ? "EVENTS · fullscreen" : "EVENTS"),
-      h(
-        Text,
-        { color: C.faint },
-        (state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : ""),
-      ),
-    ),
-    ...(shown.length === 0
-      ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")]
-      : shown.map((r) => r.node)),
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={off > 0 ? C.accentDim : C.faint}
+      paddingX={1}
+      flexDirection="column"
+      flexGrow={1}
+    >
+      <Box justifyContent="space-between">
+        <Text color={C.dim}>{full ? "EVENTS · fullscreen" : "EVENTS"}</Text>
+        <Text color={C.faint}>
+          {(state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : "")}
+        </Text>
+      </Box>
+      {shown.length === 0
+        ? [
+            <Text key="none" color={C.faint}>
+              {"  (quiet)"}
+            </Text>,
+          ]
+        : shown.map((r) => r.node)}
+    </Box>
   );
 }
 
@@ -493,21 +489,19 @@ function physicalRows(
       out.push({
         key: `${l.seq}-${l.ts}-${i}`,
         node:
-          i === 0
-            ? h(
-                Text,
-                { key: `${l.seq}-${l.ts}-0`, wrap: "truncate-end" },
-                h(Text, { color: C.faint }, ts),
-                sub ? h(Text, { color: C.faint }, sub) : null,
-                h(Text, { color: TONE_COLOR[l.tone] }, `${l.glyph} `),
-                h(Text, { color: TONE_COLOR[l.tone] }, seg),
-              )
-            : h(
-                Text,
-                { key: `${l.seq}-${l.ts}-${i}`, wrap: "truncate-end" },
-                h(Text, null, " ".repeat(indent)),
-                h(Text, { color: TONE_COLOR[l.tone] }, seg),
-              ),
+          i === 0 ? (
+            <Text key={`${l.seq}-${l.ts}-0`} wrap="truncate-end">
+              <Text color={C.faint}>{ts}</Text>
+              {sub ? <Text color={C.faint}>{sub}</Text> : null}
+              <Text color={TONE_COLOR[l.tone]}>{`${l.glyph} `}</Text>
+              <Text color={TONE_COLOR[l.tone]}>{seg}</Text>
+            </Text>
+          ) : (
+            <Text key={`${l.seq}-${l.ts}-${i}`} wrap="truncate-end">
+              <Text>{" ".repeat(indent)}</Text>
+              <Text color={TONE_COLOR[l.tone]}>{seg}</Text>
+            </Text>
+          ),
       });
     });
   }
@@ -532,12 +526,12 @@ export function EditorView({
   placeholder?: string;
 }): ReactNode {
   if (buf.text === "") {
-    return h(
-      Box,
-      null,
-      h(Text, { color: C.accent }, "▍ "),
-      h(Text, { inverse: true }, " "),
-      placeholder ? h(Text, { color: C.faint }, ` ${placeholder}`) : null,
+    return (
+      <Box>
+        <Text color={C.accent}>{"▍ "}</Text>
+        <Text inverse> </Text>
+        {placeholder ? <Text color={C.faint}>{` ${placeholder}`}</Text> : null}
+      </Box>
     );
   }
 
@@ -557,27 +551,37 @@ export function EditorView({
   const moreAbove = start > 0;
   const moreBelow = start + MAX_EDITOR_ROWS < lines.length;
 
-  return h(
-    Box,
-    { flexDirection: "column" },
-    ...shown.map((ln, i) => {
-      const r = start + i;
-      const gutter = (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
-      let content: ReactNode;
-      if (r === row) {
-        const off = Math.max(0, col - (room - 1));
-        content = h(
-          Text,
-          { wrap: "truncate-end" },
-          h(Text, { color: C.text }, ln.slice(off, col)),
-          h(Text, { inverse: true }, ln.slice(col, col + 1) || " "),
-          h(Text, { color: C.text }, ln.slice(col + 1, off + room)),
+  return (
+    <Box flexDirection="column">
+      {shown.map((ln, i) => {
+        const r = start + i;
+        const gutter =
+          (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
+        let content: ReactNode;
+        if (r === row) {
+          const off = Math.max(0, col - (room - 1));
+          content = (
+            <Text wrap="truncate-end">
+              <Text color={C.text}>{ln.slice(off, col)}</Text>
+              <Text inverse>{ln.slice(col, col + 1) || " "}</Text>
+              <Text color={C.text}>{ln.slice(col + 1, off + room)}</Text>
+            </Text>
+          );
+        } else {
+          content = (
+            <Text color={C.text} wrap="truncate-end">
+              {ln.length ? ln : " "}
+            </Text>
+          );
+        }
+        return (
+          <Box key={r}>
+            <Text color={C.accent}>{gutter}</Text>
+            {content}
+          </Box>
         );
-      } else {
-        content = h(Text, { color: C.text, wrap: "truncate-end" }, ln.length ? ln : " ");
-      }
-      return h(Box, { key: r }, h(Text, { color: C.accent }, gutter), content);
-    }),
+      })}
+    </Box>
   );
 }
 
@@ -598,7 +602,9 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 /** The `[mode]` chip: gold once it's off the mundane `manual` default, faint
  *  otherwise — the same chip the Detail pane shows for a live session. */
 function modeChip(mode: string | null | undefined): ReactNode {
-  return h(Text, { color: mode && mode !== "default" ? C.warn : C.faint }, `[${modeLabel(mode)}]`);
+  return (
+    <Text color={mode && mode !== "default" ? C.warn : C.faint}>{`[${modeLabel(mode)}]`}</Text>
+  );
 }
 
 function promptHints(p: PromptState, queued: number, sessionMode?: string | null): string {
@@ -641,48 +647,52 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
     // the session's current mode chip too.
     const sendSess =
       p.kind === "send" && p.sessionId ? state.sessions.find((x) => x.id === p.sessionId) : null;
-    return h(
-      Box,
-      { flexDirection: "column", width, paddingX: 1 },
-      h(
-        Box,
-        { gap: 1 },
-        h(Text, { color: C.accent, bold: true }, p.label),
-        p.kind === "new" ? modeChip(p.mode) : sendSess ? modeChip(sendSess.mode) : null,
-        p.kind === "new"
-          ? h(
-              Text,
-              { color: prov?.color || C.faint },
-              `${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`,
-            )
-          : null,
-        p.kind === "new" ? h(Text, { color: C.faint }, "⌥p change") : null,
-      ),
-      h(EditorView, { buf: p.buffer, width: width - 2, placeholder }),
-      h(Text, { color: C.faint }, promptHints(p, queued, sendSess?.mode)),
+    return (
+      <Box flexDirection="column" width={width} paddingX={1}>
+        <Box gap={1}>
+          <Text color={C.accent} bold>
+            {p.label}
+          </Text>
+          {p.kind === "new" ? modeChip(p.mode) : sendSess ? modeChip(sendSess.mode) : null}
+          {p.kind === "new" ? (
+            <Text color={prov?.color || C.faint}>
+              {`${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`}
+            </Text>
+          ) : null}
+          {p.kind === "new" ? <Text color={C.faint}>{"⌥p change"}</Text> : null}
+        </Box>
+        <EditorView buf={p.buffer} width={width - 2} placeholder={placeholder} />
+        <Text color={C.faint}>{promptHints(p, queued, sendSess?.mode)}</Text>
+      </Box>
     );
   }
 
   const hints = footerHints(state);
-  return h(
-    Box,
-    { flexDirection: "column", width },
-    h(Text, { color: C.faint }, "─".repeat(width)),
-    h(
-      Box,
-      { width, paddingX: 1 },
-      h(
-        Box,
-        { gap: 1 },
-        ...hints.flatMap((hint, i) => [
-          i > 0 ? h(Text, { key: `s${i}`, color: C.faint }, "·") : null,
-          h(Text, { key: `k${i}`, color: C.accent }, hint.keys),
-          h(Text, { key: `l${i}`, color: C.dim }, hint.label),
-        ]),
-      ),
-      h(Box, { flexGrow: 1 }),
-      state.notice ? h(Text, { color: TONE_COLOR[state.notice.tone] }, state.notice.text) : null,
-    ),
+  return (
+    <Box flexDirection="column" width={width}>
+      <Text color={C.faint}>{"─".repeat(width)}</Text>
+      <Box width={width} paddingX={1}>
+        <Box gap={1}>
+          {hints.flatMap((hint, i) => [
+            i > 0 ? (
+              <Text key={`s${i}`} color={C.faint}>
+                {"·"}
+              </Text>
+            ) : null,
+            <Text key={`k${i}`} color={C.accent}>
+              {hint.keys}
+            </Text>,
+            <Text key={`l${i}`} color={C.dim}>
+              {hint.label}
+            </Text>,
+          ])}
+        </Box>
+        <Box flexGrow={1} />
+        {state.notice ? (
+          <Text color={TONE_COLOR[state.notice.tone]}>{state.notice.text}</Text>
+        ) : null}
+      </Box>
+    </Box>
   );
 }
 
@@ -702,52 +712,46 @@ export function promptRows(state: TuiState): number {
 
 export function Confirm({ confirm, width }: { confirm: ConfirmState; width: number }): ReactNode {
   const accent = confirm.danger ? C.bad : C.accent;
-  return h(
-    Box,
-    {
-      width,
-      borderStyle: "round",
-      borderColor: accent,
-      paddingX: 2,
-      paddingY: 1,
-      flexDirection: "column",
-    },
-    h(Text, { color: accent, bold: true }, confirm.title),
-    confirm.body ? h(Text, { color: C.warn }, confirm.body) : null,
-    confirm.branchName
-      ? h(
-          Box,
-          { gap: 1, marginTop: 1 },
-          h(Text, { color: C.accent }, "b"),
-          h(
-            Text,
-            { color: confirm.deleteBranch ? C.bad : C.dim },
-            confirm.deleteBranch
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={accent}
+      paddingX={2}
+      paddingY={1}
+      flexDirection="column"
+    >
+      <Text color={accent} bold>
+        {confirm.title}
+      </Text>
+      {confirm.body ? <Text color={C.warn}>{confirm.body}</Text> : null}
+      {confirm.branchName ? (
+        <Box gap={1} marginTop={1}>
+          <Text color={C.accent}>{"b"}</Text>
+          <Text color={confirm.deleteBranch ? C.bad : C.dim}>
+            {confirm.deleteBranch
               ? `will also delete branch ${confirm.branchName}`
-              : `keep branch ${confirm.branchName}`,
-          ),
-        )
-      : null,
-    h(Box, { height: 1 }),
-    h(
-      Box,
-      { gap: 2 },
-      h(Text, { color: C.accent }, "enter"),
-      h(
-        Text,
-        { color: C.dim },
-        confirm.action === "restart"
-          ? "restart the daemon"
-          : confirm.action === "deleteSession"
-            ? confirm.deleteBranch
-              ? "delete the session + branch"
-              : "delete the session"
-            : "quit and stop the daemon",
-      ),
-      h(Text, { color: C.faint }, "·"),
-      h(Text, { color: C.accent }, "esc"),
-      h(Text, { color: C.dim }, "cancel"),
-    ),
+              : `keep branch ${confirm.branchName}`}
+          </Text>
+        </Box>
+      ) : null}
+      <Box height={1} />
+      <Box gap={2}>
+        <Text color={C.accent}>{"enter"}</Text>
+        <Text color={C.dim}>
+          {confirm.action === "restart"
+            ? "restart the daemon"
+            : confirm.action === "deleteSession"
+              ? confirm.deleteBranch
+                ? "delete the session + branch"
+                : "delete the session"
+              : "quit and stop the daemon"}
+        </Text>
+        <Text color={C.faint}>{"·"}</Text>
+        <Text color={C.accent}>{"esc"}</Text>
+        <Text color={C.dim}>{"cancel"}</Text>
+      </Box>
+    </Box>
   );
 }
 
@@ -779,14 +783,21 @@ function describeRequest(input: unknown, w: number): string[] {
 
 export function RequestPanel({ pending, width }: { pending: Pending; width: number }): ReactNode {
   const w = inside(width);
-  const box = (title: string, body: ReactNode[], hint: string): ReactNode =>
-    h(
-      Box,
-      { width, borderStyle: "round", borderColor: C.await_, paddingX: 1, flexDirection: "column" },
-      h(Text, { color: C.await_, bold: true }, title),
-      ...body,
-      h(Text, { color: C.faint }, hint),
-    );
+  const box = (title: string, body: ReactNode[], hint: string): ReactNode => (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={C.await_}
+      paddingX={1}
+      flexDirection="column"
+    >
+      <Text color={C.await_} bold>
+        {title}
+      </Text>
+      {body}
+      <Text color={C.faint}>{hint}</Text>
+    </Box>
+  );
 
   if (pending.question !== undefined) {
     return box(
@@ -794,14 +805,16 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
       [
         ...wrapText((pending.questionText ?? "").replace(/\s+/g, " ").trim(), w)
           .slice(0, 4)
-          .map((l, i) => h(Text, { key: i, color: C.text }, l)),
-        pending.questionContext
-          ? h(
-              Text,
-              { key: "ctx", color: C.faint, wrap: "truncate-end" },
-              truncate(pending.questionContext.replace(/\s+/g, " ").trim(), w),
-            )
-          : null,
+          .map((l, i) => (
+            <Text key={i} color={C.text}>
+              {l}
+            </Text>
+          )),
+        pending.questionContext ? (
+          <Text key="ctx" color={C.faint} wrap="truncate-end">
+            {truncate(pending.questionContext.replace(/\s+/g, " ").trim(), w)}
+          </Text>
+        ) : null,
       ],
       "a answer  ·  ⌃o view  ·  i interrupt",
     );
@@ -811,7 +824,11 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
       "❖ PLAN REVIEW",
       wrapText((pending.planText ?? "").replace(/\s+/g, " ").trim(), w)
         .slice(0, 5)
-        .map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
+        .map((l, i) => (
+          <Text key={i} color={C.text} wrap="truncate-end">
+            {l}
+          </Text>
+        )),
       "a review  ·  ⌃o view  ·  i interrupt",
     );
   }
@@ -821,9 +838,11 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
     const more = perms.length > 1 ? ` (1 of ${perms.length})` : "";
     return box(
       `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
-      describeRequest(p0.input, w).map((l, i) =>
-        h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l),
-      ),
+      describeRequest(p0.input, w).map((l, i) => (
+        <Text key={i} color={C.text} wrap="truncate-end">
+          {l}
+        </Text>
+      )),
       `a approve  ·  d deny  ·  ⌃o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
     );
   }
@@ -838,44 +857,47 @@ export function PlanReview({ text, width }: { text: string; width: number }): Re
   const w = inside(width);
   const lines = text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
   const body = lines.slice(0, 16);
-  const row = (k: string, v: string): ReactNode =>
-    h(
-      Box,
-      { gap: 1 },
-      h(Box, { width: 3 }, h(Text, { color: C.accent }, k)),
-      h(Text, { color: C.dim }, v),
-    );
-  return h(
-    Box,
-    {
-      width,
-      borderStyle: "round",
-      borderColor: C.await_,
-      paddingX: 2,
-      paddingY: 1,
-      flexDirection: "column",
-    },
-    h(Text, { color: C.await_, bold: true }, "❖ PLAN REVIEW"),
-    h(Box, { height: 1 }),
-    ...body.map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l || " ")),
-    lines.length > body.length
-      ? h(
-          Text,
-          { color: C.faint },
-          `  … ${lines.length - body.length} more lines — ⌃o to read it all`,
-        )
-      : null,
-    h(Box, { height: 1 }),
-    row("i", "implement — the agent proceeds in this context"),
-    row("f", "implement fresh — compact to the plan + goal first"),
-    row("e", "edit the plan in $EDITOR, then implement what you saved"),
-    row("d", "discuss — send a note back; the agent stays in plan mode"),
-    h(Box, { height: 1 }),
-    h(
-      Text,
-      { color: C.faint },
-      "⌃o view read-only  ·  a plan review must be answered — esc does nothing",
-    ),
+  const row = (k: string, v: string): ReactNode => (
+    <Box gap={1}>
+      <Box width={3}>
+        <Text color={C.accent}>{k}</Text>
+      </Box>
+      <Text color={C.dim}>{v}</Text>
+    </Box>
+  );
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={C.await_}
+      paddingX={2}
+      paddingY={1}
+      flexDirection="column"
+    >
+      <Text color={C.await_} bold>
+        {"❖ PLAN REVIEW"}
+      </Text>
+      <Box height={1} />
+      {body.map((l, i) => (
+        <Text key={i} color={C.text} wrap="truncate-end">
+          {l || " "}
+        </Text>
+      ))}
+      {lines.length > body.length ? (
+        <Text color={C.faint}>
+          {`  … ${lines.length - body.length} more lines — ⌃o to read it all`}
+        </Text>
+      ) : null}
+      <Box height={1} />
+      {row("i", "implement — the agent proceeds in this context")}
+      {row("f", "implement fresh — compact to the plan + goal first")}
+      {row("e", "edit the plan in $EDITOR, then implement what you saved")}
+      {row("d", "discuss — send a note back; the agent stays in plan mode")}
+      <Box height={1} />
+      <Text color={C.faint}>
+        {"⌃o view read-only  ·  a plan review must be answered — esc does nothing"}
+      </Text>
+    </Box>
   );
 }
 
@@ -971,113 +993,111 @@ export function Picker({
   );
   const shown = vis.slice(start, start + rows);
 
-  return h(
-    Box,
-    {
-      width,
-      borderStyle: "round",
-      borderColor: C.accent,
-      paddingX: 2,
-      paddingY: 1,
-      flexDirection: "column",
-    },
-    h(Text, { color: C.accent, bold: true }, `▸ ${picker.title.toUpperCase()}`),
-    // A prompt-style input line so it reads as "type here", with a block caret
-    // and a placeholder when empty.
-    h(
-      Box,
-      null,
-      h(Text, { color: C.accent }, "▍ "),
-      h(Text, { color: C.text }, picker.filter),
-      h(Text, { inverse: true }, " "),
-      picker.filter ? null : h(Text, { color: C.faint }, " type to search"),
-    ),
-    h(
-      Text,
-      { color: C.faint },
-      picker.items.length === 0
-        ? " "
-        : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`,
-    ),
-    h(Box, { height: 1 }),
-    ...(shown.length === 0
-      ? [
-          h(
-            Text,
-            { key: "none", color: C.faint, wrap: "wrap" },
-            picker.items.length === 0 ? (picker.emptyText ?? "nothing to pick") : "no matches",
-          ),
-        ]
-      : shown.map((it, i) => {
-          const on = start + i === picker.index;
-          return h(
-            Text,
-            { key: it.id, wrap: "truncate-end", color: on ? C.text : C.dim, bold: on },
-            h(Text, { color: on ? C.accent : C.faint }, on ? "▍ " : "  "),
-            truncate(it.label, Math.max(6, w - 32)),
-            it.hint ? h(Text, { color: C.faint }, `  ${truncate(it.hint, 28)}`) : null,
-          );
-        })),
-    start + shown.length < vis.length || start > 0
-      ? h(Text, { color: C.faint }, `  … ${vis.length - shown.length} more`)
-      : null,
-    h(Box, { height: 1 }),
-    h(
-      Text,
-      { color: C.faint },
-      picker.items.length === 0
-        ? "enter continue · esc cancel"
-        : "type to filter · ↑↓ move · enter pick · esc cancel",
-    ),
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={C.accent}
+      paddingX={2}
+      paddingY={1}
+      flexDirection="column"
+    >
+      <Text color={C.accent} bold>
+        {`▸ ${picker.title.toUpperCase()}`}
+      </Text>
+      {/* A prompt-style input line so it reads as "type here", with a block caret */}
+      {/* and a placeholder when empty. */}
+      <Box>
+        <Text color={C.accent}>{"▍ "}</Text>
+        <Text color={C.text}>{picker.filter}</Text>
+        <Text inverse> </Text>
+        {picker.filter ? null : <Text color={C.faint}>{" type to search"}</Text>}
+      </Box>
+      <Text color={C.faint}>
+        {picker.items.length === 0
+          ? " "
+          : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`}
+      </Text>
+      <Box height={1} />
+      {shown.length === 0
+        ? [
+            <Text key="none" color={C.faint} wrap="wrap">
+              {picker.items.length === 0 ? (picker.emptyText ?? "nothing to pick") : "no matches"}
+            </Text>,
+          ]
+        : shown.map((it, i) => {
+            const on = start + i === picker.index;
+            return (
+              <Text key={it.id} wrap="truncate-end" color={on ? C.text : C.dim} bold={on}>
+                <Text color={on ? C.accent : C.faint}>{on ? "▍ " : "  "}</Text>
+                {truncate(it.label, Math.max(6, w - 32))}
+                {it.hint ? <Text color={C.faint}>{`  ${truncate(it.hint, 28)}`}</Text> : null}
+              </Text>
+            );
+          })}
+      {start + shown.length < vis.length || start > 0 ? (
+        <Text color={C.faint}>{`  … ${vis.length - shown.length} more`}</Text>
+      ) : null}
+      <Box height={1} />
+      <Text color={C.faint}>
+        {picker.items.length === 0
+          ? "enter continue · esc cancel"
+          : "type to filter · ↑↓ move · enter pick · esc cancel"}
+      </Text>
+    </Box>
   );
 }
 
 export function Help({ width }: { width: number }): ReactNode {
-  return h(
-    Box,
-    {
-      width,
-      borderStyle: "round",
-      borderColor: C.accent,
-      paddingX: 2,
-      paddingY: 1,
-      flexDirection: "column",
-    },
-    h(Text, { color: C.accent, bold: true }, "loom — keys"),
-    h(Box, { height: 1 }),
-    h(Text, { color: C.dim, bold: true }, "the grammar"),
-    ...GRAMMAR_ROWS.map(([k, v], i) =>
-      h(
-        Box,
-        { key: `g${i}`, gap: 2 },
-        h(Box, { width: 16 }, h(Text, { color: C.accent }, k)),
-        h(Text, { color: C.dim }, v),
-      ),
-    ),
-    h(Box, { height: 1 }),
-    ...HELP_ROWS.map(([k, v], i) =>
-      h(
-        Box,
-        { key: i, gap: 2 },
-        h(Box, { width: 16 }, h(Text, { color: C.accent }, k)),
-        h(Text, { color: C.dim }, v),
-      ),
-    ),
-    h(Box, { height: 1 }),
-    h(Text, { color: C.dim, bold: true }, "in the prompt"),
-    ...EDIT_ROWS.map(([k, v], i) =>
-      h(
-        Box,
-        { key: `e${i}`, gap: 2 },
-        h(Box, { width: 16 }, h(Text, { color: C.accent }, k)),
-        h(Text, { color: C.dim }, v),
-      ),
-    ),
-    h(Box, { height: 1 }),
-    h(
-      Text,
-      { color: C.faint },
-      "loom drives worktrees only — it never pushes or touches your remotes.",
-    ),
+  return (
+    <Box
+      width={width}
+      borderStyle="round"
+      borderColor={C.accent}
+      paddingX={2}
+      paddingY={1}
+      flexDirection="column"
+    >
+      <Text color={C.accent} bold>
+        {"loom — keys"}
+      </Text>
+      <Box height={1} />
+      <Text color={C.dim} bold>
+        {"the grammar"}
+      </Text>
+      {GRAMMAR_ROWS.map(([k, v], i) => (
+        <Box key={`g${i}`} gap={2}>
+          <Box width={16}>
+            <Text color={C.accent}>{k}</Text>
+          </Box>
+          <Text color={C.dim}>{v}</Text>
+        </Box>
+      ))}
+      <Box height={1} />
+      {HELP_ROWS.map(([k, v], i) => (
+        <Box key={i} gap={2}>
+          <Box width={16}>
+            <Text color={C.accent}>{k}</Text>
+          </Box>
+          <Text color={C.dim}>{v}</Text>
+        </Box>
+      ))}
+      <Box height={1} />
+      <Text color={C.dim} bold>
+        {"in the prompt"}
+      </Text>
+      {EDIT_ROWS.map(([k, v], i) => (
+        <Box key={`e${i}`} gap={2}>
+          <Box width={16}>
+            <Text color={C.accent}>{k}</Text>
+          </Box>
+          <Text color={C.dim}>{v}</Text>
+        </Box>
+      ))}
+      <Box height={1} />
+      <Text color={C.faint}>
+        {"loom drives worktrees only — it never pushes or touches your remotes."}
+      </Text>
+    </Box>
   );
 }
