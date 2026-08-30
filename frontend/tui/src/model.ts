@@ -246,6 +246,12 @@ export interface TuiState {
   picker: PickerState | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
+  /**
+   * The last unsubmitted `new` / `send` buffer, kept after an `Esc` cancel so
+   * reopening either prompt (whichever one the user meant) restores it. Cleared
+   * once the text is actually sent.
+   */
+  lastDraft: string;
 }
 
 export function initialState(logCap = 400): TuiState {
@@ -268,6 +274,7 @@ export function initialState(logCap = 400): TuiState {
     plan: null,
     picker: null,
     promptHistory: [],
+    lastDraft: "",
   };
 }
 
@@ -312,7 +319,7 @@ export type Action =
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
-  | { t: "closePrompt" }
+  | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "echo"; line: LogLine }
   | { t: "enqueue"; sessionId: string; text: string }
   | { t: "dequeue"; sessionId: string }
@@ -431,8 +438,12 @@ export function reduce(s: TuiState, a: Action): TuiState {
       return { ...s, promptHistory: hist };
     }
 
-    case "closePrompt":
-      return { ...s, mode: "browse", prompt: null };
+    case "closePrompt": {
+      const p = s.prompt;
+      const draftable = p && (p.kind === "new" || p.kind === "send");
+      const lastDraft = draftable ? (a.saveDraft ? p.buffer.text : "") : s.lastDraft;
+      return { ...s, mode: "browse", prompt: null, lastDraft };
+    }
 
     case "echo": {
       const log = [...s.log, a.line];

@@ -97,6 +97,7 @@ Consequences:
 | `⌃w` | delete the word before the cursor |
 | `↑` / `↓` | walk the prompt history (vertical caret move in multi-line text) |
 | `Enter` | submit · `Esc` cancel — on a *send* prompt targeting a still-running session, sends now (lands after the current tool call) |
+| `Esc` on a *new* / *send* prompt | keeps the typed text as a draft — reopening either prompt (whichever you meant) restores it, until it's actually sent |
 | `⇧⏎` | insert a newline (only in terminals that send a distinct code for Shift+Enter) |
 | `⌥⏎` | insert a newline — except on a *send* prompt targeting a still-running session, where it queues the message for turn end instead |
 

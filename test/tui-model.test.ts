@@ -623,6 +623,49 @@ test("prompt open / edit / close transitions", () => {
   assert.equal(s.prompt, null);
 });
 
+test("Esc on a new/send prompt stashes the draft; either prompt can restore it; submitting clears it", () => {
+  // cancelling a `new` prompt saves the draft
+  let s = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
+  });
+  s = reduce(s, { t: "promptSet", buffer: buffer("fix the bug") });
+  s = reduce(s, { t: "closePrompt", saveDraft: true });
+  assert.equal(s.lastDraft, "fix the bug");
+
+  // ...and a `send` prompt opened afterwards picks it up
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: s.lastDraft }),
+  });
+  assert.equal(s.prompt?.buffer.text, "fix the bug");
+
+  // cancelling without saveDraft (e.g. a plain closePrompt) leaves it untouched
+  let untouched = reduce(s, { t: "closePrompt" });
+  assert.equal(untouched.lastDraft, "");
+
+  // cancelling a `title` prompt never touches the shared draft
+  let withDraft = reduce(initialState(), { t: "closePrompt", saveDraft: true }); // no prompt open: no-op
+  assert.equal(withDraft.lastDraft, "");
+  withDraft = { ...withDraft, lastDraft: "fix the bug" };
+  withDraft = reduce(withDraft, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "title", sessionId: "a", label: "rename", text: "old title" }),
+  });
+  withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
+  withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
+  assert.equal(withDraft.lastDraft, "fix the bug", "renaming doesn't clobber the send/new draft slot");
+
+  // submitting (closePrompt without saveDraft) consumes the draft
+  let sent = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "fix the bug" }),
+  });
+  sent = { ...sent, lastDraft: "fix the bug" };
+  sent = reduce(sent, { t: "closePrompt" });
+  assert.equal(sent.lastDraft, "", "a sent message shouldn't linger as a restorable draft");
+});
+
 test("promptCycleMode only cycles for a `new` prompt", () => {
   let s = reduce(initialState(), {
     t: "openPrompt",

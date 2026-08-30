@@ -358,6 +358,7 @@ export function App({
             provider: pid,
             mode,
             ...(dm ? { model: dm } : {}),
+            ...(state.lastDraft ? { text: state.lastDraft } : {}),
           }),
         });
       }
@@ -442,7 +443,12 @@ export function App({
         case "send":
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({ kind: "send", sessionId: s.id, label: "send" }),
+            prompt: makePrompt({
+              kind: "send",
+              sessionId: s.id,
+              label: "send",
+              ...(state.lastDraft ? { text: state.lastDraft } : {}),
+            }),
           });
         case "title":
           return void dispatch({
@@ -1074,7 +1080,7 @@ export function App({
               text: state.plan.text,
             });
           }
-          return void dispatch({ t: "closePrompt" });
+          return void dispatch({ t: "closePrompt", saveDraft: true });
         case "submit":
           return void submitPrompt();
         case "buffer":
