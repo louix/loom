@@ -74,6 +74,11 @@ test("user tool_result blocks normalize with ok reflecting is_error", () => {
 
 test("result success emits a usage delta then a result; state goes cumulative", () => {
   const m = new ClaudeEventMapper(SID);
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 50 } },
+  });
   const out = m.map({
     type: "result",
     subtype: "success",
@@ -104,6 +109,40 @@ test("result success emits a usage delta then a result; state goes cumulative", 
   assert.equal(res?.summary, "done");
   assert.equal(m.state.turns, 1);
   assert.equal(m.state.costUsd, 0.02);
+});
+
+test("contextUsed tracks the last single request, not the turn's cumulative usage", () => {
+  // A turn that drives several internal tool-calling round trips reports a
+  // `result.usage` that sums every one of those calls — many times the real
+  // context window. contextUsed must follow the last individual request.
+  const m = new ClaudeEventMapper(SID);
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 900_000, cache_read_input_tokens: 0 } },
+  });
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 5_000, cache_read_input_tokens: 950_000 } },
+  });
+  // A subagent call in between must not clobber the main loop's context fill.
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: "task-1",
+    message: { content: [], usage: { input_tokens: 4_000_000, cache_read_input_tokens: 0 } },
+  });
+  const out = m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "done",
+    num_turns: 1,
+    usage: { input_tokens: 4_905_000, cache_read_input_tokens: 950_000 },
+    modelUsage: { "claude-sonnet-5": { inputTokens: 4_905_000, cacheReadInputTokens: 950_000, contextWindow: 1_000_000 } },
+  });
+  const usage = byType(out, "usage")[0];
+  assert.equal(usage?.contextUsed, 955_000);
 });
 
 test("a second turn's usage is the delta over cumulative, not the running total", () => {

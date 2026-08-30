@@ -5,8 +5,11 @@
  * only the fields we forward, so a Beta type reshape can't break the mapper.
  *
  * Token / cost accounting is stateful: the SDK reports cumulative totals per
- * `query()` call, so the mapper differences them to emit per-turn deltas
- * (context fill stays absolute — it's the last request's input size).
+ * `query()` call, so the mapper differences them to emit per-turn deltas.
+ * Context fill stays absolute, tracked from each main-loop assistant
+ * message's own `usage` rather than the turn-level `result.usage` — a turn
+ * can drive many internal model calls, and `result.usage` sums all of them,
+ * so it isn't the current window fill.
  */
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 
@@ -71,7 +74,7 @@ export interface MapperState {
   costUsd: number;
   usage: TokenUsage;
   turns: number;
-  /** Last request's input-side tokens, and the model's context limit. */
+  /** The main loop's last single request's input-side tokens, and the model's context limit. */
   contextUsed: number;
   contextLimit: number;
 }
@@ -181,6 +184,15 @@ export class ClaudeEventMapper {
     if (typeof m.error === "string" && m.error.length > 0) {
       out.push({ type: "error", ...base, message: `assistant: ${m.error}`, fatal: false });
     }
+    // Context fill is the size of the single most recent request to the main
+    // loop's model — a subagent runs in its own window, and a turn can drive
+    // many internal tool-calling round trips, so the *turn's* cumulative
+    // `result.usage` (summed over all of those calls) isn't it.
+    if (m.parent_tool_use_id == null && m.message?.usage) {
+      const u = m.message.usage;
+      this.state.contextUsed =
+        (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    }
     for (const b of blocks(m.message?.content)) {
       if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
         out.push({ type: "assistant_text", ...base, text: b.text });
@@ -250,17 +262,14 @@ export class ClaudeEventMapper {
     };
     const costDeltaUsd = Math.max(0, cum.costUsd - this.state.costUsd);
 
-    const lastReq = m.usage;
-    const contextUsed = lastReq
-      ? (lastReq.input_tokens ?? 0) +
-        (lastReq.cache_read_input_tokens ?? 0) +
-        (lastReq.cache_creation_input_tokens ?? 0)
-      : this.state.contextUsed;
+    // `contextUsed` is already current — kept up to date per main-loop
+    // assistant message in #assistant(), from that single request's own
+    // usage rather than this turn's (possibly multi-call) cumulative total.
+    const contextUsed = this.state.contextUsed;
     const contextLimit = cum.contextLimit || this.state.contextLimit;
 
     this.state.usage = { ...cum };
     this.state.costUsd = cum.costUsd;
-    this.state.contextUsed = contextUsed;
     this.state.contextLimit = contextLimit;
 
     out.push({
