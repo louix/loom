@@ -14,12 +14,16 @@ export async function resolveModelFactory(opts: {
 }): Promise<(modelId: string) => LanguageModel> {
   const key = opts.apiKey ? { apiKey: opts.apiKey } : {};
   const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-  const g = createGoogleGenerativeAI({ ...key, ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}) });
+  const g = createGoogleGenerativeAI({
+    ...key,
+    ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
+  });
   return (id) => g(id);
 }
 
 export async function createProvider(ctx: ConnectorContext): Promise<AgentProvider> {
-  if (!ctx.transcript) throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
+  if (!ctx.transcript)
+    throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
   const { config } = ctx;
   const makeModel = await resolveModelFactory({
     baseUrl: config.baseUrl ?? "",

@@ -34,7 +34,9 @@ export class AisdkEventMapper {
       case "text-end": {
         const text = this.#text.get(part.id) ?? "";
         this.#text.delete(part.id);
-        return text.trim() === "" ? [] : [{ type: "assistant_text", sessionId: this.#sessionId, ts, text }];
+        return text.trim() === ""
+          ? []
+          : [{ type: "assistant_text", sessionId: this.#sessionId, ts, text }];
       }
       case "reasoning-delta":
         this.#reasoning.set(part.id, (this.#reasoning.get(part.id) ?? "") + part.text);
@@ -42,7 +44,9 @@ export class AisdkEventMapper {
       case "reasoning-end": {
         const text = this.#reasoning.get(part.id) ?? "";
         this.#reasoning.delete(part.id);
-        return text.trim() === "" ? [] : [{ type: "thinking", sessionId: this.#sessionId, ts, text }];
+        return text.trim() === ""
+          ? []
+          : [{ type: "thinking", sessionId: this.#sessionId, ts, text }];
       }
       case "tool-call":
         // Flush any text / reasoning still buffered so it lands *before* the
@@ -115,7 +119,8 @@ export class AisdkEventMapper {
   #flushOpenBlocks(ts: number): HarnessEvent[] {
     const out: HarnessEvent[] = [];
     for (const [, text] of this.#text) {
-      if (text.trim() !== "") out.push({ type: "assistant_text", sessionId: this.#sessionId, ts, text });
+      if (text.trim() !== "")
+        out.push({ type: "assistant_text", sessionId: this.#sessionId, ts, text });
     }
     for (const [, text] of this.#reasoning) {
       if (text.trim() !== "") out.push({ type: "thinking", sessionId: this.#sessionId, ts, text });

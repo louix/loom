@@ -2,21 +2,20 @@
   "name": "loom-workspace",
   "version": "0.0.1",
   "private": true,
-  "type": "module",
   "description": "Workspace root for loom — see cli/ for the app package.",
-  "packageManager": "pnpm@11.24.0",
-  "engines": {
-    "node": ">=24",
-    "pnpm": ">=11.23.0"
-  },
+  "type": "module",
   "scripts": {
     "loom": "node cli/src/loom.ts",
     "daemon": "node cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
     "watch": "tsc --noEmit --watch",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --test \"test/*.test.ts\"",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
   },
   "devDependencies": {
+    "@ai-sdk/provider": "2.0.3",
     "@loom/aisdk": "workspace:*",
     "@loom/client": "workspace:*",
     "@loom/connector-claude": "workspace:*",
@@ -27,15 +26,21 @@
     "@loom/daemon": "workspace:*",
     "@loom/harness": "workspace:*",
     "@loom/tui": "workspace:*",
-    "loom": "workspace:*",
-    "@ai-sdk/provider": "2.0.3",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "ai": "5.0.249",
     "ink": "7.1.1",
+    "loom": "workspace:*",
+    "oxfmt": "0.64.0",
+    "oxlint": "1.79.0",
     "react": "19.2.8",
     "smol-toml": "1.8.0",
     "typescript": "7.0.2",
     "zod": "4.4.3"
-  }
+  },
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11.23.0"
+  },
+  "packageManager": "pnpm@11.24.0"
 }

@@ -71,7 +71,9 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
           : h(Text, { color: C.dim }, "◌ connecting");
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
-  const running = state.sessions.filter((s) => s.status === "running" || s.status === "starting").length;
+  const running = state.sessions.filter(
+    (s) => s.status === "running" || s.status === "starting",
+  ).length;
   const waiting = state.sessions.filter((s) => s.status === "awaiting_input").length;
 
   return h(
@@ -293,15 +295,28 @@ export function Detail({
       ),
       // `[mode]` in the same gold the event log gives tool commands — the one
       // thing on this row you change mid-session, so it should catch the eye.
-      h(Text, {}, h(Text, { color: C.dim }, "mode "), h(Text, { color: C.warn }, `[${modeLabel(s.mode)}]`)),
+      h(
+        Text,
+        {},
+        h(Text, { color: C.dim }, "mode "),
+        h(Text, { color: C.warn }, `[${modeLabel(s.mode)}]`),
+      ),
       h(Text, { color: C.dim }, `${s.turns} turn${s.turns === 1 ? "" : "s"}`),
     ),
     h(
       Box,
       { marginTop: 1, gap: 2 },
       h(Text, { color: C.dim }, "context"),
-      h(Text, { color: ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim }, bar(ctxFrac, 16)),
-      h(Text, { color: C.dim }, `${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`),
+      h(
+        Text,
+        { color: ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim },
+        bar(ctxFrac, 16),
+      ),
+      h(
+        Text,
+        { color: C.dim },
+        `${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`,
+      ),
     ),
     compacting
       ? h(
@@ -319,7 +334,9 @@ export function Detail({
     (() => {
       const cs = cacheStatus(s, now);
       if (cs.state === "unknown") return null;
-      const hit = cs.lastHit ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}` : "";
+      const hit = cs.lastHit
+        ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
+        : "";
       return h(
         Box,
         { gap: 2 },
@@ -350,7 +367,8 @@ export function Detail({
           { gap: 2 },
           h(Text, { color: C.dim }, "plan "),
           ...Object.entries(s.rateLimits).map(([window, w]) => {
-            const col = w.status === "rejected" ? C.bad : w.status === "allowed_warning" ? C.warn : C.faint;
+            const col =
+              w.status === "rejected" ? C.bad : w.status === "allowed_warning" ? C.warn : C.faint;
             const pct = w.utilization != null ? `${Math.round(w.utilization)}%` : "?%";
             const resets = w.resetsAt != null ? `  ⟳ ${humanDuration(w.resetsAt - now)}` : "";
             return h(Text, { key: window, color: col }, `${window} ${pct}${resets}`);
@@ -364,7 +382,11 @@ export function Detail({
       h(Text, { color: C.dim, wrap: "truncate-end" }, gitLine),
     ),
     g?.lastCommitSubject
-      ? h(Text, { color: C.faint, wrap: "truncate-end" }, `  “${truncate(g.lastCommitSubject, w - 4)}”`)
+      ? h(
+          Text,
+          { color: C.faint, wrap: "truncate-end" },
+          `  “${truncate(g.lastCommitSubject, w - 4)}”`,
+        )
       : null,
     queued.length > 0
       ? h(
@@ -440,7 +462,9 @@ export function EventLog({
         (state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : ""),
       ),
     ),
-    ...(shown.length === 0 ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")] : shown.map((r) => r.node)),
+    ...(shown.length === 0
+      ? [h(Text, { key: "none", color: C.faint }, "  (quiet)")]
+      : shown.map((r) => r.node)),
   );
 }
 
@@ -490,7 +514,6 @@ function physicalRows(
   return out;
 }
 
-
 // ---------------------------------------------------------------------------
 // text editor view (used by the prompt)
 // ---------------------------------------------------------------------------
@@ -539,8 +562,7 @@ export function EditorView({
     { flexDirection: "column" },
     ...shown.map((ln, i) => {
       const r = start + i;
-      const gutter =
-        (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
+      const gutter = (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
       let content: ReactNode;
       if (r === row) {
         const off = Math.max(0, col - (room - 1));
@@ -667,8 +689,11 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
 /** Rows the prompt editor occupies, for the parent's height maths. */
 export function promptRows(state: TuiState): number {
   if (state.mode !== "prompt" || !state.prompt) return 2;
-  const editor = Math.min(MAX_EDITOR_ROWS, Math.max(1, state.prompt.buffer.text.split("\n").length));
-  return 1 /* label */ + editor + 1 /* hints */;
+  const editor = Math.min(
+    MAX_EDITOR_ROWS,
+    Math.max(1, state.prompt.buffer.text.split("\n").length),
+  );
+  return 1 /* label */ + editor + 1; /* hints */
 }
 
 // ---------------------------------------------------------------------------
@@ -679,7 +704,14 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
   const accent = confirm.danger ? C.bad : C.accent;
   return h(
     Box,
-    { width, borderStyle: "round", borderColor: accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    {
+      width,
+      borderStyle: "round",
+      borderColor: accent,
+      paddingX: 2,
+      paddingY: 1,
+      flexDirection: "column",
+    },
     h(Text, { color: accent, bold: true }, confirm.title),
     confirm.body ? h(Text, { color: C.warn }, confirm.body) : null,
     confirm.branchName
@@ -735,8 +767,10 @@ function describeRequest(input: unknown, w: number): string[] {
     if (typeof path === "string") parts.push(path);
     if (typeof o["pattern"] === "string") parts.push(`pattern: ${o["pattern"]}`);
     if (typeof o["url"] === "string") parts.push(String(o["url"]));
-    if (typeof o["old_string"] === "string") parts.push(`− ${String(o["old_string"]).replace(/\s+/g, " ")}`);
-    if (typeof o["new_string"] === "string") parts.push(`+ ${String(o["new_string"]).replace(/\s+/g, " ")}`);
+    if (typeof o["old_string"] === "string")
+      parts.push(`− ${String(o["old_string"]).replace(/\s+/g, " ")}`);
+    if (typeof o["new_string"] === "string")
+      parts.push(`+ ${String(o["new_string"]).replace(/\s+/g, " ")}`);
     if (parts.length > 0) return parts.flatMap((p) => wrapText(p, w)).slice(0, 5);
     return wrapText(JSON.stringify(o), w).slice(0, 5);
   }
@@ -787,7 +821,9 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
     const more = perms.length > 1 ? ` (1 of ${perms.length})` : "";
     return box(
       `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
-      describeRequest(p0.input, w).map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l)),
+      describeRequest(p0.input, w).map((l, i) =>
+        h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l),
+      ),
       `a approve  ·  d deny  ·  ⌃o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
     );
   }
@@ -803,15 +839,31 @@ export function PlanReview({ text, width }: { text: string; width: number }): Re
   const lines = text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
   const body = lines.slice(0, 16);
   const row = (k: string, v: string): ReactNode =>
-    h(Box, { gap: 1 }, h(Box, { width: 3 }, h(Text, { color: C.accent }, k)), h(Text, { color: C.dim }, v));
+    h(
+      Box,
+      { gap: 1 },
+      h(Box, { width: 3 }, h(Text, { color: C.accent }, k)),
+      h(Text, { color: C.dim }, v),
+    );
   return h(
     Box,
-    { width, borderStyle: "round", borderColor: C.await_, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    {
+      width,
+      borderStyle: "round",
+      borderColor: C.await_,
+      paddingX: 2,
+      paddingY: 1,
+      flexDirection: "column",
+    },
     h(Text, { color: C.await_, bold: true }, "❖ PLAN REVIEW"),
     h(Box, { height: 1 }),
     ...body.map((l, i) => h(Text, { key: i, color: C.text, wrap: "truncate-end" }, l || " ")),
     lines.length > body.length
-      ? h(Text, { color: C.faint }, `  … ${lines.length - body.length} more lines — ⌃o to read it all`)
+      ? h(
+          Text,
+          { color: C.faint },
+          `  … ${lines.length - body.length} more lines — ⌃o to read it all`,
+        )
       : null,
     h(Box, { height: 1 }),
     row("i", "implement — the agent proceeds in this context"),
@@ -819,7 +871,11 @@ export function PlanReview({ text, width }: { text: string; width: number }): Re
     row("e", "edit the plan in $EDITOR, then implement what you saved"),
     row("d", "discuss — send a note back; the agent stays in plan mode"),
     h(Box, { height: 1 }),
-    h(Text, { color: C.faint }, "⌃o view read-only  ·  a plan review must be answered — esc does nothing"),
+    h(
+      Text,
+      { color: C.faint },
+      "⌃o view read-only  ·  a plan review must be answered — esc does nothing",
+    ),
   );
 }
 
@@ -832,7 +888,10 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
   ["bare key", "act on the selected session, or move"],
   ["Shift + key", "the heavier / structural sibling — Q quit-all · R restart · X delete · F fork"],
   ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
-  ["Alt + key", "run an action without leaving the prompt — ⌥e ⌥o ⌥p ⌥x; ⌥m switches the model (also from the fleet view)"],
+  [
+    "Alt + key",
+    "run an action without leaving the prompt — ⌥e ⌥o ⌥p ⌥x; ⌥m switches the model (also from the fleet view)",
+  ],
   ["⇧⇥", "cycle the permission mode — on the selection, or inside a prompt (mid-message)"],
   ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
 ];
@@ -840,14 +899,32 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
 const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
   ["Space", "command palette — search and run any action available here"],
-  ["a / ⏎  ·  d", "approve a request (`a` only) · answer / review it (`⏎` too)  ·  `d` deny (deny-only — never deletes)"],
-  ["⏎  ·  i", "send a message to the selected session (revives a stopped one)  ·  interrupt its turn"],
+  [
+    "a / ⏎  ·  d",
+    "approve a request (`a` only) · answer / review it (`⏎` too)  ·  `d` deny (deny-only — never deletes)",
+  ],
+  [
+    "⏎  ·  i",
+    "send a message to the selected session (revives a stopped one)  ·  interrupt its turn",
+  ],
   ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
-  ["u  ·  ⇧⇥  ·  ⌥m", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)"],
+  [
+    "u  ·  ⇧⇥  ·  ⌥m",
+    "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)",
+  ],
   ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
-  ["o  ·  v  ·  ⇥", "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log"],
-  ["n  ·  f", "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session"],
-  ["F  ·  X", "hard fork — new session + worktree off this one (aisdk)  ·  delete the session (confirm)"],
+  [
+    "o  ·  v  ·  ⇥",
+    "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log",
+  ],
+  [
+    "n  ·  f",
+    "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session",
+  ],
+  [
+    "F  ·  X",
+    "hard fork — new session + worktree off this one (aisdk)  ·  delete the session (confirm)",
+  ],
   ["R  ·  Q", "restart the daemon  ·  quit the UI and stop the daemon  (both confirm)"],
   ["q  ·  ⌃c  ·  esc", "quit the UI, daemon keeps running  ·  quit  ·  back out of any overlay"],
   ["⟢ (fleet)", "prompt cache still warm — green → amber → red as it lapses"],
@@ -860,8 +937,14 @@ const EDIT_ROWS: Array<[string, string]> = [
   ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
   ["⌃← / ⌃→", "word back / forward"],
   ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
-  ["⌥e  ·  ⌥o", "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only"],
-  ["⇧⇥  ·  ⌥m", "cycle the permission mode  ·  switch the model — the new session's, or the one you're messaging"],
+  [
+    "⌥e  ·  ⌥o",
+    "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only",
+  ],
+  [
+    "⇧⇥  ·  ⌥m",
+    "cycle the permission mode  ·  switch the model — the new session's, or the one you're messaging",
+  ],
   ["⌥p", "provider / model picker   (new-session prompt only)"],
   ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
 ];
@@ -890,7 +973,14 @@ export function Picker({
 
   return h(
     Box,
-    { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    {
+      width,
+      borderStyle: "round",
+      borderColor: C.accent,
+      paddingX: 2,
+      paddingY: 1,
+      flexDirection: "column",
+    },
     h(Text, { color: C.accent, bold: true }, `▸ ${picker.title.toUpperCase()}`),
     // A prompt-style input line so it reads as "type here", with a block caret
     // and a placeholder when empty.
@@ -945,7 +1035,14 @@ export function Picker({
 export function Help({ width }: { width: number }): ReactNode {
   return h(
     Box,
-    { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
+    {
+      width,
+      borderStyle: "round",
+      borderColor: C.accent,
+      paddingX: 2,
+      paddingY: 1,
+      flexDirection: "column",
+    },
     h(Text, { color: C.accent, bold: true }, "loom — keys"),
     h(Box, { height: 1 }),
     h(Text, { color: C.dim, bold: true }, "the grammar"),
@@ -977,6 +1074,10 @@ export function Help({ width }: { width: number }): ReactNode {
       ),
     ),
     h(Box, { height: 1 }),
-    h(Text, { color: C.faint }, "loom drives worktrees only — it never pushes or touches your remotes."),
+    h(
+      Text,
+      { color: C.faint },
+      "loom drives worktrees only — it never pushes or touches your remotes.",
+    ),
   );
 }

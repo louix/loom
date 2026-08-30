@@ -63,9 +63,18 @@ import { makeAisdkProvider } from "@loom/aisdk/provider";
 export async function createProvider(ctx: ConnectorContext) {
   if (!ctx.transcript) throw new Error(`${ctx.id}: an aisdk connector needs a transcript store`);
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
-  const p = createOpenAICompatible({ name: ctx.id, baseURL: ctx.config.baseUrl ?? "", apiKey: ctx.config.apiKey ?? "" });
+  const p = createOpenAICompatible({
+    name: ctx.id,
+    baseURL: ctx.config.baseUrl ?? "",
+    apiKey: ctx.config.apiKey ?? "",
+  });
   return makeAisdkProvider(
-    { id: ctx.id, model: ctx.config.model ?? "", models: ctx.config.models ?? [], makeModel: (id) => p(id) },
+    {
+      id: ctx.id,
+      model: ctx.config.model ?? "",
+      models: ctx.config.models ?? [],
+      makeModel: (id) => p(id),
+    },
     ctx.transcript,
   );
 }
@@ -80,11 +89,11 @@ No build step — source is `.ts`; add a `tsconfig.build.json` only if you publi
 
 `ProviderRegistry.#packageFor(id)`:
 
-| provider id / profile | connector package |
-|---|---|
-| `claude` | `@loom/connector-claude` |
-| `fake` / `mock` | `@loom/connector-mock` |
-| `[google]` or `sdk = "google"` | `@loom/connector-gemini` |
+| provider id / profile                                                  | connector package         |
+| ---------------------------------------------------------------------- | ------------------------- |
+| `claude`                                                               | `@loom/connector-claude`  |
+| `fake` / `mock`                                                        | `@loom/connector-mock`    |
+| `[google]` or `sdk = "google"`                                         | `@loom/connector-gemini`  |
 | `[custom-provider.*]`, `[anthropic]`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
 
 Override per profile:
@@ -97,8 +106,8 @@ base_url  = "https://…"
 ```
 
 The connector must be resolvable from the `loom` package (`pnpm add` it) and
-listed in the CLI's manifest, or `session.create` fails with *"provider … needs
-connector … , which is not installed"*.
+listed in the CLI's manifest, or `session.create` fails with _"provider … needs
+connector … , which is not installed"_.
 
 ## Worktrees
 

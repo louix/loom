@@ -301,9 +301,11 @@ export class AisdkSession implements AgentSession {
     await this.#turn?.catch(() => {});
     for (const [, r] of this.#pendingPerms) r({ allow: false, message: "the session was closed" });
     this.#pendingPerms.clear();
-    for (const [, r] of this.#pendingQuestions) r("(the session was closed before the user answered)");
+    for (const [, r] of this.#pendingQuestions)
+      r("(the session was closed before the user answered)");
     this.#pendingQuestions.clear();
-    for (const [, r] of this.#pendingPlans) r({ action: "discuss", message: "the session was closed" });
+    for (const [, r] of this.#pendingPlans)
+      r({ action: "discuss", message: "the session was closed" });
     this.#pendingPlans.clear();
     this.#builtins?.close();
     await this.#hub?.close().catch(() => {});
@@ -338,7 +340,10 @@ export class AisdkSession implements AgentSession {
           Object.assign(base, this.#hub.tools);
         }
         if (this.#loomServer) {
-          Object.assign(base, buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }));
+          Object.assign(
+            base,
+            buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }),
+          );
           this.#builtins = new BuiltinTools(this.#cwd, this.#search);
           Object.assign(base, this.#builtins.tools);
           Object.assign(base, this.#planAndTaskTools());
@@ -356,7 +361,8 @@ export class AisdkSession implements AgentSession {
     const src = base as Record<string, unknown>;
     for (const name of Object.keys(src)) {
       if (this.#mode === "plan") {
-        if (name === "exit_plan" || name === "ask_user" || isReadonly(name)) picked[name] = src[name];
+        if (name === "exit_plan" || name === "ask_user" || isReadonly(name))
+          picked[name] = src[name];
       } else if (name !== "exit_plan") {
         picked[name] = src[name];
       }
@@ -373,7 +379,9 @@ export class AisdkSession implements AgentSession {
         description:
           "Call this only in plan mode, once your plan is complete. Pass the full plan text; " +
           "the user reviews it and decides whether to implement, revise, or keep discussing.",
-        inputSchema: z.object({ plan: z.string().describe("The complete implementation plan, in markdown.") }),
+        inputSchema: z.object({
+          plan: z.string().describe("The complete implementation plan, in markdown."),
+        }),
         execute: async ({ plan }) => {
           const decision = await this.#requestPlan(plan);
           switch (decision.action) {
@@ -452,7 +460,13 @@ export class AisdkSession implements AgentSession {
 
   async #runSubagent(name: string, prompt: string): Promise<string> {
     const subId = randomUUID();
-    this.#emit({ type: "subagent_started", sessionId: this.id, ts: Date.now(), subagentId: subId, name });
+    this.#emit({
+      type: "subagent_started",
+      sessionId: this.id,
+      ts: Date.now(),
+      subagentId: subId,
+      name,
+    });
 
     const base = await this.#ensureBaseTools();
     const src = base as Record<string, unknown>;
@@ -509,10 +523,13 @@ export class AisdkSession implements AgentSession {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = (): void => {
       const slow = Date.now() - startedAt > COMPACT_BEAT_BACKOFF_AFTER_MS;
-      timer = setTimeout(() => {
-        beat();
-        schedule();
-      }, slow ? COMPACT_BEAT_SLOW_MS : COMPACT_BEAT_FAST_MS);
+      timer = setTimeout(
+        () => {
+          beat();
+          schedule();
+        },
+        slow ? COMPACT_BEAT_SLOW_MS : COMPACT_BEAT_FAST_MS,
+      );
       if (typeof timer.unref === "function") timer.unref();
     };
     beat();

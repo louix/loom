@@ -39,7 +39,12 @@ function model(chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): Languag
 
 function textReply(
   text: string,
-  usage: Partial<{ inputTokens: number; outputTokens: number; totalTokens: number; cachedInputTokens: number }> = {},
+  usage: Partial<{
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+  }> = {},
   opts: { chunkDelayInMs?: number } = {},
 ): LanguageModel {
   return model(
@@ -47,7 +52,9 @@ function textReply(
       { type: "stream-start", warnings: [] },
       { type: "response-metadata", id: "r", modelId: "mock", timestamp: new Date(0) },
       { type: "text-start", id: "t" },
-      ...text.split(" ").map((w, i) => ({ type: "text-delta" as const, id: "t", delta: i === 0 ? w : ` ${w}` })),
+      ...text
+        .split(" ")
+        .map((w, i) => ({ type: "text-delta" as const, id: "t", delta: i === 0 ? w : ` ${w}` })),
       { type: "text-end", id: "t" },
       {
         type: "finish",
@@ -56,7 +63,9 @@ function textReply(
           inputTokens: usage.inputTokens ?? 10,
           outputTokens: usage.outputTokens ?? 3,
           totalTokens: usage.totalTokens ?? 13,
-          ...(usage.cachedInputTokens != null ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+          ...(usage.cachedInputTokens != null
+            ? { cachedInputTokens: usage.cachedInputTokens }
+            : {}),
         },
       },
     ],
@@ -77,9 +86,9 @@ function tmpDb() {
   db.prepare(
     "INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES (?, 'openai', 'default', 0, 0)",
   ).run("s1");
-  db.prepare("INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES (?, 'openai', 'default', 0, 0)").run(
-    "s2",
-  );
+  db.prepare(
+    "INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES (?, 'openai', 'default', 0, 0)",
+  ).run("s2");
   return {
     db,
     cleanup: () => {
@@ -112,7 +121,10 @@ test("ProviderMessageStore: replaceFrom past the end throws; copyTo refuses a no
   }
 });
 
-async function drain(events: AsyncIterable<HarnessEvent>, until: (ev: HarnessEvent) => boolean): Promise<HarnessEvent[]> {
+async function drain(
+  events: AsyncIterable<HarnessEvent>,
+  until: (ev: HarnessEvent) => boolean,
+): Promise<HarnessEvent[]> {
   const out: HarnessEvent[] = [];
   for await (const ev of events) {
     out.push(ev);
@@ -142,7 +154,10 @@ test("estimateTokens is chars/4 over message content, and shrugs off malformed r
   // a row with no content / a circular structure must not throw
   const circular: Record<string, unknown> = {};
   circular["self"] = circular;
-  assert.equal(estimateTokens([{ role: "user" } as never, { role: "user", content: circular } as never]), 0);
+  assert.equal(
+    estimateTokens([{ role: "user" } as never, { role: "user", content: circular } as never]),
+    0,
+  );
 });
 
 // --- mapper ------------------------------------------------------------------
@@ -163,15 +178,39 @@ test("mapper turns reasoning into thinking and tool parts into tool_call/tool_re
   m.map({ type: "reasoning-delta", id: "r", text: "hmm" } as never);
   assert.equal(m.map({ type: "reasoning-end", id: "r" } as never)[0]?.type, "thinking");
 
-  const call = m.map({ type: "tool-call", toolCallId: "c1", toolName: "echo", input: { x: 1 } } as never)[0];
+  const call = m.map({
+    type: "tool-call",
+    toolCallId: "c1",
+    toolName: "echo",
+    input: { x: 1 },
+  } as never)[0];
   assert.equal(call?.type, "tool_call");
-  assert.deepEqual(call, { type: "tool_call", sessionId: "s1", ts: (call as { ts: number }).ts, id: "c1", name: "echo", input: { x: 1 } });
+  assert.deepEqual(call, {
+    type: "tool_call",
+    sessionId: "s1",
+    ts: (call as { ts: number }).ts,
+    id: "c1",
+    name: "echo",
+    input: { x: 1 },
+  });
 
-  const res = m.map({ type: "tool-result", toolCallId: "c1", toolName: "echo", input: {}, output: "ok" } as never)[0];
+  const res = m.map({
+    type: "tool-result",
+    toolCallId: "c1",
+    toolName: "echo",
+    input: {},
+    output: "ok",
+  } as never)[0];
   assert.equal(res?.type, "tool_result");
   assert.equal((res as { ok: boolean }).ok, true);
 
-  const errp = m.map({ type: "tool-error", toolCallId: "c1", toolName: "echo", input: {}, error: new Error("boom") } as never)[0];
+  const errp = m.map({
+    type: "tool-error",
+    toolCallId: "c1",
+    toolName: "echo",
+    input: {},
+    error: new Error("boom"),
+  } as never)[0];
   assert.equal((errp as { ok: boolean }).ok, false);
   assert.equal((errp as { output: unknown }).output, "boom");
 });
@@ -181,12 +220,22 @@ test("mapper flushes buffered text / reasoning before a tool_call (no text-end s
   m.map({ type: "reasoning-delta", id: "r", text: "let me look" } as never);
   m.map({ type: "text-delta", id: "t", text: "I'll check the repo." } as never);
   // provider jumps straight to the tool call without closing the blocks
-  const out = m.map({ type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "ls" } } as never);
-  assert.deepEqual(out.map((e) => e.type), ["assistant_text", "thinking", "tool_call"]);
+  const out = m.map({
+    type: "tool-call",
+    toolCallId: "c1",
+    toolName: "bash",
+    input: { command: "ls" },
+  } as never);
+  assert.deepEqual(
+    out.map((e) => e.type),
+    ["assistant_text", "thinking", "tool_call"],
+  );
   assert.equal((out[0] as { text: string }).text, "I'll check the repo.");
   // a second parallel tool call has nothing left to flush
   assert.deepEqual(
-    m.map({ type: "tool-call", toolCallId: "c2", toolName: "bash", input: {} } as never).map((e) => e.type),
+    m
+      .map({ type: "tool-call", toolCallId: "c2", toolName: "bash", input: {} } as never)
+      .map((e) => e.type),
     ["tool_call"],
   );
 });
@@ -201,7 +250,12 @@ test("mapper splits cached tokens out of input on finish-step", () => {
     providerMetadata: undefined,
   } as never)[0];
   assert.equal(ev?.type, "usage");
-  assert.deepEqual((ev as { tokens: unknown }).tokens, { input: 60, output: 20, cacheRead: 40, cacheWrite: 0 });
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 60,
+    output: 20,
+    cacheRead: 40,
+    cacheWrite: 0,
+  });
   assert.equal((ev as { contextUsed: number }).contextUsed, 100);
   assert.equal((ev as { contextLimit: number }).contextLimit, 400_000);
 });
@@ -209,7 +263,13 @@ test("mapper splits cached tokens out of input on finish-step", () => {
 test("mapper surfaces a stream error part as a fatal error event", () => {
   const m = new AisdkEventMapper("s1", "gpt-5");
   const ev = m.map({ type: "error", error: new Error("network down") } as never)[0];
-  assert.deepEqual(ev, { type: "error", sessionId: "s1", ts: (ev as { ts: number }).ts, message: "network down", fatal: true });
+  assert.deepEqual(ev, {
+    type: "error",
+    sessionId: "s1",
+    ts: (ev as { ts: number }).ts,
+    message: "network down",
+    fatal: true,
+  });
 });
 
 // --- runTurn ---------------------------------------------------------------
@@ -257,7 +317,11 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
               { type: "tool-input-delta", id: "tc1", delta: "{}" },
               { type: "tool-input-end", id: "tc1" },
               { type: "tool-call", toolCallId: "tc1", toolName: "ping", input: "{}" },
-              { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
+              {
+                type: "finish",
+                finishReason: "tool-calls",
+                usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+              },
             ]
           : [
               { type: "stream-start", warnings: [] },
@@ -265,7 +329,11 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
               { type: "text-start", id: "t" },
               { type: "text-delta", id: "t", delta: "on it" },
               { type: "text-end", id: "t" },
-              { type: "finish", finishReason: "stop", usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 } },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+              },
             ];
       return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
     },
@@ -278,7 +346,9 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     model,
     system: undefined,
     messages: [{ role: "user", content: "start" }],
-    tools: { ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }) },
+    tools: {
+      ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }),
+    },
     maxSteps: 6,
     abortSignal: new AbortController().signal,
     mapper: new AisdkEventMapper("s1", "mock"),
@@ -314,7 +384,11 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
             { type: "stream-start", warnings: [] },
             { type: "response-metadata", id: `r${step}`, modelId: "mock", timestamp: new Date(0) },
             { type: "tool-call", toolCallId: `c${step}`, toolName: "ping", input: "{}" },
-            { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+            {
+              type: "finish",
+              finishReason: "tool-calls",
+              usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+            },
           ],
         }),
       };
@@ -326,7 +400,9 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
     model,
     system: undefined,
     messages: [{ role: "user", content: "go" }],
-    tools: { ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }) },
+    tools: {
+      ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }),
+    },
     maxSteps: 3,
     abortSignal: new AbortController().signal,
     mapper: new AisdkEventMapper("s1", "mock"),
@@ -366,8 +442,14 @@ test("createSession runs the first turn, emits result, and persists the transcri
     const evs = await drain(s.events(), (e) => e.type === "result");
     await s.close();
 
-    assert.equal(evs.some((e) => e.type === "assistant_text"), true);
-    assert.equal(evs.some((e) => e.type === "usage"), true);
+    assert.equal(
+      evs.some((e) => e.type === "assistant_text"),
+      true,
+    );
+    assert.equal(
+      evs.some((e) => e.type === "usage"),
+      true,
+    );
     assert.equal(evs.at(-1)?.type, "result");
 
     // user prompt + assistant reply persisted, in order.
@@ -384,7 +466,10 @@ test("interrupt aborts the running turn — no result, status not idle", async (
   const { db, cleanup } = tmpDb();
   try {
     const store = new ProviderMessageStore(db);
-    const p = provider(() => textReply("one two three four five six", {}, { chunkDelayInMs: 20 }), store);
+    const p = provider(
+      () => textReply("one two three four five six", {}, { chunkDelayInMs: 20 }),
+      store,
+    );
     const s = await p.createSession({
       sessionId: "s1",
       cwd: "/tmp",
@@ -401,7 +486,10 @@ test("interrupt aborts the running turn — no result, status not idle", async (
     await s.close();
     await reader;
 
-    assert.equal(seen.some((e) => e.type === "result"), false);
+    assert.equal(
+      seen.some((e) => e.type === "result"),
+      false,
+    );
     assert.notEqual(s.snapshot().status, "idle");
   } finally {
     cleanup();
@@ -422,11 +510,20 @@ test("a message sent mid-turn with no step to catch it folds into the same turn"
             chunkDelayInMs: 5,
             chunks: [
               { type: "stream-start", warnings: [] },
-              { type: "response-metadata", id: `r${roundTrips}`, modelId: "mock", timestamp: new Date(0) },
+              {
+                type: "response-metadata",
+                id: `r${roundTrips}`,
+                modelId: "mock",
+                timestamp: new Date(0),
+              },
               { type: "text-start", id: "t" },
               { type: "text-delta", id: "t", delta: `reply ${roundTrips}` },
               { type: "text-end", id: "t" },
-              { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+              },
             ],
           }),
         };
@@ -453,7 +550,10 @@ test("a message sent mid-turn with no step to catch it folds into the same turn"
     await reader;
 
     const stored = store.load("s1");
-    assert.deepEqual(stored.map((m) => m.role), ["user", "assistant", "user", "assistant"]);
+    assert.deepEqual(
+      stored.map((m) => m.role),
+      ["user", "assistant", "user", "assistant"],
+    );
     assert.equal(stored[2]?.content, "second");
     assert.equal(roundTrips, 2, "two model round-trips");
     assert.equal(results.length, 1, "but a single end-of-turn result");
@@ -481,14 +581,24 @@ test("two near-simultaneous sends to an idle session don't double-run a turn", a
               { type: "text-start", id: "t" },
               { type: "text-delta", id: "t", delta: `r${rt}` },
               { type: "text-end", id: "t" },
-              { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 } },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 },
+              },
             ],
           }),
         };
       },
     }) as unknown as LanguageModel;
     const p = provider(() => model, store);
-    const s = await p.createSession({ sessionId: "s1", cwd: "/tmp", prompt: "first", mode: "default", mcpServers: [] });
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
     await drain(s.events(), (e) => e.type === "result"); // turn 1 → idle
 
     await Promise.all([s.send("A"), s.send("B")]); // fired together, not awaited apart
@@ -525,14 +635,24 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
               { type: "text-start", id: "t" },
               { type: "text-delta", id: "t", delta: "recovered" },
               { type: "text-end", id: "t" },
-              { type: "finish", finishReason: "stop", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+              },
             ],
           }),
         };
       },
     }) as unknown as LanguageModel;
     const p = provider(() => model, store);
-    const s = await p.createSession({ sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] });
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "go",
+      mode: "default",
+      mcpServers: [],
+    });
     await drain(s.events(), (e) => e.type === "error");
     await new Promise((r) => setTimeout(r, 20)); // let #runTurn reach its terminal branch
     assert.notEqual(s.snapshot().status, "running");
@@ -562,7 +682,14 @@ test("dropDanglingToolCalls trims an assistant turn whose tool calls were never 
   } as const;
   const resultA = {
     role: "tool",
-    content: [{ type: "tool-result", toolCallId: "a", toolName: "bash", output: { type: "text", value: "ok" } }],
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: "a",
+        toolName: "bash",
+        output: { type: "text", value: "ok" },
+      },
+    ],
   } as const;
   const resultB = { ...resultA, content: [{ ...resultA.content[0], toolCallId: "b" }] } as const;
 
@@ -592,7 +719,11 @@ test("resumeSession reloads the transcript; the next turn sees the history", asy
                 { type: "text-start", id: "t" },
                 { type: "text-delta", id: "t", delta: "ok" },
                 { type: "text-end", id: "t" },
-                { type: "finish", finishReason: "stop", usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } },
+                {
+                  type: "finish",
+                  finishReason: "stop",
+                  usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+                },
               ],
             }),
           };
@@ -600,14 +731,25 @@ test("resumeSession reloads the transcript; the next turn sees the history", asy
       }) as unknown as LanguageModel;
 
     const p1 = provider(make, store);
-    const s1 = await p1.createSession({ sessionId: "s1", cwd: "/tmp", prompt: "first", mode: "default", mcpServers: [] });
+    const s1 = await p1.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
     await drain(s1.events(), (e) => e.type === "result");
     await s1.close();
     const afterFirst = store.count("s1");
     assert.equal(afterFirst >= 2, true);
 
     const p2 = provider(make, store);
-    const s2 = await p2.resumeSession({ sessionId: "s1", providerRef: "s1", cwd: "/tmp", model: "gpt-5" });
+    const s2 = await p2.resumeSession({
+      sessionId: "s1",
+      providerRef: "s1",
+      cwd: "/tmp",
+      model: "gpt-5",
+    });
     await s2.send("second");
     await drain(s2.events(), (e) => e.type === "result");
     await s2.close();
@@ -626,7 +768,16 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   const { db, cleanup } = tmpDb();
   try {
     const store = new ProviderMessageStore(db);
-    const p = provider(() => textReply("done", { inputTokens: 30, outputTokens: 4, totalTokens: 34, cachedInputTokens: 10 }), store);
+    const p = provider(
+      () =>
+        textReply("done", {
+          inputTokens: 30,
+          outputTokens: 4,
+          totalTokens: 34,
+          cachedInputTokens: 10,
+        }),
+      store,
+    );
 
     const events: HarnessEvent[] = [];
     const usage: UsageDelta[] = [];
@@ -645,13 +796,22 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
       log: makeLogger("test"),
     });
 
-    await mgr.create(p, { sessionId: "s1", cwd: "/tmp", prompt: "hello", mode: "default", mcpServers: [] });
+    await mgr.create(p, {
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "hello",
+      mode: "default",
+      mcpServers: [],
+    });
     // wait for the turn to finish
     for (let i = 0; i < 200 && results === 0; i++) await new Promise((r) => setTimeout(r, 5));
     await mgr.shutdown();
 
     assert.equal(results, 1);
-    assert.equal(statuses.some((s) => s.status === "idle"), true);
+    assert.equal(
+      statuses.some((s) => s.status === "idle"),
+      true,
+    );
     const withTokens = usage.find((d) => (d.input ?? 0) > 0 || (d.cacheRead ?? 0) > 0);
     assert.equal(withTokens?.cacheRead, 10);
     assert.equal(withTokens?.input, 20);
@@ -694,7 +854,11 @@ test("AisdkSession.rewind truncates the transcript in memory and in the store", 
                 { type: "text-start", id: "t" },
                 { type: "text-delta", id: "t", delta: `reply ${n}` },
                 { type: "text-end", id: "t" },
-                { type: "finish", finishReason: "stop", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
+                {
+                  type: "finish",
+                  finishReason: "stop",
+                  usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                },
               ],
             }),
           };
@@ -716,7 +880,10 @@ test("AisdkSession.rewind truncates the transcript in memory and in the store", 
 
     await s.rewind(2); // keep just turn 1
     assert.equal(store.load("s1").length, 2);
-    assert.deepEqual(store.load("s1").map((m) => m.role), ["user", "assistant"]);
+    assert.deepEqual(
+      store.load("s1").map((m) => m.role),
+      ["user", "assistant"],
+    );
 
     // the next turn continues from the truncated history
     await s.send("third");

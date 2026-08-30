@@ -34,20 +34,20 @@ wants to own the project). It is pure ESM, ships types, has no decorators or
 build step, its `fullStream` parts map almost 1:1 to our `HarnessEvent` union,
 and it has a built-in MCP client.
 
-Loom keeps ownership of loop *policy*, the permission gate, compaction, the
+Loom keeps ownership of loop _policy_, the permission gate, compaction, the
 message array, and persistence. The SDK does model I/O, tool-call plumbing, and
 MCP transport.
 
 ## Dependencies
 
-| Package | Notes |
-|---|---|
-| `ai` | **pinned to the v5 line** (`^5.0.249`, dist-tag `ai-v5`). v6/v7 exist but v5's `LanguageModelV2` usage is a flat `{ inputTokens, outputTokens, cachedInputTokens }` and its `fullStream` parts are stable and well-documented; bump later as a focused upgrade. `streamText`, `stepCountIs`, `tool`, `experimental_createMCPClient`. |
-| `@ai-sdk/openai-compatible` | `^1.0.52` (dist-tag `ai-v5`) — `createOpenAICompatible({ name, baseURL, apiKey })` → GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI itself. Dedicated package, cleaner than `@ai-sdk/openai`'s helper. |
-| `@ai-sdk/mcp` | `^0.0.31` (dist-tag `ai-v5` — matches `@ai-sdk/provider@2` / `-utils@3`). `experimental_createMCPClient`; stdio transport from the `@ai-sdk/mcp/mcp-stdio` subpath (`Experimental_StdioMCPTransport`). MCP moved out of `ai` core after v4. |
-| `@ai-sdk/anthropic` / `@ai-sdk/google` | follow-ups, not in M10 |
-| `zod` | **already a dependency** (`^4.4.3`) |
-| official MCP servers | `@modelcontextprotocol/server-filesystem`, `-git`, `-fetch` — spawned as subprocesses, not linked (M10b) |
+| Package                                | Notes                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ai`                                   | **pinned to the v5 line** (`^5.0.249`, dist-tag `ai-v5`). v6/v7 exist but v5's `LanguageModelV2` usage is a flat `{ inputTokens, outputTokens, cachedInputTokens }` and its `fullStream` parts are stable and well-documented; bump later as a focused upgrade. `streamText`, `stepCountIs`, `tool`, `experimental_createMCPClient`. |
+| `@ai-sdk/openai-compatible`            | `^1.0.52` (dist-tag `ai-v5`) — `createOpenAICompatible({ name, baseURL, apiKey })` → GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI itself. Dedicated package, cleaner than `@ai-sdk/openai`'s helper.                                                                                                                              |
+| `@ai-sdk/mcp`                          | `^0.0.31` (dist-tag `ai-v5` — matches `@ai-sdk/provider@2` / `-utils@3`). `experimental_createMCPClient`; stdio transport from the `@ai-sdk/mcp/mcp-stdio` subpath (`Experimental_StdioMCPTransport`). MCP moved out of `ai` core after v4.                                                                                          |
+| `@ai-sdk/anthropic` / `@ai-sdk/google` | follow-ups, not in M10                                                                                                                                                                                                                                                                                                               |
+| `zod`                                  | **already a dependency** (`^4.4.3`)                                                                                                                                                                                                                                                                                                  |
+| official MCP servers                   | `@modelcontextprotocol/server-filesystem`, `-git`, `-fetch` — spawned as subprocesses, not linked (M10b)                                                                                                                                                                                                                             |
 
 Whole trio installs to ~18 MB / 10 packages, most of it shared with what the
 Claude SDK already pulls.
@@ -74,48 +74,48 @@ hook.
 
 New package `src/provider/aisdk/`:
 
-| File | Responsibility |
-|---|---|
-| `adapter.ts` | `AgentProvider` impl; one instance per configured provider *profile* |
-| `session.ts` | `AgentSession` impl — owns the `ModelMessage[]`, the `AbortController`, the event queue |
-| `loop.ts` | `streamText` call + multi-step loop policy (`stopWhen`, `prepareStep`) |
-| `map.ts` | `fullStream` part → `HarnessEvent` |
-| `mcp.ts` | `McpServerHandle[]` → AI SDK MCP clients; process supervision |
-| `tools/index.ts` | tool registry: hand-built + MCP + the `loom` server shim |
-| `tools/bash.ts` | persistent-shell Bash tool |
-| `tools/edit.ts` | exact / dedent / unique-substring Edit tool |
-| `store.ts` | message-array persistence (SQLite) + resume |
-| `tokens.ts` | context-window table + `chars/4` estimate |
-| `compact.ts` | Loom-side summarize-and-rebuild |
+| File             | Responsibility                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `adapter.ts`     | `AgentProvider` impl; one instance per configured provider _profile_                    |
+| `session.ts`     | `AgentSession` impl — owns the `ModelMessage[]`, the `AbortController`, the event queue |
+| `loop.ts`        | `streamText` call + multi-step loop policy (`stopWhen`, `prepareStep`)                  |
+| `map.ts`         | `fullStream` part → `HarnessEvent`                                                      |
+| `mcp.ts`         | `McpServerHandle[]` → AI SDK MCP clients; process supervision                           |
+| `tools/index.ts` | tool registry: hand-built + MCP + the `loom` server shim                                |
+| `tools/bash.ts`  | persistent-shell Bash tool                                                              |
+| `tools/edit.ts`  | exact / dedent / unique-substring Edit tool                                             |
+| `store.ts`       | message-array persistence (SQLite) + resume                                             |
+| `tokens.ts`      | context-window table + `chars/4` estimate                                               |
+| `compact.ts`     | Loom-side summarize-and-rebuild                                                         |
 
 ### Seam mapping
 
-| `AgentProvider` / `AgentSession` | Vercel AI SDK |
-|---|---|
-| `createSession` | build model (`createOpenAICompatible({ baseURL, apiKey })(modelId)`), seed `ModelMessage[]`, start `loop.run()` |
-| `events()` | async queue fed by the `map.ts` translation of `result.fullStream` |
-| `send(input)` | push a user message, kick `loop.run()` again |
-| `respondToPermission` / `answerQuestion` / `respondToPlan` | resolve the promise the tool `execute` wrapper (or the `exit_plan` tool) is blocked on |
-| `interrupt()` | `abortController.abort()` — AI SDK stops the stream and the step loop |
-| `setMode(mode)` | swap the active tool filter + gate policy; effective next step |
-| `setModel(id)` | swap the model object; effective **next turn** (`capabilities.liveModeSwitch = false`) |
-| `compact(instructions?)` | `compact.ts`: summarize the array, replace with `[summary, ...tail]`, emit `compact` |
-| `resumeSession(ref)` | reload `ModelMessage[]` from `store.ts` by Loom session id |
-| `providerRef` | the Loom session id (we own persistence; there is no upstream session) |
+| `AgentProvider` / `AgentSession`                           | Vercel AI SDK                                                                                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `createSession`                                            | build model (`createOpenAICompatible({ baseURL, apiKey })(modelId)`), seed `ModelMessage[]`, start `loop.run()` |
+| `events()`                                                 | async queue fed by the `map.ts` translation of `result.fullStream`                                              |
+| `send(input)`                                              | push a user message, kick `loop.run()` again                                                                    |
+| `respondToPermission` / `answerQuestion` / `respondToPlan` | resolve the promise the tool `execute` wrapper (or the `exit_plan` tool) is blocked on                          |
+| `interrupt()`                                              | `abortController.abort()` — AI SDK stops the stream and the step loop                                           |
+| `setMode(mode)`                                            | swap the active tool filter + gate policy; effective next step                                                  |
+| `setModel(id)`                                             | swap the model object; effective **next turn** (`capabilities.liveModeSwitch = false`)                          |
+| `compact(instructions?)`                                   | `compact.ts`: summarize the array, replace with `[summary, ...tail]`, emit `compact`                            |
+| `resumeSession(ref)`                                       | reload `ModelMessage[]` from `store.ts` by Loom session id                                                      |
+| `providerRef`                                              | the Loom session id (we own persistence; there is no upstream session)                                          |
 
 ### Event mapping (`fullStream` → `HarnessEvent`)
 
-| AI SDK part | HarnessEvent |
-|---|---|
-| `text-delta` | `assistant_text` (streamed) |
-| `reasoning` / `reasoning-delta` | `thinking` |
-| `tool-call` | `tool_call` |
-| `tool-result` | `tool_result` |
-| `tool-call` for the `Task` tool | `subagent_started` (+ `subagent_stopped` on its result) — reuse M9 |
-| `tool-call` for the `exit_plan` tool | `plan_review` |
-| `finish` (`usage`, `finishReason`) | `usage` then `result` |
-| `error` | `error` |
-| step boundary with `finishReason: "length"` near the window | trigger auto-compact, emit `compact` |
+| AI SDK part                                                 | HarnessEvent                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------------ |
+| `text-delta`                                                | `assistant_text` (streamed)                                        |
+| `reasoning` / `reasoning-delta`                             | `thinking`                                                         |
+| `tool-call`                                                 | `tool_call`                                                        |
+| `tool-result`                                               | `tool_result`                                                      |
+| `tool-call` for the `Task` tool                             | `subagent_started` (+ `subagent_stopped` on its result) — reuse M9 |
+| `tool-call` for the `exit_plan` tool                        | `plan_review`                                                      |
+| `finish` (`usage`, `finishReason`)                          | `usage` then `result`                                              |
+| `error`                                                     | `error`                                                            |
+| step boundary with `finishReason: "length"` near the window | trigger auto-compact, emit `compact`                               |
 
 ### The loop
 
@@ -187,27 +187,27 @@ child event stream tagged with an `agentId`. Emits `subagent_started` /
 
 ## Tools — parity checklist
 
-| Claude Code built-in | aisdk source |
-|---|---|
-| Read | `@modelcontextprotocol/server-filesystem` |
-| Write | `server-filesystem` (gated) |
-| Glob | `server-filesystem` |
-| Grep | **shipped** — `tools/grep.ts`, a `rg` shell-out with a deterministic schema; falls back to a clear message when `rg` is absent |
-| Edit | **shipped** — `tools/edit.ts` `applyEdit`: exact → per-line-trailing-whitespace-insensitive → dedented tiers; uniqueness enforced for the fuzzy tiers; `replace_all` for exact |
-| Bash | **shipped** — `tools/bash.ts` `BashShell`: one long-lived `bash` child per session, sentinel-framed commands so `cwd` / exported env persist; merged stdout+stderr; per-command timeout kills + resets the shell; output clamped |
-| WebFetch | `@modelcontextprotocol/server-fetch` |
-| WebSearch | out of scope for M10 (needs a search provider; follow-up) |
-| TodoWrite | first-party in-memory tool, mirrors the Claude one |
-| NotebookEdit | out of scope for M10 |
-| Task | **hand-built** recursive loop (see Subagents) |
-| git commit / ask_user | the existing in-process `loom` MCP server, exposed to the SDK as tools via `mcp.ts` |
+| Claude Code built-in  | aisdk source                                                                                                                                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read                  | `@modelcontextprotocol/server-filesystem`                                                                                                                                                                                        |
+| Write                 | `server-filesystem` (gated)                                                                                                                                                                                                      |
+| Glob                  | `server-filesystem`                                                                                                                                                                                                              |
+| Grep                  | **shipped** — `tools/grep.ts`, a `rg` shell-out with a deterministic schema; falls back to a clear message when `rg` is absent                                                                                                   |
+| Edit                  | **shipped** — `tools/edit.ts` `applyEdit`: exact → per-line-trailing-whitespace-insensitive → dedented tiers; uniqueness enforced for the fuzzy tiers; `replace_all` for exact                                                   |
+| Bash                  | **shipped** — `tools/bash.ts` `BashShell`: one long-lived `bash` child per session, sentinel-framed commands so `cwd` / exported env persist; merged stdout+stderr; per-command timeout kills + resets the shell; output clamped |
+| WebFetch              | `@modelcontextprotocol/server-fetch`                                                                                                                                                                                             |
+| WebSearch             | out of scope for M10 (needs a search provider; follow-up)                                                                                                                                                                        |
+| TodoWrite             | first-party in-memory tool, mirrors the Claude one                                                                                                                                                                               |
+| NotebookEdit          | out of scope for M10                                                                                                                                                                                                             |
+| Task                  | **hand-built** recursive loop (see Subagents)                                                                                                                                                                                    |
+| git commit / ask_user | the existing in-process `loom` MCP server, exposed to the SDK as tools via `mcp.ts`                                                                                                                                              |
 
 Default MCP server set is configurable; `filesystem` + `fetch` on by default,
 `git` opt-in (the `loom` server already owns commit).
 
 ## Provider & model switching — UX / UI
 
-### Config: provider *profiles*
+### Config: provider _profiles_
 
 `[providers.<id>]` gains an `adapter` key. Built-in `claude` keeps
 `adapter = "claude"`; everything else is `adapter = "aisdk"`.
@@ -246,10 +246,10 @@ config sets a top-level `default_provider`.
 
 ### Rule: provider fixed at creation, model switchable within it
 
-Switching *provider* mid-session would change the tool set, the message-format
+Switching _provider_ mid-session would change the tool set, the message-format
 normalization, the resume ref, the MCP wiring, and pricing semantics — that is a
 different session, and the fork-tree backlog item is the right home for
-"same task, different provider". Switching *model within one provider* is just
+"same task, different provider". Switching _model within one provider_ is just
 the next `streamText` call, so that is supported live (next turn).
 
 ### Creation flow (`n` new session)
@@ -295,28 +295,28 @@ consulted at runtime.
 
 ## Capabilities matrix
 
-| capability | `claude` | `aisdk` |
-|---|---|---|
-| `liveModeSwitch` | true | **false** (next turn) |
-| `forking` | false | false (initially) |
-| `subagents` | true | true |
-| `compaction` | true (SDK `/compact`) | **false** — Loom rebuilds history |
-| `oneShot` | true | true |
-| `partialTokens` | true | true (`text-delta` + interim `usage` where the endpoint streams it) |
-| `permissionModes` | all four | all four (enforced Loom-side) |
-| `models` | from config | from the profile's `models` |
+| capability        | `claude`              | `aisdk`                                                             |
+| ----------------- | --------------------- | ------------------------------------------------------------------- |
+| `liveModeSwitch`  | true                  | **false** (next turn)                                               |
+| `forking`         | false                 | false (initially)                                                   |
+| `subagents`       | true                  | true                                                                |
+| `compaction`      | true (SDK `/compact`) | **false** — Loom rebuilds history                                   |
+| `oneShot`         | true                  | true                                                                |
+| `partialTokens`   | true                  | true (`text-delta` + interim `usage` where the endpoint streams it) |
+| `permissionModes` | all four              | all four (enforced Loom-side)                                       |
+| `models`          | from config           | from the profile's `models`                                         |
 
 ## Sub-milestones
 
 Commit as each lands. **Stop for review after M10a.**
 
-| # | deliverable | tests |
-|---|---|---|
-| **M10a** ✓ | aisdk provider skeleton: `[providers.<id>]` profiles + `default_provider`, `AisdkProvider`/`AisdkSession` over `createOpenAICompatible`, `streamText` single-step loop, `fullStream`→`HarnessEvent` mapper, usage with cached-token split, price-table cost (existing daemon path), `interrupt` via `AbortController`, resume via `provider_messages` (migration 6), registry built from config, one-shot path so auto-titling works. **No tools.** | `test/aisdk.test.ts` (mapper shapes, `runTurn`, session create/interrupt/resume, SessionManager rollup) + `test/config.test.ts` (profile parsing). `MockLanguageModelV2` from `ai/test`. |
-| **M10b** ✓ | MCP client via `@ai-sdk/mcp@^0.0.31` (`experimental_createMCPClient` + `Experimental_StdioMCPTransport` from `@ai-sdk/mcp/mcp-stdio`); `McpHub` maps `McpServerHandle[]` (stdio + streamable-HTTP), merges tools (namespaced on collision), tears clients down on `close()`, skips a server that won't start. `loom` `ask_user` / `commit` as native `tool()` defs (`loom-tools.ts`, reusing `commitInWorktree`). **Permission gate + mode filter** (`gate.ts`): name-heuristic readonly/edit classification, `policy(mode,name)` → allow/ask, `wrapToolSet` routes every executable tool through a `permission_request`; a denied call throws so the model sees a tool error. Multi-step turns (`maxSteps` 24). Daemon mounts `loomServer` + MCP for aisdk with an `AISDK_SYSTEM` prompt. `SessionManager.#trackPerms` clears on `tool_result` only (aisdk emits `tool_call` before `permission_request`). | `test/aisdk-tools.test.ts` (McpHub via `test/fixtures/fake-mcp-server.mjs`; gate heuristics/policy/deny; session round-trips for a gated MCP call, a denial, `ask_user`, and `auto` mode) |
-| **M10c** ✓ | first-party tools under `src/provider/aisdk/tools/`: `bash.ts` (persistent `bash` child, sentinel-framed commands so cwd/env persist, merged stdout+stderr, per-command timeout → kill+reset, output clamp), `edit.ts` (`applyEdit` — exact → trailing-whitespace-insensitive → dedented tiers, uniqueness check), `grep.ts` (ripgrep wrapper, clean message when `rg` is absent), `builtins.ts` (`BuiltinTools` — assembles the three, owns the shell's lifecycle). Mounted for aisdk sessions alongside MCP + loom tools; all gated. `TodoWrite` deferred (no UI surface, model doesn't reach for it unprompted). | `test/aisdk-builtins.test.ts` (bash persistence/timeout/clamp, edit tiers + ambiguity, grep hit/miss/missing-binary) |
-| **M10d** ✓ | `#turnToolSet` filters per turn by mode: `plan` keeps only readonly + `ask_user` + `exit_plan`; other modes drop `exit_plan`. `exit_plan` emits `plan_review` and blocks on `respondToPlan`; on `implement`/`revise` the session flips to `acceptEdits` and **chains a fresh implementation turn** (no `result` for the planning turn); `implement_fresh` compacts first; `discuss` feeds the note back and stays in plan. Loom-side compaction: `session.compact` (and an 0.85·limit auto-trigger in `#runTurn`) runs a tool-free summariser over the history, rebuilds it to one message, persists via `store.replaceFrom`, emits `compact {before,after,summary}`. `task` tool → depth-1 sub-agent: fresh mapper, tools minus `task`/`exit_plan`, events tagged `agentId`, `subagent_started`/`stopped` (M9 seam), returns the report. `capabilities.subagents = true`. | `test/aisdk-plan.test.ts` (plan→implement chain, discuss stays planning, `compact()` rebuild, bloated-history auto-compact, `task` start/stop + agentId) |
-| **M10e** ✓ | XDG user config layer (`$XDG_CONFIG_HOME/loom/config.toml` deep-merged under the per-repo file); `providers.list` / `providers.probeModels` RPCs + `ProviderInfo` wire type; generic `PickerState` + `Picker` overlay; `N` = provider→model→prompt flow (`n` unchanged), `M` = live model switch (next turn), `f` = fuzzy find-a-session, `F` = old log-scope toggle; Fleet id coloured by provider (auto palette or `color`), Detail `engine · provider / model` line; `loom providers` + `loom models <provider>` CLI. `session.setModel`/`sessions.model` already existed. | `test/config.test.ts` (deepMerge + layering), `test/daemon.test.ts` (`providers.list` + palette), `test/tui-model.test.ts` (picker reducer, provider helpers, find blob), `test/tui-render.test.ts` (`N` picker flow, `f` find) |
+| #          | deliverable                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | tests                                                                                                                                                                                                                           |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M10a** ✓ | aisdk provider skeleton: `[providers.<id>]` profiles + `default_provider`, `AisdkProvider`/`AisdkSession` over `createOpenAICompatible`, `streamText` single-step loop, `fullStream`→`HarnessEvent` mapper, usage with cached-token split, price-table cost (existing daemon path), `interrupt` via `AbortController`, resume via `provider_messages` (migration 6), registry built from config, one-shot path so auto-titling works. **No tools.**                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `test/aisdk.test.ts` (mapper shapes, `runTurn`, session create/interrupt/resume, SessionManager rollup) + `test/config.test.ts` (profile parsing). `MockLanguageModelV2` from `ai/test`.                                        |
+| **M10b** ✓ | MCP client via `@ai-sdk/mcp@^0.0.31` (`experimental_createMCPClient` + `Experimental_StdioMCPTransport` from `@ai-sdk/mcp/mcp-stdio`); `McpHub` maps `McpServerHandle[]` (stdio + streamable-HTTP), merges tools (namespaced on collision), tears clients down on `close()`, skips a server that won't start. `loom` `ask_user` / `commit` as native `tool()` defs (`loom-tools.ts`, reusing `commitInWorktree`). **Permission gate + mode filter** (`gate.ts`): name-heuristic readonly/edit classification, `policy(mode,name)` → allow/ask, `wrapToolSet` routes every executable tool through a `permission_request`; a denied call throws so the model sees a tool error. Multi-step turns (`maxSteps` 24). Daemon mounts `loomServer` + MCP for aisdk with an `AISDK_SYSTEM` prompt. `SessionManager.#trackPerms` clears on `tool_result` only (aisdk emits `tool_call` before `permission_request`). | `test/aisdk-tools.test.ts` (McpHub via `test/fixtures/fake-mcp-server.mjs`; gate heuristics/policy/deny; session round-trips for a gated MCP call, a denial, `ask_user`, and `auto` mode)                                       |
+| **M10c** ✓ | first-party tools under `src/provider/aisdk/tools/`: `bash.ts` (persistent `bash` child, sentinel-framed commands so cwd/env persist, merged stdout+stderr, per-command timeout → kill+reset, output clamp), `edit.ts` (`applyEdit` — exact → trailing-whitespace-insensitive → dedented tiers, uniqueness check), `grep.ts` (ripgrep wrapper, clean message when `rg` is absent), `builtins.ts` (`BuiltinTools` — assembles the three, owns the shell's lifecycle). Mounted for aisdk sessions alongside MCP + loom tools; all gated. `TodoWrite` deferred (no UI surface, model doesn't reach for it unprompted).                                                                                                                                                                                                                                                                                         | `test/aisdk-builtins.test.ts` (bash persistence/timeout/clamp, edit tiers + ambiguity, grep hit/miss/missing-binary)                                                                                                            |
+| **M10d** ✓ | `#turnToolSet` filters per turn by mode: `plan` keeps only readonly + `ask_user` + `exit_plan`; other modes drop `exit_plan`. `exit_plan` emits `plan_review` and blocks on `respondToPlan`; on `implement`/`revise` the session flips to `acceptEdits` and **chains a fresh implementation turn** (no `result` for the planning turn); `implement_fresh` compacts first; `discuss` feeds the note back and stays in plan. Loom-side compaction: `session.compact` (and an 0.85·limit auto-trigger in `#runTurn`) runs a tool-free summariser over the history, rebuilds it to one message, persists via `store.replaceFrom`, emits `compact {before,after,summary}`. `task` tool → depth-1 sub-agent: fresh mapper, tools minus `task`/`exit_plan`, events tagged `agentId`, `subagent_started`/`stopped` (M9 seam), returns the report. `capabilities.subagents = true`.                                  | `test/aisdk-plan.test.ts` (plan→implement chain, discuss stays planning, `compact()` rebuild, bloated-history auto-compact, `task` start/stop + agentId)                                                                        |
+| **M10e** ✓ | XDG user config layer (`$XDG_CONFIG_HOME/loom/config.toml` deep-merged under the per-repo file); `providers.list` / `providers.probeModels` RPCs + `ProviderInfo` wire type; generic `PickerState` + `Picker` overlay; `N` = provider→model→prompt flow (`n` unchanged), `M` = live model switch (next turn), `f` = fuzzy find-a-session, `F` = old log-scope toggle; Fleet id coloured by provider (auto palette or `color`), Detail `engine · provider / model` line; `loom providers` + `loom models <provider>` CLI. `session.setModel`/`sessions.model` already existed.                                                                                                                                                                                                                                                                                                                               | `test/config.test.ts` (deepMerge + layering), `test/daemon.test.ts` (`providers.list` + palette), `test/tui-model.test.ts` (picker reducer, provider helpers, find blob), `test/tui-render.test.ts` (`N` picker flow, `f` find) |
 
 ## Decisions (resolved 2026-08-29)
 
@@ -335,7 +335,7 @@ Commit as each lands. **Stop for review after M10a.**
   two that have no good equivalent.
 - **Per-model context / tokenizer drift** — `chars/4` + a static table is
   approximate; a model with an unusual tokenizer could compact early or late.
-  Only affects *when* we compact, not cost.
+  Only affects _when_ we compact, not cost.
 - **MCP subprocess supervision** — lifecycle, restart, zombie reaping across
   daemon restarts. `mcp.ts` owns this; needs the same care as the worktree
   manager.
@@ -356,4 +356,4 @@ Commit as each lands. **Stop for review after M10a.**
 - Realtime / voice, A2A, the ADK skills ecosystem.
 - Client-side fine-grained cache control for non-Claude providers.
 - WebSearch / NotebookEdit tools (follow-ups).
-- Switching a live session's *provider* (that's the fork-tree backlog item).
+- Switching a live session's _provider_ (that's the fork-tree backlog item).

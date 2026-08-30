@@ -141,7 +141,10 @@ export class AisdkProvider implements AgentProvider {
  * factory it built from its own `@ai-sdk/*` import and the daemon's transcript
  * store.
  */
-export function makeAisdkProvider(opts: AisdkProviderOptions, store: TranscriptStore): AisdkProvider {
+export function makeAisdkProvider(
+  opts: AisdkProviderOptions,
+  store: TranscriptStore,
+): AisdkProvider {
   return new AisdkProvider(opts, store);
 }
 

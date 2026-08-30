@@ -23,13 +23,19 @@ function client(): Promise<LoomClient> {
 
 test("a daemon restart flips mid-run sessions to interrupted", async () => {
   const c1 = await client();
-  const running = await c1.request<SessionSnapshot>("session.createStub", { prompt: "r", status: "running" });
+  const running = await c1.request<SessionSnapshot>("session.createStub", {
+    prompt: "r",
+    status: "running",
+  });
   const awaiting = await c1.request<SessionSnapshot>("session.createStub", {
     prompt: "a",
     status: "awaiting_input",
     reason: "permission",
   });
-  const idle = await c1.request<SessionSnapshot>("session.createStub", { prompt: "i", status: "idle" });
+  const idle = await c1.request<SessionSnapshot>("session.createStub", {
+    prompt: "i",
+    status: "idle",
+  });
   await c1.close();
 
   await h.restart();
@@ -41,9 +47,12 @@ test("a daemon restart flips mid-run sessions to interrupted", async () => {
   assert.equal(byId.get(awaiting.id)?.status, "interrupted");
   assert.equal(byId.get(idle.id)?.status, "idle");
 
-  const hist = await c2.request<Array<{ status: string; reason: string | null }>>("session.history", {
-    id: running.id,
-  });
+  const hist = await c2.request<Array<{ status: string; reason: string | null }>>(
+    "session.history",
+    {
+      id: running.id,
+    },
+  );
   assert.equal(hist.at(-1)?.status, "interrupted");
   assert.equal(hist.at(-1)?.reason, "daemon_restart");
   await c2.close();
@@ -73,9 +82,9 @@ test("startup hygiene terminates a live child from a previous daemon epoch", asy
 
 test("hygiene report is exposed on daemon.status", async () => {
   const c = await client();
-  const s = await c.request<{ hygiene: { interruptedSessions: string[]; worktreePruned: boolean } }>(
-    "daemon.status",
-  );
+  const s = await c.request<{
+    hygiene: { interruptedSessions: string[]; worktreePruned: boolean };
+  }>("daemon.status");
   assert.ok(s.hygiene);
   assert.ok(Array.isArray(s.hygiene.interruptedSessions));
   await c.close();

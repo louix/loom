@@ -14,7 +14,10 @@ test("typing inserts at the cursor and advances it", () => {
 });
 
 test("backspace deletes the char before the cursor; a no-op at column 0", () => {
-  assert.deepEqual(press("abc", 2, "", { backspace: true }), { kind: "buffer", buffer: { text: "ac", cursor: 1 } });
+  assert.deepEqual(press("abc", 2, "", { backspace: true }), {
+    kind: "buffer",
+    buffer: { text: "ac", cursor: 1 },
+  });
   assert.deepEqual(press("abc", 0, "", { backspace: true }), { kind: "ignore" });
 });
 
@@ -44,10 +47,22 @@ test("⌃a / ⌃e / ⌃b / ⌃f / ⌃u / ⌃k / ⌃w motions", () => {
 });
 
 test("⌃← / ⌃→ move by word, skipping runs of whitespace", () => {
-  assert.equal((press("one two three", 7, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor, 4);
-  assert.equal((press("one two three", 7, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor, 13);
-  assert.equal((press("one   two", 9, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor, 6);
-  assert.equal((press("one   two", 0, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor, 3);
+  assert.equal(
+    (press("one two three", 7, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor,
+    4,
+  );
+  assert.equal(
+    (press("one two three", 7, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor,
+    13,
+  );
+  assert.equal(
+    (press("one   two", 9, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor,
+    6,
+  );
+  assert.equal(
+    (press("one   two", 0, "", { ctrl: true, rightArrow: true }) as any).buffer.cursor,
+    3,
+  );
 });
 
 test("Enter submits; Escape cancels; Tab (either form) is navigation-only, inert here", () => {
@@ -76,7 +91,10 @@ test("an unbound modified key is swallowed, never inserted as the bare letter", 
 });
 
 test("⌃e is line-end (Ctrl is editing-only); ⌃o is unbound here — the app owns ⌥o", () => {
-  assert.deepEqual(press("hi", 1, "e", { ctrl: true }), { kind: "buffer", buffer: { text: "hi", cursor: 2 } });
+  assert.deepEqual(press("hi", 1, "e", { ctrl: true }), {
+    kind: "buffer",
+    buffer: { text: "hi", cursor: 2 },
+  });
   assert.deepEqual(press("hi", 1, "o", { ctrl: true }), { kind: "ignore" });
 });
 

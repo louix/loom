@@ -29,7 +29,8 @@ export async function resolveModelFactory(
 }
 
 export async function createProvider(ctx: ConnectorContext): Promise<AgentProvider> {
-  if (!ctx.transcript) throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
+  if (!ctx.transcript)
+    throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
   const { config } = ctx;
   const sdk = config.sdk === "anthropic" ? "anthropic" : "openai";
   const makeModel = await resolveModelFactory(sdk, {

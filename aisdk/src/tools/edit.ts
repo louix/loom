@@ -40,7 +40,11 @@ export function applyEdit(
   try {
     content = readFileSync(path, "utf8");
   } catch (err) {
-    return { ok: false, message: `cannot read ${path}: ${(err as Error).message}`, replacements: 0 };
+    return {
+      ok: false,
+      message: `cannot read ${path}: ${(err as Error).message}`,
+      replacements: 0,
+    };
   }
 
   // Tier 1 — exact.
@@ -57,7 +61,12 @@ export function applyEdit(
       ? content.split(oldString).join(newString)
       : content.slice(0, exact[0]) + newString + content.slice(exact[0]! + oldString.length);
     writeFileSync(path, updated);
-    return { ok: true, message: `edited ${path}`, replacements: replaceAll ? exact.length : 1, tier: "exact" };
+    return {
+      ok: true,
+      message: `edited ${path}`,
+      replacements: replaceAll ? exact.length : 1,
+      tier: "exact",
+    };
   }
 
   if (replaceAll) {
@@ -85,7 +94,11 @@ export function applyEdit(
     }
   }
 
-  return { ok: false, message: `old_string not found in ${path} (tried exact and whitespace-insensitive matching)`, replacements: 0 };
+  return {
+    ok: false,
+    message: `old_string not found in ${path} (tried exact and whitespace-insensitive matching)`,
+    replacements: 0,
+  };
 }
 
 function allIndexesOf(haystack: string, needle: string): number[] {
@@ -116,7 +129,8 @@ function windowMatches(
 
   // Precompute char offset of the start of each file line.
   const lineStart: number[] = [0];
-  for (let i = 0; i < fileLines.length; i++) lineStart.push(lineStart[i]! + fileLines[i]!.length + 1);
+  for (let i = 0; i < fileLines.length; i++)
+    lineStart.push(lineStart[i]! + fileLines[i]!.length + 1);
 
   for (let i = 0; i + n <= fileLines.length; i++) {
     const window = fileLines.slice(i, i + n);
@@ -152,7 +166,10 @@ export function editTool(cwd: string) {
       path: z.string().describe("File to edit."),
       old_string: z.string().describe("Text to replace. Include enough context to be unique."),
       new_string: z.string().describe("Replacement text."),
-      replace_all: z.boolean().optional().describe("Replace every exact occurrence (default false)."),
+      replace_all: z
+        .boolean()
+        .optional()
+        .describe("Replace every exact occurrence (default false)."),
     }),
     execute: async ({ path, old_string, new_string, replace_all }) => {
       const abs = path.startsWith("/") ? path : `${cwd.replace(/\/$/, "")}/${path}`;

@@ -209,7 +209,8 @@ export class WorktreeManager {
   // --- internals -------------------------------------------------
 
   #resolveBase(): string {
-    if (this.#git(["rev-parse", "--verify", "--quiet", this.#baseBranch]).ok) return this.#baseBranch;
+    if (this.#git(["rev-parse", "--verify", "--quiet", this.#baseBranch]).ok)
+      return this.#baseBranch;
     return "HEAD";
   }
 

@@ -178,9 +178,16 @@ async function main(): Promise<void> {
         break;
       }
       case "providers": {
-        const rows = await client.request<
-          Array<{ id: string; models: string[]; defaultModel: string; color: string; isDefault: boolean }>
-        >("providers.list");
+        const rows =
+          await client.request<
+            Array<{
+              id: string;
+              models: string[];
+              defaultModel: string;
+              color: string;
+              isDefault: boolean;
+            }>
+          >("providers.list");
         if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
         else
           for (const p of rows)
@@ -203,7 +210,9 @@ async function main(): Promise<void> {
         if (values.json) process.stdout.write(JSON.stringify(r, null, 2) + "\n");
         else if (r.warnings.length === 0) process.stdout.write("config looks good\n");
         else {
-          process.stdout.write(`${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`);
+          process.stdout.write(
+            `${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`,
+          );
           for (const line of r.warnings) process.stdout.write(`  ! ${line}\n`);
           process.exitCode = 1;
         }
@@ -231,7 +240,9 @@ async function main(): Promise<void> {
           ...(worktree !== undefined ? { worktree } : {}),
         });
         const where = r.inPlace ? "  in-place" : "";
-        process.stdout.write(`started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`);
+        process.stdout.write(
+          `started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`,
+        );
         break;
       }
       case "send": {
@@ -282,12 +293,15 @@ async function main(): Promise<void> {
         const requestId = need(positionals[2], "answer <id> <requestId> <text...>");
         const text = positionals.slice(3).join(" ");
         if (!text) need(undefined, "answer <id> <requestId> <text...>");
-        const r = await client.request<{ ok: boolean; alreadyResolved: boolean }>("session.answer", {
-          id,
-          requestId,
-          text,
-          by: client.clientId,
-        });
+        const r = await client.request<{ ok: boolean; alreadyResolved: boolean }>(
+          "session.answer",
+          {
+            id,
+            requestId,
+            text,
+            by: client.clientId,
+          },
+        );
         process.stdout.write(
           r.alreadyResolved ? `${requestId} was already answered\n` : `${requestId} answered\n`,
         );
@@ -313,45 +327,63 @@ async function main(): Promise<void> {
           need(undefined, "plan <what> must be implement | fresh | revise | discuss");
         }
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", params);
-        process.stdout.write(r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`);
+        process.stdout.write(
+          r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`,
+        );
         break;
       }
       case "mode": {
         const id = need(positionals[1], "mode <id> <mode>");
         const mode = need(positionals[2], "mode <id> <mode>");
-        const r = await client.request<SessionSnapshot>("session.setMode", { id, mode, by: client.clientId });
+        const r = await client.request<SessionSnapshot>("session.setMode", {
+          id,
+          mode,
+          by: client.clientId,
+        });
         process.stdout.write(`${r.id} mode -> ${r.mode}\n`);
         break;
       }
       case "resume": {
         const id = need(positionals[1], "resume <id>");
-        const r = await client.request<SessionSnapshot>("session.resume", { id, by: client.clientId });
+        const r = await client.request<SessionSnapshot>("session.resume", {
+          id,
+          by: client.clientId,
+        });
         process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "done": {
         const id = need(positionals[1], "done <id>");
-        const r = await client.request<SessionSnapshot>("session.markDone", { id, by: client.clientId });
+        const r = await client.request<SessionSnapshot>("session.markDone", {
+          id,
+          by: client.clientId,
+        });
         process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "rm": {
         const id = need(positionals[1], "rm <id>");
-        const r = await client.request<{ removed: string; branchDeleted?: boolean }>("session.remove", {
-          id,
-          by: client.clientId,
-          ...(values["delete-branch"] ? { deleteBranch: true } : {}),
-        });
+        const r = await client.request<{ removed: string; branchDeleted?: boolean }>(
+          "session.remove",
+          {
+            id,
+            by: client.clientId,
+            ...(values["delete-branch"] ? { deleteBranch: true } : {}),
+          },
+        );
         process.stdout.write(
           `removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`,
         );
         break;
       }
       case "gc": {
-        const r = await client.request<{ removed: string[]; failed: Array<{ id: string; error: string }> }>(
-          "session.gc",
-          { ...(values.id ? { id: values.id } : {}), ...(values.force ? { force: true } : {}) },
-        );
+        const r = await client.request<{
+          removed: string[];
+          failed: Array<{ id: string; error: string }>;
+        }>("session.gc", {
+          ...(values.id ? { id: values.id } : {}),
+          ...(values.force ? { force: true } : {}),
+        });
         process.stdout.write(`removed ${r.removed.length} worktree(s)\n`);
         for (const f of r.failed) process.stderr.write(`  ${f.id.slice(0, 8)}: ${f.error}\n`);
         break;
@@ -360,7 +392,9 @@ async function main(): Promise<void> {
         const t0 = performance.now();
         const r = await client.request<{ uptimeMs: number }>("ping", { nonce: t0 });
         const rtt = (performance.now() - t0).toFixed(1);
-        process.stdout.write(`pong  rtt=${rtt}ms  daemon-uptime=${(r.uptimeMs / 1000).toFixed(1)}s\n`);
+        process.stdout.write(
+          `pong  rtt=${rtt}ms  daemon-uptime=${(r.uptimeMs / 1000).toFixed(1)}s\n`,
+        );
         break;
       }
       case "stub": {
@@ -384,7 +418,9 @@ async function main(): Promise<void> {
           by: client.clientId,
           ...(values.reason ? { reason: values.reason } : {}),
         });
-        process.stdout.write(`${r.id} -> ${r.status}${r.awaitReason ? ` (${r.awaitReason})` : ""}\n`);
+        process.stdout.write(
+          `${r.id} -> ${r.status}${r.awaitReason ? ` (${r.awaitReason})` : ""}\n`,
+        );
         break;
       }
       case "emit": {
@@ -415,8 +451,21 @@ async function main(): Promise<void> {
 }
 
 const ID_CMDS = new Set([
-  "get", "history", "send", "compact", "interrupt", "approve", "deny", "answer",
-  "plan", "mode", "resume", "done", "rm", "set-status", "emit",
+  "get",
+  "history",
+  "send",
+  "compact",
+  "interrupt",
+  "approve",
+  "deny",
+  "answer",
+  "plan",
+  "mode",
+  "resume",
+  "done",
+  "rm",
+  "set-status",
+  "emit",
 ]);
 
 /** Expand a unique session-id prefix (as printed by `loom ls`) to the full id. */
@@ -463,15 +512,20 @@ function printSessions(rows: SessionSnapshot[]): void {
         g.dirty ? "dirty" : "clean",
       ].filter(Boolean);
       process.stdout.write(`            ${bits.join(" · ")}\n`);
-      if (g.lastCommitSubject) process.stdout.write(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
+      if (g.lastCommitSubject)
+        process.stdout.write(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
     }
   }
 }
 
 async function runTail(client: LoomClient): Promise<void> {
   process.stdout.write(`tailing ${client.daemonInfo?.repoRoot ?? "daemon"} — Ctrl-C to stop\n`);
-  client.on("reconnect", (i) => process.stdout.write(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`));
-  client.on("resync", (i) => process.stdout.write(`[resync: ${(i as { reason: string }).reason}]\n`));
+  client.on("reconnect", (i) =>
+    process.stdout.write(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
+  );
+  client.on("resync", (i) =>
+    process.stdout.write(`[resync: ${(i as { reason: string }).reason}]\n`),
+  );
   client.on("close", () => {
     process.stdout.write("[connection closed]\n");
     process.exit(0);
@@ -479,9 +533,13 @@ async function runTail(client: LoomClient): Promise<void> {
   client.onPush((f: PushFrame) => {
     if (f.type === "event") {
       const e = f.event;
-      process.stdout.write(`#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`);
+      process.stdout.write(
+        `#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`,
+      );
     } else if (f.type === "session_updated") {
-      process.stdout.write(`#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`);
+      process.stdout.write(
+        `#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`,
+      );
     } else if (f.type === "session_removed") {
       process.stdout.write(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
     } else if (f.type === "notice") {
@@ -497,15 +555,18 @@ async function runTail(client: LoomClient): Promise<void> {
 
 function summarize(ev: HarnessEvent): string {
   const e = ev as unknown as Record<string, unknown>;
-  if (ev.type === "question") return `${JSON.stringify(ev.question.slice(0, 60))}  req=${ev.id}  (answer)`;
+  if (ev.type === "question")
+    return `${JSON.stringify(ev.question.slice(0, 60))}  req=${ev.id}  (answer)`;
   if (ev.type === "answer") return `#${ev.id} ${JSON.stringify(ev.text.slice(0, 60))}`;
   if (typeof e["text"] === "string") return JSON.stringify((e["text"] as string).slice(0, 60));
   if (ev.type === "status_changed") return `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`;
   if (ev.type === "tool_call") return `${ev.name} #${ev.id}`;
   if (ev.type === "tool_result") return `#${ev.id} ${ev.ok ? "ok" : "error"}`;
   if (ev.type === "permission_request") return `${ev.tool}  req=${ev.id}  (approve/deny)`;
-  if (ev.type === "plan_review") return `plan  req=${ev.id}  (plan <id> ${ev.id} implement|fresh|revise|discuss)`;
-  if (ev.type === "usage") return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
+  if (ev.type === "plan_review")
+    return `plan  req=${ev.id}  (plan <id> ${ev.id} implement|fresh|revise|discuss)`;
+  if (ev.type === "usage")
+    return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
   if (ev.type === "result") return ev.ok ? "ok" : "failed";
   if (ev.type === "error") return ev.message.slice(0, 80);
   return "";

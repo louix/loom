@@ -57,7 +57,7 @@ the Vercel AI SDK.
 **3 · worktree manager**
 
 - **One worktree + branch per session** — `git worktree add .loom/trees/<slug>
-  -b loom/<slug>` off the configured base (`base_branch`, else `HEAD`). The
+-b loom/<slug>` off the configured base (`base_branch`, else `HEAD`). The
   slug is derived from the prompt; uniqueness is enforced with a short suffix.
   The session's adapter runs with that worktree as its cwd.
 - **In-place mode** — `[worktree] enabled = false` (or `loom run --in-place`)
@@ -108,21 +108,21 @@ the Vercel AI SDK.
 - **Event stream** — the normalized harness events for the selected session,
   colourised by kind and word-wrapped to the pane (never clipped — it scrolls).
   `v` toggles `full` ↔ `chat` (conversation only: tool traffic folds to `⚙ N
-  tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
+tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
   blows it up to fullscreen, and `o` opens the pending request — or the session
   transcript (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR`
   read-only, so you can read and copy without fighting the split.
 
 **Keybinding grammar** (full table in [`docs/keybindings.md`](docs/keybindings.md), or press `?`):
 
-| modifier | means |
-|----------|-------|
-| bare key | act on the selected session, or move |
-| `Shift`+key | the heavier / structural sibling — `Q` quit-all · `R` restart · `X` delete · `F` fork |
-| `Ctrl`+key | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃← ⌃→ ⌃u ⌃k ⌃w`); `⌃c` quits |
-| `Alt`+key | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥x`; `⌥m` (switch model) also acts from the fleet view |
-| `⇧⇥` | cycle the permission mode — on the selection, or inside a prompt (mid-message) |
-| `Space` | the command palette — every action valid right now, fuzzy, with its key |
+| modifier    | means                                                                                                           |
+| ----------- | --------------------------------------------------------------------------------------------------------------- |
+| bare key    | act on the selected session, or move                                                                            |
+| `Shift`+key | the heavier / structural sibling — `Q` quit-all · `R` restart · `X` delete · `F` fork                           |
+| `Ctrl`+key  | text editing only, inside the prompt (`⌃a ⌃e ⌃b ⌃f ⌃← ⌃→ ⌃u ⌃k ⌃w`); `⌃c` quits                                 |
+| `Alt`+key   | run a prompt action without leaving it — `⌥e` `⌥o` `⌥p` `⌥x`; `⌥m` (switch model) also acts from the fleet view |
+| `⇧⇥`        | cycle the permission mode — on the selection, or inside a prompt (mid-message)                                  |
+| `Space`     | the command palette — every action valid right now, fuzzy, with its key                                         |
 
 - **Acting on the selection**, from the verbs the footer offers (the rest live
   in the `Space` palette): `⏎` act on the session — compose a message (running /
@@ -151,7 +151,7 @@ the Vercel AI SDK.
   messaging, live), `↑`/`↓` recall earlier prompts, and a failed submit reopens
   with the text intact.
 - **The daemon, from inside** — `R` restarts it (the client respawns one that
-  inherits *this* shell's environment), `Q` quits the UI and stops it; both ask
+  inherits _this_ shell's environment), `Q` quits the UI and stops it; both ask
   first when sessions are live. `q` / `⌃c` just leave the UI. `esc` only backs
   out of overlays — it never quits.
 
@@ -164,7 +164,7 @@ the flag-gated `bypassPermissions`, which Loom never uses).
 
 **Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
 in the user-level `~/.config/loom/config.toml` (the per-repo `.loom/config.toml`
-layers on top); credentials go in as env-var *names* via `api_key_env`, or
+layers on top); credentials go in as env-var _names_ via `api_key_env`, or
 inline with `api_key`.
 
 - `[custom-provider.<id>]` — an OpenAI-compatible endpoint (OpenAI, GLM,
@@ -173,12 +173,12 @@ inline with `api_key`.
 - `[google]` / `[anthropic]` — one native profile each (`@ai-sdk/google`,
   `@ai-sdk/anthropic`); the provider id is the vendor name.
 - `[providers.<id>]` with `adapter = "aisdk"` and `sdk =
-  "openai" | "google" | "anthropic"` — the low-level escape hatch, kept for
+"openai" | "google" | "anthropic"` — the low-level escape hatch, kept for
   several native profiles or unusual setups.
 
 `default_provider` picks which one new sessions use until a session is
 actually created — from then on the provider, model, and permission mode it
-was created with (or later switched to) become the default for the *next*
+was created with (or later switched to) become the default for the _next_
 `new`, remembered across restarts. Loom persists the transcript itself in
 `provider_messages`.
 
@@ -423,13 +423,13 @@ See [`docs/connectors.md`](docs/connectors.md) for the `createProvider` contract
 
 Created in whatever repo the daemon runs against; all of it is gitignored:
 
-| path                 | what                                            |
-| -------------------- | ----------------------------------------------- |
-| `daemon.sock`        | the client↔daemon Unix domain socket            |
-| `daemon.pid`         | single-instance guard                           |
-| `daemon.log`         | rolling daemon log (JSON lines)                 |
-| `loom.db`            | SQLite: sessions, history, usage                |
-| `trees/<slug>/`      | one git worktree per session                     |
-| `hooks/pre-push`     | the push-blocking hook, shared by every worktree |
-| `config.toml`        | optional; falls back to built-in defaults       |
-| `models.toml`        | optional per-model price table (`pricing.reload`) |
+| path             | what                                              |
+| ---------------- | ------------------------------------------------- |
+| `daemon.sock`    | the client↔daemon Unix domain socket              |
+| `daemon.pid`     | single-instance guard                             |
+| `daemon.log`     | rolling daemon log (JSON lines)                   |
+| `loom.db`        | SQLite: sessions, history, usage                  |
+| `trees/<slug>/`  | one git worktree per session                      |
+| `hooks/pre-push` | the push-blocking hook, shared by every worktree  |
+| `config.toml`    | optional; falls back to built-in defaults         |
+| `models.toml`    | optional per-model price table (`pricing.reload`) |

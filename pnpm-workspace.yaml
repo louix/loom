@@ -16,7 +16,7 @@ packages:
 virtualStoreType: global
 
 # Match the coding-style dependency convention: exact pins + a release cooldown.
-minimumReleaseAge: 10080          # 7 days, in minutes
+minimumReleaseAge: 10080 # 7 days, in minutes
 minimumReleaseAgeExclude:
   # Grandfathered — the exact versions already locked in package-lock.json before
   # this pnpm migration (2026-08-30); they were vetted at the time. The cooldown

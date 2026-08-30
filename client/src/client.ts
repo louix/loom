@@ -104,7 +104,12 @@ export class LoomClient {
     if (!this.#sock) throw new Error("not connected");
     const id = this.#nextId++;
     const limit = timeoutMs ?? LoomClient.#SLOW_METHODS[method] ?? 30_000;
-    const frame: RequestFrame = { kind: "req", id, method, ...(params !== undefined ? { params } : {}) };
+    const frame: RequestFrame = {
+      kind: "req",
+      id,
+      method,
+      ...(params !== undefined ? { params } : {}),
+    };
     const p = new Promise<unknown>((resolve, reject) => {
       const timer =
         limit > 0
@@ -253,7 +258,13 @@ export class LoomClient {
     if (!waiter) return;
     this.#pending.delete(frame.id);
     if (frame.ok) waiter.resolve(frame.result);
-    else waiter.reject(Object.assign(new Error(frame.error.message), { code: frame.error.code, data: frame.error.data }));
+    else
+      waiter.reject(
+        Object.assign(new Error(frame.error.message), {
+          code: frame.error.code,
+          data: frame.error.data,
+        }),
+      );
   }
 
   #deliverPush(frame: PushFrame): void {

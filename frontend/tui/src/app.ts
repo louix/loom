@@ -81,7 +81,10 @@ export function App({
   const [tick, setTick] = useState(0);
   const [logScroll, setLogScroll] = useState(0);
   const [logFull, setLogFull] = useState(false);
-  const [dims, setDims] = useState(() => ({ cols: stdout.columns || 100, rows: stdout.rows || 30 }));
+  const [dims, setDims] = useState(() => ({
+    cols: stdout.columns || 100,
+    rows: stdout.rows || 30,
+  }));
   const restarting = useRef(false);
   const versionRestartTried = useRef(false);
   const echoSeq = useRef(0);
@@ -173,12 +176,17 @@ export function App({
     versionRestartTried.current = true;
     restarting.current = true;
     dispatch({ t: "connection", value: "reconnecting" });
-    dispatch({ t: "notice", text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — respawning`, tone: "dim" });
+    dispatch({
+      t: "notice",
+      text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — respawning`,
+      tone: "dim",
+    });
     client.request("daemon.shutdown").catch(() => {});
   }, [client]);
 
   useEffect(() => {
-    if (client.daemonInfo) dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
+    if (client.daemonInfo)
+      dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
     refetch();
     void reconcileVersion();
     const offs = [
@@ -243,7 +251,8 @@ export function App({
 
   // ---- helpers ----------------------------------------------------
   const note = useCallback(
-    (text: string, tone: "good" | "bad" | "dim" | "accent" = "good") => dispatch({ t: "notice", text, tone }),
+    (text: string, tone: "good" | "bad" | "dim" | "accent" = "good") =>
+      dispatch({ t: "notice", text, tone }),
     [],
   );
   const quitTui = useCallback(() => {
@@ -294,7 +303,8 @@ export function App({
 
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
   const editPrompt = useCallback(async () => {
-    if (state.mode !== "prompt" || !state.prompt) return note("open a prompt first — ⌃o views the log", "dim");
+    if (state.mode !== "prompt" || !state.prompt)
+      return note("open a prompt first — ⌃o views the log", "dim");
     const p = state.prompt;
     const next = await openEditor(p.buffer.text, {
       ext: p.kind === "new" ? "md" : "txt",
@@ -311,9 +321,13 @@ export function App({
     if (pend.plan !== undefined) {
       await openEditor(pend.planText ?? "", { ext: "md" });
     } else if (fp) {
-      await openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), { ext: "json" });
+      await openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), {
+        ext: "json",
+      });
     } else if (pend.question !== undefined) {
-      await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), { ext: "md" });
+      await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), {
+        ext: "md",
+      });
     } else {
       await openEditor(logText(), { ext: "log" });
     }
@@ -363,7 +377,10 @@ export function App({
         });
       }
       if (name === "filter") {
-        return void dispatch({ t: "logFilter", value: state.logFilter === "chat" ? "full" : "chat" });
+        return void dispatch({
+          t: "logFilter",
+          value: state.logFilter === "chat" ? "full" : "chat",
+        });
       }
       if (name === "find") {
         return void dispatch({
@@ -388,10 +405,16 @@ export function App({
               .map((c) => ({
                 id: String(c.turn),
                 label: `turn ${c.turn} · ${c.userText || "(no message)"}`,
-                ...(c.rewindCostUsd > 0 ? { hint: `~$${c.rewindCostUsd.toFixed(2)} to re-prime` } : {}),
+                ...(c.rewindCostUsd > 0
+                  ? { hint: `~$${c.rewindCostUsd.toFixed(2)} to re-prime` }
+                  : {}),
               }));
             if (items.length === 0) {
-              return void dispatch({ t: "notice", text: "no earlier turn to undo to", tone: "dim" });
+              return void dispatch({
+                t: "notice",
+                text: "no earlier turn to undo to",
+                tone: "dim",
+              });
             }
             dispatch({
               t: "openPicker",
@@ -404,7 +427,11 @@ export function App({
             });
           })
           .catch((e: unknown) =>
-            dispatch({ t: "notice", text: e instanceof Error ? e.message : String(e), tone: "bad" }),
+            dispatch({
+              t: "notice",
+              text: e instanceof Error ? e.message : String(e),
+              tone: "bad",
+            }),
           );
         return;
       }
@@ -414,12 +441,15 @@ export function App({
           if (!fp) return note("no permission request pending", "dim");
           const requestId = fp.id;
           return perform(async () => {
-            const r = await client.request<{ alreadyResolved: boolean }>("session.respondPermission", {
-              id: s.id,
-              requestId,
-              decision: "allow",
-              by,
-            });
+            const r = await client.request<{ alreadyResolved: boolean }>(
+              "session.respondPermission",
+              {
+                id: s.id,
+                requestId,
+                decision: "allow",
+                by,
+              },
+            );
             dispatch({ t: "resolvePerm", sessionId: s.id, id: requestId });
             return r.alreadyResolved ? `${requestId} already resolved` : `approved ${requestId}`;
           });
@@ -429,7 +459,12 @@ export function App({
           if (!fp) return note("no permission request pending", "dim");
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({ kind: "deny", sessionId: s.id, requestId: fp.id, label: `deny ${fp.id}` }),
+            prompt: makePrompt({
+              kind: "deny",
+              sessionId: s.id,
+              requestId: fp.id,
+              label: `deny ${fp.id}`,
+            }),
           });
         }
         case "answer": {
@@ -453,7 +488,12 @@ export function App({
         case "title":
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({ kind: "title", sessionId: s.id, label: "rename", text: s.title ?? "" }),
+            prompt: makePrompt({
+              kind: "title",
+              sessionId: s.id,
+              label: "rename",
+              text: s.title ?? "",
+            }),
           });
         case "planreview": {
           const pend2 = pendingFor(state, s.id);
@@ -553,14 +593,25 @@ export function App({
         if (back !== undefined) {
           dispatch({
             t: "openPrompt",
-            prompt: makePrompt({ kind: "send", sessionId: back, label: "send", ...(draft !== undefined ? { text: draft } : {}) }),
+            prompt: makePrompt({
+              kind: "send",
+              sessionId: back,
+              label: "send",
+              ...(draft !== undefined ? { text: draft } : {}),
+            }),
           });
         }
         client
           .request("session.setModel", { id, model: cur.id, by: client.clientId })
-          .then(() => dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }))
+          .then(() =>
+            dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }),
+          )
           .catch((e: unknown) =>
-            dispatch({ t: "notice", text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+            dispatch({
+              t: "notice",
+              text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
+              tone: "bad",
+            }),
           );
         return;
       }
@@ -586,7 +637,11 @@ export function App({
         .request("session.rewind", { id, toTurn, by: client.clientId })
         .then(() => dispatch({ t: "notice", text: `rewound to turn ${toTurn}`, tone: "good" }))
         .catch((e: unknown) =>
-          dispatch({ t: "notice", text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+          dispatch({
+            t: "notice",
+            text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: "bad",
+          }),
         );
       return;
     }
@@ -628,7 +683,11 @@ export function App({
       if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
       const models = modelPickItems(state, s.provider);
       if (models.length === 0) {
-        return void dispatch({ t: "notice", text: `${s.provider} has no alternate models`, tone: "dim" });
+        return void dispatch({
+          t: "notice",
+          text: `${s.provider} has no alternate models`,
+          tone: "dim",
+        });
       }
       dispatch({
         t: "openPicker",
@@ -658,7 +717,11 @@ export function App({
         .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
         .then(() => dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" }))
         .catch((e: unknown) =>
-          dispatch({ t: "notice", text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+          dispatch({
+            t: "notice",
+            text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: "bad",
+          }),
         );
     },
     [state.sessions, client],
@@ -673,7 +736,10 @@ export function App({
     // (no reason / compact the whole history); every other prompt needs text.
     if (p.kind !== "deny" && p.kind !== "compact" && !text) return;
     const reopen = () =>
-      dispatch({ t: "openPrompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
+      dispatch({
+        t: "openPrompt",
+        prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" },
+      });
 
     dispatch({ t: "closePrompt" });
 
@@ -696,7 +762,10 @@ export function App({
         // No local echo — the daemon emits a `user_message` event that every
         // client (this one included) renders, so there's one source of truth.
         // The RPC tells us whether it actually landed mid-turn.
-        const r = await client.request<{ injected?: boolean }>("session.send", { id: p.sessionId, text });
+        const r = await client.request<{ injected?: boolean }>("session.send", {
+          id: p.sessionId,
+          text,
+        });
         dispatch({ t: "pushHistory", text });
         return r.injected ? "injected — lands after the current tool call" : "sent";
       }
@@ -762,7 +831,12 @@ export function App({
       dispatch({ t: "pushHistory", text });
       dispatch({
         t: "echo",
-        line: { ...echoLine(sessionId, text), glyph: "▸", tone: "dim", text: `queued: ${text.replace(/\s+/g, " ").trim()}` },
+        line: {
+          ...echoLine(sessionId, text),
+          glyph: "▸",
+          tone: "dim",
+          text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
+        },
       });
       note("queued for turn end", "dim");
     },
@@ -788,7 +862,12 @@ export function App({
           note(`${e instanceof Error ? e.message : String(e)} — reopening the plan`, "bad");
           // The daemon is still blocked on the decision; put the overlay back
           // (fresh object, so the latch passes) so it can be retried.
-          dispatch({ t: "openPlan", sessionId: pl.sessionId, requestId: pl.requestId, text: pl.text });
+          dispatch({
+            t: "openPlan",
+            sessionId: pl.sessionId,
+            requestId: pl.requestId,
+            text: pl.text,
+          });
         });
     },
     [state.plan, client, note],
@@ -825,7 +904,10 @@ export function App({
       if (!q || q.length === 0) continue;
       const s = state.sessions.find((x) => x.id === id);
       if (!s || s.status === "done" || s.status === "error") {
-        note(`${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status : "gone"}`, "bad");
+        note(
+          `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status : "gone"}`,
+          "bad",
+        );
         dispatch({ t: "clearQueue", sessionId: id });
         lastDrainTurn.current.delete(id);
       }
@@ -859,7 +941,9 @@ export function App({
   ).length;
   const confirmFor = (action: "restart" | "quitAll"): ConfirmState => ({
     title: action === "restart" ? "Restart the daemon?" : "Quit the UI and stop the daemon?",
-    ...(liveCount > 0 ? { body: `${liveCount} live session${liveCount === 1 ? "" : "s"} will be interrupted.` } : {}),
+    ...(liveCount > 0
+      ? { body: `${liveCount} live session${liveCount === 1 ? "" : "s"} will be interrupted.` }
+      : {}),
     danger: action === "quitAll" || liveCount > 0,
     action,
   });
@@ -892,7 +976,10 @@ export function App({
           ...(alsoBranch ? { deleteBranch: true } : {}),
         })
         .then((r) =>
-          note(r.branchDeleted ? `deleted ${shortId(id)} + branch` : `deleted ${shortId(id)}`, "good"),
+          note(
+            r.branchDeleted ? `deleted ${shortId(id)} + branch` : `deleted ${shortId(id)}`,
+            "good",
+          ),
         )
         .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
       return;
@@ -959,10 +1046,13 @@ export function App({
       case "quitall":
         return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
       case "delete":
-        return void (sel ? dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) }) : undefined);
+        return void (sel
+          ? dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) })
+          : undefined);
       case "copybranch": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        const nm = sel.branch ?? (sel.worktree ? sel.worktree.split("/").pop() ?? sel.worktree : sel.id);
+        const nm =
+          sel.branch ?? (sel.worktree ? (sel.worktree.split("/").pop() ?? sel.worktree) : sel.id);
         return copyToClipboard(nm, nm);
       }
       case "clearqueue":
@@ -973,13 +1063,25 @@ export function App({
       case "fork": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
         if (sel.provider === "claude") {
-          return void dispatch({ t: "notice", text: "hard fork isn't available for Claude sessions yet", tone: "dim" });
+          return void dispatch({
+            t: "notice",
+            text: "hard fork isn't available for Claude sessions yet",
+            tone: "dim",
+          });
         }
         if (sel.inPlace) {
-          return void dispatch({ t: "notice", text: "hard fork needs a worktree — this session runs in-place", tone: "dim" });
+          return void dispatch({
+            t: "notice",
+            text: "hard fork needs a worktree — this session runs in-place",
+            tone: "dim",
+          });
         }
         if (sel.status === "awaiting_input") {
-          return void dispatch({ t: "notice", text: "answer the pending request first", tone: "dim" });
+          return void dispatch({
+            t: "notice",
+            text: "answer the pending request first",
+            tone: "dim",
+          });
         }
         client
           .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
@@ -988,7 +1090,11 @@ export function App({
             dispatch({ t: "notice", text: `forked → ${shortId(r.id)}`, tone: "good" });
           })
           .catch((e: unknown) =>
-            dispatch({ t: "notice", text: `fork failed: ${e instanceof Error ? e.message : String(e)}`, tone: "bad" }),
+            dispatch({
+              t: "notice",
+              text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
+              tone: "bad",
+            }),
           );
         return;
       }
@@ -1028,7 +1134,11 @@ export function App({
       if (key.meta && input === "o") {
         // A new-session prompt has no session and no log to open yet.
         return void (p.kind === "new"
-          ? dispatch({ t: "notice", text: "no log yet — you're starting a new session", tone: "dim" })
+          ? dispatch({
+              t: "notice",
+              text: "no log yet — you're starting a new session",
+              tone: "dim",
+            })
           : viewInEditor());
       }
       // ⇧⇥ cycles the permission mode without leaving the prompt: the
@@ -1094,7 +1204,8 @@ export function App({
 
     if (state.mode === "plan") {
       if (input === "i") return respondPlan({ action: "implement" }, "implementing the plan");
-      if (input === "f") return respondPlan({ action: "implement_fresh" }, "compacting, then implementing");
+      if (input === "f")
+        return respondPlan({ action: "implement_fresh" }, "compacting, then implementing");
       if (input === "e") return void editPlan();
       if (input === "d") {
         const pl = state.plan;
@@ -1232,10 +1343,18 @@ export function App({
     body = h(
       Box,
       { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
-      h(Picker, { picker: state.picker, width: Math.min(cols - 4, 64), height: Math.max(6, bodyH - 2) }),
+      h(Picker, {
+        picker: state.picker,
+        width: Math.min(cols - 4, 64),
+        height: Math.max(6, bodyH - 2),
+      }),
     );
   } else if (logFull) {
-    body = h(Box, { height: bodyH }, h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }));
+    body = h(
+      Box,
+      { height: bodyH },
+      h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }),
+    );
   } else {
     body = h(
       Box,

@@ -82,7 +82,14 @@ export class FakeSession implements AgentSession {
   }
 
   /** A tidy end-of-turn: a usage delta then a successful `result`. */
-  finishTurn(opts: { summary?: string; usage?: Partial<TokenUsage>; costUsd?: number; contextUsed?: number } = {}): void {
+  finishTurn(
+    opts: {
+      summary?: string;
+      usage?: Partial<TokenUsage>;
+      costUsd?: number;
+      contextUsed?: number;
+    } = {},
+  ): void {
     const u = opts.usage ?? {};
     const tokens: TokenUsage = {
       input: u.input ?? 100,
@@ -193,7 +200,10 @@ export class FakeProvider implements AgentProvider {
   #sessions = new Map<string, FakeSession>();
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
-    const s = new FakeSession(opts.sessionId, { mode: opts.mode, ...(opts.model ? { model: opts.model } : {}) });
+    const s = new FakeSession(opts.sessionId, {
+      mode: opts.mode,
+      ...(opts.model ? { model: opts.model } : {}),
+    });
     if (opts.oneShot) {
       // Throwaway: answer once and finish, without joining the tracked set.
       const reply = this.titleReply;

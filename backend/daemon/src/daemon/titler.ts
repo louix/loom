@@ -13,7 +13,7 @@ const SYSTEM =
   "output ONLY a 4–6 word title for it in plain text — no quotes, no trailing " +
   "punctuation, no preamble. Never ask a question, never address the user, " +
   "never refuse. If the description is vague, terse, or nonsensical, still " +
-  "produce your best-guess noun phrase (e.g. \"Casual greeting from the user\").";
+  'produce your best-guess noun phrase (e.g. "Casual greeting from the user").';
 
 const INSTRUCTION = "Title for this task (label only, no questions):";
 

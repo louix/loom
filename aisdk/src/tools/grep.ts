@@ -80,10 +80,18 @@ export function grepTool(cwd: string) {
       "`path` and `glob` narrow the search; it runs from the session's working directory.",
     inputSchema: z.object({
       pattern: z.string().describe("Regular expression to search for."),
-      path: z.string().optional().describe("File or directory to search (default: the whole worktree)."),
+      path: z
+        .string()
+        .optional()
+        .describe("File or directory to search (default: the whole worktree)."),
       glob: z.string().optional().describe("Only search files matching this glob, e.g. '*.ts'."),
       ignore_case: z.boolean().optional().describe("Case-insensitive search."),
-      max_results: z.number().int().positive().optional().describe(`Cap on lines returned (default ${DEFAULT_MAX}).`),
+      max_results: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(`Cap on lines returned (default ${DEFAULT_MAX}).`),
     }),
     execute: async ({ pattern, path, glob, ignore_case, max_results }) => {
       const r = await runRipgrep(

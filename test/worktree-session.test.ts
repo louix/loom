@@ -40,8 +40,14 @@ test("session.create gives the session its own worktree + branch off base", asyn
 
 test("two sessions from similar prompts get distinct worktrees", async () => {
   const c = await client();
-  const a = await c.request<SessionSnapshot>("session.create", { prompt: "fix the bug", provider: "fake" });
-  const b = await c.request<SessionSnapshot>("session.create", { prompt: "fix the bug", provider: "fake" });
+  const a = await c.request<SessionSnapshot>("session.create", {
+    prompt: "fix the bug",
+    provider: "fake",
+  });
+  const b = await c.request<SessionSnapshot>("session.create", {
+    prompt: "fix the bug",
+    provider: "fake",
+  });
   assert.notEqual(a.worktree, b.worktree);
   assert.notEqual(a.branch, b.branch);
   await c.close();
@@ -49,7 +55,10 @@ test("two sessions from similar prompts get distinct worktrees", async () => {
 
 test("markDone then gc removes the worktree but keeps the row and branch", async () => {
   const c = await client();
-  const s = await c.request<SessionSnapshot>("session.create", { prompt: "cleanup target", provider: "fake" });
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "cleanup target",
+    provider: "fake",
+  });
   const tree = s.worktree as string;
 
   // gc ignores sessions that aren't done
@@ -72,7 +81,10 @@ test("markDone then gc removes the worktree but keeps the row and branch", async
 
 test("session.remove deletes the row + worktree, keeps the branch, pushes session_removed", async () => {
   const c = await client();
-  const s = await c.request<SessionSnapshot>("session.create", { prompt: "throwaway spike", provider: "fake" });
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "throwaway spike",
+    provider: "fake",
+  });
   const tree = s.worktree as string;
   assert.ok(existsSync(tree));
 
@@ -93,9 +105,13 @@ test("session.remove deletes the row + worktree, keeps the branch, pushes sessio
   assert.deepEqual(removed, [s.id], "clients got a session_removed frame");
 
   // branch survives the delete, like gc
-  const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", "loom/throwaway-spike"], {
-    encoding: "utf8",
-  });
+  const branches = execFileSync(
+    "git",
+    ["-C", h.repoRoot, "branch", "--list", "loom/throwaway-spike"],
+    {
+      encoding: "utf8",
+    },
+  );
   assert.match(branches, /loom\/throwaway-spike/);
   await c.close();
 });
@@ -117,9 +133,13 @@ test("session.remove --delete-branch also drops the branch", async () => {
   assert.equal(r.branchDeleted, true);
   assert.ok(!existsSync(tree));
 
-  const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", "loom/branch-goes-too"], {
-    encoding: "utf8",
-  });
+  const branches = execFileSync(
+    "git",
+    ["-C", h.repoRoot, "branch", "--list", "loom/branch-goes-too"],
+    {
+      encoding: "utf8",
+    },
+  );
   assert.equal(branches.trim(), "", "branch is gone");
   await c.close();
 });

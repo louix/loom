@@ -42,6 +42,11 @@ export class SessionEventStore {
       .all(sessionId, limit) as unknown as Row[];
     return rows
       .reverse()
-      .map((r) => ({ kind: "push", type: "event", seq: r.seq, event: JSON.parse(r.payload) as HarnessEvent }));
+      .map((r) => ({
+        kind: "push",
+        type: "event",
+        seq: r.seq,
+        event: JSON.parse(r.payload) as HarnessEvent,
+      }));
   }
 }

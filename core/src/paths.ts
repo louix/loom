@@ -15,7 +15,8 @@ export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boole
     }
   };
   if (cmd.includes("/") || cmd.includes("\\")) return runnable(cmd);
-  const exts = process.platform === "win32" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  const exts =
+    process.platform === "win32" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
   for (const dir of (env["PATH"] ?? "").split(delimiter)) {
     if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
   }

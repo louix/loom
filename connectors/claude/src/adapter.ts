@@ -141,7 +141,8 @@ class ClaudeSession implements AgentSession {
       // as a first-class plan review rather than a generic permission prompt.
       if (toolName === "ExitPlanMode" || toolName === "exit_plan_mode") {
         const raw = (input as { plan?: unknown } | null)?.plan;
-        const plan = typeof raw === "string" && raw.trim() !== "" ? raw : JSON.stringify(input ?? {});
+        const plan =
+          typeof raw === "string" && raw.trim() !== "" ? raw : JSON.stringify(input ?? {});
         return new Promise<PermissionResult | null>((resolve) => {
           this.#pendingPlans.set(reqId, resolve);
           this.#outbox.push({
@@ -199,7 +200,13 @@ class ClaudeSession implements AgentSession {
         ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
         : {}),
       ...(opts.systemPromptAppend
-        ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPromptAppend } }
+        ? {
+            systemPrompt: {
+              type: "preset",
+              preset: "claude_code",
+              append: opts.systemPromptAppend,
+            },
+          }
         : {}),
       ...(opts.subagents && opts.subagents.length > 0
         ? {

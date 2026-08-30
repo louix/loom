@@ -322,7 +322,8 @@ export class SessionManager {
    *  permission_request; the turn stays blocked until the last is answered). */
   #resumeAfterAnswer(id: string, run: Running): void {
     if (run.interrupting) return;
-    if (run.pendingPerms.size > 0 || run.pendingQuestions.size > 0 || run.pendingPlans.size > 0) return;
+    if (run.pendingPerms.size > 0 || run.pendingQuestions.size > 0 || run.pendingPlans.size > 0)
+      return;
     this.#set(id, run, "running", null);
   }
 

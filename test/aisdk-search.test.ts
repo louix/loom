@@ -7,7 +7,12 @@ import { BuiltinTools } from "@loom/aisdk/tools/builtins";
 import { isReadonly } from "@loom/aisdk/gate";
 
 /** A one-request stub server; returns the base URL. */
-function stub(handler: (req: import("node:http").IncomingMessage, body: string) => { status?: number; json: unknown }): Promise<{ base: string; close: () => void; hits: Array<{ url: string; body: string }> }> {
+function stub(
+  handler: (
+    req: import("node:http").IncomingMessage,
+    body: string,
+  ) => { status?: number; json: unknown },
+): Promise<{ base: string; close: () => void; hits: Array<{ url: string; body: string }> }> {
   const hits: Array<{ url: string; body: string }> = [];
   return new Promise((resolve) => {
     const server: Server = createServer((req, res) => {
@@ -59,10 +64,17 @@ test("runSearch (tavily): posts the key + query, maps results", async () => {
     const parsed = JSON.parse(body) as { api_key: string; query: string; max_results: number };
     assert.equal(parsed.api_key, "tv-key");
     assert.equal(parsed.max_results, 3);
-    return { json: { results: [{ title: "Doc", url: "https://d.example", content: "body text" }] } };
+    return {
+      json: { results: [{ title: "Doc", url: "https://d.example", content: "body text" }] },
+    };
   });
   try {
-    const cfg: SearchConfig = { backend: "tavily", apiKey: "tv-key", apiBase: s.base, maxResults: 3 };
+    const cfg: SearchConfig = {
+      backend: "tavily",
+      apiKey: "tv-key",
+      apiBase: s.base,
+      maxResults: 3,
+    };
     const r = await runSearch(cfg, "how to rewind", 3);
     assert.equal(r.ok, true);
     assert.match(r.output, /1\. Doc\n {3}https:\/\/d\.example\n {3}body text/);
@@ -86,7 +98,10 @@ test("runSearch: an error status is a clean failure, not a throw", async () => {
 test("runSearch: no results → '(no results)'", async () => {
   const s = await stub(() => ({ json: { web: { results: [] } } }));
   try {
-    const r = await runSearch({ backend: "brave", apiKey: "k", apiBase: s.base, maxResults: 5 }, "nothing");
+    const r = await runSearch(
+      { backend: "brave", apiKey: "k", apiBase: s.base, maxResults: 5 },
+      "nothing",
+    );
     assert.equal(r.output, "(no results)");
   } finally {
     s.close();
@@ -97,7 +112,12 @@ test("BuiltinTools mounts web_search only when a search config is given; it's re
   const bare = new BuiltinTools("/tmp");
   assert.equal("web_search" in bare.tools, false);
 
-  const withSearch = new BuiltinTools("/tmp", { backend: "brave", apiKey: "k", apiBase: "", maxResults: 5 });
+  const withSearch = new BuiltinTools("/tmp", {
+    backend: "brave",
+    apiKey: "k",
+    apiBase: "",
+    maxResults: 5,
+  });
   assert.equal("web_search" in withSearch.tools, true);
   assert.equal(isReadonly("web_search"), true); // never prompts in default mode
 });

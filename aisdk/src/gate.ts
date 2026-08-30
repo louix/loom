@@ -62,7 +62,11 @@ export class PermissionDenied extends Error {
 }
 
 export interface PermissionAsk {
-  (toolName: string, input: unknown, toolCallId: string): Promise<{ allow: boolean; message?: string }>;
+  (
+    toolName: string,
+    input: unknown,
+    toolCallId: string,
+  ): Promise<{ allow: boolean; message?: string }>;
 }
 
 export interface GateOptions {

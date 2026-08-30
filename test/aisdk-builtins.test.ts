@@ -130,7 +130,7 @@ test("BashShell: a `read` in the command gets EOF, not the sentinel", async () =
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
-    const r = await sh.run("read -r x; echo \"got:[$x]\"", 3_000);
+    const r = await sh.run('read -r x; echo "got:[$x]"', 3_000);
     assert.equal(r.timedOut, false);
     assert.equal(r.output.trim(), "got:[]");
     // the next command still frames cleanly
@@ -210,7 +210,12 @@ test("applyEdit: falls back to trailing-whitespace-insensitive matching", () => 
   try {
     const f = join(dir, "code.ts");
     writeFileSync(f, "function f() {  \n  return 1;\n}\n"); // trailing spaces after {
-    const r = applyEdit(f, "function f() {\n  return 1;\n}", "function f() {\n  return 2;\n}", false);
+    const r = applyEdit(
+      f,
+      "function f() {\n  return 1;\n}",
+      "function f() {\n  return 2;\n}",
+      false,
+    );
     assert.equal(r.ok, true);
     assert.equal(r.tier, "trailing-insensitive");
     assert.match(readFileSync(f, "utf8"), /return 2;/);

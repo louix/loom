@@ -14,7 +14,12 @@ function byType<T extends HarnessEvent["type"]>(
 
 test("init captures the provider ref and model but emits nothing", () => {
   const m = new ClaudeEventMapper(SID);
-  const out = m.map({ type: "system", subtype: "init", session_id: "claude-abc", model: "claude-sonnet-5" });
+  const out = m.map({
+    type: "system",
+    subtype: "init",
+    session_id: "claude-abc",
+    model: "claude-sonnet-5",
+  });
   assert.deepEqual(out, []);
   assert.equal(m.state.providerRef, "claude-abc");
   assert.equal(m.state.model, "claude-sonnet-5");
@@ -45,7 +50,12 @@ test("assistant message splits into text / thinking / tool_call, carrying agentI
 
 test("assistant error field becomes a non-fatal error event", () => {
   const m = new ClaudeEventMapper(SID);
-  const out = m.map({ type: "assistant", parent_tool_use_id: null, error: "rate_limit", message: { content: [] } });
+  const out = m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    error: "rate_limit",
+    message: { content: [] },
+  });
   const err = byType(out, "error")[0];
   assert.ok(err);
   assert.equal(err.fatal, false);
@@ -77,7 +87,10 @@ test("result success emits a usage delta then a result; state goes cumulative", 
   m.map({
     type: "assistant",
     parent_tool_use_id: null,
-    message: { content: [], usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 50 } },
+    message: {
+      content: [],
+      usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 50 },
+    },
   });
   const out = m.map({
     type: "result",
@@ -139,7 +152,13 @@ test("contextUsed tracks the last single request, not the turn's cumulative usag
     result: "done",
     num_turns: 1,
     usage: { input_tokens: 4_905_000, cache_read_input_tokens: 950_000 },
-    modelUsage: { "claude-sonnet-5": { inputTokens: 4_905_000, cacheReadInputTokens: 950_000, contextWindow: 1_000_000 } },
+    modelUsage: {
+      "claude-sonnet-5": {
+        inputTokens: 4_905_000,
+        cacheReadInputTokens: 950_000,
+        contextWindow: 1_000_000,
+      },
+    },
   });
   const usage = byType(out, "usage")[0];
   assert.equal(usage?.contextUsed, 955_000);
@@ -154,7 +173,9 @@ test("a second turn's usage is the delta over cumulative, not the running total"
     result: "t1",
     num_turns: 1,
     usage: { input_tokens: 1000 },
-    modelUsage: { x: { inputTokens: 1000, outputTokens: 100, costUSD: 0.01, contextWindow: 200000 } },
+    modelUsage: {
+      x: { inputTokens: 1000, outputTokens: 100, costUSD: 0.01, contextWindow: 200000 },
+    },
   });
   const out = m.map({
     type: "result",
@@ -164,7 +185,9 @@ test("a second turn's usage is the delta over cumulative, not the running total"
     num_turns: 2,
     usage: { input_tokens: 1500 },
     // cumulative totals across the query() call
-    modelUsage: { x: { inputTokens: 2500, outputTokens: 260, costUSD: 0.028, contextWindow: 200000 } },
+    modelUsage: {
+      x: { inputTokens: 2500, outputTokens: 260, costUSD: 0.028, contextWindow: 200000 },
+    },
   });
   const usage = byType(out, "usage")[0];
   assert.equal(usage?.tokens.input, 1500);
@@ -196,7 +219,12 @@ test("a Task tool_use raises subagent_started; its tool_result raises subagent_s
     parent_tool_use_id: null,
     message: {
       content: [
-        { type: "tool_use", id: "task-1", name: "Task", input: { subagent_type: "code-reviewer", description: "review the diff" } },
+        {
+          type: "tool_use",
+          id: "task-1",
+          name: "Task",
+          input: { subagent_type: "code-reviewer", description: "review the diff" },
+        },
       ],
     },
   });
@@ -264,7 +292,12 @@ test("a rate_limit_event becomes a rate_limit event", () => {
   const m = new ClaudeEventMapper(SID);
   const out = m.map({
     type: "rate_limit_event",
-    rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 82, resetsAt: 12345 },
+    rate_limit_info: {
+      status: "allowed_warning",
+      rateLimitType: "five_hour",
+      utilization: 82,
+      resetsAt: 12345,
+    },
   });
   const ev = byType(out, "rate_limit")[0];
   assert.ok(ev);

@@ -52,12 +52,7 @@ import {
   type PlanDecision,
   type SessionMode,
 } from "@loom/core/types";
-import {
-  acquirePidfile,
-  IdleTimer,
-  releasePidfile,
-  type PidfileInfo,
-} from "./lifecycle.ts";
+import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./lifecycle.ts";
 
 /**
  * Appended to the Claude system prompt for every session (spec §11.4). Steers
@@ -472,7 +467,11 @@ export class Daemon {
           p.models = models;
           p.model = models[0] ?? "";
           p.autoModels = false;
-          this.#log.info("auto-detected models", { provider: id, count: models.length, model: p.model });
+          this.#log.info("auto-detected models", {
+            provider: id,
+            count: models.length,
+            model: p.model,
+          });
         } catch (err) {
           this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
             provider: id,
@@ -512,9 +511,12 @@ export class Daemon {
       this.config.providers.claude.models = this.#claudeChoices.map((c) => c.id);
       this.#log.info("claude models discovered", { count: models.length });
     } catch (err) {
-      this.#log.warn("claude model discovery failed — set `[providers.claude] models` to pin a list", {
-        err: err instanceof Error ? err.message : String(err),
-      });
+      this.#log.warn(
+        "claude model discovery failed — set `[providers.claude] models` to pin a list",
+        {
+          err: err instanceof Error ? err.message : String(err),
+        },
+      );
     }
   }
 
@@ -606,7 +608,8 @@ export class Daemon {
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
     if (row.status === "done") throw new RpcError("bad_request", "session is done");
     const providerRef = this.#registry.store.providerRef(id);
-    if (!providerRef) throw new RpcError("bad_request", "session has no provider ref to resume from");
+    if (!providerRef)
+      throw new RpcError("bad_request", "session has no provider ref to resume from");
     if (!this.#providers.has(row.provider)) {
       throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
     }
@@ -747,7 +750,9 @@ export class Daemon {
     const keep = Math.min(Math.max(0, keepMessages), this.#pmsgs.count(id));
     if (keep <= 0) return 0;
     const tokens = estimateTokens(this.#pmsgs.load(id).slice(0, keep));
-    return costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0;
+    return (
+      costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0
+    );
   }
 
   #onActivityChange(why: string): void {
@@ -761,7 +766,9 @@ export class Daemon {
     if (this.#server.clientCount > 0) return true;
     return this.#registry
       .list()
-      .some((s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input");
+      .some(
+        (s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input",
+      );
   }
 
   // -------------------------------------------------------------------------
@@ -819,7 +826,10 @@ export class Daemon {
     this.config.notify = next.notify;
     this.config.titles = next.titles;
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
-      this.config.daemon = { ...this.config.daemon, idleShutdownMinutes: next.daemon.idleShutdownMinutes };
+      this.config.daemon = {
+        ...this.config.daemon,
+        idleShutdownMinutes: next.daemon.idleShutdownMinutes,
+      };
       this.#idle.setMinutes(next.daemon.idleShutdownMinutes);
       this.#idle.poke(this.#isBusy());
     }
@@ -855,7 +865,12 @@ export class Daemon {
 
     d.register("ping", (params) => {
       const nonce = isObj(params) ? params["nonce"] : undefined;
-      return { nonce: nonce ?? null, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt };
+      return {
+        nonce: nonce ?? null,
+        pid: process.pid,
+        startedAt: this.startedAt,
+        uptimeMs: Date.now() - this.startedAt,
+      };
     });
 
     d.register("daemon.status", () => ({
@@ -914,7 +929,10 @@ export class Daemon {
       try {
         return { models: await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile)) };
       } catch (err) {
-        throw new RpcError("provider_error", `could not list models: ${err instanceof Error ? err.message : String(err)}`);
+        throw new RpcError(
+          "provider_error",
+          `could not list models: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
 
@@ -965,7 +983,11 @@ export class Daemon {
       // no longer there").
       if (!explicitModel && aisdkProfile) {
         const remembered = this.#providerDefaults.model(providerId);
-        if (remembered && aisdkProfile.models.length > 0 && !aisdkProfile.models.includes(remembered)) {
+        if (
+          remembered &&
+          aisdkProfile.models.length > 0 &&
+          !aisdkProfile.models.includes(remembered)
+        ) {
           this.#emitNotice(
             `${providerId}: last model "${remembered}" is no longer offered — using ${
               this.#defaultModelFor(providerId) || "the provider default"
@@ -994,7 +1016,9 @@ export class Daemon {
       // `worktree: false`) runs it in the repo working dir instead — no branch
       // isolation, concurrent sessions can collide, hard-fork unavailable.
       const wantWorktree =
-        typeof p["worktree"] === "boolean" ? (p["worktree"] as boolean) : this.config.worktree.enabled;
+        typeof p["worktree"] === "boolean"
+          ? (p["worktree"] as boolean)
+          : this.config.worktree.enabled;
       let wt: { path: string; branch: string; baseRef: string } | null = null;
       if (wantWorktree) {
         try {
@@ -1030,8 +1054,7 @@ export class Daemon {
       const isClaude = providerId === "claude";
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
       const mcpHandles = this.#mcpHandles();
-      const aisdkSystem =
-        mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
+      const aisdkSystem = mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
       const opts: CreateSessionOptions = {
         sessionId: id,
         cwd,
@@ -1070,7 +1093,13 @@ export class Daemon {
       // The opening prompt is a user message like any follow-up — put it on the
       // event stream so it's in the log / transcript and survives a reconnect
       // (clients no longer local-echo it).
-      this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text: prompt, injected: false });
+      this.emitEvent({
+        type: "user_message",
+        sessionId: id,
+        ts: Date.now(),
+        text: prompt,
+        injected: false,
+      });
 
       const snap = this.#registry.mustGet(id);
       this.#emitSessionUpdated(snap, clientLabel(params));
@@ -1129,7 +1158,10 @@ export class Daemon {
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       if (!this.#isAisdk(snap.provider)) {
-        throw new RpcError("bad_request", "rewind is aisdk-only for now (Claude support is fork-tree F3)");
+        throw new RpcError(
+          "bad_request",
+          "rewind is aisdk-only for now (Claude support is fork-tree F3)",
+        );
       }
       if (snap.turns <= 1) {
         throw new RpcError("bad_request", "this session has no earlier turn to rewind to");
@@ -1172,10 +1204,16 @@ export class Daemon {
       const parent = this.#registry.get(id);
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
       if (!this.#isAisdk(parent.provider)) {
-        throw new RpcError("bad_request", "hard fork is aisdk-only for now (Claude support is fork-tree F3)");
+        throw new RpcError(
+          "bad_request",
+          "hard fork is aisdk-only for now (Claude support is fork-tree F3)",
+        );
       }
       if (parent.inPlace) {
-        throw new RpcError("bad_request", "the parent runs in-place (no worktree) — hard fork needs an isolated branch");
+        throw new RpcError(
+          "bad_request",
+          "the parent runs in-place (no worktree) — hard fork needs an isolated branch",
+        );
       }
       if (!["idle", "interrupted", "done", "error"].includes(parent.status)) {
         // Forking mid-turn copies a transcript whose last message is an
@@ -1375,14 +1413,19 @@ export class Daemon {
       return this.#enrich(snap);
     });
 
-
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
       this.#lastSend.delete(id);
       const snap = this.#registry.setStatus(id, "done", "marked_done");
-      this.emitEvent({ type: "status_changed", sessionId: id, status: "done", ts: Date.now(), reason: "marked_done" });
+      this.emitEvent({
+        type: "status_changed",
+        sessionId: id,
+        status: "done",
+        ts: Date.now(),
+        reason: "marked_done",
+      });
       this.#emitSessionUpdated(snap, clientLabel(params));
       this.#onActivityChange("marked-done");
       return this.#enrich(snap);
@@ -1474,7 +1517,8 @@ export class Daemon {
         title: prompt,
       });
       const status: SessionStatus =
-        typeof p["status"] === "string" && (VALID_STATUSES as string[]).includes(p["status"] as string)
+        typeof p["status"] === "string" &&
+        (VALID_STATUSES as string[]).includes(p["status"] as string)
           ? (p["status"] as SessionStatus)
           : "idle";
       const reason = typeof p["reason"] === "string" ? (p["reason"] as string) : null;
@@ -1498,7 +1542,8 @@ export class Daemon {
         throw new RpcError("bad_request", `invalid status: ${status}`);
       }
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const reason = isObj(params) && typeof params["reason"] === "string" ? (params["reason"] as string) : null;
+      const reason =
+        isObj(params) && typeof params["reason"] === "string" ? (params["reason"] as string) : null;
       const snap = this.#registry.setStatus(id, status as SessionStatus, reason);
       this.emitEvent({
         type: "status_changed",
@@ -1548,7 +1593,12 @@ export class Daemon {
       // ahead of the replayed older ones. The client buffers everything until
       // its hello response lands, so ordering is preserved.
       if (rolled) {
-        ctx.conn.push({ kind: "push", seq: head, type: "resync", reason: "event buffer rolled past requested seq" });
+        ctx.conn.push({
+          kind: "push",
+          seq: head,
+          type: "resync",
+          reason: "event buffer rolled past requested seq",
+        });
       } else if (frames.length > 0) {
         replaying = true;
         for (const f of frames) ctx.conn.push(f);
@@ -1587,7 +1637,6 @@ export class Daemon {
       return { name: m.name, spec: { transport: "stdio", command, args } };
     });
   }
-
 }
 
 // ---------------------------------------------------------------------------

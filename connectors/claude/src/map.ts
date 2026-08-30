@@ -172,7 +172,8 @@ export class ClaudeEventMapper {
   #rateLimit(m: SdkMsgLite): HarnessEvent[] {
     const info = m.rate_limit_info;
     if (!info) return [];
-    const status = info.status === "allowed_warning" || info.status === "rejected" ? info.status : "allowed";
+    const status =
+      info.status === "allowed_warning" || info.status === "rejected" ? info.status : "allowed";
     return [
       {
         type: "rate_limit",
@@ -216,7 +217,9 @@ export class ClaudeEventMapper {
     if (m.parent_tool_use_id == null && m.message?.usage) {
       const u = m.message.usage;
       this.state.contextUsed =
-        (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        (u.input_tokens ?? 0) +
+        (u.cache_read_input_tokens ?? 0) +
+        (u.cache_creation_input_tokens ?? 0);
     }
     for (const b of blocks(m.message?.content)) {
       if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
@@ -249,7 +252,13 @@ export class ClaudeEventMapper {
     for (const b of blocks(m.message?.content)) {
       if (b.type === "tool_result") {
         const id = b.tool_use_id ?? "";
-        out.push({ type: "tool_result", ...base, id, ok: b.is_error !== true, output: b.content ?? null });
+        out.push({
+          type: "tool_result",
+          ...base,
+          id,
+          ok: b.is_error !== true,
+          output: b.content ?? null,
+        });
         if (this.#openSubagents.has(id)) {
           this.#openSubagents.delete(id);
           out.push({ type: "subagent_stopped", ...base, subagentId: id });
@@ -309,7 +318,9 @@ export class ClaudeEventMapper {
     const ok = m.subtype === "success" && m.is_error !== true;
     const summary = ok
       ? (m.result ?? "")
-      : (m.errors && m.errors.length > 0 ? m.errors.join("; ") : (m.subtype ?? "error"));
+      : m.errors && m.errors.length > 0
+        ? m.errors.join("; ")
+        : (m.subtype ?? "error");
     if (!ok) {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });
     }

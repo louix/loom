@@ -65,15 +65,27 @@ function handle(req) {
     const { name, arguments: args = {} } = params ?? {};
     try {
       if (name === "echo_text") {
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: String(args.text ?? "") }] } });
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: String(args.text ?? "") }] },
+        });
         return;
       }
       if (name === "write_note") {
         writeFileSync(args.path, args.content ?? "");
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `wrote ${args.path}` }] } });
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `wrote ${args.path}` }] },
+        });
         return;
       }
-      send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true },
+      });
     } catch (err) {
       send({ jsonrpc: "2.0", id, error: { code: -32000, message: String(err) } });
     }

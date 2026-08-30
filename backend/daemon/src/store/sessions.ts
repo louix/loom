@@ -123,9 +123,9 @@ export class SessionStore {
       | SessionRow
       | undefined;
     if (!row) return null;
-    const usage = this.#db.prepare("SELECT * FROM usage WHERE session_id = ?").get(id) as unknown as
-      | UsageRow
-      | undefined;
+    const usage = this.#db
+      .prepare("SELECT * FROM usage WHERE session_id = ?")
+      .get(id) as unknown as UsageRow | undefined;
     return toSnapshot(row, usage);
   }
 
@@ -268,17 +268,17 @@ export class SessionStore {
 
   /** The provider's own persisted session id, once the adapter reports it. */
   providerRef(id: string): string | null {
-    const row = this.#db
-      .prepare("SELECT provider_ref FROM sessions WHERE id = ?")
-      .get(id) as { provider_ref: string | null } | undefined;
+    const row = this.#db.prepare("SELECT provider_ref FROM sessions WHERE id = ?").get(id) as
+      | { provider_ref: string | null }
+      | undefined;
     return row?.provider_ref ?? null;
   }
 
   /** True once a manual rename has pinned the title against the auto-titler. */
   titleLocked(id: string): boolean {
-    const row = this.#db
-      .prepare("SELECT title_locked FROM sessions WHERE id = ?")
-      .get(id) as { title_locked: number } | undefined;
+    const row = this.#db.prepare("SELECT title_locked FROM sessions WHERE id = ?").get(id) as
+      | { title_locked: number }
+      | undefined;
     return (row?.title_locked ?? 0) !== 0;
   }
 
@@ -355,7 +355,9 @@ export class CheckpointStore {
 
   /** Drop checkpoints after `turn` (called after a rewind). */
   truncate(sessionId: string, turn: number): void {
-    this.#db.prepare("DELETE FROM checkpoints WHERE session_id = ? AND turn > ?").run(sessionId, turn);
+    this.#db
+      .prepare("DELETE FROM checkpoints WHERE session_id = ? AND turn > ?")
+      .run(sessionId, turn);
   }
 }
 

@@ -61,7 +61,11 @@ export function loadPriceTable(path: string): PriceTable {
 }
 
 /** Dollar cost of a token delta at the given model's prices, or `null` when unpriced. */
-export function costOf(table: PriceTable, model: string | null | undefined, delta: TokenUsage): number | null {
+export function costOf(
+  table: PriceTable,
+  model: string | null | undefined,
+  delta: TokenUsage,
+): number | null {
   if (!model) return null;
   const row = table.get(model);
   if (!row) return null;

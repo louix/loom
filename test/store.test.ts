@@ -17,7 +17,10 @@ setLogLevel("error");
 
 function tmpDb(): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "loom-store-"));
-  return { path: join(dir, "loom.db"), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    path: join(dir, "loom.db"),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 test("migrations bring an empty db to head and are idempotent", () => {
@@ -101,8 +104,22 @@ test("addUsage accumulates deltas but sets context as absolute", () => {
     const store = new SessionStore(db);
     store.create({ id: "s1", provider: "stub" });
 
-    store.addUsage("s1", { input: 100, output: 20, costUsd: 0.01, turns: 1, contextUsed: 100, contextLimit: 200_000 });
-    store.addUsage("s1", { input: 50, output: 10, costUsd: 0.005, turns: 1, contextUsed: 150, contextLimit: 200_000 });
+    store.addUsage("s1", {
+      input: 100,
+      output: 20,
+      costUsd: 0.01,
+      turns: 1,
+      contextUsed: 100,
+      contextLimit: 200_000,
+    });
+    store.addUsage("s1", {
+      input: 50,
+      output: 10,
+      costUsd: 0.005,
+      turns: 1,
+      contextUsed: 150,
+      contextLimit: 200_000,
+    });
 
     const s = store.get("s1");
     assert.equal(s?.usage.input, 150);
@@ -150,7 +167,10 @@ test("ChildStore records, lists by epoch, and forgets", () => {
     children.record(333, "claude-cli", "epoch-B");
 
     assert.equal(children.all().length, 3);
-    const stale = children.fromOtherEpochs("epoch-B").map((r) => r.pid).sort();
+    const stale = children
+      .fromOtherEpochs("epoch-B")
+      .map((r) => r.pid)
+      .sort();
     assert.deepEqual(stale, [111, 222]);
 
     children.forget(111);
@@ -241,7 +261,10 @@ test("CheckpointStore records / lists / truncates; setTurns resets the counter",
     cps.record("s1", { turn: 2, providerRef: "", forkPoint: "6", userText: "follow up" });
     cps.record("s1", { turn: 3, providerRef: "", forkPoint: "10", userText: "and again" });
 
-    assert.deepEqual(cps.list("s1").map((c) => c.turn), [1, 2, 3]);
+    assert.deepEqual(
+      cps.list("s1").map((c) => c.turn),
+      [1, 2, 3],
+    );
     assert.equal(cps.at("s1", 2)?.forkPoint, "6");
     assert.equal(cps.at("s1", 9), null);
 
@@ -251,7 +274,10 @@ test("CheckpointStore records / lists / truncates; setTurns resets the counter",
     assert.equal(cps.at("s1", 2)?.userText, "edited");
 
     cps.truncate("s1", 1);
-    assert.deepEqual(cps.list("s1").map((c) => c.turn), [1]);
+    assert.deepEqual(
+      cps.list("s1").map((c) => c.turn),
+      [1],
+    );
 
     sessions.setTurns("s1", 1);
     assert.equal(sessions.get("s1")?.turns, 1);

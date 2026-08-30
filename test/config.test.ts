@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { deepMerge, lintConfig, loadConfig, normalizeConfig, resolveApiKey } from "@loom/daemon/config/config";
+import {
+  deepMerge,
+  lintConfig,
+  loadConfig,
+  normalizeConfig,
+  resolveApiKey,
+} from "@loom/daemon/config/config";
 import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "@loom/daemon/scaffold";
 
 function cfg(toml: string) {
@@ -92,7 +98,10 @@ tag      = "lb"
   // no base_url → nothing to dial → dropped
   assert.deepEqual(cfg(`[custom-provider.x]\nmodel = "m"\n`).providers.aisdk, {});
   // model-less is still kept for auto-detection
-  assert.equal(cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels, true);
+  assert.equal(
+    cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels,
+    true,
+  );
 });
 
 test("max_steps defaults to 50 and is clamped to 1–500", () => {
@@ -387,7 +396,7 @@ test("scaffoldUserConfig drops the example at the XDG path once, never overwriti
     assert.equal(readFileSync(dest, "utf8"), readFileSync(exampleConfigPath(), "utf8"));
 
     // idempotent: a second call is a no-op and leaves edits intact
-    writeFileSync(dest, "base_branch = \"trunk\"\n");
+    writeFileSync(dest, 'base_branch = "trunk"\n');
     assert.equal(scaffoldUserConfig(), null);
     assert.match(readFileSync(dest, "utf8"), /trunk/);
   } finally {

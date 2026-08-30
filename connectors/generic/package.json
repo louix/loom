@@ -7,10 +7,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/aisdk": "workspace:*",
     "@ai-sdk/anthropic": "2.0.99",
     "@ai-sdk/openai-compatible": "1.0.52",
+    "@loom/aisdk": "workspace:*",
+    "@loom/core": "workspace:*",
     "ai": "5.0.249"
   }
 }

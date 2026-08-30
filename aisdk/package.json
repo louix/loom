@@ -18,8 +18,8 @@
     "./tools/builtins": "./src/tools/builtins.ts"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
     "@ai-sdk/mcp": "0.0.31",
+    "@loom/core": "workspace:*",
     "ai": "5.0.249",
     "zod": "4.4.3"
   }

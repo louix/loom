@@ -6,8 +6,8 @@ proposal after review (2026-08-29).
 ## What we're NOT building
 
 An interactive **tree navigator** (`T`: up = previous turn, left/right = sibling
-leaves, enter = continue). It's a good fit for a *chat* UI where only the
-conversation changes, but not a *code harness* — the worktree changes underneath
+leaves, enter = continue). It's a good fit for a _chat_ UI where only the
+conversation changes, but not a _code harness_ — the worktree changes underneath
 you, so hopping between leaves in a shared tree is incoherent, and a
 worktree-per-leaf is just hard-forking with extra steps. Parked.
 
@@ -27,8 +27,8 @@ prompt reopens pre-filled with that turn's original user message ("redo this").
 - **aisdk** — `store.replaceFrom(id, checkpoint(turn).seq + 1, [])`.
 - **claude** — restart the `query()` with `resume: <providerRef>`,
   `resumeSessionAt: <turn's last chain UUID>`, `resumeDropsTurn: <discarded
-  turn's prompt UUID>`. On the deterministic refusal (`Resume rejected by
-  --resume-drops-turn:`) fall back to a plain resume and surface a `notice` —
+turn's prompt UUID>`. On the deterministic refusal (`Resume rejected by
+--resume-drops-turn:`) fall back to a plain resume and surface a `notice` —
   never retry (SDK docs are explicit).
 
 ### 2. Hard fork — branch from the current tip
@@ -86,7 +86,7 @@ picks which one). `sessions` gains a `fork_turn INTEGER` column (null = root).
 - `session.rewind` returns the truncated snapshot; `session.fork` returns the
   new session's snapshot.
 - The undo picker needs the turn list: fold `turns` (already on the snapshot)
-  + a `checkpoints` read into a `session.checkpoints { id }` RPC.
+  - a `checkpoints` read into a `session.checkpoints { id }` RPC.
 
 ## TUI
 
@@ -96,16 +96,16 @@ picks which one). `sessions` gains a `fork_turn INTEGER` column (null = root).
 - **`f`** stays "new session" via the existing flow; **`⑂`** (or `⌃f`) → hard
   fork the selected session → `session.fork` → selects the new row.
 - Fleet: a forked session shows `⑂` before its id and, in Detail, `forked from
-  <shortId> @ turn N`.
+<shortId> @ turn N`.
 - Help + footer updated.
 
 ## Phasing
 
-| # | scope |
-|---|---|
+| #        | scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **F1** ✓ | migration 7 (`checkpoints` table + `sessions.fork_turn`); daemon writes a checkpoint per `result` (turn, providerRef, `fork_point` = provider_messages count for aisdk, `user_text` snippet from the last send). `AgentSession.rewind(keep)` + `capabilities.rewind` (aisdk ✓, fake ✓, claude throws). `session.checkpoints` (with a server-computed `rewindCostUsd` per turn = `estimateTokens × cacheWrite`) + `session.rewind {id,toTurn}` RPCs. TUI: `u` on an idle multi-turn session → an undo `Picker` (`turn N · "snippet" · ~$cost`) → `session.rewind`. `RewindEvent` in the log. Verified live against an OpenAI-compatible endpoint: a two-turn session rewound one turn and the model recalled the kept turn, not the discarded one. |
-| **F2** ✓ | `session.fork {id, prompt?}` RPC — aisdk only: a new `sessions` row (`parent_id`, `fork_turn` = the parent's turn count), a worktree branched off the parent's branch HEAD (`WorktreeManager.create(hint, baseRefOverride)`), the transcript copied (`ProviderMessageStore.copyTo`), then `resume` (+ `send` if a prompt was given). TUI: `⌃f` forks the selected session and selects the new row; the fork's Fleet id carries a `⑂` glyph and Detail shows `⑂ forked from <id> @ turn N`. `SessionSnapshot.forkTurn` on the wire. |
-| **F3** | Claude rewind (`resumeSessionAt` / `resumeDropsTurn` + refusal fallback) and fork (`forkSession`); mapper captures per-turn chain UUIDs. |
+| **F2** ✓ | `session.fork {id, prompt?}` RPC — aisdk only: a new `sessions` row (`parent_id`, `fork_turn` = the parent's turn count), a worktree branched off the parent's branch HEAD (`WorktreeManager.create(hint, baseRefOverride)`), the transcript copied (`ProviderMessageStore.copyTo`), then `resume` (+ `send` if a prompt was given). TUI: `⌃f` forks the selected session and selects the new row; the fork's Fleet id carries a `⑂` glyph and Detail shows `⑂ forked from <id> @ turn N`. `SessionSnapshot.forkTurn` on the wire.                                                                                                                                                                                                                |
+| **F3**   | Claude rewind (`resumeSessionAt` / `resumeDropsTurn` + refusal fallback) and fork (`forkSession`); mapper captures per-turn chain UUIDs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## Later / not now
 

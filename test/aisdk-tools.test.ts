@@ -44,7 +44,11 @@ function toolCallStep(id: string, name: string, input: string): Chunk[] {
     { type: "tool-input-delta", id, delta: input },
     { type: "tool-input-end", id },
     { type: "tool-call", toolCallId: id, toolName: name, input },
-    { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
+    {
+      type: "finish",
+      finishReason: "tool-calls",
+      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+    },
   ];
 }
 
@@ -55,14 +59,20 @@ function textStep(text: string): Chunk[] {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: { inputTokens: 6, outputTokens: 4, totalTokens: 10 } },
+    {
+      type: "finish",
+      finishReason: "stop",
+      usage: { inputTokens: 6, outputTokens: 4, totalTokens: 10 },
+    },
   ];
 }
 
 function tmpEnv() {
   const dir = mkdtempSync(join(tmpdir(), "loom-tools-"));
   const db = openDb(join(dir, "t.db"));
-  db.prepare("INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES ('s1','openai','default',0,0)").run();
+  db.prepare(
+    "INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES ('s1','openai','default',0,0)",
+  ).run();
   return {
     dir,
     db,
@@ -75,10 +85,7 @@ function tmpEnv() {
 }
 
 function provider(make: () => LanguageModel, store: ProviderMessageStore): AisdkProvider {
-  return new AisdkProvider(
-    { id: "openai", model: "m", models: ["m"], makeModel: make },
-    store,
-  );
+  return new AisdkProvider({ id: "openai", model: "m", models: ["m"], makeModel: make }, store);
 }
 
 async function collect(
@@ -109,7 +116,9 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
     const names = Object.keys(hub.tools).sort();
     assert.deepEqual(names, ["echo_text", "write_note"]);
 
-    const echo = hub.tools["echo_text"] as { execute: (i: unknown, c: unknown) => Promise<unknown> };
+    const echo = hub.tools["echo_text"] as {
+      execute: (i: unknown, c: unknown) => Promise<unknown>;
+    };
     const res = await echo.execute({ text: "hi there" }, { toolCallId: "x", messages: [] });
     assert.match(JSON.stringify(res), /hi there/);
 
@@ -121,7 +130,12 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
 
 test("McpHub skips a server that fails to start instead of throwing", async () => {
   const hub = await McpHub.connect(
-    [{ name: "broken", spec: { transport: "stdio", command: "this-command-does-not-exist-xyz", args: [] } }],
+    [
+      {
+        name: "broken",
+        spec: { transport: "stdio", command: "this-command-does-not-exist-xyz", args: [] },
+      },
+    ],
     log,
   );
   assert.equal(hub.serverCount, 0);
@@ -177,8 +191,22 @@ test("wrapToolSet: readonly runs unprompted; gated asks; denial throws Permissio
   const calls: string[] = [];
   const asked: string[] = [];
   const tools = {
-    read_thing: tool({ description: "r", inputSchema: z.object({}), execute: async () => { calls.push("read"); return "ok"; } }),
-    delete_thing: tool({ description: "d", inputSchema: z.object({}), execute: async () => { calls.push("delete"); return "gone"; } }),
+    read_thing: tool({
+      description: "r",
+      inputSchema: z.object({}),
+      execute: async () => {
+        calls.push("read");
+        return "ok";
+      },
+    }),
+    delete_thing: tool({
+      description: "d",
+      inputSchema: z.object({}),
+      execute: async () => {
+        calls.push("delete");
+        return "gone";
+      },
+    }),
   };
   let allow = true;
   const wrapped = wrapToolSet(tools, {
@@ -212,7 +240,11 @@ test("a gated MCP tool call emits permission_request; allow → tool runs → re
   try {
     const notePath = join(dir, "note.txt");
     const model = stepModel([
-      toolCallStep("c1", "write_note", JSON.stringify({ path: notePath, content: "from the model" })),
+      toolCallStep(
+        "c1",
+        "write_note",
+        JSON.stringify({ path: notePath, content: "from the model" }),
+      ),
       textStep("Done — wrote the note."),
     ]);
     const p = provider(() => model, store);
@@ -221,14 +253,20 @@ test("a gated MCP tool call emits permission_request; allow → tool runs → re
       cwd: dir,
       prompt: "write a note",
       mode: "default",
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
     });
 
     const perms: string[] = [];
-    const evs = await collect(s.events(), (ev) => {
-      perms.push(ev.tool);
-      void s.respondToPermission(ev.id, { behavior: "allow" });
-    }, null);
+    const evs = await collect(
+      s.events(),
+      (ev) => {
+        perms.push(ev.tool);
+        void s.respondToPermission(ev.id, { behavior: "allow" });
+      },
+      null,
+    );
     await s.close();
 
     assert.deepEqual(perms, ["write_note"]);
@@ -261,12 +299,18 @@ test("denying a gated tool call feeds the model a failed tool_result", async () 
       cwd: dir,
       prompt: "write",
       mode: "default",
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
     });
 
-    const evs = await collect(s.events(), (ev) => {
-      void s.respondToPermission(ev.id, { behavior: "deny", message: "not this time" });
-    }, null);
+    const evs = await collect(
+      s.events(),
+      (ev) => {
+        void s.respondToPermission(ev.id, { behavior: "deny", message: "not this time" });
+      },
+      null,
+    );
     await s.close();
 
     const tr = evs.find((e) => e.type === "tool_result");
@@ -303,7 +347,10 @@ test("the loom ask_user tool round-trips a question through the event stream", a
     await s.close();
 
     assert.equal(asked, "Which framework?");
-    assert.equal(evs.some((e) => e.type === "answer"), true);
+    assert.equal(
+      evs.some((e) => e.type === "answer"),
+      true,
+    );
     const tr = evs.find((e) => e.type === "tool_result");
     assert.match(JSON.stringify((tr as { output: unknown }).output), /Vercel AI SDK/);
     assert.equal(evs.at(-1)?.type, "result");
@@ -326,13 +373,22 @@ test("auto mode runs a gated tool without a permission_request", async () => {
       cwd: dir,
       prompt: "go",
       mode: "auto",
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
     });
-    const evs = await collect(s.events(), (ev) => {
-      throw new Error(`unexpected permission_request for ${ev.tool}`);
-    }, null);
+    const evs = await collect(
+      s.events(),
+      (ev) => {
+        throw new Error(`unexpected permission_request for ${ev.tool}`);
+      },
+      null,
+    );
     await s.close();
-    assert.equal(evs.some((e) => e.type === "permission_request"), false);
+    assert.equal(
+      evs.some((e) => e.type === "permission_request"),
+      false,
+    );
     assert.equal(readFileSync(notePath, "utf8"), "auto");
   } finally {
     cleanup();
@@ -352,9 +408,23 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
             initialDelayInMs: 0,
             chunks: [
               { type: "stream-start", warnings: [] },
-              { type: "response-metadata", id: `r${step}`, modelId: "mock", timestamp: new Date(0) },
-              { type: "tool-call", toolCallId: `c${step}`, toolName: "echo_text", input: JSON.stringify({ text: `t${step}` }) },
-              { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+              {
+                type: "response-metadata",
+                id: `r${step}`,
+                modelId: "mock",
+                timestamp: new Date(0),
+              },
+              {
+                type: "tool-call",
+                toolCallId: `c${step}`,
+                toolName: "echo_text",
+                input: JSON.stringify({ text: `t${step}` }),
+              },
+              {
+                type: "finish",
+                finishReason: "tool-calls",
+                usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+              },
             ],
           }),
         };
@@ -370,17 +440,26 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
       cwd: dir,
       prompt: "loop",
       mode: "auto",
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
     });
 
     const evs = await collect(s.events(), () => {}, null);
     await s.close();
 
-    const result = evs.find((e) => e.type === "result") as Extract<HarnessEvent, { type: "result" }> | undefined;
+    const result = evs.find((e) => e.type === "result") as
+      | Extract<HarnessEvent, { type: "result" }>
+      | undefined;
     assert.equal(result?.ok, true);
     assert.equal(result?.stopReason, "step_limit");
     // a loud, non-fatal heads-up landed before the result
-    assert.equal(evs.some((e) => e.type === "error" && !e.fatal && /loop/.test((e as { message: string }).message)), true);
+    assert.equal(
+      evs.some(
+        (e) => e.type === "error" && !e.fatal && /loop/.test((e as { message: string }).message),
+      ),
+      true,
+    );
     // exactly one completed turn; session stays usable
     assert.equal(s.snapshot().turns, 1);
     assert.equal(s.snapshot().status, "idle");
@@ -408,10 +487,16 @@ test("resumeSession re-mounts the MCP servers from the ref", async () => {
       sessionId: "s1",
       providerRef: "s1",
       cwd: dir,
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
     });
 
-    const reader = collect(s.events(), (ev) => void s.respondToPermission(ev.id, { behavior: "allow" }), null);
+    const reader = collect(
+      s.events(),
+      (ev) => void s.respondToPermission(ev.id, { behavior: "allow" }),
+      null,
+    );
     await s.send("go"); // resume() doesn't auto-run; the first turn comes from send()
     const evs = await reader;
     await s.close();

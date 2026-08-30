@@ -14,7 +14,10 @@ test("cleanTitle strips quotes, labels, and trailing punctuation", () => {
 });
 
 test("cleanTitle takes the first non-blank line and collapses whitespace", () => {
-  assert.equal(cleanTitle("\n\n  Fix   the   flaky   test  \nand some rambling after"), "Fix the flaky test");
+  assert.equal(
+    cleanTitle("\n\n  Fix   the   flaky   test  \nand some rambling after"),
+    "Fix the flaky test",
+  );
 });
 
 test("cleanTitle returns null when there's nothing usable", () => {

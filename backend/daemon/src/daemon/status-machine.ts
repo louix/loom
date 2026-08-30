@@ -49,7 +49,9 @@ export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived 
       return current === "starting" ? { status: "running", reason: null } : null;
 
     case "result":
-      return ev.ok ? { status: "idle", reason: "result" } : { status: "error", reason: "run_error" };
+      return ev.ok
+        ? { status: "idle", reason: "result" }
+        : { status: "error", reason: "run_error" };
 
     case "error":
       return ev.fatal ? { status: "error", reason: truncate(ev.message) } : null;

@@ -35,7 +35,11 @@ function callStep(id: string, name: string, input: string): Chunk[] {
     { type: "stream-start", warnings: [] },
     { type: "response-metadata", id: `r-${id}`, modelId: "mock", timestamp: new Date(0) },
     { type: "tool-call", toolCallId: id, toolName: name, input },
-    { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
+    {
+      type: "finish",
+      finishReason: "tool-calls",
+      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+    },
   ];
 }
 
@@ -46,22 +50,33 @@ function textStep(text: string): Chunk[] {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
+    {
+      type: "finish",
+      finishReason: "stop",
+      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+    },
   ];
 }
 
 function env() {
   const dir = mkdtempSync(join(tmpdir(), "loom-plan-"));
   const db = openDb(join(dir, "t.db"));
-  db.prepare("INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES ('s1','openai','default',0,0)").run();
-  return { dir, db, store: new ProviderMessageStore(db), cleanup: () => { db.close(); rmSync(dir, { recursive: true, force: true }); } };
+  db.prepare(
+    "INSERT INTO sessions (id, provider, mode, created_at, updated_at) VALUES ('s1','openai','default',0,0)",
+  ).run();
+  return {
+    dir,
+    db,
+    store: new ProviderMessageStore(db),
+    cleanup: () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 function provider(make: () => LanguageModel, store: ProviderMessageStore) {
-  return new AisdkProvider(
-    { id: "openai", model: "m", models: ["m"], makeModel: make },
-    store,
-  );
+  return new AisdkProvider({ id: "openai", model: "m", models: ["m"], makeModel: make }, store);
 }
 
 async function pump(
@@ -98,7 +113,9 @@ test("plan mode: exit_plan → plan_review → implement chains an acceptEdits t
       cwd: dir,
       prompt: "plan then build",
       mode: "plan",
-      mcpServers: [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
       loomServer: true,
     });
 
@@ -119,7 +136,10 @@ test("plan mode: exit_plan → plan_review → implement chains an acceptEdits t
     assert.match(planText, /write the note/);
     // write_note ran without a prompt — mode flipped to acceptEdits on approval
     assert.deepEqual(perms, []);
-    assert.equal(evs.some((e) => e.type === "tool_result" && e.ok), true);
+    assert.equal(
+      evs.some((e) => e.type === "tool_result" && e.ok),
+      true,
+    );
     assert.equal(evs.at(-1)?.type, "result");
     assert.equal(readFileSync(notePath, "utf8"), "implemented");
     assert.equal(s.snapshot().mode, "acceptEdits");
@@ -236,7 +256,10 @@ test("compact() emits a compact_progress heartbeat before the compact lands", as
     assert.ok(beat.elapsedMs >= 0);
     assert.ok(beat.generated >= 0);
     // the heartbeat precedes the boundary
-    assert.ok(seen.findIndex((e) => e.type === "compact_progress") < seen.findIndex((e) => e.type === "compact"));
+    assert.ok(
+      seen.findIndex((e) => e.type === "compact_progress") <
+        seen.findIndex((e) => e.type === "compact"),
+    );
   } finally {
     cleanup();
   }
@@ -287,7 +310,12 @@ test("a bloated history auto-compacts before the next turn", async () => {
     const huge = "x".repeat(500_000);
     store.append("s1", [{ role: "user", content: huge }]);
 
-    const s = await p.resumeSession({ sessionId: "s1", providerRef: "s1", cwd: "/tmp", model: "m" });
+    const s = await p.resumeSession({
+      sessionId: "s1",
+      providerRef: "s1",
+      cwd: "/tmp",
+      model: "m",
+    });
     const seen: HarnessEvent[] = [];
     const reader = (async () => {
       for await (const ev of s.events()) {
@@ -315,7 +343,11 @@ test("the task tool runs a sub-agent and reports start/stop with an agentId", as
   const { dir, store, cleanup } = env();
   try {
     const model = stepModel([
-      callStep("t1", "task", JSON.stringify({ description: "survey the code", prompt: "list the modules" })),
+      callStep(
+        "t1",
+        "task",
+        JSON.stringify({ description: "survey the code", prompt: "list the modules" }),
+      ),
       textStep("The sub-agent surveyed the code."),
     ]);
     // sub-agent's own streamText call gets the 2nd step; make it plain text.
@@ -346,7 +378,10 @@ test("the task tool runs a sub-agent and reports start/stop with an agentId", as
     // the sub-agent's text was tagged with its agent id
     const tagged = evs.find((e) => e.type === "assistant_text" && e.agentId);
     assert.ok(tagged);
-    assert.equal((tagged as { agentId?: string }).agentId, (started as { subagentId: string }).subagentId);
+    assert.equal(
+      (tagged as { agentId?: string }).agentId,
+      (started as { subagentId: string }).subagentId,
+    );
     assert.equal(evs.at(-1)?.type, "result");
   } finally {
     cleanup();

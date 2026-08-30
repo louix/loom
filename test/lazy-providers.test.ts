@@ -41,7 +41,11 @@ test("a fake-only daemon session never loads a vendor connector", async () => {
 
   const h = await makeHarness();
   try {
-    const c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: h.repoRoot,
+      sockPath: h.sockPath,
+      autospawn: false,
+    });
     // Drives daemon → ProviderRegistry.get("fake") → the "@loom/connector-mock" thunk only.
     await c.request("session.create", { prompt: "hello", provider: "fake" });
     await c.close();

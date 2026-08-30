@@ -3,16 +3,16 @@
 Status: milestones 1–5 shipped (daemon, Claude adapter, worktree manager, loom
 MCP server, terminal UI). This doc plans the next five:
 
-| # | milestone | size | depends on |
-|---|-----------|------|------------|
-| 6 | Context compaction | S–M | — |
-| 7 | The trio — LLM titles · price-table cost · budgets | S (one pass) | — |
-| 8 | Plan review | M | 6 (real "implement fresh") |
-| 9 | Sub-agent nesting | M | — |
-| 10 | Non-Claude providers (Vercel AI SDK) | L | 6 (non-Claude context mgmt mindset) |
+| #   | milestone                                          | size         | depends on                          |
+| --- | -------------------------------------------------- | ------------ | ----------------------------------- |
+| 6   | Context compaction                                 | S–M          | —                                   |
+| 7   | The trio — LLM titles · price-table cost · budgets | S (one pass) | —                                   |
+| 8   | Plan review                                        | M            | 6 (real "implement fresh")          |
+| 9   | Sub-agent nesting                                  | M            | —                                   |
+| 10  | Non-Claude providers (Vercel AI SDK)               | L            | 6 (non-Claude context mgmt mindset) |
 
 Compaction moved to the front (user, 2026-08-28): it's self-contained, it
-unblocks the good version of plan review's *implement fresh*, and it forces the
+unblocks the good version of plan review's _implement fresh_, and it forces the
 "manage context without the SDK owning it" thinking that milestone 10 needs. The
 trio is independent and tiny, so it could sit either side of 6 — kept second as
 a visible quick win.
@@ -51,11 +51,11 @@ the boundary. `PostCompact` carries `compact_summary`.
   sends `/compact` (+ instructions) via the same channel as `send()`.
 - Adapter listens for the `compact_boundary` system message → emit a new
   `CompactEvent { type: "compact"; before: number; after: number; summary?:
-  string }` (context tokens before/after). Status is unaffected.
+string }` (context tokens before/after). Status is unaffected.
 - Daemon: `session.compact { id, instructions? }` RPC; `SessionManager` forwards
   to the live adapter.
 - TUI: `c` on the selected session compacts it. When `contextUsed /
-  contextLimit > 0.7` the meter goes amber and the footer hints `c compact`; a
+contextLimit > 0.7` the meter goes amber and the footer hints `c compact`; a
   compact event logs as `⇊ context 120k → 24k`.
 
 **Feeds milestone 8.** `implement fresh` = `compact("Keep only the approved plan
@@ -85,13 +85,12 @@ Built as planned: `src/daemon/titler.ts` (`cleanTitle` + `generateTitle`), a
 successful turn, a `title_locked` column (migration 2) set by `session.setTitle`.
 `CreateSessionOptions.oneShot` + `ProviderCapabilities.oneShot` gate it.
 
-
 **Goal.** Replace `title = prompt.slice(0, 200)` with a 4–6 word summary after
 the first turn, unless the user has renamed the session.
 
 **Mechanism.** After a session's first `result` (turns === 1), if
 `title === prompt.slice(0, 200)` (untouched since creation), the daemon runs a
-throwaway one-shot through the *same provider*: a fresh `query()` with
+throwaway one-shot through the _same provider_: a fresh `query()` with
 `maxTurns: 1`, no MCP, no tools, cheap model, prompt =
 `"Summarise this coding task in 4–6 words, no trailing punctuation:\n<prompt>"`.
 On success → `registry.setFields(id, { title })` + `emitSessionUpdated`.
@@ -115,7 +114,6 @@ Built as planned: `src/config/pricing.ts` (`loadPriceTable` / `parsePriceTable`
 / `costOf`), computed in `Daemon.#priceUsage` on the usage rollup, `costSource`
 (migration 3, `usage.cost_source`) on the snapshot, `pricing.reload` RPC, `~`
 prefix in the Detail cost line.
-
 
 **Goal.** Compute cost from a local per-model price table instead of trusting the
 SDK's `costUsd`.
@@ -156,7 +154,7 @@ applied at session.create. TUI `b` + a Detail budget bar; `loom budget` CLI.
 Track `budgetState: "ok" | "warned" | "halted"` on the session row:
 
 - **soft** (`on_breach = "soft"`, the default): first breach → `budgetState =
-  "warned"`, a `notice`-worthy `session_updated`; the session keeps running.
+"warned"`, a `notice`-worthy `session_updated`; the session keeps running.
 - **hard**: first breach → `session.interrupt(id)`, status → `interrupted` with
   reason `budget`, `budgetState = "halted"`.
 
@@ -193,7 +191,6 @@ it (`⇧⇥` / `--mode plan`), unchanged. Non-Claude plan-mode enforcement is
 deferred to M10 (no non-Claude provider exists yet); the fake provider just
 records the decision.
 
-
 **Goal.** In `plan` mode the agent calls `ExitPlanMode` with the plan text.
 Instead of showing that as a generic permission prompt, give it a first-class
 review flow.
@@ -212,9 +209,9 @@ review flow.
   - `{ action: "revise"; plan: string }` — the user edited the plan; resolve
     `{ behavior: "allow", updatedInput: { plan } }` if the SDK honours
     `updatedInput` for `ExitPlanMode`, else `deny` + `send(<edited plan as an
-    instruction>)`.
+instruction>)`.
   - `{ action: "discuss"; message: string }` — resolve `{ behavior: "deny",
-    message }`; the agent gets the message and iterates, staying in plan mode.
+message }`; the agent gets the message and iterates, staying in plan mode.
 - Claude adapter: in `canUseTool`, branch on `toolName === "ExitPlanMode"` (or
   the SDK's `exit_plan_mode`) → emit `plan_review` instead of
   `permission_request`; keep the resolver keyed by id like permissions.
@@ -226,12 +223,12 @@ review flow.
 When `awaitReason === "plan_review"`, a prominent overlay shows the plan text,
 with four actions:
 
-| key | action | what it does |
-|-----|--------|--------------|
-| `i` | **implement** | accept, agent continues in this context |
-| `f` | **implement fresh** | accept, then compact to plan + goal before implementing |
-| `e` | **edit plan** | open the plan in `$EDITOR`; **`:w` sends the revised plan** back (`respondPlan {action:"revise"}`), `:wq` returns |
-| `d` | **discuss** | opens a message prompt; your text goes back to the agent (`respondPlan {action:"discuss"}`) to change the plan or redirect |
+| key | action              | what it does                                                                                                               |
+| --- | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `i` | **implement**       | accept, agent continues in this context                                                                                    |
+| `f` | **implement fresh** | accept, then compact to plan + goal before implementing                                                                    |
+| `e` | **edit plan**       | open the plan in `$EDITOR`; **`:w` sends the revised plan** back (`respondPlan {action:"revise"}`), `:wq` returns          |
+| `d` | **discuss**         | opens a message prompt; your text goes back to the agent (`respondPlan {action:"discuss"}`) to change the plan or redirect |
 
 `⌃o` opens the plan read-only (as elsewhere). `esc` does nothing here (a plan
 review must be answered) — `i`/`f` move forward, `d` to talk.
@@ -267,14 +264,14 @@ event with its sub-agent. The Claude mapper already sets `agentId` from
 **Changes.**
 
 - `SessionManager` keeps a per-session `Map<subagentId, { name, startedAt,
-  active }>` from the started/stopped events; expose it on the snapshot as
+active }>` from the started/stopped events; expose it on the snapshot as
   `subagents: Array<{ id, name, active }>`.
 - TUI: `Detail` shows `⑂ 2 sub-agents · reviewer, tester`. Event-log rows for a
   sub-agent get its name as a dim prefix / one level of indent.
 - Optional: a tree view (fullscreen, like the event log) grouping events by
   agent. Defer if it bloats the milestone.
 
-**Note — two kinds of nesting.** (a) SDK sub-agents *within* one Loom session
+**Note — two kinds of nesting.** (a) SDK sub-agents _within_ one Loom session
 (this milestone). (b) Loom **child sessions** (`parentId` on the session row,
 used by future explicit spawns). Keep them distinct in the UI: sub-agents live
 inside a session card; child sessions are their own rows with a parent link.
@@ -337,7 +334,7 @@ against an OpenAI-compatible endpoint: model ran a script, edited it, re-ran it.
 **M10d — shipped.** `#turnToolSet` filters tools per turn by mode: `plan` keeps only readonly + `ask_user` + `exit_plan`. `exit_plan` emits `plan_review`, blocks on `respondToPlan`, then on approval flips the session to `acceptEdits` and chains a fresh implementation turn (`implement_fresh` compacts first; `discuss` stays planning). Loom-side compaction: `session.compact` + an 0.85·limit auto-trigger run a tool-free summariser, rebuild the history to one message (`store.replaceFrom`), emit `compact`. `task` tool spawns a depth-1 sub-agent (own mapper, `agentId`-tagged events, `subagent_started/stopped`). `capabilities.subagents = true`.
 
 **M10e — shipped.** User-level config at `$XDG_CONFIG_HOME/loom/config.toml`,
-deep-merged *under* the per-repo file (`loadConfig(repo, user)` + `deepMerge`).
+deep-merged _under_ the per-repo file (`loadConfig(repo, user)` + `deepMerge`).
 `providers.list` / `providers.probeModels` RPCs; `ProviderInfo` on the wire.
 TUI: `N` runs a provider → model picker before the new-session prompt (`n`
 unchanged); `M` live-switches the selected session's model (next turn); `f` is
@@ -462,7 +459,7 @@ refreshes, prefix invalidation, server-side eviction.
 ## Rough sequencing notes
 
 - **6** first: self-contained, small SDK spike, and everything after it benefits
-  (8's *implement fresh*, 10's non-Claude context thinking).
+  (8's _implement fresh_, 10's non-Claude context thinking).
 - **7** is independent and tiny — one branch, three commits. Could swap with 6.
 - **8** builds cleanly once 6 exists. Needs the plan-mode open questions answered.
 - **9** is self-contained; slot it wherever it fits.
@@ -477,6 +474,7 @@ injection shipped post-M10 (see above).
 Ordered roughly by value / independence. Items 1–2 are in progress.
 
 ### 1 · Compaction polish
+
 - **Heartbeat + no arbitrary timeout** — ✓ shipped (see "Compaction heartbeat +
   steer" above). A `>15 min` hard timeout stays as the real backstop.
 - **Steer the summary** — ✓ the RPC/CLI/TUI all take a focus string now.
@@ -489,6 +487,7 @@ Ordered roughly by value / independence. Items 1–2 are in progress.
   generated-chars is the honest signal.
 
 ### 2 · Worktree in-place toggle — ✓ shipped
+
 `[worktree] enabled = true|false` (default true) + a per-session `worktree`
 boolean on `session.create` (`loom run --in-place` / `--worktree`). Off → the
 session runs in the repo working dir: `worktree`/`branch` null, `cwd` = repo
@@ -500,19 +499,22 @@ mentor mode. Follow-up if wanted: a TUI new-prompt toggle (no free key under
 the current grammar, so left for the CLI + config for now).
 
 ### 3 · Mentor / pair mode
+
 A new `SessionMode`. Reuses `gate.ts` `isReadonly` to deny mutating tools
 (essentially permanent plan-mode minus the "now produce a plan" framing). System
-prompt shift: *you* do the work; the agent explains approach / which files / how
+prompt shift: _you_ do the work; the agent explains approach / which files / how
 things work, reviews your changes (a "review my diff" affordance running `git
 diff`), and never writes unless you explicitly ask or switch modes. Pairs with
 #2 (wants in-place by default).
 
 ### 4 · External worktree deletion handling
+
 An out-of-band `git worktree remove` / `rm -rf` currently makes the pump error
 ugly. Detect worktree-gone on the next git/tool op → mark the session `error`
 with a readable reason, offer re-create or archive. Defensive; opportunistic.
 
 ### 5 · Named worktree pool + rename on title-gen
+
 Pregenerate a wordlist; assign one memorable name per session as a stable prefix;
 when the auto-title job runs also rename the branch to `<name>/<slug>` (`git
 branch -m` always, best-effort `git worktree move` — the dir move fails if the
@@ -554,6 +556,7 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
   OpenAI itself via its base URL).
 
 ### 7 · Approval-prompt UX (user, 2026-08-29 — "for after") — ✓ shipped (2026-08-30)
+
 - **Request panel at the bottom** — `RequestPanel` renders full-width just above
   the footer (in `browse` / `prompt` modes), where the eye already is for the
   keybinds; body height reserves `REQUEST_PANEL_ROWS` for it.
@@ -567,6 +570,7 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
   launch when none exists.
 
 ### 7b · More seamless-daemon + TUI polish — ✓ shipped (2026-08-30)
+
 - **Alt-screen exit** — the TUI renders with Ink 7.1 `alternateScreen: true`;
   quitting restores the primary buffer with no half-drawn frame left behind.
 - **`d` deletes a session** — new `session.remove` RPC (closes the run, removes
@@ -577,7 +581,7 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
   `[default]` instead of a `* ` gutter.
 - **`[custom-provider.<id>]` + `[google]` / `[anthropic]`** config namespaces —
   the OpenAI-compatible case drops `adapter` / `sdk`; `[providers.<id>]
-  adapter = "aisdk"` stays as the escape hatch and wins a duplicate id.
+adapter = "aisdk"` stays as the escape hatch and wins a duplicate id.
   `custom-provider` is the future plugin seam.
 - **Live config reload** — the daemon watches repo + user config.toml;
   `[worktree] enabled` / `[budget]` / `[notify]` / `[titles]` / idle minutes
@@ -588,13 +592,14 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
   `npx -y tilth@0.9.0`; falls through to the built-ins if npx is missing too.
 
 ### 8 · aisdk provider config conveniences — ✓ shipped (`18305c8`)
+
 - **Auto model detection** — omit `model` + `models` from an openai-sdk profile
   and the daemon probes `{base_url}/models` at start-up (`autoModels`, bounded
   8s, best-effort). `google` / `anthropic` still need an explicit model.
 - **Inline `api_key`** — on a profile and `[search]`, alongside `api_key_env`;
   inline wins. `resolveApiKey()` centralises inline → env → "".
 - **`lintConfig()`** — logged at daemon start + `config.check` RPC / `loom
-  config` CLI: unset key vars, providers pending auto-detect, keyless search.
+config` CLI: unset key vars, providers pending auto-detect, keyless search.
 - Fixed a latent test leak: `makeHarness` now isolates `XDG_CONFIG_HOME` so the
   dev's real `~/.config/loom/config.toml` doesn't merge into test daemons.
 - **`N` flow (`6561099`):** the model step always shows after the provider is
@@ -603,13 +608,15 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
 - **Permission prompt stuck behind `running` (`a34e1f1`):** a new aisdk session
   making parallel tool calls never surfaced the approval panel. `deriveStatus`
   no longer lets a content event clear `awaiting_input` (some OpenAI-compatible
-  providers flush buffered assistant text *after* the `permission_request`); the
+  providers flush buffered assistant text _after_ the `permission_request`); the
   aisdk mapper flushes open text/reasoning on `tool-call` + `finish-step`; and
   parallel requests are handled — `#resumeAfterAnswer` waits for the last, the
   TUI queues pending permissions (`Pending.permissions`) and shows "(1 of N)".
 
 ### 9 · Provider / model UX + lifecycle — ✓ shipped (2026-08-30)
+
 From a user brain-dump. 287 → 294 tests.
+
 - **`N` merged into `n`.** The new-session prompt now shows the provider and
   model it will use (`ProviderInfo.defaultModel` on the wire); `⌃P` in that
   prompt walks the provider → model picker and returns to the prompt with what
@@ -625,7 +632,7 @@ From a user brain-dump. 287 → 294 tests.
 - **Stale default handling.** A remembered / row model that has dropped out of
   the detected list is skipped: `session.create` emits a `NoticePush` and falls
   back; `session.resume` swaps the row to the current default (notice) instead
-  of failing turn 1. `lintConfig`'s auto-detect line now fires only on a *failed*
+  of failing turn 1. `lintConfig`'s auto-detect line now fires only on a _failed_
   probe (moved after `#resolveAutoModels` at start-up) and is worded as an error.
 - **`d` can also delete the branch.** The delete confirm carries a `b` toggle
   when the session has a branch (`ConfirmState.branchName` / `deleteBranch`,
@@ -689,7 +696,7 @@ A 7-item brain-dump. 296 → 298 tests.
   `models[0]`; `session.create` / `setModel` remember Claude's last model too.
 - **`auto` mode passthrough** (revised in `aed44ab`). The Claude SDK's
   `PermissionMode` has its own `'auto'` (proceeds, still prompts for anything it
-  judges unsafe) — *not* `bypassPermissions` (the flag-gated one Loom never
+  judges unsafe) — _not_ `bypassPermissions` (the flag-gated one Loom never
   uses). `toPermissionMode` passes all four `SessionMode`s straight through
   (compile-checked subset), so Claude cycles default → plan → acceptEdits → auto
   like every provider — fixing "stuck in acceptEdits" / the raw
@@ -731,7 +738,7 @@ A 7-item brain-dump. 296 → 298 tests.
   `modelChoices?: ModelChoice[]` (parallel to `models`); `modelPickItems` uses
   it for the label + a `1.0M ctx` hint, bare id fallback for aisdk.
 - **`⇧⏎` / `⌥⏎` insert a newline** in the prompt (`applyKey`: `key.return &&
-  (key.shift || key.meta)`). Shift+Enter needs a terminal that sends a distinct
+(key.shift || key.meta)`). Shift+Enter needs a terminal that sends a distinct
   code; Alt+Enter is portable. Plain / `⌃⏎` still submit.
 - **Enter = the "talk to this session" verb; `resume` retired.** `s` is gone —
   browse `key.return` opens the message prompt for the selection (a pending
@@ -754,9 +761,9 @@ steps), and silent truncation reported as success is a bug at any number.
 
 - **`runTurn` reports why it stopped.** `TurnResult` gains `hitStepLimit` — set
   when the stream ends with the last `finish-step`'s `finishReason ===
-  "tool-calls"` (the model wanted to keep going; only `stopWhen` stopped it).
+"tool-calls"` (the model wanted to keep going; only `stopWhen` stopped it).
   Always `false` on abort / error.
-- **The ceiling is now per-*segment*, not per-turn.** When a segment hits it
+- **The ceiling is now per-_segment_, not per-turn.** When a segment hits it
   with `hitStepLimit`, `#runTurn` continues the same turn with a fresh budget
   (`#kickTurn()`, the path injection-folding already uses) instead of emitting
   `result`. `#segmentsRun` counts consecutive step-ceiling continuations and
@@ -764,13 +771,13 @@ steps), and silent truncation reported as success is a bug at any number.
   chain, abort, error).
 - **Runaway backstop.** After `MAX_TURN_SEGMENTS = 5` segments the turn stops:
   a non-fatal `error` ("likely a loop — send to continue") plus `result { ok:
-  true, stopReason: "step_limit" }`. Status stays `idle`, so a plain `send`
+true, stopReason: "step_limit" }`. Status stays `idle`, so a plain `send`
   continues it. `ResultEvent.stopReason?: "step_limit"` is the new wire field;
   the TUI renders the result line as `turn paused — step ceiling hit repeatedly`
   and raises a matching notice.
 - **`DEFAULT_MAX_STEPS` 24 → 50**, and overridable per provider with
   `max_steps` in `[custom-provider.<id>]` / `[providers.<id>]` (`AisdkProfile.
-  maxSteps`, clamped 1–500, threaded provider → `AisdkProviderOptions` →
+maxSteps`, clamped 1–500, threaded provider → `AisdkProviderOptions` →
   `AisdkSessionOptions`). Sub-agent turns use the same ceiling.
 - Tests: `runTurn` flags `hitStepLimit`; a tool-stuck session auto-continues 5×
   then stops with `stopReason: "step_limit"` + the non-fatal heads-up, one
@@ -796,8 +803,8 @@ Folded the choice into the keys already at hand instead.
 ### 16 · new-session provider/mode remembered like the model already was — ✓ shipped (2026-08-30)
 
 The model a provider last ran was already remembered (`ProviderDefaultStore`,
-milestone 9) so a `new` session defaults to it; the *provider* and *permission
-mode* picked at creation weren't — `new` always fell back to config's
+milestone 9) so a `new` session defaults to it; the _provider_ and _permission
+mode_ picked at creation weren't — `new` always fell back to config's
 `default_provider` and `default` (manual) mode.
 
 - **`ProviderDefaultStore` gains `last_provider` / `last_mode` rows**,

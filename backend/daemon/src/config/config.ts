@@ -213,7 +213,11 @@ function strArray(v: unknown, fallback: string[]): string[] {
  *  `src/provider/aisdk/session.ts`. */
 const DEFAULT_AISDK_MAX_STEPS = 50;
 
-function buildAisdkProfile(id: string, t: Record<string, unknown>, sdk: AisdkKind): AisdkProfile | null {
+function buildAisdkProfile(
+  id: string,
+  t: Record<string, unknown>,
+  sdk: AisdkKind,
+): AisdkProfile | null {
   const baseUrl = str(t["base_url"], "");
   if (sdk === "openai" && baseUrl === "") return null;
   const model = str(t["model"], "");
@@ -255,7 +259,8 @@ function parseAisdkProfiles(raw: Record<string, unknown>): Record<string, AisdkP
 
   // [google] / [anthropic] — one profile per vendor, id = the vendor name.
   for (const sdk of ["google", "anthropic"] as const) {
-    if (raw[sdk] && typeof raw[sdk] === "object") put(sdk, buildAisdkProfile(sdk, asRecord(raw[sdk]), sdk));
+    if (raw[sdk] && typeof raw[sdk] === "object")
+      put(sdk, buildAisdkProfile(sdk, asRecord(raw[sdk]), sdk));
   }
 
   // [custom-provider.<id>] — OpenAI-compatible, no adapter / sdk keys.
@@ -318,7 +323,9 @@ export function lintConfig(cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env
   }
   if (cfg.search.backend !== "none" && !cfg.search.apiKey) {
     if (!cfg.search.apiKeyEnv) {
-      w.push(`search: backend = "${cfg.search.backend}" but no api_key / api_key_env — web_search stays disabled`);
+      w.push(
+        `search: backend = "${cfg.search.backend}" but no api_key / api_key_env — web_search stays disabled`,
+      );
     } else if (!env[cfg.search.apiKeyEnv]) {
       w.push(`search: $${cfg.search.apiKeyEnv} is not set — web_search stays disabled`);
     }
@@ -352,7 +359,8 @@ export function normalizeConfig(raw: unknown): LoomConfig {
   const defaultProvider = wantDefault === "claude" || wantDefault in aisdk ? wantDefault : "claude";
 
   // "manual" is the user-facing name for "default" (you approve everything).
-  const permDefault = claude["permission_default"] === "manual" ? "default" : claude["permission_default"];
+  const permDefault =
+    claude["permission_default"] === "manual" ? "default" : claude["permission_default"];
   const permissionDefault =
     permDefault === "plan" ||
     permDefault === "acceptEdits" ||
@@ -409,7 +417,10 @@ export function normalizeConfig(raw: unknown): LoomConfig {
     pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     search: {
-      backend: search["backend"] === "brave" || search["backend"] === "tavily" ? search["backend"] : "none",
+      backend:
+        search["backend"] === "brave" || search["backend"] === "tavily"
+          ? search["backend"]
+          : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),
       apiKey: str(search["api_key"], d.search.apiKey),
       apiBase: str(search["api_base"], d.search.apiBase),

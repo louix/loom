@@ -16,17 +16,32 @@ test("first model output moves starting → running", () => {
 test("model activity does NOT clear awaiting_input — the daemon owns that", () => {
   // A provider that flushes assistant text / a tool call after the
   // permission_request must not unblock the UI while the gate is still parked.
-  assert.equal(deriveStatus("awaiting_input", ev({ type: "tool_call", id: "1", name: "x", input: {} })), null);
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "tool_call", id: "1", name: "x", input: {} })),
+    null,
+  );
   assert.equal(deriveStatus("awaiting_input", ev({ type: "assistant_text", text: "…" })), null);
   assert.equal(deriveStatus("awaiting_input", ev({ type: "thinking", text: "…" })), null);
-  assert.equal(deriveStatus("awaiting_input", ev({ type: "tool_result", id: "1", ok: true, output: null })), null);
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "tool_result", id: "1", ok: true, output: null })),
+    null,
+  );
 });
 
 test("model activity while already running / interrupted / idle is a no-op", () => {
   assert.equal(deriveStatus("running", ev({ type: "thinking", text: "" })), null);
-  assert.equal(deriveStatus("running", ev({ type: "tool_result", id: "1", ok: true, output: null })), null);
-  assert.equal(deriveStatus("interrupted", ev({ type: "tool_result", id: "1", ok: true, output: null })), null);
-  assert.equal(deriveStatus("idle", ev({ type: "tool_call", id: "1", name: "x", input: {} })), null);
+  assert.equal(
+    deriveStatus("running", ev({ type: "tool_result", id: "1", ok: true, output: null })),
+    null,
+  );
+  assert.equal(
+    deriveStatus("interrupted", ev({ type: "tool_result", id: "1", ok: true, output: null })),
+    null,
+  );
+  assert.equal(
+    deriveStatus("idle", ev({ type: "tool_call", id: "1", name: "x", input: {} })),
+    null,
+  );
 });
 
 test("permission_request → awaiting_input/permission (reason returned even when already awaiting)", () => {
@@ -36,7 +51,10 @@ test("permission_request → awaiting_input/permission (reason returned even whe
   );
   // deriveStatus reports the reason; #set dedupes an unchanged status+reason.
   assert.deepEqual(
-    deriveStatus("awaiting_input", ev({ type: "permission_request", id: "p2", tool: "Bash", input: {} })),
+    deriveStatus(
+      "awaiting_input",
+      ev({ type: "permission_request", id: "p2", tool: "Bash", input: {} }),
+    ),
     { status: "awaiting_input", reason: "permission" },
   );
 });
@@ -67,7 +85,10 @@ test("question → awaiting_input/question; a permission→question reason chang
 test("answer alone does not move status — #resumeAfterAnswer sets running", () => {
   // The daemon's answer/approve RPC path sets `running` explicitly; the trailing
   // `answer` event (processed later by the pump) is then a no-op.
-  assert.equal(deriveStatus("awaiting_input", ev({ type: "answer", id: "q1", text: "this one" })), null);
+  assert.equal(
+    deriveStatus("awaiting_input", ev({ type: "answer", id: "q1", text: "this one" })),
+    null,
+  );
   assert.equal(deriveStatus("running", ev({ type: "answer", id: "q1", text: "this one" })), null);
 });
 
@@ -92,8 +113,19 @@ test("only fatal errors change status", () => {
 
 test("usage and subagent events never move status", () => {
   assert.equal(
-    deriveStatus("running", ev({ type: "usage", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextUsed: 0, contextLimit: 0 })),
+    deriveStatus(
+      "running",
+      ev({
+        type: "usage",
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextUsed: 0,
+        contextLimit: 0,
+      }),
+    ),
     null,
   );
-  assert.equal(deriveStatus("idle", ev({ type: "subagent_started", subagentId: "a", name: "n" })), null);
+  assert.equal(
+    deriveStatus("idle", ev({ type: "subagent_started", subagentId: "a", name: "n" })),
+    null,
+  );
 });

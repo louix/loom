@@ -46,14 +46,19 @@ test("loadPriceTable parses a real file", () => {
 });
 
 test("costOf multiplies token deltas by the per-million price", () => {
-  const t = parsePriceTable({ "m": { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } });
-  const cost = costOf(t, "m", { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheWrite: 0 });
+  const t = parsePriceTable({ m: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } });
+  const cost = costOf(t, "m", {
+    input: 1_000_000,
+    output: 100_000,
+    cacheRead: 2_000_000,
+    cacheWrite: 0,
+  });
   // 3.00 + 1.50 + 0.60 = 5.10
   assert.ok(Math.abs((cost ?? 0) - 5.1) < 1e-9);
 });
 
 test("costOf returns null for an unpriced or unknown model", () => {
-  const t = parsePriceTable({ "m": { input: 1, output: 1 } });
+  const t = parsePriceTable({ m: { input: 1, output: 1 } });
   assert.equal(costOf(t, "other", { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 }), null);
   assert.equal(costOf(t, null, { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 }), null);
 });

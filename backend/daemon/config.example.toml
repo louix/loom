@@ -6,38 +6,38 @@
 # config of its own; its `Ctrl-E` handoff uses $VISUAL / $EDITOR. The rest is
 # carried for later milestones.
 
-base_branch   = "main"             # each session branches loom/<slug> off this
-                                   # (falls back to HEAD if the branch is missing)
-worktree_dir  = ".loom/trees"
-db            = ".loom/loom.db"
-run_isolation = "in-process"        # or "subprocess" (later milestones)
+base_branch = "main" # each session branches loom/<slug> off this
+# (falls back to HEAD if the branch is missing)
+worktree_dir = ".loom/trees"
+db = ".loom/loom.db"
+run_isolation = "in-process" # or "subprocess" (later milestones)
 
 [worktree]
-enabled = true                     # true: each session gets its own git worktree + branch.
-                                   # false: sessions run in the repo working dir — no branch
-                                   # isolation, concurrent sessions can collide, and hard-fork
-                                   # is unavailable (undo still works). `loom run --in-place` /
-                                   # `--worktree` overrides this per session.
+enabled = true # true: each session gets its own git worktree + branch.
+# false: sessions run in the repo working dir — no branch
+# isolation, concurrent sessions can collide, and hard-fork
+# is unavailable (undo still works). `loom run --in-place` /
+# `--worktree` overrides this per session.
 
 [daemon]
-idle_shutdown_minutes = 30          # exit after N min with no sessions and no clients; 0 disables
-event_buffer_size     = 4096        # push-stream ring buffer, in frames
+idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0 disables
+event_buffer_size = 4096 # push-stream ring buffer, in frames
 
 [providers.claude]
-model              = "claude-sonnet-5"
+model = "claude-sonnet-5"
 # models           = ["opus", "sonnet", "haiku"]
-                                   # the M / ⌥p picker list. Omit it and the daemon
-                                   # asks the Claude CLI for its catalog at start-up.
-permission_default = "manual"       # manual (aka default) | plan | acceptEdits | auto
-setting_sources    = ["project"]   # loads CLAUDE.md / project settings
-disable_builtin    = ["Grep", "Glob"]
-cli_path           = ""            # "" = use `claude` on PATH, else the SDK's bundled
-                                   # binary. Set this where the bundled ELF won't run
-                                   # (NixOS, musl, minimal containers).
-prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on a
-                                   # subscription, 5m on an API key). Pinning it makes
-                                   # the TUI's cache-liveness countdown exact; 1h cache
-                                   # writes cost more on metered billing.
+# the M / ⌥p picker list. Omit it and the daemon
+# asks the Claude CLI for its catalog at start-up.
+permission_default = "manual" # manual (aka default) | plan | acceptEdits | auto
+setting_sources = ["project"] # loads CLAUDE.md / project settings
+disable_builtin = ["Grep", "Glob"]
+cli_path = "" # "" = use `claude` on PATH, else the SDK's bundled
+# binary. Set this where the bundled ELF won't run
+# (NixOS, musl, minimal containers).
+prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
+# subscription, 5m on an API key). Pinning it makes
+# the TUI's cache-liveness countdown exact; 1h cache
+# writes cost more on metered billing.
 
 # This file is the per-repo layer. A user-level file at
 # $XDG_CONFIG_HOME/loom/config.toml (→ ~/.config/loom/config.toml) is loaded
@@ -45,7 +45,7 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # override model / base_branch / [[mcp]]. Same schema; a per-repo key wins.
 
 # default_provider = "claude"       # which provider new sessions use when the
-                                   # client doesn't name one (must be configured)
+# client doesn't name one (must be configured)
 
 # Non-Claude providers (milestone 10) run on the Vercel AI SDK. The @ai-sdk/*
 # package for a backend is loaded only when a session actually uses it.
@@ -85,26 +85,26 @@ prompt_cache_ttl   = "1h"          # "5m" | "1h" | "" (let the CLI decide: 1h on
 # optional `connector = "@scope/pkg"` to route the profile at a connector
 # package other than the built-in generic / gemini ones (see docs/connectors.md).
 
-[[mcp]]                             # mounted into every session, in order, after
-name    = "tilth"                   # the built-in `loom` server. The system
-command = "tilth mcp --edit"        # prompt steers file writes to tilth_write /
-                                    # tilth_edit and search to fff; Claude's own
-[[mcp]]                             # Grep / Glob are disabled outright below.
-name    = "fff"
+[[mcp]] # mounted into every session, in order, after
+name = "tilth" # the built-in `loom` server. The system
+command = "tilth mcp --edit" # prompt steers file writes to tilth_write /
+# tilth_edit and search to fff; Claude's own
+[[mcp]] # Grep / Glob are disabled outright below.
+name = "fff"
 command = "fff-mcp"
 
 [titles]
-enabled = true                     # summarise the first message into a title after turn 1
-model   = ""                       # "" = a per-provider cheap default (Haiku for claude)
+enabled = true # summarise the first message into a title after turn 1
+model = "" # "" = a per-provider cheap default (Haiku for claude)
 
 [pricing]
 table = ".loom/models.toml"
 
 [notify]
-webhook = ""                        # best-effort POST on awaiting_input / error when no client attached
+webhook = "" # best-effort POST on awaiting_input / error when no client attached
 
-[search]                            # web_search tool for aisdk sessions (Claude
-backend     = "none"               # has its own). "none" | "brave" | "tavily".
-api_key_env = ""                   # env var with the API key; tool is off if unset
+[search] # web_search tool for aisdk sessions (Claude
+backend = "none" # has its own). "none" | "brave" | "tavily".
+api_key_env = "" # env var with the API key; tool is off if unset
 # api_base  = ""                   # override the backend URL (proxy / self-host)
 max_results = 5

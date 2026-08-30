@@ -10,13 +10,7 @@
  * `prepareStep` message override after the step runs, so the splice is
  * re-applied on each later step from `appliedInjections`.
  */
-import {
-  type LanguageModel,
-  type ModelMessage,
-  type ToolSet,
-  stepCountIs,
-  streamText,
-} from "ai";
+import { type LanguageModel, type ModelMessage, type ToolSet, stepCountIs, streamText } from "ai";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AisdkEventMapper } from "./map.ts";
 

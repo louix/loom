@@ -56,14 +56,7 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind =
-  | "send"
-  | "answer"
-  | "deny"
-  | "new"
-  | "title"
-  | "discuss"
-  | "compact";
+export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "discuss" | "compact";
 
 export interface PromptState {
   kind: PromptKind;
@@ -415,7 +408,8 @@ export function reduce(s: TuiState, a: Action): TuiState {
     case "promptCycleMode": {
       if (!s.prompt || s.prompt.kind !== "new") return s;
       const cur = s.prompt.mode ?? "default";
-      const next = SESSION_MODES[(SESSION_MODES.indexOf(cur) + 1) % SESSION_MODES.length] ?? "default";
+      const next =
+        SESSION_MODES[(SESSION_MODES.indexOf(cur) + 1) % SESSION_MODES.length] ?? "default";
       return { ...s, prompt: { ...s.prompt, mode: next } };
     }
 
@@ -423,7 +417,10 @@ export function reduce(s: TuiState, a: Action): TuiState {
       if (!s.prompt || s.promptHistory.length === 0) return s;
       const p = s.prompt;
       const draft = p.histIdx === 0 && a.dir === -1 ? p.buffer.text : p.draft;
-      const idx = Math.max(0, Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)));
+      const idx = Math.max(
+        0,
+        Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
+      );
       const text = idx === 0 ? draft : (s.promptHistory[s.promptHistory.length - idx] ?? "");
       return { ...s, prompt: { ...p, histIdx: idx, draft, buffer: buffer(text) } };
     }
@@ -515,7 +512,10 @@ export function reduce(s: TuiState, a: Action): TuiState {
       const { permissions: _drop, ...others } = cur;
       return {
         ...s,
-        pending: { ...s.pending, [a.sessionId]: rest.length ? { ...others, permissions: rest } : others },
+        pending: {
+          ...s.pending,
+          [a.sessionId]: rest.length ? { ...others, permissions: rest } : others,
+        },
       };
     }
 
@@ -560,7 +560,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
         pending,
-        ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
+        ...(planGone
+          ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
+          : {}),
       };
     }
     case "session_removed": {
@@ -570,7 +572,11 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       // A `find` picker lists sessions by id — drop the vanished row so `enter`
       // can't land on a ghost.
       let picker = s.picker;
-      if (!pickerGone && picker?.kind === "find" && picker.items.some((it) => it.id === frame.sessionId)) {
+      if (
+        !pickerGone &&
+        picker?.kind === "find" &&
+        picker.items.some((it) => it.id === frame.sessionId)
+      ) {
         const items = picker.items.filter((it) => it.id !== frame.sessionId);
         picker = { ...picker, items, index: Math.min(picker.index, Math.max(0, items.length - 1)) };
       }
@@ -581,7 +587,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
         compacting: without(s.compacting, frame.sessionId),
-        ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
+        ...(planGone
+          ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
+          : {}),
         ...(pickerGone
           ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }
           : { picker }),
@@ -598,7 +606,11 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
       // local notice, styled by tone.
       return {
         ...s,
-        notice: { text: frame.text, tone: frame.tone === "warn" ? "bad" : "accent", at: Date.now() },
+        notice: {
+          text: frame.text,
+          tone: frame.tone === "warn" ? "bad" : "accent",
+          at: Date.now(),
+        },
       };
   }
 }
@@ -610,7 +622,10 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
     if (perms.some((x) => x.id === ev.id)) return pending; // history replay
     return {
       ...pending,
-      [ev.sessionId]: { ...cur, permissions: [...perms, { id: ev.id, tool: ev.tool, input: ev.input }] },
+      [ev.sessionId]: {
+        ...cur,
+        permissions: [...perms, { id: ev.id, tool: ev.tool, input: ev.input }],
+      },
     };
   }
   if (ev.type === "question") {
@@ -658,10 +673,7 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
 /** Start/refresh a "compacting…" entry on each heartbeat; clear it when the
  *  compaction lands (`compact`) or the session reports an error — the provider
  *  emits a non-fatal `error` if the summariser times out or fails. */
-function trackCompacting(
-  cur: TuiState["compacting"],
-  ev: HarnessEvent,
-): TuiState["compacting"] {
+function trackCompacting(cur: TuiState["compacting"], ev: HarnessEvent): TuiState["compacting"] {
   if (ev.type === "compact_progress") {
     return {
       ...cur,
@@ -685,7 +697,10 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
 }
 
 /** Drop entries keyed by a session that no longer exists. */
-function pruneByLive<T>(rec: Record<string, T>, sessions: readonly SessionSnapshot[]): Record<string, T> {
+function pruneByLive<T>(
+  rec: Record<string, T>,
+  sessions: readonly SessionSnapshot[],
+): Record<string, T> {
   const live = new Set(sessions.map((x) => x.id));
   let changed = false;
   const out: Record<string, T> = {};
@@ -833,7 +848,10 @@ export function condenseLog(lines: readonly LogLine[]): LogLine[] {
     if (l.kind === "tool_call" || l.kind === "tool_result") {
       let j = i;
       let calls = 0;
-      while (j < lines.length && (lines[j]?.kind === "tool_call" || lines[j]?.kind === "tool_result")) {
+      while (
+        j < lines.length &&
+        (lines[j]?.kind === "tool_call" || lines[j]?.kind === "tool_result")
+      ) {
         if (lines[j]?.kind === "tool_call") calls += 1;
         j += 1;
       }
@@ -904,7 +922,8 @@ function transcriptHeader(l: LogLine): string | null {
 function transcriptBody(l: LogLine): string {
   const raw = (l.full ?? l.text).replace(/[ \t]+$/gm, "").trimEnd();
   if (l.kind === "tool_call") return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
-  if (l.kind === "tool_result") return raw.replace(/^error\n/, "").trim() || (l.tone === "bad" ? "(failed)" : "ok");
+  if (l.kind === "tool_result")
+    return raw.replace(/^error\n/, "").trim() || (l.tone === "bad" ? "(failed)" : "ok");
   return raw;
 }
 
@@ -956,7 +975,10 @@ export function providerPickItems(s: TuiState): PickItem[] {
   return s.providers.map((p) => ({
     id: p.id,
     label: p.tag || p.id,
-    hint: [p.isDefault ? "default" : "", p.defaultModel || (p.models.length ? `${p.models.length} models` : "")]
+    hint: [
+      p.isDefault ? "default" : "",
+      p.defaultModel || (p.models.length ? `${p.models.length} models` : ""),
+    ]
       .filter(Boolean)
       .join(" · "),
   }));
@@ -1243,7 +1265,11 @@ const oneLine = (s: string, n = 200): string => truncate(s.replace(/\s+/g, " ").
  * between every row) until the offending line scrolls out of view.
  */
 const body = (s: string): string =>
-  s.replace(/\r\n/g, "\n").replace(/\t/g, "    ").replace(/[ \t]+$/gm, "").trimEnd();
+  s
+    .replace(/\r\n/g, "\n")
+    .replace(/\t/g, "    ")
+    .replace(/[ \t]+$/gm, "")
+    .trimEnd();
 
 export function formatEvent(ev: HarnessEvent): EventFormat {
   switch (ev.type) {
@@ -1252,7 +1278,12 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "thinking":
       return { glyph: "·", text: oneLine(ev.text), full: body(ev.text), tone: "think" };
     case "tool_call":
-      return { glyph: "⚙", text: `${ev.name}${summarizeInput(ev.input)}`, full: toolCallFull(ev.name, ev.input), tone: "warn" };
+      return {
+        glyph: "⚙",
+        text: `${ev.name}${summarizeInput(ev.input)}`,
+        full: toolCallFull(ev.name, ev.input),
+        tone: "warn",
+      };
     case "tool_result": {
       const raw = valueOf(ev.output);
       const out = typeof raw === "string" ? body(raw) : "";
@@ -1266,7 +1297,12 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     case "permission_request":
       return { glyph: "⇱", text: `${ev.tool} needs approval · req ${ev.id}`, tone: "accent" };
     case "question":
-      return { glyph: "?", text: `${oneLine(ev.question, 120)} · req ${ev.id}`, full: body(ev.question), tone: "accent" };
+      return {
+        glyph: "?",
+        text: `${oneLine(ev.question, 120)} · req ${ev.id}`,
+        full: body(ev.question),
+        tone: "accent",
+      };
     case "answer":
       return { glyph: "↩", text: oneLine(ev.text, 120), full: body(ev.text), tone: "accent" };
     case "plan_review":
@@ -1304,8 +1340,16 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
       if (ev.stopReason === "step_limit")
-        return { glyph: "■", text: "turn paused — step ceiling hit repeatedly (send to continue)", tone: "warn" };
-      return { glyph: "■", text: ev.ok ? "turn complete" : "turn failed", tone: ev.ok ? "good" : "bad" };
+        return {
+          glyph: "■",
+          text: "turn paused — step ceiling hit repeatedly (send to continue)",
+          tone: "warn",
+        };
+      return {
+        glyph: "■",
+        text: ev.ok ? "turn complete" : "turn failed",
+        tone: ev.ok ? "good" : "bad",
+      };
     case "rewind":
       return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
     case "user_message":
@@ -1369,12 +1413,20 @@ function valueOf(x: unknown): unknown {
 
 function noticeForEvent(s: TuiState, ev: HarnessEvent): Notice | null {
   const tag = ev.sessionId === s.selectedId ? "" : ` [${shortId(ev.sessionId)}]`;
-  if (ev.type === "permission_request") return { text: `${ev.tool} needs approval${tag}`, tone: "accent", at: Date.now() };
-  if (ev.type === "question") return { text: `question waiting${tag}`, tone: "accent", at: Date.now() };
-  if (ev.type === "plan_review") return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
-  if (ev.type === "error" && ev.fatal) return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
+  if (ev.type === "permission_request")
+    return { text: `${ev.tool} needs approval${tag}`, tone: "accent", at: Date.now() };
+  if (ev.type === "question")
+    return { text: `question waiting${tag}`, tone: "accent", at: Date.now() };
+  if (ev.type === "plan_review")
+    return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
+  if (ev.type === "error" && ev.fatal)
+    return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
   if (ev.type === "result" && ev.stopReason === "step_limit")
-    return { text: `turn paused at the step ceiling${tag} — send to continue`, tone: "accent", at: Date.now() };
+    return {
+      text: `turn paused at the step ceiling${tag} — send to continue`,
+      tone: "accent",
+      at: Date.now(),
+    };
   return null;
 }
 

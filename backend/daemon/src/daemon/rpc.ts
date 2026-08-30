@@ -37,7 +37,10 @@ export class RpcDispatcher {
   async handle(req: RequestFrame, ctx: RpcContext): Promise<ResponseFrame> {
     const handler = this.#handlers.get(req.method);
     if (!handler) {
-      return errFrame(req.id, { code: "method_not_found", message: `unknown method: ${req.method}` });
+      return errFrame(req.id, {
+        code: "method_not_found",
+        message: `unknown method: ${req.method}`,
+      });
     }
     try {
       const result = await handler(req.params, ctx);

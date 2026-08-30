@@ -93,7 +93,8 @@ test("session.list is ordered by status group then recency", async () => {
   // awaiting_input group sorts ahead of running, which sorts ahead of idle
   assert.equal(list[0]?.id, awaiting.id);
   const groups = list.map((s) => s.status);
-  const rank = (s: string) => ["awaiting_input", "running", "interrupted", "idle", "error", "done"].indexOf(s);
+  const rank = (s: string) =>
+    ["awaiting_input", "running", "interrupted", "idle", "error", "done"].indexOf(s);
   for (let i = 1; i < groups.length; i++) {
     assert.ok(rank(groups[i]!) >= rank(groups[i - 1]!), `group order violated at ${i}: ${groups}`);
   }
@@ -118,7 +119,9 @@ test("dev.emit is broadcast to a subscribed client with a monotonic seq", async 
   await delay(20);
   const events = got.filter((f) => f.type === "event");
   assert.ok(events.length >= 2);
-  const texts = events.map((f) => (f.type === "event" ? (f.event as { text?: string }).text : undefined));
+  const texts = events.map((f) =>
+    f.type === "event" ? (f.event as { text?: string }).text : undefined,
+  );
   assert.ok(texts.includes("one") && texts.includes("two"));
   await c.close();
 });
@@ -127,19 +130,28 @@ test("session.events returns a session's durable history, oldest first, excludin
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
 
-  await c.request("dev.emit", { event: { sessionId: stub.id, type: "assistant_text", text: "one" } });
+  await c.request("dev.emit", {
+    event: { sessionId: stub.id, type: "assistant_text", text: "one" },
+  });
   await c.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "two" } });
   // neither of these should end up in the durable history — the TUI never
   // renders them either (see `applyPush` in the frontend model)
-  await c.request("dev.emit", { event: { sessionId: stub.id, type: "status_changed", status: "running" } });
   await c.request("dev.emit", {
-    event: { sessionId: stub.id, type: "compact_progress", elapsedMs: 100, generated: 10, before: 1000 },
+    event: { sessionId: stub.id, type: "status_changed", status: "running" },
+  });
+  await c.request("dev.emit", {
+    event: {
+      sessionId: stub.id,
+      type: "compact_progress",
+      elapsedMs: 100,
+      generated: 10,
+      before: 1000,
+    },
   });
 
-  const events = await c.request<Array<{ seq: number; type: string; event: { text?: string; type: string } }>>(
-    "session.events",
-    { id: stub.id },
-  );
+  const events = await c.request<
+    Array<{ seq: number; type: string; event: { text?: string; type: string } }>
+  >("session.events", { id: stub.id });
   assert.deepEqual(
     events.map((f) => f.event.text),
     ["one", "two"],
@@ -148,8 +160,14 @@ test("session.events returns a session's durable history, oldest first, excludin
   assert.ok(events[0]!.seq < events[1]!.seq);
 
   // a capped fetch keeps the most recent N, still oldest-first
-  const capped = await c.request<Array<{ event: { text?: string } }>>("session.events", { id: stub.id, limit: 1 });
-  assert.deepEqual(capped.map((f) => f.event.text), ["two"]);
+  const capped = await c.request<Array<{ event: { text?: string } }>>("session.events", {
+    id: stub.id,
+    limit: 1,
+  });
+  assert.deepEqual(
+    capped.map((f) => f.event.text),
+    ["two"],
+  );
 
   await assert.rejects(c.request("session.events", { id: "no-such-session" }));
   await c.close();
@@ -157,7 +175,10 @@ test("session.events returns a session's durable history, oldest first, excludin
 
 test("setStatus broadcasts a session_updated with a bumped version and attribution", async () => {
   const c = await client();
-  const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", status: "running" });
+  const stub = await c.request<SessionSnapshot>("session.createStub", {
+    prompt: "x",
+    status: "running",
+  });
 
   const updates: Array<{ version: number; by?: string; status: string }> = [];
   c.onPush((f) => {
@@ -207,13 +228,17 @@ test("reconnecting within the buffer replays the gap (no resync)", async () => {
     resynced = true;
   });
 
-  await driver.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "A-live" } });
+  await driver.request("dev.emit", {
+    event: { sessionId: stub.id, type: "thinking", text: "A-live" },
+  });
   await delay(20);
   assert.ok(texts.includes("A-live"));
 
   // Transport drop, then an event lands while the observer is away.
   observer.dropForTest();
-  await driver.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "B-gap" } });
+  await driver.request("dev.emit", {
+    event: { sessionId: stub.id, type: "thinking", text: "B-gap" },
+  });
 
   // Wait for the observer to come back and drain the replay.
   for (let i = 0; i < 100 && !reconnected; i++) await delay(10);
@@ -262,7 +287,11 @@ test("a reconnect onto a restarted daemon (new epoch) forces a resync", async ()
     // Drive the NEW daemon's head *above* the old client's #lastSeq, so
     // `EventLog.since(lastSeq)` returns { rolled: false } and the only thing
     // that can trigger a resync is the epoch-mismatch branch in #handshake.
-    const driver = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const driver = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
     for (let i = 0; i < lastSeq + 4; i++) {
       await driver.request("session.createStub", { prompt: `d${i}` });
     }
@@ -279,7 +308,9 @@ test("a reconnect onto a restarted daemon (new epoch) forces a resync", async ()
 
 test("daemon.status reflects live counts", async () => {
   const c = await client();
-  const s = await c.request<{ sessions: number; clients: number; eventSeq: number }>("daemon.status");
+  const s = await c.request<{ sessions: number; clients: number; eventSeq: number }>(
+    "daemon.status",
+  );
   assert.ok(s.sessions >= 1);
   assert.ok(s.clients >= 1);
   assert.ok(s.eventSeq >= 1);
@@ -305,10 +336,21 @@ color    = "red"
 `,
   });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
-    const list = await c.request<
-      Array<{ id: string; models: string[]; defaultModel: string; color: string; isDefault: boolean }>
-    >("providers.list");
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const list =
+      await c.request<
+        Array<{
+          id: string;
+          models: string[];
+          defaultModel: string;
+          color: string;
+          isDefault: boolean;
+        }>
+      >("providers.list");
     await c.close();
 
     const byId = new Map(list.map((p) => [p.id, p]));
@@ -341,7 +383,11 @@ models   = ["pin-a", "pin-b"]
 `,
   });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
 
     // Nothing has run yet → providers.list falls back to the config pin.
     let list = await c.request<Array<{ id: string; defaultModel: string }>>("providers.list");
@@ -367,12 +413,17 @@ models   = ["pin-a", "pin-b"]
 test("the provider and mode a session was created with become the default for the next new session", async () => {
   const hh = await makeHarness({ config: `default_provider = "claude"\n` });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
 
     // Nothing has run yet → the configured default provider, manual mode.
-    let list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
-      "providers.list",
-    );
+    let list =
+      await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+        "providers.list",
+      );
     assert.equal(list.find((p) => p.isDefault)?.id, "claude");
     assert.equal(list[0]?.defaultMode, "default");
 
@@ -383,9 +434,10 @@ test("the provider and mode a session was created with become the default for th
       mode: "acceptEdits",
     });
 
-    list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
-      "providers.list",
-    );
+    list =
+      await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+        "providers.list",
+      );
     assert.equal(list[0]?.defaultMode, "acceptEdits");
 
     // A later session.create with nothing named picks up both remembered values.
@@ -395,9 +447,10 @@ test("the provider and mode a session was created with become the default for th
 
     // A deliberate session.setMode also updates the remembered default.
     await c.request("session.setMode", { id: s.id, mode: "plan", by: "t" });
-    list = await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
-      "providers.list",
-    );
+    list =
+      await c.request<Array<{ id: string; isDefault: boolean; defaultMode: string }>>(
+        "providers.list",
+      );
     assert.equal(list[0]?.defaultMode, "plan");
 
     await c.close();
@@ -416,7 +469,11 @@ model    = "gpt-5"
 `,
   });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
 
     const parent = await c.request<SessionSnapshot>("session.createStub", {
       prompt: "the trunk task",
@@ -441,9 +498,9 @@ model    = "gpt-5"
       .get(fork.id) as { n: number };
     assert.equal(copied.n, 4);
     // an aisdk fork gets its provider_ref written so it survives a restart
-    const ref = db
-      .prepare("SELECT provider_ref FROM sessions WHERE id = ?")
-      .get(fork.id) as { provider_ref: string };
+    const ref = db.prepare("SELECT provider_ref FROM sessions WHERE id = ?").get(fork.id) as {
+      provider_ref: string;
+    };
     assert.equal(ref.provider_ref, fork.id);
 
     // forking a mid-turn parent is refused (dangling tool call)
@@ -451,11 +508,17 @@ model    = "gpt-5"
     await assert.rejects(c.request("session.fork", { id: parent.id }), /mid-turn/);
     // …and so is a rewind while it's not idle
     db.prepare("UPDATE usage SET turns = 3 WHERE session_id = ?").run(parent.id);
-    await assert.rejects(c.request("session.rewind", { id: parent.id, toTurn: 1 }), /interrupt the session/);
+    await assert.rejects(
+      c.request("session.rewind", { id: parent.id, toTurn: 1 }),
+      /interrupt the session/,
+    );
     hh.daemon.registry.setStatus(parent.id, "idle", "test");
 
     // fork a fake session → rejected for now
-    const fk = await c.request<SessionSnapshot>("session.createStub", { prompt: "x", provider: "fake" });
+    const fk = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "x",
+      provider: "fake",
+    });
     await assert.rejects(c.request("session.fork", { id: fk.id }), /aisdk-only/);
 
     await c.close();
@@ -480,7 +543,11 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
 `,
   });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
 
     // probed at start-up, sorted, and the first becomes the default model
     const provs = await c.request<Array<{ id: string; models: string[] }>>("providers.list");
@@ -512,13 +579,20 @@ model    = "gpt-5"
 `,
   });
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
 
     const getFake = async (id: string): Promise<void> => {
       ((await hh.daemon.providers.get("fake")) as FakeProvider).session(id)?.finishTurn();
     };
 
-    const s = await c.request<SessionSnapshot>("session.create", { prompt: "work in the repo", provider: "fake" });
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "work in the repo",
+      provider: "fake",
+    });
     await getFake(s.id); // settle so shutdown is clean
     assert.equal(s.inPlace, true);
     assert.equal(s.worktree, null);
@@ -545,7 +619,9 @@ model    = "gpt-5"
       status: "idle",
       provider: "openai",
     });
-    hh.daemon.db.prepare("UPDATE sessions SET in_place = 1, worktree = NULL WHERE id = ?").run(ip.id);
+    hh.daemon.db
+      .prepare("UPDATE sessions SET in_place = 1, worktree = NULL WHERE id = ?")
+      .run(ip.id);
     await assert.rejects(c.request("session.fork", { id: ip.id }), /in-place|worktree/);
 
     await c.close();
@@ -556,7 +632,11 @@ model    = "gpt-5"
 
 test("session.send always broadcasts a user_message; injected reflects whether a turn was live", async () => {
   const hh = await makeHarness();
-  const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
   try {
     const frames: PushFrame[] = [];
     c.onPush((f) => frames.push(f));
@@ -568,12 +648,18 @@ test("session.send always broadcasts a user_message; injected reflects whether a
           return { text: e.text, injected: e.injected };
         });
 
-    const snap = await c.request<SessionSnapshot>("session.create", { prompt: "busy", provider: "fake" });
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "busy",
+      provider: "fake",
+    });
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
     fs?.emit({ type: "assistant_text", text: "working…" }); // → running
     await delay(80);
 
-    const r1 = await c.request<{ injected?: boolean }>("session.send", { id: snap.id, text: "also handle Y" });
+    const r1 = await c.request<{ injected?: boolean }>("session.send", {
+      id: snap.id,
+      text: "also handle Y",
+    });
     await delay(60);
     assert.equal(r1.injected, true);
     assert.deepEqual(umEvents().at(-1), { text: "also handle Y", injected: true });
@@ -581,7 +667,10 @@ test("session.send always broadcasts a user_message; injected reflects whether a
     fs?.finishTurn(); // → idle
     await delay(60);
     frames.length = 0;
-    const r2 = await c.request<{ injected?: boolean }>("session.send", { id: snap.id, text: "next turn please" });
+    const r2 = await c.request<{ injected?: boolean }>("session.send", {
+      id: snap.id,
+      text: "next turn please",
+    });
     await delay(60);
     assert.equal(r2.injected, false);
     assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
@@ -595,23 +684,36 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
   const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
   const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
     const notices: string[] = [];
     c.onPush((f) => {
       if (f.type === "notice") notices.push(f.text);
     });
 
     // a session before the edit gets a worktree
-    const a = await c.request<SessionSnapshot>("session.create", { prompt: "before edit", provider: "fake" });
+    const a = await c.request<SessionSnapshot>("session.create", {
+      prompt: "before edit",
+      provider: "fake",
+    });
     assert.ok(a.worktree && !a.inPlace);
 
     writeFileSync(cfgPath, `[worktree]\nenabled = false\n`);
     await delay(500); // debounce (250ms) + reload
 
-    assert.ok(notices.some((t) => /config reloaded/.test(t)), `got notices: ${JSON.stringify(notices)}`);
+    assert.ok(
+      notices.some((t) => /config reloaded/.test(t)),
+      `got notices: ${JSON.stringify(notices)}`,
+    );
 
     // a session after the edit runs in-place — the reload took effect with no restart
-    const b = await c.request<SessionSnapshot>("session.create", { prompt: "after edit", provider: "fake" });
+    const b = await c.request<SessionSnapshot>("session.create", {
+      prompt: "after edit",
+      provider: "fake",
+    });
     assert.equal(b.inPlace, true);
     assert.equal(b.worktree, null);
 
@@ -625,7 +727,11 @@ test("a provider-set change on disk asks for a restart rather than applying live
   const hh = await makeHarness({ config: `base_branch = "main"\n` });
   const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
   try {
-    const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
     const notices: string[] = [];
     c.onPush((f) => {
       if (f.type === "notice") notices.push(f.text);
@@ -637,7 +743,10 @@ test("a provider-set change on disk asks for a restart rather than applying live
     );
     await delay(500);
 
-    assert.ok(notices.some((t) => /restart the daemon/.test(t)), `got notices: ${JSON.stringify(notices)}`);
+    assert.ok(
+      notices.some((t) => /restart the daemon/.test(t)),
+      `got notices: ${JSON.stringify(notices)}`,
+    );
     // the running provider list is unchanged until a restart
     const list = await c.request<Array<{ id: string }>>("providers.list");
     assert.ok(!list.some((p) => p.id === "local"));

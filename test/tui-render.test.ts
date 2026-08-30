@@ -13,7 +13,6 @@ import { makeHarness, type Harness } from "@loom/harness";
 
 const ESC = "\x1b";
 
-
 class FakeOut extends EventEmitter {
   columns = 120;
   rows = 40;
@@ -86,7 +85,11 @@ async function harness(opts: { config?: string } = {}): Promise<{
 test("renders the fleet, tracks selection by key, and shows help", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
-  await client.request("session.createStub", { prompt: "add a --json flag", status: "running", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "add a --json flag",
+    status: "running",
+    provider: "fake",
+  });
   await client.request("session.createStub", {
     prompt: "write the release notes",
     status: "awaiting_input",
@@ -125,7 +128,11 @@ test("renders the fleet, tracks selection by key, and shows help", async () => {
 test("esc does not quit; only overlays back out", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
-  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(160);
@@ -136,7 +143,11 @@ test("esc does not quit; only overlays back out", async () => {
     stdin.feed("n");
     await delay(100);
     assert.match(stdout.last, /new session/);
-    assert.match(stdout.last, /\[manual\]/, "the mode chip is always shown (default reads as 'manual')");
+    assert.match(
+      stdout.last,
+      /\[manual\]/,
+      "the mode chip is always shown (default reads as 'manual')",
+    );
     stdin.feed(ESC);
     await delay(100);
     assert.doesNotMatch(stdout.last, /new session/);
@@ -209,7 +220,11 @@ test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send
     stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
     await delay(160);
     const after = await client.request<SessionSnapshot[]>("session.list");
-    assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "the session was re-moded from the prompt");
+    assert.equal(
+      after.find((x) => x.id === snap.id)?.mode,
+      "plan",
+      "the session was re-moded from the prompt",
+    );
     assert.match(stdout.last, /\[plan\]/, "the prompt chip reflects it");
     assert.match(stdout.last, /switch to plan first/, "the half-typed message survived");
 
@@ -219,7 +234,11 @@ test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send
 
     stdin.feed("\r"); // pick m1 → back to the send prompt with the draft
     await delay(160);
-    assert.match(stdout.last, /switch to plan first/, "the draft comes back after the model switch");
+    assert.match(
+      stdout.last,
+      /switch to plan first/,
+      "the draft comes back after the model switch",
+    );
   } finally {
     app.unmount();
     await client.close();
@@ -230,7 +249,11 @@ test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send
 test("R raises a restart confirmation that esc dismisses", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
-  await client.request("session.createStub", { prompt: "busy", status: "running", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "busy",
+    status: "running",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(160);
@@ -379,12 +402,17 @@ test("re-opening the TUI backfills the event log from the running daemon", async
   try {
     assert.ok(
       second.bufferedEvents.some(
-        (f) => f.event.type === "assistant_text" && f.event.text === "something from an earlier viewing",
+        (f) =>
+          f.event.type === "assistant_text" && f.event.text === "something from an earlier viewing",
       ),
       "the client replayed the daemon's buffered history",
     );
     await delay(200);
-    assert.match(stdout.last, /something from an earlier viewing/, "the TUI seeded its log from it");
+    assert.match(
+      stdout.last,
+      /something from an earlier viewing/,
+      "the TUI seeded its log from it",
+    );
   } finally {
     app.unmount();
     await second.close();
@@ -429,7 +457,10 @@ test("selecting a session backfills its durable history when the live ring doesn
 test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "busy worker", provider: "fake" });
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "busy worker",
+    provider: "fake",
+  });
   const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   const fs = fake.session(snap.id);
   fs?.emit({ type: "assistant_text", text: "working…" }); // -> running
@@ -467,7 +498,10 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
 test("a queue on a session that never returns to idle is reported, not silently dropped", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "worker", provider: "fake" });
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "worker",
+    provider: "fake",
+  });
   const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   const fs = fake.session(snap.id);
   fs?.emit({ type: "assistant_text", text: "working…" }); // -> running
@@ -535,7 +569,13 @@ test("the pending permission is spelled out in a panel", async () => {
   try {
     await delay(150);
     await client.request("dev.emit", {
-      event: { sessionId: s.id, type: "permission_request", id: "p1", tool: "Bash", input: { command: "npm publish" } },
+      event: {
+        sessionId: s.id,
+        type: "permission_request",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "npm publish" },
+      },
     });
     await delay(200);
     assert.match(stdout.last, /PERMISSION — Bash/);
@@ -550,13 +590,20 @@ test("the pending permission is spelled out in a panel", async () => {
 test("a plan review opens an overlay; `i` sends the implement decision", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "plan this", provider: "fake" });
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "plan this",
+    provider: "fake",
+  });
   const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
   const fs = fake.session(snap.id);
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(150);
-    fs?.emit({ type: "plan_review", id: "pr1", plan: "1. carve the seam\n2. wire the RPC\n3. paint the overlay" });
+    fs?.emit({
+      type: "plan_review",
+      id: "pr1",
+      plan: "1. carve the seam\n2. wire the RPC\n3. paint the overlay",
+    });
     await delay(200);
     // the request panel flags it
     assert.match(stdout.last, /PLAN REVIEW/);
@@ -590,7 +637,10 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
 test("sub-agents show in the Detail pane and prefix their log rows", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "spawn helpers", provider: "fake" });
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "spawn helpers",
+    provider: "fake",
+  });
   const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
   const { stdout, app } = mount(client);
   try {
@@ -655,7 +705,11 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
 `,
   });
   const client = await connect();
-  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(220);
@@ -711,7 +765,11 @@ base_url = "http://127.0.0.1:9/v1"
 `,
   });
   const client = await connect();
-  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(220);
@@ -746,7 +804,11 @@ models   = ["gpt-5", "gpt-5-mini"]
 `,
   });
   const client = await connect();
-  await client.request("session.createStub", { prompt: "a task", status: "idle", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(220);
@@ -774,8 +836,16 @@ models   = ["gpt-5", "gpt-5-mini"]
 test("f opens the find picker and filters the fleet by text", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
-  await client.request("session.createStub", { prompt: "refactor the parser", status: "idle", provider: "fake" });
-  await client.request("session.createStub", { prompt: "update the docs", status: "idle", provider: "fake" });
+  await client.request("session.createStub", {
+    prompt: "refactor the parser",
+    status: "idle",
+    provider: "fake",
+  });
+  await client.request("session.createStub", {
+    prompt: "update the docs",
+    status: "idle",
+    provider: "fake",
+  });
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(200);
@@ -804,8 +874,11 @@ test("f opens the find picker and filters the fleet by text", async () => {
 test("u opens the undo picker listing earlier turns", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
-  const snap = await client.request<SessionSnapshot>("session.create", { prompt: "the original task", provider: "fake" });
-  const fs = (await h.daemon.providers.get("fake") as FakeProvider).session(snap.id);
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "the original task",
+    provider: "fake",
+  });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
   fs?.finishTurn(); // turn 1
   await delay(60);
   await client.request("session.send", { id: snap.id, text: "a follow-up" });

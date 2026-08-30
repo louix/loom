@@ -128,7 +128,11 @@ test("sortSessions: status group first, then most-recently-updated", () => {
 });
 
 test("move clamps at both ends of the sorted list", () => {
-  const list = [snap({ id: "a", status: "awaiting_input" }), snap({ id: "b", status: "running" }), snap({ id: "c", status: "idle" })];
+  const list = [
+    snap({ id: "a", status: "awaiting_input" }),
+    snap({ id: "b", status: "running" }),
+    snap({ id: "c", status: "idle" }),
+  ];
   let s = reduce(initialState(), { t: "hello", daemon, sessions: list });
   assert.equal(s.selectedId, "a");
   s = reduce(s, { t: "move", delta: -1 });
@@ -147,9 +151,18 @@ test("session_updated upserts, re-sorts, and preserves selection", () => {
   // a finishes its turn — should drop below b (idle group) but stay selected
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 1, type: "session_updated", session: snap({ id: "a", status: "idle", updatedAt: 9 }), version: 2 },
+    frame: {
+      kind: "push",
+      seq: 1,
+      type: "session_updated",
+      session: snap({ id: "a", status: "idle", updatedAt: 9 }),
+      version: 2,
+    },
   });
-  assert.deepEqual(s.sessions.map((x) => x.id), ["b", "a"]);
+  assert.deepEqual(
+    s.sessions.map((x) => x.id),
+    ["b", "a"],
+  );
   assert.equal(s.selectedId, "a");
 });
 
@@ -158,8 +171,14 @@ test("session_removed drops the row and reselects the head", () => {
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
   s = reduce(s, { t: "select", id: "b" });
-  s = reduce(s, { t: "push", frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "b" } });
-  assert.deepEqual(s.sessions.map((x) => x.id), ["a"]);
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "b" },
+  });
+  assert.deepEqual(
+    s.sessions.map((x) => x.id),
+    ["a"],
+  );
   assert.equal(s.selectedId, "a");
 });
 
@@ -170,17 +189,33 @@ test("session_removed drops the row and reselects the head", () => {
 test("event pushes append log lines and the ring honours logCap", () => {
   let s = initialState(3);
   for (let i = 0; i < 5; i++) {
-    s = reduce(s, { t: "push", frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })) });
+    s = reduce(s, {
+      t: "push",
+      frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
+    });
   }
   assert.equal(s.log.length, 3);
-  assert.deepEqual(s.log.map((l) => l.seq), [2, 3, 4]);
+  assert.deepEqual(
+    s.log.map((l) => l.seq),
+    [2, 3, 4],
+  );
 });
 
 test("compact_progress drives the compacting indicator without hitting the log", () => {
   let s = initialState();
   s = reduce(s, {
     t: "push",
-    frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 4_000, generated: 128, before: 90_000 })),
+    frame: push(
+      1,
+      ev({
+        type: "compact_progress",
+        sessionId: "s1",
+        ts: 10_000,
+        elapsedMs: 4_000,
+        generated: 128,
+        before: 90_000,
+      }),
+    ),
   });
   assert.equal(s.log.length, 0, "heartbeat is not a transcript line");
   assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
@@ -188,14 +223,27 @@ test("compact_progress drives the compacting indicator without hitting the log",
   // a later beat refreshes it
   s = reduce(s, {
     t: "push",
-    frame: push(2, ev({ type: "compact_progress", sessionId: "s1", ts: 12_000, elapsedMs: 6_000, generated: 400, before: 90_000 })),
+    frame: push(
+      2,
+      ev({
+        type: "compact_progress",
+        sessionId: "s1",
+        ts: 12_000,
+        elapsedMs: 6_000,
+        generated: 400,
+        before: 90_000,
+      }),
+    ),
   });
   assert.equal(s.compacting["s1"]?.generated, 400);
 
   // the boundary clears it and *is* logged
   s = reduce(s, {
     t: "push",
-    frame: push(3, ev({ type: "compact", sessionId: "s1", trigger: "manual", before: 90_000, after: 12_000 })),
+    frame: push(
+      3,
+      ev({ type: "compact", sessionId: "s1", trigger: "manual", before: 90_000, after: 12_000 }),
+    ),
   });
   assert.equal(s.compacting["s1"], undefined);
   assert.equal(s.log.length, 1);
@@ -207,10 +255,23 @@ test("an error (fatal or not) abandons the compacting indicator", () => {
     let s = initialState();
     s = reduce(s, {
       t: "push",
-      frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 0, generated: 0, before: 50_000 })),
+      frame: push(
+        1,
+        ev({
+          type: "compact_progress",
+          sessionId: "s1",
+          ts: 10_000,
+          elapsedMs: 0,
+          generated: 0,
+          before: 50_000,
+        }),
+      ),
     });
     assert.ok(s.compacting["s1"]);
-    s = reduce(s, { t: "push", frame: push(2, ev({ type: "error", message: "boom", fatal, sessionId: "s1" })) });
+    s = reduce(s, {
+      t: "push",
+      frame: push(2, ev({ type: "error", message: "boom", fatal, sessionId: "s1" })),
+    });
     assert.equal(s.compacting["s1"], undefined, `fatal=${fatal}`);
   }
 });
@@ -219,7 +280,17 @@ test("resync drops all compacting indicators", () => {
   let s = initialState();
   s = reduce(s, {
     t: "push",
-    frame: push(1, ev({ type: "compact_progress", sessionId: "s1", ts: 10_000, elapsedMs: 0, generated: 0, before: 50_000 })),
+    frame: push(
+      1,
+      ev({
+        type: "compact_progress",
+        sessionId: "s1",
+        ts: 10_000,
+        elapsedMs: 0,
+        generated: 0,
+        before: 50_000,
+      }),
+    ),
   });
   assert.ok(s.compacting["s1"]);
   s = reduce(s, { t: "push", frame: { kind: "push", seq: 2, type: "resync", reason: "rolled" } });
@@ -228,11 +299,17 @@ test("resync drops all compacting indicators", () => {
 
 test("permission / question / fatal-error events raise a notice", () => {
   let s = initialState();
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+  });
   assert.match(s.notice?.text ?? "", /Bash needs approval/);
   assert.equal(s.notice?.tone, "accent");
 
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "question", id: "q1", question: "which db?" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "question", id: "q1", question: "which db?" })),
+  });
   assert.match(s.notice?.text ?? "", /question waiting/);
 
   s = reduce(s, { t: "push", frame: push(3, ev({ type: "error", message: "boom", fatal: true })) });
@@ -253,10 +330,22 @@ test("the event log always shows just the selected session", () => {
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
   s = reduce(s, { t: "select", id: "a" });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })) });
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "assistant_text", text: "for b", sessionId: "b" })) });
-  assert.deepEqual(sessionLog(s).map((l) => l.text), ["for a"]);
-  assert.deepEqual(visibleLog(s).map((l) => l.text), ["for a"]);
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "assistant_text", text: "for b", sessionId: "b" })),
+  });
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["for a"],
+  );
+  assert.deepEqual(
+    visibleLog(s).map((l) => l.text),
+    ["for a"],
+  );
 });
 
 test("chat view collapses tool traffic and thinking; full view keeps everything", () => {
@@ -289,11 +378,28 @@ test("chat view collapses tool traffic and thinking; full view keeps everything"
 
 test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {
   const L = [
-    toLogLine(1, { ...ev({ type: "user_message", text: "do the thing", injected: false }), ts: 5000 }),
+    toLogLine(1, {
+      ...ev({ type: "user_message", text: "do the thing", injected: false }),
+      ts: 5000,
+    }),
     toLogLine(2, { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
-    toLogLine(3, { ...ev({ type: "tool_call", id: "t", name: "Bash", input: { command: "ls -la" } }), ts: 7000 }),
-    toLogLine(4, { ...ev({ type: "tool_result", id: "t", ok: true, output: { text: "a\nb" } }), ts: 8000 }),
-    toLogLine(5, { ...ev({ type: "usage", tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1, contextLimit: 2 }), ts: 8500 }),
+    toLogLine(3, {
+      ...ev({ type: "tool_call", id: "t", name: "Bash", input: { command: "ls -la" } }),
+      ts: 7000,
+    }),
+    toLogLine(4, {
+      ...ev({ type: "tool_result", id: "t", ok: true, output: { text: "a\nb" } }),
+      ts: 8000,
+    }),
+    toLogLine(5, {
+      ...ev({
+        type: "usage",
+        tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+        contextUsed: 1,
+        contextLimit: 2,
+      }),
+      ts: 8500,
+    }),
     toLogLine(6, { ...ev({ type: "result", ok: true }), ts: 9000 }),
   ];
   const t = transcriptText(L);
@@ -328,13 +434,47 @@ test("condenseLog: a lone thinking / tool line still collapses; other kinds pass
 test("parallel permission requests queue; each resolvePerm advances; session_updated clears", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: { command: "ls" }, sessionId: "a" })) });
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "permission_request", id: "p2", tool: "bash", input: { command: "pwd" }, sessionId: "a" })) });
-  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "bash", input: { command: "ls" } });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({
+        type: "permission_request",
+        id: "p1",
+        tool: "bash",
+        input: { command: "ls" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      2,
+      ev({
+        type: "permission_request",
+        id: "p2",
+        tool: "bash",
+        input: { command: "pwd" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  assert.deepEqual(firstPerm(pendingFor(s, "a")), {
+    id: "p1",
+    tool: "bash",
+    input: { command: "ls" },
+  });
   assert.equal(pendingFor(s, "a").permissions?.length, 2);
 
   // a replayed request isn't double-counted
-  s = reduce(s, { t: "push", frame: push(3, ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      3,
+      ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" }),
+    ),
+  });
   assert.equal(pendingFor(s, "a").permissions?.length, 2);
 
   s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
@@ -345,10 +485,22 @@ test("parallel permission requests queue; each resolvePerm advances; session_upd
   assert.equal(pendingFor(s, "a").permissions, undefined);
 
   // and a session moving on wipes any leftover
-  s = reduce(s, { t: "push", frame: push(4, ev({ type: "permission_request", id: "p3", tool: "bash", input: {}, sessionId: "a" })) });
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 5, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 3 },
+    frame: push(
+      4,
+      ev({ type: "permission_request", id: "p3", tool: "bash", input: {}, sessionId: "a" }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 5,
+      type: "session_updated",
+      session: snap({ id: "a", status: "running" }),
+      version: 3,
+    },
   });
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 });
@@ -362,30 +514,76 @@ test("a permission's matching tool_result clears it, even mid-replay with the se
   // the real, current request.
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: { command: "ls" }, sessionId: "a" })) });
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "tool_result", id: "p1", ok: true, output: "", sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({
+        type: "permission_request",
+        id: "p1",
+        tool: "bash",
+        input: { command: "ls" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "tool_result", id: "p1", ok: true, output: "", sessionId: "a" })),
+  });
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 
-  s = reduce(s, { t: "push", frame: push(3, ev({ type: "permission_request", id: "p2", tool: "bash", input: { command: "pwd" }, sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      3,
+      ev({
+        type: "permission_request",
+        id: "p2",
+        tool: "bash",
+        input: { command: "pwd" },
+        sessionId: "a",
+      }),
+    ),
+  });
   assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
 
   // a tool_result for an unrelated id is a no-op
-  s = reduce(s, { t: "push", frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })),
+  });
   assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
 });
 
 test("pending question is cleared by the matching answer event", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "question" })] });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "question", id: "q1", question: "?", sessionId: "a" })) });
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "question" })],
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "question", id: "q1", question: "?", sessionId: "a" })),
+  });
   assert.equal(pendingFor(s, "a").question, "q1");
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "answer", id: "q1", text: "sqlite", sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "answer", id: "q1", text: "sqlite", sessionId: "a" })),
+  });
   assert.equal(pendingFor(s, "a").question, undefined);
 });
 
 test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "step one\nstep two", sessionId: "a" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({ type: "plan_review", id: "pr1", plan: "step one\nstep two", sessionId: "a" }),
+    ),
+  });
   assert.equal(pendingFor(s, "a").plan, "pr1");
   assert.equal(pendingFor(s, "a").planText, "step one\nstep two");
 
@@ -396,7 +594,13 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   // the session moving on closes the overlay and clears pending
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 3 },
+    frame: {
+      kind: "push",
+      seq: 2,
+      type: "session_updated",
+      session: snap({ id: "a", status: "running" }),
+      version: 3,
+    },
   });
   assert.equal(s.plan, null);
   assert.equal(s.mode, "browse");
@@ -436,11 +640,15 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
 });
 
 test("an in-place session offers undo but not hard fork", () => {
-  const inPlace = allowedActs(snap({ status: "idle", provider: "openai", inPlace: true, turns: 3 }));
+  const inPlace = allowedActs(
+    snap({ status: "idle", provider: "openai", inPlace: true, turns: 3 }),
+  );
   assert.ok(!inPlace.has("fork"), "no worktree → no hard fork");
   assert.ok(inPlace.has("undo"), "undo is conversation-only, still available");
 
-  const isolated = allowedActs(snap({ status: "idle", provider: "openai", inPlace: false, turns: 3 }));
+  const isolated = allowedActs(
+    snap({ status: "idle", provider: "openai", inPlace: false, turns: 3 }),
+  );
   assert.ok(isolated.has("fork"));
   assert.ok(isolated.has("undo"));
 });
@@ -466,7 +674,13 @@ test("footerHints gives every overlay its own fixed key set", () => {
     footerHints({
       ...base,
       mode: "confirm",
-      confirm: { title: "x", danger: true, action: "deleteSession", sessionId: "s1", branchName: "loom/x" },
+      confirm: {
+        title: "x",
+        danger: true,
+        action: "deleteSession",
+        sessionId: "s1",
+        branchName: "loom/x",
+      },
     }).map((h) => h.label),
     ["confirm", "+ branch", "cancel"],
   );
@@ -491,7 +705,16 @@ test("commandsFor lists every action valid now — session verbs plus the app co
     assert.ok(ids.includes(v as any), `missing ${v}`);
   }
   // app / view commands that never earn a footer slot
-  for (const v of ["viewlog", "filter", "fullscreen", "restart", "quitall", "new", "find", "help"]) {
+  for (const v of [
+    "viewlog",
+    "filter",
+    "fullscreen",
+    "restart",
+    "quitall",
+    "new",
+    "find",
+    "help",
+  ]) {
     assert.ok(ids.includes(v as any), `missing ${v}`);
   }
   // no duplicates, and each carries its key as the hint
@@ -507,12 +730,24 @@ test("commandsFor lists every action valid now — session verbs plus the app co
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {
   assert.equal(cacheStatus(null, 1000).state, "unknown");
-  assert.equal(cacheStatus(snap({ cache: { ttlMinutes: 0, lastTurnAt: 5000, lastRead: 9, lastWrite: 0 } }), 6000).state, "unknown");
-  assert.equal(cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 0, lastRead: 0, lastWrite: 0 } }), 6000).state, "unknown");
+  assert.equal(
+    cacheStatus(
+      snap({ cache: { ttlMinutes: 0, lastTurnAt: 5000, lastRead: 9, lastWrite: 0 } }),
+      6000,
+    ).state,
+    "unknown",
+  );
+  assert.equal(
+    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 0, lastRead: 0, lastWrite: 0 } }), 6000)
+      .state,
+    "unknown",
+  );
 });
 
 test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () => {
-  const c = snap({ cache: { ttlMinutes: 5, lastTurnAt: 1_000_000, lastRead: 8000, lastWrite: 300 } });
+  const c = snap({
+    cache: { ttlMinutes: 5, lastTurnAt: 1_000_000, lastRead: 8000, lastWrite: 300 },
+  });
   const warm = cacheStatus(c, 1_000_000 + 2 * 60_000);
   assert.equal(warm.state, "warm");
   assert.equal(warm.remainingMs, 3 * 60_000);
@@ -525,7 +760,8 @@ test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () =
 
 test("cacheStatus: lastHit reads the read/write split", () => {
   const mk = (lastRead: number, lastWrite: number) =>
-    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 1000, lastRead, lastWrite } }), 2000).lastHit;
+    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 1000, lastRead, lastWrite } }), 2000)
+      .lastHit;
   assert.equal(mk(9000, 200), "hit"); // big read → continuation
   assert.equal(mk(0, 9000), "rewrote"); // all write → prefix was cold
   assert.equal(mk(0, 0), null);
@@ -536,7 +772,10 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   // ttl 60m; sample at minute offsets from the last turn
   const at = (min: number) =>
     cacheHeat(
-      cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: T0, lastRead: 9, lastWrite: 1 } }), T0 + min * 60_000),
+      cacheStatus(
+        snap({ cache: { ttlMinutes: 60, lastTurnAt: T0, lastRead: 9, lastWrite: 1 } }),
+        T0 + min * 60_000,
+      ),
     );
   assert.equal(at(0), "fresh"); // 100% left
   assert.equal(at(30), "fresh"); // 50% left (> 33%)
@@ -544,23 +783,48 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   assert.equal(at(58), "expiring"); // ~3% left
   assert.equal(at(61), null); // cold
   assert.equal(
-    cacheHeat(cacheStatus(snap({ cache: { ttlMinutes: 0, lastTurnAt: T0, lastRead: 0, lastWrite: 0 } }), T0)),
+    cacheHeat(
+      cacheStatus(
+        snap({ cache: { ttlMinutes: 0, lastTurnAt: T0, lastRead: 0, lastWrite: 0 } }),
+        T0,
+      ),
+    ),
     null, // unknown (no pinned TTL)
   );
 });
 
 test("compact only appears once the context meter passes half", () => {
-  assert.ok(!allowedActs(snap({ status: "idle", contextUsed: 40, contextLimit: 100 })).has("compact"));
-  assert.ok(allowedActs(snap({ status: "idle", contextUsed: 60, contextLimit: 100 })).has("compact"));
-  assert.ok(allowedActs(snap({ status: "running", contextUsed: 90, contextLimit: 100 })).has("compact"));
+  assert.ok(
+    !allowedActs(snap({ status: "idle", contextUsed: 40, contextLimit: 100 })).has("compact"),
+  );
+  assert.ok(
+    allowedActs(snap({ status: "idle", contextUsed: 60, contextLimit: 100 })).has("compact"),
+  );
+  assert.ok(
+    allowedActs(snap({ status: "running", contextUsed: 90, contextLimit: 100 })).has("compact"),
+  );
   // not offered for a session with no live adapter
-  assert.ok(!allowedActs(snap({ status: "interrupted", contextUsed: 90, contextLimit: 100 })).has("compact"));
+  assert.ok(
+    !allowedActs(snap({ status: "interrupted", contextUsed: 90, contextLimit: 100 })).has(
+      "compact",
+    ),
+  );
 });
 
 test("groupsOf only emits non-empty groups, in fleet-view order", () => {
-  const g = groupsOf([snap({ status: "idle" }), snap({ status: "awaiting_input" }), snap({ status: "idle" })]);
-  assert.deepEqual(g.map((x) => x.status), ["awaiting_input", "idle"]);
-  assert.deepEqual(g.map((x) => x.sessions.length), [1, 2]);
+  const g = groupsOf([
+    snap({ status: "idle" }),
+    snap({ status: "awaiting_input" }),
+    snap({ status: "idle" }),
+  ]);
+  assert.deepEqual(
+    g.map((x) => x.status),
+    ["awaiting_input", "idle"],
+  );
+  assert.deepEqual(
+    g.map((x) => x.sessions.length),
+    [1, 2],
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -568,7 +832,9 @@ test("groupsOf only emits non-empty groups, in fleet-view order", () => {
 // ---------------------------------------------------------------------------
 
 test("formatEvent renders each event kind to a glyph + one-liner + tone", () => {
-  const tc = formatEvent(ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }));
+  const tc = formatEvent(
+    ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }),
+  );
   assert.equal(tc.glyph, "⚙");
   assert.equal(tc.text, "Bash  npm test");
   assert.equal(tc.tone, "warn");
@@ -577,20 +843,40 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
   assert.equal(okr.tone, "good");
   assert.equal(okr.text, "ok");
   assert.equal(okr.full, undefined); // empty object → nothing to expand
-  const badr = formatEvent(ev({ type: "tool_result", id: "1", ok: false, output: { text: "nope" } }));
+  const badr = formatEvent(
+    ev({ type: "tool_result", id: "1", ok: false, output: { text: "nope" } }),
+  );
   assert.equal(badr.tone, "bad");
   assert.equal(badr.full, "error\nnope");
-  assert.match(formatEvent(ev({ type: "question", id: "q1", question: "which one?" })).text, /req q1/);
   assert.match(
-    formatEvent(ev({ type: "usage", tokens: { input: 1200, output: 30, cacheRead: 0, cacheWrite: 0 }, contextUsed: 1200, contextLimit: 200000 })).text,
+    formatEvent(ev({ type: "question", id: "q1", question: "which one?" })).text,
+    /req q1/,
+  );
+  assert.match(
+    formatEvent(
+      ev({
+        type: "usage",
+        tokens: { input: 1200, output: 30, cacheRead: 0, cacheWrite: 0 },
+        contextUsed: 1200,
+        contextLimit: 200000,
+      }),
+    ).text,
     /ctx 1\.2k\/200\.0k/,
   );
-  assert.match(formatEvent(ev({ type: "plan_review", id: "pr9", plan: "x" })).text, /plan ready.*req pr9/);
-  const comp = formatEvent(ev({ type: "compact", trigger: "manual", before: 120000, after: 24000 }));
+  assert.match(
+    formatEvent(ev({ type: "plan_review", id: "pr9", plan: "x" })).text,
+    /plan ready.*req pr9/,
+  );
+  const comp = formatEvent(
+    ev({ type: "compact", trigger: "manual", before: 120000, after: 24000 }),
+  );
   assert.equal(comp.glyph, "⇊");
   assert.match(comp.text, /120\.0k → 24\.0k/);
   // `after` unknown until the next turn — no arrow
-  assert.doesNotMatch(formatEvent(ev({ type: "compact", trigger: "auto", before: 120000, after: 0 })).text, /→/);
+  assert.doesNotMatch(
+    formatEvent(ev({ type: "compact", trigger: "auto", before: 120000, after: 0 })).text,
+    /→/,
+  );
 });
 
 test("formatEvent keeps the full body for long / multi-line events", () => {
@@ -653,7 +939,11 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   });
   withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
   withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
-  assert.equal(withDraft.lastDraft, "fix the bug", "renaming doesn't clobber the send/new draft slot");
+  assert.equal(
+    withDraft.lastDraft,
+    "fix the bug",
+    "renaming doesn't clobber the send/new draft slot",
+  );
 
   // submitting (closePrompt without saveDraft) consumes the draft
   let sent = reduce(initialState(), {
@@ -670,7 +960,11 @@ test("promptCycleMode only cycles for a `new` prompt", () => {
     t: "openPrompt",
     prompt: makePrompt({ kind: "new", sessionId: null, label: "new" }),
   });
-  assert.equal(s.prompt?.mode, undefined, "a fresh new-prompt carries no mode — it just uses the default");
+  assert.equal(
+    s.prompt?.mode,
+    undefined,
+    "a fresh new-prompt carries no mode — it just uses the default",
+  );
   s = reduce(s, { t: "promptCycleMode" });
   assert.equal(s.prompt?.mode, "plan");
   s = reduce(s, { t: "promptCycleMode" });
@@ -689,7 +983,10 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
   for (const x of ["one", "two", "one", "three"]) s = reduce(s, { t: "pushHistory", text: x });
   assert.deepEqual(s.promptHistory, ["two", "one", "three"]);
 
-  s = reduce(s, { t: "openPrompt", prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "live" }) });
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "live" }),
+  });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(s.prompt?.buffer.text, "three");
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
@@ -713,7 +1010,10 @@ test("echo appends a local log line that respects the cap", () => {
   s = reduce(s, { t: "echo", line: echo(-1, "hi", 1) });
   s = reduce(s, { t: "echo", line: echo(-2, "there", 2) });
   s = reduce(s, { t: "echo", line: echo(-3, "again", 3) });
-  assert.deepEqual(s.log.map((l) => l.text), ["there", "again"]);
+  assert.deepEqual(
+    s.log.map((l) => l.text),
+    ["there", "again"],
+  );
 });
 
 test("enqueue / dequeue / clearQueue and queueFor", () => {
@@ -734,21 +1034,48 @@ test("enqueue / dequeue / clearQueue and queueFor", () => {
 });
 
 test("a permission_request stashes the tool + input; leaving awaiting_input clears it", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "awaiting_input" })] });
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm -rf x" }, sessionId: "a" })),
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "awaiting_input" })],
   });
-  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "Bash", input: { command: "rm -rf x" } });
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "a", status: "running" }), version: 2 },
+    frame: push(
+      1,
+      ev({
+        type: "permission_request",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "rm -rf x" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  assert.deepEqual(firstPerm(pendingFor(s, "a")), {
+    id: "p1",
+    tool: "Bash",
+    input: { command: "rm -rf x" },
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 2,
+      type: "session_updated",
+      session: snap({ id: "a", status: "running" }),
+      version: 2,
+    },
   });
   assert.deepEqual(pendingFor(s, "a"), {});
 });
 
 test("queue entries are pruned when their session disappears", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "running" })] });
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "running" })],
+  });
   s = reduce(s, { t: "enqueue", sessionId: "a", text: "later" });
   s = reduce(s, { t: "sessions", sessions: [] });
   assert.deepEqual(queueFor(s, "a"), []);
@@ -832,9 +1159,18 @@ test("theme formatting helpers", () => {
 
 test("status_changed events stay out of the log; result is a terse marker", () => {
   let s = initialState();
-  s = reduce(s, { t: "push", frame: push(1, ev({ type: "assistant_text", text: "here is the answer" })) });
-  s = reduce(s, { t: "push", frame: push(2, ev({ type: "status_changed", status: "idle", reason: "result" })) });
-  s = reduce(s, { t: "push", frame: push(3, ev({ type: "result", ok: true, summary: "here is the answer" })) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "assistant_text", text: "here is the answer" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "status_changed", status: "idle", reason: "result" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(3, ev({ type: "result", ok: true, summary: "here is the answer" })),
+  });
   assert.deepEqual(
     s.log.map((l) => l.glyph),
     ["▪", "■"],
@@ -845,7 +1181,11 @@ test("status_changed events stay out of the log; result is a terse marker", () =
 
 test("selectedSession returns the highlighted row or null", () => {
   assert.equal(selectedSession(initialState()), null);
-  const s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "z", status: "running" })] });
+  const s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "z", status: "running" })],
+  });
   assert.equal(selectedSession(s)?.id, "z");
 });
 
@@ -867,8 +1207,24 @@ const PROVIDERS: ProviderInfo[] = [
     color: "",
     isDefault: true,
   },
-  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", defaultMode: "default", tag: "oai", color: "cyan", isDefault: false },
-  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", defaultMode: "default", tag: "ds", color: "magenta", isDefault: false },
+  {
+    id: "openai",
+    models: ["gpt-5", "gpt-5-mini", "o4"],
+    defaultModel: "gpt-5",
+    defaultMode: "default",
+    tag: "oai",
+    color: "cyan",
+    isDefault: false,
+  },
+  {
+    id: "deepseek",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+    defaultModel: "deepseek-chat",
+    defaultMode: "default",
+    tag: "ds",
+    color: "magenta",
+    isDefault: false,
+  },
 ];
 
 function withProviders(): TuiState {
@@ -880,7 +1236,10 @@ test("providers action populates state and the derived helpers", () => {
   assert.equal(defaultProviderId(s), "claude");
   assert.equal(providerColorOf(s, "openai"), "cyan");
   assert.equal(providerColorOf(s, "claude"), "");
-  assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
+  assert.deepEqual(
+    modelPickItems(s, "deepseek").map((i) => i.id),
+    ["deepseek-chat", "deepseek-reasoner"],
+  );
   assert.equal(providerPickItems(s).length, 3);
   // claude's picker uses the CLI catalog's friendly names + context tags
   assert.deepEqual(modelPickItems(s, "claude"), [
@@ -888,13 +1247,22 @@ test("providers action populates state and the derived helpers", () => {
     { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
   ]);
   // aisdk with no modelChoices falls back to bare ids
-  assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.label), ["deepseek-chat", "deepseek-reasoner"]);
+  assert.deepEqual(
+    modelPickItems(s, "deepseek").map((i) => i.label),
+    ["deepseek-chat", "deepseek-reasoner"],
+  );
   assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
   assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
 });
 
 test("versionMismatchAction: bounce only when alone, otherwise prompt then nag", () => {
-  const base = { daemonVersion: "1.2.0", uiVersion: "1.3.0", otherClients: 0, liveSessions: 0, alreadyHandled: false };
+  const base = {
+    daemonVersion: "1.2.0",
+    uiVersion: "1.3.0",
+    otherClients: 0,
+    liveSessions: 0,
+    alreadyHandled: false,
+  };
   assert.equal(versionMismatchAction({ ...base, daemonVersion: "1.3.0" }), "ok");
   assert.equal(versionMismatchAction({ ...base, daemonVersion: null }), "ok");
   assert.equal(versionMismatchAction(base), "auto-restart");
@@ -908,7 +1276,11 @@ test("versionMismatchAction: bounce only when alone, otherwise prompt then nag",
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {
   let s = reduce(withProviders(), {
     t: "openPicker",
-    picker: makePicker({ kind: "model", title: "model", items: modelPickItems(withProviders(), "openai") }),
+    picker: makePicker({
+      kind: "model",
+      title: "model",
+      items: modelPickItems(withProviders(), "openai"),
+    }),
   });
   assert.equal(s.mode, "picker");
   assert.equal(pickerVisible(s.picker!).length, 3);
@@ -934,7 +1306,16 @@ test("find picker items fold message text into the fuzzy blob", () => {
   });
   s = reduce(s, {
     t: "push",
-    frame: { type: "event", seq: 1, event: { type: "assistant_text", sessionId: "bbb", ts: 1, text: "refactor the parser module" } },
+    frame: {
+      type: "event",
+      seq: 1,
+      event: {
+        type: "assistant_text",
+        sessionId: "bbb",
+        ts: 1,
+        text: "refactor the parser module",
+      },
+    },
   } as never);
 
   const items = findPickItems(s);
@@ -943,7 +1324,10 @@ test("find picker items fold message text into the fuzzy blob", () => {
 
   const picker = makePicker({ kind: "find", title: "find", items });
   const filtered = pickerVisible({ ...picker, filter: "parser" });
-  assert.deepEqual(filtered.map((i) => i.id), ["bbb"]);
+  assert.deepEqual(
+    filtered.map((i) => i.id),
+    ["bbb"],
+  );
 });
 
 test("a live model picker closes if its session is removed", () => {
@@ -961,13 +1345,22 @@ test("a live model picker closes if its session is removed", () => {
       ctx: { provider: "openai", liveSessionId: "live" },
     }),
   });
-  s = reduce(s, { t: "push", frame: { type: "session_removed", seq: 2, sessionId: "live" } } as never);
+  s = reduce(s, {
+    t: "push",
+    frame: { type: "session_removed", seq: 2, sessionId: "live" },
+  } as never);
   assert.equal(s.picker, null);
   assert.equal(s.mode, "browse");
 });
 
 test("makePrompt carries provider + model for the ⌃P chooser flow", () => {
-  const p = makePrompt({ kind: "new", sessionId: null, label: "new", provider: "openai", model: "o4" });
+  const p = makePrompt({
+    kind: "new",
+    sessionId: null,
+    label: "new",
+    provider: "openai",
+    model: "o4",
+  });
   assert.equal(p.provider, "openai");
   assert.equal(p.model, "o4");
 });

@@ -8,7 +8,8 @@ import { buildLoomMcpServer, commitInWorktree } from "@loom/connector-claude/loo
 
 function repo(): { root: string; git: (...a: string[]) => string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "loom-mcp-"));
-  const git = (...a: string[]) => execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
+  const git = (...a: string[]) =>
+    execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
   execFileSync("git", ["init", "-q", "-b", "main", root]);
   git("config", "user.email", "loom+claude@localhost");
   git("config", "user.name", "Loom (claude)");

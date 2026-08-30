@@ -47,7 +47,9 @@ export function buildLoomMcpServer(deps: LoomMcpDeps): McpSdkServerConfigWithIns
       context: z
         .string()
         .optional()
-        .describe("Optional background: what you were doing, why you're blocked, the options you see."),
+        .describe(
+          "Optional background: what you were doing, why you're blocked, the options you see.",
+        ),
     },
     async (args) => {
       const answer = await deps.askUser(args.question, args.context);
@@ -65,7 +67,9 @@ export function buildLoomMcpServer(deps: LoomMcpDeps): McpSdkServerConfigWithIns
       stage_all: z
         .boolean()
         .optional()
-        .describe("Stage all changes first (git add -A). Default true; set false to commit only what is already staged."),
+        .describe(
+          "Stage all changes first (git add -A). Default true; set false to commit only what is already staged.",
+        ),
     },
     async (args) => {
       const res = commitInWorktree(deps.cwd, args.message, { stageAll: args.stage_all !== false });
@@ -77,6 +81,10 @@ export function buildLoomMcpServer(deps: LoomMcpDeps): McpSdkServerConfigWithIns
 
   // `alwaysLoad` keeps these two tools in every prompt rather than deferring
   // them behind tool-search — they're few and broadly relevant to any session.
-  return createSdkMcpServer({ name: "loom", version: "1", alwaysLoad: true, tools: [askUser, commit] });
+  return createSdkMcpServer({
+    name: "loom",
+    version: "1",
+    alwaysLoad: true,
+    tools: [askUser, commit],
+  });
 }
-

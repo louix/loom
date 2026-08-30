@@ -7,11 +7,11 @@
     ".": "./src/harness.ts"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/daemon": "workspace:*",
     "@loom/connector-claude": "workspace:*",
     "@loom/connector-gemini": "workspace:*",
     "@loom/connector-generic": "workspace:*",
-    "@loom/connector-mock": "workspace:*"
+    "@loom/connector-mock": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/daemon": "workspace:*"
   }
 }

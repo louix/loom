@@ -36,11 +36,15 @@ export function buildLoomTools(deps: LoomToolDeps): ToolSet {
     ask_user: tool({
       description: ASK_USER_DESC,
       inputSchema: z.object({
-        question: z.string().describe("The question to put to the user. Be specific and self-contained."),
+        question: z
+          .string()
+          .describe("The question to put to the user. Be specific and self-contained."),
         context: z
           .string()
           .optional()
-          .describe("Optional background: what you were doing, why you're blocked, the options you see."),
+          .describe(
+            "Optional background: what you were doing, why you're blocked, the options you see.",
+          ),
       }),
       execute: async ({ question, context }) => {
         const answer = await deps.askUser(question, context);
@@ -50,11 +54,15 @@ export function buildLoomTools(deps: LoomToolDeps): ToolSet {
     commit: tool({
       description: COMMIT_DESC,
       inputSchema: z.object({
-        message: z.string().describe("Commit message. First line is the subject; keep it under ~72 chars."),
+        message: z
+          .string()
+          .describe("Commit message. First line is the subject; keep it under ~72 chars."),
         stage_all: z
           .boolean()
           .optional()
-          .describe("Stage all changes first (git add -A). Default true; set false to commit only what is staged."),
+          .describe(
+            "Stage all changes first (git add -A). Default true; set false to commit only what is staged.",
+          ),
       }),
       execute: async ({ message, stage_all }) => {
         const res = commitInWorktree(deps.cwd, message, { stageAll: stage_all !== false });

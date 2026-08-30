@@ -14,8 +14,8 @@
     "./theme": "./src/theme.ts"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
     "@loom/client": "workspace:*",
+    "@loom/core": "workspace:*",
     "ink": "7.1.1",
     "react": "19.2.8"
   }

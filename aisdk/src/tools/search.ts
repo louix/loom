@@ -35,14 +35,25 @@ export async function runSearch(
     if (hits.length === 0) return { ok: true, output: "(no results)" };
     return {
       ok: true,
-      output: hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${oneLine(h.snippet)}`).join("\n"),
+      output: hits
+        .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${oneLine(h.snippet)}`)
+        .join("\n"),
     };
   } catch (err) {
-    return { ok: false, output: `search failed: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      output: `search failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 
-async function brave(base: string, key: string, q: string, n: number, signal: AbortSignal): Promise<Hit[]> {
+async function brave(
+  base: string,
+  key: string,
+  q: string,
+  n: number,
+  signal: AbortSignal,
+): Promise<Hit[]> {
   const res = await fetch(`${base}/web/search?q=${encodeURIComponent(q)}&count=${n}`, {
     headers: { Accept: "application/json", "X-Subscription-Token": key },
     signal,
@@ -58,7 +69,13 @@ async function brave(base: string, key: string, q: string, n: number, signal: Ab
   }));
 }
 
-async function tavily(base: string, key: string, q: string, n: number, signal: AbortSignal): Promise<Hit[]> {
+async function tavily(
+  base: string,
+  key: string,
+  q: string,
+  n: number,
+  signal: AbortSignal,
+): Promise<Hit[]> {
   const res = await fetch(`${base}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -66,7 +83,9 @@ async function tavily(base: string, key: string, q: string, n: number, signal: A
     signal,
   });
   if (!res.ok) throw new Error(`tavily search ${res.status} ${res.statusText}`);
-  const body = (await res.json()) as { results?: Array<{ title?: unknown; url?: unknown; content?: unknown }> };
+  const body = (await res.json()) as {
+    results?: Array<{ title?: unknown; url?: unknown; content?: unknown }>;
+  };
   return (body.results ?? []).slice(0, n).map((r) => ({
     title: str(r.title),
     url: str(r.url),
@@ -84,7 +103,12 @@ export function searchTool(cfg: SearchConfig) {
       "Use a fetch tool afterwards to read a page in full.",
     inputSchema: z.object({
       query: z.string().describe("The search query."),
-      max_results: z.number().int().positive().optional().describe(`How many results (default ${cfg.maxResults}).`),
+      max_results: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(`How many results (default ${cfg.maxResults}).`),
     }),
     execute: async ({ query, max_results }) => {
       const r = await runSearch(cfg, query, max_results);

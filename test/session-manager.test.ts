@@ -20,7 +20,12 @@ after(async () => {
 });
 
 function client(reconnect = false): Promise<LoomClient> {
-  return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false, reconnect });
+  return LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+    reconnect,
+  });
 }
 
 function fake(): FakeProvider {
@@ -40,7 +45,10 @@ async function statusOf(c: LoomClient, id: string): Promise<string> {
   return (await c.request<SessionSnapshot>("session.get", { id })).status;
 }
 
-async function createFake(c: LoomClient, prompt = "do work"): Promise<{ id: string; fs: FakeSession }> {
+async function createFake(
+  c: LoomClient,
+  prompt = "do work",
+): Promise<{ id: string; fs: FakeSession }> {
   const snap = await c.request<SessionSnapshot>("session.create", { prompt, provider: "fake" });
   await waitFor(() => fake().session(snap.id) !== undefined);
   return { id: snap.id, fs: fake().session(snap.id) as FakeSession };
@@ -63,11 +71,19 @@ test("create registers a session, streams its events, and derives running → id
   assert.equal(created.title, "stream me");
 
   fs.emit({ type: "assistant_text", text: "working" });
-  await waitFor(() => (c.sessions ?? []).length >= 0 && frames.some((f) => f.type === "event" && f.event.type === "assistant_text"));
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    () =>
+      (c.sessions ?? []).length >= 0 &&
+      frames.some((f) => f.type === "event" && f.event.type === "assistant_text"),
+  );
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
 
   fs.finishTurn({ summary: "all done", usage: { input: 500, output: 40 }, costUsd: 0.03 });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+  );
 
   const done = await c.request<SessionSnapshot>("session.get", { id });
   assert.equal(done.usage.input, 500);
@@ -99,24 +115,32 @@ test("permission_request blocks the session; first responder wins", async () => 
     return s.status === "awaiting_input" && s.awaitReason === "permission";
   });
 
-  const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPermission", {
-    id,
-    requestId: "p1",
-    decision: "allow",
-  });
+  const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>(
+    "session.respondPermission",
+    {
+      id,
+      requestId: "p1",
+      decision: "allow",
+    },
+  );
   assert.deepEqual(first, { ok: true, alreadyResolved: false });
 
-  const second = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPermission", {
-    id,
-    requestId: "p1",
-    decision: "deny",
-  });
+  const second = await c.request<{ ok: boolean; alreadyResolved: boolean }>(
+    "session.respondPermission",
+    {
+      id,
+      requestId: "p1",
+      decision: "deny",
+    },
+  );
   assert.equal(second.alreadyResolved, true);
 
   assert.equal(fs.permissionResponses.length, 1);
   assert.equal(fs.permissionResponses[0]?.decision.behavior, "allow");
 
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
   await c.close();
 });
 
@@ -143,7 +167,12 @@ test("a stray assistant_text / tool_call after permission_request doesn't unbloc
 test("an ask_user question blocks the session until session.answer resolves it", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
-  fs.emit({ type: "question", id: "q1", question: "which database?", context: "postgres or sqlite" });
+  fs.emit({
+    type: "question",
+    id: "q1",
+    question: "which database?",
+    context: "postgres or sqlite",
+  });
 
   await waitFor(async () => {
     const s = await c.request<SessionSnapshot>("session.get", { id });
@@ -166,7 +195,9 @@ test("an ask_user question blocks the session until session.answer resolves it",
   assert.equal(second.alreadyResolved, true);
   assert.equal(fs.questionAnswers.length, 1);
 
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
   await c.close();
 });
 
@@ -197,7 +228,9 @@ test("a plan_review blocks the session; session.respondPlan resolves it", async 
   });
   assert.equal(second.alreadyResolved, true);
 
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
   await c.close();
 });
 
@@ -205,7 +238,10 @@ test("session.respondPlan carries the revise plan / discuss message and validate
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "plan_review", id: "pr2", plan: "draft" });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).awaitReason === "plan_review");
+  await waitFor(
+    async () =>
+      (await c.request<SessionSnapshot>("session.get", { id })).awaitReason === "plan_review",
+  );
 
   await assert.rejects(
     c.request("session.respondPlan", { id, requestId: "pr2", action: "revise", plan: "  " }),
@@ -216,7 +252,12 @@ test("session.respondPlan carries the revise plan / discuss message and validate
     /implement \| implement_fresh \| revise \| discuss/,
   );
 
-  await c.request("session.respondPlan", { id, requestId: "pr2", action: "revise", plan: "final plan" });
+  await c.request("session.respondPlan", {
+    id,
+    requestId: "pr2",
+    action: "revise",
+    plan: "final plan",
+  });
   assert.deepEqual(fs.planResponses.at(-1)?.decision, { action: "revise", plan: "final plan" });
   await c.close();
 });
@@ -234,7 +275,9 @@ test("send delivers a follow-up turn and returns the session to running", async 
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.finishTurn();
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+  );
 
   await c.request("session.send", { id, text: "one more thing" });
   assert.deepEqual(fs.sends, ["one more thing"]);
@@ -265,16 +308,21 @@ test("session.compact forwards to the adapter and streams a compact event", asyn
   c.onPush((f) => frames.push(f));
   const { id, fs } = await createFake(c);
   fs.finishTurn({ contextUsed: 80_000 });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+  );
 
   await c.request("session.compact", { id, instructions: "keep the plan" });
   assert.deepEqual(fs.compacts, ["keep the plan"]);
 
   await waitFor(() =>
-    frames.some((f) => f.type === "event" && f.event.type === "compact" && f.event.sessionId === id),
+    frames.some(
+      (f) => f.type === "event" && f.event.type === "compact" && f.event.sessionId === id,
+    ),
   );
   const compact = frames.find(
-    (f): f is Extract<PushFrame, { type: "event" }> => f.type === "event" && f.event.type === "compact",
+    (f): f is Extract<PushFrame, { type: "event" }> =>
+      f.type === "event" && f.event.type === "compact",
   );
   assert.equal(compact?.event.type === "compact" && compact.event.before, 80_000);
   // compacting an idle session leaves it idle
@@ -292,7 +340,9 @@ test("interrupt is sticky — a trailing stream end does not undo it", async () 
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "midway" });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
 
   await c.request("session.interrupt", { id });
   assert.equal(fs.interruptCount, 1);
@@ -308,7 +358,9 @@ test("after an interrupt you can just send — no resume step", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "midway" });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
 
   await c.request("session.interrupt", { id });
   assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "interrupted");
@@ -316,7 +368,9 @@ test("after an interrupt you can just send — no resume step", async () => {
   // send() on the interrupted (still-live) session starts a fresh turn
   await c.request("session.send", { id, text: "carry on" });
   assert.deepEqual(fs.sends, ["carry on"]);
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
   await c.close();
 });
 
@@ -324,8 +378,13 @@ test("a fatal error moves the session to error", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.fail("provider exploded");
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "error");
-  const hist = await c.request<Array<{ status: string; reason: string | null }>>("session.history", { id });
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "error",
+  );
+  const hist = await c.request<Array<{ status: string; reason: string | null }>>(
+    "session.history",
+    { id },
+  );
   assert.equal(hist.at(-1)?.status, "error");
   await c.close();
 });
@@ -334,10 +393,17 @@ test("an abrupt stream end (still live) becomes interrupted/stream_ended", async
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "half" });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+  );
   fs.endStream();
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "interrupted");
-  const hist = await c.request<Array<{ status: string; reason: string | null }>>("session.history", { id });
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "interrupted",
+  );
+  const hist = await c.request<Array<{ status: string; reason: string | null }>>(
+    "session.history",
+    { id },
+  );
   assert.equal(hist.at(-1)?.reason, "stream_ended");
   await c.close();
 });
@@ -346,11 +412,16 @@ test("the first successful turn auto-titles the session", async () => {
   const c = await client();
   fake().titleReply = "Add a websocket transport";
   const { id, fs } = await createFake(c, "please add websockets to the transport layer");
-  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).title, "please add websockets to the transport layer");
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id })).title,
+    "please add websockets to the transport layer",
+  );
 
   fs.finishTurn();
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).title === "Add a websocket transport",
+    async () =>
+      (await c.request<SessionSnapshot>("session.get", { id })).title ===
+      "Add a websocket transport",
   );
   await c.close();
 });
@@ -374,12 +445,17 @@ test("sub-agent start/stop events surface on the session snapshot", async () => 
 
   fs.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
   fs.emit({ type: "subagent_started", subagentId: "t2", name: "tester" });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).subagents.length === 2);
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).subagents.length === 2,
+  );
 
   let snap = await c.request<SessionSnapshot>("session.get", { id });
   assert.deepEqual(
     snap.subagents.map((s) => [s.name, s.active]),
-    [["reviewer", true], ["tester", true]],
+    [
+      ["reviewer", true],
+      ["tester", true],
+    ],
   );
 
   fs.emit({ type: "subagent_stopped", subagentId: "t1" });
@@ -397,25 +473,55 @@ test("rate_limit events surface on the session snapshot, keyed by window", async
   const c = await client();
   const { id, fs } = await createFake(c);
 
-  fs.emit({ type: "rate_limit", status: "allowed", window: "five_hour", utilization: 42, resetsAt: 1000 });
-  await waitFor(async () => Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length === 1);
+  fs.emit({
+    type: "rate_limit",
+    status: "allowed",
+    window: "five_hour",
+    utilization: 42,
+    resetsAt: 1000,
+  });
+  await waitFor(
+    async () =>
+      Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length ===
+      1,
+  );
 
   // A different window merges in rather than clobbering the first.
-  fs.emit({ type: "rate_limit", status: "allowed_warning", window: "seven_day", utilization: 88, resetsAt: 2000 });
+  fs.emit({
+    type: "rate_limit",
+    status: "allowed_warning",
+    window: "seven_day",
+    utilization: 88,
+    resetsAt: 2000,
+  });
   await waitFor(
-    async () => Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length === 2,
+    async () =>
+      Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length ===
+      2,
   );
 
   const snap = await c.request<SessionSnapshot>("session.get", { id });
-  assert.deepEqual(snap.rateLimits.five_hour, { status: "allowed", utilization: 42, resetsAt: 1000 });
-  assert.deepEqual(snap.rateLimits.seven_day, { status: "allowed_warning", utilization: 88, resetsAt: 2000 });
+  assert.deepEqual(snap.rateLimits.five_hour, {
+    status: "allowed",
+    utilization: 42,
+    resetsAt: 1000,
+  });
+  assert.deepEqual(snap.rateLimits.seven_day, {
+    status: "allowed_warning",
+    utilization: 88,
+    resetsAt: 2000,
+  });
   await c.close();
 });
 
 test("setMode updates the row and forwards to a live adapter", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
-  const snap = await c.request<SessionSnapshot>("session.setMode", { id, mode: "plan", by: "tester" });
+  const snap = await c.request<SessionSnapshot>("session.setMode", {
+    id,
+    mode: "plan",
+    by: "tester",
+  });
   assert.equal(snap.mode, "plan");
   assert.deepEqual(fs.modeChanges, ["plan"]);
   await assert.rejects(c.request("session.setMode", { id, mode: "bogus" }), /mode must be/);
@@ -434,7 +540,10 @@ test("without a price table the provider's cost is kept, tagged costSource=provi
 });
 
 test("a price table overrides the provider's cost, tagged costSource=table", async () => {
-  writeFileSync(join(h.repoRoot, ".loom", "models.toml"), `["fake-1"]\ninput = 3.0\noutput = 15.0\n`);
+  writeFileSync(
+    join(h.repoRoot, ".loom", "models.toml"),
+    `["fake-1"]\ninput = 3.0\noutput = 15.0\n`,
+  );
   const c = await client();
   const reloaded = await c.request<{ models: string[] }>("pricing.reload");
   assert.ok(reloaded.models.includes("fake-1"));
@@ -448,7 +557,9 @@ test("a price table overrides the provider's cost, tagged costSource=table", asy
   const fs = fake().session(snap.id) as FakeSession;
 
   fs.finishTurn({ usage: { input: 1000, output: 500 }, costUsd: 0.99 });
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: snap.id })).turns === 1);
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id: snap.id })).turns === 1,
+  );
 
   const got = await c.request<SessionSnapshot>("session.get", { id: snap.id });
   // (1000*3 + 500*15) / 1e6 = 0.0105  — not the provider's 0.99
@@ -481,7 +592,10 @@ test("a checkpoint is recorded per completed turn; session.checkpoints lists the
     "session.checkpoints",
     { id },
   );
-  assert.deepEqual(cps.map((x) => x.turn), [1, 2]);
+  assert.deepEqual(
+    cps.map((x) => x.turn),
+    [1, 2],
+  );
   assert.equal(cps[0]?.userText, "do work"); // the create prompt
   assert.equal(cps[1]?.userText, "the second ask");
   assert.equal(cps[1]?.rewindCostUsd, 0); // fake isn't priced / isn't aisdk
@@ -502,14 +616,21 @@ test("a permission answer that lands after an interrupt does not un-interrupt th
   await waitFor(async () => (await statusOf(c, id)) === "interrupted");
 
   // a client whose UI still showed the prompt clicks Allow
-  const r = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPermission", {
-    id,
-    requestId: "p1",
-    decision: "allow",
-  });
+  const r = await c.request<{ ok: boolean; alreadyResolved: boolean }>(
+    "session.respondPermission",
+    {
+      id,
+      requestId: "p1",
+      decision: "allow",
+    },
+  );
   await delay(40);
   assert.equal(r.alreadyResolved, true, "the pending id was dropped by the interrupt");
-  assert.equal(await statusOf(c, id), "interrupted", "a stale answer must not flip a dead turn back to running");
+  assert.equal(
+    await statusOf(c, id),
+    "interrupted",
+    "a stale answer must not flip a dead turn back to running",
+  );
   await c.close();
 });
 
@@ -523,7 +644,10 @@ test("a compaction drops the checkpoints (their offsets are no longer valid)", a
   await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2);
 
   let cps = await c.request<Array<{ turn: number }>>("session.checkpoints", { id });
-  assert.deepEqual(cps.map((x) => x.turn), [1, 2]);
+  assert.deepEqual(
+    cps.map((x) => x.turn),
+    [1, 2],
+  );
 
   fs.emit({ type: "compact", trigger: "manual", before: 100, after: 30 });
   await delay(40);
@@ -532,4 +656,3 @@ test("a compaction drops the checkpoints (their offsets are no longer valid)", a
   assert.deepEqual(cps, [], "checkpoints cleared after a compaction");
   await c.close();
 });
-
