@@ -38,9 +38,9 @@ import {
   visibleLog,
   type LogLine,
   type TuiState,
-} from "../src/tui/model.ts";
-import { buffer } from "../src/tui/editor.ts";
-import { bar, humanTokens, money, spinnerFrame, truncate, wrapText } from "../src/tui/theme.ts";
+} from "@loom/tui/model";
+import { buffer } from "@loom/tui/editor";
+import { bar, humanTokens, money, spinnerFrame, truncate, wrapText } from "@loom/tui/theme";
 
 // ---------------------------------------------------------------------------
 // fixtures

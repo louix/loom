@@ -5,11 +5,15 @@
     "noEmit": true
   },
   "include": [
-    "src/**/*.ts",
     "test/**/*.ts",
     "core/src/**/*.ts",
-    "harness/src/**/*.ts",
+    "client/src/**/*.ts",
     "aisdk/src/**/*.ts",
-    "connectors/*/src/**/*.ts"
-  ]
+    "harness/src/**/*.ts",
+    "backend/daemon/src/**/*.ts",
+    "frontend/tui/src/**/*.ts",
+    "connectors/*/src/**/*.ts",
+    "cli/src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "**/node_modules", ".claude", ".loom", "**/dist"]
 }

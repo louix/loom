@@ -37,7 +37,7 @@ test("a fake-only daemon session never loads a vendor connector", async () => {
   // Imported *after* the hook — harness → Daemon → registry, none of which
   // statically import a connector or a vendor SDK.
   const { makeHarness } = await import("@loom/harness");
-  const { LoomClient } = await import("../src/client/client.ts");
+  const { LoomClient } = await import("@loom/client");
 
   const h = await makeHarness();
   try {

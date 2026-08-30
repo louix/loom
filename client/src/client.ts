@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   EventPush,
@@ -14,11 +13,14 @@ import type {
 } from "@loom/core/wire";
 import { PROTOCOL_VERSION } from "@loom/core/wire";
 
-const LOOMD_ENTRY = fileURLToPath(new URL("../cli/loomd.ts", import.meta.url));
-
 export interface ConnectOptions {
   repoRoot: string;
   sockPath: string;
+  /**
+   * Absolute path to the `loomd` entry script, run as `node <daemonEntry> --repo …`
+   * when `autospawn` fires. Required unless `autospawn` is false.
+   */
+  daemonEntry?: string;
   /** Spawn a daemon if none is listening. Default true. */
   autospawn?: boolean;
   /** Reconnect (with gap replay) if the connection drops. Default true. */
@@ -69,6 +71,7 @@ export class LoomClient {
       autospawn: true,
       reconnect: true,
       replayHistory: false,
+      daemonEntry: "",
       clientId: this.clientId,
       ...opts,
     };
@@ -184,7 +187,9 @@ export class LoomClient {
   }
 
   async #spawnDaemon(): Promise<void> {
-    const child = spawn(process.execPath, [LOOMD_ENTRY, "--repo", this.#opts.repoRoot], {
+    const entry = this.#opts.daemonEntry;
+    if (!entry) throw new Error("LoomClient: autospawn needs `daemonEntry` (path to loomd)");
+    const child = spawn(process.execPath, [entry, "--repo", this.#opts.repoRoot], {
       detached: true,
       stdio: "ignore",
     });

@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { LoomClient } from "../src/client/client.ts";
+import { LoomClient } from "@loom/client";
 import type { HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";

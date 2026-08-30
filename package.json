@@ -1,41 +1,40 @@
 {
-  "name": "loom",
+  "name": "loom-workspace",
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Per-project daemon that runs and supervises a fleet of coding agents, each in its own git worktree.",
+  "description": "Workspace root for loom — see cli/ for the app package.",
   "packageManager": "pnpm@11.24.0",
-  "bin": {
-    "loom": "./src/cli/loom.ts"
-  },
   "engines": {
     "node": ">=24",
     "pnpm": ">=11.23.0"
   },
   "scripts": {
-    "loom": "node src/cli/loom.ts",
-    "daemon": "node src/cli/loomd.ts",
+    "loom": "node cli/src/loom.ts",
+    "daemon": "node cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\""
   },
-  "dependencies": {
-    "@loom/core": "workspace:*",
-    "ink": "7.1.1",
-    "react": "19.2.8",
-    "smol-toml": "1.8.0"
-  },
   "devDependencies": {
     "@loom/aisdk": "workspace:*",
+    "@loom/client": "workspace:*",
     "@loom/connector-claude": "workspace:*",
     "@loom/connector-gemini": "workspace:*",
     "@loom/connector-generic": "workspace:*",
     "@loom/connector-mock": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/daemon": "workspace:*",
     "@loom/harness": "workspace:*",
+    "@loom/tui": "workspace:*",
+    "loom": "workspace:*",
     "@ai-sdk/provider": "2.0.3",
-    "ai": "5.0.249",
-    "zod": "4.4.3",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
-    "typescript": "5.9.3"
+    "ai": "5.0.249",
+    "ink": "7.1.1",
+    "react": "19.2.8",
+    "smol-toml": "1.8.0",
+    "typescript": "5.9.3",
+    "zod": "4.4.3"
   }
 }

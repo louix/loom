@@ -3,13 +3,13 @@ import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkpoint, migrate, openDb } from "../src/store/db.ts";
+import { checkpoint, migrate, openDb } from "@loom/daemon/store/db";
 import {
   ChildStore,
   CheckpointStore,
   ProviderDefaultStore,
   SessionStore,
-} from "../src/store/sessions.ts";
+} from "@loom/daemon/store/sessions";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");

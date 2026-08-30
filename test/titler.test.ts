@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cheapModelFor, cleanTitle, generateTitle } from "../src/daemon/titler.ts";
+import { cheapModelFor, cleanTitle, generateTitle } from "@loom/daemon/daemon/titler";
 import { FakeProvider } from "@loom/connector-mock";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { deepMerge, lintConfig, loadConfig, normalizeConfig, resolveApiKey } from "../src/config/config.ts";
-import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "../src/util/paths.ts";
+import { deepMerge, lintConfig, loadConfig, normalizeConfig, resolveApiKey } from "@loom/daemon/config/config";
+import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "@loom/daemon/scaffold";
 
 function cfg(toml: string) {
   return normalizeConfig(parseToml(toml));

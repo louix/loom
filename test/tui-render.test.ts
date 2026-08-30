@@ -5,9 +5,9 @@ import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { render } from "ink";
-import { LoomClient } from "../src/client/client.ts";
+import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
-import { App } from "../src/tui/app.ts";
+import { App } from "@loom/tui/app";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorktreeManager, slugify } from "../src/daemon/worktrees.ts";
+import { WorktreeManager, slugify } from "@loom/daemon/daemon/worktrees";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
 
 setLogLevel("error");

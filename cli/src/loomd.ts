@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { findRepoRoot } from "../util/paths.ts";
+import { findRepoRoot } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
-import { Daemon } from "../daemon/daemon.ts";
-import { DaemonAlreadyRunning } from "../daemon/lifecycle.ts";
+import { Daemon } from "@loom/daemon/daemon/daemon";
+import { DaemonAlreadyRunning } from "@loom/daemon/daemon/lifecycle";
 import { LOOM_VERSION } from "@loom/core/version";
 import { CONNECTORS } from "./connectors.ts";
 

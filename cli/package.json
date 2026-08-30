@@ -1,0 +1,26 @@
+{
+  "name": "loom",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Per-project daemon that runs and supervises a fleet of coding agents, each in its own git worktree.",
+  "bin": {
+    "loom": "./src/loom.ts",
+    "loomd": "./src/loomd.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@loom/client": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/daemon": "workspace:*",
+    "@loom/tui": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@loom/connector-claude": "workspace:*",
+    "@loom/connector-gemini": "workspace:*",
+    "@loom/connector-generic": "workspace:*",
+    "@loom/connector-mock": "workspace:*"
+  }
+}

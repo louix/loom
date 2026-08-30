@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import type { LoomClient } from "../client/client.ts";
+import type { LoomClient } from "@loom/client";
 import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";

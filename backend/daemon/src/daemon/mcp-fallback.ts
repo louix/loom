@@ -5,7 +5,7 @@
  * tools. If `npx` is missing too, the command is left as-is and the session
  * runs with just the built-in tools.
  */
-import { onPath } from "../util/paths.ts";
+import { onPath } from "@loom/core/paths";
 
 /** Pinned tilth version for the no-install fallback. */
 export const TILTH_FALLBACK = "tilth@0.9.0";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { LoomClient } from "../src/client/client.ts";
+import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { makeHarness, type Harness } from "@loom/harness";
 

@@ -8,14 +8,14 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
 import type { HarnessEvent, SessionStatus } from "@loom/core/events";
-import type { UsageDelta } from "../src/store/sessions.ts";
-import { openDb } from "../src/store/db.ts";
-import { SessionManager } from "../src/daemon/session-manager.ts";
+import type { UsageDelta } from "@loom/daemon/store/sessions";
+import { openDb } from "@loom/daemon/store/db";
+import { SessionManager } from "@loom/daemon/daemon/session-manager";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import { AisdkProvider, dropDanglingToolCalls } from "@loom/aisdk/provider";
 import { resolveModelFactory } from "@loom/connector-generic";
 import { AisdkEventMapper } from "@loom/aisdk/map";
-import { ProviderMessageStore } from "../src/store/provider-messages.ts";
+import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
 import { runTurn } from "@loom/aisdk/loop";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 

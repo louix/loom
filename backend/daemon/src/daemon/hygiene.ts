@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
-import type { LoomPaths } from "../util/paths.ts";
+import type { LoomPaths } from "@loom/core/paths";
 import type { ChildStore } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
 

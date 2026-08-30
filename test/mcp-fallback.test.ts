@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveMcpCommand, TILTH_FALLBACK } from "../src/daemon/mcp-fallback.ts";
-import { onPath } from "../src/util/paths.ts";
+import { resolveMcpCommand, TILTH_FALLBACK } from "@loom/daemon/daemon/mcp-fallback";
+import { onPath } from "@loom/core/paths";
 
 test("onPath finds a real binary and rejects a bogus one", () => {
   assert.equal(onPath("node"), true);

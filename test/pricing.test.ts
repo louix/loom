@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { costOf, loadPriceTable, parsePriceTable } from "../src/config/pricing.ts";
+import { costOf, loadPriceTable, parsePriceTable } from "@loom/daemon/config/pricing";
 
 const TABLE = `
 ["claude-sonnet-5"]

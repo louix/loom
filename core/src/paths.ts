@@ -1,5 +1,4 @@
-import { accessSync, constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 /**
@@ -21,43 +20,6 @@ export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boole
     if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
   }
   return false;
-}
-
-/**
- * The user-level config file, layered *under* the per-repo `.loom/config.toml`.
- * `$XDG_CONFIG_HOME/loom/config.toml`, falling back to `~/.config/loom/config.toml`.
- * Provider profiles, credentials (env-var names), and keybindings live here;
- * the per-repo file overrides model defaults, base branch, `[[mcp]]`, etc.
- */
-export function userConfigPath(): string {
-  const base = process.env["XDG_CONFIG_HOME"]?.trim() || join(homedir(), ".config");
-  return join(base, "loom", "config.toml");
-}
-
-/** The `config.example.toml` shipped alongside the source. */
-export function exampleConfigPath(): string {
-  return join(import.meta.dirname, "..", "..", "config.example.toml");
-}
-
-/**
- * First-run convenience: drop a copy of `config.example.toml` at
- * {@link userConfigPath} when nothing is there yet, so `loom` has an obvious,
- * annotated place to configure providers. Never overwrites an existing file.
- * Returns the path when it created one, `null` otherwise (already present, or
- * the example couldn't be read).
- */
-export function scaffoldUserConfig(): string | null {
-  const dest = userConfigPath();
-  if (existsSync(dest)) return null;
-  const src = exampleConfigPath();
-  if (!existsSync(src)) return null;
-  try {
-    mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(src, dest);
-    return dest;
-  } catch {
-    return null;
-  }
 }
 
 /**

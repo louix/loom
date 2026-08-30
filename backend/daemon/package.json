@@ -1,0 +1,14 @@
+{
+  "name": "@loom/daemon",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./scaffold": "./src/scaffold.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "smol-toml": "1.8.0"
+  }
+}

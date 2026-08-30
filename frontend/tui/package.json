@@ -1,0 +1,22 @@
+{
+  "name": "@loom/tui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/run.ts",
+    "./run": "./src/run.ts",
+    "./app": "./src/app.ts",
+    "./model": "./src/model.ts",
+    "./components": "./src/components.ts",
+    "./editor": "./src/editor.ts",
+    "./editor-handoff": "./src/editor-handoff.ts",
+    "./theme": "./src/theme.ts"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/client": "workspace:*",
+    "ink": "7.1.1",
+    "react": "19.2.8"
+  }
+}

@@ -16,7 +16,7 @@
  */
 import { createElement } from "react";
 import { render } from "ink";
-import type { LoomClient } from "../client/client.ts";
+import type { LoomClient } from "@loom/client";
 import { App } from "./app.ts";
 
 export async function runTui(client: LoomClient): Promise<void> {

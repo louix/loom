@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKey, buffer, layout, lineBounds, type KeyLike } from "../src/tui/editor.ts";
+import { applyKey, buffer, layout, lineBounds, type KeyLike } from "@loom/tui/editor";
 
 const K = (over: Partial<KeyLike> = {}): KeyLike => ({ ...over });
 

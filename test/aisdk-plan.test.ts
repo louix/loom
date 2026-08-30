@@ -8,8 +8,8 @@ import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { LanguageModel } from "ai";
 import { setLogLevel } from "@loom/core/logger";
-import { openDb } from "../src/store/db.ts";
-import { ProviderMessageStore } from "../src/store/provider-messages.ts";
+import { openDb } from "@loom/daemon/store/db";
+import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
 import { AisdkProvider } from "@loom/aisdk/provider";
 import type { HarnessEvent } from "@loom/core/events";
 

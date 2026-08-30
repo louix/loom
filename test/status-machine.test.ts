@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveStatus } from "../src/daemon/status-machine.ts";
+import { deriveStatus } from "@loom/daemon/daemon/status-machine";
 import type { HarnessEvent } from "@loom/core/events";
 
 const ev = (e: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent =>

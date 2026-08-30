@@ -11,6 +11,7 @@
     "./logger": "./src/logger.ts",
     "./commit": "./src/commit.ts",
     "./tokens": "./src/tokens.ts",
+    "./paths": "./src/paths.ts",
     "./version": "./src/version.ts",
     "./transcript": "./src/transcript.ts",
     "./connector": "./src/connector.ts"

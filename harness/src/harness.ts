@@ -2,10 +2,18 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon } from "../../src/daemon/daemon.ts";
-import { loomPaths } from "../../src/util/paths.ts";
-import { CONNECTORS } from "../../src/cli/connectors.ts";
+import type { ConnectorManifest } from "@loom/core/connector";
+import { loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
+import { Daemon } from "@loom/daemon/daemon/daemon";
+
+/** Every connector, for a harness daemon that may exercise any provider. */
+const CONNECTORS: ConnectorManifest = {
+  "@loom/connector-mock": () => import("@loom/connector-mock"),
+  "@loom/connector-claude": () => import("@loom/connector-claude"),
+  "@loom/connector-generic": () => import("@loom/connector-generic"),
+  "@loom/connector-gemini": () => import("@loom/connector-gemini"),
+};
 
 setLogLevel("error"); // keep test output quiet
 

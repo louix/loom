@@ -2,13 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
-import {
-  ensureLoomDir,
-  loomPaths,
-  scaffoldUserConfig,
-  userConfigPath,
-  type LoomPaths,
-} from "../util/paths.ts";
+import { ensureLoomDir, loomPaths, type LoomPaths } from "@loom/core/paths";
+import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveMcpCommand } from "./mcp-fallback.ts";
 import {
   lintConfig,

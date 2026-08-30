@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { LoomClient } from "../src/client/client.ts";
+import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
-import { ChildStore } from "../src/store/sessions.ts";
-import { pidAlive } from "../src/daemon/hygiene.ts";
+import { ChildStore } from "@loom/daemon/store/sessions";
+import { pidAlive } from "@loom/daemon/daemon/hygiene";
 import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;

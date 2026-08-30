@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { findRepoRoot, loomPaths } from "../util/paths.ts";
-import { LoomClient } from "../client/client.ts";
+import { fileURLToPath } from "node:url";
+import { findRepoRoot, loomPaths } from "@loom/core/paths";
+import { LoomClient } from "@loom/client";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import { LOOM_VERSION } from "@loom/core/version";
@@ -141,12 +142,13 @@ async function main(): Promise<void> {
   const client = await LoomClient.connect({
     repoRoot,
     sockPath: sock,
+    daemonEntry: fileURLToPath(new URL("./loomd.ts", import.meta.url)),
     reconnect,
     ...(wantTui ? { replayHistory: true } : {}),
   });
 
   if (wantTui) {
-    const { runTui } = await import("../tui/run.ts");
+    const { runTui } = await import("@loom/tui/run");
     await runTui(client);
     return;
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EventLog } from "../src/daemon/event-log.ts";
+import { EventLog } from "@loom/daemon/daemon/event-log";
 import type { PushFrame } from "@loom/core/wire";
 
 function evt(sessionId: string, text: string): Omit<Extract<PushFrame, { type: "event" }>, "seq"> {
