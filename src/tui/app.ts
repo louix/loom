@@ -1033,6 +1033,8 @@ export function App({
         // The command palette runs an action through the shared dispatcher; the
         // provider / model / find / undo pickers resolve by kind in choosePicked.
         if (p.kind === "command") {
+          if (overlayActed.current === p) return; // batched double-Enter guard
+          overlayActed.current = p;
           const cur = pickerCurrent(p);
           dispatch({ t: "closePicker" });
           if (cur) runAct(cur.id as ActName);
