@@ -6,7 +6,7 @@
  */
 import { createElement as h, useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
-import type { SessionSnapshot } from "../protocol/wire.ts";
+import type { SessionSnapshot } from "@loom/core/wire";
 import { layout, type Buffer } from "./editor.ts";
 import {
   cacheHeat,

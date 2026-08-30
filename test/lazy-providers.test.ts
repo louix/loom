@@ -27,9 +27,9 @@ function vendorHits(): string[] {
 }
 
 test("a fake-only daemon session never evaluates a vendor SDK", async () => {
-  // Imported *after* the hook — helpers → Daemon → registry, none of which
+  // Imported *after* the hook — harness → Daemon → registry, none of which
   // statically import a vendor SDK any more.
-  const { makeHarness } = await import("./helpers.ts");
+  const { makeHarness } = await import("@loom/harness");
   const { LoomClient } = await import("../src/client/client.ts");
 
   const h = await makeHarness();

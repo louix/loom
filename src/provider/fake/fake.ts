@@ -8,8 +8,8 @@
  * `emit(...)`, `finishTurn()`, `fail(...)`, `endStream()`.
  */
 import { randomUUID } from "node:crypto";
-import type { HarnessEvent, TokenUsage } from "../../protocol/events.ts";
-import { AsyncChannel } from "../../util/channel.ts";
+import type { HarnessEvent, TokenUsage } from "@loom/core/events";
+import { AsyncChannel } from "@loom/core/channel";
 import type {
   AdapterSnapshot,
   AgentProvider,
@@ -21,7 +21,7 @@ import type {
   SessionMode,
   SessionRef,
   UserInput,
-} from "../types.ts";
+} from "@loom/core/types";
 
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,

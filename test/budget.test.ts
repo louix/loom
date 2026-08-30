@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
-import type { SessionSnapshot } from "../src/protocol/wire.ts";
+import type { SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "../src/provider/fake/fake.ts";
-import { makeHarness, type Harness } from "./helpers.ts";
+import { makeHarness, type Harness } from "@loom/harness";
 
 async function waitFor(pred: () => boolean | Promise<boolean>, ms = 1000): Promise<void> {
   const start = Date.now();

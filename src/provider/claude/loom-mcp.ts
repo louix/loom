@@ -14,7 +14,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { commitInWorktree, type CommitResult } from "../commit.ts";
+import { commitInWorktree, type CommitResult } from "@loom/core/commit";
 
 // Re-exported for the tests that still import it from here.
 export { commitInWorktree, type CommitResult };

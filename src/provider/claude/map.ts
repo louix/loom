@@ -8,7 +8,7 @@
  * `query()` call, so the mapper differences them to emit per-turn deltas
  * (context fill stays absolute — it's the last request's input size).
  */
-import type { HarnessEvent, TokenUsage } from "../../protocol/events.ts";
+import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 
 // --- minimal shapes we depend on -------------------------------------------
 

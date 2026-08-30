@@ -4,7 +4,7 @@
  * No React in here — components read these constants, and the formatting
  * helpers are unit-tested directly.
  */
-import type { SessionStatus } from "../protocol/events.ts";
+import type { SessionStatus } from "@loom/core/events";
 
 /** Truecolour palette. One accent (teal); everything else stays quiet. */
 export const C = {

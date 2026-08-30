@@ -5,8 +5,8 @@
  * interrupt, permission responses, mode / model — funnels through here so it is
  * serialized per session and the daemon stays thin.
  */
-import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
-import type { Logger } from "../util/logger.ts";
+import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { Logger } from "@loom/core/logger";
 import type { UsageDelta } from "../store/sessions.ts";
 import type {
   AdapterSnapshot,
@@ -17,7 +17,7 @@ import type {
   PlanDecision,
   SessionMode,
   SessionRef,
-} from "../provider/types.ts";
+} from "@loom/core/types";
 import { deriveStatus } from "./status-machine.ts";
 
 export interface ManagerHooks {

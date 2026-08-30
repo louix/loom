@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon } from "../src/daemon/daemon.ts";
-import { loomPaths } from "../src/util/paths.ts";
-import { setLogLevel } from "../src/util/logger.ts";
+import { Daemon } from "../../src/daemon/daemon.ts";
+import { loomPaths } from "../../src/util/paths.ts";
+import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error"); // keep test output quiet
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
-import { makeLogger, setLogFile, type Logger } from "../util/logger.ts";
+import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import {
   ensureLoomDir,
   loomPaths,
@@ -18,8 +18,8 @@ import {
   type LoomConfig,
 } from "../config/config.ts";
 import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
-import { LOOM_VERSION } from "../version.ts";
-import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
+import { LOOM_VERSION } from "@loom/core/version";
+import type { HarnessEvent, SessionStatus } from "@loom/core/events";
 import {
   PROTOCOL_VERSION,
   type HelloParams,
@@ -27,7 +27,7 @@ import {
   type ModelChoice,
   type ProviderInfo,
   type SessionSnapshot,
-} from "../protocol/wire.ts";
+} from "@loom/core/wire";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
 import {
   ChildStore,
@@ -36,7 +36,7 @@ import {
   type UsageDelta,
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../provider/aisdk/store.ts";
-import { estimateTokens } from "../provider/aisdk/tokens.ts";
+import { estimateTokens } from "@loom/core/tokens";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -54,7 +54,7 @@ import {
   type PermissionDecision,
   type PlanDecision,
   type SessionMode,
-} from "../provider/types.ts";
+} from "@loom/core/types";
 import {
   acquirePidfile,
   IdleTimer,

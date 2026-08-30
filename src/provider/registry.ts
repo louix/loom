@@ -11,7 +11,7 @@
  */
 import { resolveApiKey, type LoomConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
-import type { AgentProvider } from "./types.ts";
+import type { AgentProvider } from "@loom/core/types";
 import type { SearchConfig } from "./aisdk/tools/search.ts";
 
 export class ProviderRegistry {

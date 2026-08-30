@@ -9,8 +9,8 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Logger } from "../util/logger.ts";
-import type { GitFacts } from "../protocol/wire.ts";
+import type { Logger } from "@loom/core/logger";
+import type { GitFacts } from "@loom/core/wire";
 
 const IDENTITY_NAME = "Loom (claude)";
 const IDENTITY_EMAIL = "loom+claude@localhost";

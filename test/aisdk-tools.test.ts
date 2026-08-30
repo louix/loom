@@ -8,13 +8,13 @@ import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel } from "ai";
 import { z } from "zod";
-import { setLogLevel, makeLogger } from "../src/util/logger.ts";
+import { setLogLevel, makeLogger } from "@loom/core/logger";
 import { openDb } from "../src/store/db.ts";
 import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
 import { AisdkProvider } from "../src/provider/aisdk/adapter.ts";
 import { McpHub } from "../src/provider/aisdk/mcp.ts";
 import { isReadonly, isEdit, policy, wrapToolSet, PermissionDenied } from "../src/provider/aisdk/gate.ts";
-import type { HarnessEvent } from "../src/protocol/events.ts";
+import type { HarnessEvent } from "@loom/core/events";
 
 setLogLevel("error");
 const log = makeLogger("test");

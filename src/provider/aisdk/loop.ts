@@ -17,7 +17,7 @@ import {
   stepCountIs,
   streamText,
 } from "ai";
-import type { HarnessEvent } from "../../protocol/events.ts";
+import type { HarnessEvent } from "@loom/core/events";
 import type { AisdkEventMapper } from "./map.ts";
 
 export interface TurnHooks {

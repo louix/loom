@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { makeLogger } from "../util/logger.ts";
+import { makeLogger } from "@loom/core/logger";
 import { MIGRATIONS } from "./migrations.ts";
 
 const log = makeLogger("store");

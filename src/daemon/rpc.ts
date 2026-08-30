@@ -1,6 +1,6 @@
 import type { Connection } from "./connection.ts";
-import type { RequestFrame, ResponseFrame, WireError } from "../protocol/wire.ts";
-import { makeLogger } from "../util/logger.ts";
+import type { RequestFrame, ResponseFrame, WireError } from "@loom/core/wire";
+import { makeLogger } from "@loom/core/logger";
 
 const log = makeLogger("rpc");
 

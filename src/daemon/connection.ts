@@ -1,6 +1,6 @@
 import type { Socket } from "node:net";
-import { makeLogger } from "../util/logger.ts";
-import type { Frame, PushFrame, ResponseFrame } from "../protocol/wire.ts";
+import { makeLogger } from "@loom/core/logger";
+import type { Frame, PushFrame, ResponseFrame } from "@loom/core/wire";
 
 const log = makeLogger("conn");
 

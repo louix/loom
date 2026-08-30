@@ -1,0 +1,12 @@
+{
+  "name": "@loom/harness",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/harness.ts"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*"
+  }
+}

@@ -13,7 +13,7 @@ import type {
   CreateSessionOptions,
   ProviderCapabilities,
   SessionRef,
-} from "../types.ts";
+} from "@loom/core/types";
 import { AisdkSession } from "./session.ts";
 import type { ProviderMessageStore } from "./store.ts";
 import type { SearchConfig } from "./tools/search.ts";

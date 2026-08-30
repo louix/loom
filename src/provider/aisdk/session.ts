@@ -12,9 +12,9 @@ import { randomUUID } from "node:crypto";
 import { stepCountIs, streamText, tool } from "ai";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import { z } from "zod";
-import type { HarnessEvent } from "../../protocol/events.ts";
-import { AsyncChannel } from "../../util/channel.ts";
-import { makeLogger, type Logger } from "../../util/logger.ts";
+import type { HarnessEvent } from "@loom/core/events";
+import { AsyncChannel } from "@loom/core/channel";
+import { makeLogger, type Logger } from "@loom/core/logger";
 import type {
   AdapterSnapshot,
   AgentSession,
@@ -23,7 +23,7 @@ import type {
   PlanDecision,
   SessionMode,
   UserInput,
-} from "../types.ts";
+} from "@loom/core/types";
 import { AisdkEventMapper } from "./map.ts";
 import { runTurn } from "./loop.ts";
 import { McpHub } from "./mcp.ts";
@@ -32,7 +32,7 @@ import { BuiltinTools } from "./tools/builtins.ts";
 import type { SearchConfig } from "./tools/search.ts";
 import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { ProviderMessageStore } from "./store.ts";
-import { contextLimitFor, estimateTokens } from "./tokens.ts";
+import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 
 /**
  * Default per-*segment* ceiling on tool round-trips. It is not a hard turn

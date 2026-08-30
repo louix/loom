@@ -1,7 +1,7 @@
 import { connect, createServer, type Server } from "node:net";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
-import { makeLogger } from "../util/logger.ts";
-import type { Frame, PushFrame } from "../protocol/wire.ts";
+import { makeLogger } from "@loom/core/logger";
+import type { Frame, PushFrame } from "@loom/core/wire";
 import { Connection } from "./connection.ts";
 import type { RpcDispatcher } from "./rpc.ts";
 

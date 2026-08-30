@@ -2,9 +2,9 @@
 import { parseArgs } from "node:util";
 import { findRepoRoot, loomPaths } from "../util/paths.ts";
 import { LoomClient } from "../client/client.ts";
-import type { PushFrame, SessionSnapshot } from "../protocol/wire.ts";
-import type { HarnessEvent } from "../protocol/events.ts";
-import { LOOM_VERSION } from "../version.ts";
+import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type { HarnessEvent } from "@loom/core/events";
+import { LOOM_VERSION } from "@loom/core/version";
 
 const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
 

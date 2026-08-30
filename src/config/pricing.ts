@@ -13,7 +13,7 @@
  */
 import { readFileSync } from "node:fs";
 import { parse as parseToml } from "smol-toml";
-import type { TokenUsage } from "../protocol/events.ts";
+import type { TokenUsage } from "@loom/core/events";
 
 export interface PriceRow {
   input: number;

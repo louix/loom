@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
-import type { PushFrame, SessionSnapshot } from "../src/protocol/wire.ts";
+import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "../src/provider/fake/fake.ts";
-import { makeHarness, type Harness } from "./helpers.ts";
+import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;
 let fakeProvider: FakeProvider;

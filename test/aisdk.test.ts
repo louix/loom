@@ -7,16 +7,16 @@ import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
-import type { HarnessEvent, SessionStatus } from "../src/protocol/events.ts";
+import type { HarnessEvent, SessionStatus } from "@loom/core/events";
 import type { UsageDelta } from "../src/store/sessions.ts";
 import { openDb } from "../src/store/db.ts";
 import { SessionManager } from "../src/daemon/session-manager.ts";
-import { makeLogger, setLogLevel } from "../src/util/logger.ts";
+import { makeLogger, setLogLevel } from "@loom/core/logger";
 import { AisdkProvider, dropDanglingToolCalls, resolveModelFactory } from "../src/provider/aisdk/adapter.ts";
 import { AisdkEventMapper } from "../src/provider/aisdk/map.ts";
 import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
 import { runTurn } from "../src/provider/aisdk/loop.ts";
-import { contextLimitFor, estimateTokens } from "../src/provider/aisdk/tokens.ts";
+import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 
 setLogLevel("error");
 

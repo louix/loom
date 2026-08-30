@@ -10,7 +10,7 @@ import {
   ProviderDefaultStore,
   SessionStore,
 } from "../src/store/sessions.ts";
-import { setLogLevel } from "../src/util/logger.ts";
+import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
 

@@ -7,11 +7,11 @@ import { test } from "node:test";
 import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { LanguageModel } from "ai";
-import { setLogLevel } from "../src/util/logger.ts";
+import { setLogLevel } from "@loom/core/logger";
 import { openDb } from "../src/store/db.ts";
 import { ProviderMessageStore } from "../src/provider/aisdk/store.ts";
 import { AisdkProvider } from "../src/provider/aisdk/adapter.ts";
-import type { HarnessEvent } from "../src/protocol/events.ts";
+import type { HarnessEvent } from "@loom/core/events";
 
 setLogLevel("error");
 const FAKE_MCP = fileURLToPath(new URL("./fixtures/fake-mcp-server.mjs", import.meta.url));

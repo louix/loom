@@ -5,7 +5,15 @@
  * counts still come from the provider's `usage` on every turn; this is only for
  * "how full is the window right now".
  */
-import type { ModelMessage } from "ai";
+/**
+ * Just the shape {@link estimateTokens} reads. Kept local so `@loom/core` pulls
+ * in no model-SDK — the aisdk connector passes its real `ModelMessage[]`, which
+ * is structurally a superset of this.
+ */
+interface EstimableMessage {
+  readonly role?: string;
+  readonly content?: unknown;
+}
 
 /**
  * Known context limits, longest-prefix matched against the model id (so
@@ -54,7 +62,7 @@ export function contextLimitFor(model: string | null | undefined): number {
 }
 
 /** Rough token estimate for a message array (`chars / 4`, rounded up). */
-export function estimateTokens(messages: ModelMessage[]): number {
+export function estimateTokens(messages: readonly EstimableMessage[]): number {
   let chars = 0;
   for (const m of messages) {
     const c = m?.content;

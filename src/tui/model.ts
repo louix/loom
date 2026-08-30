@@ -4,9 +4,9 @@
  * decides *what* to show lives here as a `reduce(state, action)` function and
  * a set of selectors, all unit-tested without React or a live daemon.
  */
-import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
-import type { ProviderInfo, PushFrame, SessionSnapshot } from "../protocol/wire.ts";
-import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
+import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
 

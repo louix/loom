@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { findRepoRoot } from "../util/paths.ts";
-import { setLogLevel } from "../util/logger.ts";
+import { setLogLevel } from "@loom/core/logger";
 import { Daemon } from "../daemon/daemon.ts";
 import { DaemonAlreadyRunning } from "../daemon/lifecycle.ts";
-import { LOOM_VERSION } from "../version.ts";
+import { LOOM_VERSION } from "@loom/core/version";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({

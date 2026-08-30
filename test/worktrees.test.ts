@@ -5,7 +5,7 @@ import { accessSync, constants, existsSync, mkdtempSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorktreeManager, slugify } from "../src/daemon/worktrees.ts";
-import { setLogLevel, makeLogger } from "../src/util/logger.ts";
+import { setLogLevel, makeLogger } from "@loom/core/logger";
 
 setLogLevel("error");
 

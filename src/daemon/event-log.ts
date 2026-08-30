@@ -1,4 +1,4 @@
-import type { PushFrame } from "../protocol/wire.ts";
+import type { PushFrame } from "@loom/core/wire";
 
 /** A push frame before it has been assigned a sequence number. */
 export type UnsequencedPush =

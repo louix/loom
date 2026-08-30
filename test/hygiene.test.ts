@@ -3,10 +3,10 @@ import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
-import type { SessionSnapshot } from "../src/protocol/wire.ts";
+import type { SessionSnapshot } from "@loom/core/wire";
 import { ChildStore } from "../src/store/sessions.ts";
 import { pidAlive } from "../src/daemon/hygiene.ts";
-import { makeHarness, type Harness } from "./helpers.ts";
+import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;
 

@@ -16,9 +16,9 @@ import {
 } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "../client/client.ts";
-import type { ProviderInfo, SessionSnapshot } from "../protocol/wire.ts";
-import { SESSION_MODES, type SessionMode } from "../provider/types.ts";
-import { LOOM_VERSION } from "../version.ts";
+import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import { SESSION_MODES, type SessionMode } from "@loom/core/types";
+import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { C, modeLabel, shortId } from "./theme.ts";

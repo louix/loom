@@ -5,8 +5,8 @@
  * Claude adapter emits (rather than one event per token).
  */
 import type { LanguageModelUsage, TextStreamPart, ToolSet } from "ai";
-import type { HarnessEvent } from "../../protocol/events.ts";
-import { contextLimitFor } from "./tokens.ts";
+import type { HarnessEvent } from "@loom/core/events";
+import { contextLimitFor } from "@loom/core/tokens";
 
 type Part = TextStreamPart<ToolSet>;
 

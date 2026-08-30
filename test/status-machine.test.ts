@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deriveStatus } from "../src/daemon/status-machine.ts";
-import type { HarnessEvent } from "../src/protocol/events.ts";
+import type { HarnessEvent } from "@loom/core/events";
 
 const ev = (e: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent =>
   ({ sessionId: "s", ts: 0, ...e }) as HarnessEvent;

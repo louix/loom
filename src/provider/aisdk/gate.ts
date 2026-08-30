@@ -10,7 +10,7 @@
  * use consistent `read_`/`write_`/`list_`/… verbs.
  */
 import type { ToolCallOptions, ToolSet } from "ai";
-import type { SessionMode } from "../types.ts";
+import type { SessionMode } from "@loom/core/types";
 
 const READONLY_EXACT = new Set([
   "ask_user", // surfaces its own question prompt

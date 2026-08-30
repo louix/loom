@@ -3,7 +3,7 @@
  * vendor SDK; adapters normalize to the one `HarnessEvent` union and this pair
  * of interfaces. The Claude adapter ships in V1; ADK is a designed-for second.
  */
-import type { HarnessEvent, SessionStatus, TokenUsage } from "../protocol/events.ts";
+import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
 
 export type SessionMode = "default" | "plan" | "acceptEdits" | "auto";
 

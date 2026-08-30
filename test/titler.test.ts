@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cheapModelFor, cleanTitle, generateTitle } from "../src/daemon/titler.ts";
 import { FakeProvider } from "../src/provider/fake/fake.ts";
-import { makeLogger, setLogLevel } from "../src/util/logger.ts";
+import { makeLogger, setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
 const log = makeLogger("titler-test");

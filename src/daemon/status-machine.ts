@@ -10,7 +10,7 @@
  *   running ─▶ idle              (clean `result`)
  *   running ─▶ error             (fatal error, or a failed `result`)
  */
-import type { HarnessEvent, SessionStatus } from "../protocol/events.ts";
+import type { HarnessEvent, SessionStatus } from "@loom/core/events";
 
 export interface Derived {
   status: SessionStatus;

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { HarnessEvent } from "../src/protocol/events.ts";
-import type { ProviderInfo, SessionSnapshot } from "../src/protocol/wire.ts";
-import type { EventPush } from "../src/protocol/wire.ts";
+import type { HarnessEvent } from "@loom/core/events";
+import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import type { EventPush } from "@loom/core/wire";
 import {
   actionsFor,
   allowedActs,

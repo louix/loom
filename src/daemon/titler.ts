@@ -5,8 +5,8 @@
  * rename (`session.setTitle`) locks the title and this never runs again.
  */
 import { randomUUID } from "node:crypto";
-import type { AgentProvider } from "../provider/types.ts";
-import type { Logger } from "../util/logger.ts";
+import type { AgentProvider } from "@loom/core/types";
+import type { Logger } from "@loom/core/logger";
 
 const SYSTEM =
   "You are a labelling function, not an assistant. Given a task description, " +

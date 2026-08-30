@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "../src/client/client.ts";
-import type { HelloResult, PushFrame, SessionSnapshot } from "../src/protocol/wire.ts";
+import type { HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider } from "../src/provider/fake/fake.ts";
-import { makeHarness, type Harness } from "./helpers.ts";
+import { makeHarness, type Harness } from "@loom/harness";
 
 /** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn. */
 function modelsStub(ids: string[]): Promise<{ base: string; close: () => void }> {

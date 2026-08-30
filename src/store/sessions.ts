@@ -1,5 +1,5 @@
-import type { SessionStatus, TokenUsage } from "../protocol/events.ts";
-import type { SessionSnapshot } from "../protocol/wire.ts";
+import type { SessionStatus, TokenUsage } from "@loom/core/events";
+import type { SessionSnapshot } from "@loom/core/wire";
 import type { Db } from "./db.ts";
 
 // ---------------------------------------------------------------------------

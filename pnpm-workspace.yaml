@@ -1,6 +1,12 @@
-# Phase 2+ sets this to the real package list. Kept empty for the pnpm-only
-# migration so `pnpm install` behaves exactly like the single-package repo.
-packages: []
+packages:
+  - core
+  - client
+  - aisdk
+  - harness
+  - backend/*
+  - frontend/*
+  - connectors/*
+  - cli
 
 # One content-addressable virtual store shared across every git worktree of this
 # repo — the daemon's .loom/trees/* and the user's own sibling / .claude/worktrees

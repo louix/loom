@@ -23,6 +23,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.251
         version: 0.3.251(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
+      '@loom/core':
+        specifier: workspace:*
+        version: link:core
       ai:
         specifier: 5.0.249
         version: 5.0.249(zod@4.4.3)
@@ -42,6 +45,9 @@ importers:
       '@ai-sdk/provider':
         specifier: 2.0.3
         version: 2.0.3
+      '@loom/harness':
+        specifier: workspace:*
+        version: link:harness
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
@@ -51,6 +57,14 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+
+  core: {}
+
+  harness:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 

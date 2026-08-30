@@ -11,8 +11,8 @@ import type {
   RequestFrame,
   ResponseFrame,
   SessionSnapshot,
-} from "../protocol/wire.ts";
-import { PROTOCOL_VERSION } from "../protocol/wire.ts";
+} from "@loom/core/wire";
+import { PROTOCOL_VERSION } from "@loom/core/wire";
 
 const LOOMD_ENTRY = fileURLToPath(new URL("../cli/loomd.ts", import.meta.url));
 

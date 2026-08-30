@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AsyncChannel } from "../src/util/channel.ts";
+import { AsyncChannel } from "@loom/core/channel";
 
 test("buffers values pushed before the consumer asks for them", async () => {
   const ch = new AsyncChannel<number>();

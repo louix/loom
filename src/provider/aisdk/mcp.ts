@@ -10,8 +10,8 @@
 import { experimental_createMCPClient, type experimental_MCPClient } from "@ai-sdk/mcp";
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
-import type { Logger } from "../../util/logger.ts";
-import type { McpServerHandle } from "../types.ts";
+import type { Logger } from "@loom/core/logger";
+import type { McpServerHandle } from "@loom/core/types";
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};

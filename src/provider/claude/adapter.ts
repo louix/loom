@@ -18,9 +18,9 @@ import type {
   Query,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { HarnessEvent } from "../../protocol/events.ts";
-import { makeLogger, type Logger } from "../../util/logger.ts";
-import { AsyncChannel } from "../../util/channel.ts";
+import type { HarnessEvent } from "@loom/core/events";
+import { makeLogger, type Logger } from "@loom/core/logger";
+import { AsyncChannel } from "@loom/core/channel";
 import { ClaudeEventMapper } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildLoomMcpServer } from "./loom-mcp.ts";
@@ -37,7 +37,7 @@ import type {
   SessionMode,
   SessionRef,
   UserInput,
-} from "../types.ts";
+} from "@loom/core/types";
 
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
