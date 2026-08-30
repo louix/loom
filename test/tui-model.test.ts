@@ -354,6 +354,27 @@ test("parallel permission requests queue; each resolvePerm advances; session_upd
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 });
 
+test("a permission's matching tool_result clears it, even mid-replay with the session still awaiting_input", () => {
+  // Reconnect/history-replay: the daemon has long since resolved p1 (no
+  // dedicated event marks that — only the `tool_result` does, per the
+  // daemon's own `#trackPerms`), but the session is genuinely awaiting_input
+  // again for p2. Without tracking `tool_result`, p1 would sit in
+  // `permissions` forever and `firstPerm` would keep surfacing it instead of
+  // the real, current request.
+  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "push", frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: { command: "ls" }, sessionId: "a" })) });
+  s = reduce(s, { t: "push", frame: push(2, ev({ type: "tool_result", id: "p1", ok: true, output: "", sessionId: "a" })) });
+  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
+
+  s = reduce(s, { t: "push", frame: push(3, ev({ type: "permission_request", id: "p2", tool: "bash", input: { command: "pwd" }, sessionId: "a" })) });
+  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+
+  // a tool_result for an unrelated id is a no-op
+  s = reduce(s, { t: "push", frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })) });
+  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+});
+
 test("pending question is cleared by the matching answer event", () => {
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "question" })] });
   s = reduce(s, { t: "push", frame: push(1, ev({ type: "question", id: "q1", question: "?", sessionId: "a" })) });

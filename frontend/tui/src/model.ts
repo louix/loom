@@ -623,7 +623,21 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
     const { question: _q, questionText: _qt, questionContext: _qc, ...rest } = cur;
     return { ...pending, [ev.sessionId]: rest };
   }
-  // A resolved permission is cleared wholesale when the session leaves
+  if (ev.type === "tool_result") {
+    // Mirrors the daemon's own `#trackPerms`: no event marks a permission
+    // resolved (aisdk emits `tool_call` *before* the gate; Claude the other
+    // way round), so the matching `tool_result` is the only reliable signal.
+    // Without this a replayed/reconnected history leaves long-since-approved
+    // requests stuck in `permissions`, and `firstPerm` — the oldest one —
+    // never advances to whatever's genuinely still pending.
+    const cur = pending[ev.sessionId];
+    if (!cur?.permissions) return pending;
+    const rest = cur.permissions.filter((p) => p.id !== ev.id);
+    if (rest.length === cur.permissions.length) return pending;
+    const { permissions: _drop, ...others } = cur;
+    return { ...pending, [ev.sessionId]: rest.length ? { ...others, permissions: rest } : others };
+  }
+  // Any leftovers are also wiped wholesale when the session leaves
   // awaiting_input — see the `session_updated` case.
   return pending;
 }

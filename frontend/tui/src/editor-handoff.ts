@@ -48,10 +48,10 @@ export function spawnEditor(text: string, opts: EditorOpts = {}): string | null 
   try {
     const [cmd, ...pre] = editor.split(/\s+/).filter(Boolean);
     const r = spawnSync(cmd ?? "vi", [...pre, file, ...extra], { stdio: "inherit" });
-    if (r.error) return null;
+    if (r.error) {
+      throw new Error(`couldn't launch "${editor}" (${r.error.message}) — set $EDITOR or $VISUAL`);
+    }
     return readFileSync(file, "utf8");
-  } catch {
-    return null;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

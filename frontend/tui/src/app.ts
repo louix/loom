@@ -261,13 +261,14 @@ export function App({
         await suspendTerminal(async () => {
           saved = spawnEditor(text, opts);
         });
-      } catch {
+      } catch (e) {
         saved = null;
+        note(e instanceof Error ? e.message : String(e), "bad");
       }
       if (stdout.isTTY) stdout.write("\x1b[?2004h");
       return saved;
     },
-    [openEditorOverride, suspendTerminal, stdout],
+    [openEditorOverride, suspendTerminal, stdout, note],
   );
 
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
