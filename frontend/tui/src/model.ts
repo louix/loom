@@ -1218,8 +1218,17 @@ export interface EventFormat {
 }
 
 const oneLine = (s: string, n = 200): string => truncate(s.replace(/\s+/g, " ").trim(), n);
-/** Full body: normalise newlines, trim trailing space, keep everything else. */
-const body = (s: string): string => s.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trimEnd();
+/**
+ * Full body: normalise newlines, expand tabs, trim trailing space, keep
+ * everything else. Tabs matter here — a tab counts as ~1 column to our word
+ * wrap and to Ink's own width math, but a real terminal jumps it to the next
+ * 8-column stop. Left in, a tab-indented diff can render wider than the
+ * terminal thinks, so the line hard-wraps outside Ink's row accounting and
+ * every subsequent redraw lands one row off (looks like a blank line wedged
+ * between every row) until the offending line scrolls out of view.
+ */
+const body = (s: string): string =>
+  s.replace(/\r\n/g, "\n").replace(/\t/g, "    ").replace(/[ \t]+$/gm, "").trimEnd();
 
 export function formatEvent(ev: HarnessEvent): EventFormat {
   switch (ev.type) {
@@ -1313,11 +1322,12 @@ function toolCallFull(name: string, input: unknown): string {
   const lines = [name];
   for (const [k, v] of entries) {
     if (typeof v === "string") {
-      if (v.includes("\n")) {
+      const normalized = v.includes("\t") || v.includes("\r") ? body(v) : v;
+      if (normalized.includes("\n")) {
         lines.push(`${k}:`);
-        for (const ln of v.split("\n")) lines.push(`  ${ln}`);
+        for (const ln of normalized.split("\n")) lines.push(`  ${ln}`);
       } else {
-        lines.push(`${k}: ${v}`);
+        lines.push(`${k}: ${normalized}`);
       }
     } else {
       let rendered: string;
