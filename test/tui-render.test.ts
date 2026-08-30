@@ -136,7 +136,7 @@ test("esc does not quit; only overlays back out", async () => {
     stdin.feed("n");
     await delay(100);
     assert.match(stdout.last, /new session/);
-    assert.doesNotMatch(stdout.last, /\[default\]/, "no chip while the mode is the default");
+    assert.match(stdout.last, /\[default\]/, "the mode chip is always shown — no invisible mode");
     stdin.feed(ESC);
     await delay(100);
     assert.doesNotMatch(stdout.last, /new session/);
@@ -714,6 +714,7 @@ test("f opens the find picker and filters the fleet by text", async () => {
     stdin.feed("f");
     await delay(120);
     assert.match(stdout.last, /FIND SESSION/);
+    assert.match(stdout.last, /type to search/); // placeholder while the filter is empty
     assert.match(stdout.last, /refactor the parser/);
     assert.match(stdout.last, /update the docs/);
 

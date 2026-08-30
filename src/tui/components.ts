@@ -574,9 +574,10 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 };
 
 function promptHints(p: PromptState, queued: number): string {
-  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥e editor", "⌥o log"];
+  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥e editor"];
+  if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
   if (p.kind === "new") {
-    bits.push(p.mode && p.mode !== "default" ? `⌥m mode:${p.mode}` : "⌥m mode");
+    bits.push(`⌥m mode:${p.mode ?? "default"}`);
     bits.push("⌥p provider/model");
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
@@ -611,8 +612,12 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
         Box,
         { gap: 1 },
         h(Text, { color: C.accent, bold: true }, p.label),
-        p.kind === "new" && p.mode && p.mode !== "default"
-          ? h(Text, { color: C.warn }, `[${p.mode}]`)
+        p.kind === "new"
+          ? h(
+              Text,
+              { color: p.mode && p.mode !== "default" ? C.warn : C.faint },
+              `[${p.mode ?? "default"}]`,
+            )
           : null,
         p.kind === "new"
           ? h(
@@ -895,12 +900,22 @@ export function Picker({
     Box,
     { width, borderStyle: "round", borderColor: C.accent, paddingX: 2, paddingY: 1, flexDirection: "column" },
     h(Text, { color: C.accent, bold: true }, `▸ ${picker.title.toUpperCase()}`),
+    // A prompt-style input line so it reads as "type here", with a block caret
+    // and a placeholder when empty.
     h(
       Box,
-      { gap: 1 },
-      h(Text, { color: C.faint }, "filter"),
-      h(Text, { color: C.text }, picker.filter || "…"),
-      h(Text, { color: C.faint }, `  ${vis.length}/${picker.items.length}`),
+      null,
+      h(Text, { color: C.accent }, "▍ "),
+      h(Text, { color: C.text }, picker.filter),
+      h(Text, { inverse: true }, " "),
+      picker.filter ? null : h(Text, { color: C.faint }, " type to search"),
+    ),
+    h(
+      Text,
+      { color: C.faint },
+      picker.items.length === 0
+        ? " "
+        : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`,
     ),
     h(Box, { height: 1 }),
     ...(shown.length === 0

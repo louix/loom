@@ -946,7 +946,12 @@ export function App({
       // ⌥-prefixed prompt actions — "step out to a bigger tool" without losing
       // what's typed. Ctrl is reserved for readline motions (applyKey).
       if (key.meta && input === "e") return void editPrompt();
-      if (key.meta && input === "o") return void viewInEditor();
+      if (key.meta && input === "o") {
+        // A new-session prompt has no session and no log to open yet.
+        return void (p.kind === "new"
+          ? dispatch({ t: "notice", text: "no log yet — you're starting a new session", tone: "dim" })
+          : viewInEditor());
+      }
       if (key.meta && input === "m" && p.kind === "new") {
         return void dispatch({ t: "promptCycleMode" });
       }
