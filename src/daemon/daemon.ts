@@ -9,6 +9,7 @@ import {
   userConfigPath,
   type LoomPaths,
 } from "../util/paths.ts";
+import { resolveMcpCommand } from "./mcp-fallback.ts";
 import {
   lintConfig,
   loadConfig,
@@ -142,6 +143,7 @@ export class Daemon {
   #hygiene: HygieneReport | null = null;
   #configWatchers: FSWatcher[] = [];
   #reloadTimer: NodeJS.Timeout | null = null;
+  #tilthFallbackLogged = false;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
   /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
@@ -1431,12 +1433,12 @@ export class Daemon {
   /** Vendor-neutral MCP handles from config; mounted into every session. */
   #mcpHandles(): McpServerHandle[] {
     return this.config.mcp.map((m) => {
-      const parts = m.command.split(/\s+/).filter((s) => s.length > 0);
-      const command = parts[0] ?? m.command;
-      return {
-        name: m.name,
-        spec: { transport: "stdio", command, args: parts.slice(1) },
-      };
+      const { command, args, note } = resolveMcpCommand(m.command);
+      if (note && !this.#tilthFallbackLogged) {
+        this.#log.info("mcp command resolved", { name: m.name, note });
+        this.#tilthFallbackLogged = true;
+      }
+      return { name: m.name, spec: { transport: "stdio", command, args } };
     });
   }
 

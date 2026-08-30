@@ -1,6 +1,27 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+
+/**
+ * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
+ * already contains a path separator? Used for best-effort tool fallbacks.
+ */
+export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const runnable = (p: string): boolean => {
+    try {
+      accessSync(p, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (cmd.includes("/") || cmd.includes("\\")) return runnable(cmd);
+  const exts = process.platform === "win32" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  for (const dir of (env["PATH"] ?? "").split(delimiter)) {
+    if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
+  }
+  return false;
+}
 
 /**
  * The user-level config file, layered *under* the per-repo `.loom/config.toml`.

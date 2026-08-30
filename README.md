@@ -87,7 +87,9 @@ the Vercel AI SDK.
     subject and diffstat; refuses cleanly when there's nothing to commit.
 - **Tool steer** — a system-prompt append points file writes at tilth
   (`tilth_write` / `tilth_edit`) and search at fff; Claude's built-in `Grep` /
-  `Glob` are disabled outright (`providers.claude.disable_builtin`).
+  `Glob` are disabled outright (`providers.claude.disable_builtin`). If `tilth`
+  isn't on `$PATH` the daemon falls back to `npx -y tilth@0.9.0` (and, if `npx`
+  is missing too, just runs with the built-ins).
 
 **5 · terminal UI**
 
@@ -323,7 +325,7 @@ node src/cli/loomd.ts --repo . --log-level debug
 
 ```sh
 npm run typecheck    # tsc --noEmit
-npm test             # node:test — 282 cases
+npm test             # node:test — 287 cases
 ```
 
 ### Layout
