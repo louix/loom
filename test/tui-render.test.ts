@@ -286,7 +286,7 @@ test("X deletes the selected session behind a confirm", async () => {
   }
 });
 
-test("X on a branched session offers a branch toggle; b arms it", async () => {
+test("X on a branched session offers a branch toggle; b disarms it", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const s = await client.request<SessionSnapshot>("session.create", {
@@ -301,11 +301,11 @@ test("X on a branched session offers a branch toggle; b arms it", async () => {
     stdin.feed("X");
     await delay(100);
     assert.match(stdout.last, /Delete session/);
-    assert.match(stdout.last, /also delete branch/i);
-
-    stdin.feed("b"); // arm it
-    await delay(80);
     assert.match(stdout.last, /will also delete branch/i);
+
+    stdin.feed("b"); // disarm it
+    await delay(80);
+    assert.match(stdout.last, /keep branch/i);
 
     stdin.feed("\r"); // confirm
     await delay(200);
@@ -314,7 +314,7 @@ test("X on a branched session offers a branch toggle; b arms it", async () => {
     const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", branch], {
       encoding: "utf8",
     });
-    assert.equal(branches.trim(), "", "branch was deleted too");
+    assert.notEqual(branches.trim(), "", "branch was kept");
   } finally {
     app.unmount();
     await client.close();
