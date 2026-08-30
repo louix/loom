@@ -275,7 +275,14 @@ color    = "red"
   try {
     const c = await LoomClient.connect({ repoRoot: hh.repoRoot, sockPath: hh.sockPath, autospawn: false });
     const list = await c.request<
-      Array<{ id: string; models: string[]; defaultModel: string; color: string; isDefault: boolean }>
+      Array<{
+        id: string;
+        models: string[];
+        defaultModel: string;
+        permissionModes: string[];
+        color: string;
+        isDefault: boolean;
+      }>
     >("providers.list");
     await c.close();
 
@@ -285,6 +292,10 @@ color    = "red"
     // no model has run yet → the config pin is the default
     assert.equal(byId.get("openai")?.defaultModel, "gpt-5");
     assert.equal(byId.get("claude")?.defaultModel, "claude-sonnet-5");
+    // claude carries its curated model list, and drops `auto` from the cycle
+    assert.ok((byId.get("claude")?.models.length ?? 0) >= 2);
+    assert.deepEqual(byId.get("claude")?.permissionModes, ["default", "plan", "acceptEdits"]);
+    assert.deepEqual(byId.get("openai")?.permissionModes, ["default", "plan", "acceptEdits", "auto"]);
     assert.equal(byId.get("openai")?.isDefault, true);
     assert.equal(byId.get("claude")?.isDefault, false);
     // first aisdk profile gets the first palette colour; explicit wins
@@ -293,6 +304,27 @@ color    = "red"
   } finally {
     await hh.cleanup();
   }
+});
+
+test("session.setMode rejects a mode the provider can't run (claude + auto)", async () => {
+  const c = await client();
+  const claude = await c.request<SessionSnapshot>("session.createStub", {
+    prompt: "claude one",
+    status: "idle",
+    provider: "claude",
+  });
+  await assert.rejects(
+    c.request("session.setMode", { id: claude.id, mode: "auto", by: "t" }),
+    /can't switch to "auto"/,
+  );
+  // the three it can run are still fine
+  const after = await c.request<SessionSnapshot>("session.setMode", {
+    id: claude.id,
+    mode: "acceptEdits",
+    by: "t",
+  });
+  assert.equal(after.mode, "acceptEdits");
+  await c.close();
 });
 
 test("the last model a provider ran becomes its default for new sessions", async () => {

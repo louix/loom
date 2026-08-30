@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { HarnessEvent } from "../src/protocol/events.ts";
-import type { SessionSnapshot } from "../src/protocol/wire.ts";
+import type { ProviderInfo, SessionSnapshot } from "../src/protocol/wire.ts";
 import type { EventPush } from "../src/protocol/wire.ts";
 import {
   actionsFor,
@@ -24,6 +24,7 @@ import {
   pickerCurrent,
   pickerVisible,
   providerColorOf,
+  providerInfo,
   providerPickItems,
   queueFor,
   condenseLog,
@@ -802,10 +803,11 @@ test("selectedSession returns the highlighted row or null", () => {
 // picker: provider / model / find
 // ---------------------------------------------------------------------------
 
-const PROVIDERS = [
-  { id: "claude", models: [], defaultModel: "claude-sonnet-5", tag: "claude", color: "", isDefault: true },
-  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", tag: "oai", color: "cyan", isDefault: false },
-  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", tag: "ds", color: "magenta", isDefault: false },
+const M4 = ["default", "plan", "acceptEdits", "auto"] as const;
+const PROVIDERS: ProviderInfo[] = [
+  { id: "claude", models: ["claude-opus-5", "claude-sonnet-5"], defaultModel: "claude-sonnet-5", permissionModes: ["default", "plan", "acceptEdits"], tag: "claude", color: "", isDefault: true },
+  { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", permissionModes: [...M4], tag: "oai", color: "cyan", isDefault: false },
+  { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", permissionModes: [...M4], tag: "ds", color: "magenta", isDefault: false },
 ];
 
 function withProviders(): TuiState {
@@ -819,10 +821,13 @@ test("providers action populates state and the derived helpers", () => {
   assert.equal(providerColorOf(s, "claude"), "");
   assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
   assert.equal(providerPickItems(s).length, 3);
-  // claude has no model list → empty picker text, but a distinct message
-  assert.deepEqual(modelPickItems(s, "claude"), []);
-  assert.match(modelPickEmptyText("claude"), /configured model/);
+  // claude now carries a curated model list too
+  assert.deepEqual(modelPickItems(s, "claude").map((i) => i.id), ["claude-opus-5", "claude-sonnet-5"]);
+  assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
   assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
+  // claude drops `auto` from its permission-mode cycle
+  assert.deepEqual(providerInfo(s, "claude")?.permissionModes, ["default", "plan", "acceptEdits"]);
+  assert.deepEqual(providerInfo(s, "openai")?.permissionModes, ["default", "plan", "acceptEdits", "auto"]);
 });
 
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {

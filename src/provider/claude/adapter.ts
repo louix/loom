@@ -46,13 +46,17 @@ const CAPS: ProviderCapabilities = {
   compaction: true,
   oneShot: true,
   partialTokens: true,
-  permissionModes: ["default", "plan", "acceptEdits", "auto"],
+  // No "auto": it maps to the SDK's `bypassPermissions`, which the query can
+  // only enter if the CLI was *launched* with --dangerously-skip-permissions —
+  // `setPermissionMode("bypassPermissions")` throws afterwards. So Claude
+  // sessions cycle default → plan → acceptEdits only.
+  permissionModes: ["default", "plan", "acceptEdits"],
   models: [],
 };
 
 function toPermissionMode(mode: SessionMode): PermissionMode {
-  // "auto" is Loom's name for "don't ask me anything"; the rest are the SDK's
-  // own permission modes and pass straight through.
+  // "auto" is Loom's name for "don't ask me anything" — unreachable for Claude
+  // (see CAPS.permissionModes), but map it defensively for any stray call.
   return mode === "auto" ? "bypassPermissions" : mode;
 }
 
@@ -348,8 +352,15 @@ class ClaudeSession implements AgentSession {
   }
 
   async setMode(mode: SessionMode): Promise<void> {
-    this.#mode = mode;
-    await this.#query?.setPermissionMode(toPermissionMode(mode));
+    try {
+      await this.#query?.setPermissionMode(toPermissionMode(mode));
+      this.#mode = mode;
+    } catch (err) {
+      // e.g. bypassPermissions without the launch flag — keep the old mode and
+      // give the caller a readable reason rather than the raw SDK message.
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`Claude rejected the "${mode}" permission mode: ${raw}`);
+    }
   }
 
   async setModel(model: string): Promise<void> {

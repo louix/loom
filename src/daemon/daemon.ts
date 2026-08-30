@@ -47,6 +47,7 @@ import { WorktreeManager } from "./worktrees.ts";
 import { ProviderRegistry } from "../provider/registry.ts";
 import {
   isSessionMode,
+  SESSION_MODES,
   type CreateSessionOptions,
   type McpServerHandle,
   type PermissionDecision,
@@ -468,8 +469,9 @@ export class Daemon {
     const out: ProviderInfo[] = [
       {
         id: "claude",
-        models: [],
-        defaultModel: this.config.providers.claude.model,
+        models: this.config.providers.claude.models,
+        defaultModel: this.#defaultModelFor("claude"),
+        permissionModes: this.#permissionModesFor("claude"),
         tag: "claude",
         color: "",
         isDefault: def === "claude",
@@ -481,6 +483,7 @@ export class Daemon {
         id,
         models: p.models,
         defaultModel: this.#defaultModelFor(id),
+        permissionModes: this.#permissionModesFor(id),
         tag: p.tag || id,
         color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
         isDefault: def === id,
@@ -491,13 +494,30 @@ export class Daemon {
   }
 
   /**
+   * Permission modes a provider can actually run, in cycle order. Mirrors the
+   * adapter `CAPS.permissionModes` without instantiating the (lazy) provider:
+   * Claude drops `auto` because the SDK can't switch to `bypassPermissions`
+   * after launch; aisdk providers gate `auto` themselves and keep it.
+   */
+  #permissionModesFor(providerId: string): SessionMode[] {
+    return providerId === "claude"
+      ? ["default", "plan", "acceptEdits"]
+      : [...SESSION_MODES];
+  }
+
+  /**
    * The model a new session on `providerId` uses when the caller names none:
    * the last model run on it (persisted in `meta`), else a config `model` pin,
    * else the first auto-detected model. A remembered model that has dropped out
    * of the provider's detected list is ignored.
    */
   #defaultModelFor(providerId: string): string {
-    if (providerId === "claude") return this.config.providers.claude.model;
+    if (providerId === "claude") {
+      const c = this.config.providers.claude;
+      const remembered = this.#providerDefaults.model("claude");
+      if (remembered && (c.models.length === 0 || c.models.includes(remembered))) return remembered;
+      return c.model || c.models[0] || "";
+    }
     const p = this.config.providers.aisdk[providerId];
     if (!p) return "";
     const remembered = this.#providerDefaults.model(providerId);
@@ -824,6 +844,12 @@ export class Daemon {
           ? (p["provider"] as string)
           : this.#providers.defaultId;
       const mode: SessionMode = isSessionMode(p["mode"]) ? p["mode"] : "default";
+      if (!this.#permissionModesFor(providerId).includes(mode)) {
+        throw new RpcError(
+          "bad_request",
+          `${providerId} sessions don't support "${mode}" mode`,
+        );
+      }
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
       // Tell the operator once when the model we'd have reused has dropped out of
@@ -840,11 +866,7 @@ export class Daemon {
           );
         }
       }
-      const model =
-        explicitModel ??
-        (providerId === "claude"
-          ? this.config.providers.claude.model
-          : this.#defaultModelFor(providerId) || null);
+      const model = explicitModel ?? (this.#defaultModelFor(providerId) || null);
       if (aisdkProfile && !model) {
         throw new RpcError(
           "bad_request",
@@ -898,7 +920,9 @@ export class Daemon {
 
       // Remember what this provider just ran, so the next `new` on it defaults
       // here without the model being pinned in config.
-      if (aisdkProfile && model) this.#providerDefaults.remember(providerId, model);
+      if (model && (aisdkProfile || providerId === "claude")) {
+        this.#providerDefaults.remember(providerId, model);
+      }
 
       const isClaude = providerId === "claude";
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
@@ -1248,7 +1272,14 @@ export class Daemon {
         throw new RpcError("bad_request", "mode must be one of default|plan|acceptEdits|auto");
       }
       const mode = (params as Record<string, unknown>)["mode"] as SessionMode;
-      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const modeRow = this.#registry.get(id);
+      if (!modeRow) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!this.#permissionModesFor(modeRow.provider).includes(mode)) {
+        throw new RpcError(
+          "bad_request",
+          `${modeRow.provider} sessions can't switch to "${mode}" mode`,
+        );
+      }
       if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
       const snap = this.#registry.setFields(id, { mode });
       this.#emitSessionUpdated(snap, clientLabel(params));
@@ -1263,7 +1294,7 @@ export class Daemon {
       if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
       const snap = this.#registry.setFields(id, { model });
       // A deliberate switch is also "the last model used" for this provider.
-      if (this.config.providers.aisdk[row.provider]) {
+      if (row.provider === "claude" || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
       }
       this.#emitSessionUpdated(snap, clientLabel(params));

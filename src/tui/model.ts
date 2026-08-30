@@ -388,8 +388,9 @@ export function reduce(s: TuiState, a: Action): TuiState {
 
     case "promptCycleMode": {
       if (!s.prompt || s.prompt.kind !== "new") return s;
+      const modes = providerInfo(s, s.prompt.provider ?? "")?.permissionModes ?? SESSION_MODES;
       const cur = s.prompt.mode ?? "default";
-      const next = SESSION_MODES[(SESSION_MODES.indexOf(cur) + 1) % SESSION_MODES.length] ?? "default";
+      const next = modes[(modes.indexOf(cur) + 1) % modes.length] ?? "default";
       return { ...s, prompt: { ...s.prompt, mode: next } };
     }
 
