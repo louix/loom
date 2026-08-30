@@ -50,7 +50,15 @@ test("Enter submits; Escape cancels; Tab (either form) is navigation-only, inert
   assert.deepEqual(press("hi", 2, "", { tab: true }), { kind: "ignore" });
 });
 
-test("there is no newline key — Enter never inserts", () => {
+test("⇧⏎ / ⌥⏎ insert a newline; plain ⏎ (or ⌃⏎) submits", () => {
+  assert.deepEqual(press("ab", 1, "", { return: true, shift: true }), {
+    kind: "buffer",
+    buffer: { text: "a\nb", cursor: 2 },
+  });
+  assert.deepEqual(press("ab", 2, "", { return: true, meta: true }), {
+    kind: "buffer",
+    buffer: { text: "ab\n", cursor: 3 },
+  });
   assert.deepEqual(press("hi", 2, "\r", { return: true, ctrl: true }), { kind: "submit" });
   assert.deepEqual(press("hi", 2, "j", { ctrl: true }), { kind: "ignore" });
 });

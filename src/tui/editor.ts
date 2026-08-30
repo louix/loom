@@ -89,7 +89,15 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
 
   if (key.escape) return { kind: "cancel" };
   if (key.tab) return { kind: "ignore" }; // Tab is navigation-only; mode cycles on ⌥m (app-intercepted)
-  if (key.return) return { kind: "submit" }; // single-line: ⌥e hands off to $EDITOR for multi-line
+  if (key.return) {
+    // ⇧⏎ / ⌥⏎ insert a newline; bare ⏎ submits. (Shift+Enter only reaches us in
+    // terminals that send a distinct code — Alt+Enter is the portable one; ⌥e
+    // still opens $EDITOR for heavier editing.)
+    if (key.shift || key.meta) {
+      return edit(text.slice(0, cursor) + "\n" + text.slice(cursor), cursor + 1);
+    }
+    return { kind: "submit" };
+  }
 
   if (key.ctrl) {
     // Ctrl is the text-editing modifier: readline motions only, nothing app-level.

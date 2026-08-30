@@ -575,7 +575,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 };
 
 function promptHints(p: PromptState, queued: number): string {
-  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥e editor"];
+  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥⏎ newline", "⌥e editor"];
   if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
   if (p.kind === "new") {
     bits.push(`⌥m mode:${modeLabel(p.mode)}`);
@@ -852,8 +852,8 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
 const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
   ["Space", "command palette — search and run any action available here"],
-  ["a  ·  d", "approve / answer / review a request  ·  deny it (deny-only — never deletes)"],
-  ["s  ·  i  ·  r", "send a follow-up  ·  interrupt the turn  ·  resume an interrupted / errored session"],
+  ["a / ⏎  ·  d", "approve a request (`a` only) · answer / review it (`⏎` too)  ·  `d` deny (deny-only — never deletes)"],
+  ["⏎  ·  i", "send a message to the selected session (revives a stopped one)  ·  interrupt its turn"],
   ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
   ["u  ·  m  ·  M", "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model"],
   ["e  ·  b  ·  y", "rename  ·  set a cost budget  ·  copy the branch name to the clipboard"],
@@ -868,6 +868,7 @@ const HELP_ROWS: Array<[string, string]> = [
 
 const EDIT_ROWS: Array<[string, string]> = [
   ["enter  ·  esc", "submit  ·  cancel"],
+  ["⇧⏎ / ⌥⏎", "insert a newline (⇧⏎ needs a terminal that sends a distinct code; ⌥⏎ always works)"],
   ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
   ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
   ["⌥e  ·  ⌥o", "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only"],

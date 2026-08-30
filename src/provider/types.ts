@@ -160,7 +160,16 @@ export interface AgentProvider {
    * CLI's own catalog, an OpenAI `/models` probe). Optional — a provider with
    * no catalog omits it and callers fall back to configured `models`.
    */
-  listModels?(): Promise<string[]>;
+  listModels?(): Promise<DiscoveredModel[]>;
+}
+
+export interface DiscoveredModel {
+  /** The id to pass to the API. */
+  id: string;
+  /** A friendly display name, when the provider gives one. */
+  label?: string;
+  /** Context-window size in tokens, when known. */
+  context?: number;
 }
 
 /** Map a Loom session mode to the closest provider permission mode label. */

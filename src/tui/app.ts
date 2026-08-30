@@ -459,11 +459,6 @@ export function App({
               label: "compact — focus (blank = full)",
             }),
           });
-        case "resume":
-          return perform(async () => {
-            await client.request("session.resume", { id: s.id, by });
-            return "resuming";
-          });
         case "done":
           return perform(async () => {
             await client.request("session.markDone", { id: s.id, by });
@@ -804,7 +799,7 @@ export function App({
   useEffect(() => {
     // A queue on a session that won't return to idle (done / error / gone) is
     // stranded — say so and drop it rather than showing "N queued" forever.
-    // An `interrupted` session is left alone: a `resume` will drain it.
+    // An `interrupted` session is left alone until the next `send` revives it.
     for (const [id, q] of Object.entries(state.queue)) {
       if (!q || q.length === 0) continue;
       const s = state.sessions.find((x) => x.id === id);
@@ -1112,6 +1107,15 @@ export function App({
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
     if (key.tab) return void (sel ? setLogFull((v) => !v) : undefined); // Tab = navigation only
     if (key.escape) return void (logFull ? setLogFull(false) : undefined);
+    // Enter on a fleet row = act on it: compose a message (running / idle /
+    // stopped), or take up a pending question / plan. A pending *permission*
+    // still wants the explicit `a` / `d`.
+    if (key.return) {
+      if (allowed.has("send")) return runAct("send");
+      if (allowed.has("answer")) return runAct("answer");
+      if (allowed.has("planreview")) return runAct("planreview");
+      return;
+    }
     if (key.ctrl || key.meta) return; // Ctrl / Alt do nothing outside the prompt — swallow
 
     // Space → the command palette: every action valid right now, fuzzy, with its key.
@@ -1134,9 +1138,7 @@ export function App({
     const map: Record<string, ActName> = {
       a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
       d: "deny", // deny-only now — never delete (that's X)
-      s: "send",
       i: "interrupt",
-      r: "resume",
       x: "done",
       c: "compact",
       u: "undo",

@@ -939,7 +939,16 @@ export function providerPickItems(s: TuiState): PickItem[] {
 }
 
 export function modelPickItems(s: TuiState, providerId: string): PickItem[] {
-  return (providerInfo(s, providerId)?.models ?? []).map((m) => ({ id: m, label: m }));
+  const p = providerInfo(s, providerId);
+  if (!p) return [];
+  if (p.modelChoices && p.modelChoices.length > 0) {
+    return p.modelChoices.map((c) => ({
+      id: c.id,
+      label: c.label,
+      ...(c.context ? { hint: `${humanTokens(c.context)} ctx` } : {}),
+    }));
+  }
+  return p.models.map((m) => ({ id: m, label: m }));
 }
 
 /** Message for an empty model picker — why there's nothing to pick. */
@@ -989,7 +998,6 @@ export type ActName =
   | "answer"
   | "send"
   | "interrupt"
-  | "resume"
   | "done"
   | "compact"
   | "planreview"
@@ -1040,9 +1048,9 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     // footer and the permitted set the keymap checks.
     if (status === "awaiting_input") {
       if (awaitReason === "question") {
-        local.push({ keys: "a", label: "answer", act: "answer", footer: true });
+        local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
       } else if (awaitReason === "plan_review") {
-        local.push({ keys: "a", label: "review plan", act: "planreview", footer: true });
+        local.push({ keys: "⏎", label: "review plan", act: "planreview", footer: true });
       } else {
         local.push({ keys: "a", label: "approve", act: "approve", footer: true });
         local.push({ keys: "d", label: "deny", act: "deny", footer: true });
@@ -1054,8 +1062,11 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     if (status === "running" || status === "starting") {
       local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
     }
-    if (status === "running" || status === "idle") {
-      local.push({ keys: "s", label: "send", act: "send", footer: true });
+    // `send` is the one "talk to this session" verb, bound to Enter — it works
+    // while running (injects), idle, or stopped (interrupted / errored → the
+    // daemon revives the session first). No separate "resume" step.
+    if (status !== "starting") {
+      local.push({ keys: "⏎", label: "send", act: "send", footer: true });
     }
     if (
       (status === "running" || status === "idle") &&
@@ -1063,9 +1074,6 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
       session.contextUsed / session.contextLimit > 0.5
     ) {
       local.push({ keys: "c", label: "compact", act: "compact", footer: true });
-    }
-    if (status === "interrupted" || status === "error") {
-      local.push({ keys: "r", label: "resume", act: "resume", footer: true });
     }
     if (status === "idle" || status === "error" || status === "interrupted") {
       local.push({ keys: "x", label: "done", act: "done", footer: true });

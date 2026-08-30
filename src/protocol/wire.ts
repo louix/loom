@@ -176,13 +176,25 @@ export interface HelloParams {
   sinceSeq?: number;
 }
 
+/** One row in the model picker — a canonical id plus display trimmings. */
+export interface ModelChoice {
+  id: string;
+  /** Friendly name; falls back to `id` when the provider gives none. */
+  label: string;
+  /** Context-window size in tokens, when the provider reports it. */
+  context?: number;
+}
+
 /** A configured provider, for the TUI's creation flow and model switcher. */
 export interface ProviderInfo {
   id: string;
-  /** Models offered in the picker (`M` / `⌥p`). For `claude` this is the
-   *  CLI-reported catalog (discovered at daemon start-up); for aisdk it's the
-   *  configured / `/models`-probed list. */
+  /** Canonical model ids — used for defaults, dedupe, and the aisdk picker.
+   *  For `claude` this is the CLI-reported catalog (discovered at daemon
+   *  start-up); for aisdk it's the configured / `/models`-probed list. */
   models: string[];
+  /** Richer picker rows (labels, context sizes) when the provider has them —
+   *  Claude does. Parallel to `models`; the picker falls back to a bare `id`. */
+  modelChoices?: ModelChoice[];
   /**
    * Model a new session gets when none is chosen: the last one run on this
    * provider (remembered across restarts), else a config pin, else the first

@@ -327,7 +327,7 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(180);
-    stdin.feed("s");
+    stdin.feed("\r"); // Enter opens the send prompt
     await delay(100);
     stdin.feed("hold that thought");
     await delay(100);
@@ -342,7 +342,7 @@ test("a running session's send prompt asks asap vs turn-end; queue drains on idl
     assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
     // queue a second one while still running
-    stdin.feed("s");
+    stdin.feed("\r"); // Enter opens the send prompt
     await delay(80);
     stdin.feed("and another");
     await delay(80);
@@ -377,7 +377,7 @@ test("SendChoice: a doubled keypress resolves the overlay once", async () => {
   const { stdin, app } = mount(client);
   try {
     await delay(180);
-    stdin.feed("s");
+    stdin.feed("\r"); // Enter opens the send prompt
     await delay(80);
     stdin.feed("just once");
     await delay(80);
@@ -404,7 +404,7 @@ test("a queue on a session that never returns to idle is reported, not silently 
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(180);
-    stdin.feed("s");
+    stdin.feed("\r"); // Enter opens the send prompt
     await delay(80);
     stdin.feed("later note");
     await delay(80);

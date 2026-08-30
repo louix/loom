@@ -29,6 +29,7 @@ import type {
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
+  DiscoveredModel,
   McpServerHandle,
   PermissionDecision,
   PlanDecision,
@@ -56,6 +57,13 @@ const CAPS: ProviderCapabilities = {
 
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
+
+/** Pull a context-window size out of a `[1m]` / `[200k]` style tag; 0 if none. */
+function parseContextTag(s: string): number {
+  const m = /\[(\d+(?:\.\d+)?)\s*([mk])\]/i.exec(s);
+  if (!m) return 0;
+  return Math.round(parseFloat(m[1]!) * (m[2]!.toLowerCase() === "m" ? 1_000_000 : 1_000));
+}
 
 function userMessage(text: string): SDKUserMessage {
   return {
@@ -463,7 +471,7 @@ export class ClaudeProvider implements AgentProvider {
    * `query()` whose prompt never yields: the `initialize` handshake carries
    * `models`, so we read it and close without running a turn.
    */
-  async listModels(): Promise<string[]> {
+  async listModels(): Promise<DiscoveredModel[]> {
     const cli = this.#resolveCli();
     const q = query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
@@ -471,9 +479,22 @@ export class ClaudeProvider implements AgentProvider {
     });
     try {
       const init = await q.initializationResult();
-      return init.models
-        .map((m) => m.value)
-        .filter((v): v is string => typeof v === "string" && v.length > 0);
+      const seen = new Set<string>();
+      const out: DiscoveredModel[] = [];
+      for (const m of init.models) {
+        if (!m.value || m.value === "default") continue; // "default" = whatever the account picks; Loom has its own
+        // Some rows tag a context variant in the value / name, e.g. "…[1m]".
+        const ctx = parseContextTag(`${m.value} ${m.displayName ?? ""}`);
+        const id = (m.resolvedModel || m.value).replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          ...(m.displayName ? { label: m.displayName } : {}),
+          ...(ctx ? { context: ctx } : {}),
+        });
+      }
+      return out;
     } finally {
       await Promise.resolve(q.close?.()).catch(() => {});
     }

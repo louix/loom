@@ -408,8 +408,9 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
   );
   assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
-  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["resume", "done", ...S].sort());
-  assert.deepEqual([...acts({ status: "error" })].sort(), ["resume", "done", ...S].sort());
+  // a stopped session: `send` (the daemon revives it) — no separate "resume"
+  assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["send", "done", ...S].sort());
+  assert.deepEqual([...acts({ status: "error" })].sort(), ["send", "done", ...S].sort());
   assert.deepEqual([...allowedActs(null)].sort(), ["find", "help", "new", "quit"].sort());
 });
 
@@ -804,7 +805,18 @@ test("selectedSession returns the highlighted row or null", () => {
 // ---------------------------------------------------------------------------
 
 const PROVIDERS: ProviderInfo[] = [
-  { id: "claude", models: ["claude-opus-5", "claude-sonnet-5"], defaultModel: "claude-sonnet-5", tag: "claude", color: "", isDefault: true },
+  {
+    id: "claude",
+    models: ["claude-opus-5", "claude-sonnet-5"],
+    modelChoices: [
+      { id: "claude-opus-5", label: "Claude Opus 4.8", context: 1_000_000 },
+      { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    ],
+    defaultModel: "claude-sonnet-5",
+    tag: "claude",
+    color: "",
+    isDefault: true,
+  },
   { id: "openai", models: ["gpt-5", "gpt-5-mini", "o4"], defaultModel: "gpt-5", tag: "oai", color: "cyan", isDefault: false },
   { id: "deepseek", models: ["deepseek-chat", "deepseek-reasoner"], defaultModel: "deepseek-chat", tag: "ds", color: "magenta", isDefault: false },
 ];
@@ -820,8 +832,13 @@ test("providers action populates state and the derived helpers", () => {
   assert.equal(providerColorOf(s, "claude"), "");
   assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.id), ["deepseek-chat", "deepseek-reasoner"]);
   assert.equal(providerPickItems(s).length, 3);
-  // claude carries a model list too (the daemon fills it from the CLI catalog)
-  assert.deepEqual(modelPickItems(s, "claude").map((i) => i.id), ["claude-opus-5", "claude-sonnet-5"]);
+  // claude's picker uses the CLI catalog's friendly names + context tags
+  assert.deepEqual(modelPickItems(s, "claude"), [
+    { id: "claude-opus-5", label: "Claude Opus 4.8", hint: "1.0M ctx" },
+    { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  ]);
+  // aisdk with no modelChoices falls back to bare ids
+  assert.deepEqual(modelPickItems(s, "deepseek").map((i) => i.label), ["deepseek-chat", "deepseek-reasoner"]);
   assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
   assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
 });

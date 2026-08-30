@@ -24,6 +24,7 @@ import {
   PROTOCOL_VERSION,
   type HelloParams,
   type HelloResult,
+  type ModelChoice,
   type ProviderInfo,
   type SessionSnapshot,
 } from "../protocol/wire.ts";
@@ -135,6 +136,8 @@ export class Daemon {
   #checkpoints: CheckpointStore;
   #pmsgs: ProviderMessageStore;
   #providerDefaults: ProviderDefaultStore;
+  /** Claude's CLI-reported model catalog, discovered once at start-up. */
+  #claudeChoices: ModelChoice[] | null = null;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   #events: EventLog;
@@ -484,7 +487,12 @@ export class Daemon {
         ),
       ]);
       if (models.length === 0) return;
-      this.config.providers.claude.models = models;
+      this.#claudeChoices = models.map((m) => ({
+        id: m.id,
+        label: m.label || m.id,
+        ...(m.context ? { context: m.context } : {}),
+      }));
+      this.config.providers.claude.models = this.#claudeChoices.map((c) => c.id);
       this.#log.info("claude models discovered", { count: models.length });
     } catch (err) {
       this.#log.warn("claude model discovery failed — set `[providers.claude] models` to pin a list", {
@@ -503,6 +511,7 @@ export class Daemon {
         // Discovered catalog if we have it, else the single configured pin so
         // the picker isn't empty.
         models: claude.models.length ? claude.models : claude.model ? [claude.model] : [],
+        ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
         defaultModel: this.#defaultModelFor("claude"),
         tag: "claude",
         color: "",
@@ -542,6 +551,53 @@ export class Daemon {
     const remembered = this.#providerDefaults.model(providerId);
     if (remembered && (p.models.length === 0 || p.models.includes(remembered))) return remembered;
     return p.model || p.models[0] || "";
+  }
+
+  /**
+   * Re-instantiate the adapter for a session that isn't currently live (a
+   * daemon restart left it `interrupted`, or its last turn ended). Caller must
+   * have checked `!#sessions.has(id)`. Returns the fresh snapshot; the caller
+   * emits `session_updated`.
+   */
+  async #reviveSession(id: string): Promise<SessionSnapshot> {
+    const row = this.#registry.get(id);
+    if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+    if (row.status === "done") throw new RpcError("bad_request", "session is done");
+    const providerRef = this.#registry.store.providerRef(id);
+    if (!providerRef) throw new RpcError("bad_request", "session has no provider ref to resume from");
+    if (!this.#providers.has(row.provider)) {
+      throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
+    }
+    const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
+    // If the model this session ran on has since dropped out of the endpoint's
+    // list, revive on the current default instead of failing the first turn.
+    let model = row.model;
+    const prof = this.config.providers.aisdk[row.provider];
+    if (prof && model && prof.models.length > 0 && !prof.models.includes(model)) {
+      const swap = this.#defaultModelFor(row.provider);
+      if (swap && swap !== model) {
+        this.#emitNotice(
+          `${row.provider}: model "${model}" is no longer offered — resuming ${id.slice(0, 8)} on "${swap}"`,
+          "warn",
+        );
+        this.#registry.setFields(id, { model: swap });
+        model = swap;
+      }
+    }
+    try {
+      await this.#sessions.resume(await this.#providers.get(row.provider), {
+        sessionId: id,
+        providerRef,
+        cwd: row.worktree ?? this.repoRoot,
+        mode,
+        mcpServers: this.#mcpHandles(),
+        ...(model ? { model } : {}),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RpcError("provider_error", `could not resume session: ${message}`);
+    }
+    return this.#registry.setStatus(id, "running", "resumed");
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
@@ -825,7 +881,10 @@ export class Daemon {
       if (id === "claude") {
         try {
           const provider = await this.#providers.get("claude");
-          const models = (await provider.listModels?.()) ?? this.config.providers.claude.models;
+          const discovered = await provider.listModels?.();
+          const models = discovered
+            ? discovered.map((m) => m.id)
+            : this.config.providers.claude.models;
           return { models };
         } catch (err) {
           throw new RpcError(
@@ -1011,44 +1070,8 @@ export class Daemon {
 
     d.register("session.resume", async (params) => {
       const id = reqString(params, "id");
-      const row = this.#registry.get(id);
-      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) throw new RpcError("conflict", "session is already running");
-      const providerRef = this.#registry.store.providerRef(id);
-      if (!providerRef) throw new RpcError("bad_request", "session has no provider ref to resume from");
-      if (!this.#providers.has(row.provider)) {
-        throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
-      }
-      const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
-      // If the model this session ran on has since dropped out of the endpoint's
-      // list, resume on the current default instead of failing the first turn.
-      let model = row.model;
-      const prof = this.config.providers.aisdk[row.provider];
-      if (prof && model && prof.models.length > 0 && !prof.models.includes(model)) {
-        const swap = this.#defaultModelFor(row.provider);
-        if (swap && swap !== model) {
-          this.#emitNotice(
-            `${row.provider}: model "${model}" is no longer offered — resuming ${id.slice(0, 8)} on "${swap}"`,
-            "warn",
-          );
-          this.#registry.setFields(id, { model: swap });
-          model = swap;
-        }
-      }
-      try {
-        await this.#sessions.resume(await this.#providers.get(row.provider), {
-          sessionId: id,
-          providerRef,
-          cwd: row.worktree ?? this.repoRoot,
-          mode,
-          mcpServers: this.#mcpHandles(),
-          ...(model ? { model } : {}),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError("provider_error", `could not resume session: ${message}`);
-      }
-      const snap = this.#registry.setStatus(id, "running", "resumed");
+      const snap = await this.#reviveSession(id);
       this.#emitSessionUpdated(snap, clientLabel(params));
       this.#onActivityChange("session-resumed");
       return snap;
@@ -1057,7 +1080,13 @@ export class Daemon {
     d.register("session.send", async (params) => {
       const id = reqString(params, "id");
       const text = reqString(params, "text");
-      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      // A cold session (daemon restarted, or a turn that ended) is brought back
+      // transparently — `send` is the one verb for "talk to this session", it
+      // doesn't need a separate resume step.
+      if (!this.#sessions.has(id)) {
+        await this.#reviveSession(id);
+        this.#onActivityChange("session-resumed");
+      }
       const { injected } = await this.#sessions.send(id, text);
       // Always emit the message so every client renders it from one source
       // (clients don't local-echo sends). `injected: true` = it landed in a

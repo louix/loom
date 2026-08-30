@@ -304,6 +304,22 @@ test("interrupt is sticky — a trailing stream end does not undo it", async () 
   await c.close();
 });
 
+test("after an interrupt you can just send — no resume step", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "assistant_text", text: "midway" });
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+
+  await c.request("session.interrupt", { id });
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "interrupted");
+
+  // send() on the interrupted (still-live) session starts a fresh turn
+  await c.request("session.send", { id, text: "carry on" });
+  assert.deepEqual(fs.sends, ["carry on"]);
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running");
+  await c.close();
+});
+
 test("a fatal error moves the session to error", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

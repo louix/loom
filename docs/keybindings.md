@@ -44,11 +44,10 @@ Consequences:
 
 | key | action |
 |-----|--------|
-| `a` | approve a permission · answer a question · review a plan — whatever is pending |
+| `⏎` | act on the selected session: compose a message (running / idle / stopped — a stopped one is revived first), or take up a pending question / plan. It's the one "talk to this session" verb — there's no separate resume. |
+| `a` | approve a pending permission (Enter deliberately doesn't — this one's explicit); also answers / reviews, like `⏎` |
 | `d` | deny the pending request (**deny-only** — never deletes) |
-| `s` | send a follow-up turn |
 | `i` | interrupt the current turn |
-| `r` | resume an interrupted / errored session |
 | `c` | compact the context window (offered once the meter passes half) |
 | `x` | mark the session done |
 
@@ -94,6 +93,7 @@ Consequences:
 | `⌃w` | delete the word before the cursor |
 | `↑` / `↓` | walk the prompt history (vertical caret move in multi-line text) |
 | `Enter` | submit · `Esc` cancel |
+| `⇧⏎` / `⌥⏎` | insert a newline (Shift+Enter only in terminals that send a distinct code; Alt+Enter always) |
 
 `Alt` runs an action without dropping what you've typed:
 
@@ -105,8 +105,8 @@ Consequences:
 | `⌥m` | cycle the permission mode  *(new-session prompt only)* |
 | `⌥x` | clear the session's queued messages  *(send prompt only)* |
 
-There is no newline key in the prompt — `⌥e` is the way to compose multi-line
-text.
+`⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
+for heavier multi-line editing.
 
 ## Overlays
 

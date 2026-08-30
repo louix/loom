@@ -124,10 +124,12 @@ the Vercel AI SDK.
 | `Space` | the command palette — every action valid right now, fuzzy, with its key |
 
 - **Acting on the selection**, from the verbs the footer offers (the rest live
-  in the `Space` palette): `a` approve / answer / review, `d` deny (deny-only —
-  `X` deletes), `s` send a turn, `c` compact the context window (offered once
-  the meter passes half), `i` interrupt, `r` resume (also from `error`), `x` mark
-  done. Second-tier, on the palette and `?` help: `m` cycle the permission mode,
+  in the `Space` palette): `⏎` act on the session — compose a message (running /
+  idle / stopped; a stopped session is revived first, so there's no separate
+  resume) or take up a pending question / plan; `a` approve a pending permission
+  (kept explicit — Enter won't), `d` deny (deny-only — `X` deletes), `c` compact
+  the context window (offered once the meter passes half), `i` interrupt, `x`
+  mark done. Second-tier, on the palette and `?` help: `m` cycle the permission mode,
   `M` switch the model (next turn), `u` undo — rewind an idle session to an
   earlier turn (shows the re-prime cost), `e` rename, `b` set a cost budget,
   `y` copy the branch, `o` view the log in `$EDITOR`, `v` full / chat,
