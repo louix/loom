@@ -634,6 +634,26 @@ test("a permission answer that lands after an interrupt does not un-interrupt th
   await c.close();
 });
 
+test("the post-interrupt guard is transient — a later turn's events still drive status", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "assistant_text", text: "working" });
+  await waitFor(async () => (await statusOf(c, id)) === "running");
+
+  await c.request("session.interrupt", { id });
+  await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+
+  // The interrupted turn's own trailing result is still swallowed…
+  fs.finishTurn();
+  await delay(40);
+  assert.equal(await statusOf(c, id), "interrupted", "the interrupt stays sticky for its own turn");
+
+  // …but a subsequent turn is not frozen out: its permission_request lands.
+  fs.emit({ type: "permission_request", id: "p9", tool: "Bash", input: {} });
+  await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+  await c.close();
+});
+
 test("a compaction drops the checkpoints (their offsets are no longer valid)", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

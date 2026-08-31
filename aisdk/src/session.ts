@@ -26,6 +26,7 @@ import type {
 } from "@loom/core/types";
 import { AisdkEventMapper } from "./map.ts";
 import { runTurn } from "./loop.ts";
+import { dropDanglingToolCalls } from "./transcript.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
 import { BuiltinTools } from "./tools/builtins.ts";
@@ -123,6 +124,13 @@ export class AisdkSession implements AgentSession {
   #turn: Promise<void> | null = null;
   /** True from `#kickTurn()` until the turn (and any chained turn) settles. */
   #turnRunning = false;
+  /**
+   * Set by `interrupt()`, cleared by the next `send()`. `#abort` only reaches
+   * the *currently* live segment; between the chained segments of a step-limit
+   * turn it is briefly null, so this flag is what stops the next segment (and
+   * the impl / injection re-chains) from kicking off after an interrupt.
+   */
+  #interrupted = false;
   /** User messages sent mid-turn, drained by the loop's `prepareStep`. */
   readonly #injections: string[] = [];
   #closing = false;
@@ -216,6 +224,7 @@ export class AisdkSession implements AgentSession {
       throw err;
     }
     this.#segmentsRun = 0; // a fresh user turn — reset the step-ceiling counter
+    this.#interrupted = false; // a new turn supersedes any prior interrupt
     this.#kickTurn();
   }
 
@@ -264,7 +273,11 @@ export class AisdkSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
+    this.#interrupted = true;
     this.#abort?.abort();
+    // A turn parked in the permission gate won't see the abort until its tool
+    // `execute` returns — resolve the parked gate(s) so `#turn` can settle.
+    this.#failPendingGates("the turn was interrupted");
     await this.#turn?.catch(() => {});
   }
 
@@ -299,14 +312,7 @@ export class AisdkSession implements AgentSession {
     this.#closing = true;
     this.#abort?.abort();
     await this.#turn?.catch(() => {});
-    for (const [, r] of this.#pendingPerms) r({ allow: false, message: "the session was closed" });
-    this.#pendingPerms.clear();
-    for (const [, r] of this.#pendingQuestions)
-      r("(the session was closed before the user answered)");
-    this.#pendingQuestions.clear();
-    for (const [, r] of this.#pendingPlans)
-      r({ action: "discuss", message: "the session was closed" });
-    this.#pendingPlans.clear();
+    this.#failPendingGates("the session was closed");
     this.#builtins?.close();
     await this.#hub?.close().catch(() => {});
     this.#outbox.close();
@@ -316,6 +322,32 @@ export class AisdkSession implements AgentSession {
 
   #lastRole(): string | undefined {
     return this.#messages[this.#messages.length - 1]?.role;
+  }
+
+  /**
+   * Resolve every parked permission / question / plan so a gated tool `execute`
+   * stops awaiting and the turn can unwind. Used by `interrupt()` and `close()`.
+   */
+  #failPendingGates(why: string): void {
+    for (const [, r] of this.#pendingPerms) r({ allow: false, message: why });
+    this.#pendingPerms.clear();
+    for (const [, r] of this.#pendingQuestions) r(`(${why})`);
+    this.#pendingQuestions.clear();
+    for (const [, r] of this.#pendingPlans) r({ action: "discuss", message: why });
+    this.#pendingPlans.clear();
+  }
+
+  /**
+   * A turn stopped mid-tool (interrupt / provider error) leaves the transcript
+   * ending on an assistant `tool-call` with no result — the next `send` would
+   * ship that to the endpoint and 400 (or hang). Trim it here too, not only on
+   * cold `resumeSession`, since a live session continues in place.
+   */
+  #healDanglingToolCalls(): void {
+    const trimmed = dropDanglingToolCalls(this.#messages);
+    if (trimmed.length === this.#messages.length) return;
+    this.#messages.length = trimmed.length;
+    this.#store?.replaceFrom(this.id, trimmed.length, []);
   }
 
   #emit(ev: HarnessEvent): void {
@@ -611,7 +643,7 @@ export class AisdkSession implements AgentSession {
     // `chained` = this turn kicked a follow-up that now owns `#turnRunning`.
     let chained = false;
     try {
-      if (this.#closing) return;
+      if (this.#closing || this.#interrupted) return;
 
       if (
         !this.#oneShot &&
@@ -622,7 +654,7 @@ export class AisdkSession implements AgentSession {
       }
 
       const tools = await this.#turnToolSet();
-      if (this.#closing) return;
+      if (this.#closing || this.#interrupted) return;
 
       const abort = new AbortController();
       this.#abort = abort;
@@ -650,8 +682,17 @@ export class AisdkSession implements AgentSession {
 
       this.#abort = null;
 
-      if (aborted || errored) {
-        if (aborted) {
+      // `#interrupted` without `aborted` = the interrupt landed in the gap
+      // between two step-limit segments, after `#abort` was cleared.
+      const stopped = aborted || this.#interrupted;
+      if (stopped || errored) {
+        this.#segmentsRun = 0;
+        // Whether the turn stopped in the gate or on a provider error, the
+        // transcript may now end on an unanswered tool-call — trim it (before
+        // re-attaching any injection) so the next `send` starts from valid
+        // history, not only after a cold `resumeSession`.
+        this.#healDanglingToolCalls();
+        if (stopped) {
           // The user interrupted — drop anything queued but not yet acted on
           // rather than persisting it as a dangling unanswered user message.
           this.#injections.length = 0;
@@ -659,8 +700,7 @@ export class AisdkSession implements AgentSession {
           // An errored turn may be resumed; keep a late injection for that.
           this.#flushInjections();
         }
-        this.#segmentsRun = 0;
-        this.#snap.status = aborted ? "interrupted" : "error";
+        this.#snap.status = stopped ? "interrupted" : "error";
         if (this.#oneShot) this.#outbox.close();
         return;
       }

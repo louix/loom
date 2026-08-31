@@ -145,15 +145,21 @@ export class SessionManager {
         if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
         this.#trackRef(id, run);
         this.#applyStatus(id, run, ev);
+        // `interrupting` guards the *interrupted* turn's trailing events only —
+        // once that turn has demonstrably ended (its `result`), lift it so the
+        // next turn's events aren't silently swallowed.
+        if (ev.type === "result") run.interrupting = false;
       }
       // The adapter stream ended. A clean run leaves status at idle/done/error;
       // anything still live stopped without a clean finish → interrupted.
       run.ended = true;
+      run.interrupting = false;
       if (LIVE.includes(run.status)) {
         this.#set(id, run, "interrupted", "stream_ended");
       }
     } catch (err) {
       run.ended = true;
+      run.interrupting = false;
       const message = err instanceof Error ? err.message : String(err);
       this.#hooks.log.warn("session pump failed", { id, err: message });
       this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
@@ -281,10 +287,12 @@ export class SessionManager {
     const injected =
       run.status === "running" || run.status === "awaiting_input" || run.status === "starting";
     await run.session.send(text);
+    // Any user send is a fresh engagement — the post-interrupt guard that keeps
+    // a stale permission answer from reviving a dead turn has done its job.
+    run.interrupting = false;
     // For an injection, leave the status (and its reason, e.g. a pending
     // permission) alone; the turn's own events drive it.
     if (injected) return { injected };
-    run.interrupting = false;
     this.#set(id, run, "running", null);
     return { injected };
   }
@@ -301,8 +309,18 @@ export class SessionManager {
     const run = this.#require(id);
     run.interrupting = true;
     this.#forgetPending(run);
-    await run.session.interrupt();
+    // Reflect the interrupt immediately and unconditionally — the adapter call
+    // below can be slow (or, on a wedged turn, throw), and the UI must not be
+    // left showing `running` either way.
     this.#set(id, run, "interrupted", "user");
+    try {
+      await run.session.interrupt();
+    } catch (err) {
+      this.#hooks.log.warn("adapter interrupt failed", {
+        id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

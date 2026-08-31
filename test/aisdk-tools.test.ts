@@ -322,6 +322,69 @@ test("denying a gated tool call feeds the model a failed tool_result", async () 
   }
 });
 
+test("interrupting a turn parked in the gate stops it and heals the transcript for the next send", async () => {
+  const { dir, store, cleanup } = tmpEnv();
+  try {
+    const model = stepModel([
+      toolCallStep("c1", "write_note", JSON.stringify({ path: join(dir, "x"), content: "y" })),
+      textStep("ok, carrying on"),
+    ]);
+    const p = provider(() => model, store);
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "write a note",
+      mode: "default",
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
+    });
+
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const ev of s.events()) {
+        seen.push(ev);
+        // Don't answer the gate — interrupt while it's still parked.
+        if (ev.type === "permission_request") void s.interrupt();
+      }
+    })();
+
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(
+      seen.some((e) => e.type === "permission_request"),
+      true,
+      "the gated tool raised a permission_request",
+    );
+    assert.equal(
+      seen.some((e) => e.type === "result"),
+      false,
+      "an interrupted turn emits no result",
+    );
+    assert.equal(s.snapshot().status, "interrupted");
+    // The dangling assistant tool-call must not survive into the stored transcript.
+    assert.deepEqual(
+      store.load("s1").map((m) => m.role),
+      ["user"],
+      "the unanswered tool-call turn was trimmed",
+    );
+
+    // A plain `send` now resumes from valid history and runs to completion.
+    await s.send("continue");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(
+      seen.some((e) => e.type === "result"),
+      true,
+      "the follow-up turn completed",
+    );
+    assert.equal(s.snapshot().status, "idle");
+
+    await s.close();
+    await reader;
+  } finally {
+    cleanup();
+  }
+});
+
 test("the loom ask_user tool round-trips a question through the event stream", async () => {
   const { dir, store, cleanup } = tmpEnv();
   try {
