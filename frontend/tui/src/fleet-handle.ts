@@ -58,6 +58,7 @@ import {
   type ConfirmState,
   type LogLine,
   type Pending,
+  type PickerState,
   type TuiState,
 } from "./model.ts";
 
@@ -754,6 +755,54 @@ export const mkFleetHandle = ({
     openModelStep(only, provs[0]?.tag || only, draft);
   };
 
+  /** `Esc` inside a picker: step back one level of the provider → model →
+   *  prompt wizard instead of discarding the whole detour (and any draft text
+   *  typed before it). Kinds with no "back" step — `find`, `undo`, `command`,
+   *  or a bare live `⌥m` switch with nothing to return to — just close. */
+  const escapePicker = (p: PickerState): void => {
+    if (p.kind === "provider") {
+      return void dispatch({
+        t: "openPrompt",
+        prompt: makePrompt({
+          kind: "new",
+          sessionId: null,
+          label: "new session",
+          text: p.ctx?.draft ?? "",
+        }),
+      });
+    }
+    if (p.kind === "model" && !p.ctx?.liveSessionId) {
+      const draft = p.ctx?.draft ?? "";
+      if (state.providers.length > 1) {
+        return void dispatch({
+          t: "openPicker",
+          picker: makePicker({
+            kind: "provider",
+            title: "provider",
+            items: providerPickItems(state),
+            ctx: { draft },
+          }),
+        });
+      }
+      return void dispatch({
+        t: "openPrompt",
+        prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text: draft }),
+      });
+    }
+    if (p.kind === "model" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
+      return void dispatch({
+        t: "openPrompt",
+        prompt: makePrompt({
+          kind: "send",
+          sessionId: p.ctx.reopenSend,
+          label: "send",
+          ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
+        }),
+      });
+    }
+    return void dispatch({ t: "closePicker" });
+  };
+
   /** Open a live model switcher (`⌥m`): the selected session, or an explicit
    *  one. From a `send` prompt, pass `draft` so the picker drops you back. */
   const switchModel = (sessionId?: string, draft?: string): void => {
@@ -1271,7 +1320,7 @@ export const mkFleetHandle = ({
 
     if (state.mode === "picker" && state.picker) {
       const p = state.picker;
-      if (key.escape) return void dispatch({ t: "closePicker" });
+      if (key.escape) return void escapePicker(p);
       if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
       if (key.return) {
