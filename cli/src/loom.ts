@@ -147,6 +147,14 @@ const main = async (): Promise<void> => {
   });
 
   if (wantTui) {
+    // React (via Ink) chooses its dev or prod build off NODE_ENV when it's first
+    // imported. The dev build records a `performance.measure()` entry on every
+    // commit for the DevTools render track, and Node keeps every PerformanceEntry
+    // for the life of the process — so a long-lived TUI rendering many times a
+    // second grows the timeline without bound until it OOMs. Pin the prod build
+    // unless a developer has asked for dev explicitly. Must run before the import
+    // below, which is the first thing to pull in React.
+    process.env["NODE_ENV"] ??= "production";
     const { runTui } = await import("@loom/tui/run");
     await runTui(client);
     return;
