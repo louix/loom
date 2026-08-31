@@ -19,6 +19,11 @@ export class AsyncChannel<T> implements AsyncIterable<T> {
     return this.#queue.length;
   }
 
+  /** Discard buffered items the consumer hasn't taken yet; keep the stream open. */
+  drain(): void {
+    this.#queue.length = 0;
+  }
+
   push(value: T): void {
     if (this.#closed) return;
     const w = this.#waiters.shift();

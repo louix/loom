@@ -38,6 +38,21 @@ test("close ends the loop even with a blocked consumer; further pushes are ignor
   assert.equal(ch.closed, true);
 });
 
+test("drain discards buffered values but keeps the stream open", async () => {
+  const ch = new AsyncChannel<number>();
+  ch.push(1);
+  ch.push(2);
+  assert.equal(ch.pending, 2);
+  ch.drain();
+  assert.equal(ch.pending, 0);
+  assert.equal(ch.closed, false);
+  ch.push(3);
+  ch.close();
+  const got: number[] = [];
+  for await (const v of ch) got.push(v);
+  assert.deepEqual(got, [3]);
+});
+
 test("undefined is a valid buffered value", async () => {
   const ch = new AsyncChannel<number | undefined>();
   ch.push(undefined);

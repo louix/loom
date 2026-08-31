@@ -115,6 +115,15 @@ class ClaudeSession implements AgentSession {
   #pendingPlans = new Map<string, (r: PermissionResult | null) => void>();
   #pump: Promise<void> | null = null;
   #closing = false;
+  /**
+   * Set by `interrupt()`, cleared by the next `send()`. The SDK's `interrupt()`
+   * aborts the live turn but not turns already sitting in its command queue (a
+   * message the user sent mid-turn, or the plan-approval path's own follow-up).
+   * While this is set, `#drain` keeps the mapper's accounting current but drops
+   * every mapped event, so a queued turn can't stream chatter into a session
+   * the user has stopped. A real `send()` supersedes the interrupt.
+   */
+  #interrupted = false;
 
   constructor(opts: CreateSessionOptions) {
     this.id = opts.sessionId;
@@ -234,7 +243,11 @@ class ClaudeSession implements AgentSession {
     if (!q) return;
     try {
       for await (const msg of q) {
-        for (const ev of this.#mapper.map(msg)) this.#outbox.push(ev);
+        // Always run the mapper — it carries cumulative token / cost state
+        // that must stay correct even for a turn we're suppressing.
+        const events = this.#mapper.map(msg);
+        if (this.#interrupted) continue;
+        for (const ev of events) this.#outbox.push(ev);
       }
     } catch (err) {
       if (!this.#closing) {
@@ -272,6 +285,7 @@ class ClaudeSession implements AgentSession {
 
   async send(input: UserInput): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    this.#interrupted = false; // a fresh user turn supersedes any prior interrupt
     this.#inbox.push(userMessage(input));
   }
 
@@ -364,7 +378,18 @@ class ClaudeSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
-    await this.#query?.interrupt();
+    // Stop the live turn, and don't let anything queued behind it speak into
+    // the stopped session. `#inbox.drain()` clears sends the SDK hasn't pulled
+    // yet; `#interrupted` (lifted by the next `send()`) muzzles a turn already
+    // in the SDK's own command queue — 0.3.251's `interrupt()` takes no
+    // `cancel_queued`, so that queue can't be emptied from here.
+    this.#interrupted = true;
+    this.#inbox.drain();
+    const receipt = await this.#query?.interrupt();
+    const queued = receipt?.still_queued;
+    if (queued && queued.length > 0) {
+      this.#log.debug("interrupt left queued turns in the CLI", { count: queued.length });
+    }
   }
 
   async rewind(_keep: number): Promise<void> {
