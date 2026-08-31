@@ -17,6 +17,7 @@ import {
   pickerVisible,
   providerInfo,
   queueFor,
+  selectedSession,
   visibleLog,
   type Connection,
   type ConfirmState,
@@ -41,6 +42,7 @@ import {
   TONE_COLOR,
   truncate,
   wrapText,
+  type Tone,
 } from "./theme.ts";
 
 const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
@@ -444,19 +446,30 @@ export const EventLog = ({
   full?: boolean;
 }): ReactNode => {
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
-  // Wrapping every visible line runs on each ~120ms tick; only redo it when the
-  // log, the view, the selection or the width actually changed (a big tool
-  // result would otherwise re-wrap needlessly).
-  const physical = useMemo(() => {
-    const subName = new Map<string, string>();
-    for (const s of state.sessions) for (const a of s.subagents) subName.set(a.id, a.name);
-    return physicalRows(visibleLog(state), inside(width), subName);
-  }, [state.log, state.logFilter, state.selectedId, state.sessions, width]);
+  // Only the selected session's sub-agents can show in its log. Key the map by a
+  // cheap signature so a `session_updated` that merely bumped a token counter (a
+  // fresh `sessions` array, same sub-agents) doesn't invalidate the wrap below.
+  const sel = selectedSession(state);
+  const subSig = (sel?.subagents ?? []).map((a) => `${a.id}=${a.name}`).join(",");
+  const subName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of sel?.subagents ?? []) m.set(a.id, a.name);
+    return m;
+    // sel is captured; subSig is its identity for this purpose.
+  }, [subSig]);
 
-  const maxScroll = Math.max(0, physical.length - capacity);
+  // Flatten the visible log to physical (wrapped) rows. `wrapLine` memoises per
+  // line, so a new event re-wraps one line rather than the whole backlog, and
+  // only the `shown` slice is turned into elements below.
+  const rows = useMemo(
+    () => physicalRows(visibleLog(state), inside(width), subName),
+    [state.log, state.logFilter, state.selectedId, subName, width],
+  );
+
+  const maxScroll = Math.max(0, rows.length - capacity);
   const off = Math.min(scroll, maxScroll);
-  const end = physical.length - off;
-  const shown = physical.slice(Math.max(0, end - capacity), end);
+  const end = rows.length - off;
+  const shown = rows.slice(Math.max(0, end - capacity), end);
   const above = Math.max(0, end - capacity);
 
   return (
@@ -474,59 +487,90 @@ export const EventLog = ({
           {(state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : "")}
         </Text>
       </Box>
-      {shown.length === 0
-        ? [
-            <Text key="none" color={C.faint}>
-              {"  (quiet)"}
-            </Text>,
-          ]
-        : shown.map((r) => r.node)}
+      {shown.length === 0 ? (
+        <Text color={C.faint}>{"  (quiet)"}</Text>
+      ) : (
+        shown.map((r) =>
+          r.first ? (
+            <Text key={r.key} wrap="truncate-end">
+              <Text color={C.faint}>{r.ts}</Text>
+              {r.sub ? <Text color={C.faint}>{r.sub}</Text> : null}
+              <Text color={TONE_COLOR[r.tone]}>{`${r.glyph} `}</Text>
+              <Text color={TONE_COLOR[r.tone]}>{r.seg}</Text>
+            </Text>
+          ) : (
+            <Text key={r.key} wrap="truncate-end">
+              <Text>{" ".repeat(r.indent)}</Text>
+              <Text color={TONE_COLOR[r.tone]}>{r.seg}</Text>
+            </Text>
+          ),
+        )
+      )}
     </Box>
   );
 };
 
+/** One wrapped screen row of the event log. `first` rows carry the time + glyph
+ *  gutter; continuation rows carry `indent` spaces and nothing else. */
+interface PhysicalRow {
+  readonly key: string;
+  readonly first: boolean;
+  readonly ts: string;
+  readonly sub: string;
+  readonly indent: number;
+  readonly glyph: string;
+  readonly tone: Tone;
+  readonly seg: string;
+}
+
 /**
- * Wrap every log line to `iw` columns; one entry per physical row. Each event's
- * full body is shown, word-wrapped to width and never clipped — the pane
- * scrolls (`chat` view collapses tool / thinking runs when the full trace is
- * too much). Newlines in the body become their own wrapped rows.
+ * The visible log flattened to physical rows, oldest first — pure data, so the
+ * caller builds elements only for the slice it shows. Each event's full body is
+ * word-wrapped to width and never clipped (the pane scrolls); intentional
+ * newlines survive as their own rows.
  */
 const physicalRows = (
   lines: readonly LogLine[],
   iw: number,
-  subName: Map<string, string> = new Map(),
-): Array<{ key: string; node: ReactNode }> => {
-  const out: Array<{ key: string; node: ReactNode }> = [];
+  subName: ReadonlyMap<string, string>,
+): PhysicalRow[] => {
+  const out: PhysicalRow[] = [];
   for (const l of lines) {
     const ts = `${clock(l.ts)} `;
     // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
     const sub = l.agentId ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
     const indent = ts.length + sub.length + 2; // + "glyph "
-    const room = Math.max(8, iw - indent);
-    // Wrap each source line separately so intentional newlines are kept.
-    const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
-    const wrapped = source.split("\n").flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, room));
-    wrapped.forEach((seg, i) => {
+    const segs = wrapLine(l, Math.max(8, iw - indent));
+    segs.forEach((seg, i) => {
       out.push({
         key: `${l.seq}-${l.ts}-${i}`,
-        node:
-          i === 0 ? (
-            <Text key={`${l.seq}-${l.ts}-0`} wrap="truncate-end">
-              <Text color={C.faint}>{ts}</Text>
-              {sub ? <Text color={C.faint}>{sub}</Text> : null}
-              <Text color={TONE_COLOR[l.tone]}>{`${l.glyph} `}</Text>
-              <Text color={TONE_COLOR[l.tone]}>{seg}</Text>
-            </Text>
-          ) : (
-            <Text key={`${l.seq}-${l.ts}-${i}`} wrap="truncate-end">
-              <Text>{" ".repeat(indent)}</Text>
-              <Text color={TONE_COLOR[l.tone]}>{seg}</Text>
-            </Text>
-          ),
+        first: i === 0,
+        ts,
+        sub,
+        indent,
+        glyph: l.glyph,
+        tone: l.tone,
+        seg,
       });
     });
   }
   return out;
+};
+
+/**
+ * `wrapText` over a log line's body, memoised by line identity + column count —
+ * appending an event then re-wraps one line, not the 400-line backlog. LogLines
+ * are immutable and fall out of `state.log` at its cap, so the `WeakMap` self-bounds.
+ */
+const wrapCache = new WeakMap<LogLine, { room: number; segs: readonly string[] }>();
+const wrapLine = (l: LogLine, room: number): readonly string[] => {
+  const hit = wrapCache.get(l);
+  if (hit && hit.room === room) return hit.segs;
+  // Wrap each source line separately so intentional newlines are kept.
+  const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
+  const segs = source.split("\n").flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, room));
+  wrapCache.set(l, { room, segs });
+  return segs;
 };
 
 // ---------------------------------------------------------------------------
