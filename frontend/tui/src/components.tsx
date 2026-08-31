@@ -902,7 +902,7 @@ export const RequestPanel = ({
           </Text>
         ) : null,
       ],
-      "a answer  ·  ⌃o view  ·  i interrupt",
+      "a answer  ·  ⌥o / o view  ·  i interrupt",
     );
   }
   if (pending.plan !== undefined) {
@@ -915,7 +915,7 @@ export const RequestPanel = ({
             {l}
           </Text>
         )),
-      "a review  ·  ⌃o view  ·  i interrupt",
+      "a review  ·  ⌥o / o view  ·  i interrupt",
     );
   }
   const perms = pending.permissions ?? [];
@@ -929,7 +929,7 @@ export const RequestPanel = ({
           {l}
         </Text>
       )),
-      `a approve  ·  d deny  ·  ⌃o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
+      `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
     );
   }
   return null;
@@ -972,7 +972,7 @@ export const PlanReview = ({ text, width }: { text: string; width: number }): Re
       ))}
       {lines.length > body.length ? (
         <Text color={C.faint}>
-          {`  … ${lines.length - body.length} more lines — ⌃o to read it all`}
+          {`  … ${lines.length - body.length} more lines — ⌥o / o to read it all`}
         </Text>
       ) : null}
       <Box height={1} />
@@ -982,7 +982,7 @@ export const PlanReview = ({ text, width }: { text: string; width: number }): Re
       {row("d", "discuss — send a note back; the agent stays in plan mode")}
       <Box height={1} />
       <Text color={C.faint}>
-        {"⌃o view read-only  ·  a plan review must be answered — esc does nothing"}
+        {"⌥o / o view read-only  ·  a plan review must be answered — esc does nothing"}
       </Text>
     </Box>
   );

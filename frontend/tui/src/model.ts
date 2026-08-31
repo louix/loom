@@ -73,7 +73,7 @@ export interface LogLine {
   /** Compact one-liner for the log pane (may be truncated). */
   text: string;
   /**
-   * The event's full body, newlines intact — for the `⌃o` editor view. The pane
+   * The event's full body, newlines intact — for the `o` / `⌥o` editor view. The pane
    * itself renders it in full too (wrapped, never clipped). Omitted when it
    * would just equal {@link text}.
    */
@@ -970,7 +970,7 @@ export const condenseToolResults = (lines: readonly LogLine[]): LogLine[] => {
   return out;
 };
 
-/** Role label for a log line in the `⌃o` transcript, or null to omit it. */
+/** Role label for a log line in the `o` / `⌥o` transcript, or null to omit it. */
 const transcriptHeader = (l: LogLine): string | null => {
   const midTurn = l.glyph === "»" ? " (mid-turn)" : "";
   switch (l.kind) {
@@ -1015,7 +1015,7 @@ const transcriptHeader = (l: LogLine): string | null => {
   }
 };
 
-/** Body text for the `⌃o` transcript — the header already names the role. */
+/** Body text for the `o` / `⌥o` transcript — the header already names the role. */
 const transcriptBody = (l: LogLine): string => {
   const raw = (l.full ?? l.text).replace(/[ \t]+$/gm, "").trimEnd();
   if (l.kind === "tool_call") return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
@@ -1316,7 +1316,7 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
         { keys: "f", label: "fresh" },
         { keys: "e", label: "edit" },
         { keys: "d", label: "discuss" },
-        { keys: "⌃o", label: "view" },
+        { keys: "⌥o / o", label: "view" },
       ];
     case "help":
       return [{ keys: "? / esc", label: "close help" }];

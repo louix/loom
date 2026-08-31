@@ -363,7 +363,7 @@ export const mkFleetHandle = ({
     ts: Date.now(),
   });
 
-  /** `⌃o` dump: the selected session's whole log as a readable transcript. */
+  /** `o` / `⌥o` dump: the selected session's whole log as a readable transcript. */
   const logText = (): string => transcriptText(sessionLog(state));
 
   /**
@@ -392,7 +392,7 @@ export const mkFleetHandle = ({
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
   const editPrompt = async (): Promise<void> => {
     if (state.mode !== "prompt" || !state.prompt)
-      return note("open a prompt first — ⌃o views the log", "dim");
+      return note("open a prompt first — press o to view the log", "dim");
     const p = state.prompt;
     const next = await openEditor(p.buffer.text, {
       ext: p.kind === "new" ? "md" : "txt",
@@ -401,7 +401,7 @@ export const mkFleetHandle = ({
     if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
   };
 
-  /** `⌃o` — open the pending request, or the event log, in `$EDITOR` read-only. */
+  /** `o` / `⌥o` — open the pending request, or the event log, in `$EDITOR` read-only. */
   const viewInEditor = async (): Promise<void> => {
     const s = selectedSession(state);
     const pend = s ? pendingFor(state, s.id) : {};
@@ -1013,6 +1013,13 @@ export const mkFleetHandle = ({
     respondPlan({ action: "revise", plan }, "implementing your edited plan");
   };
 
+  /** `o` / `⌥o` in the plan overlay — view the plan in $EDITOR, read-only. */
+  const viewPlan = async (): Promise<void> => {
+    const pl = state.plan;
+    if (!pl) return;
+    await openEditor(pl.text, { ext: "md" });
+  };
+
   // ---- daemon lifecycle ---------------------------------------
   const confirmFor = (action: "restart" | "quitAll"): ConfirmState => {
     const liveCount = state.sessions.filter(
@@ -1292,6 +1299,7 @@ export const mkFleetHandle = ({
       if (input === "f")
         return respondPlan({ action: "implement_fresh" }, "compacting, then implementing");
       if (input === "e") return void editPlan();
+      if (input === "o" || (key.meta && input === "o")) return void viewPlan();
       if (input === "d") {
         const pl = state.plan;
         if (!pl) return;
