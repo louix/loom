@@ -4,6 +4,7 @@
  * decides *what* to show lives here as a `reduce(state, action)` function and
  * a set of selectors, all unit-tested without React or a live daemon.
  */
+import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent, SessionStatus } from "@loom/core/events";
 import type { ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
@@ -521,6 +522,9 @@ export function reduce(s: TuiState, a: Action): TuiState {
 
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };
+
+    default:
+      return absurd(a);
   }
 }
 
@@ -612,6 +616,9 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
           at: Date.now(),
         },
       };
+
+    default:
+      return absurd(frame);
   }
 }
 
@@ -915,6 +922,8 @@ function transcriptHeader(l: LogLine): string | null {
     case "compact_progress":
     case "rate_limit":
       return null;
+    default:
+      return absurd(l.kind);
   }
 }
 
@@ -1224,6 +1233,8 @@ export function footerHints(s: TuiState): Array<{ keys: string; label: string }>
         .map((h) => ({ keys: h.keys, label: h.label }));
       return [...hints, { keys: "␣", label: "more" }];
     }
+    default:
+      return absurd(s.mode);
   }
 }
 
@@ -1359,6 +1370,8 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
         full: ev.injected ? `${body(ev.text)}\n\n(sent mid-turn)` : body(ev.text),
         tone: "accent",
       };
+    default:
+      return absurd(ev);
   }
 }
 

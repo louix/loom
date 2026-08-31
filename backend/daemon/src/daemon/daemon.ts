@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
+import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
@@ -446,7 +447,16 @@ export class Daemon {
 
   get #cacheTtlMinutes(): number {
     const ttl = this.config.providers.claude.promptCacheTtl;
-    return ttl === "1h" ? 60 : ttl === "5m" ? 5 : 0;
+    switch (ttl) {
+      case "1h":
+        return 60;
+      case "5m":
+        return 5;
+      case "":
+        return 0;
+      default:
+        return absurd(ttl);
+    }
   }
 
   /**
