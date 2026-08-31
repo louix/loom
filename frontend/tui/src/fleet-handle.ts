@@ -23,6 +23,13 @@ import { modeLabel, shortId } from "./theme.ts";
 import { promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
+  loadableFailed,
+  loadableIdle,
+  loadableLoaded,
+  loadablePending,
+  type Loadable,
+} from "./loadable.ts";
+import {
   allowedActs,
   commandsFor,
   defaultModeOf,
@@ -101,6 +108,9 @@ export type BodyKind = "help" | "confirm" | "plan" | "picker" | "logFull" | "spl
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
   readonly state: TuiState;
+  /** The initial `session.list` + `providers.list` reconcile — `error` once it
+   *  has failed and not yet succeeded on a reconnect. */
+  readonly boot: Loadable<string, void>;
   readonly tick: number;
   readonly logScroll: number;
   readonly logFull: boolean;
@@ -135,6 +145,7 @@ export interface MkFleetHandleInput {
 
 const deriveView = (
   state: TuiState,
+  boot: Loadable<string, void>,
   tick: number,
   logScroll: number,
   logFull: boolean,
@@ -172,6 +183,7 @@ const deriveView = (
 
   return {
     state,
+    boot,
     tick,
     logScroll,
     logFull,
@@ -196,6 +208,7 @@ export const mkFleetHandle = ({
   openEditorOverride,
 }: MkFleetHandleInput): FleetHandle => {
   let state = initialState();
+  let boot: Loadable<string, void> = loadableIdle;
   let tick = 0;
   let logScroll = 0;
   let logFull = false;
@@ -217,8 +230,8 @@ export const mkFleetHandle = ({
   const draining = new Set<string>();
   const lastDrainTurn = new Map<string, number>();
 
-  const store = mkStore<FleetView>(deriveView(state, tick, logScroll, logFull, dims));
-  const publish = (): void => store.set(deriveView(state, tick, logScroll, logFull, dims));
+  const store = mkStore<FleetView>(deriveView(state, boot, tick, logScroll, logFull, dims));
+  const publish = (): void => store.set(deriveView(state, boot, tick, logScroll, logFull, dims));
 
   const backfillHistory = (): void => {
     const id = state.selectedId;
@@ -1351,14 +1364,30 @@ export const mkFleetHandle = ({
   };
 
   const refetch = (): void => {
-    void client
-      .request<SessionSnapshot[]>("session.list")
-      .then((sessions) => dispatch({ t: "sessions", sessions }))
-      .catch(() => {});
-    void client
-      .request<ProviderInfo[]>("providers.list")
-      .then((list) => dispatch({ t: "providers", list }))
-      .catch(() => {});
+    if (boot.tag !== "data") {
+      boot = loadablePending;
+      publish();
+    }
+    Promise.all([
+      client
+        .request<SessionSnapshot[]>("session.list")
+        .then((sessions) => dispatch({ t: "sessions", sessions })),
+      client
+        .request<ProviderInfo[]>("providers.list")
+        .then((list) => dispatch({ t: "providers", list })),
+    ]).then(
+      () => {
+        boot = loadableLoaded(undefined);
+        publish();
+      },
+      (e: unknown) => {
+        // Was a silent `.catch(() => {})` per request. A reconnect re-runs this;
+        // `boot` flips back to `data` if the retry lands.
+        boot = loadableFailed(e instanceof Error ? e.message : String(e));
+        note("couldn't reach the daemon — will retry on reconnect", "bad");
+        publish();
+      },
+    );
   };
 
   /**
