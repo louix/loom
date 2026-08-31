@@ -41,7 +41,17 @@ import {
   type TuiState,
 } from "@loom/tui/model";
 import { buffer } from "@loom/tui/editor";
-import { bar, humanTokens, money, spinnerFrame, truncate, wrapText } from "@loom/tui/theme";
+import {
+  bar,
+  humanTokens,
+  money,
+  setThemeMode,
+  spinnerFrame,
+  statusLook,
+  toneColor,
+  truncate,
+  wrapText,
+} from "@loom/tui/theme";
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -709,6 +719,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
     "viewlog",
     "filter",
     "fullscreen",
+    "theme",
     "restart",
     "quitall",
     "new",
@@ -1136,6 +1147,15 @@ test("connection action drives the header lamp state", () => {
   assert.equal(s.connection, "live");
 });
 
+test("toggleTheme flips dark ↔ light, defaulting to dark", () => {
+  let s = initialState();
+  assert.equal(s.theme, "dark");
+  s = reduce(s, { t: "toggleTheme" });
+  assert.equal(s.theme, "light");
+  s = reduce(s, { t: "toggleTheme" });
+  assert.equal(s.theme, "dark");
+});
+
 // ---------------------------------------------------------------------------
 // theme helpers
 // ---------------------------------------------------------------------------
@@ -1155,6 +1175,19 @@ test("theme formatting helpers", () => {
   assert.deepEqual(wrapText("the quick brown fox", 9), ["the quick", "brown fox"]);
   assert.deepEqual(wrapText("supercalifragilistic", 6), ["superc", "alifra", "gilist", "ic"]);
   assert.deepEqual(wrapText("short", 40), ["short"]);
+});
+
+test("setThemeMode swaps the shared palette in place — statusLook/toneColor follow immediately", () => {
+  setThemeMode("dark");
+  const darkGood = statusLook("idle").color;
+  const darkBad = toneColor("bad");
+  setThemeMode("light");
+  assert.notEqual(statusLook("idle").color, darkGood);
+  assert.notEqual(toneColor("bad"), darkBad);
+  // glyph/label are theme-independent
+  assert.equal(statusLook("idle").glyph, "○");
+  assert.equal(statusLook("idle").label, "idle");
+  setThemeMode("dark"); // restore for any test relying on the default palette
 });
 
 test("status_changed events stay out of the log; result is a terse marker", () => {

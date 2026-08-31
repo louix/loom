@@ -65,6 +65,7 @@ Consequences:
 | `y`  | copy the session's branch name to the clipboard                            |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only     |
 | `v`  | event log: everything ↔ chat only                                          |
+| `t`  | toggle dark / light theme                                                  |
 
 ### Structural (`Shift`)
 

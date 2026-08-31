@@ -21,7 +21,7 @@ import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { modeLabel, shortId } from "./theme.ts";
+import { modeLabel, setThemeMode, shortId } from "./theme.ts";
 import { promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
@@ -336,6 +336,7 @@ export const mkFleetHandle = ({
     if (state.selectedId !== prev.selectedId || state.logFilter !== prev.logFilter) logScroll = 0;
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
+    if (state.theme !== prev.theme) setThemeMode(state.theme);
     publish();
     if (state.selectedId !== prev.selectedId) backfillHistory();
     if (state.sessions !== prev.sessions) forgetDeadSessions();
@@ -1103,6 +1104,8 @@ export const mkFleetHandle = ({
           publish();
         }
         return;
+      case "theme":
+        return void dispatch({ t: "toggleTheme" });
       case "restart":
         return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
       case "quitall":
@@ -1417,6 +1420,7 @@ export const mkFleetHandle = ({
       y: "copybranch",
       o: "viewlog",
       v: "filter",
+      t: "theme",
       n: "new",
       f: "find",
       "?": "help",

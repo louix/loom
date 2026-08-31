@@ -9,7 +9,16 @@ import type { HarnessEvent, SessionStatus } from "@loom/core/events";
 import type { ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
-import { STATUS, STATUS_ORDER, clock, humanTokens, shortId, truncate, type Tone } from "./theme.ts";
+import {
+  STATUS_ORDER,
+  clock,
+  humanTokens,
+  shortId,
+  statusLook,
+  truncate,
+  type ThemeMode,
+  type Tone,
+} from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
 export type UiMode = "browse" | "prompt" | "help" | "confirm" | "plan" | "picker";
@@ -216,6 +225,7 @@ export const firstPerm = (p: Pending): PendingPerm | undefined => {
 
 export interface TuiState {
   connection: Connection;
+  theme: ThemeMode;
   daemon: DaemonInfo | null;
   /** Configured providers, from `providers.list` at connect time. */
   providers: ProviderInfo[];
@@ -250,6 +260,7 @@ export interface TuiState {
 export const initialState = (logCap = 400): TuiState => {
   return {
     connection: "connecting",
+    theme: "dark",
     daemon: null,
     providers: [],
     sessions: [],
@@ -302,6 +313,7 @@ export type Action =
   | { t: "sessions"; sessions: SessionSnapshot[] }
   | { t: "push"; frame: PushFrame }
   | { t: "connection"; value: Connection }
+  | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
   | { t: "logFilter"; value: LogFilter }
@@ -374,6 +386,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "connection":
       return { ...s, connection: a.value };
+
+    case "toggleTheme":
+      return { ...s, theme: s.theme === "dark" ? "light" : "dark" };
 
     case "move": {
       if (s.sessions.length === 0) return s;
@@ -1046,7 +1061,8 @@ export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
     const inGroup = sessions.filter((x) => x.status === status);
-    if (inGroup.length > 0) out.push({ status, label: STATUS[status].label, sessions: inGroup });
+    if (inGroup.length > 0)
+      out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }
   return out;
 };
@@ -1074,6 +1090,7 @@ export type ActName =
   | "viewlog"
   | "logs"
   | "fullscreen"
+  | "theme"
   | "clearqueue"
   | "restart"
   | "quitall"
@@ -1189,6 +1206,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", s.logFilter === "chat" ? "event log: show everything" : "event log: chat only", "v"],
     ["fullscreen", "fullscreen the event log", "⇥"],
+    ["theme", s.theme === "dark" ? "switch to light theme" : "switch to dark theme", "t"],
     ["restart", "restart the daemon", "R"],
     ["quitall", "quit and stop the daemon", "Q"],
   ];

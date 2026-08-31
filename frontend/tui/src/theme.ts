@@ -6,8 +6,21 @@
  */
 import type { SessionStatus } from "@loom/core/events";
 
-/** Truecolour palette. One accent (teal); everything else stays quiet. */
-export const C = {
+export type ThemeMode = "dark" | "light";
+
+type Palette = {
+  accent: string;
+  accentDim: string;
+  await_: string;
+  good: string;
+  warn: string;
+  bad: string;
+  text: string;
+  dim: string;
+  faint: string;
+};
+
+const DARK: Palette = {
   accent: "#5eead4",
   accentDim: "#2dd4bf",
   await_: "#c084fc",
@@ -17,18 +30,55 @@ export const C = {
   text: "#e5e7eb",
   dim: "#6b7280",
   faint: "#4b5563",
-} as const;
+};
+
+/** Same roles, darkened/saturated to stay legible on a light terminal background. */
+const LIGHT: Palette = {
+  accent: "#0f766e",
+  accentDim: "#0d9488",
+  await_: "#7c3aed",
+  good: "#15803d",
+  warn: "#b45309",
+  bad: "#b91c1c",
+  text: "#111827",
+  dim: "#4b5563",
+  faint: "#9ca3af",
+};
+
+let mode: ThemeMode = "dark";
+
+/** Truecolour palette. Mutated in place on {@link setThemeMode} so every
+ *  `C.xxx` read across the TUI — most of them inline in JSX — picks up the
+ *  new colours on the next render without any prop drilling. */
+export const C: Palette = { ...DARK };
+
+export const themeMode = (): ThemeMode => mode;
+
+export const setThemeMode = (m: ThemeMode): void => {
+  mode = m;
+  Object.assign(C, m === "light" ? LIGHT : DARK);
+};
 
 export type Tone = "plain" | "dim" | "accent" | "good" | "warn" | "bad" | "think";
 
-export const TONE_COLOR: Record<Tone, string> = {
-  plain: C.text,
-  dim: C.dim,
-  accent: C.accent,
-  good: C.good,
-  warn: C.warn,
-  bad: C.bad,
-  think: C.faint,
+/** Ink colour for a log tone, read fresh so a theme switch takes effect immediately. */
+export const toneColor = (t: Tone): string => {
+  switch (t) {
+    case "plain":
+      return C.text;
+    case "dim":
+      return C.dim;
+    case "accent":
+      return C.accent;
+    case "good":
+      return C.good;
+    case "warn":
+      return C.warn;
+    case "bad":
+      return C.bad;
+    case "think":
+      return C.faint;
+  }
 };
 
 export interface StatusLook {
@@ -48,15 +98,41 @@ export const STATUS_ORDER: readonly SessionStatus[] = [
   "done",
 ];
 
-export const STATUS: Record<SessionStatus, StatusLook> = {
-  awaiting_input: { glyph: "◆", color: C.await_, label: "awaiting input" },
-  running: { glyph: "●", color: C.accent, label: "running" },
-  starting: { glyph: "◌", color: C.accentDim, label: "starting" },
-  interrupted: { glyph: "⊘", color: C.warn, label: "interrupted" },
-  idle: { glyph: "○", color: C.good, label: "idle" },
-  error: { glyph: "✕", color: C.bad, label: "error" },
-  done: { glyph: "✓", color: C.faint, label: "done" },
+/** Glyph + label per status — unlike the colour, these don't depend on the theme. */
+const STATUS_TEXT: Record<SessionStatus, { glyph: string; label: string }> = {
+  awaiting_input: { glyph: "◆", label: "awaiting input" },
+  running: { glyph: "●", label: "running" },
+  starting: { glyph: "◌", label: "starting" },
+  interrupted: { glyph: "⊘", label: "interrupted" },
+  idle: { glyph: "○", label: "idle" },
+  error: { glyph: "✕", label: "error" },
+  done: { glyph: "✓", label: "done" },
 };
+
+const statusColor = (s: SessionStatus): string => {
+  switch (s) {
+    case "awaiting_input":
+      return C.await_;
+    case "running":
+      return C.accent;
+    case "starting":
+      return C.accentDim;
+    case "interrupted":
+      return C.warn;
+    case "idle":
+      return C.good;
+    case "error":
+      return C.bad;
+    case "done":
+      return C.faint;
+  }
+};
+
+/** Glyph + colour + label for a session status, read fresh (colour follows the theme). */
+export const statusLook = (s: SessionStatus): StatusLook => ({
+  ...STATUS_TEXT[s],
+  color: statusColor(s),
+});
 
 /** Braille spinner frames for running rows. */
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;

@@ -38,8 +38,8 @@ import {
   money,
   shortId,
   spinnerFrame,
-  STATUS,
-  TONE_COLOR,
+  statusLook,
+  toneColor,
   truncate,
   wrapText,
   type Tone,
@@ -59,12 +59,18 @@ const titleLine = (t: string | null): string => {
   return "(untitled)";
 };
 
-/** Connection lamp — glyph + colour per {@link Connection}. */
-const LAMP: Record<Connection, { color: string; text: string }> = {
-  live: { color: C.good, text: "● live" },
-  reconnecting: { color: C.warn, text: "◍ reconnecting" },
-  closed: { color: C.bad, text: "○ offline" },
-  connecting: { color: C.dim, text: "◌ connecting" },
+/** Connection lamp — glyph + colour per {@link Connection}, read fresh so it follows the theme. */
+const lampFor = (c: Connection): { color: string; text: string } => {
+  switch (c) {
+    case "live":
+      return { color: C.good, text: "● live" };
+    case "reconnecting":
+      return { color: C.warn, text: "◍ reconnecting" };
+    case "closed":
+      return { color: C.bad, text: "○ offline" };
+    case "connecting":
+      return { color: C.dim, text: "◌ connecting" };
+  }
 };
 
 /** Editor placeholder per prompt kind. */
@@ -110,7 +116,7 @@ const gitLineText = (s: SessionSnapshot): string => {
 // ---------------------------------------------------------------------------
 
 export const Header = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  const lamp = LAMP[state.connection];
+  const lamp = lampFor(state.connection);
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
   const running = state.sessions.filter(
@@ -173,7 +179,7 @@ export const Fleet = ({
       : groups.map((g, i) => (
           <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
             <Text bold>
-              <Text color={STATUS[g.status].color}>{STATUS[g.status].glyph + " "}</Text>
+              <Text color={statusLook(g.status).color}>{statusLook(g.status).glyph + " "}</Text>
               <Text color={C.dim}>{g.label.toUpperCase()}</Text>
               <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
             </Text>
@@ -208,7 +214,16 @@ export const Fleet = ({
 };
 
 /** Fleet-row cache dot: `⟢` graded green → amber → red by TTL left, blank otherwise. */
-const CACHE_HEAT_COLOR = { fresh: C.good, fading: C.warn, expiring: C.bad } as const;
+const cacheHeatColor = (h: "fresh" | "fading" | "expiring"): string => {
+  switch (h) {
+    case "fresh":
+      return C.good;
+    case "fading":
+      return C.warn;
+    case "expiring":
+      return C.bad;
+  }
+};
 
 const FleetRow = ({
   s,
@@ -229,13 +244,13 @@ const FleetRow = ({
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
 }): ReactNode => {
-  const look = STATUS[s.status];
+  const look = statusLook(s.status);
   const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
   const id = shortId(s.id);
   const cost = money(s.costUsd);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
-  const cacheColor = heat ? CACHE_HEAT_COLOR[heat] : null;
+  const cacheColor = heat ? cacheHeatColor(heat) : null;
   const idColor = pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
@@ -298,7 +313,7 @@ export const Detail = ({
 
   const s = session;
   const w = inside(width);
-  const look = STATUS[s.status];
+  const look = statusLook(s.status);
   const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
   const ctxPct = Math.round(ctxFrac * 100);
   const g = s.git;
@@ -495,13 +510,13 @@ export const EventLog = ({
             <Text key={r.key} wrap="truncate-end">
               <Text color={C.faint}>{r.ts}</Text>
               {r.sub ? <Text color={C.faint}>{r.sub}</Text> : null}
-              <Text color={TONE_COLOR[r.tone]}>{`${r.glyph} `}</Text>
-              <Text color={TONE_COLOR[r.tone]}>{r.seg}</Text>
+              <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
+              <Text color={toneColor(r.tone)}>{r.seg}</Text>
             </Text>
           ) : (
             <Text key={r.key} wrap="truncate-end">
               <Text>{" ".repeat(r.indent)}</Text>
-              <Text color={TONE_COLOR[r.tone]}>{r.seg}</Text>
+              <Text color={toneColor(r.tone)}>{r.seg}</Text>
             </Text>
           ),
         )
@@ -745,7 +760,7 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
         </Box>
         <Box flexGrow={1} />
         {state.notice ? (
-          <Text color={TONE_COLOR[state.notice.tone]}>{state.notice.text}</Text>
+          <Text color={toneColor(state.notice.tone)}>{state.notice.text}</Text>
         ) : null}
       </Box>
     </Box>
@@ -1003,6 +1018,7 @@ const HELP_ROWS: Array<[string, string]> = [
     "o  ·  v  ·  ⇥",
     "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log",
   ],
+  ["t", "toggle dark / light theme"],
   [
     "n  ·  f",
     "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session",
