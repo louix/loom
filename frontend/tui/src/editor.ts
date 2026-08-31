@@ -18,9 +18,9 @@ export interface Buffer {
   cursor: number;
 }
 
-export function buffer(text = "", cursor = text.length): Buffer {
+export const buffer = (text = "", cursor = text.length): Buffer => {
   return { text, cursor: clamp(cursor, 0, text.length) };
-}
+};
 
 /** The subset of Ink's `key` object the editor looks at. */
 export interface KeyLike {
@@ -48,13 +48,13 @@ export type EditResult =
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
 /** Start / end offsets of the line containing `cursor`. */
-export function lineBounds(text: string, cursor: number): { start: number; end: number } {
+export const lineBounds = (text: string, cursor: number): { start: number; end: number } => {
   const start = text.lastIndexOf("\n", cursor - 1) + 1;
   const nl = text.indexOf("\n", cursor);
   return { start, end: nl === -1 ? text.length : nl };
-}
+};
 
-function verticalTarget(text: string, cursor: number, dir: -1 | 1): number | null {
+const verticalTarget = (text: string, cursor: number, dir: -1 | 1): number | null => {
   const { start, end } = lineBounds(text, cursor);
   const col = cursor - start;
   if (dir === -1) {
@@ -68,39 +68,39 @@ function verticalTarget(text: string, cursor: number, dir: -1 | 1): number | nul
   const nextNl = text.indexOf("\n", nextStart);
   const nextLen = (nextNl === -1 ? text.length : nextNl) - nextStart;
   return nextStart + Math.min(col, nextLen);
-}
+};
 
 /** Offset one word back from `cursor` (skips trailing whitespace, then the word). */
-function wordLeft(text: string, cursor: number): number {
+const wordLeft = (text: string, cursor: number): number => {
   let i = cursor;
   while (i > 0 && /\s/.test(text.charAt(i - 1))) i--;
   while (i > 0 && !/\s/.test(text.charAt(i - 1))) i--;
   return i;
-}
+};
 
 /** Offset one word forward from `cursor` (skips leading whitespace, then the word). */
-function wordRight(text: string, cursor: number): number {
+const wordRight = (text: string, cursor: number): number => {
   let i = cursor;
   while (i < text.length && /\s/.test(text.charAt(i))) i++;
   while (i < text.length && !/\s/.test(text.charAt(i))) i++;
   return i;
-}
+};
 
-function edit(text: string, cursor: number): EditResult {
+const edit = (text: string, cursor: number): EditResult => {
   return { kind: "buffer", buffer: { text, cursor: clamp(cursor, 0, text.length) } };
-}
+};
 
 /** Printable text: everything except C0 controls, but newlines are allowed. */
-function isInsertable(s: string): boolean {
+const isInsertable = (s: string): boolean => {
   if (s.length === 0) return false;
   for (const ch of s) {
     if (ch === "\n") continue;
     if (ch < " " || ch === "\x7f") return false;
   }
   return true;
-}
+};
 
-export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
+export const applyKey = (buf: Buffer, input: string, key: KeyLike): EditResult => {
   const { text, cursor } = buf;
 
   if (key.escape) return { kind: "cancel" };
@@ -168,10 +168,10 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
     return edit(text.slice(0, cursor) + clean + text.slice(cursor), cursor + clean.length);
   }
   return { kind: "ignore" };
-}
+};
 
 /** Split for rendering: the line list plus the caret's row / column. */
-export function layout(buf: Buffer): { lines: string[]; row: number; col: number } {
+export const layout = (buf: Buffer): { lines: string[]; row: number; col: number } => {
   const lines = buf.text.split("\n");
   let pos = 0;
   for (let r = 0; r < lines.length; r++) {
@@ -181,4 +181,4 @@ export function layout(buf: Buffer): { lines: string[]; row: number; col: number
   }
   const last = lines.length - 1;
   return { lines, row: last, col: (lines[last] ?? "").length };
-}
+};

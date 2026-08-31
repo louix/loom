@@ -141,12 +141,12 @@ export class AisdkProvider implements AgentProvider {
  * factory it built from its own `@ai-sdk/*` import and the daemon's transcript
  * store.
  */
-export function makeAisdkProvider(
+export const makeAisdkProvider = (
   opts: AisdkProviderOptions,
   store: TranscriptStore,
-): AisdkProvider {
+): AisdkProvider => {
   return new AisdkProvider(opts, store);
-}
+};
 
 /**
  * A turn that was killed mid-tool (daemon restart while a permission was
@@ -155,7 +155,7 @@ export function makeAisdkProvider(
  * assistant message (and anything after it) so the resumed session is valid and
  * a fresh `send` re-runs from the last real user turn.
  */
-export function dropDanglingToolCalls(messages: ModelMessage[]): ModelMessage[] {
+export const dropDanglingToolCalls = (messages: ModelMessage[]): ModelMessage[] => {
   const partsOf = (m: ModelMessage | undefined): Array<{ type?: string; toolCallId?: string }> =>
     Array.isArray(m?.content) ? (m.content as Array<{ type?: string; toolCallId?: string }>) : [];
 
@@ -180,4 +180,4 @@ export function dropDanglingToolCalls(messages: ModelMessage[]): ModelMessage[] 
     }
   }
   return callIds.every((id) => answered.has(id)) ? messages : messages.slice(0, lastAssistant);
-}
+};

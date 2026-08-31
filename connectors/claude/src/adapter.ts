@@ -59,21 +59,21 @@ const CAPS: ProviderCapabilities = {
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
 
 /** Pull a context-window size out of a `[1m]` / `[200k]` style tag; 0 if none. */
-function parseContextTag(s: string): number {
+const parseContextTag = (s: string): number => {
   const m = /\[(\d+(?:\.\d+)?)\s*([mk])\]/i.exec(s);
   if (!m) return 0;
   return Math.round(parseFloat(m[1]!) * (m[2]!.toLowerCase() === "m" ? 1_000_000 : 1_000));
-}
+};
 
-function userMessage(text: string): SDKUserMessage {
+const userMessage = (text: string): SDKUserMessage => {
   return {
     type: "user",
     message: { role: "user", content: text },
     parent_tool_use_id: null,
   } as unknown as SDKUserMessage;
-}
+};
 
-function mcpConfig(handles: McpServerHandle[]): Record<string, McpServerConfig> {
+const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> => {
   const out: Record<string, McpServerConfig> = {};
   for (const h of handles) {
     if (h.spec.transport === "stdio") {
@@ -92,7 +92,7 @@ function mcpConfig(handles: McpServerHandle[]): Record<string, McpServerConfig> 
     }
   }
   return out;
-}
+};
 
 // ---------------------------------------------------------------------------
 

@@ -5,7 +5,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
  * already contains a path separator? Used for best-effort tool fallbacks.
  */
-export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+export const onPath = (cmd: string, env: NodeJS.ProcessEnv = process.env): boolean => {
   const runnable = (p: string): boolean => {
     try {
       accessSync(p, constants.X_OK);
@@ -21,13 +21,13 @@ export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boole
     if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
   }
   return false;
-}
+};
 
 /**
  * Walk up from `start` until a directory containing `.git` is found.
  * That directory is the repo root and the anchor for everything in `.loom/`.
  */
-export function findRepoRoot(start: string = process.cwd()): string {
+export const findRepoRoot = (start: string = process.cwd()): string => {
   let dir = resolve(start);
   for (;;) {
     if (existsSync(join(dir, ".git"))) return dir;
@@ -39,7 +39,7 @@ export function findRepoRoot(start: string = process.cwd()): string {
     }
     dir = parent;
   }
-}
+};
 
 export interface LoomPaths {
   repoRoot: string;
@@ -59,7 +59,7 @@ export interface LoomPaths {
   trees: string;
 }
 
-export function loomPaths(repoRoot: string): LoomPaths {
+export const loomPaths = (repoRoot: string): LoomPaths => {
   const dir = join(repoRoot, ".loom");
   return {
     repoRoot,
@@ -71,10 +71,10 @@ export function loomPaths(repoRoot: string): LoomPaths {
     config: join(dir, "config.toml"),
     trees: join(dir, "trees"),
   };
-}
+};
 
 /** Create `.loom/` (and `.loom/trees/`) if missing. */
-export function ensureLoomDir(paths: LoomPaths): void {
+export const ensureLoomDir = (paths: LoomPaths): void => {
   mkdirSync(paths.dir, { recursive: true });
   mkdirSync(paths.trees, { recursive: true });
-}
+};

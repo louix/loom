@@ -50,7 +50,7 @@ export interface TurnResult {
   hitStepLimit: boolean;
 }
 
-export async function runTurn(args: TurnArgs): Promise<TurnResult> {
+export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   const { sessionId, model, system, messages, mapper, hooks } = args;
   let aborted = false;
   let errored = false;
@@ -147,4 +147,4 @@ export async function runTurn(args: TurnArgs): Promise<TurnResult> {
 
   const hitStepLimit = !aborted && !errored && lastStepReason === "tool-calls";
   return { aborted, errored, hitStepLimit };
-}
+};

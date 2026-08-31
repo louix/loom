@@ -10,7 +10,7 @@ import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 /** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn. */
-function modelsStub(ids: string[]): Promise<{ base: string; close: () => void }> {
+const modelsStub = (ids: string[]): Promise<{ base: string; close: () => void }> => {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       if ((req.url ?? "").endsWith("/models")) {
@@ -26,7 +26,7 @@ function modelsStub(ids: string[]): Promise<{ base: string; close: () => void }>
       resolve({ base: `http://127.0.0.1:${port}/v1`, close: () => server.close() });
     });
   });
-}
+};
 
 let h: Harness;
 
@@ -37,14 +37,14 @@ after(async () => {
   await h.cleanup();
 });
 
-async function client(reconnect = false): Promise<LoomClient> {
+const client = async (reconnect = false): Promise<LoomClient> => {
   return LoomClient.connect({
     repoRoot: h.repoRoot,
     sockPath: h.sockPath,
     autospawn: false,
     reconnect,
   });
-}
+};
 
 test("hello handshake returns daemon info and an empty session list", async () => {
   const c = await client();

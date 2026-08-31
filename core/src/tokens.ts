@@ -44,25 +44,25 @@ export const MODEL_CONTEXT: Array<[prefix: string, limit: number]> = [
  * Model ids often arrive as `vendor/model` (OpenRouter, llmbase). Match against
  * both the full id and the part after the last slash.
  */
-function candidates(model: string): string[] {
+const candidates = (model: string): string[] => {
   const lower = model.toLowerCase();
   const slash = lower.lastIndexOf("/");
   return slash === -1 ? [lower] : [lower, lower.slice(slash + 1)];
-}
+};
 
 export const DEFAULT_CONTEXT_LIMIT = 128_000;
 
-export function contextLimitFor(model: string | null | undefined): number {
+export const contextLimitFor = (model: string | null | undefined): number => {
   if (!model) return DEFAULT_CONTEXT_LIMIT;
   const names = candidates(model);
   for (const [prefix, limit] of MODEL_CONTEXT) {
     if (names.some((n) => n.startsWith(prefix) || n.includes(`/${prefix}`))) return limit;
   }
   return DEFAULT_CONTEXT_LIMIT;
-}
+};
 
 /** Rough token estimate for a message array (`chars / 4`, rounded up). */
-export function estimateTokens(messages: readonly EstimableMessage[]): number {
+export const estimateTokens = (messages: readonly EstimableMessage[]): number => {
   let chars = 0;
   for (const m of messages) {
     const c = m?.content;
@@ -77,4 +77,4 @@ export function estimateTokens(messages: readonly EstimableMessage[]): number {
     }
   }
   return Math.ceil(chars / 4);
-}
+};

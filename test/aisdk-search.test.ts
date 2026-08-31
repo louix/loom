@@ -7,12 +7,12 @@ import { BuiltinTools } from "@loom/aisdk/tools/builtins";
 import { isReadonly } from "@loom/aisdk/gate";
 
 /** A one-request stub server; returns the base URL. */
-function stub(
+const stub = (
   handler: (
     req: import("node:http").IncomingMessage,
     body: string,
   ) => { status?: number; json: unknown },
-): Promise<{ base: string; close: () => void; hits: Array<{ url: string; body: string }> }> {
+): Promise<{ base: string; close: () => void; hits: Array<{ url: string; body: string }> }> => {
   const hits: Array<{ url: string; body: string }> = [];
   return new Promise((resolve) => {
     const server: Server = createServer((req, res) => {
@@ -31,7 +31,7 @@ function stub(
       resolve({ base: `http://127.0.0.1:${port}`, close: () => server.close(), hits });
     });
   });
-}
+};
 
 test("runSearch (brave): sends the query + token header, formats the results", async () => {
   const s = await stub((req) => {

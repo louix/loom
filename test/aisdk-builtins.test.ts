@@ -7,10 +7,10 @@ import { BashShell } from "@loom/aisdk/tools/bash";
 import { applyEdit } from "@loom/aisdk/tools/edit";
 import { runRipgrep } from "@loom/aisdk/tools/grep";
 
-function tmp(): { dir: string; cleanup: () => void } {
+const tmp = (): { dir: string; cleanup: () => void } => {
   const dir = mkdtempSync(join(tmpdir(), "loom-builtins-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
+};
 
 // --- bash ----------------------------------------------------------------
 

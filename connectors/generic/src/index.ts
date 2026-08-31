@@ -13,10 +13,10 @@ import { makeAisdkProvider } from "@loom/aisdk/provider";
  * Build a `(modelId) => LanguageModel`, importing only the one `@ai-sdk/*` the
  * `sdk` needs — a daemon that never runs this connector never evaluates them.
  */
-export async function resolveModelFactory(
+export const resolveModelFactory = async (
   sdk: "openai" | "anthropic",
   opts: { id: string; baseUrl: string; apiKey: string },
-): Promise<(modelId: string) => LanguageModel> {
+): Promise<(modelId: string) => LanguageModel> => {
   const key = opts.apiKey ? { apiKey: opts.apiKey } : {};
   if (sdk === "anthropic") {
     const { createAnthropic } = await import("@ai-sdk/anthropic");
@@ -26,9 +26,9 @@ export async function resolveModelFactory(
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
   const p = createOpenAICompatible({ name: opts.id, baseURL: opts.baseUrl, ...key });
   return (id) => p(id);
-}
+};
 
-export async function createProvider(ctx: ConnectorContext): Promise<AgentProvider> {
+export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvider> => {
   if (!ctx.transcript)
     throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
   const { config } = ctx;
@@ -49,4 +49,4 @@ export async function createProvider(ctx: ConnectorContext): Promise<AgentProvid
     },
     ctx.transcript,
   );
-}
+};

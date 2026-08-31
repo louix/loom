@@ -19,7 +19,7 @@ const FAKE_MCP = fileURLToPath(new URL("./fixtures/fake-mcp-server.mjs", import.
 type Chunk = LanguageModelV2StreamPart;
 
 /** Model whose Nth `doStream` returns the Nth chunk list (last repeats). */
-function stepModel(steps: Chunk[][]): LanguageModel {
+const stepModel = (steps: Chunk[][]): LanguageModel => {
   let n = 0;
   return new MockLanguageModelV2({
     doStream: async () => {
@@ -28,9 +28,9 @@ function stepModel(steps: Chunk[][]): LanguageModel {
       return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
     },
   }) as unknown as LanguageModel;
-}
+};
 
-function callStep(id: string, name: string, input: string): Chunk[] {
+const callStep = (id: string, name: string, input: string): Chunk[] => {
   return [
     { type: "stream-start", warnings: [] },
     { type: "response-metadata", id: `r-${id}`, modelId: "mock", timestamp: new Date(0) },
@@ -41,9 +41,9 @@ function callStep(id: string, name: string, input: string): Chunk[] {
       usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
     },
   ];
-}
+};
 
-function textStep(text: string): Chunk[] {
+const textStep = (text: string): Chunk[] => {
   return [
     { type: "stream-start", warnings: [] },
     { type: "response-metadata", id: "r-t", modelId: "mock", timestamp: new Date(0) },
@@ -56,9 +56,9 @@ function textStep(text: string): Chunk[] {
       usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
     },
   ];
-}
+};
 
-function env() {
+const env = () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-plan-"));
   const db = openDb(join(dir, "t.db"));
   db.prepare(
@@ -73,19 +73,19 @@ function env() {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}
+};
 
-function provider(make: () => LanguageModel, store: ProviderMessageStore) {
+const provider = (make: () => LanguageModel, store: ProviderMessageStore) => {
   return new AisdkProvider({ id: "openai", model: "m", models: ["m"], makeModel: make }, store);
-}
+};
 
-async function pump(
+const pump = async (
   events: AsyncIterable<HarnessEvent>,
   handlers: {
     onPlan?: (ev: Extract<HarnessEvent, { type: "plan_review" }>) => void | Promise<void>;
     onPerm?: (ev: Extract<HarnessEvent, { type: "permission_request" }>) => void | Promise<void>;
   },
-): Promise<HarnessEvent[]> {
+): Promise<HarnessEvent[]> => {
   const out: HarnessEvent[] = [];
   for await (const ev of events) {
     out.push(ev);
@@ -94,7 +94,7 @@ async function pump(
     if (ev.type === "result" || (ev.type === "error" && ev.fatal)) break;
   }
   return out;
-}
+};
 
 // --- plan mode -------------------------------------------------------------
 

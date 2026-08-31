@@ -21,12 +21,12 @@ export interface EditOutcome {
   tier?: "exact" | "trailing-insensitive" | "dedented";
 }
 
-export function applyEdit(
+export const applyEdit = (
   path: string,
   oldString: string,
   newString: string,
   replaceAll: boolean,
-): EditOutcome {
+): EditOutcome => {
   if (oldString === newString) {
     return { ok: false, message: "old_string and new_string are identical", replacements: 0 };
   }
@@ -99,9 +99,9 @@ export function applyEdit(
     message: `old_string not found in ${path} (tried exact and whitespace-insensitive matching)`,
     replacements: 0,
   };
-}
+};
 
-function allIndexesOf(haystack: string, needle: string): number[] {
+const allIndexesOf = (haystack: string, needle: string): number[] => {
   if (needle === "") return [];
   const out: number[] = [];
   let i = haystack.indexOf(needle);
@@ -110,15 +110,15 @@ function allIndexesOf(haystack: string, needle: string): number[] {
     i = haystack.indexOf(needle, i + needle.length);
   }
   return out;
-}
+};
 
 /** Char spans in `content` whose line-window matches `needle` after normalization. */
-function windowMatches(
+const windowMatches = (
   content: string,
   needle: string,
   normalize: (line: string) => string,
   dedent: boolean,
-): Array<[start: number, end: number]> {
+): Array<[start: number, end: number]> => {
   const fileLines = content.split("\n");
   const needleLines = needle.split("\n");
   const n = needleLines.length;
@@ -141,9 +141,9 @@ function windowMatches(
     }
   }
   return spans;
-}
+};
 
-function keyOf(lines: string[], normalize: (l: string) => string, dedent: boolean): string {
+const keyOf = (lines: string[], normalize: (l: string) => string, dedent: boolean): string => {
   let ls = lines;
   if (dedent) {
     const indents = ls
@@ -153,9 +153,9 @@ function keyOf(lines: string[], normalize: (l: string) => string, dedent: boolea
     ls = ls.map((l) => l.slice(common));
   }
   return ls.map(normalize).join("\n");
-}
+};
 
-export function editTool(cwd: string) {
+export const editTool = (cwd: string) => {
   return tool({
     description:
       "Replace a string in a file. `old_string` must match the file exactly, " +
@@ -178,4 +178,4 @@ export function editTool(cwd: string) {
       return { ok: true, message: r.message, replacements: r.replacements };
     },
   });
-}
+};

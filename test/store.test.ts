@@ -15,13 +15,13 @@ import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
 
-function tmpDb(): { path: string; cleanup: () => void } {
+const tmpDb = (): { path: string; cleanup: () => void } => {
   const dir = mkdtempSync(join(tmpdir(), "loom-store-"));
   return {
     path: join(dir, "loom.db"),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
-}
+};
 
 test("migrations bring an empty db to head and are idempotent", () => {
   const { path, cleanup } = tmpDb();

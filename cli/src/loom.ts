@@ -95,7 +95,7 @@ const USAGE: Record<string, string> = {
   --delete-branch              also \`git branch -D\` the session's branch`,
 };
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -449,7 +449,7 @@ async function main(): Promise<void> {
   } finally {
     if (cmd !== "tail") await client.close();
   }
-}
+};
 
 const ID_CMDS = new Set([
   "get",
@@ -470,24 +470,24 @@ const ID_CMDS = new Set([
 ]);
 
 /** Expand a unique session-id prefix (as printed by `loom ls`) to the full id. */
-async function resolveSid(client: LoomClient, raw: string): Promise<string> {
+const resolveSid = async (client: LoomClient, raw: string): Promise<string> => {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(raw)) return raw; // already a full uuid
   const sessions = await client.request<SessionSnapshot[]>("session.list");
   const hits = sessions.filter((s) => s.id.startsWith(raw));
   if (hits.length === 1) return hits[0]!.id;
   if (hits.length === 0) throw new Error(`no session id starts with "${raw}"`);
   throw new Error(`"${raw}" is ambiguous — matches ${hits.length} sessions`);
-}
+};
 
-function need(v: string | undefined, usage: string): string {
+const need = (v: string | undefined, usage: string): string => {
   if (!v) {
     process.stderr.write(`usage: loom ${usage}\n`);
     process.exit(2);
   }
   return v;
-}
+};
 
-function printSessions(rows: SessionSnapshot[]): void {
+const printSessions = (rows: SessionSnapshot[]): void => {
   if (rows.length === 0) {
     process.stdout.write("(no sessions)\n");
     return;
@@ -517,9 +517,9 @@ function printSessions(rows: SessionSnapshot[]): void {
         process.stdout.write(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
     }
   }
-}
+};
 
-async function runTail(client: LoomClient): Promise<void> {
+const runTail = async (client: LoomClient): Promise<void> => {
   process.stdout.write(`tailing ${client.daemonInfo?.repoRoot ?? "daemon"} — Ctrl-C to stop\n`);
   client.on("reconnect", (i) =>
     process.stdout.write(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
@@ -552,9 +552,9 @@ async function runTail(client: LoomClient): Promise<void> {
       void client.close().then(resolve);
     });
   });
-}
+};
 
-function summarize(ev: HarnessEvent): string {
+const summarize = (ev: HarnessEvent): string => {
   const e = ev as unknown as Record<string, unknown>;
   if (ev.type === "question")
     return `${JSON.stringify(ev.question.slice(0, 60))}  req=${ev.id}  (answer)`;
@@ -571,7 +571,7 @@ function summarize(ev: HarnessEvent): string {
   if (ev.type === "result") return ev.ok ? "ok" : "failed";
   if (ev.type === "error") return ev.message.slice(0, 80);
   return "";
-}
+};
 
 main().catch((err) => {
   const code = (err as { code?: string }).code;

@@ -8,15 +8,15 @@ import { dirname, join } from "node:path";
  * Provider profiles, credentials (env-var names), and keybindings live here;
  * the per-repo file overrides model defaults, base branch, `[[mcp]]`, etc.
  */
-export function userConfigPath(): string {
+export const userConfigPath = (): string => {
   const base = process.env["XDG_CONFIG_HOME"]?.trim() || join(homedir(), ".config");
   return join(base, "loom", "config.toml");
-}
+};
 
 /** The `config.example.toml` shipped at the root of `@loom/daemon`. */
-export function exampleConfigPath(): string {
+export const exampleConfigPath = (): string => {
   return join(import.meta.dirname, "..", "config.example.toml");
-}
+};
 
 /**
  * First-run convenience: drop a copy of `config.example.toml` at
@@ -25,7 +25,7 @@ export function exampleConfigPath(): string {
  * Returns the path when it created one, `null` otherwise (already present, or
  * the example couldn't be read).
  */
-export function scaffoldUserConfig(): string | null {
+export const scaffoldUserConfig = (): string | null => {
   const dest = userConfigPath();
   if (existsSync(dest)) return null;
   const src = exampleConfigPath();
@@ -37,4 +37,4 @@ export function scaffoldUserConfig(): string | null {
   } catch {
     return null;
   }
-}
+};

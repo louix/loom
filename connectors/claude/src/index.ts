@@ -6,9 +6,9 @@ import type { AgentProvider } from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
 import { ClaudeProvider } from "./adapter.ts";
 
-export function createProvider(ctx: ConnectorContext): AgentProvider {
+export const createProvider = (ctx: ConnectorContext): AgentProvider => {
   return new ClaudeProvider({
     cliPath: ctx.config.cliPath ?? "",
     promptCacheTtl: ctx.config.promptCacheTtl ?? "",
   });
-}
+};

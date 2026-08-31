@@ -189,14 +189,14 @@ export class BashShell {
   }
 }
 
-function clamp(s: string): string {
+const clamp = (s: string): string => {
   if (Buffer.byteLength(s, "utf8") <= MAX_OUTPUT_BYTES) return s;
   const head = s.slice(0, HEAD_BYTES);
   const tail = s.slice(-(MAX_OUTPUT_BYTES - HEAD_BYTES));
   return `${head}\n… [output truncated] …\n${tail}`;
-}
+};
 
-export function bashTool(shell: BashShell) {
+export const bashTool = (shell: BashShell) => {
   return tool({
     description:
       "Run a command in this session's persistent bash shell. The working " +
@@ -216,4 +216,4 @@ export function bashTool(shell: BashShell) {
       return { output: r.output, exit_code: r.exitCode, timed_out: r.timedOut };
     },
   });
-}
+};

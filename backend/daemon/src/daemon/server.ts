@@ -128,7 +128,7 @@ export class SocketServer {
 }
 
 /** Does something actually accept connections on this socket path right now? */
-function isSocketLive(sockPath: string): Promise<boolean> {
+const isSocketLive = (sockPath: string): Promise<boolean> => {
   return new Promise((resolve) => {
     const probe = connect(sockPath);
     const done = (live: boolean) => {
@@ -140,4 +140,4 @@ function isSocketLive(sockPath: string): Promise<boolean> {
     probe.once("error", () => done(false));
     setTimeout(() => done(false), 500).unref();
   });
-}
+};

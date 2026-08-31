@@ -19,40 +19,40 @@ after(async () => {
   await h.cleanup();
 });
 
-function client(reconnect = false): Promise<LoomClient> {
+const client = (reconnect = false): Promise<LoomClient> => {
   return LoomClient.connect({
     repoRoot: h.repoRoot,
     sockPath: h.sockPath,
     autospawn: false,
     reconnect,
   });
-}
+};
 
-function fake(): FakeProvider {
+const fake = (): FakeProvider => {
   return fakeProvider;
-}
+};
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms = 1000): Promise<void> {
+const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 1000): Promise<void> => {
   const start = Date.now();
   for (;;) {
     if (await pred()) return;
     if (Date.now() - start >= ms) throw new Error("condition not met in time");
     await delay(5);
   }
-}
+};
 
-async function statusOf(c: LoomClient, id: string): Promise<string> {
+const statusOf = async (c: LoomClient, id: string): Promise<string> => {
   return (await c.request<SessionSnapshot>("session.get", { id })).status;
-}
+};
 
-async function createFake(
+const createFake = async (
   c: LoomClient,
   prompt = "do work",
-): Promise<{ id: string; fs: FakeSession }> {
+): Promise<{ id: string; fs: FakeSession }> => {
   const snap = await c.request<SessionSnapshot>("session.create", { prompt, provider: "fake" });
   await waitFor(() => fake().session(snap.id) !== undefined);
   return { id: snap.id, fs: fake().session(snap.id) as FakeSession };
-}
+};
 
 test("session.create requires a prompt", async () => {
   const c = await client();

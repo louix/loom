@@ -246,7 +246,7 @@ export class WorktreeManager {
 
 // ---------------------------------------------------------------------------
 
-export function slugify(hint: string): string {
+export const slugify = (hint: string): string => {
   const words = hint
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -255,13 +255,13 @@ export function slugify(hint: string): string {
     .filter(Boolean);
   const slug = words.slice(0, 5).join("-").slice(0, 40).replace(/-+$/g, "");
   return slug || "session";
-}
+};
 
-function randomSuffix(): string {
+const randomSuffix = (): string => {
   return randomBytes(3).toString("hex"); // always 6 hex chars (Math.random() could give fewer)
-}
+};
 
-function numOr0(s: string | undefined): number {
+const numOr0 = (s: string | undefined): number => {
   const n = Number.parseInt((s ?? "").trim(), 10);
   return Number.isFinite(n) ? n : 0;
-}
+};

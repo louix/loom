@@ -18,7 +18,7 @@ export interface Derived {
 }
 
 /** The next status, or `null` when this event leaves status unchanged. */
-export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived | null {
+export const deriveStatus = (current: SessionStatus, ev: HarnessEvent): Derived | null => {
   switch (ev.type) {
     // Return the new blocked-reason even when already `awaiting_input` — a
     // session can move permission → question → plan_review without a `running`
@@ -60,8 +60,8 @@ export function deriveStatus(current: SessionStatus, ev: HarnessEvent): Derived 
       // usage, subagent_*, status_changed — not status-bearing on their own.
       return null;
   }
-}
+};
 
-function truncate(s: string): string {
+const truncate = (s: string): string => {
   return s.length > 120 ? s.slice(0, 117) + "…" : s;
-}
+};

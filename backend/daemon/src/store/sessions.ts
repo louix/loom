@@ -485,7 +485,7 @@ export class ProviderDefaultStore {
 // helpers
 // ---------------------------------------------------------------------------
 
-function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapshot {
+const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapshot => {
   return {
     id: row.id,
     parentId: row.parent_id,
@@ -525,4 +525,4 @@ function toSnapshot(row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
+};

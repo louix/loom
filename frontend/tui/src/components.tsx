@@ -107,7 +107,7 @@ const gitLineText = (s: SessionSnapshot): string => {
 // header
 // ---------------------------------------------------------------------------
 
-export function Header({ state, width }: { state: TuiState; width: number }): ReactNode {
+export const Header = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   const lamp = LAMP[state.connection];
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
@@ -137,13 +137,13 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
       </Box>
     </Box>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // fleet list (left column)
 // ---------------------------------------------------------------------------
 
-export function Fleet({
+export const Fleet = ({
   state,
   tick,
   width,
@@ -153,7 +153,7 @@ export function Fleet({
   tick: number;
   width: number;
   now?: number;
-}): ReactNode {
+}): ReactNode => {
   const groups = groupsOf(state.sessions);
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
@@ -203,12 +203,12 @@ export function Fleet({
       </Box>
     </Box>
   );
-}
+};
 
 /** Fleet-row cache dot: `⟢` graded green → amber → red by TTL left, blank otherwise. */
 const CACHE_HEAT_COLOR = { fresh: C.good, fading: C.warn, expiring: C.bad } as const;
 
-function FleetRow({
+const FleetRow = ({
   s,
   selected,
   tick,
@@ -226,7 +226,7 @@ function FleetRow({
   pcolor: Map<string, string>;
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
-}): ReactNode {
+}): ReactNode => {
   const look = STATUS[s.status];
   const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
   const id = shortId(s.id);
@@ -256,13 +256,13 @@ function FleetRow({
       <Text color={C.faint}>{` ${cost}`}</Text>
     </Text>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // detail (right column, top)
 // ---------------------------------------------------------------------------
 
-export function Detail({
+export const Detail = ({
   session,
   width,
   queued = [],
@@ -278,7 +278,7 @@ export function Detail({
   engineColor?: string;
   /** Set while a compaction is in flight on this session. */
   compacting?: { startedAt: number; before: number } | null;
-}): ReactNode {
+}): ReactNode => {
   if (!session) {
     return (
       <Box
@@ -424,13 +424,13 @@ export function Detail({
         : null}
     </Box>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // event log (right column, bottom)
 // ---------------------------------------------------------------------------
 
-export function EventLog({
+export const EventLog = ({
   state,
   width,
   height,
@@ -442,7 +442,7 @@ export function EventLog({
   height: number;
   scroll?: number;
   full?: boolean;
-}): ReactNode {
+}): ReactNode => {
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
   // Wrapping every visible line runs on each ~120ms tick; only redo it when the
   // log, the view, the selection or the width actually changed (a big tool
@@ -483,7 +483,7 @@ export function EventLog({
         : shown.map((r) => r.node)}
     </Box>
   );
-}
+};
 
 /**
  * Wrap every log line to `iw` columns; one entry per physical row. Each event's
@@ -491,11 +491,11 @@ export function EventLog({
  * scrolls (`chat` view collapses tool / thinking runs when the full trace is
  * too much). Newlines in the body become their own wrapped rows.
  */
-function physicalRows(
+const physicalRows = (
   lines: readonly LogLine[],
   iw: number,
   subName: Map<string, string> = new Map(),
-): Array<{ key: string; node: ReactNode }> {
+): Array<{ key: string; node: ReactNode }> => {
   const out: Array<{ key: string; node: ReactNode }> = [];
   for (const l of lines) {
     const ts = `${clock(l.ts)} `;
@@ -527,7 +527,7 @@ function physicalRows(
     });
   }
   return out;
-}
+};
 
 // ---------------------------------------------------------------------------
 // text editor view (used by the prompt)
@@ -537,7 +537,7 @@ function physicalRows(
  *  can't overdraw the body when a big paste / $EDITOR return lands. */
 export const MAX_EDITOR_ROWS = 8;
 
-export function EditorView({
+export const EditorView = ({
   buf,
   width,
   placeholder,
@@ -545,7 +545,7 @@ export function EditorView({
   buf: Buffer;
   width: number;
   placeholder?: string;
-}): ReactNode {
+}): ReactNode => {
   if (buf.text === "") {
     return (
       <Box>
@@ -604,7 +604,7 @@ export function EditorView({
       })}
     </Box>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // footer: contextual hints, or the prompt editor
@@ -622,13 +622,13 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
 
 /** The `[mode]` chip: gold once it's off the mundane `manual` default, faint
  *  otherwise — the same chip the Detail pane shows for a live session. */
-function modeChip(mode: string | null | undefined): ReactNode {
+const modeChip = (mode: string | null | undefined): ReactNode => {
   return (
     <Text color={mode && mode !== "default" ? C.warn : C.faint}>{`[${modeLabel(mode)}]`}</Text>
   );
-}
+};
 
-function promptHints(p: PromptState, queued: number, sessionMode?: string | null): string {
+const promptHints = (p: PromptState, queued: number, sessionMode?: string | null): string => {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥⏎ newline", "⌥e editor"];
   if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
   if (p.kind === "new") {
@@ -645,9 +645,9 @@ function promptHints(p: PromptState, queued: number, sessionMode?: string | null
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
   bits.push("esc cancel");
   return bits.join("  ·  ");
-}
+};
 
-export function FooterArea({ state, width }: { state: TuiState; width: number }): ReactNode {
+export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   if (state.mode === "prompt" && state.prompt) {
     const p = state.prompt;
     const queued = p.kind === "send" ? queueFor(state, p.sessionId).length : 0;
@@ -706,23 +706,29 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
       </Box>
     </Box>
   );
-}
+};
 
 /** Rows the prompt editor occupies, for the parent's height maths. */
-export function promptRows(state: TuiState): number {
+export const promptRows = (state: TuiState): number => {
   if (state.mode !== "prompt" || !state.prompt) return 2;
   const editor = Math.min(
     MAX_EDITOR_ROWS,
     Math.max(1, state.prompt.buffer.text.split("\n").length),
   );
   return 1 /* label */ + editor + 1; /* hints */
-}
+};
 
 // ---------------------------------------------------------------------------
 // confirm overlay
 // ---------------------------------------------------------------------------
 
-export function Confirm({ confirm, width }: { confirm: ConfirmState; width: number }): ReactNode {
+export const Confirm = ({
+  confirm,
+  width,
+}: {
+  confirm: ConfirmState;
+  width: number;
+}): ReactNode => {
   const accent = confirm.danger ? C.bad : C.accent;
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
@@ -761,7 +767,7 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
       </Box>
     </Box>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // pending request panel (what you're approving / being asked)
@@ -770,7 +776,7 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
 /** Height reserved for {@link RequestPanel} in the layout. */
 export const REQUEST_PANEL_ROWS = 8;
 
-function describeRequest(input: unknown, w: number): string[] {
+const describeRequest = (input: unknown, w: number): string[] => {
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
     if (typeof o["command"] === "string") return wrapText(o["command"], w).slice(0, 5);
@@ -787,9 +793,15 @@ function describeRequest(input: unknown, w: number): string[] {
     return wrapText(JSON.stringify(o), w).slice(0, 5);
   }
   return input == null ? [] : wrapText(String(input), w).slice(0, 5);
-}
+};
 
-export function RequestPanel({ pending, width }: { pending: Pending; width: number }): ReactNode {
+export const RequestPanel = ({
+  pending,
+  width,
+}: {
+  pending: Pending;
+  width: number;
+}): ReactNode => {
   const w = inside(width);
   const box = (title: string, body: ReactNode[], hint: string): ReactNode => (
     <Box
@@ -855,13 +867,13 @@ export function RequestPanel({ pending, width }: { pending: Pending; width: numb
     );
   }
   return null;
-}
+};
 
 // ---------------------------------------------------------------------------
 // plan-review overlay (the post-planning decision)
 // ---------------------------------------------------------------------------
 
-export function PlanReview({ text, width }: { text: string; width: number }): ReactNode {
+export const PlanReview = ({ text, width }: { text: string; width: number }): ReactNode => {
   const w = inside(width);
   const lines = text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
   const body = lines.slice(0, 16);
@@ -907,7 +919,7 @@ export function PlanReview({ text, width }: { text: string; width: number }): Re
       </Text>
     </Box>
   );
-}
+};
 
 // ---------------------------------------------------------------------------
 // help overlay
@@ -983,7 +995,7 @@ const EDIT_ROWS: Array<[string, string]> = [
 // picker overlay — provider / model choice, session find
 // ---------------------------------------------------------------------------
 
-export function Picker({
+export const Picker = ({
   picker,
   width,
   height,
@@ -991,7 +1003,7 @@ export function Picker({
   picker: PickerState;
   width: number;
   height: number;
-}): ReactNode {
+}): ReactNode => {
   const w = inside(width);
   const vis = pickerVisible(picker);
   const rows = Math.max(3, height - 7);
@@ -1054,9 +1066,9 @@ export function Picker({
       </Text>
     </Box>
   );
-}
+};
 
-export function Help({ width }: { width: number }): ReactNode {
+export const Help = ({ width }: { width: number }): ReactNode => {
   return (
     <Box
       width={width}
@@ -1108,4 +1120,4 @@ export function Help({ width }: { width: number }): ReactNode {
       </Text>
     </Box>
   );
-}
+};

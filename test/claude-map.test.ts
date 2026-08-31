@@ -5,12 +5,12 @@ import type { HarnessEvent } from "@loom/core/events";
 
 const SID = "loom-1";
 
-function byType<T extends HarnessEvent["type"]>(
+const byType = <T extends HarnessEvent["type"]>(
   evs: HarnessEvent[],
   type: T,
-): Extract<HarnessEvent, { type: T }>[] {
+): Extract<HarnessEvent, { type: T }>[] => {
   return evs.filter((e): e is Extract<HarnessEvent, { type: T }> => e.type === type);
-}
+};
 
 test("init captures the provider ref and model but emits nothing", () => {
   const m = new ClaudeEventMapper(SID);

@@ -4,9 +4,9 @@ import { applyKey, buffer, layout, lineBounds, type KeyLike } from "@loom/tui/ed
 
 const K = (over: Partial<KeyLike> = {}): KeyLike => ({ ...over });
 
-function press(text: string, cursor: number, input: string, key: Partial<KeyLike> = {}) {
+const press = (text: string, cursor: number, input: string, key: Partial<KeyLike> = {}) => {
   return applyKey({ text, cursor }, input, K(key));
-}
+};
 
 test("typing inserts at the cursor and advances it", () => {
   const r = press("helo", 3, "l");

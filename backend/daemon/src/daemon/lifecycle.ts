@@ -21,7 +21,7 @@ export class DaemonAlreadyRunning extends Error {
  * If it exists and names a live process, throws DaemonAlreadyRunning. A stale
  * pidfile (dead pid) is removed and the claim retried once.
  */
-export function acquirePidfile(path: string, epoch: string): PidfileInfo {
+export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
   const info: PidfileInfo = { pid: process.pid, epoch, startedAt: Date.now() };
   const body = JSON.stringify(info);
 
@@ -51,9 +51,9 @@ export function acquirePidfile(path: string, epoch: string): PidfileInfo {
     }
   }
   throw new Error(`could not acquire pidfile at ${path}`);
-}
+};
 
-export function releasePidfile(path: string): void {
+export const releasePidfile = (path: string): void => {
   try {
     const info = JSON.parse(readFileSync(path, "utf8")) as PidfileInfo;
     if (info.pid !== process.pid) return; // not ours to remove
@@ -65,7 +65,7 @@ export function releasePidfile(path: string): void {
   } catch {
     /* already gone */
   }
-}
+};
 
 /**
  * Fires `onIdle` after the daemon has been continuously idle (no active

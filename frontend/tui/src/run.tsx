@@ -18,7 +18,7 @@ import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
 
-export async function runTui(client: LoomClient): Promise<void> {
+export const runTui = async (client: LoomClient): Promise<void> => {
   // Ask the terminal to bracket pastes so a multi-line paste arrives as one
   // chunk instead of a stream of Enter-looking carriage returns. Also turn on
   // SGR mouse reporting so the wheel arrives as its own escape sequence —
@@ -37,4 +37,4 @@ export async function runTui(client: LoomClient): Promise<void> {
     if (process.stdout.isTTY) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
     await client.close();
   }
-}
+};

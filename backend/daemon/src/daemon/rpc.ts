@@ -60,6 +60,6 @@ export class RpcDispatcher {
   }
 }
 
-function errFrame(id: number, error: WireError): ResponseFrame {
+const errFrame = (id: number, error: WireError): ResponseFrame => {
   return { kind: "res", id, ok: false, error };
-}
+};

@@ -94,7 +94,7 @@ export class Registry {
   }
 }
 
-export function sortSnapshots(list: SessionSnapshot[]): SessionSnapshot[] {
+export const sortSnapshots = (list: SessionSnapshot[]): SessionSnapshot[] => {
   return [...list].sort((a, b) => {
     const ga = GROUP_RANK[a.status] ?? 9;
     const gb = GROUP_RANK[b.status] ?? 9;
@@ -104,4 +104,4 @@ export function sortSnapshots(list: SessionSnapshot[]): SessionSnapshot[] {
     // every other group: most recently active first.
     return b.updatedAt - a.updatedAt;
   });
-}
+};

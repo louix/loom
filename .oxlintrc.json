@@ -7,7 +7,9 @@
   "rules": {
     "no-nested-ternary": "error",
     "default-case-last": "error",
-    "no-lonely-if": "error"
+    "no-lonely-if": "error",
+    "func-style": ["error", "expression", { "allowArrowFunctions": true }],
+    "prefer-arrow-callback": "error"
   },
   "env": {
     "builtin": true

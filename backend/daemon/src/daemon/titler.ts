@@ -22,12 +22,12 @@ const INSTRUCTION = "Title for this task (label only, no questions):";
  * apology, or a refusal. We'd rather keep the clipped first message than show
  * one of these. (Merely *long* replies aren't rejected — they get capped.)
  */
-function looksConversational(firstLine: string, cleaned: string): boolean {
+const looksConversational = (firstLine: string, cleaned: string): boolean => {
   if (firstLine.trim().endsWith("?")) return true;
   return /^(?:i['’]?m |i am |i |sorry\b|could you|can you|please\b|what |which |who |when |where |why |how |tell me|provide |describe |hello\b|hey\b)/i.test(
     cleaned,
   );
-}
+};
 
 /** Built-ins a titling turn has no business touching. */
 const NO_TOOLS = [
@@ -45,16 +45,16 @@ const NO_TOOLS = [
 ];
 
 /** A cheap model for the one-shot when `[titles] model` is unset. */
-export function cheapModelFor(providerId: string): string | undefined {
+export const cheapModelFor = (providerId: string): string | undefined => {
   return providerId === "claude" ? "claude-haiku-4-5-20251001" : undefined;
-}
+};
 
 /**
  * Tidy a raw model reply into a title: first non-blank line, unwrapped, with
  * surrounding quotes and trailing punctuation stripped, capped at 72 chars.
  * Returns `null` when there's nothing usable.
  */
-export function cleanTitle(raw: string): string | null {
+export const cleanTitle = (raw: string): string | null => {
   const firstLine = raw
     .split("\n")
     .map((l) => l.trim())
@@ -71,7 +71,7 @@ export function cleanTitle(raw: string): string | null {
   if (looksConversational(firstLine, t)) return null;
   if (t.length > 72) t = t.slice(0, 71).trimEnd() + "…";
   return t;
-}
+};
 
 export interface TitleRequest {
   provider: AgentProvider;
@@ -84,7 +84,7 @@ export interface TitleRequest {
 }
 
 /** Run the one-shot and return a cleaned title, or `null` on any failure. */
-export async function generateTitle(req: TitleRequest): Promise<string | null> {
+export const generateTitle = async (req: TitleRequest): Promise<string | null> => {
   const { provider, prompt, cwd, model, log } = req;
   if (!provider.capabilities.oneShot) return null;
   // A single word (a greeting, "hi", "help") has nothing to summarise and tends
@@ -124,4 +124,4 @@ export async function generateTitle(req: TitleRequest): Promise<string | null> {
     await session.close().catch(() => {});
   }
   return cleanTitle(text);
-}
+};

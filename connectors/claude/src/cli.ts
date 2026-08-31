@@ -9,7 +9,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
-function isExecutableFile(path: string): boolean {
+const isExecutableFile = (path: string): boolean => {
   try {
     if (!statSync(path).isFile()) return false;
     accessSync(path, constants.X_OK);
@@ -17,9 +17,9 @@ function isExecutableFile(path: string): boolean {
   } catch {
     return false;
   }
-}
+};
 
-function onPath(name: string): string | undefined {
+const onPath = (name: string): string | undefined => {
   const raw = process.env["PATH"];
   if (!raw) return undefined;
   for (const dir of raw.split(delimiter)) {
@@ -28,17 +28,17 @@ function onPath(name: string): string | undefined {
     if (isExecutableFile(candidate)) return candidate;
   }
   return undefined;
-}
+};
 
 /**
  * @param explicit `providers.claude.cli_path` from config ("" = auto).
  * @returns an absolute path to pass as `pathToClaudeCodeExecutable`, or
  *   `undefined` to let the SDK use its bundled binary.
  */
-export function resolveClaudeCli(explicit: string): string | undefined {
+export const resolveClaudeCli = (explicit: string): string | undefined => {
   if (explicit) {
     if (isExecutableFile(explicit)) return explicit;
     throw new Error(`providers.claude.cli_path is not an executable file: ${explicit}`);
   }
   return onPath("claude");
-}
+};

@@ -9,7 +9,7 @@ import { setLogLevel, makeLogger } from "@loom/core/logger";
 
 setLogLevel("error");
 
-function repo(): { root: string; cleanup: () => void } {
+const repo = (): { root: string; cleanup: () => void } => {
   const root = mkdtempSync(join(tmpdir(), "loom-wt-"));
   const git = (...a: string[]) => execFileSync("git", ["-C", root, ...a]);
   execFileSync("git", ["init", "-q", "-b", "main", root]);
@@ -18,9 +18,9 @@ function repo(): { root: string; cleanup: () => void } {
   git("config", "commit.gpgsign", "false");
   git("commit", "-q", "--allow-empty", "-m", "base");
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
-}
+};
 
-function mgr(root: string): WorktreeManager {
+const mgr = (root: string): WorktreeManager => {
   return new WorktreeManager({
     repoRoot: root,
     treesDir: join(root, ".loom", "trees"),
@@ -28,7 +28,7 @@ function mgr(root: string): WorktreeManager {
     baseBranch: "main",
     log: makeLogger("test"),
   });
-}
+};
 
 test("slugify keeps it short, kebab, and never empty", () => {
   assert.equal(slugify("Refactor the Auth Module!!!"), "refactor-the-auth-module");

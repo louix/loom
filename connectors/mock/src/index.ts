@@ -9,6 +9,6 @@ import { FakeProvider } from "./fake.ts";
 export { FakeProvider, fakeSessionId } from "./fake.ts";
 export type { FakeSession } from "./fake.ts";
 
-export function createProvider(_ctx: ConnectorContext): FakeProvider {
+export const createProvider = (_ctx: ConnectorContext): FakeProvider => {
   return new FakeProvider();
-}
+};

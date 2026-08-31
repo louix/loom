@@ -17,9 +17,9 @@ after(async () => {
   await h.cleanup();
 });
 
-function client(): Promise<LoomClient> {
+const client = (): Promise<LoomClient> => {
   return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
-}
+};
 
 test("a daemon restart flips mid-run sessions to interrupted", async () => {
   const c1 = await client();

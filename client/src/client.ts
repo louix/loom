@@ -392,7 +392,7 @@ export class LoomClient {
   }
 }
 
-function tryConnect(sockPath: string): Promise<Socket> {
+const tryConnect = (sockPath: string): Promise<Socket> => {
   return new Promise((resolve, reject) => {
     const sock = connect(sockPath);
     sock.once("connect", () => {
@@ -401,4 +401,4 @@ function tryConnect(sockPath: string): Promise<Socket> {
     });
     sock.once("error", reject);
   });
-}
+};

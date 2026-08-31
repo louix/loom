@@ -78,7 +78,7 @@ const TOOL_STEER = [
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
 
 /** `GET {base_url}/models` → sorted model ids (OpenAI list shape). */
-async function probeOpenAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
+const probeOpenAiModels = async (baseUrl: string, apiKey: string): Promise<string[]> => {
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
@@ -89,7 +89,7 @@ async function probeOpenAiModels(baseUrl: string, apiKey: string): Promise<strin
     .map((m) => m.id)
     .filter((x): x is string => typeof x === "string")
     .sort();
-}
+};
 
 const AISDK_SYSTEM = [
   "You are a coding agent working in a git worktree under Loom, a fleet supervisor.",
@@ -1654,18 +1654,18 @@ export class Daemon {
 // param helpers
 // ---------------------------------------------------------------------------
 
-function isObj(v: unknown): v is Record<string, unknown> {
+const isObj = (v: unknown): v is Record<string, unknown> => {
   return v !== null && typeof v === "object" && !Array.isArray(v);
-}
+};
 
-function reqString(params: unknown, key: string): string {
+const reqString = (params: unknown, key: string): string => {
   if (!isObj(params) || typeof params[key] !== "string" || params[key] === "") {
     throw new RpcError("bad_request", `missing required string param: ${key}`);
   }
   return params[key] as string;
-}
+};
 
-function clientLabel(params: unknown): string | undefined {
+const clientLabel = (params: unknown): string | undefined => {
   if (isObj(params) && typeof params["by"] === "string") return params["by"] as string;
   return undefined;
-}
+};

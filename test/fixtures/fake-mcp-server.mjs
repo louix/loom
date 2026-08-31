@@ -38,11 +38,11 @@ const TOOLS = [
   },
 ];
 
-function send(msg) {
+const send = (msg) => {
   process.stdout.write(JSON.stringify(msg) + "\n");
-}
+};
 
-function handle(req) {
+const handle = (req) => {
   const { id, method, params } = req;
   if (method === "initialize") {
     send({
@@ -94,7 +94,7 @@ function handle(req) {
   if (id !== undefined) {
     send({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });
   }
-}
+};
 
 let buf = "";
 process.stdin.setEncoding("utf8");

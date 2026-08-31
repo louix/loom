@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildLoomMcpServer, commitInWorktree } from "@loom/connector-claude/loom-mcp";
 
-function repo(): { root: string; git: (...a: string[]) => string; cleanup: () => void } {
+const repo = (): { root: string; git: (...a: string[]) => string; cleanup: () => void } => {
   const root = mkdtempSync(join(tmpdir(), "loom-mcp-"));
   const git = (...a: string[]) =>
     execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
@@ -16,7 +16,7 @@ function repo(): { root: string; git: (...a: string[]) => string; cleanup: () =>
   git("config", "commit.gpgsign", "false");
   git("commit", "-q", "--allow-empty", "-m", "base");
   return { root, git, cleanup: () => rmSync(root, { recursive: true, force: true }) };
-}
+};
 
 test("commitInWorktree stages everything and reports the new commit", () => {
   const { root, git, cleanup } = repo();

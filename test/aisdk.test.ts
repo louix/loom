@@ -25,7 +25,7 @@ setLogLevel("error");
 
 type Chunk = LanguageModelV2StreamPart;
 
-function model(chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): LanguageModel {
+const model = (chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): LanguageModel => {
   return new MockLanguageModelV2({
     doStream: async () => ({
       stream: simulateReadableStream({
@@ -35,9 +35,9 @@ function model(chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): Languag
       }),
     }),
   }) as unknown as LanguageModel;
-}
+};
 
-function textReply(
+const textReply = (
   text: string,
   usage: Partial<{
     inputTokens: number;
@@ -46,7 +46,7 @@ function textReply(
     cachedInputTokens: number;
   }> = {},
   opts: { chunkDelayInMs?: number } = {},
-): LanguageModel {
+): LanguageModel => {
   return model(
     [
       { type: "stream-start", warnings: [] },
@@ -71,16 +71,19 @@ function textReply(
     ],
     opts,
   );
-}
+};
 
-function provider(make: (id: string) => LanguageModel, store: ProviderMessageStore): AisdkProvider {
+const provider = (
+  make: (id: string) => LanguageModel,
+  store: ProviderMessageStore,
+): AisdkProvider => {
   return new AisdkProvider(
     { id: "openai", model: "gpt-5", models: ["gpt-5"], makeModel: make },
     store,
   );
-}
+};
 
-function tmpDb() {
+const tmpDb = () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-aisdk-"));
   const db = openDb(join(dir, "t.db"));
   db.prepare(
@@ -96,7 +99,7 @@ function tmpDb() {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}
+};
 
 test("ProviderMessageStore: replaceFrom past the end throws; copyTo refuses a non-empty target", () => {
   const { db, cleanup } = tmpDb();
@@ -121,17 +124,17 @@ test("ProviderMessageStore: replaceFrom past the end throws; copyTo refuses a no
   }
 });
 
-async function drain(
+const drain = async (
   events: AsyncIterable<HarnessEvent>,
   until: (ev: HarnessEvent) => boolean,
-): Promise<HarnessEvent[]> {
+): Promise<HarnessEvent[]> => {
   const out: HarnessEvent[] = [];
   for await (const ev of events) {
     out.push(ev);
     if (until(ev)) break;
   }
   return out;
-}
+};
 
 // --- tokens --------------------------------------------------------------
 

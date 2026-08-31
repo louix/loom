@@ -78,7 +78,7 @@ export interface PromptState {
   draft: string;
 }
 
-export function makePrompt(init: {
+export const makePrompt = (init: {
   kind: PromptKind;
   sessionId: string | null;
   requestId?: string;
@@ -88,7 +88,7 @@ export function makePrompt(init: {
   /** For `new`: the provider / model chosen in the `N` picker flow. */
   provider?: string;
   model?: string;
-}): PromptState {
+}): PromptState => {
   return {
     kind: init.kind,
     sessionId: init.sessionId,
@@ -101,7 +101,7 @@ export function makePrompt(init: {
     histIdx: 0,
     draft: "",
   };
-}
+};
 
 // ---------------------------------------------------------------------------
 // picker overlay — provider choice, model choice, session find
@@ -131,13 +131,13 @@ export interface PickerState {
   ctx?: { provider?: string; liveSessionId?: string; draft?: string; reopenSend?: string };
 }
 
-export function makePicker(init: {
+export const makePicker = (init: {
   kind: PickerState["kind"];
   title: string;
   items: PickItem[];
   emptyText?: string;
   ctx?: PickerState["ctx"];
-}): PickerState {
+}): PickerState => {
   return {
     kind: init.kind,
     title: init.title,
@@ -147,10 +147,10 @@ export function makePicker(init: {
     ...(init.emptyText ? { emptyText: init.emptyText } : {}),
     ...(init.ctx ? { ctx: init.ctx } : {}),
   };
-}
+};
 
 /** Case-insensitive subsequence match — every char of `q` appears in order. */
-function fuzzyMatch(hay: string, q: string): boolean {
+const fuzzyMatch = (hay: string, q: string): boolean => {
   if (q === "") return true;
   const h = hay.toLowerCase();
   let i = 0;
@@ -160,19 +160,19 @@ function fuzzyMatch(hay: string, q: string): boolean {
     i += 1;
   }
   return true;
-}
+};
 
 /** The picker's items narrowed to the current filter (label + blob). */
-export function pickerVisible(p: PickerState): PickItem[] {
+export const pickerVisible = (p: PickerState): PickItem[] => {
   if (p.filter === "") return p.items;
   return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, p.filter));
-}
+};
 
 /** The currently-highlighted item, honouring the filter. */
-export function pickerCurrent(p: PickerState): PickItem | null {
+export const pickerCurrent = (p: PickerState): PickItem | null => {
   const vis = pickerVisible(p);
   return vis[Math.max(0, Math.min(vis.length - 1, p.index))] ?? null;
-}
+};
 
 export interface ConfirmState {
   title: string;
@@ -210,9 +210,9 @@ export interface Pending {
 }
 
 /** The permission request the UI should surface next (FIFO). */
-export function firstPerm(p: Pending): PendingPerm | undefined {
+export const firstPerm = (p: Pending): PendingPerm | undefined => {
   return p.permissions?.[0];
-}
+};
 
 export interface TuiState {
   connection: Connection;
@@ -247,7 +247,7 @@ export interface TuiState {
   lastDraft: string;
 }
 
-export function initialState(logCap = 400): TuiState {
+export const initialState = (logCap = 400): TuiState => {
   return {
     connection: "connecting",
     daemon: null,
@@ -269,7 +269,7 @@ export function initialState(logCap = 400): TuiState {
     promptHistory: [],
     lastDraft: "",
   };
-}
+};
 
 /**
  * What a TUI should do when it finds the daemon on a different build than
@@ -279,18 +279,18 @@ export function initialState(logCap = 400): TuiState {
  */
 export type VersionAction = "ok" | "auto-restart" | "prompt" | "nag";
 
-export function versionMismatchAction(o: {
+export const versionMismatchAction = (o: {
   daemonVersion: string | null | undefined;
   uiVersion: string;
   otherClients: number;
   liveSessions: number;
   alreadyHandled: boolean;
-}): VersionAction {
+}): VersionAction => {
   if (!o.daemonVersion || o.daemonVersion === o.uiVersion) return "ok";
   if (o.alreadyHandled) return "nag";
   if (o.otherClients > 0 || o.liveSessions > 0) return "prompt";
   return "auto-restart";
-}
+};
 
 // ---------------------------------------------------------------------------
 // actions
@@ -329,7 +329,7 @@ export type Action =
   | { t: "resolvePerm"; sessionId: string; id: string }
   | { t: "help"; value: boolean };
 
-export function reduce(s: TuiState, a: Action): TuiState {
+export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
     case "providers":
       return { ...s, providers: a.list };
@@ -527,9 +527,9 @@ export function reduce(s: TuiState, a: Action): TuiState {
     default:
       return absurd(a);
   }
-}
+};
 
-function applyPush(s: TuiState, frame: PushFrame): TuiState {
+const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
@@ -621,9 +621,12 @@ function applyPush(s: TuiState, frame: PushFrame): TuiState {
     default:
       return absurd(frame);
   }
-}
+};
 
-function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Record<string, Pending> {
+const trackPending = (
+  pending: Record<string, Pending>,
+  ev: HarnessEvent,
+): Record<string, Pending> => {
   if (ev.type === "permission_request") {
     const cur = pending[ev.sessionId] ?? {};
     const perms = cur.permissions ?? [];
@@ -676,12 +679,12 @@ function trackPending(pending: Record<string, Pending>, ev: HarnessEvent): Recor
   // Any leftovers are also wiped wholesale when the session leaves
   // awaiting_input — see the `session_updated` case.
   return pending;
-}
+};
 
 /** Start/refresh a "compacting…" entry on each heartbeat; clear it when the
  *  compaction lands (`compact`) or the session reports an error — the provider
  *  emits a non-fatal `error` if the summariser times out or fails. */
-function trackCompacting(cur: TuiState["compacting"], ev: HarnessEvent): TuiState["compacting"] {
+const trackCompacting = (cur: TuiState["compacting"], ev: HarnessEvent): TuiState["compacting"] => {
   if (ev.type === "compact_progress") {
     return {
       ...cur,
@@ -696,19 +699,19 @@ function trackCompacting(cur: TuiState["compacting"], ev: HarnessEvent): TuiStat
     return without(cur, ev.sessionId);
   }
   return cur;
-}
+};
 
-function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
+const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {
   if (!(key in rec)) return rec;
   const { [key]: _drop, ...rest } = rec;
   return rest;
-}
+};
 
 /** Drop entries keyed by a session that no longer exists. */
-function pruneByLive<T>(
+const pruneByLive = <T>(
   rec: Record<string, T>,
   sessions: readonly SessionSnapshot[],
-): Record<string, T> {
+): Record<string, T> => {
   const live = new Set(sessions.map((x) => x.id));
   let changed = false;
   const out: Record<string, T> = {};
@@ -717,7 +720,7 @@ function pruneByLive<T>(
     else changed = true;
   }
   return changed ? out : rec;
-}
+};
 
 // ---------------------------------------------------------------------------
 // selection / ordering
@@ -734,7 +737,7 @@ const RANK: Record<SessionStatus, number> = {
 };
 
 /** Fleet-view order: by status group, then most-recently-active first. */
-export function sortSessions(list: readonly SessionSnapshot[]): SessionSnapshot[] {
+export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[] => {
   return [...list].sort((a, b) => {
     const r = RANK[a.status] - RANK[b.status];
     if (r !== 0) return r;
@@ -742,28 +745,31 @@ export function sortSessions(list: readonly SessionSnapshot[]): SessionSnapshot[
     if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
     return a.id < b.id ? -1 : Number(a.id > b.id);
   });
-}
+};
 
-function clampSelection(list: readonly SessionSnapshot[], current: string | null): string | null {
+const clampSelection = (
+  list: readonly SessionSnapshot[],
+  current: string | null,
+): string | null => {
   if (current && list.some((x) => x.id === current)) return current;
   return list[0]?.id ?? null;
-}
+};
 
 // ---------------------------------------------------------------------------
 // selectors
 // ---------------------------------------------------------------------------
 
-export function selectedSession(s: TuiState): SessionSnapshot | null {
+export const selectedSession = (s: TuiState): SessionSnapshot | null => {
   return s.sessions.find((x) => x.id === s.selectedId) ?? null;
-}
+};
 
-export function pendingFor(s: TuiState, id: string | null): Pending {
+export const pendingFor = (s: TuiState, id: string | null): Pending => {
   return (id && s.pending[id]) || {};
-}
+};
 
-export function queueFor(s: TuiState, id: string | null): string[] {
+export const queueFor = (s: TuiState, id: string | null): string[] => {
   return (id && s.queue[id]) || [];
-}
+};
 
 export interface CacheStatus {
   state: "warm" | "cold" | "unknown";
@@ -781,7 +787,7 @@ export interface CacheStatus {
  * estimate — it can't see mid-turn refreshes or server-side eviction — hence
  * `lastHit`, the ground truth from the last turn's cache read/write split.
  */
-export function cacheStatus(s: SessionSnapshot | null, now: number): CacheStatus {
+export const cacheStatus = (s: SessionSnapshot | null, now: number): CacheStatus => {
   if (!s || s.cache.ttlMinutes <= 0 || s.cache.lastTurnAt <= 0) {
     return { state: "unknown", remainingMs: 0, fraction: 0, lastHit: null };
   }
@@ -794,7 +800,7 @@ export function cacheStatus(s: SessionSnapshot | null, now: number): CacheStatus
   return remainingMs > 0
     ? { state: "warm", remainingMs, fraction: Math.min(1, remainingMs / ttlMs), lastHit }
     : { state: "cold", remainingMs: 0, fraction: 0, lastHit };
-}
+};
 
 /** Fraction of TTL left above which the cache dot reads as fresh / still-usable. */
 export const CACHE_FRESH_FRACTION = 0.33;
@@ -802,30 +808,30 @@ export const CACHE_FRESH_FRACTION = 0.33;
 export const CACHE_EXPIRING_FRACTION = 0.08;
 
 /** Coarsen a warm {@link CacheStatus} into a heat band for the fleet dot; `null` when not warm. */
-export function cacheHeat(cs: CacheStatus): "fresh" | "fading" | "expiring" | null {
+export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | null => {
   if (cs.state !== "warm") return null;
   if (cs.fraction >= CACHE_FRESH_FRACTION) return "fresh";
   if (cs.fraction >= CACHE_EXPIRING_FRACTION) return "fading";
   return "expiring";
-}
+};
 
 /** The selected session's log lines, oldest first. */
-export function sessionLog(s: TuiState): LogLine[] {
+export const sessionLog = (s: TuiState): LogLine[] => {
   if (!s.selectedId) return [];
   return s.log.filter((l) => l.sessionId === s.selectedId);
-}
+};
 
 /** What the event pane shows: the full log, or the `chat` view with tool
  *  traffic and thinking collapsed to one-line markers. */
-export function visibleLog(s: TuiState): LogLine[] {
+export const visibleLog = (s: TuiState): LogLine[] => {
   const rows = sessionLog(s);
   return s.logFilter === "chat" ? condenseLog(rows) : rows;
-}
+};
 
 /** `⌃E`-style: fold consecutive `thinking` into `· thought for Ns`, and
  *  consecutive `tool_call` / `tool_result` into `⚙ N tool calls`. Everything
  *  else passes through untouched. */
-export function condenseLog(lines: readonly LogLine[]): LogLine[] {
+export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
   const out: LogLine[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -882,10 +888,10 @@ export function condenseLog(lines: readonly LogLine[]): LogLine[] {
     i += 1;
   }
   return out;
-}
+};
 
 /** Role label for a log line in the `⌃o` transcript, or null to omit it. */
-function transcriptHeader(l: LogLine): string | null {
+const transcriptHeader = (l: LogLine): string | null => {
   const midTurn = l.glyph === "»" ? " (mid-turn)" : "";
   switch (l.kind) {
     case "assistant_text":
@@ -927,23 +933,23 @@ function transcriptHeader(l: LogLine): string | null {
     default:
       return absurd(l.kind);
   }
-}
+};
 
 /** Body text for the `⌃o` transcript — the header already names the role. */
-function transcriptBody(l: LogLine): string {
+const transcriptBody = (l: LogLine): string => {
   const raw = (l.full ?? l.text).replace(/[ \t]+$/gm, "").trimEnd();
   if (l.kind === "tool_call") return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
   if (l.kind === "tool_result")
     return raw.replace(/^error\n/, "").trim() || (l.tone === "bad" ? "(failed)" : "ok");
   return raw;
-}
+};
 
 /**
  * The selected session's log as a readable transcript for `$EDITOR`: one entry
  * per event as `[time]  <role>` then the body, blank line between. Raw bodies,
  * no `chat`-view collapsing — the "give me everything" view.
  */
-export function transcriptText(lines: readonly LogLine[]): string {
+export const transcriptText = (lines: readonly LogLine[]): string => {
   const parts: string[] = [];
   for (const l of lines) {
     const header = transcriptHeader(l);
@@ -951,38 +957,38 @@ export function transcriptText(lines: readonly LogLine[]): string {
     parts.push(`[${clock(l.ts)}]  ${header}\n${transcriptBody(l)}`);
   }
   return parts.join("\n\n") || "(no events)";
-}
+};
 
 // ---------------------------------------------------------------------------
 // provider / model / find helpers for the picker flow
 // ---------------------------------------------------------------------------
 
 /** The Ink colour a provider's session ids render in, or "" for the default. */
-export function providerColorOf(s: TuiState, providerId: string): string {
+export const providerColorOf = (s: TuiState, providerId: string): string => {
   return s.providers.find((p) => p.id === providerId)?.color ?? "";
-}
+};
 
-export function providerInfo(s: TuiState, providerId: string): ProviderInfo | null {
+export const providerInfo = (s: TuiState, providerId: string): ProviderInfo | null => {
   return s.providers.find((p) => p.id === providerId) ?? null;
-}
+};
 
-export function defaultProviderId(s: TuiState): string {
+export const defaultProviderId = (s: TuiState): string => {
   return s.providers.find((p) => p.isDefault)?.id ?? "claude";
-}
+};
 
 /** The model a new session on `providerId` will use unless changed — the
  *  daemon's remembered "last used", a config pin, or the first detected id. */
-export function defaultModelOf(s: TuiState, providerId: string): string {
+export const defaultModelOf = (s: TuiState, providerId: string): string => {
   return providerInfo(s, providerId)?.defaultModel ?? "";
-}
+};
 
 /** The permission mode a new session will use unless changed — the daemon's
  *  remembered "last used", or `default` (manual). Not per-provider. */
-export function defaultModeOf(s: TuiState): SessionMode {
+export const defaultModeOf = (s: TuiState): SessionMode => {
   return s.providers[0]?.defaultMode ?? "default";
-}
+};
 
-export function providerPickItems(s: TuiState): PickItem[] {
+export const providerPickItems = (s: TuiState): PickItem[] => {
   return s.providers.map((p) => ({
     id: p.id,
     label: p.tag || p.id,
@@ -993,9 +999,9 @@ export function providerPickItems(s: TuiState): PickItem[] {
       .filter(Boolean)
       .join(" · "),
   }));
-}
+};
 
-export function modelPickItems(s: TuiState, providerId: string): PickItem[] {
+export const modelPickItems = (s: TuiState, providerId: string): PickItem[] => {
   const p = providerInfo(s, providerId);
   if (!p) return [];
   if (p.modelChoices && p.modelChoices.length > 0) {
@@ -1006,16 +1012,16 @@ export function modelPickItems(s: TuiState, providerId: string): PickItem[] {
     }));
   }
   return p.models.map((m) => ({ id: m, label: m }));
-}
+};
 
 /** Message for an empty model picker — why there's nothing to pick. */
-export function modelPickEmptyText(providerId: string): string {
+export const modelPickEmptyText = (providerId: string): string => {
   if (providerId === "claude") return "claude uses its configured model — enter to continue";
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
-}
+};
 
 /** Sessions as find targets — title + this session's log text folded into the match. */
-export function findPickItems(s: TuiState): PickItem[] {
+export const findPickItems = (s: TuiState): PickItem[] => {
   const logBySession = new Map<string, string[]>();
   for (const l of s.log) {
     const arr = logBySession.get(l.sessionId) ?? [];
@@ -1028,7 +1034,7 @@ export function findPickItems(s: TuiState): PickItem[] {
     hint: `${sess.provider}${sess.model ? `/${sess.model}` : ""} · ${sess.status}`,
     blob: (logBySession.get(sess.id) ?? []).join(" "),
   }));
-}
+};
 
 export interface Group {
   status: SessionStatus;
@@ -1036,14 +1042,14 @@ export interface Group {
   sessions: SessionSnapshot[];
 }
 
-export function groupsOf(sessions: readonly SessionSnapshot[]): Group[] {
+export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
     const inGroup = sessions.filter((x) => x.status === status);
     if (inGroup.length > 0) out.push({ status, label: STATUS[status].label, sessions: inGroup });
   }
   return out;
-}
+};
 
 // ---------------------------------------------------------------------------
 // contextual actions — what the footer offers and the keymap allows
@@ -1093,7 +1099,7 @@ const GLOBAL_HINTS: KeyHint[] = [
 ];
 
 /** The actions valid for the given session, most salient first, then globals. */
-export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
+export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
   const local: KeyHint[] = [];
   if (session) {
     const { status, awaitReason } = session;
@@ -1157,19 +1163,19 @@ export function actionsFor(session: SessionSnapshot | null): KeyHint[] {
     local.push({ keys: "X", label: "delete", act: "delete" });
   }
   return [...local, ...GLOBAL_HINTS];
-}
+};
 
 /** Convenience for tests / keymap: the bare set of permitted act names. */
-export function allowedActs(session: SessionSnapshot | null): Set<ActName> {
+export const allowedActs = (session: SessionSnapshot | null): Set<ActName> => {
   return new Set(actionsFor(session).map((h) => h.act));
-}
+};
 
 /**
  * Every action reachable right now, for the `Space` command palette — the
  * selected session's contextual verbs ({@link actionsFor}) plus the app / view
  * commands that never earn a footer slot. One entry per act; `hint` is its key.
  */
-export function commandsFor(s: TuiState): PickItem[] {
+export const commandsFor = (s: TuiState): PickItem[] => {
   const seen = new Set<ActName>();
   const items: PickItem[] = [];
   for (const h of actionsFor(selectedSession(s))) {
@@ -1193,7 +1199,7 @@ export function commandsFor(s: TuiState): PickItem[] {
     items.push({ id: "clearqueue", label: "clear the queued messages", hint: "⌥x" });
   }
   return items;
-}
+};
 
 /**
  * The hint chips the footer shows for the current UI mode. `browse` delegates to
@@ -1201,7 +1207,7 @@ export function commandsFor(s: TuiState): PickItem[] {
  * mode gets a fixed set so the footer never advertises a key the mode won't
  * accept. `prompt` returns `[]` — {@link FooterArea} draws the editor there.
  */
-export function footerHints(s: TuiState): Array<{ keys: string; label: string }> {
+export const footerHints = (s: TuiState): Array<{ keys: string; label: string }> => {
   switch (s.mode) {
     case "prompt":
       return [];
@@ -1238,13 +1244,13 @@ export function footerHints(s: TuiState): Array<{ keys: string; label: string }>
     default:
       return absurd(s.mode);
   }
-}
+};
 
 // ---------------------------------------------------------------------------
 // event → log line
 // ---------------------------------------------------------------------------
 
-export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
+export const toLogLine = (seq: number, ev: HarnessEvent): LogLine => {
   const f = formatEvent(ev);
   return {
     seq,
@@ -1257,7 +1263,7 @@ export function toLogLine(seq: number, ev: HarnessEvent): LogLine {
     tone: f.tone,
     ts: ev.ts,
   };
-}
+};
 
 export interface EventFormat {
   glyph: string;
@@ -1284,7 +1290,7 @@ const body = (s: string): string =>
     .replace(/[ \t]+$/gm, "")
     .trimEnd();
 
-export function formatEvent(ev: HarnessEvent): EventFormat {
+export const formatEvent = (ev: HarnessEvent): EventFormat => {
   switch (ev.type) {
     case "assistant_text":
       return { glyph: "▪", text: oneLine(ev.text), full: body(ev.text), tone: "plain" };
@@ -1375,9 +1381,9 @@ export function formatEvent(ev: HarnessEvent): EventFormat {
     default:
       return absurd(ev);
   }
-}
+};
 
-function summarizeInput(input: unknown): string {
+const summarizeInput = (input: unknown): string => {
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
     for (const k of ["command", "file_path", "path", "pattern", "query", "url"]) {
@@ -1385,14 +1391,14 @@ function summarizeInput(input: unknown): string {
     }
   }
   return "";
-}
+};
 
 /**
  * Full tool-call rendering for the editor / wrapped view: the name, then one
  * `key: value` line per argument — strings verbatim (multi-line ones indented
  * under their key), anything else as compact JSON. Readable, not a raw dump.
  */
-function toolCallFull(name: string, input: unknown): string {
+const toolCallFull = (name: string, input: unknown): string => {
   if (input == null || typeof input !== "object") return name;
   const entries = Object.entries(input as Record<string, unknown>);
   if (entries.length === 0) return name;
@@ -1417,16 +1423,16 @@ function toolCallFull(name: string, input: unknown): string {
     }
   }
   return lines.join("\n");
-}
+};
 
-function valueOf(x: unknown): unknown {
+const valueOf = (x: unknown): unknown => {
   if (x && typeof x === "object" && "text" in (x as Record<string, unknown>)) {
     return (x as Record<string, unknown>)["text"];
   }
   return x;
-}
+};
 
-function noticeForEvent(s: TuiState, ev: HarnessEvent): Notice | null {
+const noticeForEvent = (s: TuiState, ev: HarnessEvent): Notice | null => {
   const tag = ev.sessionId === s.selectedId ? "" : ` [${shortId(ev.sessionId)}]`;
   if (ev.type === "permission_request")
     return { text: `${ev.tool} needs approval${tag}`, tone: "accent", at: Date.now() };
@@ -1443,7 +1449,7 @@ function noticeForEvent(s: TuiState, ev: HarnessEvent): Notice | null {
       at: Date.now(),
     };
   return null;
-}
+};
 
 /** Re-export for components that render timestamps. */
 export { clock };

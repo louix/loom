@@ -28,7 +28,7 @@ export type EditorHandoff = (text: string, opts?: EditorOpts) => Promise<string 
  * editor couldn't run. Must be called with the terminal already handed over
  * (Ink suspended), so it does no screen management of its own.
  */
-export function spawnEditor(text: string, opts: EditorOpts = {}): string | null {
+export const spawnEditor = (text: string, opts: EditorOpts = {}): string | null => {
   const ext = opts.ext ?? "md";
   const editor = process.env["VISUAL"] || process.env["EDITOR"] || "vi";
   const dir = mkdtempSync(join(tmpdir(), "loom-edit-"));
@@ -55,4 +55,4 @@ export function spawnEditor(text: string, opts: EditorOpts = {}): string | null 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
+};

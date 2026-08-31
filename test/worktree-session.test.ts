@@ -15,9 +15,9 @@ after(async () => {
   await h.cleanup();
 });
 
-function client(): Promise<LoomClient> {
+const client = (): Promise<LoomClient> => {
   return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
-}
+};
 
 test("session.create gives the session its own worktree + branch off base", async () => {
   const c = await client();

@@ -9,7 +9,7 @@ import { z } from "zod";
 
 const DEFAULT_MAX = 200;
 
-export function runRipgrep(
+export const runRipgrep = (
   opts: {
     pattern: string;
     path?: string;
@@ -20,7 +20,7 @@ export function runRipgrep(
     bin?: string;
   },
   cwd: string,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<{ ok: boolean; output: string }> => {
   return new Promise((resolve) => {
     const args = ["--line-number", "--no-heading", "--color=never", "--max-columns", "400"];
     if (opts.ignoreCase) args.push("-i");
@@ -69,9 +69,9 @@ export function runRipgrep(
       }
     });
   });
-}
+};
 
-export function grepTool(cwd: string) {
+export const grepTool = (cwd: string) => {
   return tool({
     description:
       "Search file contents with ripgrep. Returns `path:line:match` lines. " +
@@ -106,4 +106,4 @@ export function grepTool(cwd: string) {
       return { matches: r.output };
     },
   });
-}
+};

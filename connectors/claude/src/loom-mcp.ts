@@ -36,7 +36,7 @@ const COMMIT_DESC =
   "first by default. Commits are made under this session's Loom identity. Returns " +
   "the new commit's short hash, subject, and a diffstat.";
 
-export function buildLoomMcpServer(deps: LoomMcpDeps): McpSdkServerConfigWithInstance {
+export const buildLoomMcpServer = (deps: LoomMcpDeps): McpSdkServerConfigWithInstance => {
   const askUser = tool(
     "ask_user",
     ASK_USER_DESC,
@@ -87,4 +87,4 @@ export function buildLoomMcpServer(deps: LoomMcpDeps): McpSdkServerConfigWithIns
     alwaysLoad: true,
     tools: [askUser, commit],
   });
-}
+};

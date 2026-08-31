@@ -13,9 +13,9 @@ import {
 } from "@loom/daemon/config/config";
 import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "@loom/daemon/scaffold";
 
-function cfg(toml: string) {
+const cfg = (toml: string) => {
   return normalizeConfig(parseToml(toml));
-}
+};
 
 test("an empty config yields the defaults: claude default, no aisdk profiles", () => {
   const c = cfg("");

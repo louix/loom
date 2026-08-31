@@ -14,11 +14,11 @@ export interface CommitResult {
   sha?: string;
 }
 
-export function commitInWorktree(
+export const commitInWorktree = (
   cwd: string,
   message: string,
   opts: { stageAll: boolean },
-): CommitResult {
+): CommitResult => {
   const msg = message.trim();
   if (msg === "") return { ok: false, text: "commit aborted: the message is empty" };
 
@@ -50,9 +50,9 @@ export function commitInWorktree(
     sha,
     text: `committed ${sha} ${subject}${stat ? `\n${stat}` : ""}`,
   };
-}
+};
 
-function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
+const git = (cwd: string, args: string[]): { ok: boolean; out: string; err: string } => {
   const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
-}
+};

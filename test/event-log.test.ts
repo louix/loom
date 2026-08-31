@@ -3,13 +3,16 @@ import { test } from "node:test";
 import { EventLog } from "@loom/daemon/daemon/event-log";
 import type { PushFrame } from "@loom/core/wire";
 
-function evt(sessionId: string, text: string): Omit<Extract<PushFrame, { type: "event" }>, "seq"> {
+const evt = (
+  sessionId: string,
+  text: string,
+): Omit<Extract<PushFrame, { type: "event" }>, "seq"> => {
   return {
     kind: "push",
     type: "event",
     event: { type: "assistant_text", sessionId, text, ts: 0 },
   };
-}
+};
 
 test("append assigns strictly increasing seq from 1", () => {
   const log = new EventLog(10);

@@ -19,11 +19,11 @@ interface Hit {
   snippet: string;
 }
 
-export async function runSearch(
+export const runSearch = async (
   cfg: SearchConfig,
   query: string,
   maxResults?: number,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<{ ok: boolean; output: string }> => {
   const n = Math.min(20, Math.max(1, maxResults ?? cfg.maxResults));
   const base = (cfg.apiBase || DEFAULT_BASE[cfg.backend]).replace(/\/$/, "");
   const signal = AbortSignal.timeout(15_000); // a hung backend must not stall the turn
@@ -45,15 +45,15 @@ export async function runSearch(
       output: `search failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-}
+};
 
-async function brave(
+const brave = async (
   base: string,
   key: string,
   q: string,
   n: number,
   signal: AbortSignal,
-): Promise<Hit[]> {
+): Promise<Hit[]> => {
   const res = await fetch(`${base}/web/search?q=${encodeURIComponent(q)}&count=${n}`, {
     headers: { Accept: "application/json", "X-Subscription-Token": key },
     signal,
@@ -67,15 +67,15 @@ async function brave(
     url: str(r.url),
     snippet: str(r.description),
   }));
-}
+};
 
-async function tavily(
+const tavily = async (
   base: string,
   key: string,
   q: string,
   n: number,
   signal: AbortSignal,
-): Promise<Hit[]> {
+): Promise<Hit[]> => {
   const res = await fetch(`${base}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -91,12 +91,12 @@ async function tavily(
     url: str(r.url),
     snippet: str(r.content),
   }));
-}
+};
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 
-export function searchTool(cfg: SearchConfig) {
+export const searchTool = (cfg: SearchConfig) => {
   return tool({
     description:
       "Search the web. Returns a numbered list of results (title, URL, snippet). " +
@@ -116,4 +116,4 @@ export function searchTool(cfg: SearchConfig) {
       return { results: r.output };
     },
   });
-}
+};

@@ -150,7 +150,7 @@ export class AisdkEventMapper {
   }
 }
 
-function errorText(err: unknown): string {
+const errorText = (err: unknown): string => {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {
@@ -158,4 +158,4 @@ function errorText(err: unknown): string {
   } catch {
     return String(err);
   }
-}
+};

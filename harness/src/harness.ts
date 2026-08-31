@@ -32,7 +32,9 @@ export interface Harness {
 }
 
 /** A throwaway git repo with a standalone daemon running against it. */
-export async function makeHarness(opts: { git?: boolean; config?: string } = {}): Promise<Harness> {
+export const makeHarness = async (
+  opts: { git?: boolean; config?: string } = {},
+): Promise<Harness> => {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
   if (opts.config !== undefined) {
     mkdirSync(join(repoRoot, ".loom"), { recursive: true });
@@ -69,4 +71,4 @@ export async function makeHarness(opts: { git?: boolean; config?: string } = {})
     },
   } as Harness;
   return h;
-}
+};

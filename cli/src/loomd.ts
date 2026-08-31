@@ -7,7 +7,7 @@ import { DaemonAlreadyRunning } from "@loom/daemon/daemon/lifecycle";
 import { LOOM_VERSION } from "@loom/core/version";
 import { CONNECTORS } from "./connectors.ts";
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   const { values } = parseArgs({
     options: {
       repo: { type: "string" },
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
 
   await daemon.whenClosed();
   process.exit(0);
-}
+};
 
 main().catch((err) => {
   process.stderr.write(

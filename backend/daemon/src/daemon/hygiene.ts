@@ -23,7 +23,7 @@ export interface HygieneReport {
 }
 
 /** Is `pid` a live process (whether or not we can signal it)? */
-export function pidAlive(pid: number): boolean {
+export const pidAlive = (pid: number): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -31,7 +31,7 @@ export function pidAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
-}
+};
 
 /**
  * Bring a freshly-started daemon into a clean state after a previous instance
@@ -42,7 +42,7 @@ export function pidAlive(pid: number): boolean {
  *     signalled to exit and their bookkeeping rows dropped
  *   - stale git index locks under `.loom/trees/` are removed and worktrees pruned
  */
-export function runStartupHygiene(input: HygieneInput): HygieneReport {
+export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
   const { paths, registry, children, epoch, log } = input;
 
   const interruptedSessions = registry.markMidRunInterrupted();
@@ -54,9 +54,9 @@ export function runStartupHygiene(input: HygieneInput): HygieneReport {
   const { clearedLocks, worktreePruned } = tidyWorktrees(paths, log);
 
   return { interruptedSessions, reapedChildren, clearedLocks, worktreePruned };
-}
+};
 
-function reapChildren(children: ChildStore, epoch: string, log: Logger): number {
+const reapChildren = (children: ChildStore, epoch: string, log: Logger): number => {
   let reaped = 0;
   for (const row of children.all()) {
     const stale = row.daemon_epoch !== epoch;
@@ -94,12 +94,12 @@ function reapChildren(children: ChildStore, epoch: string, log: Logger): number 
     reaped++;
   }
   return reaped;
-}
+};
 
-function tidyWorktrees(
+const tidyWorktrees = (
   paths: LoomPaths,
   log: Logger,
-): { clearedLocks: string[]; worktreePruned: boolean } {
+): { clearedLocks: string[]; worktreePruned: boolean } => {
   const clearedLocks: string[] = [];
   if (existsSync(paths.trees)) {
     let entries: string[] = [];
@@ -143,4 +143,4 @@ function tidyWorktrees(
     log.debug("git worktree prune skipped", { err: String(res.error) });
   }
   return { clearedLocks, worktreePruned };
-}
+};

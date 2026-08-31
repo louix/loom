@@ -178,29 +178,29 @@ export const DEFAULT_CONFIG: LoomConfig = {
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
 };
 
-function asRecord(v: unknown): Record<string, unknown> {
+const asRecord = (v: unknown): Record<string, unknown> => {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-}
+};
 
-function str(v: unknown, fallback: string): string {
+const str = (v: unknown, fallback: string): string => {
   return typeof v === "string" ? v : fallback;
-}
+};
 
-function num(v: unknown, fallback: number): number {
+const num = (v: unknown, fallback: number): number => {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
-}
+};
 
 /** A non-negative number, or the fallback (rejects `-1`, NaN, wrong type). */
-function nonNeg(v: unknown, fallback: number): number {
+const nonNeg = (v: unknown, fallback: number): number => {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
-}
+};
 
-function strArray(v: unknown, fallback: string[]): string[] {
+const strArray = (v: unknown, fallback: string[]): string[] => {
   if (!Array.isArray(v)) return fallback;
   // Keep the string entries rather than reverting the whole list (and losing an
   // explicit `[]`) because of one stray non-string element.
   return v.filter((x): x is string => typeof x === "string");
-}
+};
 
 /**
  * Build one aisdk profile from a config table. `sdk = "openai"` with no
@@ -213,11 +213,11 @@ function strArray(v: unknown, fallback: string[]): string[] {
  *  `src/provider/aisdk/session.ts`. */
 const DEFAULT_AISDK_MAX_STEPS = 50;
 
-function buildAisdkProfile(
+const buildAisdkProfile = (
   id: string,
   t: Record<string, unknown>,
   sdk: AisdkKind,
-): AisdkProfile | null {
+): AisdkProfile | null => {
   const baseUrl = str(t["base_url"], "");
   if (sdk === "openai" && baseUrl === "") return null;
   const model = str(t["model"], "");
@@ -241,7 +241,7 @@ function buildAisdkProfile(
     titleModel: str(t["title_model"], ""),
     connector: str(t["connector"], ""),
   };
-}
+};
 
 /**
  * Every aisdk provider profile, from all the namespaces, keyed by id:
@@ -252,7 +252,7 @@ function buildAisdkProfile(
  *    its `sdk` key still selects the backend. Wins a duplicate id.
  * `claude` is reserved for the native CLI provider and is never an aisdk id.
  */
-function parseAisdkProfiles(raw: Record<string, unknown>): Record<string, AisdkProfile> {
+const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkProfile> => {
   const out: Record<string, AisdkProfile> = {};
   const put = (id: string, p: AisdkProfile | null): void => {
     if (p && id !== "claude" && !(id in out)) out[id] = p;
@@ -280,21 +280,21 @@ function parseAisdkProfiles(raw: Record<string, unknown>): Record<string, AisdkP
   }
 
   return out;
-}
+};
 
 /**
  * The API key for an aisdk profile / `[search]`: an inline `api_key` wins,
  * else `api_key_env` is looked up in the environment, else "" (a keyless
  * local endpoint).
  */
-export function resolveApiKey(
+export const resolveApiKey = (
   src: { apiKey?: string; apiKeyEnv?: string },
   env: NodeJS.ProcessEnv = process.env,
-): string {
+): string => {
   if (src.apiKey) return src.apiKey;
   if (src.apiKeyEnv) return env[src.apiKeyEnv] ?? "";
   return "";
-}
+};
 
 /**
  * Human-readable warnings about the loaded config — misconfigured providers,
@@ -303,7 +303,7 @@ export function resolveApiKey(
  * to `claude`, so that's not re-checked here. Logged at daemon start-up and
  * available over `config.check` / `loom config`.
  */
-export function lintConfig(cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env): string[] {
+export const lintConfig = (cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env): string[] => {
   const w: string[] = [];
   for (const [id, p] of Object.entries(cfg.providers.aisdk)) {
     if (p.sdk === "openai" && p.baseUrl === "") {
@@ -332,14 +332,14 @@ export function lintConfig(cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env
     }
   }
   return w;
-}
+};
 
 /**
  * Parse a raw TOML tree into a fully-populated LoomConfig, filling any missing
  * key from DEFAULT_CONFIG. Unknown keys are ignored. Enum-typed fields fall back
  * to the default when the value is not one of the permitted literals.
  */
-export function normalizeConfig(raw: unknown): LoomConfig {
+export const normalizeConfig = (raw: unknown): LoomConfig => {
   const r = asRecord(raw);
   const d = DEFAULT_CONFIG;
 
@@ -428,9 +428,9 @@ export function normalizeConfig(raw: unknown): LoomConfig {
       maxResults: Math.max(1, nonNeg(search["max_results"], d.search.maxResults)),
     },
   };
-}
+};
 
-function readTomlIfPresent(path: string): Record<string, unknown> | null {
+const readTomlIfPresent = (path: string): Record<string, unknown> | null => {
   try {
     const parsed = parseToml(readFileSync(path, "utf8"));
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
@@ -439,13 +439,13 @@ function readTomlIfPresent(path: string): Record<string, unknown> | null {
     if (e.code === "ENOENT") return null;
     throw new Error(`failed to read ${path}: ${e.message}`);
   }
-}
+};
 
 /** Recursive object merge; `over` wins. Arrays and scalars are replaced wholesale. */
-export function deepMerge(
+export const deepMerge = (
   base: Record<string, unknown>,
   over: Record<string, unknown>,
-): Record<string, unknown> {
+): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...base };
   for (const [k, v] of Object.entries(over)) {
     const b = out[k];
@@ -463,13 +463,13 @@ export function deepMerge(
     }
   }
   return out;
-}
+};
 
 /**
  * Load and normalize config. The per-repo `.loom/config.toml` is layered on top
  * of the user-level `userConfigPath` (when given); either may be absent.
  */
-export function loadConfig(repoConfigPath: string, userConfigPath?: string): LoomConfig {
+export const loadConfig = (repoConfigPath: string, userConfigPath?: string): LoomConfig => {
   let raw: Record<string, unknown> = {};
   if (userConfigPath) {
     const u = readTomlIfPresent(userConfigPath);
@@ -478,9 +478,9 @@ export function loadConfig(repoConfigPath: string, userConfigPath?: string): Loo
   const r = readTomlIfPresent(repoConfigPath);
   if (r) raw = deepMerge(raw, r);
   return normalizeConfig(raw);
-}
+};
 
 /** Resolve a possibly-relative config path against the repo root. */
-export function resolveAgainstRepo(repoRoot: string, p: string): string {
+export const resolveAgainstRepo = (repoRoot: string, p: string): string => {
   return isAbsolute(p) ? p : resolve(repoRoot, p);
-}
+};

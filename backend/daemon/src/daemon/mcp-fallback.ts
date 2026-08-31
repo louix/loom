@@ -18,10 +18,10 @@ export interface ResolvedCommand {
   note?: string;
 }
 
-export function resolveMcpCommand(
+export const resolveMcpCommand = (
   raw: string,
   has: (cmd: string) => boolean = onPath,
-): ResolvedCommand {
+): ResolvedCommand => {
   const parts = raw.split(/\s+/).filter((s) => s.length > 0);
   const command = parts[0] ?? raw;
   const args = parts.slice(1);
@@ -40,4 +40,4 @@ export function resolveMcpCommand(
     args,
     note: "tilth and npx both missing — its tools won't be available this session",
   };
-}
+};

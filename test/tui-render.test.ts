@@ -48,16 +48,16 @@ class FakeIn extends EventEmitter {
  * than a fixed `delay` for actions that spawn a worktree — the `@oxc-node/core`
  * register hook adds enough per-import cost to blow a tight fixed wait.
  */
-async function waitFor(stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<void> {
+const waitFor = async (stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (re.test(stdout.last)) return;
     await delay(25);
   }
   assert.match(stdout.last, re);
-}
+};
 
-function mount(client: LoomClient) {
+const mount = (client: LoomClient) => {
   const stdout = new FakeOut();
   const stdin = new FakeIn();
   const app = render(createElement(App, { client }), {
@@ -68,7 +68,7 @@ function mount(client: LoomClient) {
     patchConsole: false,
   });
   return { stdout, stdin, app };
-}
+};
 
 /**
  * Each test gets its own daemon + repo so the fleet contents (and therefore
@@ -76,11 +76,13 @@ function mount(client: LoomClient) {
  * *before* mounting so they arrive in the `hello` snapshot; emit live events
  * *after*, once the client has subscribed.
  */
-async function harness(opts: { config?: string } = {}): Promise<{
+const harness = async (
+  opts: { config?: string } = {},
+): Promise<{
   h: Harness;
   connect: (replayHistory?: boolean) => Promise<LoomClient>;
   cleanup: () => Promise<void>;
-}> {
+}> => {
   const h = await makeHarness(opts);
   return {
     h,
@@ -94,7 +96,7 @@ async function harness(opts: { config?: string } = {}): Promise<{
       }),
     cleanup: () => h.cleanup(),
   };
-}
+};
 
 test("renders the fleet, tracks selection by key, and shows help", async () => {
   const { connect, cleanup } = await harness();

@@ -239,6 +239,6 @@ export class FakeProvider implements AgentProvider {
 }
 
 /** Handy for tests that want a unique id without a daemon. */
-export function fakeSessionId(): string {
+export const fakeSessionId = (): string => {
   return randomUUID();
-}
+};

@@ -49,7 +49,7 @@ import { bar, humanTokens, money, spinnerFrame, truncate, wrapText } from "@loom
 
 let clock = 1_000;
 
-function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
+const snap = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => {
   const now = ++clock;
   return {
     id: over.id ?? `s${now}`,
@@ -79,15 +79,15 @@ function snap(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
     updatedAt: now,
     ...over,
   };
-}
+};
 
-function ev(over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent {
+const ev = (over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent => {
   return { sessionId: "s1", ts: 5_000, ...(over as object) } as HarnessEvent;
-}
+};
 
-function push(seq: number, event: HarnessEvent): EventPush {
+const push = (seq: number, event: HarnessEvent): EventPush => {
   return { kind: "push", seq, type: "event", event };
-}
+};
 
 const daemon = { pid: 1, version: "0.0.1", repoRoot: "/tmp/demo" };
 
@@ -1227,9 +1227,9 @@ const PROVIDERS: ProviderInfo[] = [
   },
 ];
 
-function withProviders(): TuiState {
+const withProviders = (): TuiState => {
   return reduce(initialState(), { t: "providers", list: PROVIDERS });
-}
+};
 
 test("providers action populates state and the derived helpers", () => {
   const s = withProviders();

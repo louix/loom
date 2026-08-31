@@ -31,7 +31,7 @@ const COMMIT_DESC =
   "first by default. Commits are made under this session's Loom identity. Returns " +
   "the new commit's short hash, subject, and a diffstat.";
 
-export function buildLoomTools(deps: LoomToolDeps): ToolSet {
+export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
   return {
     ask_user: tool({
       description: ASK_USER_DESC,
@@ -70,4 +70,4 @@ export function buildLoomTools(deps: LoomToolDeps): ToolSet {
       },
     }),
   };
-}
+};

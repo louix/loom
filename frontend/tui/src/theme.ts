@@ -61,30 +61,30 @@ export const STATUS: Record<SessionStatus, StatusLook> = {
 /** Braille spinner frames for running rows. */
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-export function spinnerFrame(tick: number): string {
+export const spinnerFrame = (tick: number): string => {
   const i = ((tick % SPINNER.length) + SPINNER.length) % SPINNER.length;
   return SPINNER[i] as string;
-}
+};
 
 // ---------------------------------------------------------------------------
 // pure formatting helpers (unit-tested)
 // ---------------------------------------------------------------------------
 
 /** `abcdef12-…` → `abcdef12`. */
-export function shortId(id: string): string {
+export const shortId = (id: string): string => {
   return id.slice(0, 8);
-}
+};
 
 /** Clip to `n` columns, adding an ellipsis when it had to cut. */
-export function truncate(s: string, n: number): string {
+export const truncate = (s: string, n: number): string => {
   if (n <= 0) return "";
   if (s.length <= n) return s;
   if (n === 1) return "…";
   return s.slice(0, n - 1) + "…";
-}
+};
 
 /** Greedy word wrap to `width` columns; hard-breaks any token longer than it. */
-export function wrapText(s: string, width: number): string[] {
+export const wrapText = (s: string, width: number): string[] => {
   if (width <= 0) return [s];
   const out: string[] = [];
   let line = "";
@@ -111,32 +111,32 @@ export function wrapText(s: string, width: number): string[] {
   }
   if (line) out.push(line);
   return out.length ? out : [""];
-}
+};
 
 /** 12345 → "12.3k", 2_000_000 → "2.0M", <1000 stays exact. */
-export function humanTokens(n: number): string {
+export const humanTokens = (n: number): string => {
   if (!Number.isFinite(n) || n < 0) return "0";
   if (n < 1000) return String(Math.round(n));
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
   return `${(n / 1_000_000).toFixed(1)}M`;
-}
+};
 
 /** A unicode meter: `▰▰▰▱▱▱▱▱`. `frac` is clamped to [0,1]. */
-export function bar(frac: number, width = 10): string {
+export const bar = (frac: number, width = 10): string => {
   const f = Math.max(0, Math.min(1, Number.isFinite(frac) ? frac : 0));
   const filled = Math.round(f * width);
   return "▰".repeat(filled) + "▱".repeat(Math.max(0, width - filled));
-}
+};
 
 /** A duration in ms → `M:SS` (minutes uncapped), for countdowns. */
-export function mmss(ms: number): string {
+export const mmss = (ms: number): string => {
   const total = Math.max(0, Math.round(ms / 1000));
   const m = Math.floor(total / 60);
   return `${m}:${String(total % 60).padStart(2, "0")}`;
-}
+};
 
 /** A duration in ms → `Nd Nh` / `Nh Nm` / `Nm`, for "resets in …" labels. */
-export function humanDuration(ms: number): string {
+export const humanDuration = (ms: number): string => {
   const total = Math.max(0, Math.round(ms / 60_000)); // minutes
   const d = Math.floor(total / 1440);
   const h = Math.floor((total % 1440) / 60);
@@ -144,22 +144,22 @@ export function humanDuration(ms: number): string {
   if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
-}
+};
 
 /** ms epoch → local `HH:MM:SS`. */
-export function clock(ts: number): string {
+export const clock = (ts: number): string => {
   const d = new Date(ts);
   const p = (x: number) => String(x).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
+};
 
 /** "$0.42", or "—" for a zero / missing cost. */
-export function money(usd: number): string {
+export const money = (usd: number): string => {
   return usd && Number.isFinite(usd) ? `$${usd.toFixed(2)}` : "—";
-}
+};
 
 /** How a permission mode reads in the UI. The wire / SDK value stays `default`;
  *  we call it `manual` — you approve everything yourself. */
-export function modeLabel(mode: string | null | undefined): string {
+export const modeLabel = (mode: string | null | undefined): string => {
   return !mode || mode === "default" ? "manual" : mode;
-}
+};

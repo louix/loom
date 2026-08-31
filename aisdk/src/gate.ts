@@ -31,28 +31,28 @@ const READONLY_RE =
 const EDIT_RE =
   /(^|_)(write|edit|create|append|patch|apply|insert|mkdir|move|rename|copy|delete|remove|rm|touch|format|save|replace|swap|update|upsert|prune|purge|drop|truncate|clear|overwrite)(_|$)/i;
 
-export function isEdit(name: string): boolean {
+export const isEdit = (name: string): boolean => {
   return EDIT_RE.test(name);
-}
+};
 
-export function isReadonly(name: string): boolean {
+export const isReadonly = (name: string): boolean => {
   if (READONLY_EXACT.has(name)) return true;
   // A name that carries *both* a read verb and a mutation verb
   // (`search_and_replace`, `get_or_create_file`, `read_and_write`) is a
   // mutator — the edit verb wins the tie, so it goes through the gate and is
   // withheld in plan mode.
   return READONLY_RE.test(name) && !EDIT_RE.test(name);
-}
+};
 
 /** What to do with a tool call *before* any user prompt. */
-export function policy(mode: SessionMode, name: string): "allow" | "ask" {
+export const policy = (mode: SessionMode, name: string): "allow" | "ask" => {
   if (mode === "auto") return "allow";
   if (isReadonly(name)) return "allow";
   if (mode === "acceptEdits" && isEdit(name)) return "allow";
   // `plan` mode's withhold-the-mutators behaviour is M10d; until then it gates
   // like `default`.
   return "ask";
-}
+};
 
 export class PermissionDenied extends Error {
   constructor(message: string) {
@@ -76,7 +76,7 @@ export interface GateOptions {
 }
 
 /** Wrap every executable tool in a set with the gate. */
-export function wrapToolSet(tools: ToolSet, opts: GateOptions): ToolSet {
+export const wrapToolSet = (tools: ToolSet, opts: GateOptions): ToolSet => {
   const src = tools as Record<string, Record<string, unknown>>;
   const out: Record<string, unknown> = {};
   for (const name of Object.keys(src)) {
@@ -99,4 +99,4 @@ export function wrapToolSet(tools: ToolSet, opts: GateOptions): ToolSet {
     };
   }
   return out as ToolSet;
-}
+};

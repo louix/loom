@@ -13,11 +13,11 @@ import type { ToolSet } from "ai";
 import type { Logger } from "@loom/core/logger";
 import type { McpServerHandle } from "@loom/core/types";
 
-function cleanEnv(extra: Record<string, string>): Record<string, string> {
+const cleanEnv = (extra: Record<string, string>): Record<string, string> => {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) out[k] = v;
   return { ...out, ...extra };
-}
+};
 
 export class McpHub {
   readonly #clients: experimental_MCPClient[];

@@ -86,22 +86,24 @@ export interface MapperState {
   contextLimit: number;
 }
 
-function zeroUsage(): TokenUsage {
+const zeroUsage = (): TokenUsage => {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-}
+};
 
-function blocks(content: unknown): ContentBlock[] {
+const blocks = (content: unknown): ContentBlock[] => {
   return Array.isArray(content) ? (content as ContentBlock[]) : [];
-}
+};
 
-function sumModelUsage(mu: Record<string, ModelUsageEntry> | undefined): {
+const sumModelUsage = (
+  mu: Record<string, ModelUsageEntry> | undefined,
+): {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
   costUsd: number;
   contextLimit: number;
-} {
+} => {
   const acc = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, contextLimit: 0 };
   for (const e of Object.values(mu ?? {})) {
     acc.input += e.inputTokens ?? 0;
@@ -112,7 +114,7 @@ function sumModelUsage(mu: Record<string, ModelUsageEntry> | undefined): {
     acc.contextLimit = Math.max(acc.contextLimit, e.contextWindow ?? 0);
   }
   return acc;
-}
+};
 
 // --- the mapper ----------------------------------------------------------
 

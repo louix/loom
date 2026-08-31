@@ -24,14 +24,14 @@ import {
   RequestPanel,
 } from "./components.tsx";
 
-export function App({
+export const App = ({
   client,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
 }: {
   client: LoomClient;
   openEditor?: EditorHandoff;
-}): ReactNode {
+}): ReactNode => {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
 
@@ -58,7 +58,7 @@ export function App({
   const view = useSyncExternalStore(handle.subscribe, handle.getView);
 
   return <Layout view={view} />;
-}
+};
 
 const Layout = ({ view }: { view: FleetView }): ReactNode => {
   const { state, sel, cols, bodyH, leftW, rightW, splitLogH } = view;

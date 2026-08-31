@@ -24,12 +24,12 @@ export interface PriceRow {
 
 export type PriceTable = Map<string, PriceRow>;
 
-function num(v: unknown): number {
+const num = (v: unknown): number => {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
-}
+};
 
 /** Parse a raw TOML tree into a price table. Unknown / malformed rows are skipped. */
-export function parsePriceTable(raw: unknown): PriceTable {
+export const parsePriceTable = (raw: unknown): PriceTable => {
   const table: PriceTable = new Map();
   if (!raw || typeof raw !== "object") return table;
   for (const [model, row] of Object.entries(raw as Record<string, unknown>)) {
@@ -46,10 +46,10 @@ export function parsePriceTable(raw: unknown): PriceTable {
     }
   }
   return table;
-}
+};
 
 /** Load and parse the table; returns an empty table if the file is absent. */
-export function loadPriceTable(path: string): PriceTable {
+export const loadPriceTable = (path: string): PriceTable => {
   let raw: unknown = {};
   try {
     raw = parseToml(readFileSync(path, "utf8"));
@@ -58,14 +58,14 @@ export function loadPriceTable(path: string): PriceTable {
     if (e.code !== "ENOENT") throw new Error(`failed to read price table ${path}: ${e.message}`);
   }
   return parsePriceTable(raw);
-}
+};
 
 /** Dollar cost of a token delta at the given model's prices, or `null` when unpriced. */
-export function costOf(
+export const costOf = (
   table: PriceTable,
   model: string | null | undefined,
   delta: TokenUsage,
-): number | null {
+): number | null => {
   if (!model) return null;
   const row = table.get(model);
   if (!row) return null;
@@ -76,4 +76,4 @@ export function costOf(
       delta.cacheWrite * row.cacheWrite) /
     1_000_000
   );
-}
+};

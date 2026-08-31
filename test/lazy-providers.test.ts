@@ -29,9 +29,9 @@ const isVendor = (s: string): boolean =>
   s === "@loom/aisdk" ||
   s.startsWith("@loom/aisdk/");
 
-function vendorHits(): string[] {
+const vendorHits = (): string[] => {
   return [...resolved].filter(isVendor);
-}
+};
 
 test("a fake-only daemon session never loads a vendor connector", async () => {
   // Imported *after* the hook — harness → Daemon → registry, none of which
