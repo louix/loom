@@ -391,6 +391,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 
   s = reduce(s, { t: "logFilter", value: "chat" });
   const chat = visibleLog(s);
+  // Neither call has an input `description`, so they collapse to one count marker.
   assert.deepEqual(
     chat.map((l) => l.text),
     ["let me look", "thought for 3s", "2 tool calls", "done"],
@@ -409,6 +410,32 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 
   s = reduce(s, { t: "logFilter", value: "everything" });
   assert.equal(visibleLog(s).length, 8);
+});
+
+test("chat view: tool calls with an input `description` get their own line; those without still collapse to a count", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "select", id: "a" });
+  const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
+    (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
+  at(1, { type: "tool_call", id: "t1", name: "Read", input: { file_path: "a.ts" } }, 1_000);
+  at(2, { type: "tool_result", id: "t1", ok: true, output: {} }, 1_100);
+  at(
+    3,
+    { type: "tool_call", id: "t2", name: "Bash", input: { command: "ls", description: "List files" } },
+    2_000,
+  );
+  at(4, { type: "tool_result", id: "t2", ok: true, output: {} }, 2_100);
+  at(5, { type: "tool_call", id: "t3", name: "Grep", input: { pattern: "foo" } }, 3_000);
+  at(6, { type: "tool_result", id: "t3", ok: true, output: {} }, 3_100);
+  at(7, { type: "tool_call", id: "t4", name: "Glob", input: { pattern: "*.ts" } }, 3_200);
+  at(8, { type: "tool_result", id: "t4", ok: true, output: {} }, 3_300);
+
+  s = reduce(s, { t: "logFilter", value: "chat" });
+  assert.deepEqual(
+    visibleLog(s).map((l) => l.text),
+    ["1 tool call", "List files", "2 tool calls"],
+  );
 });
 
 test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {

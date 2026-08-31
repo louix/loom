@@ -78,6 +78,9 @@ export interface LogLine {
    * would just equal {@link text}.
    */
   full?: string;
+  /** For `tool_call`: the input's `description` field, when the tool provided one
+   *  (e.g. Bash) — used by the `chat` view instead of a generic count. */
+  toolDescription?: string;
   tone: Tone;
   ts: number;
 }
@@ -988,25 +991,52 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
     }
     if (l.kind === "tool_call" || l.kind === "tool_result") {
       let j = i;
-      let calls = 0;
+      // Runs of tool calls with no `description` collapse into one `N tool
+      // call(s)` marker (as before); calls that do have one get their own
+      // line instead, in place among the undescribed runs' markers.
+      let pending: LogLine | null = null;
+      let pendingCount = 0;
+      const flushPending = () => {
+        if (!pending) return;
+        out.push({
+          seq: pending.seq,
+          sessionId: pending.sessionId,
+          kind: "tool_call",
+          ...(pending.agentId ? { agentId: pending.agentId } : {}),
+          glyph: "⚙",
+          text: `${pendingCount} tool call${pendingCount === 1 ? "" : "s"}`,
+          tone: "warn",
+          ts: pending.ts,
+        });
+        pending = null;
+        pendingCount = 0;
+      };
       while (
         j < lines.length &&
         (lines[j]?.kind === "tool_call" || lines[j]?.kind === "tool_result")
       ) {
-        if (lines[j]?.kind === "tool_call") calls += 1;
+        const line = lines[j]!;
+        if (line.kind === "tool_call") {
+          if (line.toolDescription) {
+            flushPending();
+            out.push({
+              seq: line.seq,
+              sessionId: line.sessionId,
+              kind: "tool_call",
+              ...(line.agentId ? { agentId: line.agentId } : {}),
+              glyph: "⚙",
+              text: line.toolDescription,
+              tone: "warn",
+              ts: line.ts,
+            });
+          } else {
+            if (!pending) pending = line;
+            pendingCount += 1;
+          }
+        }
         j += 1;
       }
-      const first = lines[i]!;
-      out.push({
-        seq: first.seq,
-        sessionId: first.sessionId,
-        kind: "tool_call",
-        ...(first.agentId ? { agentId: first.agentId } : {}),
-        glyph: "⚙",
-        text: `${calls || 1} tool call${calls === 1 ? "" : "s"}`,
-        tone: "warn",
-        ts: first.ts,
-      });
+      flushPending();
       i = j;
       continue;
     }
@@ -1538,6 +1568,7 @@ export const toLogLine = (seq: number, ev: HarnessEvent): LogLine => {
     glyph: f.glyph,
     text: f.text,
     ...(f.full !== undefined && f.full !== f.text ? { full: f.full } : {}),
+    ...(f.toolDescription !== undefined ? { toolDescription: f.toolDescription } : {}),
     tone: f.tone,
     ts: ev.ts,
   };
@@ -1548,6 +1579,8 @@ export interface EventFormat {
   text: string;
   /** Untruncated body with newlines, when it differs from {@link text}. */
   full?: string;
+  /** `tool_call` only: the input's `description` field, when present. */
+  toolDescription?: string;
   tone: Tone;
 }
 
@@ -1574,13 +1607,16 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
       return { glyph: "▪", text: oneLine(ev.text), full: body(ev.text), tone: "plain" };
     case "thinking":
       return { glyph: "·", text: oneLine(ev.text), full: body(ev.text), tone: "think" };
-    case "tool_call":
+    case "tool_call": {
+      const desc = toolDescriptionOf(ev.input);
       return {
         glyph: "⚙",
         text: `${ev.name}${summarizeInput(ev.input)}`,
         full: toolCallFull(ev.name, ev.input),
+        ...(desc !== undefined ? { toolDescription: desc } : {}),
         tone: "warn",
       };
+    }
     case "tool_result": {
       const raw = valueOf(ev.output);
       const out = typeof raw === "string" ? body(raw) : "";
@@ -1669,6 +1705,15 @@ const summarizeInput = (input: unknown): string => {
     }
   }
   return "";
+};
+
+/** The tool input's `description` field (e.g. Bash's), when present and non-blank. */
+const toolDescriptionOf = (input: unknown): string | undefined => {
+  if (input && typeof input === "object") {
+    const d = (input as Record<string, unknown>).description;
+    if (typeof d === "string" && d.trim()) return oneLine(d, 120);
+  }
+  return undefined;
 };
 
 /**
