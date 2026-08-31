@@ -230,6 +230,15 @@ export const mkFleetHandle = ({
   const draining = new Set<string>();
   const lastDrainTurn = new Map<string, number>();
 
+  // All three are keyed by session id and never shrank on their own — one dead
+  // entry per session ever seen. Prune to the live fleet on any list change.
+  const forgetDeadSessions = (): void => {
+    const live = new Set(state.sessions.map((s) => s.id));
+    for (const id of historyBackfilled) if (!live.has(id)) historyBackfilled.delete(id);
+    for (const id of draining) if (!live.has(id)) draining.delete(id);
+    for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
+  };
+
   const store = mkStore<FleetView>(deriveView(state, boot, tick, logScroll, logFull, dims));
   const publish = (): void => store.set(deriveView(state, boot, tick, logScroll, logFull, dims));
 
@@ -298,6 +307,7 @@ export const mkFleetHandle = ({
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
     publish();
     if (state.selectedId !== prev.selectedId) backfillHistory();
+    if (state.sessions !== prev.sessions) forgetDeadSessions();
     if (state.sessions !== prev.sessions || state.queue !== prev.queue) drainQueues();
   };
 
