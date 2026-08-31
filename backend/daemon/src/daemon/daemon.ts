@@ -346,7 +346,7 @@ export class Daemon {
     // SessionManager) a brief window to finish before the DB closes under them.
     if (this.#titleJobs.size > 0) {
       await Promise.race([
-        Promise.allSettled([...this.#titleJobs]),
+        Promise.allSettled(this.#titleJobs),
         new Promise((r) => setTimeout(r, 2_000).unref()),
       ]);
     }

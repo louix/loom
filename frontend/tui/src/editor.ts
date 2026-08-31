@@ -159,7 +159,10 @@ export function applyKey(buf: Buffer, input: string, key: KeyLike): EditResult {
     return t === null ? { kind: "history", dir: 1 } : edit(text, t);
   }
 
-  // Printable input, including a bracketed paste delivered as one chunk.
+  // Printable input, including a bracketed paste delivered as one chunk. The
+  // regex strips the paste-bracket escapes (ESC [200~ / ESC [201~); the ESC is
+  // load-bearing, so the control-character match is deliberate.
+  // oxlint-disable-next-line no-control-regex
   const clean = input.replace(/\x1b\[20[01]~/g, "").replace(/\r\n?/g, "\n");
   if (clean !== "" && isInsertable(clean)) {
     return edit(text.slice(0, cursor) + clean + text.slice(cursor), cursor + clean.length);

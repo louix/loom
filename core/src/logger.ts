@@ -23,7 +23,7 @@ function emit(level: LogLevel, scope: string, msg: string, fields?: Record<strin
     level,
     scope,
     msg,
-    ...(fields ?? {}),
+    ...fields,
   });
   process.stderr.write(line + "\n");
   if (fileSink) {

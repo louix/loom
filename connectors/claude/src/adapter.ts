@@ -490,7 +490,7 @@ export class ClaudeProvider implements AgentProvider {
     const cli = this.#resolveCli();
     const q = query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
-      options: { ...(cli ? { pathToClaudeCodeExecutable: cli } : {}) },
+      options: cli ? { pathToClaudeCodeExecutable: cli } : {},
     });
     try {
       const init = await q.initializationResult();

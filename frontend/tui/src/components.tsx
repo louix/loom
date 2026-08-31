@@ -14,7 +14,6 @@ import {
   clock,
   footerHints,
   groupsOf,
-  pendingFor,
   pickerVisible,
   providerInfo,
   queueFor,
