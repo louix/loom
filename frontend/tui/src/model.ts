@@ -30,9 +30,31 @@ export type UiMode = "browse" | "prompt" | "help" | "confirm" | "plan" | "picker
  *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥x)
  *   • Space     → the command palette: everything valid right now, fuzzy, with its key
  */
-/** How much of the selected session's log to show: everything, or just the
- *  conversation (tool traffic and thinking collapsed to one-line markers). */
-export type LogFilter = "full" | "chat";
+/** How much of the selected session's log to show:
+ *   - `chat`           — just the conversation (tool traffic and thinking
+ *                        collapsed to one-line markers)
+ *   - `chat_and_tools` — conversation plus each individual tool call, but not
+ *                        its output
+ *   - `everything`     — the raw log, unfiltered */
+export type LogFilter = "chat" | "chat_and_tools" | "everything";
+
+/** `v` cycles through {@link LogFilter} in this order. */
+export const cycleLogFilter = (f: LogFilter): LogFilter =>
+  f === "chat" ? "chat_and_tools" : f === "chat_and_tools" ? "everything" : "chat";
+
+/** Human label for what pressing `v` would switch the event log *to*. */
+export const logFilterLabel = (f: LogFilter): string => {
+  switch (f) {
+    case "chat":
+      return "chat only";
+    case "chat_and_tools":
+      return "chat + tool calls";
+    case "everything":
+      return "show everything";
+    default:
+      return absurd(f);
+  }
+};
 
 export interface DaemonInfo {
   pid: number;
@@ -267,7 +289,7 @@ export const initialState = (logCap = 400): TuiState => {
     selectedId: null,
     log: [],
     logCap,
-    logFilter: "full",
+    logFilter: "everything",
     pending: {},
     queue: {},
     compacting: {},
@@ -836,11 +858,42 @@ export const sessionLog = (s: TuiState): LogLine[] => {
   return s.log.filter((l) => l.sessionId === s.selectedId);
 };
 
-/** What the event pane shows: the full log, or the `chat` view with tool
- *  traffic and thinking collapsed to one-line markers. */
+/** What the event pane shows, per {@link LogFilter}. */
 export const visibleLog = (s: TuiState): LogLine[] => {
   const rows = sessionLog(s);
-  return s.logFilter === "chat" ? condenseLog(rows) : rows;
+  switch (s.logFilter) {
+    case "chat":
+      return condenseLog(rows);
+    case "chat_and_tools":
+      return condenseToolResults(rows);
+    case "everything":
+      return rows;
+    default:
+      return absurd(s.logFilter);
+  }
+};
+
+/** Collapse a run of consecutive `thinking` lines (starting at `i`) into one
+ *  `· thought for Ns` marker, returning it and the index past the run. */
+const collapseThinking = (lines: readonly LogLine[], i: number): [LogLine, number] => {
+  let j = i;
+  while (j < lines.length && lines[j]?.kind === "thinking") j += 1;
+  const first = lines[i]!;
+  const last = lines[j - 1]!;
+  const secs = Math.round((last.ts - first.ts) / 1000);
+  return [
+    {
+      seq: first.seq,
+      sessionId: first.sessionId,
+      kind: "thinking",
+      ...(first.agentId ? { agentId: first.agentId } : {}),
+      glyph: "·",
+      text: secs > 0 ? `thought for ${secs}s` : "thought a moment",
+      tone: "think",
+      ts: first.ts,
+    },
+    j,
+  ];
 };
 
 /** `⌃E`-style: fold consecutive `thinking` into `· thought for Ns`, and
@@ -857,22 +910,9 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
       continue;
     }
     if (l.kind === "thinking") {
-      let j = i;
-      while (j < lines.length && lines[j]?.kind === "thinking") j += 1;
-      const first = lines[i]!;
-      const last = lines[j - 1]!;
-      const secs = Math.round((last.ts - first.ts) / 1000);
-      out.push({
-        seq: first.seq,
-        sessionId: first.sessionId,
-        kind: "thinking",
-        ...(first.agentId ? { agentId: first.agentId } : {}),
-        glyph: "·",
-        text: secs > 0 ? `thought for ${secs}s` : "thought a moment",
-        tone: "think",
-        ts: first.ts,
-      });
-      i = j;
+      const [marker, next] = collapseThinking(lines, i);
+      out.push(marker);
+      i = next;
       continue;
     }
     if (l.kind === "tool_call" || l.kind === "tool_result") {
@@ -897,6 +937,31 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
         ts: first.ts,
       });
       i = j;
+      continue;
+    }
+    out.push(l);
+    i += 1;
+  }
+  return out;
+};
+
+/** `chat_and_tools`: like {@link condenseLog}, but keeps each tool call as
+ *  its own line instead of collapsing the run — only the tool *results* (the
+ *  output) are dropped. */
+export const condenseToolResults = (lines: readonly LogLine[]): LogLine[] => {
+  const out: LogLine[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l) break;
+    if (l.kind === "usage" || l.kind === "tool_result") {
+      i += 1;
+      continue;
+    }
+    if (l.kind === "thinking") {
+      const [marker, next] = collapseThinking(lines, i);
+      out.push(marker);
+      i = next;
       continue;
     }
     out.push(l);
@@ -1204,7 +1269,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
   const extra: Array<[ActName, string, string]> = [
     ["viewlog", "view the log in $EDITOR", "o"],
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
-    ["filter", s.logFilter === "chat" ? "event log: show everything" : "event log: chat only", "v"],
+    ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],
     ["fullscreen", "fullscreen the event log", "⇥"],
     ["theme", s.theme === "dark" ? "switch to light theme" : "switch to dark theme", "t"],
     ["restart", "restart the daemon", "R"],

@@ -64,7 +64,7 @@ Consequences:
 | `e`  | rename the session                                                         |
 | `y`  | copy the session's branch name to the clipboard                            |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only     |
-| `v`  | event log: everything ↔ chat only                                          |
+| `v`  | event log: cycle chat only → chat + tool calls → everything                |
 | `t`  | toggle dark / light theme                                                  |
 
 ### Structural (`Shift`)

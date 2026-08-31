@@ -358,7 +358,7 @@ test("the event log always shows just the selected session", () => {
   );
 });
 
-test("chat view collapses tool traffic and thinking; full view keeps everything", () => {
+test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls but drops results; everything keeps it all", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
   s = reduce(s, { t: "select", id: "a" });
@@ -382,7 +382,18 @@ test("chat view collapses tool traffic and thinking; full view keeps everything"
     ["let me look", "thought for 3s", "2 tool calls", "done"],
   );
 
-  s = reduce(s, { t: "logFilter", value: "full" });
+  s = reduce(s, { t: "logFilter", value: "chat_and_tools" });
+  const chatAndTools = visibleLog(s);
+  assert.deepEqual(
+    chatAndTools.map((l) => l.kind),
+    ["assistant_text", "thinking", "tool_call", "tool_call", "assistant_text"],
+  );
+  assert.deepEqual(
+    chatAndTools.map((l) => l.text),
+    ["let me look", "thought for 3s", "Bash", "Grep", "done"],
+  );
+
+  s = reduce(s, { t: "logFilter", value: "everything" });
   assert.equal(visibleLog(s).length, 8);
 });
 

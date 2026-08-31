@@ -34,6 +34,7 @@ import {
 import {
   allowedActs,
   commandsFor,
+  cycleLogFilter,
   defaultModeOf,
   defaultModelOf,
   defaultProviderId,
@@ -468,7 +469,7 @@ export const mkFleetHandle = ({
       });
     }
     if (name === "filter") {
-      return void dispatch({ t: "logFilter", value: state.logFilter === "chat" ? "full" : "chat" });
+      return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
     }
     if (name === "find") {
       return void dispatch({

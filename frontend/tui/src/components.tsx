@@ -503,7 +503,8 @@ export const EventLog = ({
       <Box justifyContent="space-between">
         <Text color={C.dim}>{full ? "EVENTS · fullscreen" : "EVENTS"}</Text>
         <Text color={C.faint}>
-          {(state.logFilter === "chat" ? "chat" : "full") + (off > 0 ? `  ·  ↑${above} more` : "")}
+          {(state.logFilter === "everything" ? "full" : state.logFilter === "chat_and_tools" ? "chat+tools" : "chat") +
+            (off > 0 ? `  ·  ↑${above} more` : "")}
         </Text>
       </Box>
       {shown.length === 0 ? (
