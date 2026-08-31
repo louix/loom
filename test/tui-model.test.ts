@@ -137,6 +137,16 @@ test("sortSessions: status group first, then most-recently-updated", () => {
   );
 });
 
+test("sortSessions: starting never outranks running, even when more recent", () => {
+  const running = snap({ id: "run", status: "running", updatedAt: 10 });
+  const starting = snap({ id: "start", status: "starting", updatedAt: 99 });
+  assert.deepEqual(
+    sortSessions([starting, running]).map((x) => x.id),
+    ["run", "start"],
+    "flat nav order must match the rendered section order (running above starting)",
+  );
+});
+
 test("move clamps at both ends of the sorted list", () => {
   const list = [
     snap({ id: "a", status: "awaiting_input" }),

@@ -766,11 +766,11 @@ const pruneByLive = <T>(
 const RANK: Record<SessionStatus, number> = {
   awaiting_input: 0,
   running: 1,
-  starting: 1,
-  interrupted: 2,
-  idle: 3,
-  error: 4,
-  done: 5,
+  starting: 2,
+  interrupted: 3,
+  idle: 4,
+  error: 5,
+  done: 6,
 };
 
 /** Fleet-view order: by status group, then most-recently-active first. */
