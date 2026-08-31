@@ -53,6 +53,8 @@ export interface LoomPaths {
   db: string;
   /** Rolling daemon log. */
   log: string;
+  /** TUI client log — one client per repo, truncated each launch. */
+  tuiLog: string;
   /** `<repoRoot>/.loom/config.toml` */
   config: string;
   /** Directory holding one git worktree per session. */
@@ -68,6 +70,7 @@ export const loomPaths = (repoRoot: string): LoomPaths => {
     pid: join(dir, "daemon.pid"),
     db: join(dir, "loom.db"),
     log: join(dir, "daemon.log"),
+    tuiLog: join(dir, "tui.log"),
     config: join(dir, "config.toml"),
     trees: join(dir, "trees"),
   };

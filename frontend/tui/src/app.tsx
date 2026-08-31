@@ -26,10 +26,13 @@ import {
 
 export const App = ({
   client,
+  logs,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
 }: {
   client: LoomClient;
+  /** Daemon + TUI log paths for the "view logs" palette command. */
+  logs?: { daemon: string; tui: string };
   openEditor?: EditorHandoff;
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
@@ -49,6 +52,7 @@ export const App = ({
           return () => void stdout.off("resize", fn);
         },
       },
+      ...(logs ? { logs } : {}),
       ...(openEditorOverride ? { openEditorOverride } : {}),
     }),
   );

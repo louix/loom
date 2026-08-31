@@ -18,7 +18,11 @@ import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
 
-export const runTui = async (client: LoomClient): Promise<void> => {
+export const runTui = async (
+  client: LoomClient,
+  /** Absolute paths to the daemon + TUI log files, for the "view logs" command. */
+  logs?: { daemon: string; tui: string },
+): Promise<void> => {
   // Ask the terminal to bracket pastes so a multi-line paste arrives as one
   // chunk instead of a stream of Enter-looking carriage returns. Also turn on
   // SGR mouse reporting so the wheel arrives as its own escape sequence —
@@ -26,7 +30,7 @@ export const runTui = async (client: LoomClient): Promise<void> => {
   // the alt screen, which App's keymap reads as fleet-selection movement.
   if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
-  const instance = render(<App client={client} />, {
+  const instance = render(<App client={client} {...(logs ? { logs } : {})} />, {
     exitOnCtrlC: false,
     alternateScreen: true,
   });

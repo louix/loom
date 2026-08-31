@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { render } from "ink";
@@ -57,10 +60,10 @@ const waitFor = async (stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<v
   assert.match(stdout.last, re);
 };
 
-const mount = (client: LoomClient) => {
+const mount = (client: LoomClient, extra: Partial<Parameters<typeof App>[0]> = {}) => {
   const stdout = new FakeOut();
   const stdin = new FakeIn();
-  const app = render(createElement(App, { client }), {
+  const app = render(createElement(App, { client, ...extra }), {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
     debug: true,
@@ -392,6 +395,60 @@ test("Space opens the command palette; a filtered pick runs the action", async (
     await delay(200);
     const after = await client.request<SessionSnapshot>("session.get", { id: s.id });
     assert.equal(after.title, "palette win");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("the palette's 'view logs' opens the daemon + TUI logs in $EDITOR", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  await client.request("session.createStub", { prompt: "x", status: "idle", provider: "fake" });
+
+  const dir = mkdtempSync(join(tmpdir(), "loom-logtest-"));
+  const daemonLog = join(dir, "daemon.log");
+  const tuiLog = join(dir, "tui.log");
+  writeFileSync(daemonLog, '{"scope":"daemon","msg":"daemon line"}\n');
+  writeFileSync(tuiLog, '{"scope":"tui","msg":"tui line"}\n');
+
+  const calls: Array<{
+    text: string;
+    ext: string | undefined;
+    asideName: string | undefined;
+    asideBody: string | undefined;
+  }> = [];
+  const openEditor = async (
+    text: string,
+    opts?: { ext?: string; aside?: { name: string; body: string } },
+  ): Promise<string | null> => {
+    calls.push({
+      text,
+      ext: opts?.ext,
+      asideName: opts?.aside?.name,
+      asideBody: opts?.aside?.body,
+    });
+    return null;
+  };
+
+  const { stdin, app } = mount(client, { logs: { daemon: daemonLog, tui: tuiLog }, openEditor });
+  try {
+    await delay(160);
+    stdin.feed(" "); // leader
+    await delay(100);
+    stdin.feed("view logs");
+    await delay(80);
+    stdin.feed("\r");
+    await delay(120);
+
+    assert.equal(calls.length, 1, "openEditor was called once");
+    const [handoff] = calls;
+    assert.ok(handoff);
+    assert.match(handoff.text, /daemon line/);
+    assert.equal(handoff.ext, "log");
+    assert.equal(handoff.asideName, "tui.log");
+    assert.match(handoff.asideBody ?? "", /tui line/);
   } finally {
     app.unmount();
     await client.close();

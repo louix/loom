@@ -11,9 +11,11 @@
  * (restart latch, echo seq, backfill/drain bookkeeping) are plain closure
  * variables here.
  */
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
+import { makeLogger } from "@loom/core/logger";
 import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
@@ -58,6 +60,29 @@ import {
   type Pending,
   type TuiState,
 } from "./model.ts";
+
+/** How much of each log file the `logs` command pulls into `$EDITOR`. */
+const LOG_TAIL_BYTES = 256 * 1024;
+
+/** Last `maxBytes` of `path` as text, partial first line dropped. Never throws —
+ *  a missing / unreadable file comes back as a one-line note. */
+const tailFileSync = (path: string, maxBytes: number): string => {
+  let fd: number | null = null;
+  try {
+    const { size } = statSync(path);
+    if (size === 0) return `(${path} is empty)`;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(Math.min(size, maxBytes));
+    fd = openSync(path, "r");
+    const n = readSync(fd, buf, 0, buf.length, start);
+    const text = buf.subarray(0, n).toString("utf8");
+    return start > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+  } catch (e) {
+    return `(could not read ${path}: ${e instanceof Error ? e.message : String(e)})`;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+};
 
 const nextMode = (m: SessionMode): SessionMode =>
   SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
@@ -139,6 +164,8 @@ export interface FleetHandle {
 export interface MkFleetHandleInput {
   readonly client: LoomClient;
   readonly term: Term;
+  /** Daemon + TUI log paths for the "view logs" command; absent in tests. */
+  readonly logs?: { readonly daemon: string; readonly tui: string };
   /** Test seam: stands in for the real `$EDITOR` handoff. */
   readonly openEditorOverride?: EditorHandoff;
 }
@@ -205,8 +232,11 @@ const deriveView = (
 export const mkFleetHandle = ({
   client,
   term,
+  logs,
   openEditorOverride,
 }: MkFleetHandleInput): FleetHandle => {
+  // File-only (stderr is silenced upstream); absent in tests, where nothing logs.
+  const log = logs ? makeLogger("tui") : null;
   let state = initialState();
   let boot: Loadable<string, void> = loadableIdle;
   let tick = 0;
@@ -348,7 +378,9 @@ export const mkFleetHandle = ({
       });
     } catch (e) {
       saved = null;
-      note(e instanceof Error ? e.message : String(e), "bad");
+      const msg = e instanceof Error ? e.message : String(e);
+      log?.warn("editor handoff failed", { err: msg });
+      note(msg, "bad");
     }
     if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
     return saved;
@@ -384,6 +416,17 @@ export const mkFleetHandle = ({
     } else {
       await openEditor(logText(), { ext: "log" });
     }
+  };
+
+  /** Command palette: the tail of both process logs in `$EDITOR` — daemon.log
+   *  primary, tui.log alongside (read-only). */
+  const viewLogs = async (): Promise<void> => {
+    if (!logs) return note("logs aren't wired up in this session", "dim");
+    log?.info("view logs");
+    await openEditor(tailFileSync(logs.daemon, LOG_TAIL_BYTES), {
+      ext: "log",
+      aside: { name: "tui.log", body: tailFileSync(logs.tui, LOG_TAIL_BYTES) },
+    });
   };
 
   const copyToClipboard = (text: string, label: string): void => {
@@ -1001,6 +1044,8 @@ export const mkFleetHandle = ({
     switch (name) {
       case "viewlog":
         return void viewInEditor();
+      case "logs":
+        return void viewLogs();
       case "model":
         return void switchModel();
       case "fullscreen":
@@ -1332,6 +1377,11 @@ export const mkFleetHandle = ({
   };
 
   const effectStart = (): (() => void) => {
+    log?.info("start", {
+      ui: LOOM_VERSION,
+      daemon: client.daemonInfo?.version ?? null,
+      pid: client.daemonInfo?.pid ?? null,
+    });
     if (client.daemonInfo)
       dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
     refetch();
@@ -1339,8 +1389,12 @@ export const mkFleetHandle = ({
 
     const offs = [
       client.onPush((frame) => dispatch({ t: "push", frame })),
-      client.on("disconnect", () => dispatch({ t: "connection", value: "reconnecting" })),
+      client.on("disconnect", () => {
+        log?.warn("daemon disconnected");
+        dispatch({ t: "connection", value: "reconnecting" });
+      }),
       client.on("reconnect", () => {
+        log?.info("daemon reconnected");
         dispatch({ t: "connection", value: "live" });
         refetch();
         if (restarting) {
@@ -1349,8 +1403,14 @@ export const mkFleetHandle = ({
         }
         void reconcileVersion();
       }),
-      client.on("resync", () => refetch()),
-      client.on("close", () => dispatch({ t: "connection", value: "closed" })),
+      client.on("resync", () => {
+        log?.info("resync");
+        refetch();
+      }),
+      client.on("close", () => {
+        log?.warn("connection closed");
+        dispatch({ t: "connection", value: "closed" });
+      }),
       term.onResize(() => {
         dims = term.getSize();
         publish();
@@ -1393,7 +1453,9 @@ export const mkFleetHandle = ({
       (e: unknown) => {
         // Was a silent `.catch(() => {})` per request. A reconnect re-runs this;
         // `boot` flips back to `data` if the retry lands.
-        boot = loadableFailed(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        log?.error("boot reconcile failed", { err: msg });
+        boot = loadableFailed(msg);
         note("couldn't reach the daemon — will retry on reconnect", "bad");
         publish();
       },
@@ -1429,6 +1491,13 @@ export const mkFleetHandle = ({
       otherClients,
       liveSessions,
       alreadyHandled: versionRestartTried,
+    });
+    log?.info("version mismatch", {
+      daemon: dv,
+      ui: LOOM_VERSION,
+      otherClients,
+      liveSessions,
+      action,
     });
     if (action === "ok") return;
 

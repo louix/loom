@@ -1072,6 +1072,7 @@ export type ActName =
   | "delete"
   | "copybranch"
   | "viewlog"
+  | "logs"
   | "fullscreen"
   | "clearqueue"
   | "restart"
@@ -1185,6 +1186,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
   }
   const extra: Array<[ActName, string, string]> = [
     ["viewlog", "view the log in $EDITOR", "o"],
+    ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", s.logFilter === "chat" ? "event log: show everything" : "event log: chat only", "v"],
     ["fullscreen", "fullscreen the event log", "⇥"],
     ["restart", "restart the daemon", "R"],

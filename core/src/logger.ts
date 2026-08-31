@@ -6,6 +6,7 @@ const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 
 
 let threshold: number = ORDER.info;
 let fileSink: string | null = null;
+let stderrSink = true;
 
 export const setLogLevel = (level: LogLevel): void => {
   threshold = ORDER[level];
@@ -16,6 +17,12 @@ export const setLogFile = (path: string | null): void => {
   fileSink = path;
 };
 
+/** Silence the stderr sink — for a process that owns the screen (the TUI),
+ *  where a stray line corrupts the frame. The file sink still applies. */
+export const setLogStderr = (enabled: boolean): void => {
+  stderrSink = enabled;
+};
+
 const emit = (
   level: LogLevel,
   scope: string,
@@ -23,6 +30,7 @@ const emit = (
   fields?: Record<string, unknown>,
 ): void => {
   if (ORDER[level] < threshold) return;
+  if (!stderrSink && !fileSink) return;
   const line = JSON.stringify({
     t: new Date().toISOString(),
     level,
@@ -30,7 +38,7 @@ const emit = (
     msg,
     ...fields,
   });
-  process.stderr.write(line + "\n");
+  if (stderrSink) process.stderr.write(line + "\n");
   if (fileSink) {
     try {
       appendFileSync(fileSink, line + "\n");

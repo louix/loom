@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { findRepoRoot, loomPaths } from "@loom/core/paths";
+import { writeFileSync } from "node:fs";
+import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
+import { setLogFile, setLogStderr } from "@loom/core/logger";
 import { LoomClient } from "@loom/client";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
@@ -155,8 +157,23 @@ const main = async (): Promise<void> => {
     // unless a developer has asked for dev explicitly. Must run before the import
     // below, which is the first thing to pull in React.
     process.env["NODE_ENV"] ??= "production";
+
+    // The TUI owns the screen, so its logs go to a file only — a fresh
+    // <repo>/.loom/tui.log per launch, in the daemon's own .loom/ so both logs
+    // sit together. Never stderr: a stray line would corrupt the frame.
+    const logRoot = client.daemonInfo?.repoRoot ?? repoRoot;
+    const paths = loomPaths(logRoot);
+    ensureLoomDir(paths);
+    try {
+      writeFileSync(paths.tuiLog, "");
+    } catch {
+      /* best effort — logging must never block the UI */
+    }
+    setLogStderr(false);
+    setLogFile(paths.tuiLog);
+
     const { runTui } = await import("@loom/tui/run");
-    await runTui(client);
+    await runTui(client, { daemon: paths.log, tui: paths.tuiLog });
     return;
   }
 
