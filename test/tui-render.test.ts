@@ -219,6 +219,28 @@ test("⇧⇥ cycles the mode and ⌥m opens the model picker on the selected ses
   }
 });
 
+test("⌥t shows a dim notice when the session's model has no thinking-effort control", async () => {
+  const { connect, cleanup } = await harness({ config: OAI_CFG });
+  const client = await connect();
+  await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "oai",
+    model: "m1",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(180);
+    stdin.feed("\x1bt"); // ⌥t — no "oai" model advertises thinking-effort support
+    await delay(140);
+    assert.match(stdout.last, /oai\/m1 has no thinking-effort control/i);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send prompt", async () => {
   const { connect, cleanup } = await harness({ config: OAI_CFG });
   const client = await connect();
