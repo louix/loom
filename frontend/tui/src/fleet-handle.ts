@@ -39,6 +39,7 @@ import {
   defaultModelOf,
   defaultProviderId,
   effortPickItems,
+  escapeTarget,
   findPickItems,
   firstPerm,
   initialState,
@@ -783,7 +784,7 @@ export const mkFleetHandle = ({
         const providerId = p.ctx?.provider ?? "claude";
         if (modelSupportsEffort(state, providerId, cur.id)) {
           const label = providerInfo(state, providerId)?.tag ?? providerId;
-          return void openEffortStep(providerId, cur.id, label, p.ctx);
+          return void openEffortStep(providerId, cur.id, label, { ...p.ctx, viaModelStep: true });
         }
         return void finalizeModelChoice(p.ctx, cur.id);
       }
@@ -842,69 +843,9 @@ export const mkFleetHandle = ({
     openModelStep(only, provs[0]?.tag || only, draft);
   };
 
-  /** `Esc` inside a picker: step back one level of the provider → model →
-   *  prompt wizard instead of discarding the whole detour (and any draft text
-   *  typed before it). Kinds with no "back" step — `find`, `undo`, `command`,
-   *  or a bare live `⌥m` switch with nothing to return to — just close. */
-  const escapePicker = (p: PickerState): void => {
-    if (p.kind === "provider") {
-      return void dispatch({
-        t: "openPrompt",
-        prompt: makePrompt({
-          kind: "new",
-          sessionId: null,
-          label: "new session",
-          text: p.ctx?.draft ?? "",
-        }),
-      });
-    }
-    if (p.kind === "model" && !p.ctx?.liveSessionId) {
-      const draft = p.ctx?.draft ?? "";
-      if (state.providers.length > 1) {
-        return void dispatch({
-          t: "openPicker",
-          picker: makePicker({
-            kind: "provider",
-            title: "provider",
-            items: providerPickItems(state),
-            ctx: { draft },
-          }),
-        });
-      }
-      return void dispatch({
-        t: "openPrompt",
-        prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text: draft }),
-      });
-    }
-    if (p.kind === "model" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
-      return void dispatch({
-        t: "openPrompt",
-        prompt: makePrompt({
-          kind: "send",
-          sessionId: p.ctx.reopenSend,
-          label: "send",
-          ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
-        }),
-      });
-    }
-    // `effort` always followed a `model` step (chosen or, for a bare ⌥t, the
-    // session's current one) — step back to it rather than closing outright.
-    if (p.kind === "effort") {
-      const providerId = p.ctx?.provider ?? "claude";
-      const label = providerInfo(state, providerId)?.tag ?? providerId;
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({
-          kind: "model",
-          title: `model · ${label}`,
-          items: modelPickItems(state, providerId),
-          emptyText: modelPickEmptyText(providerId),
-          ctx: { ...p.ctx, provider: providerId },
-        }),
-      });
-    }
-    return void dispatch({ t: "closePicker" });
-  };
+  /** `Esc` inside a picker — the step-back logic is pure (see
+   *  {@link escapeTarget}); this just dispatches its result. */
+  const escapePicker = (p: PickerState): void => dispatch(escapeTarget(p, state));
 
   /** Open a live model switcher (`⌥m`): the selected session, or an explicit
    *  one. From a `send` prompt, pass `draft` so the picker drops you back. */

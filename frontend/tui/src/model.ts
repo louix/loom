@@ -181,13 +181,18 @@ export interface PickerState {
   /** Carried context: provider id from the provider step; `model` id from the
    *  model step, for an `effort` step that follows it; `liveSessionId` for a
    *  live `⌥m` / `⌥t` switch; `draft` restores a half-typed prompt after the
-   *  detour; `reopenSend` returns to that session's send prompt afterwards. */
+   *  detour; `reopenSend` returns to that session's send prompt afterwards.
+   *  `viaModelStep` marks an `effort` step reached by picking a model that
+   *  takes one (⌥p wizard, or ⌥m onto such a model) — `Esc` there steps back
+   *  to that model list. A bare ⌥t skips straight to `effort` with no model
+   *  step to return to, so `Esc` closes (or restores the prompt) instead. */
   ctx?: {
     provider?: string;
     model?: string;
     liveSessionId?: string;
     draft?: string;
     reopenSend?: string;
+    viaModelStep?: boolean;
   };
 }
 
@@ -1183,6 +1188,101 @@ export const effortPickItems = (s: TuiState, providerId: string, modelId: string
   const choice = providerInfo(s, providerId)?.modelChoices?.find((c) => c.id === modelId);
   const levels = choice?.effortLevels?.length ? choice.effortLevels : DEFAULT_EFFORT_LEVELS;
   return levels.map((lvl) => ({ id: lvl, label: lvl }));
+};
+
+/**
+ * `Esc` inside a picker: step back one level of the provider → model →
+ * (optional) effort → prompt wizard instead of discarding the whole detour
+ * (and any draft text typed before it). Kinds with no "back" step — `find`,
+ * `undo`, `command`, or a bare live `⌥m` / `⌥t` switch with nothing to
+ * return to — just close.
+ *
+ * An `effort` step reached by picking a model that takes one (⌥p wizard, or
+ * ⌥m onto such a model — `ctx.viaModelStep`) steps back to that model list,
+ * regardless of whether it's also a live switch. A bare `⌥t` skips straight
+ * to `effort` with no model step behind it, so it falls back to the same
+ * `reopenSend` / close / restore-the-prompt handling `model` uses for a bare
+ * `⌥m`.
+ */
+export const escapeTarget = (p: PickerState, s: TuiState): Action => {
+  if (p.kind === "provider") {
+    return {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "new",
+        sessionId: null,
+        label: "new session",
+        text: p.ctx?.draft ?? "",
+      }),
+    };
+  }
+  if (p.kind === "model" && !p.ctx?.liveSessionId) {
+    const draft = p.ctx?.draft ?? "";
+    if (s.providers.length > 1) {
+      return {
+        t: "openPicker",
+        picker: makePicker({
+          kind: "provider",
+          title: "provider",
+          items: providerPickItems(s),
+          ctx: { draft },
+        }),
+      };
+    }
+    return {
+      t: "openPrompt",
+      prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text: draft }),
+    };
+  }
+  if (p.kind === "model" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
+    return {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "send",
+        sessionId: p.ctx.reopenSend,
+        label: "send",
+        ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
+      }),
+    };
+  }
+  if (p.kind === "effort" && p.ctx?.viaModelStep) {
+    const providerId = p.ctx?.provider ?? "claude";
+    const label = providerInfo(s, providerId)?.tag ?? providerId;
+    return {
+      t: "openPicker",
+      picker: makePicker({
+        kind: "model",
+        title: `model · ${label}`,
+        items: modelPickItems(s, providerId),
+        emptyText: modelPickEmptyText(providerId),
+        ctx: { ...p.ctx, provider: providerId },
+      }),
+    };
+  }
+  if (p.kind === "effort" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
+    return {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "send",
+        sessionId: p.ctx.reopenSend,
+        label: "send",
+        ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
+      }),
+    };
+  }
+  if (p.kind === "effort" && !p.ctx?.liveSessionId) {
+    return {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "new",
+        sessionId: null,
+        label: "new session",
+        ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
+        text: p.ctx?.draft ?? "",
+      }),
+    };
+  }
+  return { t: "closePicker" };
 };
 
 /** Sessions as find targets — title + this session's log text folded into the match. */

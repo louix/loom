@@ -13,6 +13,7 @@ import {
   defaultModelOf,
   defaultProviderId,
   effortPickItems,
+  escapeTarget,
   findPickItems,
   footerHints,
   formatEvent,
@@ -1436,6 +1437,64 @@ test("a live model picker closes if its session is removed", () => {
   } as never);
   assert.equal(s.picker, null);
   assert.equal(s.mode, "browse");
+});
+
+test("escapeTarget: an effort step reached via the model wizard steps back to it; a bare ⌥t doesn't", () => {
+  const s = withProviders(); // claude/claude-opus-5 has supportsEffort: true
+
+  // Reached by picking a model that takes one (⌥p wizard, or ⌥m onto such a
+  // model) — Esc steps back to the model list, live switch or not.
+  const viaWizard = makePicker({
+    kind: "effort",
+    title: "effort",
+    items: [],
+    ctx: { provider: "claude", model: "claude-opus-5", viaModelStep: true },
+  });
+  const backToModel = escapeTarget(viaWizard, s);
+  assert.equal(backToModel.t, "openPicker");
+  assert.equal(backToModel.t === "openPicker" && backToModel.picker.kind, "model");
+
+  // A bare ⌥t on a live session skipped the model step entirely — Esc must
+  // not invent one to go back to; with nothing else to return to, it closes.
+  const bareLive = makePicker({
+    kind: "effort",
+    title: "effort",
+    items: [],
+    ctx: { provider: "claude", model: "claude-opus-5", liveSessionId: "s1" },
+  });
+  assert.deepEqual(escapeTarget(bareLive, s), { t: "closePicker" });
+
+  // A bare ⌥t from inside a `send` prompt — no model step, but reopens that
+  // prompt with the draft, same as a bare ⌥m would.
+  const bareSend = makePicker({
+    kind: "effort",
+    title: "effort",
+    items: [],
+    ctx: {
+      provider: "claude",
+      model: "claude-opus-5",
+      liveSessionId: "s1",
+      reopenSend: "s1",
+      draft: "half-typed",
+    },
+  });
+  const reopened = escapeTarget(bareSend, s);
+  assert.equal(reopened.t, "openPrompt");
+  assert.equal(reopened.t === "openPrompt" && reopened.prompt.kind, "send");
+  assert.equal(reopened.t === "openPrompt" && reopened.prompt.buffer.text, "half-typed");
+
+  // A bare ⌥t from the `new` prompt — restores it with the draft and provider.
+  const bareNew = makePicker({
+    kind: "effort",
+    title: "effort",
+    items: [],
+    ctx: { provider: "claude", model: "claude-opus-5", draft: "hi" },
+  });
+  const restored = escapeTarget(bareNew, s);
+  assert.equal(restored.t, "openPrompt");
+  assert.equal(restored.t === "openPrompt" && restored.prompt.kind, "new");
+  assert.equal(restored.t === "openPrompt" && restored.prompt.provider, "claude");
+  assert.equal(restored.t === "openPrompt" && restored.prompt.buffer.text, "hi");
 });
 
 test("makePrompt carries provider + model for the ⌃P chooser flow", () => {
