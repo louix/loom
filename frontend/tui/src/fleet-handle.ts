@@ -47,6 +47,7 @@ import {
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
+  parseAskUserQuestions,
   pendingFor,
   pickerCurrent,
   providerInfo,
@@ -59,12 +60,24 @@ import {
   versionMismatchAction,
   type ActName,
   type Action,
+  type AskUserQuestionItem,
   type ConfirmState,
   type LogLine,
   type Pending,
   type PickerState,
   type TuiState,
 } from "./model.ts";
+
+/** Footer label for the `answerQuestion` prompt: the current question's short
+ *  `header` chip, plus progress when the `AskUserQuestion` call asked more
+ *  than one question. */
+const questionPromptLabel = (qs: AskUserQuestionItem[], answered: number): string => {
+  const cur = qs[0];
+  const tag = cur?.header || "answer";
+  return qs.length > 1 || answered > 0
+    ? `answer ${answered + 1}/${answered + qs.length}: ${tag}`
+    : `answer: ${tag}`;
+};
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -548,12 +561,35 @@ export const mkFleetHandle = ({
         });
       }
       case "answer": {
-        const requestId = pendingFor(state, s.id).question;
-        if (!requestId) return note("no question pending", "dim");
-        return void dispatch({
-          t: "openPrompt",
-          prompt: makePrompt({ kind: "answer", sessionId: s.id, requestId, label: "answer" }),
-        });
+        const pend = pendingFor(state, s.id);
+        if (pend.question !== undefined) {
+          return void dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({
+              kind: "answer",
+              sessionId: s.id,
+              requestId: pend.question,
+              label: "answer",
+            }),
+          });
+        }
+        const fp = firstPerm(pend);
+        if (fp?.tool === "AskUserQuestion") {
+          const qs = parseAskUserQuestions(fp.input);
+          if (qs.length === 0) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
+          return void dispatch({
+            t: "openPrompt",
+            prompt: makePrompt({
+              kind: "answerQuestion",
+              sessionId: s.id,
+              requestId: fp.id,
+              label: questionPromptLabel(qs, 0),
+              qaQueue: qs,
+              qaAnswers: {},
+            }),
+          });
+        }
+        return note("no question pending", "dim");
       }
       case "send":
         return void dispatch({
@@ -1014,6 +1050,42 @@ export const mkFleetHandle = ({
           });
           return r.alreadyResolved ? "already answered" : "answered";
         }
+        case "answerQuestion": {
+          if (!p.sessionId || !p.requestId || !p.qaQueue || p.qaQueue.length === 0) return "";
+          const [current, ...rest] = p.qaQueue;
+          const answers = { ...(p.qaAnswers ?? {}), [current!.question]: text };
+          if (rest.length > 0) {
+            dispatch({
+              t: "openPrompt",
+              prompt: makePrompt({
+                kind: "answerQuestion",
+                sessionId: p.sessionId,
+                requestId: p.requestId,
+                label: questionPromptLabel(rest, Object.keys(answers).length),
+                qaQueue: rest,
+                qaAnswers: answers,
+              }),
+            });
+            return "";
+          }
+          const fp = firstPerm(pendingFor(state, p.sessionId));
+          const baseInput =
+            fp && fp.input && typeof fp.input === "object"
+              ? (fp.input as Record<string, unknown>)
+              : {};
+          const r = await client.request<{ alreadyResolved: boolean }>(
+            "session.respondPermission",
+            {
+              id: p.sessionId,
+              requestId: p.requestId,
+              decision: "allow",
+              updatedInput: { ...baseInput, answers },
+              by,
+            },
+          );
+          dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
+          return r.alreadyResolved ? `${p.requestId} already resolved` : "answered";
+        }
         case "deny": {
           if (!p.sessionId || !p.requestId) return "";
           const r = await client.request<{ alreadyResolved: boolean }>(
@@ -1374,6 +1446,22 @@ export const mkFleetHandle = ({
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
+          // Cancelling out of an AskUserQuestion answer denies the tool call
+          // outright, rather than leaving it silently unanswered — the model
+          // sees a normal deny and can ask what you want instead.
+          if (p.kind === "answerQuestion" && p.sessionId && p.requestId) {
+            const sessionId = p.sessionId;
+            const requestId = p.requestId;
+            perform(async () => {
+              const r = await client.request<{ alreadyResolved: boolean }>(
+                "session.respondPermission",
+                { id: sessionId, requestId, decision: "deny", by: client.clientId },
+              );
+              dispatch({ t: "resolvePerm", sessionId, id: requestId });
+              return r.alreadyResolved ? "already resolved" : "cancelled";
+            });
+            return void dispatch({ t: "closePrompt" });
+          }
           // Backing out of the plan "discuss" sub-prompt returns to the plan
           // overlay — the daemon is still blocked on the decision.
           if (p.kind === "discuss" && p.sessionId && p.requestId && state.plan) {

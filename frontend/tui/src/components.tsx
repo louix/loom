@@ -14,6 +14,7 @@ import {
   clock,
   footerHints,
   groupsOf,
+  parseAskUserQuestions,
   pickerVisible,
   providerInfo,
   queueFor,
@@ -82,6 +83,7 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   compact: "what to keep in focus — blank compacts the whole history",
   send: "type a message…",
   answer: "type a message…",
+  answerQuestion: "type your answer — e.g. \"a\" or \"a, but …\"",
 };
 
 /** Context-meter colour by fill fraction. */
@@ -678,6 +680,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   new: "start",
   send: "send",
   answer: "answer",
+  answerQuestion: "answer",
   deny: "deny",
   title: "rename",
   discuss: "send",
@@ -841,6 +844,25 @@ export const Confirm = ({
 /** Height reserved for {@link RequestPanel} in the layout. */
 export const REQUEST_PANEL_ROWS = 8;
 
+/** `AskUserQuestion`'s `{questions:[{question,options}]}` rendered as lettered
+ *  choices — a) b) c) … — instead of the generic raw-JSON dump. Falls back to
+ *  that dump if the model's call didn't match the expected shape. */
+const describeAskUserQuestion = (input: unknown, w: number): string[] => {
+  const qs = parseAskUserQuestions(input);
+  if (qs.length === 0) return describeRequest(input, w);
+  const lines: string[] = [];
+  qs.forEach((q, qi) => {
+    const prefix = qs.length > 1 ? `${qi + 1}. ` : "";
+    lines.push(...wrapText(`${prefix}${q.question}`, w));
+    q.options.forEach((opt, oi) => {
+      const letter = String.fromCharCode(97 + oi);
+      const desc = opt.description ? ` — ${opt.description}` : "";
+      lines.push(...wrapText(`  ${letter}) ${opt.label}${desc}`, w));
+    });
+  });
+  return lines.slice(0, 5);
+};
+
 const describeRequest = (input: unknown, w: number): string[] => {
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
@@ -922,14 +944,19 @@ export const RequestPanel = ({
   if (perms.length > 0) {
     const p0 = perms[0]!;
     const more = perms.length > 1 ? ` (1 of ${perms.length})` : "";
+    const isQuestion = p0.tool === "AskUserQuestion";
     return box(
-      `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
-      describeRequest(p0.input, w).map((l, i) => (
-        <Text key={i} color={C.text} wrap="truncate-end">
-          {l}
-        </Text>
-      )),
-      `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
+      isQuestion ? `? QUESTION${more}` : `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
+      (isQuestion ? describeAskUserQuestion(p0.input, w) : describeRequest(p0.input, w)).map(
+        (l, i) => (
+          <Text key={i} color={C.text} wrap="truncate-end">
+            {l}
+          </Text>
+        ),
+      ),
+      isQuestion
+        ? `a answer  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`
+        : `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
     );
   }
   return null;

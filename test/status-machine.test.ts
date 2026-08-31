@@ -83,6 +83,16 @@ test("permission_request → awaiting_input/permission (reason returned even whe
   );
 });
 
+test("permission_request for AskUserQuestion → awaiting_input/user_question", () => {
+  assert.deepEqual(
+    deriveStatus(
+      "running",
+      ev({ type: "permission_request", id: "p1", tool: "AskUserQuestion", input: {} }),
+    ),
+    { status: "awaiting_input", reason: "user_question" },
+  );
+});
+
 test("plan_review → awaiting_input/plan_review", () => {
   assert.deepEqual(
     deriveStatus("running", ev({ type: "plan_review", id: "pr1", plan: "do X then Y" })),

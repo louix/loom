@@ -665,6 +665,12 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
     [...acts({ status: "awaiting_input", awaitReason: "plan_review" })].sort(),
     ["planreview", "interrupt", ...G].sort(),
   );
+  // AskUserQuestion is a real permission gate — unlike Loom's own ask_user,
+  // denying it is meaningful, so both answer and deny are offered.
+  assert.deepEqual(
+    [...acts({ status: "awaiting_input", awaitReason: "user_question" })].sort(),
+    ["answer", "deny", "interrupt", ...G].sort(),
+  );
   assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
   // a stopped session: `send` (the daemon revives it) — no separate "resume"

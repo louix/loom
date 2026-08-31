@@ -25,7 +25,13 @@ export const deriveStatus = (current: SessionStatus, ev: HarnessEvent): Derived 
     // session can move permission → question → plan_review without a `running`
     // event in between, and #set propagates an awaiting_input reason change.
     case "permission_request":
-      return { status: "awaiting_input", reason: "permission" };
+      // The SDK's own AskUserQuestion tool is a multiple-choice prompt, not a
+      // yes/no gate — flag it so the TUI offers "answer" instead of
+      // "approve/deny" (spec: don't let it look like a plain finished turn).
+      return {
+        status: "awaiting_input",
+        reason: ev.tool === "AskUserQuestion" ? "user_question" : "permission",
+      };
 
     case "question":
       // The agent called `ask_user` and is blocked on a human answer.

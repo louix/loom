@@ -88,7 +88,15 @@ export interface Notice {
   at: number;
 }
 
-export type PromptKind = "send" | "answer" | "deny" | "new" | "title" | "discuss" | "compact";
+export type PromptKind =
+  | "send"
+  | "answer"
+  | "answerQuestion"
+  | "deny"
+  | "new"
+  | "title"
+  | "discuss"
+  | "compact";
 
 export interface PromptState {
   kind: PromptKind;
@@ -109,6 +117,12 @@ export interface PromptState {
   histIdx: number;
   /** Live buffer text, stashed while browsing history. */
   draft: string;
+  /** `answerQuestion` only: remaining unanswered `AskUserQuestion` questions —
+   *  index 0 is the one this prompt is currently collecting an answer for. */
+  qaQueue?: AskUserQuestionItem[];
+  /** `answerQuestion` only: answers already collected for earlier questions in
+   *  this same `AskUserQuestion` call, keyed by question text. */
+  qaAnswers?: Record<string, string>;
 }
 
 export const makePrompt = (init: {
@@ -122,6 +136,8 @@ export const makePrompt = (init: {
   provider?: string;
   model?: string;
   effort?: string;
+  qaQueue?: AskUserQuestionItem[];
+  qaAnswers?: Record<string, string>;
 }): PromptState => {
   return {
     kind: init.kind,
@@ -132,6 +148,8 @@ export const makePrompt = (init: {
     ...(init.provider ? { provider: init.provider } : {}),
     ...(init.model ? { model: init.model } : {}),
     ...(init.effort ? { effort: init.effort } : {}),
+    ...(init.qaQueue ? { qaQueue: init.qaQueue } : {}),
+    ...(init.qaAnswers ? { qaAnswers: init.qaAnswers } : {}),
     buffer: buffer(init.text ?? ""),
     histIdx: 0,
     draft: "",
@@ -254,6 +272,45 @@ export interface Pending {
 /** The permission request the UI should surface next (FIFO). */
 export const firstPerm = (p: Pending): PendingPerm | undefined => {
   return p.permissions?.[0];
+};
+
+/** One question from an `AskUserQuestion` tool call, narrowed for display. */
+export interface AskUserQuestionItem {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description?: string }>;
+}
+
+/** Parse an `AskUserQuestion` tool call's `input.questions` defensively — the
+ *  shape comes from the model, not from Loom, so nothing here is guaranteed. */
+export const parseAskUserQuestions = (input: unknown): AskUserQuestionItem[] => {
+  if (!input || typeof input !== "object") return [];
+  const qs = (input as Record<string, unknown>)["questions"];
+  if (!Array.isArray(qs)) return [];
+  const out: AskUserQuestionItem[] = [];
+  for (const q of qs) {
+    if (!q || typeof q !== "object") continue;
+    const o = q as Record<string, unknown>;
+    if (typeof o["question"] !== "string" || o["question"] === "") continue;
+    const options: AskUserQuestionItem["options"] = [];
+    if (Array.isArray(o["options"])) {
+      for (const opt of o["options"]) {
+        if (!opt || typeof opt !== "object") continue;
+        const oo = opt as Record<string, unknown>;
+        if (typeof oo["label"] !== "string" || oo["label"] === "") continue;
+        options.push({
+          label: oo["label"],
+          ...(typeof oo["description"] === "string" ? { description: oo["description"] } : {}),
+        });
+      }
+    }
+    out.push({
+      question: o["question"],
+      header: typeof o["header"] === "string" ? o["header"] : "",
+      options,
+    });
+  }
+  return out;
 };
 
 export interface TuiState {
@@ -1223,6 +1280,12 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     if (status === "awaiting_input") {
       if (awaitReason === "question") {
         local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
+      } else if (awaitReason === "user_question") {
+        // AskUserQuestion is a real permission gate underneath, so — unlike
+        // Loom's own ask_user — denying it is a meaningful choice, not just
+        // "come back later".
+        local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
+        local.push({ keys: "d", label: "deny", act: "deny", footer: true });
       } else if (awaitReason === "plan_review") {
         local.push({ keys: "⏎", label: "review plan", act: "planreview", footer: true });
       } else {
