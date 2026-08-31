@@ -48,6 +48,7 @@ import {
   isSessionMode,
   normalizeSessionMode,
   type CreateSessionOptions,
+  type EffortLevel,
   type McpServerHandle,
   type PermissionDecision,
   type PlanDecision,
@@ -517,6 +518,8 @@ export class Daemon {
         id: m.id,
         label: m.label || m.id,
         ...(m.context ? { context: m.context } : {}),
+        ...(m.supportsEffort ? { supportsEffort: true } : {}),
+        ...(m.effortLevels && m.effortLevels.length > 0 ? { effortLevels: m.effortLevels } : {}),
       }));
       this.config.providers.claude.models = this.#claudeChoices.map((c) => c.id);
       this.#log.info("claude models discovered", { count: models.length });
@@ -544,6 +547,7 @@ export class Daemon {
         models: claude.models.length ? claude.models : claudeModelPin,
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
         defaultModel: this.#defaultModelFor("claude"),
+        defaultEffort: this.#defaultEffortFor("claude"),
         defaultMode: mode,
         tag: "claude",
         color: "",
@@ -556,6 +560,7 @@ export class Daemon {
         id,
         models: p.models,
         defaultModel: this.#defaultModelFor(id),
+        defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
         tag: p.tag || id,
         color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
@@ -608,6 +613,14 @@ export class Daemon {
     return p.model || p.models[0] || "";
   }
 
+  /** The effort level a new session on `providerId` gets when none is chosen —
+   *  the last one used there, remembered across restarts. Unlike models, an
+   *  effort level isn't tied to a provider-reported catalog, so there's no
+   *  "still valid" check to make. */
+  #defaultEffortFor(providerId: string): string {
+    return this.#providerDefaults.effort(providerId) || "";
+  }
+
   /**
    * Re-instantiate the adapter for a session that isn't currently live (a
    * daemon restart left it `interrupted`, or its last turn ended). Caller must
@@ -648,6 +661,7 @@ export class Daemon {
         mode,
         mcpServers: this.#mcpHandles(),
         ...(model ? { model } : {}),
+        ...(row.effort ? { effort: row.effort as EffortLevel } : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1008,6 +1022,8 @@ export class Daemon {
         }
       }
       const model = explicitModel ?? (this.#defaultModelFor(providerId) || null);
+      const explicitEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : null;
+      const effort = explicitEffort ?? (this.#defaultEffortFor(providerId) || null);
       if (aisdkProfile && !model) {
         throw new RpcError(
           "bad_request",
@@ -1045,6 +1061,7 @@ export class Daemon {
         id,
         provider: providerId,
         model,
+        effort,
         mode,
         parentId,
         title: prompt.slice(0, 200),
@@ -1059,6 +1076,7 @@ export class Daemon {
       if (model && (aisdkProfile || providerId === "claude")) {
         this.#providerDefaults.remember(providerId, model);
       }
+      if (effort) this.#providerDefaults.rememberEffort(providerId, effort);
       this.#providerDefaults.rememberProvider(providerId);
       this.#providerDefaults.rememberMode(mode);
 
@@ -1077,6 +1095,7 @@ export class Daemon {
         ...(isClaude ? { loomServer: true, systemPromptAppend: TOOL_STEER } : {}),
         ...(isAisdk ? { loomServer: true, systemPromptAppend: aisdkSystem } : {}),
         ...(model ? { model } : {}),
+        ...(effort ? { effort: effort as EffortLevel } : {}),
         ...(parentId ? { parentId } : {}),
       };
 
@@ -1255,6 +1274,7 @@ export class Daemon {
           id: newId,
           provider: parent.provider,
           model: parent.model,
+          effort: parent.effort,
           parentId: id,
           title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
           worktree: wt.path,
@@ -1272,6 +1292,7 @@ export class Daemon {
           mode,
           mcpServers: this.#mcpHandles(),
           ...(parent.model ? { model: parent.model } : {}),
+          ...(parent.effort ? { effort: parent.effort as EffortLevel } : {}),
         });
       } catch (err) {
         await this.#sessions.close(newId).catch(() => {});
@@ -1412,6 +1433,21 @@ export class Daemon {
       // A deliberate switch is also "the last model used" for this provider.
       if (row.provider === "claude" || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
+      }
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return snap;
+    });
+
+    d.register("session.setEffort", async (params) => {
+      const id = reqString(params, "id");
+      const effort = reqString(params, "effort");
+      const row = this.#registry.get(id);
+      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+      if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort as EffortLevel);
+      const snap = this.#registry.setFields(id, { effort });
+      // A deliberate switch is also "the last effort used" for this provider.
+      if (row.provider === "claude" || this.config.providers.aisdk[row.provider]) {
+        this.#providerDefaults.rememberEffort(row.provider, effort);
       }
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;

@@ -1,5 +1,5 @@
 import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
-import type { SessionMode } from "./types.ts";
+import type { EffortLevel, SessionMode } from "./types.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -131,6 +131,7 @@ export interface SessionSnapshot {
   forkTurn: number | null;
   provider: string;
   model: string | null;
+  effort: string | null;
   mode: string;
   status: SessionStatus;
   awaitReason: string | null;
@@ -190,6 +191,10 @@ export interface ModelChoice {
   label: string;
   /** Context-window size in tokens, when the provider reports it. */
   context?: number;
+  /** Whether this model accepts a thinking-effort level. */
+  supportsEffort?: boolean;
+  /** The effort levels it accepts, when the provider enumerates them. */
+  effortLevels?: EffortLevel[];
 }
 
 /** A configured provider, for the TUI's creation flow and model switcher. */
@@ -208,6 +213,12 @@ export interface ProviderInfo {
    * detected model. "" when nothing is known yet.
    */
   defaultModel: string;
+  /**
+   * Effort level a new session gets when none is chosen: the last one used on
+   * this provider (remembered across restarts). "" when nothing is known yet
+   * or the provider has no effort-capable models.
+   */
+  defaultEffort: string;
   /**
    * Permission mode a new session gets when none is chosen: the last one a
    * session was created with (remembered across restarts), else `default`

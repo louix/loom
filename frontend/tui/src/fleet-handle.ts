@@ -38,6 +38,7 @@ import {
   defaultModeOf,
   defaultModelOf,
   defaultProviderId,
+  effortPickItems,
   findPickItems,
   firstPerm,
   initialState,
@@ -45,8 +46,10 @@ import {
   makePrompt,
   modelPickEmptyText,
   modelPickItems,
+  modelSupportsEffort,
   pendingFor,
   pickerCurrent,
+  providerInfo,
   providerPickItems,
   queueFor,
   reduce,
@@ -627,6 +630,86 @@ export const mkFleetHandle = ({
       }),
     });
 
+  /** Model chosen, and it takes a thinking-effort level → one more step before
+   *  the wizard resolves. Carries the rest of `ctx` (live session / draft /
+   *  reopenSend) through unchanged. */
+  const openEffortStep = (
+    providerId: string,
+    modelId: string,
+    label: string,
+    ctx: PickerState["ctx"] = {},
+  ): void =>
+    dispatch({
+      t: "openPicker",
+      picker: makePicker({
+        kind: "effort",
+        title: `effort · ${label}`,
+        items: effortPickItems(state, providerId, modelId),
+        ctx: { ...ctx, provider: providerId, model: modelId },
+      }),
+    });
+
+  /** Finalize a model (+ optional effort) chosen through the wizard: either a
+   *  live switch on an existing session, or folding the choice into the
+   *  `new`-session prompt. */
+  const finalizeModelChoice = (ctx: PickerState["ctx"], model: string, effort?: string): void => {
+    if (ctx?.liveSessionId) {
+      const id = ctx.liveSessionId;
+      const back = ctx.reopenSend;
+      const draft = ctx.draft;
+      dispatch({ t: "closePicker" });
+      // Came from a `send` prompt (⌥m/⌥t mid-message) → drop the user back into
+      // it with the half-typed text intact once the switch is away.
+      if (back !== undefined) {
+        dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "send",
+            sessionId: back,
+            label: "send",
+            ...(draft !== undefined ? { text: draft } : {}),
+          }),
+        });
+      }
+      client
+        .request("session.setModel", { id, model, by: client.clientId })
+        .then(() => {
+          if (!effort) {
+            dispatch({ t: "notice", text: `model → ${model} · next turn`, tone: "good" });
+            return undefined;
+          }
+          return client.request("session.setEffort", { id, effort, by: client.clientId }).then(
+            () =>
+              void dispatch({
+                t: "notice",
+                text: `model → ${model} · effort → ${effort} · next turn`,
+                tone: "good",
+              }),
+          );
+        })
+        .catch((e: unknown) =>
+          dispatch({
+            t: "notice",
+            text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: "bad",
+          }),
+        );
+      return;
+    }
+    dispatch({
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "new",
+        sessionId: null,
+        label: "new session",
+        ...(ctx?.provider ? { provider: ctx.provider } : {}),
+        ...(ctx?.draft !== undefined ? { text: ctx.draft } : {}),
+        model,
+        ...(effort ? { effort } : {}),
+      }),
+    });
+  };
+
   /** Resolve the open picker's highlighted item by its kind. */
   const choosePicked = (): void => {
     const p = state.picker;
@@ -634,8 +717,9 @@ export const mkFleetHandle = ({
     overlayActed = p;
     const cur = pickerCurrent(p);
 
-    // Empty model step: enter continues to the prompt with just the provider
-    // (the daemon falls back to that provider's default model).
+    // Empty model / effort step: enter continues without picking one (the
+    // daemon falls back to the provider's default model; a model with no
+    // enumerated effort levels never reaches an empty effort step).
     if (!cur) {
       if (p.kind === "model" && !p.ctx?.liveSessionId) {
         return void dispatch({
@@ -649,6 +733,9 @@ export const mkFleetHandle = ({
           }),
         });
       }
+      if (p.kind === "effort") {
+        return void finalizeModelChoice(p.ctx, p.ctx?.model ?? "");
+      }
       return void dispatch({ t: "closePicker" });
     }
 
@@ -657,50 +744,16 @@ export const mkFleetHandle = ({
         return void openModelStep(cur.id, cur.label, p.ctx?.draft);
 
       case "model": {
-        if (p.ctx?.liveSessionId) {
-          const id = p.ctx.liveSessionId;
-          const back = p.ctx.reopenSend;
-          const draft = p.ctx.draft;
-          dispatch({ t: "closePicker" });
-          // Came from a `send` prompt (⌥m mid-message) → drop the user back into
-          // it with the half-typed text intact once the switch is away.
-          if (back !== undefined) {
-            dispatch({
-              t: "openPrompt",
-              prompt: makePrompt({
-                kind: "send",
-                sessionId: back,
-                label: "send",
-                ...(draft !== undefined ? { text: draft } : {}),
-              }),
-            });
-          }
-          client
-            .request("session.setModel", { id, model: cur.id, by: client.clientId })
-            .then(() =>
-              dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }),
-            )
-            .catch((e: unknown) =>
-              dispatch({
-                t: "notice",
-                text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
-                tone: "bad",
-              }),
-            );
-          return;
+        const providerId = p.ctx?.provider ?? "claude";
+        if (modelSupportsEffort(state, providerId, cur.id)) {
+          const label = providerInfo(state, providerId)?.tag ?? providerId;
+          return void openEffortStep(providerId, cur.id, label, p.ctx);
         }
-        return void dispatch({
-          t: "openPrompt",
-          prompt: makePrompt({
-            kind: "new",
-            sessionId: null,
-            label: "new session",
-            ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
-            ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
-            model: cur.id,
-          }),
-        });
+        return void finalizeModelChoice(p.ctx, cur.id);
       }
+
+      case "effort":
+        return void finalizeModelChoice(p.ctx, p.ctx?.model ?? "", cur.id);
 
       case "undo": {
         const id = p.ctx?.liveSessionId;
@@ -798,6 +851,22 @@ export const mkFleetHandle = ({
         }),
       });
     }
+    // `effort` always followed a `model` step (chosen or, for a bare ⌥t, the
+    // session's current one) — step back to it rather than closing outright.
+    if (p.kind === "effort") {
+      const providerId = p.ctx?.provider ?? "claude";
+      const label = providerInfo(state, providerId)?.tag ?? providerId;
+      return void dispatch({
+        t: "openPicker",
+        picker: makePicker({
+          kind: "model",
+          title: `model · ${label}`,
+          items: modelPickItems(state, providerId),
+          emptyText: modelPickEmptyText(providerId),
+          ctx: { ...p.ctx, provider: providerId },
+        }),
+      });
+    }
     return void dispatch({ t: "closePicker" });
   };
 
@@ -826,6 +895,24 @@ export const mkFleetHandle = ({
           ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
         },
       }),
+    });
+  };
+
+  /** Open a live thinking-effort switcher (`⌥t`): the selected session, or an
+   *  explicit one. Only offered when its current model takes an effort level. */
+  const switchEffort = (sessionId?: string, draft?: string): void => {
+    const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+    if (!s.model || !modelSupportsEffort(state, s.provider, s.model)) {
+      return void dispatch({
+        t: "notice",
+        text: `${s.provider}${s.model ? `/${s.model}` : ""} has no thinking-effort control`,
+        tone: "dim",
+      });
+    }
+    openEffortStep(s.provider, s.model, s.provider, {
+      liveSessionId: s.id,
+      ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
     });
   };
 
@@ -872,6 +959,7 @@ export const mkFleetHandle = ({
             ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
             ...(p.provider ? { provider: p.provider } : {}),
             ...(p.model ? { model: p.model } : {}),
+            ...(p.effort ? { effort: p.effort } : {}),
           });
           dispatch({ t: "select", id: r.id });
           dispatch({ t: "pushHistory", text });
@@ -1102,6 +1190,8 @@ export const mkFleetHandle = ({
         return void viewLogs();
       case "model":
         return void switchModel();
+      case "effort":
+        return void switchEffort();
       case "fullscreen":
         if (sel) {
           logFull = !logFull;
@@ -1248,6 +1338,24 @@ export const mkFleetHandle = ({
         if (p.kind === "send" && p.sessionId) return void switchModel(p.sessionId, p.buffer.text);
         return;
       }
+      // ⌥t swaps the thinking-effort level without leaving the prompt.
+      if (key.meta && input === "t") {
+        if (p.kind === "new") {
+          const pid = p.provider ?? state.providers[0]?.id ?? "claude";
+          const mid = p.model || defaultModelOf(state, pid);
+          if (!mid || !modelSupportsEffort(state, pid, mid)) {
+            return void dispatch({
+              t: "notice",
+              text: "this model has no thinking-effort control",
+              tone: "dim",
+            });
+          }
+          const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
+          return void openEffortStep(pid, mid, tag, { draft: p.buffer.text });
+        }
+        if (p.kind === "send" && p.sessionId) return void switchEffort(p.sessionId, p.buffer.text);
+        return;
+      }
       if (key.meta && input === "p" && p.kind === "new") {
         return void pickProviderModel(p.buffer.text);
       }
@@ -1388,9 +1496,11 @@ export const mkFleetHandle = ({
       if (allowed.has("planreview")) return runAct("planreview");
       return;
     }
-    // ⌥m switches the selected session's model — the one Alt key that also acts
-    // from the fleet view (its sibling ⇧⇥ does the same for the mode).
+    // ⌥m switches the selected session's model, ⌥t its thinking-effort level —
+    // the Alt keys that also act from the fleet view (their sibling ⇧⇥ does
+    // the same for the mode).
     if (key.meta && input === "m") return void (sel ? runAct("model") : undefined);
+    if (key.meta && input === "t") return void (sel ? runAct("effort") : undefined);
     if (key.ctrl || key.meta) return; // Ctrl / Alt otherwise do nothing outside the prompt
 
     // Space → the command palette.

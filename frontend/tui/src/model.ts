@@ -27,7 +27,7 @@ export type UiMode = "browse" | "prompt" | "help" | "confirm" | "plan" | "picker
  *   • bare key  → act on the selected session, or move
  *   • Shift+key → the heavier / structural sibling (Q quit-all · R restart · X delete · F fork)
  *   • Ctrl+key  → text editing only, inside the prompt (⌃a/⌃e/⌃b/⌃f/⌃u/⌃k/⌃w); ⌃c quits
- *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥x)
+ *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥t ⌥x)
  *   • Space     → the command palette: everything valid right now, fuzzy, with its key
  */
 /** How much of the selected session's log to show:
@@ -103,6 +103,8 @@ export interface PromptState {
   /** Provider / model for the session to be created — `new` via the `N` flow. */
   provider?: string;
   model?: string;
+  /** Thinking effort for the session to be created, when the model takes one. */
+  effort?: string;
   /** History cursor: 0 = the live buffer, 1..N = {@link TuiState.promptHistory} from newest. */
   histIdx: number;
   /** Live buffer text, stashed while browsing history. */
@@ -116,9 +118,10 @@ export const makePrompt = (init: {
   label: string;
   text?: string;
   mode?: SessionMode;
-  /** For `new`: the provider / model chosen in the `N` picker flow. */
+  /** For `new`: the provider / model / effort chosen in the `N` picker flow. */
   provider?: string;
   model?: string;
+  effort?: string;
 }): PromptState => {
   return {
     kind: init.kind,
@@ -128,6 +131,7 @@ export const makePrompt = (init: {
     ...(init.mode ? { mode: init.mode } : {}),
     ...(init.provider ? { provider: init.provider } : {}),
     ...(init.model ? { model: init.model } : {}),
+    ...(init.effort ? { effort: init.effort } : {}),
     buffer: buffer(init.text ?? ""),
     histIdx: 0,
     draft: "",
@@ -147,7 +151,7 @@ export interface PickItem {
 }
 
 export interface PickerState {
-  kind: "provider" | "model" | "find" | "undo" | "command";
+  kind: "provider" | "model" | "effort" | "find" | "undo" | "command";
   title: string;
   items: PickItem[];
   /** Shown when `items` is empty (e.g. no models detected for a provider). */
@@ -156,10 +160,17 @@ export interface PickerState {
   filter: string;
   /** Highlight into the *filtered* list. */
   index: number;
-  /** Carried context: provider id from the provider step; `liveSessionId` for a
-   *  live `⌥m` model switch; `draft` restores a half-typed prompt after the
+  /** Carried context: provider id from the provider step; `model` id from the
+   *  model step, for an `effort` step that follows it; `liveSessionId` for a
+   *  live `⌥m` / `⌥t` switch; `draft` restores a half-typed prompt after the
    *  detour; `reopenSend` returns to that session's send prompt afterwards. */
-  ctx?: { provider?: string; liveSessionId?: string; draft?: string; reopenSend?: string };
+  ctx?: {
+    provider?: string;
+    model?: string;
+    liveSessionId?: string;
+    draft?: string;
+    reopenSend?: string;
+  };
 }
 
 export const makePicker = (init: {
@@ -1098,6 +1109,25 @@ export const modelPickEmptyText = (providerId: string): string => {
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };
 
+/** The default effort levels offered when a model supports effort but doesn't
+ *  enumerate which ones — the SDK's full `EffortLevel` set. */
+const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+/** Whether `providerId`'s `modelId` accepts a thinking-effort level, per the
+ *  discovered catalog — the gate for offering the `effort` picker step. */
+export const modelSupportsEffort = (s: TuiState, providerId: string, modelId: string): boolean => {
+  return (
+    providerInfo(s, providerId)?.modelChoices?.some((c) => c.id === modelId && c.supportsEffort) ??
+    false
+  );
+};
+
+export const effortPickItems = (s: TuiState, providerId: string, modelId: string): PickItem[] => {
+  const choice = providerInfo(s, providerId)?.modelChoices?.find((c) => c.id === modelId);
+  const levels = choice?.effortLevels?.length ? choice.effortLevels : DEFAULT_EFFORT_LEVELS;
+  return levels.map((lvl) => ({ id: lvl, label: lvl }));
+};
+
 /** Sessions as find targets — title + this session's log text folded into the match. */
 export const findPickItems = (s: TuiState): PickItem[] => {
   const logBySession = new Map<string, string[]>();
@@ -1145,6 +1175,7 @@ export type ActName =
   | "planreview"
   | "mode"
   | "model"
+  | "effort"
   | "undo"
   | "fork"
   | "title"
@@ -1226,6 +1257,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // both also work inside a prompt, so you can re-mode / re-model mid-message.
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "⌥m", label: "model", act: "model" });
+    local.push({ keys: "⌥t", label: "effort", act: "effort" });
     // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
     // don't advertise them there. Hard fork additionally needs an isolated
     // branch, which an in-place session doesn't have — undo (conversation-only)

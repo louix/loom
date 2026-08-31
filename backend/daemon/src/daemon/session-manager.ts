@@ -13,6 +13,7 @@ import type {
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
+  EffortLevel,
   PermissionDecision,
   PlanDecision,
   SessionMode,
@@ -393,6 +394,10 @@ export class SessionManager {
 
   async setModel(id: string, model: string): Promise<void> {
     await this.#require(id).session.setModel(model);
+  }
+
+  async setEffort(id: string, effort: EffortLevel): Promise<void> {
+    await this.#require(id).session.setEffort(effort);
   }
 
   /** Undo: truncate the live session's transcript to its first `keep` messages. */

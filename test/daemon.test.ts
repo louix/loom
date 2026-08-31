@@ -409,6 +409,48 @@ models   = ["pin-a", "pin-b"]
   }
 });
 
+test("session.setEffort records the row and becomes the default effort for the next new session", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.local]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "pin-a"
+models   = ["pin-a"]
+`,
+  });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+
+    let list = await c.request<Array<{ id: string; defaultEffort: string }>>("providers.list");
+    assert.equal(list.find((p) => p.id === "local")?.defaultEffort, "");
+
+    const s = await c.request<{ id: string; effort: string | null }>("session.createStub", {
+      prompt: "x",
+      provider: "local",
+    });
+    assert.equal(s.effort, null);
+
+    const updated = await c.request<{ effort: string | null }>("session.setEffort", {
+      id: s.id,
+      effort: "high",
+      by: "t",
+    });
+    assert.equal(updated.effort, "high");
+
+    list = await c.request<Array<{ id: string; defaultEffort: string }>>("providers.list");
+    assert.equal(list.find((p) => p.id === "local")?.defaultEffort, "high");
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("the provider and mode a session was created with become the default for the next new session", async () => {
   const hh = await makeHarness({ config: `default_provider = "claude"\n` });
   try {

@@ -15,6 +15,7 @@ import type {
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
+  EffortLevel,
   PermissionDecision,
   PlanDecision,
   ProviderCapabilities,
@@ -65,6 +66,7 @@ export class FakeSession implements AgentSession {
       status: "starting",
       providerRef: this.providerRef,
       model: opts.model ?? "fake-1",
+      effort: null,
       mode: opts.mode,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextUsed: 0,
@@ -178,6 +180,12 @@ export class FakeSession implements AgentSession {
   async setModel(model: string): Promise<void> {
     this.modelChanges.push(model);
     this.#snap.model = model;
+  }
+
+  readonly effortChanges: string[] = [];
+  async setEffort(effort: EffortLevel): Promise<void> {
+    this.effortChanges.push(effort);
+    this.#snap.effort = effort;
   }
 
   snapshot(): AdapterSnapshot {

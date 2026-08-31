@@ -18,6 +18,7 @@ import { makeLogger, type Logger } from "@loom/core/logger";
 import type {
   AdapterSnapshot,
   AgentSession,
+  EffortLevel,
   McpServerHandle,
   PermissionDecision,
   PlanDecision,
@@ -166,6 +167,7 @@ export class AisdkSession implements AgentSession {
       status: "starting",
       providerRef: opts.sessionId,
       model: opts.modelId,
+      effort: null,
       mode: opts.mode,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextUsed: 0,
@@ -303,6 +305,11 @@ export class AisdkSession implements AgentSession {
     this.#snap.model = model;
     this.#snap.contextLimit = contextLimitFor(model);
   }
+
+  /** No OpenAI-compatible endpoint Loom talks to today takes a request-side
+   *  effort/reasoning param — {@link DiscoveredModel.supportsEffort} is never
+   *  set for aisdk models, so the picker never offers this. */
+  async setEffort(_effort: EffortLevel): Promise<void> {}
 
   snapshot(): AdapterSnapshot {
     return { ...this.#snap, usage: { ...this.#snap.usage } };

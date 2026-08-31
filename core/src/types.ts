@@ -7,6 +7,9 @@ import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
 
 export type SessionMode = "default" | "plan" | "acceptEdits" | "auto";
 
+/** How hard the model should think — mirrors the Claude Agent SDK's `EffortLevel`. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ProviderCapabilities {
   /** Mode / model changes take effect immediately (Claude) vs. next turn (ADK). */
   liveModeSwitch: boolean;
@@ -47,6 +50,8 @@ export interface CreateSessionOptions {
   cwd: string;
   prompt: string;
   model?: string;
+  /** Thinking effort, for models that accept one ({@link DiscoveredModel.supportsEffort}). */
+  effort?: EffortLevel;
   mode: SessionMode;
   parentId?: string;
   systemPromptAppend?: string;
@@ -71,6 +76,7 @@ export interface SessionRef {
   providerRef: string;
   cwd: string;
   model?: string;
+  effort?: EffortLevel;
   mode?: SessionMode;
   /** MCP servers to re-mount on resume (the daemon's current `[[mcp]]` list). */
   mcpServers?: McpServerHandle[];
@@ -103,6 +109,7 @@ export interface AdapterSnapshot {
   status: SessionStatus;
   providerRef: string | null;
   model: string | null;
+  effort: string | null;
   mode: SessionMode;
   usage: TokenUsage;
   contextUsed: number;
@@ -138,6 +145,7 @@ export interface AgentSession {
   rewind(keep: number): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string): Promise<void>;
+  setEffort(effort: EffortLevel): Promise<void>;
   snapshot(): AdapterSnapshot;
   close(): Promise<void>;
 }
@@ -163,6 +171,10 @@ export interface DiscoveredModel {
   label?: string;
   /** Context-window size in tokens, when known. */
   context?: number;
+  /** Whether this model accepts a thinking-effort level. */
+  supportsEffort?: boolean;
+  /** The effort levels it accepts, when the provider enumerates them. */
+  effortLevels?: EffortLevel[];
 }
 
 /** Map a Loom session mode to the closest provider permission mode label. */

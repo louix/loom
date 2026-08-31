@@ -152,4 +152,10 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions DROP COLUMN budget_max_turns;
   ALTER TABLE sessions DROP COLUMN budget_state;
   `,
+
+  // 11 — thinking-effort level a session was created (or later switched) with,
+  // alongside the model it applies to (Claude Agent SDK `EffortLevel`).
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN effort TEXT;
+  `,
 ];

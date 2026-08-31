@@ -30,6 +30,7 @@ import type {
   AgentSession,
   CreateSessionOptions,
   DiscoveredModel,
+  EffortLevel,
   McpServerHandle,
   PermissionDecision,
   PlanDecision,
@@ -103,6 +104,7 @@ class ClaudeSession implements AgentSession {
   #mapper: ClaudeEventMapper;
   #log: Logger;
   #mode: SessionMode;
+  #effort: EffortLevel | null;
 
   /** Follow-up turns fed into the streaming-input prompt. */
   #inbox = new AsyncChannel<SDKUserMessage>();
@@ -129,6 +131,7 @@ class ClaudeSession implements AgentSession {
     this.id = opts.sessionId;
     this.#mapper = new ClaudeEventMapper(opts.sessionId);
     this.#mode = opts.mode;
+    this.#effort = opts.effort ?? null;
     this.#log = makeLogger("claude").child(opts.sessionId.slice(0, 8));
   }
 
@@ -201,6 +204,7 @@ class ClaudeSession implements AgentSession {
         : {}),
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { effort: opts.effort } : {}),
       ...(resume ? { resume } : {}),
       ...(opts.disableTools && opts.disableTools.length > 0
         ? { disallowedTools: opts.disableTools }
@@ -411,12 +415,23 @@ class ClaudeSession implements AgentSession {
     await this.#query?.setModel(model);
   }
 
+  async setEffort(effort: EffortLevel): Promise<void> {
+    try {
+      await this.#query?.applyFlagSettings({ effortLevel: effort });
+      this.#effort = effort;
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`Claude rejected the "${effort}" effort level: ${raw}`);
+    }
+  }
+
   snapshot(): AdapterSnapshot {
     const s = this.#mapper.state;
     return {
       status: "running",
       providerRef: s.providerRef,
       model: s.model,
+      effort: this.#effort,
       mode: this.#mode,
       usage: { ...s.usage },
       contextUsed: s.contextUsed,
@@ -495,6 +510,7 @@ export class ClaudeProvider implements AgentProvider {
       mcpServers: ref.mcpServers ?? [],
       loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
+      ...(ref.effort ? { effort: ref.effort } : {}),
     };
     const s = new ClaudeSession(opts);
     s.start(opts, { resume: ref.providerRef, ...this.#extra(cli) });
@@ -532,6 +548,10 @@ export class ClaudeProvider implements AgentProvider {
           id,
           ...(m.displayName ? { label: m.displayName } : {}),
           ...(ctx ? { context: ctx } : {}),
+          ...(m.supportsEffort ? { supportsEffort: true } : {}),
+          ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0
+            ? { effortLevels: m.supportedEffortLevels }
+            : {}),
         });
       }
       return out;

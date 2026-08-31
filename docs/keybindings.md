@@ -26,9 +26,10 @@ Consequences:
   `Enter` away, and the palette teaches you the key for next time.
 - The footer only ever shows the few most pertinent verbs for the current state,
   plus `␣ more`.
-- Two session-control keys work **both** in browse and inside a prompt, so you
-  can change your mind mid-message: `⇧⇥` cycles the permission mode, `⌥m` swaps
-  the model. (`⌥m` is the one `Alt` key that also acts from the fleet view.)
+- Three session-control keys work **both** in browse and inside a prompt, so
+  you can change your mind mid-message: `⇧⇥` cycles the permission mode, `⌥m`
+  swaps the model, `⌥t` its thinking-effort level. (`⌥m` / `⌥t` are the `Alt`
+  keys that also act from the fleet view.)
 
 ## Browse (the fleet view)
 
@@ -60,6 +61,7 @@ Consequences:
 | ---- | -------------------------------------------------------------------------- |
 | `⇧⇥` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`)     |
 | `⌥m` | switch the session's model — applies next turn                             |
+| `⌥t` | switch the session's thinking-effort level (models that support one)       |
 | `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
 | `e`  | rename the session                                                         |
 | `y`  | copy the session's branch name to the clipboard                            |
@@ -109,7 +111,8 @@ Consequences:
 | `⌥o` | open the event log in `$EDITOR`, read-only                                                                                                   |
 | `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                              |
 | `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_ |
-| `⌥p` | pick the provider / model _(new-session prompt only)_                                                                                        |
+| `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                             |
+| `⌥p` | pick the provider / model _(new-session prompt only)_ — a model that takes a thinking-effort level asks for one as a third step              |
 | `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                     |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`

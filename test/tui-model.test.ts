@@ -12,6 +12,7 @@ import {
   defaultModeOf,
   defaultModelOf,
   defaultProviderId,
+  effortPickItems,
   findPickItems,
   footerHints,
   formatEvent,
@@ -21,6 +22,7 @@ import {
   makePrompt,
   modelPickEmptyText,
   modelPickItems,
+  modelSupportsEffort,
   pendingFor,
   pickerCurrent,
   pickerVisible,
@@ -67,6 +69,7 @@ const snap = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => {
     forkTurn: null,
     provider: "fake",
     model: null,
+    effort: null,
     mode: "default",
     status: "idle",
     awaitReason: null,
@@ -645,8 +648,8 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
-  // a settled selected session also gets mode + model + title + delete
-  const S = ["mode", "model", "fork", "title", "delete", ...G];
+  // a settled selected session also gets mode + model + effort + title + delete
+  const S = ["mode", "model", "effort", "fork", "title", "delete", ...G];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
   // plus interrupt and the globals. No mode / model / rename / fork.
@@ -1252,10 +1255,17 @@ const PROVIDERS: ProviderInfo[] = [
     id: "claude",
     models: ["claude-opus-5", "claude-sonnet-5"],
     modelChoices: [
-      { id: "claude-opus-5", label: "Claude Opus 4.8", context: 1_000_000 },
+      {
+        id: "claude-opus-5",
+        label: "Claude Opus 4.8",
+        context: 1_000_000,
+        supportsEffort: true,
+        effortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
       { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     ],
     defaultModel: "claude-sonnet-5",
+    defaultEffort: "",
     defaultMode: "default",
     tag: "claude",
     color: "",
@@ -1265,6 +1275,7 @@ const PROVIDERS: ProviderInfo[] = [
     id: "openai",
     models: ["gpt-5", "gpt-5-mini", "o4"],
     defaultModel: "gpt-5",
+    defaultEffort: "",
     defaultMode: "default",
     tag: "oai",
     color: "cyan",
@@ -1274,6 +1285,7 @@ const PROVIDERS: ProviderInfo[] = [
     id: "deepseek",
     models: ["deepseek-chat", "deepseek-reasoner"],
     defaultModel: "deepseek-chat",
+    defaultEffort: "",
     defaultMode: "default",
     tag: "ds",
     color: "magenta",
@@ -1307,6 +1319,19 @@ test("providers action populates state and the derived helpers", () => {
   );
   assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
   assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
+});
+
+test("modelSupportsEffort / effortPickItems: gated per model, per its own enumerated levels", () => {
+  const s = withProviders();
+  assert.equal(modelSupportsEffort(s, "claude", "claude-opus-5"), true);
+  // sibling model with no `supportsEffort` on its ModelChoice
+  assert.equal(modelSupportsEffort(s, "claude", "claude-sonnet-5"), false);
+  // a provider with no modelChoices at all never offers it
+  assert.equal(modelSupportsEffort(s, "deepseek", "deepseek-chat"), false);
+  assert.deepEqual(
+    effortPickItems(s, "claude", "claude-opus-5").map((i) => i.id),
+    ["low", "medium", "high", "xhigh", "max"],
+  );
 });
 
 test("versionMismatchAction: bounce only when alone, otherwise prompt then nag", () => {

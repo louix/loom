@@ -11,6 +11,7 @@ interface SessionRow {
   parent_id: string | null;
   provider: string;
   model: string | null;
+  effort: string | null;
   mode: string;
   status: string;
   await_reason: string | null;
@@ -47,6 +48,7 @@ export interface NewSession {
   id: string;
   provider: string;
   model?: string | null;
+  effort?: string | null;
   mode?: string;
   parentId?: string | null;
   title?: string | null;
@@ -95,15 +97,16 @@ export class SessionStore {
     this.#db
       .prepare(
         `INSERT INTO sessions
-           (id, parent_id, provider, model, mode, status, title, worktree, branch,
+           (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
             base_branch, in_place, provider_ref, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         s.id,
         s.parentId ?? null,
         s.provider,
         s.model ?? null,
+        s.effort ?? null,
         s.mode ?? "default",
         s.title ?? null,
         s.worktree ?? null,
@@ -168,6 +171,7 @@ export class SessionStore {
     id: string,
     fields: Partial<{
       model: string | null;
+      effort: string | null;
       mode: string;
       title: string | null;
       titleLocked: boolean;
@@ -182,6 +186,7 @@ export class SessionStore {
     const vals: Array<string | number | null> = [];
     const map: Record<string, string> = {
       model: "model",
+      effort: "effort",
       mode: "mode",
       title: "title",
       titleLocked: "title_locked",
@@ -450,6 +455,10 @@ export class ProviderDefaultStore {
     return `default_model:${providerId}`;
   }
 
+  #effortKey(providerId: string): string {
+    return `default_effort:${providerId}`;
+  }
+
   /** The remembered model for `providerId`, or null if none has run yet. */
   model(providerId: string): string | null {
     return this.#get(this.#key(providerId));
@@ -458,6 +467,16 @@ export class ProviderDefaultStore {
   /** Record `model` as the provider's new default. No-op for an empty model. */
   remember(providerId: string, model: string): void {
     this.#set(this.#key(providerId), model);
+  }
+
+  /** The remembered thinking-effort level for `providerId`, or null if none has run yet. */
+  effort(providerId: string): string | null {
+    return this.#get(this.#effortKey(providerId));
+  }
+
+  /** Record `effort` as the provider's new default. No-op for an empty value. */
+  rememberEffort(providerId: string, effort: string): void {
+    this.#set(this.#effortKey(providerId), effort);
   }
 
   /** The last provider picked at session creation, or null if none yet. */
@@ -492,6 +511,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     forkTurn: row.fork_turn,
     provider: row.provider,
     model: row.model,
+    effort: row.effort,
     mode: row.mode,
     status: row.status as SessionStatus,
     awaitReason: row.await_reason,
