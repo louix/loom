@@ -253,8 +253,11 @@ export interface TuiState {
   providers: ProviderInfo[];
   sessions: SessionSnapshot[];
   selectedId: string | null;
+  /** Every event across every session, oldest first — never truncated: the
+   *  daemon has the durable copy, but this is what's actually rendered, so a
+   *  cap here would silently cut off history (a busy session evicting a quiet
+   *  one's transcript). */
   log: LogLine[];
-  logCap: number;
   logFilter: LogFilter;
   pending: Record<string, Pending>;
   /** Follow-up messages typed at a still-running session, awaiting its next idle. */
@@ -279,7 +282,7 @@ export interface TuiState {
   lastDraft: string;
 }
 
-export const initialState = (logCap = 400): TuiState => {
+export const initialState = (): TuiState => {
   return {
     connection: "connecting",
     theme: "dark",
@@ -288,7 +291,6 @@ export const initialState = (logCap = 400): TuiState => {
     sessions: [],
     selectedId: null,
     log: [],
-    logCap,
     logFilter: "everything",
     pending: {},
     queue: {},
@@ -480,11 +482,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, mode: "browse", prompt: null, lastDraft };
     }
 
-    case "echo": {
-      const log = [...s.log, a.line];
-      if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
-      return { ...s, log };
-    }
+    case "echo":
+      return { ...s, log: [...s.log, a.line] };
 
     case "enqueue": {
       const t = a.text.trim();
@@ -586,7 +585,6 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq))
         return { ...s, pending, compacting, notice };
       const log = [...s.log, toLogLine(frame.seq, ev)];
-      if (log.length > s.logCap) log.splice(0, log.length - s.logCap);
       return { ...s, log, pending, compacting, notice };
     }
     case "session_updated": {

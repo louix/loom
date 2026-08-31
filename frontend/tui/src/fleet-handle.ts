@@ -255,18 +255,15 @@ export const mkFleetHandle = ({
   // twice. Holds the overlay object already acted on — a fresh overlay has a
   // new identity and passes.
   let overlayActed: object | null = null;
-  // Sessions already backfilled from `session.events` this attach.
-  const historyBackfilled = new Set<string>();
   // Queue-drain bookkeeping: which sessions have an in-flight release, and the
   // `turns` value each last released at (so the next waits for a real turn).
   const draining = new Set<string>();
   const lastDrainTurn = new Map<string, number>();
 
-  // All three are keyed by session id and never shrank on their own — one dead
+  // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
   const forgetDeadSessions = (): void => {
     const live = new Set(state.sessions.map((s) => s.id));
-    for (const id of historyBackfilled) if (!live.has(id)) historyBackfilled.delete(id);
     for (const id of draining) if (!live.has(id)) draining.delete(id);
     for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
   };
@@ -276,12 +273,11 @@ export const mkFleetHandle = ({
 
   const backfillHistory = (): void => {
     const id = state.selectedId;
-    // The live/replayed push ring is cross-session and bounded, so a quiet
-    // session's events can be long gone from it even though the daemon still
-    // has them on disk. Frames carry the same global seq the ring uses, so
-    // dispatching them as ordinary pushes de-dupes for free.
-    if (!id || historyBackfilled.has(id)) return;
-    historyBackfilled.add(id);
+    // Re-fetched on every select, not just the first: the daemon's own
+    // durable copy is the source of truth, and frames carry the same global
+    // seq the live log uses, so dispatching them as ordinary pushes de-dupes
+    // for free against whatever's already in memory.
+    if (!id) return;
     client
       .request<EventPush[]>("session.events", { id })
       .then((frames) => {

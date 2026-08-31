@@ -206,18 +206,18 @@ test("session_removed drops the row and reselects the head", () => {
 // event log
 // ---------------------------------------------------------------------------
 
-test("event pushes append log lines and the ring honours logCap", () => {
-  let s = initialState(3);
+test("event pushes append log lines and never truncate", () => {
+  let s = initialState();
   for (let i = 0; i < 5; i++) {
     s = reduce(s, {
       t: "push",
       frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
     });
   }
-  assert.equal(s.log.length, 3);
+  assert.equal(s.log.length, 5);
   assert.deepEqual(
     s.log.map((l) => l.seq),
-    [2, 3, 4],
+    [0, 1, 2, 3, 4],
   );
 });
 
@@ -1028,8 +1028,8 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
   assert.equal(s.prompt?.buffer.text, "live", "returns to the stashed live draft at index 0");
 });
 
-test("echo appends a local log line that respects the cap", () => {
-  let s = initialState(2);
+test("echo appends a local log line and never truncates", () => {
+  let s = initialState();
   const echo = (seq: number, text: string, ts: number): LogLine => ({
     seq,
     sessionId: "a",
@@ -1044,7 +1044,7 @@ test("echo appends a local log line that respects the cap", () => {
   s = reduce(s, { t: "echo", line: echo(-3, "again", 3) });
   assert.deepEqual(
     s.log.map((l) => l.text),
-    ["there", "again"],
+    ["hi", "there", "again"],
   );
 });
 
