@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./absurd": "./src/absurd.ts",
     "./events": "./src/events.ts",
     "./wire": "./src/wire.ts",
     "./types": "./src/types.ts",
