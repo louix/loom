@@ -25,14 +25,15 @@ test("session.create gives the session its own worktree + branch off base", asyn
     prompt: "wire up the metrics endpoint",
     provider: "fake",
   });
-  assert.ok(s.worktree && s.worktree.includes("/.loom/trees/"));
-  assert.equal(s.branch, "loom/wire-up-the-metrics-endpoint");
+  // Worktree dir keeps the readable prompt slug; the branch is named after the id.
+  assert.ok(s.worktree && s.worktree.includes("/.loom/trees/wire-up-the-metrics-endpoint"));
+  assert.equal(s.branch, `loom/${s.id.slice(0, 8)}`);
   assert.equal(s.baseBranch, "main");
   assert.ok(existsSync(s.worktree as string));
 
   const got = await c.request<SessionSnapshot>("session.get", { id: s.id });
   assert.ok(got.git, "git facts should be enriched onto the snapshot");
-  assert.equal(got.git?.branch, "loom/wire-up-the-metrics-endpoint");
+  assert.equal(got.git?.branch, `loom/${s.id.slice(0, 8)}`);
   assert.equal(got.git?.dirty, false);
   assert.equal(got.git?.aheadOfBase, 0);
   await c.close();
@@ -75,7 +76,7 @@ test("markDone then gc removes the worktree but keeps the row and branch", async
   const after = await c.request<SessionSnapshot>("session.get", { id: s.id });
   assert.equal(after.status, "done");
   assert.equal(after.worktree, null);
-  assert.equal(after.branch, "loom/cleanup-target"); // branch retained
+  assert.equal(after.branch, `loom/${s.id.slice(0, 8)}`); // branch retained
   await c.close();
 });
 
@@ -105,14 +106,11 @@ test("session.remove deletes the row + worktree, keeps the branch, pushes sessio
   assert.deepEqual(removed, [s.id], "clients got a session_removed frame");
 
   // branch survives the delete, like gc
-  const branches = execFileSync(
-    "git",
-    ["-C", h.repoRoot, "branch", "--list", "loom/throwaway-spike"],
-    {
-      encoding: "utf8",
-    },
-  );
-  assert.match(branches, /loom\/throwaway-spike/);
+  const branch = `loom/${s.id.slice(0, 8)}`;
+  const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", branch], {
+    encoding: "utf8",
+  });
+  assert.equal(branches.trim(), branch);
   await c.close();
 });
 
@@ -135,7 +133,7 @@ test("session.remove --delete-branch also drops the branch", async () => {
 
   const branches = execFileSync(
     "git",
-    ["-C", h.repoRoot, "branch", "--list", "loom/branch-goes-too"],
+    ["-C", h.repoRoot, "branch", "--list", `loom/${s.id.slice(0, 8)}`],
     {
       encoding: "utf8",
     },

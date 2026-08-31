@@ -30,6 +30,13 @@ const mgr = (root: string): WorktreeManager => {
   });
 };
 
+/** A stand-in session id whose first 8 chars are `short` — the branch a
+ *  worktree gets is `loom/<first 8 chars of the id>`. */
+const fakeId = (short: string): string => {
+  assert.equal(short.length, 8, "fakeId prefix must be 8 chars");
+  return `${short}-1111-2222-3333-444444444444`;
+};
+
 test("slugify keeps it short, kebab, and never empty", () => {
   assert.equal(slugify("Refactor the Auth Module!!!"), "refactor-the-auth-module");
   assert.equal(slugify("  a---b  "), "a-b");
@@ -42,9 +49,9 @@ test("create makes a worktree + branch off base, with identity and a push block"
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create("add a json flag");
-    assert.equal(wt.slug, "add-a-json-flag");
-    assert.equal(wt.branch, "loom/add-a-json-flag");
+    const wt = m.create("add a json flag", fakeId("aaaaaaaa"));
+    assert.equal(wt.slug, "add-a-json-flag"); // dir still uses the readable slug
+    assert.equal(wt.branch, "loom/aaaaaaaa"); // branch is named after the session id
     assert.equal(wt.baseRef, "main");
     assert.ok(existsSync(wt.path));
 
@@ -59,7 +66,7 @@ test("create makes a worktree + branch off base, with identity and a push block"
     assert.doesNotThrow(() => accessSync(hook, constants.X_OK));
 
     // the branch exists in the repo
-    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/add-a-json-flag"]);
+    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/aaaaaaaa"]);
     cleanup();
   } finally {
     if (existsSync(root)) cleanup();
@@ -70,8 +77,8 @@ test("colliding hints get distinct slugs", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const a = m.create("same name");
-    const b = m.create("same name");
+    const a = m.create("same name", fakeId("aaaaaaaa"));
+    const b = m.create("same name", fakeId("bbbbbbbb"));
     assert.notEqual(a.slug, b.slug);
     assert.equal(a.slug, "same-name");
     assert.match(b.slug, /^same-name-[0-9a-z]+$/);
@@ -84,7 +91,7 @@ test("the pre-push hook rejects a push", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create("push test");
+    const wt = m.create("push test", fakeId("aaaaaaaa"));
     const bare = mkdtempSync(join(tmpdir(), "loom-bare-"));
     try {
       execFileSync("git", ["init", "-q", "--bare", bare]);
@@ -109,11 +116,11 @@ test("facts report branch, commits, ahead/behind, dirty, last subject", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create("facts");
+    const wt = m.create("facts", fakeId("aaaaaaaa"));
 
     let f = m.facts(wt.path, "main");
     assert.ok(f);
-    assert.equal(f.branch, "loom/facts");
+    assert.equal(f.branch, "loom/aaaaaaaa");
     assert.equal(f.aheadOfBase, 0);
     assert.equal(f.dirty, false);
 
@@ -138,13 +145,13 @@ test("remove drops the worktree", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create("removable");
+    const wt = m.create("removable", fakeId("aaaaaaaa"));
     assert.ok(m.list().some((w) => w.path === wt.path));
     m.remove(wt.path, { force: true });
     assert.ok(!m.list().some((w) => w.path === wt.path));
     assert.ok(!existsSync(wt.path));
     // branch is retained
-    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/removable"]);
+    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/aaaaaaaa"]);
   } finally {
     cleanup();
   }
