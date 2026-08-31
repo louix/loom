@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Box, useApp, useInput, useStdout } from "ink";
+import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
@@ -58,6 +59,33 @@ import {
 
 const nextMode = (m: SessionMode): SessionMode =>
   SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
+
+/**
+ * The acts {@link runAct} hands off to {@link act} — session verbs plus the
+ * always-on globals. Everything else in {@link ActName} (view / structural
+ * commands) `runAct` handles inline. Splitting the union this way makes both
+ * switches exhaustive: a new `ActName` fails to compile until it's placed.
+ */
+type DelegatedAct =
+  | "approve"
+  | "deny"
+  | "answer"
+  | "send"
+  | "interrupt"
+  | "done"
+  | "compact"
+  | "planreview"
+  | "mode"
+  | "undo"
+  | "title"
+  | "new"
+  | "find"
+  | "filter"
+  | "help"
+  | "quit";
+
+/** The {@link DelegatedAct}s allowed regardless of the selected session's state. */
+const GLOBAL_ACTS = new Set<DelegatedAct>(["new", "find", "filter", "help", "quit"]);
 
 export function App({
   client,
@@ -348,7 +376,7 @@ export function App({
   );
 
   const act = useCallback(
-    (name: ActName) => {
+    (name: DelegatedAct) => {
       const s = selectedSession(state);
       const by = client.clientId;
       if (name === "new") {
@@ -523,6 +551,8 @@ export function App({
             return `mode → ${target}`;
           });
         }
+        default:
+          return absurd(name);
       }
     },
     [state, client, note, perform, quitTui],
@@ -570,77 +600,86 @@ export function App({
       return void dispatch({ t: "closePicker" });
     }
 
-    if (p.kind === "provider") {
-      return void openModelStep(cur.id, cur.label, p.ctx?.draft);
-    }
+    switch (p.kind) {
+      case "provider":
+        return void openModelStep(cur.id, cur.label, p.ctx?.draft);
 
-    if (p.kind === "model") {
-      if (p.ctx?.liveSessionId) {
-        const id = p.ctx.liveSessionId;
-        const back = p.ctx.reopenSend;
-        const draft = p.ctx.draft;
-        dispatch({ t: "closePicker" });
-        // Came from a `send` prompt (⌥m mid-message) → drop the user back into
-        // it with the half-typed text intact once the switch is away.
-        if (back !== undefined) {
-          dispatch({
-            t: "openPrompt",
-            prompt: makePrompt({
-              kind: "send",
-              sessionId: back,
-              label: "send",
-              ...(draft !== undefined ? { text: draft } : {}),
-            }),
-          });
+      case "model": {
+        if (p.ctx?.liveSessionId) {
+          const id = p.ctx.liveSessionId;
+          const back = p.ctx.reopenSend;
+          const draft = p.ctx.draft;
+          dispatch({ t: "closePicker" });
+          // Came from a `send` prompt (⌥m mid-message) → drop the user back into
+          // it with the half-typed text intact once the switch is away.
+          if (back !== undefined) {
+            dispatch({
+              t: "openPrompt",
+              prompt: makePrompt({
+                kind: "send",
+                sessionId: back,
+                label: "send",
+                ...(draft !== undefined ? { text: draft } : {}),
+              }),
+            });
+          }
+          client
+            .request("session.setModel", { id, model: cur.id, by: client.clientId })
+            .then(() =>
+              dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }),
+            )
+            .catch((e: unknown) =>
+              dispatch({
+                t: "notice",
+                text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
+                tone: "bad",
+              }),
+            );
+          return;
         }
+        return void dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "new",
+            sessionId: null,
+            label: "new session",
+            ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
+            ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
+            model: cur.id,
+          }),
+        });
+      }
+
+      case "undo": {
+        const id = p.ctx?.liveSessionId;
+        const toTurn = Number(cur.id);
+        dispatch({ t: "closePicker" });
+        if (!id) return;
         client
-          .request("session.setModel", { id, model: cur.id, by: client.clientId })
-          .then(() =>
-            dispatch({ t: "notice", text: `model → ${cur.id} · next turn`, tone: "good" }),
-          )
+          .request("session.rewind", { id, toTurn, by: client.clientId })
+          .then(() => dispatch({ t: "notice", text: `rewound to turn ${toTurn}`, tone: "good" }))
           .catch((e: unknown) =>
             dispatch({
               t: "notice",
-              text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
+              text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`,
               tone: "bad",
             }),
           );
         return;
       }
-      return void dispatch({
-        t: "openPrompt",
-        prompt: makePrompt({
-          kind: "new",
-          sessionId: null,
-          label: "new session",
-          ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
-          ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
-          model: cur.id,
-        }),
-      });
-    }
 
-    if (p.kind === "undo") {
-      const id = p.ctx?.liveSessionId;
-      const toTurn = Number(cur.id);
-      dispatch({ t: "closePicker" });
-      if (!id) return;
-      client
-        .request("session.rewind", { id, toTurn, by: client.clientId })
-        .then(() => dispatch({ t: "notice", text: `rewound to turn ${toTurn}`, tone: "good" }))
-        .catch((e: unknown) =>
-          dispatch({
-            t: "notice",
-            text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`,
-            tone: "bad",
-          }),
-        );
-      return;
-    }
+      case "find":
+        dispatch({ t: "select", id: cur.id });
+        dispatch({ t: "closePicker" });
+        return;
 
-    // find
-    dispatch({ t: "select", id: cur.id });
-    dispatch({ t: "closePicker" });
+      case "command":
+        // The command palette resolves in the keymap before choosePicked runs.
+        return;
+
+      default:
+        return absurd(p.kind);
+    }
   }, [state, client, openModelStep]);
 
   /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
@@ -736,74 +775,86 @@ export function App({
     dispatch({ t: "closePrompt" });
 
     const run = async (): Promise<string> => {
-      if (p.kind === "new") {
-        const r = await client.request<SessionSnapshot>("session.create", {
-          prompt: text,
-          by,
-          ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
-          ...(p.provider ? { provider: p.provider } : {}),
-          ...(p.model ? { model: p.model } : {}),
-        });
-        dispatch({ t: "select", id: r.id });
-        dispatch({ t: "pushHistory", text });
-        // No local echo — the daemon emits a `user_message` for the opening
-        // prompt too, so it's in the log for every client and after a reopen.
-        return `started ${shortId(r.id)}`;
+      switch (p.kind) {
+        case "new": {
+          const r = await client.request<SessionSnapshot>("session.create", {
+            prompt: text,
+            by,
+            ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
+            ...(p.provider ? { provider: p.provider } : {}),
+            ...(p.model ? { model: p.model } : {}),
+          });
+          dispatch({ t: "select", id: r.id });
+          dispatch({ t: "pushHistory", text });
+          // No local echo — the daemon emits a `user_message` for the opening
+          // prompt too, so it's in the log for every client and after a reopen.
+          return `started ${shortId(r.id)}`;
+        }
+        case "send": {
+          if (!p.sessionId) return "";
+          // No local echo — the daemon emits a `user_message` event that every
+          // client (this one included) renders, so there's one source of truth.
+          // The RPC tells us whether it actually landed mid-turn.
+          const r = await client.request<{ injected?: boolean }>("session.send", {
+            id: p.sessionId,
+            text,
+          });
+          dispatch({ t: "pushHistory", text });
+          return r.injected ? "injected — lands after the current tool call" : "sent";
+        }
+        case "title": {
+          if (!p.sessionId) return "";
+          await client.request("session.setTitle", { id: p.sessionId, title: text, by });
+          return "renamed";
+        }
+        case "compact": {
+          if (!p.sessionId) return "";
+          await client.request("session.compact", {
+            id: p.sessionId,
+            ...(text ? { instructions: text } : {}),
+          });
+          return text ? "compacting — focused" : "compacting context";
+        }
+        case "discuss": {
+          if (!p.sessionId || !p.requestId) return "";
+          const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
+            id: p.sessionId,
+            requestId: p.requestId,
+            action: "discuss",
+            message: text,
+            by,
+          });
+          dispatch({ t: "closePlan" });
+          return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
+        }
+        case "answer": {
+          if (!p.sessionId || !p.requestId) return "";
+          const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
+            id: p.sessionId,
+            requestId: p.requestId,
+            text,
+            by,
+          });
+          return r.alreadyResolved ? "already answered" : "answered";
+        }
+        case "deny": {
+          if (!p.sessionId || !p.requestId) return "";
+          const r = await client.request<{ alreadyResolved: boolean }>(
+            "session.respondPermission",
+            {
+              id: p.sessionId,
+              requestId: p.requestId,
+              decision: "deny",
+              by,
+              ...(text ? { message: text } : {}),
+            },
+          );
+          dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
+          return r.alreadyResolved ? `${p.requestId} already resolved` : `denied ${p.requestId}`;
+        }
+        default:
+          return absurd(p.kind);
       }
-      if (p.kind === "send" && p.sessionId) {
-        // No local echo — the daemon emits a `user_message` event that every
-        // client (this one included) renders, so there's one source of truth.
-        // The RPC tells us whether it actually landed mid-turn.
-        const r = await client.request<{ injected?: boolean }>("session.send", {
-          id: p.sessionId,
-          text,
-        });
-        dispatch({ t: "pushHistory", text });
-        return r.injected ? "injected — lands after the current tool call" : "sent";
-      }
-      if (p.kind === "title" && p.sessionId) {
-        await client.request("session.setTitle", { id: p.sessionId, title: text, by });
-        return "renamed";
-      }
-      if (p.kind === "compact" && p.sessionId) {
-        await client.request("session.compact", {
-          id: p.sessionId,
-          ...(text ? { instructions: text } : {}),
-        });
-        return text ? "compacting — focused" : "compacting context";
-      }
-      if (p.kind === "discuss" && p.sessionId && p.requestId) {
-        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
-          id: p.sessionId,
-          requestId: p.requestId,
-          action: "discuss",
-          message: text,
-          by,
-        });
-        dispatch({ t: "closePlan" });
-        return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
-      }
-      if (p.kind === "answer" && p.sessionId && p.requestId) {
-        const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
-          id: p.sessionId,
-          requestId: p.requestId,
-          text,
-          by,
-        });
-        return r.alreadyResolved ? "already answered" : "answered";
-      }
-      if (p.kind === "deny" && p.sessionId && p.requestId) {
-        const r = await client.request<{ alreadyResolved: boolean }>("session.respondPermission", {
-          id: p.sessionId,
-          requestId: p.requestId,
-          decision: "deny",
-          by,
-          ...(text ? { message: text } : {}),
-        });
-        dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
-        return r.alreadyResolved ? `${p.requestId} already resolved` : `denied ${p.requestId}`;
-      }
-      return "";
     };
 
     run()
@@ -1090,12 +1141,28 @@ export function App({
           );
         return;
       }
+      case "approve":
+      case "deny":
+      case "answer":
+      case "send":
+      case "interrupt":
+      case "done":
+      case "compact":
+      case "planreview":
+      case "mode":
+      case "undo":
+      case "title":
+      case "new":
+      case "find":
+      case "filter":
+      case "help":
+      case "quit":
+        // Globals are always allowed; session verbs are gated by the selected
+        // session's state (the set the keymap / palette also check).
+        if (GLOBAL_ACTS.has(name) || allowed.has(name)) act(name);
+        return;
       default:
-        // new / find / help / quit / filter are always allowed; the rest are
-        // session verbs gated by the selected session's state.
-        if (["new", "find", "help", "quit", "filter"].includes(name) || allowed.has(name)) {
-          return void act(name);
-        }
+        return absurd(name);
     }
   };
 
