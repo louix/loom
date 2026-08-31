@@ -1446,22 +1446,6 @@ export const mkFleetHandle = ({
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
-          // Cancelling out of an AskUserQuestion answer denies the tool call
-          // outright, rather than leaving it silently unanswered — the model
-          // sees a normal deny and can ask what you want instead.
-          if (p.kind === "answerQuestion" && p.sessionId && p.requestId) {
-            const sessionId = p.sessionId;
-            const requestId = p.requestId;
-            perform(async () => {
-              const r = await client.request<{ alreadyResolved: boolean }>(
-                "session.respondPermission",
-                { id: sessionId, requestId, decision: "deny", by: client.clientId },
-              );
-              dispatch({ t: "resolvePerm", sessionId, id: requestId });
-              return r.alreadyResolved ? "already resolved" : "cancelled";
-            });
-            return void dispatch({ t: "closePrompt" });
-          }
           // Backing out of the plan "discuss" sub-prompt returns to the plan
           // overlay — the daemon is still blocked on the decision.
           if (p.kind === "discuss" && p.sessionId && p.requestId && state.plan) {
