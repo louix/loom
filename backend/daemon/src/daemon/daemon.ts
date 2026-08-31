@@ -1033,7 +1033,7 @@ export class Daemon {
       let wt: { path: string; branch: string; baseRef: string } | null = null;
       if (wantWorktree) {
         try {
-          wt = this.#worktrees.create(prompt);
+          wt = this.#worktrees.create(prompt, id);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           throw new RpcError("worktree_error", `could not create worktree: ${message}`);
@@ -1235,15 +1235,19 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
 
+      const newId = randomUUID();
       let wt;
       try {
-        wt = this.#worktrees.create(`${parent.title ?? id} fork`, parent.branch ?? undefined);
+        wt = this.#worktrees.create(
+          `${parent.title ?? id} fork`,
+          newId,
+          parent.branch ?? undefined,
+        );
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
       }
 
-      const newId = randomUUID();
       // Everything past the worktree is torn down together on any failure so a
       // failed fork doesn't leave an orphan worktree / branch / row / rows.
       try {

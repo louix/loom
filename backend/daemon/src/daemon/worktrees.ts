@@ -84,12 +84,14 @@ export class WorktreeManager {
   // --- lifecycle ----------------------------------------------------
 
   /**
-   * `git worktree add <trees>/<slug> -b loom/<slug> <base>`, then pin the
+   * `git worktree add <trees>/<slug> -b loom/<shortId> <base>`, then pin the
    * commit identity and hooks path for that tree. `baseRefOverride` branches
    * off something other than the configured base (a parent session's branch,
-   * for a hard fork).
+   * for a hard fork). `id` is the session's own id — the branch is named
+   * after it (truncated to match the fleet view's short id) so a session's
+   * branch is always traceable back to it.
    */
-  create(hint: string, baseRefOverride?: string): WorktreeInfo {
+  create(hint: string, id: string, baseRefOverride?: string): WorktreeInfo {
     this.ensureSetup();
     const baseRef =
       baseRefOverride && this.#git(["rev-parse", "--verify", "--quiet", baseRefOverride]).ok
@@ -97,7 +99,7 @@ export class WorktreeManager {
         : this.#resolveBase();
     const slug = this.#uniqueSlug(hint);
     const path = join(this.#treesDir, slug);
-    const branch = `loom/${slug}`;
+    const branch = this.#uniqueBranch(id);
 
     const add = this.#git(["worktree", "add", path, "-b", branch, baseRef]);
     if (!add.ok) {
@@ -220,10 +222,17 @@ export class WorktreeManager {
     for (let attempt = 0; ; attempt++) {
       const slug = attempt === 0 ? base : `${base}-${randomSuffix()}`;
       const path = join(this.#treesDir, slug);
-      const branchTaken = this.#git(["rev-parse", "--verify", "--quiet", `loom/${slug}`]).ok;
-      if (!taken.has(path) && !existsSync(path) && !branchTaken) return slug;
+      if (!taken.has(path) && !existsSync(path)) return slug;
       if (attempt > 20) return `${base}-${Date.now().toString(36)}`;
     }
+  }
+
+  /** `loom/<first 8 chars of id>`, falling back to the full id on collision
+   *  (astronomically rare — ids are random UUIDs). */
+  #uniqueBranch(id: string): string {
+    const short = `loom/${id.slice(0, 8)}`;
+    if (!this.#git(["rev-parse", "--verify", "--quiet", short]).ok) return short;
+    return `loom/${id}`;
   }
 
   #git(args: string[], cwd?: string): GitResult {
