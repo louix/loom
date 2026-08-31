@@ -6,7 +6,7 @@
   "exports": {
     ".": "./src/run.tsx",
     "./run": "./src/run.tsx",
-    "./app": "./src/app.ts",
+    "./app": "./src/app.tsx",
     "./model": "./src/model.ts",
     "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",

@@ -16,7 +16,7 @@
  */
 import { render } from "ink";
 import type { LoomClient } from "@loom/client";
-import { App } from "./app.ts";
+import { App } from "./app.tsx";
 
 export async function runTui(client: LoomClient): Promise<void> {
   // Ask the terminal to bracket pastes so a multi-line paste arrives as one

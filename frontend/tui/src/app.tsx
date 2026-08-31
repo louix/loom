@@ -2,18 +2,10 @@
  * Root Ink component: binds a {@link LoomClient} to the TUI model, owns the
  * keymap, and turns key presses into daemon RPCs. Rendering delegates to the
  * pure components in `./components.tsx`; state logic lives in `./model.ts`;
- * single-key text editing lives in `./editor.ts`. Written with `createElement`
- * (no JSX) to keep the no-build-step constraint.
+ * single-key text editing lives in `./editor.ts`. JSX with no bundler —
+ * `@oxc-node` transforms `.tsx` on the fly (see `./components.tsx`).
  */
-import {
-  createElement as h,
-  useCallback,
-  useEffect,
-  useReducer,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Box, useApp, useInput, useStdout } from "ink";
 import type { LoomClient } from "@loom/client";
 import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
@@ -1326,62 +1318,72 @@ export function App({
   // ---- layout ----------------------------------------------
   let body: ReactNode;
   if (state.mode === "help") {
-    body = h(Box, { paddingX: 1, paddingTop: 1 }, h(Help, { width: cols - 2 }));
+    body = (
+      <Box paddingX={1} paddingTop={1}>
+        <Help width={cols - 2} />
+      </Box>
+    );
   } else if (state.mode === "confirm" && state.confirm) {
-    body = h(
-      Box,
-      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
-      h(Confirm, { confirm: state.confirm, width: Math.min(cols - 4, 64) }),
+    body = (
+      <Box paddingX={2} paddingTop={1} alignItems="flex-start">
+        <Confirm confirm={state.confirm} width={Math.min(cols - 4, 64)} />
+      </Box>
     );
   } else if (state.mode === "plan" && state.plan) {
-    body = h(
-      Box,
-      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
-      h(PlanReview, { text: state.plan.text, width: Math.min(cols - 4, 96) }),
+    body = (
+      <Box paddingX={2} paddingTop={1} alignItems="flex-start">
+        <PlanReview text={state.plan.text} width={Math.min(cols - 4, 96)} />
+      </Box>
     );
   } else if (state.mode === "picker" && state.picker) {
-    body = h(
-      Box,
-      { paddingX: 2, paddingTop: 1, alignItems: "flex-start" },
-      h(Picker, {
-        picker: state.picker,
-        width: Math.min(cols - 4, 64),
-        height: Math.max(6, bodyH - 2),
-      }),
+    body = (
+      <Box paddingX={2} paddingTop={1} alignItems="flex-start">
+        <Picker
+          picker={state.picker}
+          width={Math.min(cols - 4, 64)}
+          height={Math.max(6, bodyH - 2)}
+        />
+      </Box>
     );
   } else if (logFull) {
-    body = h(
-      Box,
-      { height: bodyH },
-      h(EventLog, { state, width: cols, height: bodyH, scroll: logScroll, full: true }),
+    body = (
+      <Box height={bodyH}>
+        <EventLog state={state} width={cols} height={bodyH} scroll={logScroll} full />
+      </Box>
     );
   } else {
-    body = h(
-      Box,
-      { height: bodyH, gap: 1 },
-      h(Box, { width: leftW }, h(Fleet, { state, tick, width: leftW, now: Date.now() })),
-      h(
-        Box,
-        { width: rightW, flexDirection: "column" },
-        h(Detail, {
-          session: sel,
-          width: rightW,
-          queued: sel ? queueFor(state, sel.id) : [],
-          now: Date.now(),
-          engineColor: sel ? providerColorOf(state, sel.provider) : "",
-          compacting: sel ? (state.compacting[sel.id] ?? null) : null,
-        }),
-        h(EventLog, { state, width: rightW, height: splitLogH, scroll: logScroll, full: false }),
-      ),
+    body = (
+      <Box height={bodyH} gap={1}>
+        <Box width={leftW}>
+          <Fleet state={state} tick={tick} width={leftW} now={Date.now()} />
+        </Box>
+        <Box width={rightW} flexDirection="column">
+          <Detail
+            session={sel}
+            width={rightW}
+            queued={sel ? queueFor(state, sel.id) : []}
+            now={Date.now()}
+            engineColor={sel ? providerColorOf(state, sel.provider) : ""}
+            compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+          />
+          <EventLog
+            state={state}
+            width={rightW}
+            height={splitLogH}
+            scroll={logScroll}
+            full={false}
+          />
+        </Box>
+      </Box>
     );
   }
 
-  return h(
-    Box,
-    { flexDirection: "column", width: cols },
-    h(Header, { state, width: cols }),
-    body,
-    showRequest ? h(RequestPanel, { pending: pend, width: cols }) : null,
-    h(FooterArea, { state, width: cols }),
+  return (
+    <Box flexDirection="column" width={cols}>
+      <Header state={state} width={cols} />
+      {body}
+      {showRequest ? <RequestPanel pending={pend} width={cols} /> : null}
+      <FooterArea state={state} width={cols} />
+    </Box>
   );
 }
