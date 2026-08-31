@@ -226,13 +226,14 @@ function buildAisdkProfile(
   if (autoModels && sdk !== "openai") return null; // can't auto-detect; nothing to dial
   const effectiveModel = model || (models[0] ?? "");
   const rawSteps = num(t["max_steps"], DEFAULT_AISDK_MAX_STEPS);
+  const effectiveModelList = effectiveModel ? [effectiveModel] : [];
   return {
     sdk,
     baseUrl,
     apiKeyEnv: str(t["api_key_env"], ""),
     apiKey: str(t["api_key"], ""),
     model: effectiveModel,
-    models: models.length > 0 ? models : effectiveModel ? [effectiveModel] : [],
+    models: models.length > 0 ? models : effectiveModelList,
     autoModels,
     maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),

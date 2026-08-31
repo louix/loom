@@ -195,7 +195,7 @@ export class SessionStore {
       if (k in fields) {
         cols.push(`${col} = ?`);
         const v = (fields as Record<string, string | number | boolean | null>)[k];
-        vals.push(typeof v === "boolean" ? (v ? 1 : 0) : (v ?? null));
+        vals.push(typeof v === "boolean" ? Number(v) : (v ?? null));
       }
     }
     if (cols.length === 0) return;

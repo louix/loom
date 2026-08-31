@@ -535,12 +535,13 @@ export class Daemon {
     const def = this.#defaultProviderId();
     const mode = this.#defaultMode();
     const claude = this.config.providers.claude;
+    const claudeModelPin = claude.model ? [claude.model] : [];
     const out: ProviderInfo[] = [
       {
         id: "claude",
         // Discovered catalog if we have it, else the single configured pin so
         // the picker isn't empty.
-        models: claude.models.length ? claude.models : claude.model ? [claude.model] : [],
+        models: claude.models.length ? claude.models : claudeModelPin,
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
         defaultModel: this.#defaultModelFor("claude"),
         defaultMode: mode,

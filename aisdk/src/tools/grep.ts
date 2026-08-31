@@ -58,11 +58,9 @@ export function runRipgrep(
         const max = opts.maxResults ?? DEFAULT_MAX;
         const shown = lines.slice(0, max);
         const extra = lines.length - shown.length;
-        const tail = capped
-          ? "\n… output capped — narrow the pattern or pass `path` / `glob`"
-          : extra > 0
-            ? `\n… ${extra} more match(es)`
-            : "";
+        let tail = "";
+        if (capped) tail = "\n… output capped — narrow the pattern or pass `path` / `glob`";
+        else if (extra > 0) tail = `\n… ${extra} more match(es)`;
         resolve({ ok: true, output: shown.join("\n") + tail });
       } else if (code === 1) {
         resolve({ ok: true, output: "(no matches)" });

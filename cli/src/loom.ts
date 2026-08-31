@@ -229,7 +229,9 @@ async function main(): Promise<void> {
         if (values["in-place"] && values.worktree) {
           need(undefined, "run: --in-place and --worktree are mutually exclusive");
         }
-        const worktree = values.worktree ? true : values["in-place"] ? false : undefined;
+        let worktree: boolean | undefined;
+        if (values.worktree) worktree = true;
+        else if (values["in-place"]) worktree = false;
         const r = await client.request<SessionSnapshot>("session.create", {
           prompt,
           by: client.clientId,

@@ -438,7 +438,8 @@ export function reduce(s: TuiState, a: Action): TuiState {
     case "closePrompt": {
       const p = s.prompt;
       const draftable = p && (p.kind === "new" || p.kind === "send");
-      const lastDraft = draftable ? (a.saveDraft ? p.buffer.text : "") : s.lastDraft;
+      let lastDraft = s.lastDraft;
+      if (draftable) lastDraft = a.saveDraft ? p.buffer.text : "";
       return { ...s, mode: "browse", prompt: null, lastDraft };
     }
 
@@ -739,7 +740,7 @@ export function sortSessions(list: readonly SessionSnapshot[]): SessionSnapshot[
     if (r !== 0) return r;
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    return a.id < b.id ? -1 : Number(a.id > b.id);
   });
 }
 
@@ -785,8 +786,9 @@ export function cacheStatus(s: SessionSnapshot | null, now: number): CacheStatus
     return { state: "unknown", remainingMs: 0, fraction: 0, lastHit: null };
   }
   const { lastTurnAt, ttlMinutes, lastRead, lastWrite } = s.cache;
-  const lastHit: CacheStatus["lastHit"] =
-    lastRead > 0 && lastRead >= lastWrite ? "hit" : lastWrite > 0 ? "rewrote" : null;
+  let lastHit: CacheStatus["lastHit"] = null;
+  if (lastRead > 0 && lastRead >= lastWrite) lastHit = "hit";
+  else if (lastWrite > 0) lastHit = "rewrote";
   const ttlMs = ttlMinutes * 60_000;
   const remainingMs = lastTurnAt + ttlMs - now;
   return remainingMs > 0

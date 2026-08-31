@@ -316,11 +316,10 @@ export class ClaudeEventMapper {
     });
 
     const ok = m.subtype === "success" && m.is_error !== true;
-    const summary = ok
-      ? (m.result ?? "")
-      : m.errors && m.errors.length > 0
-        ? m.errors.join("; ")
-        : (m.subtype ?? "error");
+    let summary: string;
+    if (ok) summary = m.result ?? "";
+    else if (m.errors && m.errors.length > 0) summary = m.errors.join("; ");
+    else summary = m.subtype ?? "error";
     if (!ok) {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });
     }

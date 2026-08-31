@@ -1363,8 +1363,13 @@ export function App({
 
     if (input === "q") return quitTui();
 
+    // `a` resolves to whichever request the session has parked on.
+    let aKey: ActName = "approve";
+    if (allowed.has("answer")) aKey = "answer";
+    else if (allowed.has("planreview")) aKey = "planreview";
+
     const map: Record<string, ActName> = {
-      a: allowed.has("answer") ? "answer" : allowed.has("planreview") ? "planreview" : "approve",
+      a: aKey,
       d: "deny", // deny-only now — never delete (that's X)
       i: "interrupt",
       x: "done",

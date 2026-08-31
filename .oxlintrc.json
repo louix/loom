@@ -4,7 +4,11 @@
   "categories": {
     "correctness": "error"
   },
-  "rules": {},
+  "rules": {
+    "no-nested-ternary": "error",
+    "default-case-last": "error",
+    "no-lonely-if": "error"
+  },
   "env": {
     "builtin": true
   }

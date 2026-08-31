@@ -18,10 +18,12 @@ import {
   providerInfo,
   queueFor,
   visibleLog,
+  type Connection,
   type ConfirmState,
   type LogLine,
   type Pending,
   type PickerState,
+  type PromptKind,
   type PromptState,
   type TuiState,
 } from "./model.ts";
@@ -55,21 +57,58 @@ const titleLine = (t: string | null): string => {
   return "(untitled)";
 };
 
+/** Connection lamp — glyph + colour per {@link Connection}. */
+const LAMP: Record<Connection, { color: string; text: string }> = {
+  live: { color: C.good, text: "● live" },
+  reconnecting: { color: C.warn, text: "◍ reconnecting" },
+  closed: { color: C.bad, text: "○ offline" },
+  connecting: { color: C.dim, text: "◌ connecting" },
+};
+
+/** Editor placeholder per prompt kind. */
+const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
+  deny: "reason (optional)",
+  new: "describe the task…",
+  title: "session title",
+  discuss: "what should change about the plan?",
+  compact: "what to keep in focus — blank compacts the whole history",
+  send: "type a message…",
+  answer: "type a message…",
+};
+
+/** Context-meter colour by fill fraction. */
+const contextHeatColor = (frac: number): string => {
+  if (frac > 0.85) return C.bad;
+  if (frac > 0.6) return C.warn;
+  return C.accentDim;
+};
+
+/** The one-line git summary under a session's Detail pane. */
+const gitLineText = (s: SessionSnapshot): string => {
+  const g = s.git;
+  if (g) {
+    return [
+      s.inPlace ? "in-place" : null,
+      g.branch ?? s.branch ?? "(detached)",
+      `${g.commits} commit${g.commits === 1 ? "" : "s"}`,
+      g.aheadOfBase ? `+${g.aheadOfBase}` : null,
+      g.behindBase ? `-${g.behindBase} behind` : null,
+      g.dirty ? "dirty" : "clean",
+    ]
+      .filter(Boolean)
+      .join("  ·  ");
+  }
+  if (s.inPlace) return "in-place — repo working dir";
+  if (s.branch) return `${s.branch}  ·  no worktree (gc'd)`;
+  return "no worktree";
+};
+
 // ---------------------------------------------------------------------------
 // header
 // ---------------------------------------------------------------------------
 
 export function Header({ state, width }: { state: TuiState; width: number }): ReactNode {
-  const lamp =
-    state.connection === "live" ? (
-      <Text color={C.good}>{"● live"}</Text>
-    ) : state.connection === "reconnecting" ? (
-      <Text color={C.warn}>{"◍ reconnecting"}</Text>
-    ) : state.connection === "closed" ? (
-      <Text color={C.bad}>{"○ offline"}</Text>
-    ) : (
-      <Text color={C.dim}>{"◌ connecting"}</Text>
-    );
+  const lamp = LAMP[state.connection];
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
   const running = state.sessions.filter(
@@ -94,7 +133,7 @@ export function Header({ state, width }: { state: TuiState; width: number }): Re
         {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
         {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
         <Text color={C.faint}>{"·"}</Text>
-        {lamp}
+        <Text color={lamp.color}>{lamp.text}</Text>
       </Box>
     </Box>
   );
@@ -261,23 +300,7 @@ export function Detail({
   const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
   const ctxPct = Math.round(ctxFrac * 100);
   const g = s.git;
-
-  const gitLine = g
-    ? [
-        s.inPlace ? "in-place" : null,
-        g.branch ?? s.branch ?? "(detached)",
-        `${g.commits} commit${g.commits === 1 ? "" : "s"}`,
-        g.aheadOfBase ? `+${g.aheadOfBase}` : null,
-        g.behindBase ? `-${g.behindBase} behind` : null,
-        g.dirty ? "dirty" : "clean",
-      ]
-        .filter(Boolean)
-        .join("  ·  ")
-    : s.inPlace
-      ? "in-place — repo working dir"
-      : s.branch
-        ? `${s.branch}  ·  no worktree (gc'd)`
-        : "no worktree";
+  const gitLine = gitLineText(s);
 
   return (
     <Box
@@ -315,9 +338,7 @@ export function Detail({
       </Box>
       <Box marginTop={1} gap={2}>
         <Text color={C.dim}>{"context"}</Text>
-        <Text color={ctxFrac > 0.85 ? C.bad : ctxFrac > 0.6 ? C.warn : C.accentDim}>
-          {bar(ctxFrac, 16)}
-        </Text>
+        <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
         <Text color={C.dim}>
           {`${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
         </Text>
@@ -361,8 +382,9 @@ export function Detail({
         <Box gap={2}>
           <Text color={C.dim}>{"plan "}</Text>
           {Object.entries(s.rateLimits).map(([window, w]) => {
-            const col =
-              w.status === "rejected" ? C.bad : w.status === "allowed_warning" ? C.warn : C.faint;
+            let col: string = C.faint;
+            if (w.status === "rejected") col = C.bad;
+            else if (w.status === "allowed_warning") col = C.warn;
             const pct = w.utilization != null ? `${Math.round(w.utilization)}%` : "?%";
             const resets = w.resetsAt != null ? `  ⟳ ${humanDuration(w.resetsAt - now)}` : "";
             return (
@@ -629,30 +651,21 @@ export function FooterArea({ state, width }: { state: TuiState; width: number })
   if (state.mode === "prompt" && state.prompt) {
     const p = state.prompt;
     const queued = p.kind === "send" ? queueFor(state, p.sessionId).length : 0;
-    const placeholder =
-      p.kind === "deny"
-        ? "reason (optional)"
-        : p.kind === "new"
-          ? "describe the task…"
-          : p.kind === "title"
-            ? "session title"
-            : p.kind === "discuss"
-              ? "what should change about the plan?"
-              : p.kind === "compact"
-                ? "what to keep in focus — blank compacts the whole history"
-                : "type a message…";
+    const placeholder = PROMPT_PLACEHOLDER[p.kind];
     const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
     // A send prompt re-modes / re-models its target with ⇧⇥ / ⌥m, so it shows
     // the session's current mode chip too.
     const sendSess =
       p.kind === "send" && p.sessionId ? state.sessions.find((x) => x.id === p.sessionId) : null;
+    const showModeChip = p.kind === "new" || sendSess != null;
+    const chipMode = p.kind === "new" ? p.mode : sendSess?.mode;
     return (
       <Box flexDirection="column" width={width} paddingX={1}>
         <Box gap={1}>
           <Text color={C.accent} bold>
             {p.label}
           </Text>
-          {p.kind === "new" ? modeChip(p.mode) : sendSess ? modeChip(sendSess.mode) : null}
+          {showModeChip ? modeChip(chipMode) : null}
           {p.kind === "new" ? (
             <Text color={prov?.color || C.faint}>
               {`${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`}
@@ -711,6 +724,10 @@ export function promptRows(state: TuiState): number {
 
 export function Confirm({ confirm, width }: { confirm: ConfirmState; width: number }): ReactNode {
   const accent = confirm.danger ? C.bad : C.accent;
+  let actionText = "quit and stop the daemon";
+  if (confirm.action === "restart") actionText = "restart the daemon";
+  else if (confirm.action === "deleteSession")
+    actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";
   return (
     <Box
       width={width}
@@ -737,15 +754,7 @@ export function Confirm({ confirm, width }: { confirm: ConfirmState; width: numb
       <Box height={1} />
       <Box gap={2}>
         <Text color={C.accent}>{"enter"}</Text>
-        <Text color={C.dim}>
-          {confirm.action === "restart"
-            ? "restart the daemon"
-            : confirm.action === "deleteSession"
-              ? confirm.deleteBranch
-                ? "delete the session + branch"
-                : "delete the session"
-              : "quit and stop the daemon"}
-        </Text>
+        <Text color={C.dim}>{actionText}</Text>
         <Text color={C.faint}>{"·"}</Text>
         <Text color={C.accent}>{"esc"}</Text>
         <Text color={C.dim}>{"cancel"}</Text>
