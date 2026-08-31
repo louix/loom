@@ -67,7 +67,7 @@ const TOOL_STEER = [
   "- Use tilth for editing files — `tilth_write` to create or replace a file, `tilth_edit` for in-place edits. Do not use the built-in Write/Edit for changes you intend to keep.",
   "- Use fff to find files and search code. The built-in Grep and Glob are disabled.",
   "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
-  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping.",
+  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Never pose the question as plain chat text instead — the session has no way to tell that apart from finishing normally, so it will show as idle/done instead of waiting on you.",
 ].join("\n");
 
 /**
@@ -100,7 +100,7 @@ const AISDK_SYSTEM = [
   "Before you commit, run the project's typecheck and tests and read the output — don't assume it passed. If a test you added fails or is flaky, fix the root cause or follow how the existing tests assert; never loosen an assertion just to get a green run. When you assert on rendered terminal output, match the visible token loosely (e.g. /\\[plan\\]/) — not exact spacing, column position, or adjacency between coloured spans.",
   "You have tools for reading and editing files, searching, and committing. Call them rather than guessing file contents.",
   "Some tool calls need the user's approval — if one is denied, adapt instead of retrying it unchanged.",
-  "When you are blocked on a decision only the user can make, use `ask_user`.",
+  "When you are blocked on a decision only the user can make, use `ask_user`. Never ask in plain chat text instead — the session can't distinguish that from finishing normally, so it will show as idle/done rather than waiting on you.",
 ].join("\n");
 
 const VALID_STATUSES: readonly SessionStatus[] = [
