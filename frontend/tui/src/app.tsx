@@ -11,6 +11,7 @@ import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
 import { providerColorOf, queueFor } from "./model.ts";
+import { C } from "./theme.ts";
 import {
   Confirm,
   Detail,
@@ -143,7 +144,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
   }
 
   return (
-    <Box flexDirection="column" width={cols}>
+    <Box flexDirection="column" width={cols} backgroundColor={C.bg}>
       <Header state={state} width={cols} />
       {body}
       {view.showRequest ? <RequestPanel pending={view.pend} width={cols} /> : null}

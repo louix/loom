@@ -18,6 +18,13 @@ type Palette = {
   text: string;
   dim: string;
   faint: string;
+  /** Screen background — painted explicitly (`Layout`'s root `Box`, and every
+   *  bordered panel's `borderBackgroundColor`) because a terminal's own
+   *  background is whatever the user already has it set to, usually dark; a
+   *  "light theme" that only changes foreground hues would still be dark text
+   *  read against that dark background. `undefined` leaves the terminal's own
+   *  background untouched. */
+  bg: string | undefined;
 };
 
 const DARK: Palette = {
@@ -30,9 +37,10 @@ const DARK: Palette = {
   text: "#e5e7eb",
   dim: "#6b7280",
   faint: "#4b5563",
+  bg: undefined,
 };
 
-/** Same roles, darkened/saturated to stay legible on a light terminal background. */
+/** Same roles, darkened/saturated for legibility against the explicit light `bg`. */
 const LIGHT: Palette = {
   accent: "#0f766e",
   accentDim: "#0d9488",
@@ -43,6 +51,7 @@ const LIGHT: Palette = {
   text: "#111827",
   dim: "#4b5563",
   faint: "#9ca3af",
+  bg: "#f4f4f5",
 };
 
 let mode: ThemeMode = "dark";
