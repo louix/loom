@@ -55,6 +55,8 @@ interface SdkMsgLite {
   result?: string;
   is_error?: boolean;
   num_turns?: number;
+  /** >0 ⇒ more user turns are already queued; this `result` is not the end. */
+  queued_turn_count?: number;
   total_cost_usd?: number;
   usage?: RawUsage;
   modelUsage?: Record<string, ModelUsageEntry>;
@@ -322,6 +324,18 @@ export class ClaudeEventMapper {
     if (ok) summary = m.result ?? "";
     else if (m.errors && m.errors.length > 0) summary = m.errors.join("; ");
     else summary = m.subtype ?? "error";
+
+    // The SDK emits one `result` per SDK turn, but Loom stitches several SDK
+    // turns into one engagement — a mid-turn message the user sent while the
+    // last turn was still running, or the "implement it now" turn the plan
+    // approval path queues itself. When the SDK tells us more user turns are
+    // already queued (`queued_turn_count > 0`), this `result` is an internal
+    // seam, not a turn boundary: emitting it would log a false "turn complete"
+    // and flap the session to `idle` while it's plainly still working. Keep
+    // the usage delta above; drop the marker. A failed turn still surfaces —
+    // the error is worth seeing even mid-engagement.
+    if (ok && (m.queued_turn_count ?? 0) > 0) return out;
+
     if (!ok) {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });
     }

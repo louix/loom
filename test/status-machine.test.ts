@@ -28,20 +28,44 @@ test("model activity does NOT clear awaiting_input — the daemon owns that", ()
   );
 });
 
-test("model activity while already running / interrupted / idle is a no-op", () => {
+test("model activity while already running is a no-op", () => {
   assert.equal(deriveStatus("running", ev({ type: "thinking", text: "" })), null);
   assert.equal(
     deriveStatus("running", ev({ type: "tool_result", id: "1", ok: true, output: null })),
     null,
   );
+});
+
+test("model activity does NOT revive an interrupted or errored turn", () => {
+  for (const s of ["interrupted", "error"] as const) {
+    assert.equal(deriveStatus(s, ev({ type: "assistant_text", text: "…" })), null);
+    assert.equal(deriveStatus(s, ev({ type: "thinking", text: "…" })), null);
+    assert.equal(deriveStatus(s, ev({ type: "tool_call", id: "1", name: "x", input: {} })), null);
+    assert.equal(
+      deriveStatus(s, ev({ type: "tool_result", id: "1", ok: true, output: null })),
+      null,
+    );
+  }
+});
+
+test("fresh model output heals a session wrongly parked at idle", () => {
+  // A connector can emit an interim `result` (Claude: denied ExitPlanMode,
+  // `/compact`) and then keep streaming the same engagement. Those events
+  // never pass through the daemon's send() path, so the state machine has to
+  // pull the session back to `running` itself.
+  for (const e of [
+    ev({ type: "assistant_text", text: "back to work" }),
+    ev({ type: "thinking", text: "…" }),
+    ev({ type: "tool_call", id: "1", name: "x", input: {} }),
+  ]) {
+    assert.deepEqual(deriveStatus("idle", e), { status: "running", reason: null });
+  }
+  // Plumbing events are not enough on their own to revive a settled turn.
   assert.equal(
-    deriveStatus("interrupted", ev({ type: "tool_result", id: "1", ok: true, output: null })),
+    deriveStatus("idle", ev({ type: "tool_result", id: "1", ok: true, output: null })),
     null,
   );
-  assert.equal(
-    deriveStatus("idle", ev({ type: "tool_call", id: "1", name: "x", input: {} })),
-    null,
-  );
+  assert.equal(deriveStatus("idle", ev({ type: "answer", id: "q1", text: "x" })), null);
 });
 
 test("permission_request → awaiting_input/permission (reason returned even when already awaiting)", () => {

@@ -4,6 +4,7 @@
  * through this pure function.
  *
  *   starting ─▶ running          (first model output)
+ *   idle ─▶ running              (model output after an interim `result`)
  *   running ─▶ awaiting_input    (permission_request / question / plan_review)
  *   awaiting_input ─▶ running    (the daemon's answer/approve path, NOT this fn)
  *   running ─▶ interrupted       (user stop / stream ended abruptly — set directly)
@@ -34,18 +35,34 @@ export const deriveStatus = (current: SessionStatus, ev: HarnessEvent): Derived 
       // The agent presented a plan (ExitPlanMode) and is blocked on a decision.
       return { status: "awaiting_input", reason: "plan_review" };
 
-    case "answer":
     case "assistant_text":
     case "thinking":
     case "tool_call":
+      // Fresh model output. It moves a `starting` turn to `running`, and it
+      // also *heals* a session wrongly parked at `idle`: a connector can emit
+      // an interim `result` and then keep streaming the same engagement — the
+      // Claude adapter does exactly this after a denied `ExitPlanMode` (it
+      // queues an "implement it now" turn itself) and around `/compact`. That
+      // turn's events never flow through the daemon's `send()` path, so
+      // without this the turn runs to completion while every client shows the
+      // session as IDLE.
+      //
+      // It must NOT pull the session out of `awaiting_input` — that transition
+      // is owned by the daemon's answer / approve path (`#resumeAfterAnswer`).
+      // A provider that flushes buffered assistant text *after* the
+      // `permission_request` (some OpenAI-compatible endpoints do) would
+      // otherwise clear the blocked state and hide the approval prompt while
+      // the turn is still parked on the gate. `interrupted` / `error` stay
+      // sticky until the user acts.
+      return current === "starting" || current === "idle"
+        ? { status: "running", reason: null }
+        : null;
+
+    case "answer":
     case "tool_result":
-      // First model output moves a `starting` turn to `running`. It must NOT
-      // pull the session out of `awaiting_input` — that transition is owned by
-      // the daemon's answer / approve path (`#resumeAfterAnswer`). A provider
-      // that flushes buffered assistant text *after* the `permission_request`
-      // (some OpenAI-compatible endpoints do) would otherwise clear the blocked
-      // state and hide the approval prompt while the turn is still parked on
-      // the gate. `interrupted` / `error` / `idle` are likewise left alone.
+      // Reactive plumbing, not fresh model output: only unstick a `starting`
+      // turn. `answer` has its own resume path in the daemon, and a stray
+      // `tool_result` should never be what revives an otherwise-settled turn.
       return current === "starting" ? { status: "running", reason: null } : null;
 
     case "result":

@@ -212,6 +212,45 @@ test("result error emits an error and a failed result", () => {
   assert.equal(res?.ok, false);
 });
 
+test("an interim result with more turns queued emits the usage delta but no result marker", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 500, output_tokens: 100 } },
+  });
+  const out = m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "queued more",
+    num_turns: 1,
+    queued_turn_count: 1,
+    usage: { input_tokens: 500, output_tokens: 100 },
+    modelUsage: { x: { inputTokens: 500, outputTokens: 100, costUSD: 0.01, contextWindow: 200000 } },
+  });
+  assert.equal(byType(out, "result").length, 0, "no turn-complete marker mid-engagement");
+  assert.equal(byType(out, "usage").length, 1, "usage still accounts");
+  assert.equal(m.state.turns, 1, "cumulative state still advances");
+  assert.equal(m.state.costUsd, 0.01);
+});
+
+test("a failed interim result still surfaces even with turns queued", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.map({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    num_turns: 3,
+    queued_turn_count: 2,
+    errors: ["boom"],
+    usage: { input_tokens: 10 },
+    modelUsage: {},
+  });
+  assert.equal(byType(out, "error")[0]?.message.includes("boom"), true);
+  assert.equal(byType(out, "result")[0]?.ok, false);
+});
+
 test("a Task tool_use raises subagent_started; its tool_result raises subagent_stopped", () => {
   const m = new ClaudeEventMapper(SID);
   const started = m.map({
