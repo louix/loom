@@ -142,6 +142,10 @@ test("contextLimitFor matches on model-id prefix, falls back to 128k", () => {
   assert.equal(contextLimitFor("gpt-5-mini"), 400_000);
   assert.equal(contextLimitFor("deepseek-reasoner"), 128_000);
   assert.equal(contextLimitFor("glm-4.6"), 200_000);
+  assert.equal(contextLimitFor("glm-5.3-flash"), 1_048_576);
+  assert.equal(contextLimitFor("glm-5.3-flash-0824"), 1_048_576);
+  assert.equal(contextLimitFor("zai-org/glm-5.3-flash"), 1_048_576);
+  assert.equal(contextLimitFor("glm-5"), 200_000);
   assert.equal(contextLimitFor("something-unknown"), 128_000);
   assert.equal(contextLimitFor(null), 128_000);
   // native anthropic / google aisdk backends
@@ -839,6 +843,7 @@ test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", asy
         results += 1;
       },
       onSubagents: () => {},
+      onBackgroundTasks: () => {},
       onProviderRef: () => {},
       onMode: () => {},
       onBackgroundTasks: () => {},

@@ -29,6 +29,7 @@ export const MODEL_CONTEXT: Array<[prefix: string, limit: number]> = [
   ["claude", 200_000], // Sonnet / Opus / Haiku, default (non-beta) window
   ["deepseek", 128_000],
   ["glm-4.6", 200_000],
+  ["glm-5.3-flash", 1_048_576], // 2^20 — the flash tier ships the 1M window
   ["glm-5", 200_000],
   ["glm", 128_000],
   ["qwen", 256_000],
