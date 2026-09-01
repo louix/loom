@@ -79,7 +79,7 @@ const TOOL_STEER = [
   "- Use tilth for working with code — locating a symbol or its references, reading source structurally, and editing (`tilth_write` creates or replaces a file, `tilth_edit` makes in-place changes). It understands code structure via tree-sitter, so prefer it over the built-in Read / Write / Edit for source files.",
   "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
   "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
-  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Never pose the question as plain chat text instead — the session has no way to tell that apart from finishing normally, so it will show as idle/done instead of waiting on you.",
+  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Avoid a plain chat text question because it will show the session as idle/done instead of waiting on the user.",
 ].join("\n");
 
 /**
@@ -105,14 +105,11 @@ const probeOpenAiModels = async (baseUrl: string, apiKey: string): Promise<strin
 };
 
 const AISDK_SYSTEM = [
-  "You are a coding agent working in a git worktree under Loom, a fleet supervisor.",
+  "You are a coding agent working in a git worktree under Loom, an agent harness.",
   "Work autonomously toward the user's goal: inspect the repo before changing it, make focused edits, and explain what you did concisely.",
-  "You have a large context window — read whole files rather than fragments, and prefer a few substantial edits over many tiny ones.",
-  "Make the smallest change that fully covers the request. Don't edit README or other docs unless the task explicitly asks for a docs change, and don't refactor code the task didn't name.",
-  "Before you commit, run the project's typecheck and tests and read the output — don't assume it passed. If a test you added fails or is flaky, fix the root cause or follow how the existing tests assert; never loosen an assertion just to get a green run. When you assert on rendered terminal output, match the visible token loosely (e.g. /\\[plan\\]/) — not exact spacing, column position, or adjacency between coloured spans.",
-  "You have tools for reading and editing files, searching, and committing. Call them rather than guessing file contents.",
-  "Some tool calls need the user's approval — if one is denied, adapt instead of retrying it unchanged.",
-  "When you are blocked on a decision only the user can make, use `ask_user`. Never ask in plain chat text instead — the session can't distinguish that from finishing normally, so it will show as idle/done rather than waiting on you.",
+  "Make the smallest change that fully covers the request. Documentation and comments can be good used sparingly. The test: does this tell the reader something they can't get from the code, or could only get by re-deriving it painfully? If not, delete it.",
+  "Before you commit, run the project's typecheck and tests and read their output. If a test you added fails or is flaky, fix the root cause or follow how the existing tests assert; never loosen an assertion just to get a green run.",
+  "You have tools for reading and editing files, searching, and committing. Call them.",
 ].join("\n");
 
 const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
