@@ -47,8 +47,16 @@ export type UiMode = "browse" | "prompt" | "help" | "doctor" | "confirm" | "plan
 export type LogFilter = "chat" | "chat_and_tools" | "everything";
 
 /** `v` cycles through {@link LogFilter} in this order. */
-export const cycleLogFilter = (f: LogFilter): LogFilter =>
-  f === "chat" ? "chat_and_tools" : f === "chat_and_tools" ? "everything" : "chat";
+export const cycleLogFilter = (f: LogFilter): LogFilter => {
+  switch (f) {
+    case "chat":
+      return "chat_and_tools";
+    case "chat_and_tools":
+      return "everything";
+    default:
+      return "chat";
+  }
+};
 
 /** Human label for what pressing `v` would switch the event log *to*. */
 export const logFilterLabel = (f: LogFilter): string => {
@@ -61,6 +69,18 @@ export const logFilterLabel = (f: LogFilter): string => {
       return "show everything";
     default:
       return absurd(f);
+  }
+};
+
+/** Compact label for the *current* filter, as shown in the event-log header. */
+export const logFilterTag = (f: LogFilter): string => {
+  switch (f) {
+    case "everything":
+      return "full";
+    case "chat_and_tools":
+      return "chat+tools";
+    default:
+      return "chat";
   }
 };
 

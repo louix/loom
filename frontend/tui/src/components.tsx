@@ -16,6 +16,7 @@ import {
   focusedChildOf,
   footerHints,
   groupsOf,
+  logFilterTag,
   parseAskUserQuestions,
   pickerVisible,
   providerInfo,
@@ -721,11 +722,7 @@ export const EventLog = ({
           {title}
         </Text>
         <Text color={C.faint}>
-          {(state.logFilter === "everything"
-            ? "full"
-            : state.logFilter === "chat_and_tools"
-              ? "chat+tools"
-              : "chat") + (off > 0 ? `  ·  ↑${above} more` : "")}
+          {logFilterTag(state.logFilter) + (off > 0 ? `  ·  ↑${above} more` : "")}
         </Text>
       </Box>
       {shown.length === 0 ? (

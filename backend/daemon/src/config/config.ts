@@ -332,8 +332,9 @@ const modelContextOf = (v: unknown): Record<string, number> => {
   const out: Record<string, number> = {};
   if (!v || typeof v !== "object") return out;
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    const n = typeof val === "number" ? val : typeof val === "string" ? Number(val) : NaN;
-    if (k !== "" && Number.isFinite(n) && n > 0) out[k] = Math.round(n);
+    if (k === "" || (typeof val !== "number" && typeof val !== "string")) continue;
+    const n = typeof val === "string" ? Number(val) : val;
+    if (Number.isFinite(n) && n > 0) out[k] = Math.round(n);
   }
   return out;
 };

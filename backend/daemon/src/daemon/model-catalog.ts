@@ -28,8 +28,18 @@ const CONTEXT_FIELDS = [
   "max_context_length",
 ] as const;
 
+/** Coerce a JSON scalar to a number; any other shape is NaN. */
+const toNumber = (v: unknown): number => {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return Number(v);
+  return NaN;
+};
+
+const nonEmptyString = (v: unknown): string | undefined =>
+  typeof v === "string" && v !== "" ? v : undefined;
+
 const positiveNumber = (v: unknown): number | undefined => {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  const n = toNumber(v);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
 };
 
@@ -53,7 +63,7 @@ const advertisedPricing = (row: Record<string, unknown>): PriceRow | undefined =
   if (!p || typeof p !== "object") return undefined;
   const r = p as Record<string, unknown>;
   const perMillion = (v: unknown): number | undefined => {
-    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    const n = toNumber(v);
     // sanity-banded: an advertised price is a smallish non-negative number
     return Number.isFinite(n) && n >= 0 && n < 100_000 ? n : undefined;
   };
@@ -88,12 +98,7 @@ export const parseModelRows = (body: unknown): ProbedModel[] => {
     .map((m) => {
       const context = advertisedContext(m);
       const pricing = advertisedPricing(m);
-      const label =
-        typeof m["display_name"] === "string" && m["display_name"] !== ""
-          ? m["display_name"]
-          : typeof m["name"] === "string" && m["name"] !== ""
-            ? m["name"]
-            : undefined;
+      const label = nonEmptyString(m["display_name"]) ?? nonEmptyString(m["name"]);
       return {
         id: m.id,
         ...(context !== undefined ? { context } : {}),
@@ -101,7 +106,11 @@ export const parseModelRows = (body: unknown): ProbedModel[] => {
         ...(pricing !== undefined ? { pricing } : {}),
       };
     })
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .sort((a, b) => {
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
 };
 
 /** `GET {base_url}/models` → parsed rows. Throws on a non-OK / dead endpoint. */
