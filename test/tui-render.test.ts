@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
-import { render } from "ink";
+import { render, renderToString } from "ink";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
+import { FooterArea, promptRows } from "@loom/tui/components";
+import { initialState, reduce } from "@loom/tui/model";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -60,8 +62,15 @@ const waitFor = async (stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<v
   assert.match(stdout.last, re);
 };
 
-const mount = (client: LoomClient, extra: Partial<Parameters<typeof App>[0]> = {}) => {
+const mount = (
+  client: LoomClient,
+  extra: Partial<Parameters<typeof App>[0]> = {},
+  /** Terminal size override — layout regressions are width-sensitive. */
+  size: { columns?: number; rows?: number } = {},
+) => {
   const stdout = new FakeOut();
+  if (size.columns !== undefined) stdout.columns = size.columns;
+  if (size.rows !== undefined) stdout.rows = size.rows;
   const stdin = new FakeIn();
   const app = render(createElement(App, { client, ...extra }), {
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -1124,6 +1133,65 @@ model    = "gpt-5"
     stdin.feed("F"); // hard fork
     await waitFor(stdout, /forked from .* @ turn 0/); // Detail lineage line
     assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// frame-height regression: a footer row that word-wraps (or a Detail pane
+// taller than its budget) makes the frame taller than the terminal, the alt
+// screen scrolls, and the top bar slides off. Ink frames carry one \n per
+// physical row, so a stripped frame must split to exactly `rows` lines.
+// ---------------------------------------------------------------------------
+
+/* oxlint-disable no-control-regex -- stripping terminal escape sequences */
+const stripAnsi = (s: string): string =>
+  s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+/* oxlint-enable no-control-regex */
+
+test("the footer notice owns a truncating row — hints + notice can never wrap", () => {
+  const long = `injected “${"word ".repeat(30)}” — lands after the current tool call`;
+  const state = reduce(initialState(), { t: "notice", text: long, tone: "good" });
+  assert.equal(promptRows(state), 3, "the layout reserves the notice's row");
+  const out = renderToString(createElement(FooterArea, { state, width: 60 }));
+  const lines = stripAnsi(out).split("\n");
+  assert.equal(lines.length, 3, "notice + rule + hints, nothing wrapped");
+  assert.match(lines[0]!, /✓ injected/, "the notice is tone-glyphed on its own row");
+  assert.match(lines[1]!, /^─+$/, "the rule separates the notice from the hints");
+  for (const line of lines) {
+    assert.ok(line.length <= 60, `footer row exceeds the width: ${JSON.stringify(line)}`);
+  }
+});
+
+test("a transient notice never grows the frame past the terminal height", async () => {
+  const { connect, cleanup } = await harness({ config: OAI_CFG });
+  const client = await connect();
+  await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "oai",
+    model: "m1",
+  });
+  // 90 cols: the old footer put the notice at the end of the hints row, which
+  // overflowed and word-wrapped at this width — growing the frame a row past
+  // the terminal and pushing the top bar off the alt screen.
+  const { stdout, stdin, app } = mount(client, {}, { columns: 90 });
+  const frameLines = (): number => stripAnsi(stdout.last).split("\n").length;
+  try {
+    // ⌥t acts on the *selected* session — wait until the Detail pane shows it,
+    // or the key lands before selection and is dropped.
+    await waitFor(stdout, /engine oai/);
+    assert.equal(frameLines(), stdout.rows, "the frame fills the terminal exactly");
+    stdin.feed("\x1bt"); // ⌥t — no "oai" model advertises thinking-effort support
+    await waitFor(stdout, /has no thinking-effort control/);
+    assert.equal(
+      frameLines(),
+      stdout.rows,
+      "the notice was absorbed into the footer budget — the frame did not grow",
+    );
   } finally {
     app.unmount();
     await client.close();

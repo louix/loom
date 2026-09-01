@@ -49,6 +49,7 @@ import {
   type LogLine,
   type TuiState,
 } from "@loom/tui/model";
+import { detailRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   bar,
@@ -1703,6 +1704,57 @@ test("defaultModeOf reads the daemon's remembered mode, not per-provider", () =>
     list: PROVIDERS.map((p) => ({ ...p, defaultMode: "acceptEdits" })),
   });
   assert.equal(defaultModeOf(s), "acceptEdits");
+});
+
+// ---------------------------------------------------------------------------
+// layout budgets — the frame must never exceed the terminal (see deriveView)
+// ---------------------------------------------------------------------------
+
+test("detailRows counts the Detail pane's physical rows, conditional lines included", () => {
+  assert.equal(detailRows(null), 4); // borders + "DETAIL" + the select hint
+  assert.equal(detailRows(snap({ id: "a", status: "idle" })), 10);
+
+  // A claude chat mid-flight: profile line, fork lineage, compaction, warm
+  // cache, plan windows, commit subject, queued message, sub-agents, bg tasks.
+  const full = snap({
+    id: "c",
+    status: "running",
+    parentId: "p",
+    forkTurn: 3,
+    git: {
+      branch: "loom/x",
+      commits: 2,
+      aheadOfBase: 1,
+      behindBase: 0,
+      dirty: true,
+      lastCommitSubject: "add flag",
+    },
+    rateLimits: { five_hour: { status: "allowed", utilization: 0.4 } },
+    cache: { ttlMinutes: 5, lastTurnAt: Date.now(), lastRead: 2, lastWrite: 1 },
+    subagents: [{ id: "sa", name: "scout", active: true }],
+    backgroundTasks: [{ id: "bt", kind: "shell", title: "tail log" }],
+  });
+  const rows = detailRows(full, {
+    account: "claude pro (acme)",
+    compacting: { startedAt: Date.now(), before: 90_000 },
+    queued: ["follow up"],
+  });
+  assert.equal(rows, 19);
+  // The layout used to hardcode 13 here — a session like this overflowed the
+  // body by 6 rows and pushed the top bar off the alt screen.
+  assert.ok(rows > 13, "a full claude Detail exceeds the old hardcoded budget");
+});
+
+test("promptRows budgets the footer notice row in browse, never in a prompt", () => {
+  assert.equal(promptRows(initialState()), 2);
+  const noted = reduce(initialState(), { t: "notice", text: "sent", tone: "good" });
+  assert.equal(promptRows(noted), 3);
+  // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
+  const prompted = reduce(noted, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+  });
+  assert.equal(promptRows(prompted), 3);
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks

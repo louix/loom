@@ -140,22 +140,28 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
       <Box gap={1}>
-        <Text color={C.accent} bold>
+        <Text color={C.accent} bold wrap="truncate-end">
           {"▍ loom"}
         </Text>
-        <Text color={C.dim}>{`v${state.daemon?.version ?? "?"}`}</Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {`v${state.daemon?.version ?? "?"}`}
+        </Text>
         <Text color={C.faint}>{"·"}</Text>
         <Text color={C.text} wrap="truncate-end">
           {repo}
         </Text>
       </Box>
       <Box gap={1}>
-        <Text color={C.dim}>{`${state.sessions.length} sessions`}</Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {`${state.sessions.length} sessions`}
+        </Text>
         {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
         {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
         {bg ? <Text color={C.accentDim}>{`◐ ${bg}`}</Text> : null}
         <Text color={C.faint}>{"·"}</Text>
-        <Text color={lamp.color}>{lamp.text}</Text>
+        <Text color={lamp.color} wrap="truncate-end">
+          {lamp.text}
+        </Text>
       </Box>
     </Box>
   );
@@ -424,7 +430,7 @@ export const Detail = ({
       flexDirection="column"
     >
       <Box>
-        <Text color={C.dim}>{`DETAIL  ${shortId(s.id)}`}</Text>
+        <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
         <Box flexGrow={1} justifyContent="flex-end">
           <Text wrap="truncate-end">
             <Text color={C.faint}>{"engine "}</Text>
@@ -442,7 +448,9 @@ export const Detail = ({
         {truncate(titleLine(s.title), w)}
       </Text>
       {s.parentId && s.forkTurn != null ? (
-        <Text color={C.faint}>{`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}</Text>
+        <Text color={C.faint} wrap="truncate-end">
+          {`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}
+        </Text>
       ) : null}
       <Box marginTop={1} gap={2}>
         <Text color={look.color} bold wrap="truncate-end">
@@ -450,11 +458,13 @@ export const Detail = ({
         </Text>
         {/* `[mode]` in the same gold the event log gives tool commands — the one */}
         {/* thing on this row you change mid-session, so it should catch the eye. */}
-        <Text>
+        <Text wrap="truncate-end">
           <Text color={C.dim}>{"mode "}</Text>
           <Text color={C.warn}>{`[${modeLabel(s.mode)}]`}</Text>
         </Text>
-        <Text color={C.dim}>{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
+        </Text>
       </Box>
       <Field label="context">
         <Text wrap="truncate-end">
@@ -501,7 +511,7 @@ export const Detail = ({
             {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`}
           </Text>
         </Box>
-        <Text color={s.costUsd ? C.good : C.faint}>
+        <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
           {` ${(s.costSource === "table" ? "~" : "") + money(s.costUsd)}`}
         </Text>
       </Box>
@@ -560,6 +570,47 @@ export const Detail = ({
       ) : null}
     </Box>
   );
+};
+
+/**
+ * The physical rows {@link Detail} renders for a session — the layout's budget
+ * for the right column. Every Detail line truncates (never wraps), so the count
+ * is exact. `deriveView` sizes the split event log against this; it used to
+ * hardcode 13, which drifted from the conditional lines a claude chat accumulates
+ * (account / cache / plan / commit subject / background tasks), overflowed the
+ * body, and pushed the top of the UI off the alt screen. Keep in lockstep with
+ * Detail's JSX above — `test/tui-model.test.ts` pins both ends.
+ */
+export const detailRows = (
+  session: SessionSnapshot | null,
+  opts: {
+    /** `<login method> (<org>)` line — claude profiles only. */
+    account?: string;
+    /** Compaction-in-flight row. */
+    compacting?: { startedAt: number; before: number } | null;
+    /** Queued-messages row. */
+    queued?: readonly string[];
+  } = {},
+): number => {
+  if (!session) return 4; // borders + "DETAIL" + the select hint
+  const s = session;
+  let rows = 4; // borders + the title row + the title line
+  if (opts.account) rows += 1;
+  if (s.parentId && s.forkTurn != null) rows += 1;
+  rows += 2; // status row + its marginTop
+  rows += 1; // context
+  if (opts.compacting) rows += 1;
+  // cache row: appears once cache data exists (warm → cold with age, but the
+  // row persists), so `Date.now()` here can't disagree with the render.
+  if (cacheStatus(s, Date.now()).state !== "unknown") rows += 1;
+  rows += 1; // tokens
+  if (Object.keys(s.rateLimits).length > 0) rows += 1;
+  rows += 2; // git row + its marginTop
+  if (s.git?.lastCommitSubject) rows += 1;
+  if ((opts.queued ?? []).length > 0) rows += 1;
+  if (s.subagents.length > 0) rows += 1;
+  if ((s.backgroundTasks ?? []).length > 0) rows += 1;
+  return rows;
 };
 
 // ---------------------------------------------------------------------------
@@ -736,7 +787,11 @@ export const EditorView = ({
       <Box>
         <Text color={C.accent}>{"▍ "}</Text>
         <Text inverse> </Text>
-        {placeholder ? <Text color={C.faint}>{` ${placeholder}`}</Text> : null}
+        {placeholder ? (
+          <Text color={C.faint} wrap="truncate-end">
+            {` ${placeholder}`}
+          </Text>
+        ) : null}
       </Box>
     );
   }
@@ -810,7 +865,9 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
  *  otherwise — the same chip the Detail pane shows for a live session. */
 const modeChip = (mode: string | null | undefined): ReactNode => {
   return (
-    <Text color={mode && mode !== "default" ? C.warn : C.faint}>{`[${modeLabel(mode)}]`}</Text>
+    <Text wrap="truncate-end" color={mode && mode !== "default" ? C.warn : C.faint}>
+      {`[${modeLabel(mode)}]`}
+    </Text>
   );
 };
 
@@ -835,6 +892,23 @@ const promptHints = (p: PromptState, queued: number, sessionMode?: string | null
   return bits.join("  ·  ");
 };
 
+/** Glyph prefixing a footer notice, by tone — a quiet "message line" marker
+ *  that reads at a glance: ✓ done, ✕ failed, ▸ needs you, · informational. */
+const noticeGlyph = (tone: Tone): string => {
+  switch (tone) {
+    case "good":
+      return "✓";
+    case "bad":
+      return "✕";
+    case "accent":
+      return "▸";
+    case "warn":
+      return "!";
+    default:
+      return "·";
+  }
+};
+
 export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   if (state.mode === "prompt" && state.prompt) {
     const p = state.prompt;
@@ -850,19 +924,23 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
     return (
       <Box flexDirection="column" width={width} paddingX={1}>
         <Box gap={1}>
-          <Text color={C.accent} bold>
+          <Text color={C.accent} bold wrap="truncate-end">
             {p.label}
           </Text>
           {showModeChip ? modeChip(chipMode) : null}
           {p.kind === "new" ? (
-            <Text color={prov?.color || C.faint}>
+            <Text color={prov?.color || C.faint} wrap="truncate-end">
               {`${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`}
             </Text>
           ) : null}
           {p.kind === "new" ? <Text color={C.faint}>{"⌥p change"}</Text> : null}
         </Box>
         <EditorView buf={p.buffer} width={width - 2} placeholder={placeholder} />
-        <Text color={C.faint}>{promptHints(p, queued, sendSess?.mode)}</Text>
+        {/* Truncate, never wrap — this row is budgeted as exactly one line
+            (see promptRows); wrapping it grows the frame past the terminal. */}
+        <Text color={C.faint} wrap="truncate-end">
+          {promptHints(p, queued, sendSess?.mode)}
+        </Text>
       </Box>
     );
   }
@@ -870,35 +948,51 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
   const hints = footerHints(state);
   return (
     <Box flexDirection="column" width={width}>
+      {/* A transient notice owns this full-width row rather than hanging off the
+          hint row: appended there it word-wrapped past the terminal edge once
+          hints + text outgrew `width`, and the extra footer row made the frame
+          taller than `rows` — Ink's repaint then drifted and pushed the top
+          bar off the alt screen. `promptRows` reserves this row while a notice
+          is up; every Text below truncates so the footer stays its budgeted
+          height at any width. */}
+      {state.notice ? (
+        <Box paddingX={1}>
+          <Text wrap="truncate-end" color={toneColor(state.notice.tone)}>
+            {`${noticeGlyph(state.notice.tone)} ${state.notice.text}`}
+          </Text>
+        </Box>
+      ) : null}
       <Text color={C.faint}>{"─".repeat(width)}</Text>
-      <Box width={width} paddingX={1}>
-        <Box gap={1}>
+      <Box paddingX={1}>
+        {/* One truncating Text (not a flex row of chips): overflow clips the
+         * tail instead of wrapping a hint onto a second line. */}
+        <Text wrap="truncate-end">
           {hints.flatMap((hint, i) => [
             i > 0 ? (
               <Text key={`s${i}`} color={C.faint}>
-                {"·"}
+                {" · "}
               </Text>
             ) : null,
             <Text key={`k${i}`} color={C.accent}>
               {hint.keys}
             </Text>,
             <Text key={`l${i}`} color={C.dim}>
-              {hint.label}
+              {` ${hint.label}`}
             </Text>,
           ])}
-        </Box>
-        <Box flexGrow={1} />
-        {state.notice ? (
-          <Text color={toneColor(state.notice.tone)}>{state.notice.text}</Text>
-        ) : null}
+        </Text>
       </Box>
     </Box>
   );
 };
 
-/** Rows the prompt editor occupies, for the parent's height maths. */
+/** Rows the footer strip occupies, for the parent's height maths — rule +
+ *  hints in browse, label + editor + hints in a prompt. A transient notice
+ *  adds its own row in browse only (the prompt footer never renders one); it
+ *  must be budgeted here so the frame stays exactly `rows` tall while it's
+ *  up, or Ink's repaints drift and the top bar slides off the alt screen. */
 export const promptRows = (state: TuiState): number => {
-  if (state.mode !== "prompt" || !state.prompt) return 2;
+  if (state.mode !== "prompt" || !state.prompt) return 2 + (state.notice ? 1 : 0);
   const editor = Math.min(
     MAX_EDITOR_ROWS,
     Math.max(1, state.prompt.buffer.text.split("\n").length),

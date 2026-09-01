@@ -24,7 +24,7 @@ import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
-import { promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
+import { detailRows, promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
   loadableFailed,
@@ -53,6 +53,7 @@ import {
   parseAskUserQuestions,
   pendingFor,
   pickerCurrent,
+  providerAccountOf,
   providerInfo,
   providerPickItems,
   queueFor,
@@ -212,14 +213,29 @@ const deriveView = (
     sel?.status.kind === "awaiting_input" &&
     (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
 
-  const cols = Math.max(60, dims.cols);
-  const rows = Math.max(16, dims.rows);
+  // Never floor these above the real terminal size: the whole frame is laid
+  // out at exactly `cols` × `rows`, and a frame wider/taller than the terminal
+  // soft-wraps or scrolls — Ink's repaints then drift and the top bar slides
+  // off the alt screen. Tiny terminals degrade; they don't corrupt.
+  const cols = Math.max(1, dims.cols);
+  const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state);
   const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
-  const bodyH = Math.max(6, rows - 1 - footerH - requestH);
-  const leftW = Math.max(32, Math.min(52, Math.round(cols * 0.4)));
-  const rightW = cols - leftW - 1;
-  const splitLogH = Math.max(4, bodyH - 13);
+  const bodyH = Math.max(1, rows - 1 - footerH - requestH);
+  // Fleet column: 32-col floor where the terminal affords it, yielding below
+  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`.
+  const leftW = Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
+  const rightW = Math.max(1, cols - leftW - 1);
+  // The right column is Detail (natural height) + gap 1 + the log, and must
+  // sum to exactly bodyH — size the log against Detail's real row count
+  // (detailRows), not a hardcoded guess, or a rich claude session overflows
+  // the body and pushes the top of the UI off screen.
+  const detailH = detailRows(sel, {
+    account: sel ? providerAccountOf(state, sel.provider) : "",
+    compacting: sel ? (state.compacting[sel.id] ?? null) : null,
+    queued: sel ? queueFor(state, sel.id) : [],
+  });
+  const splitLogH = Math.max(4, bodyH - detailH - 1);
   const logH = logFull ? bodyH : splitLogH;
   const logPage = Math.max(1, logH - 3);
 
@@ -1008,7 +1024,12 @@ export const mkFleetHandle = ({
             text,
           });
           dispatch({ t: "pushHistory", text });
-          return r.injected ? "injected — lands after the current tool call" : "sent";
+          // Quote a preview: mid-turn sends are easy to fire twice in a row,
+          // and "injected" alone says neither which message landed nor that
+          // it's queued behind the running tool call rather than lost.
+          return r.injected
+            ? `injected “${truncate(text.replace(/\s+/g, " ").trim(), 40)}” — lands after the current tool call`
+            : "sent";
         }
         case "title": {
           if (!p.sessionId) return "";
