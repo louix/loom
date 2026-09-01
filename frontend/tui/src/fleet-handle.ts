@@ -23,7 +23,7 @@ import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { modeLabel, setThemeMode, shortId } from "./theme.ts";
+import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
 import { promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
@@ -519,24 +519,29 @@ export const mkFleetHandle = ({
     if (!s) return;
     if (name === "undo") {
       const sid = s.id;
-      const turns = s.turns;
       client
         .request<Array<{ turn: number; userText: string; rewindCostUsd: number }>>(
           "session.checkpoints",
           { id: sid },
         )
         .then((cps) => {
-          const items = cps
-            .filter((c) => c.turn < turns)
-            .map((c) => ({
+          const costToKeep = new Map(cps.map((c) => [c.turn, c.rewindCostUsd]));
+          // One row per turn you can undo, oldest first. "Undo turn T" discards
+          // turn T and everything after it, then reopens the prompt pre-filled
+          // with turn T's message — so the re-prime cost shown is the cost of
+          // keeping turn T-1 (nothing to re-prime when undoing turn 1).
+          const items = cps.map((c) => {
+            const snippet = truncate(c.userText.replace(/\s+/g, " ").trim(), 72) || "(no message)";
+            const cost = c.turn > 1 ? (costToKeep.get(c.turn - 1) ?? 0) : 0;
+            return {
               id: String(c.turn),
-              label: `turn ${c.turn} · ${c.userText || "(no message)"}`,
-              ...(c.rewindCostUsd > 0
-                ? { hint: `~$${c.rewindCostUsd.toFixed(2)} to re-prime` }
-                : {}),
-            }));
+              label: `turn ${c.turn} · ${snippet}`,
+              blob: c.userText,
+              ...(cost > 0 ? { hint: `~$${cost.toFixed(2)} to re-prime` } : {}),
+            };
+          });
           if (items.length === 0) {
-            return void dispatch({ t: "notice", text: "no earlier turn to undo to", tone: "dim" });
+            return void dispatch({ t: "notice", text: "nothing to undo yet", tone: "dim" });
           }
           dispatch({
             t: "openPicker",
@@ -827,16 +832,31 @@ export const mkFleetHandle = ({
 
       case "undo": {
         const id = p.ctx?.liveSessionId;
-        const toTurn = Number(cur.id);
+        const undoTurn = Number(cur.id);
+        const prefill = cur.blob ?? "";
         dispatch({ t: "closePicker" });
-        if (!id) return;
+        if (!id || !Number.isInteger(undoTurn)) return;
         client
-          .request("session.rewind", { id, toTurn, by: client.clientId })
-          .then(() => dispatch({ t: "notice", text: `rewound to turn ${toTurn}`, tone: "good" }))
+          // `toTurn` is turns-to-keep: undoing turn T keeps T-1.
+          .request("session.rewind", { id, toTurn: undoTurn - 1, by: client.clientId })
+          .then(() => {
+            dispatch({ t: "notice", text: `undid turn ${undoTurn}`, tone: "good" });
+            // Reopen the compose prompt with that turn's message pre-filled, as
+            // if you'd pressed Enter on the session — edit and re-send, or Esc.
+            dispatch({
+              t: "openPrompt",
+              prompt: makePrompt({
+                kind: "send",
+                sessionId: id,
+                label: "send",
+                ...(prefill ? { text: prefill } : {}),
+              }),
+            });
+          })
           .catch((e: unknown) =>
             dispatch({
               t: "notice",
-              text: `rewind failed: ${e instanceof Error ? e.message : String(e)}`,
+              text: `undo failed: ${e instanceof Error ? e.message : String(e)}`,
               tone: "bad",
             }),
           );

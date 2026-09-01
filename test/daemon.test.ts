@@ -668,6 +668,59 @@ model    = "gpt-5"
   }
 });
 
+test("session.rewind: toTurn 0 wipes the transcript; range guard covers the ends", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "gpt-5"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const s = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "first ask",
+      status: "idle",
+      provider: "openai",
+    });
+    const db = hh.daemon.db;
+    const insMsg = db.prepare(
+      "INSERT INTO provider_messages (session_id, seq, role, content, created_at) VALUES (?, ?, ?, ?, 0)",
+    );
+    for (let i = 0; i < 4; i++) insMsg.run(s.id, i, i % 2 ? "assistant" : "user", `"m${i}"`);
+    const insCp = db.prepare(
+      "INSERT INTO checkpoints (session_id, turn, provider_ref, fork_point, user_text, created_at) VALUES (?, ?, '', ?, ?, 0)",
+    );
+    insCp.run(s.id, 1, "2", "first ask");
+    insCp.run(s.id, 2, "4", "second ask");
+    db.prepare("UPDATE usage SET turns = 2 WHERE session_id = ?").run(s.id);
+
+    // out of range on both ends
+    await assert.rejects(c.request("session.rewind", { id: s.id, toTurn: -1 }), /toTurn must be 0/);
+    await assert.rejects(c.request("session.rewind", { id: s.id, toTurn: 2 }), /toTurn must be 0/);
+
+    // toTurn 0 → whole transcript gone, turn counter reset, every checkpoint dropped
+    const back = await c.request<SessionSnapshot>("session.rewind", { id: s.id, toTurn: 0 });
+    assert.equal(back.turns, 0);
+    assert.equal(back.status.kind, "idle");
+    const left = db
+      .prepare("SELECT COUNT(*) AS n FROM provider_messages WHERE session_id = ?")
+      .get(s.id) as { n: number };
+    assert.equal(left.n, 0);
+    const cps = await c.request<Array<{ turn: number }>>("session.checkpoints", { id: s.id });
+    assert.deepEqual(cps, []);
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("aisdk model auto-detection fills the picker list at start-up; config.check reports warnings", async () => {
   const srv = await modelsStub(["z-model", "a-model", "m-model"]);
   const hh = await makeHarness({

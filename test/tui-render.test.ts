@@ -997,7 +997,7 @@ test("f opens the find picker and filters the fleet by text", async () => {
   }
 });
 
-test("u opens the undo picker listing earlier turns", async () => {
+test("u opens the undo picker listing every turn, newest last", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", {
@@ -1022,11 +1022,74 @@ test("u opens the undo picker listing earlier turns", async () => {
     assert.match(stdout.last, /UNDO/);
     assert.match(stdout.last, /turn 1 · the original task/);
     assert.match(stdout.last, /turn 2 · a follow-up/);
-    assert.doesNotMatch(stdout.last, /turn 3/); // can't rewind to the current turn
+    // the latest turn is undoable too — pick it to rephrase what you just sent
+    assert.match(stdout.last, /turn 3 · one more/);
 
     stdin.feed(ESC);
     await delay(80);
     assert.match(stdout.last, /▍ loom/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("picking a turn rewinds the session and reopens the prompt pre-filled", async () => {
+  const { h, connect, cleanup } = await harness({
+    config: `
+[providers.openai]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "gpt-5"
+`,
+  });
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "turn one prompt",
+    status: "idle",
+    provider: "openai",
+  });
+  const db = h.daemon.db;
+  const insMsg = db.prepare(
+    "INSERT INTO provider_messages (session_id, seq, role, content, created_at) VALUES (?, ?, ?, ?, 0)",
+  );
+  for (let i = 0; i < 4; i++) insMsg.run(snap.id, i, i % 2 ? "assistant" : "user", `"m${i}"`);
+  const insCp = db.prepare(
+    "INSERT INTO checkpoints (session_id, turn, provider_ref, fork_point, user_text, created_at) VALUES (?, ?, '', ?, ?, 0)",
+  );
+  insCp.run(snap.id, 1, "2", "turn one prompt");
+  insCp.run(snap.id, 2, "4", "the second prompt we will redo");
+  db.prepare("UPDATE usage SET turns = 2 WHERE session_id = ?").run(snap.id);
+
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(200);
+    stdin.feed("u");
+    await waitFor(stdout, /UNDO/);
+    stdin.feed("redo"); // fuzzy-match narrows to the turn-2 row (matches its message)
+    await delay(80);
+    assert.match(stdout.last, /turn 2 · the second prompt/);
+    assert.doesNotMatch(stdout.last, /turn 1 · turn one prompt/);
+    stdin.feed("\r"); // enter → undo turn 2
+    // the compose prompt is back (as if Enter had been pressed on the session),
+    // pre-filled with turn 2's full message, ready to edit and re-send
+    await waitFor(stdout, /send \[manual\]\n ▍ the second prompt we will redo/);
+    assert.match(stdout.last, /↶ rewound to turn 1/); // the rewind landed
+
+    // the transcript was truncated to turn 1 (2 messages kept) and turn 2's
+    // checkpoint dropped
+    const kept = db
+      .prepare("SELECT COUNT(*) AS n FROM provider_messages WHERE session_id = ?")
+      .get(snap.id) as { n: number };
+    assert.equal(kept.n, 2);
+    const cps = await client.request<Array<{ turn: number }>>("session.checkpoints", {
+      id: snap.id,
+    });
+    assert.deepEqual(
+      cps.map((c) => c.turn),
+      [1],
+    );
   } finally {
     app.unmount();
     await client.close();

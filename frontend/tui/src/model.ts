@@ -1510,7 +1510,11 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // branch, which an in-place session doesn't have — undo (conversation-only)
     // still works there.
     const isAisdk = !isClaudeId(session.provider);
-    if (isAisdk && (status.kind === "idle" || status.kind === "interrupted") && session.turns > 1) {
+    if (
+      isAisdk &&
+      (status.kind === "idle" || status.kind === "interrupted") &&
+      session.turns >= 1
+    ) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
     if (isAisdk && !session.inPlace) local.push({ keys: "F", label: "fork", act: "fork" });

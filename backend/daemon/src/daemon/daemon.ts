@@ -911,10 +911,10 @@ export class Daemon {
     const snap = this.#registry.get(id);
     if (!snap || snap.turns <= 0) return;
     const forkPoint = this.#isAisdk(snap.provider) ? String(this.#pmsgs.count(id)) : "";
-    const userText = (this.#lastSend.get(id) ?? snap.title ?? "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 120);
+    // The full text that started this turn — the undo picker prefills a fresh
+    // prompt with it ("redo this"), so it's kept whole (newlines and all); the
+    // TUI clips it for the row label. Unbounded, like the event log.
+    const userText = (this.#lastSend.get(id) ?? snap.title ?? "").trim();
     this.#checkpoints.record(id, {
       turn: snap.turns,
       providerRef: this.#registry.store.providerRef(id) ?? "",
@@ -1391,20 +1391,26 @@ export class Daemon {
           "rewind is aisdk-only for now (Claude support is fork-tree F3)",
         );
       }
-      if (snap.turns <= 1) {
-        throw new RpcError("bad_request", "this session has no earlier turn to rewind to");
+      if (snap.turns < 1) {
+        throw new RpcError("bad_request", "this session has no turn to undo");
       }
-      if (!Number.isInteger(toTurn) || toTurn < 1 || toTurn >= snap.turns) {
-        throw new RpcError("bad_request", `toTurn must be 1..${snap.turns - 1}`);
+      // `toTurn` is how many turns to keep: 0 wipes the transcript (redo the
+      // first message from scratch), `turns - 1` drops just the last turn.
+      if (!Number.isInteger(toTurn) || toTurn < 0 || toTurn >= snap.turns) {
+        throw new RpcError("bad_request", `toTurn must be 0..${snap.turns - 1}`);
       }
       if (!["idle", "interrupted", "error"].includes(snap.status.kind)) {
         // rewind() awaits the in-flight #turn, which for a running / parked
         // session never settles until it's interrupted → the RPC would hang.
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
       }
-      const cp = this.#checkpoints.at(id, toTurn);
-      if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
-      const keep = Number(cp.forkPoint) || 0;
+      // toTurn 0 has no checkpoint row — keep nothing.
+      let keep = 0;
+      if (toTurn > 0) {
+        const cp = this.#checkpoints.at(id, toTurn);
+        if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
+        keep = Number(cp.forkPoint) || 0;
+      }
 
       // Truncate the bookkeeping first so whichever path emits the snapshot
       // below carries the new turn count.
