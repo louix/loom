@@ -6,7 +6,7 @@
  * {@link TranscriptStore} the daemon hands a connector in its `ConnectorContext`.
  */
 import type { TranscriptMessage, TranscriptStore } from "@loom/core/transcript";
-import type { Db } from "./db.ts";
+import { type Db, withTransaction } from "./db.ts";
 
 interface Row {
   seq: number;
@@ -39,6 +39,12 @@ export class ProviderMessageStore implements TranscriptStore {
   /** Append messages after whatever is already stored. */
   append(sessionId: string, messages: readonly TranscriptMessage[]): void {
     if (messages.length === 0) return;
+    withTransaction(this.#db, () => this.#appendUnlocked(sessionId, messages));
+  }
+
+  /** The insert loop, without its own transaction — call inside one. */
+  #appendUnlocked(sessionId: string, messages: readonly TranscriptMessage[]): void {
+    if (messages.length === 0) return;
     const startRow = this.#db
       .prepare("SELECT COALESCE(MAX(seq), -1) AS max FROM provider_messages WHERE session_id = ?")
       .get(sessionId) as { max: number } | undefined;
@@ -64,10 +70,14 @@ export class ProviderMessageStore implements TranscriptStore {
       // is wrong. Fail loudly instead.
       throw new Error(`replaceFrom: fromSeq ${fromSeq} is past the end (${n} messages)`);
     }
-    this.#db
-      .prepare("DELETE FROM provider_messages WHERE session_id = ? AND seq >= ?")
-      .run(sessionId, fromSeq);
-    this.append(sessionId, messages);
+    // The DELETE and the re-append are one unit — a crash between them would
+    // drop the tail with nothing to replace it (compaction / rewind data loss).
+    withTransaction(this.#db, () => {
+      this.#db
+        .prepare("DELETE FROM provider_messages WHERE session_id = ? AND seq >= ?")
+        .run(sessionId, fromSeq);
+      this.#appendUnlocked(sessionId, messages);
+    });
   }
 
   clear(sessionId: string): void {

@@ -20,6 +20,38 @@ export const openDb = (path: string): Db => {
   return db;
 };
 
+/** Databases with a `withTransaction` frame currently on the stack — guards
+ *  against a nested call (SQLite has no nested `BEGIN`; no caller needs one). */
+const inTransaction = new WeakSet<Db>();
+
+/**
+ * Run `fn` inside a single `BEGIN IMMEDIATE` … `COMMIT`, rolling back and
+ * re-throwing if it throws. `IMMEDIATE` takes the write lock up front so two
+ * daemons racing the same file serialise here instead of one hitting
+ * `SQLITE_BUSY` mid-statement. Not re-entrant.
+ */
+export const withTransaction = <T>(db: Db, fn: () => T): T => {
+  if (inTransaction.has(db)) {
+    throw new Error("withTransaction is not re-entrant");
+  }
+  inTransaction.add(db);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const out = fn();
+    db.exec("COMMIT");
+    return out;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // already rolled back by SQLite (e.g. a fatal error) — nothing to undo
+    }
+    throw err;
+  } finally {
+    inTransaction.delete(db);
+  }
+};
+
 const currentVersion = (db: Db): number => {
   db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
@@ -49,14 +81,24 @@ export const migrate = (db: Db): void => {
   for (let v = from; v < MIGRATIONS.length; v++) {
     const sql = MIGRATIONS[v];
     if (sql === undefined) continue;
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     try {
+      // Re-check under the write lock: another daemon opening the same file
+      // could have applied this step between the read above and this BEGIN.
+      if (currentVersion(db) !== v) {
+        db.exec("ROLLBACK");
+        continue;
+      }
       db.exec(sql);
       setVersion(db, v + 1);
       db.exec("COMMIT");
       log.info("migration applied", { to: v + 1 });
     } catch (err) {
-      db.exec("ROLLBACK");
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // SQLite may have already aborted the transaction
+      }
       throw new Error(`migration ${v + 1} failed: ${(err as Error).message}`);
     }
   }

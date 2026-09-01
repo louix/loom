@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkpoint, migrate, openDb } from "@loom/daemon/store/db";
+import { checkpoint, migrate, openDb, withTransaction } from "@loom/daemon/store/db";
 import {
   stateAwaitingInput,
   stateIdle,
@@ -47,6 +47,34 @@ test("migrations bring an empty db to head and are idempotent", () => {
     for (const t of ["sessions", "status_history", "usage", "runtime_children"]) {
       assert.ok(tables.includes(t), `missing table ${t}`);
     }
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("withTransaction rolls back every write when the body throws, and rejects nesting", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    const ins = db.prepare(
+      "INSERT INTO sessions (id, provider, mode, status, created_at, updated_at) VALUES (?, 'stub', 'default', 'starting', 0, 0)",
+    );
+
+    assert.throws(() => {
+      withTransaction(db, () => {
+        ins.run("rollback-me");
+        throw new Error("boom");
+      });
+    }, /boom/);
+    assert.equal(store.get("rollback-me"), null, "the write was rolled back");
+
+    assert.throws(() => withTransaction(db, () => withTransaction(db, () => 1)), /not re-entrant/);
+
+    // Still usable after a rolled-back transaction / a rejected nested call.
+    store.create({ id: "after", provider: "stub" });
+    assert.ok(store.get("after"));
     db.close();
   } finally {
     cleanup();

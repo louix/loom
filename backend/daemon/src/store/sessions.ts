@@ -1,7 +1,7 @@
 import type { TokenUsage } from "@loom/core/events";
 import { parseSessionState, type SessionState, sessionStateDetail } from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
-import type { Db } from "./db.ts";
+import { type Db, withTransaction } from "./db.ts";
 
 // ---------------------------------------------------------------------------
 // Row shapes (snake_case, straight from SQLite)
@@ -95,31 +95,35 @@ export class SessionStore {
 
   create(s: NewSession): void {
     const now = Date.now();
-    this.#db
-      .prepare(
-        `INSERT INTO sessions
-           (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
-            base_branch, in_place, provider_ref, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        s.id,
-        s.parentId ?? null,
-        s.provider,
-        s.model ?? null,
-        s.effort ?? null,
-        s.mode ?? "default",
-        s.title ?? null,
-        s.worktree ?? null,
-        s.branch ?? null,
-        s.baseBranch ?? null,
-        s.inPlace ? 1 : 0,
-        s.providerRef ?? null,
-        now,
-        now,
-      );
-    this.#db.prepare("INSERT INTO usage (session_id, updated_at) VALUES (?, ?)").run(s.id, now);
-    this.#appendHistory(s.id, "starting", null, now);
+    // One transaction: an interrupted `create` must not leave a session row
+    // without its `usage` row / opening history entry.
+    withTransaction(this.#db, () => {
+      this.#db
+        .prepare(
+          `INSERT INTO sessions
+             (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
+              base_branch, in_place, provider_ref, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          s.id,
+          s.parentId ?? null,
+          s.provider,
+          s.model ?? null,
+          s.effort ?? null,
+          s.mode ?? "default",
+          s.title ?? null,
+          s.worktree ?? null,
+          s.branch ?? null,
+          s.baseBranch ?? null,
+          s.inPlace ? 1 : 0,
+          s.providerRef ?? null,
+          now,
+          now,
+        );
+      this.#db.prepare("INSERT INTO usage (session_id, updated_at) VALUES (?, ?)").run(s.id, now);
+      this.#appendHistory(s.id, "starting", null, now);
+    });
   }
 
   get(id: string): SessionSnapshot | null {
@@ -163,10 +167,12 @@ export class SessionStore {
     const stmt = this.#db.prepare(
       "UPDATE sessions SET status = 'interrupted', status_detail = 'user', updated_at = ? WHERE id = ?",
     );
-    for (const { id } of rows) {
-      stmt.run(now, id);
-      this.#appendHistory(id, "interrupted", "daemon_restart", now);
-    }
+    withTransaction(this.#db, () => {
+      for (const { id } of rows) {
+        stmt.run(now, id);
+        this.#appendHistory(id, "interrupted", "daemon_restart", now);
+      }
+    });
     return rows.map((r) => r.id);
   }
 
