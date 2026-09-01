@@ -14,7 +14,10 @@ import type { GitFacts } from "@loom/core/wire";
 
 const IDENTITY_NAME = "Loom (claude)";
 const IDENTITY_EMAIL = "loom+claude@localhost";
-const FACTS_TTL_MS = 8000;
+const FACTS_TTL_MS = 3000;
+/** `git status --porcelain` / `worktree list --porcelain` in a very large tree
+ *  can exceed the 1 MB `spawnSync` default → `ENOBUFS` → `status: null`. */
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 const PRE_PUSH_HOOK = `#!/bin/sh
 # Installed by Loom. Sessions must never push — integrate in your own git.
@@ -61,6 +64,8 @@ interface GitResult {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** `spawnSync` error message (`ETIMEDOUT`, `ENOBUFS`, `ENOENT`), or "". */
+  error: string;
 }
 
 export class WorktreeManager {
@@ -323,6 +328,12 @@ export class WorktreeManager {
     return this.#factsCache.get(path)?.facts ?? null;
   }
 
+  /** Drop the cached facts for `path` — call after a known mutation (a commit
+   *  from the agent's tool, an undo restore) so the fleet view doesn't lag it. */
+  invalidateFacts(path: string): void {
+    this.#factsCache.delete(path);
+  }
+
   // --- keep-current --------------------------------------------------
 
   /**
@@ -370,7 +381,7 @@ export class WorktreeManager {
       return { outcome: "dirty", ...info };
     }
 
-    const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, 120_000);
+    const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, 90_000);
     if (run.ok) {
       this.#factsCache.delete(path);
       const head = this.#gitOut(["rev-parse", "--short", "HEAD"], path);
@@ -378,17 +389,20 @@ export class WorktreeManager {
       return { outcome: "updated", head, ...info };
     }
 
+    // Classify before the abort clears the unmerged state: a real conflict
+    // leaves unmerged paths in the index. Exit-code / index driven, not a
+    // locale-dependent grep of git's stdout.
+    const conflict = this.#gitOut(["diff", "--name-only", "--diff-filter=U"], path).length > 0;
     // Undo whatever half-applied state git left behind, whichever way it failed.
     const abort = this.#git([mode, "--abort"], path);
     this.#factsCache.delete(path);
-    const conflict = /conflict/i.test(`${run.stdout}\n${run.stderr}`);
     this.#log.warn("branch sync onto base failed", {
       path,
       base,
       mode,
       conflict,
       aborted: abort.ok,
-      error: run.stderr.trim() || run.stdout.trim(),
+      error: run.error || run.stderr.trim() || run.stdout.trim(),
     });
     return { outcome: conflict ? "conflict" : "error", ...info };
   }
@@ -452,12 +466,18 @@ export class WorktreeManager {
     const res = spawnSync("git", ["-C", cwd ?? this.#repoRoot, ...args], {
       encoding: "utf8",
       timeout,
+      maxBuffer: GIT_MAX_BUFFER,
     });
+    const error = res.error ? (res.error.message ?? String(res.error)) : "";
+    if (error) this.#log.warn("git spawn error", { args: args.slice(0, 2), error });
     return {
-      ok: res.status === 0,
+      // A spawn error (timeout / ENOBUFS) leaves `status` null — treat it as a
+      // failure, not a silent empty result.
+      ok: res.status === 0 && !error,
       code: res.status,
       stdout: res.stdout ?? "",
       stderr: res.stderr ?? "",
+      error,
     };
   }
 
