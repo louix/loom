@@ -420,20 +420,24 @@ test("an abrupt stream end (still live) becomes interrupted/stream_ended", async
   await c.close();
 });
 
-test("the first successful turn auto-titles the session", async () => {
+test("the first successful turn auto-titles the session and rebrands its branch", async () => {
   const c = await client();
   fake().titleReply = "Add a websocket transport";
   const { id, fs } = await createFake(c, "please add websockets to the transport layer");
-  assert.equal(
-    (await c.request<SessionSnapshot>("session.get", { id })).title,
-    "please add websockets to the transport layer",
-  );
+  const before = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(before.title, "please add websockets to the transport layer");
+  assert.equal(before.branch, `loom/${id.slice(0, 8)}`);
 
   fs.finishTurn();
   await waitFor(
     async () =>
       (await c.request<SessionSnapshot>("session.get", { id })).title ===
       "Add a websocket transport",
+  );
+  // the branch rename lands in the same step as the title
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id })).branch,
+    "loom/add-a-websocket-transport",
   );
   await c.close();
 });

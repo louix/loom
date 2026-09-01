@@ -119,6 +119,34 @@ export class WorktreeManager {
     return { slug, path, branch, baseRef };
   }
 
+  /**
+   * Rebrand a session's still-generic `loom/<shortId>` branch from its freshly
+   * generated title — `git branch -m` to `loom/<slug>` (git updates the linked
+   * worktree's HEAD). The worktree *directory* is left as-is: the running
+   * session holds it as its cwd, and the dir name is cosmetic. Returns the new
+   * branch, or `currentBranch` unchanged on a no-op / failure.
+   */
+  renameBranch(hint: string, currentBranch: string): string {
+    const branch = this.#uniqueBranchNamed(slugify(hint), currentBranch);
+    if (branch === currentBranch) return currentBranch;
+
+    const res = this.#git(["branch", "-m", currentBranch, branch]);
+    if (!res.ok) {
+      this.#log.warn("branch rename failed", {
+        from: currentBranch,
+        to: branch,
+        error: res.stderr.trim() || res.stdout.trim(),
+      });
+      return currentBranch;
+    }
+
+    // Facts are keyed by worktree path (unchanged) but carry the old branch
+    // name; the cache is tiny and rebuilds on the next snapshot.
+    this.#factsCache.clear();
+    this.#log.info("session branch renamed", { from: currentBranch, to: branch });
+    return branch;
+  }
+
   /** `git worktree remove` — used by gc for sessions marked done. */
   remove(path: string, opts: { force?: boolean } = {}): void {
     const args = ["worktree", "remove"];
@@ -233,6 +261,17 @@ export class WorktreeManager {
     const short = `loom/${id.slice(0, 8)}`;
     if (!this.#git(["rev-parse", "--verify", "--quiet", short]).ok) return short;
     return `loom/${id}`;
+  }
+
+  /** `loom/<slug>`, with a short hex suffix if that ref is already taken.
+   *  `exclude` (the branch being renamed away from) doesn't count as taken. */
+  #uniqueBranchNamed(slug: string, exclude?: string): string {
+    for (let attempt = 0; ; attempt++) {
+      const name = attempt === 0 ? `loom/${slug}` : `loom/${slug}-${randomSuffix()}`;
+      if (name === exclude) return name;
+      if (!this.#git(["rev-parse", "--verify", "--quiet", name]).ok) return name;
+      if (attempt > 20) return `loom/${slug}-${Date.now().toString(36)}`;
+    }
   }
 
   #git(args: string[], cwd?: string): GitResult {

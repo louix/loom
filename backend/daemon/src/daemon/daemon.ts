@@ -730,7 +730,17 @@ export class Daemon {
       });
       if (!title || this.#stopping) return;
       if (this.#registry.store.titleLocked(id)) return; // raced with a manual rename
-      this.#emitSessionUpdated(this.#registry.setFields(id, { title }));
+      let updated = this.#registry.setFields(id, { title });
+
+      // Rebrand the still-generic `loom/<shortId>` worktree branch from the new
+      // title. In-place sessions have no branch; the check also skips a branch
+      // already renamed (or manually shaped).
+      if (snap.branch === `loom/${id.slice(0, 8)}` || snap.branch === `loom/${id}`) {
+        const branch = this.#worktrees.renameBranch(title, snap.branch);
+        if (branch !== snap.branch) updated = this.#registry.setFields(id, { branch });
+      }
+
+      this.#emitSessionUpdated(updated);
     } catch (err) {
       this.#log.debug("auto-title failed", { id, err: String(err) });
     } finally {

@@ -515,12 +515,19 @@ with a readable reason, offer re-create or archive. Defensive; opportunistic.
 
 ### 5 · Named worktree pool + rename on title-gen
 
-Pregenerate a wordlist; assign one memorable name per session as a stable prefix;
-when the auto-title job runs also rename the branch to `<name>/<slug>` (`git
-branch -m` always, best-effort `git worktree move` — the dir move fails if the
-user is `cd`'d in from another terminal). Update `sessions.worktree` + the
-`#worktrees` facts cache + push a `session_updated`. Collisions: large pool +
-`git branch --list` check, hex fallback when exhausted.
+**Branch rename shipped** (minimal): when the auto-title job replaces the
+clipped-prompt title after turn 1, `WorktreeManager.renameBranch` also
+`git branch -m`s the still-generic `loom/<shortId>` to `loom/<slug-of-title>`
+(hex suffix on a `git rev-parse` collision, the current branch excepted), and the
+same `#maybeAutoTitle` step pushes the `session_updated` carrying the new
+`branch`. The worktree _directory_ keeps its name — the running session holds it
+as cwd — so `sessions.worktree` is untouched and the facts cache is just
+cleared.
+
+Still open: a pregenerated memorable-wordlist prefix assigned at create time (so
+there's a stable handle before turn 1), and a best-effort `git worktree move` to
+match the dir name (fails if the user is `cd`'d in, or would yank cwd from the
+live agent — needs the adapter to re-root).
 
 ### 6 · pnpm monorepo + plugin packages — ✓ shipped (2026-08-30)
 

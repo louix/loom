@@ -141,6 +141,51 @@ test("facts report branch, commits, ahead/behind, dirty, last subject", () => {
   }
 });
 
+test("renameBranch rebrands loom/<id> from a title, keeping the tree dir", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("initial prompt words", fakeId("aaaaaaaa"));
+    assert.equal(wt.branch, "loom/aaaaaaaa");
+
+    assert.equal(m.renameBranch('"Add OAuth login flow"', wt.branch), "loom/add-oauth-login-flow");
+
+    // new ref exists, old is gone, the worktree's HEAD followed, dir unchanged
+    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/add-oauth-login-flow"]);
+    assert.throws(() =>
+      execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/aaaaaaaa"], {
+        stdio: "pipe",
+      }),
+    );
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "symbolic-ref", "--short", "HEAD"], {
+        encoding: "utf8",
+      }).trim(),
+      "loom/add-oauth-login-flow",
+    );
+    assert.ok(existsSync(wt.path));
+  } finally {
+    cleanup();
+  }
+});
+
+test("renameBranch suffixes on a name clash and no-ops when the slug already matches", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const a = m.create("one", fakeId("aaaaaaaa"));
+    const b = m.create("two", fakeId("bbbbbbbb"));
+
+    assert.equal(m.renameBranch("Same Title", a.branch), "loom/same-title");
+    assert.match(m.renameBranch("Same Title", b.branch), /^loom\/same-title-[0-9a-f]{6}$/);
+    // already `loom/<slug>` for this title → left alone
+    assert.equal(m.renameBranch("same title", "loom/same-title"), "loom/same-title");
+    execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/same-title"]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("remove drops the worktree", () => {
   const { root, cleanup } = repo();
   try {
