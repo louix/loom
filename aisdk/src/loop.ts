@@ -54,6 +54,10 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   const { sessionId, model, system, messages, mapper, hooks } = args;
   let aborted = false;
   let errored = false;
+  // The mapper already emits a fatal `error` event for a stream `error` part;
+  // track that so the outer catch doesn't emit a second one if the iterator
+  // then also throws.
+  let sawErrorPart = false;
   // Finish reason of the last completed step. `tool-calls` when the stream ends
   // means the loop was cut by `stopWhen`, not by the model deciding it was done.
   let lastStepReason: string | undefined;
@@ -111,7 +115,10 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
     });
 
     for await (const part of res.fullStream) {
-      if (part.type === "error") errored = true;
+      if (part.type === "error") {
+        errored = true;
+        sawErrorPart = true;
+      }
       if (part.type === "finish-step") {
         const r = (part as { finishReason?: string }).finishReason;
         if (r) lastStepReason = r;
@@ -136,13 +143,15 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
     }
   } catch (err) {
     errored = true;
-    hooks.emit({
-      type: "error",
-      sessionId,
-      ts: Date.now(),
-      message: err instanceof Error ? err.message : String(err),
-      fatal: true,
-    });
+    if (!sawErrorPart) {
+      hooks.emit({
+        type: "error",
+        sessionId,
+        ts: Date.now(),
+        message: err instanceof Error ? err.message : String(err),
+        fatal: true,
+      });
+    }
   }
 
   const hitStepLimit = !aborted && !errored && lastStepReason === "tool-calls";

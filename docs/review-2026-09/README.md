@@ -100,11 +100,11 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | C10 | low | done | On a terminal `result` segment, `subagent_stopped` is emitted for any still-open foreground `Task` | `connectors/claude/src/map.ts:326-337` |
 | C11 | low | wontfix | `test/claude-map.test.ts:289` ("a failed interim result still surfaces even with turns queued") explicitly locks emitting `result kind:error` mid-engagement. Suppressing the marker needs a design decision on how the daemon should show a mid-engagement failure. | `connectors/claude/src/map.ts:412-437` |
 | C14 | low | backlog | Transforming leading-slash user text safely needs knowledge of the Claude CLI's slash-command grammar; a wrong transform corrupts legitimate messages. Low severity. | `connectors/claude/src/adapter.ts:334-350` |
-| A3 | med | todo | `#summarize` swallows mid-stream `error` parts → whole transcript replaced by a truncated summary | `aisdk/src/session.ts:627-653` |
-| A6 | med | todo | Sub-agent failures and step-limit truncation are swallowed (no `error` event) | `aisdk/src/session.ts:507-549` |
-| A7 | low | todo | Usage mapping zeroes `contextUsed` when a provider omits token fields → meter flaps | `aisdk/src/map.ts:133-150` |
-| A10 | cosmetic | todo | Step-limit message reports `segments×maxSteps` (upper bound, not actual) | `aisdk/src/session.ts:772-774` |
-| A11 | low | todo | Duplicate `fatal: true` error events for one stream failure | `aisdk/src/map.ts:96-105` |
+| A3 | med | done | `#summarize` swallows mid-stream `error` parts → whole transcript replaced by a truncated summary | `aisdk/src/session.ts:627-653` |
+| A6 | med | done | Sub-agent failures and step-limit truncation are swallowed (no `error` event) | `aisdk/src/session.ts:507-549` |
+| A7 | low | done | Usage mapping zeroes `contextUsed` when a provider omits token fields → meter flaps | `aisdk/src/map.ts:133-150` |
+| A10 | cosmetic | done | Step-limit message reports `segments×maxSteps` (upper bound, not actual) | `aisdk/src/session.ts:772-774` |
+| A11 | low | done | Duplicate `fatal: true` error events for one stream failure | `aisdk/src/map.ts:96-105` |
 | T2 | **high** | todo | bash timeout kills only the bash process, not its group → orphaned dev servers holding ports | `aisdk/src/tools/bash.ts:35-39, 181-185` |
 | T3 | med | todo | Trailing `\` / `\|` / `&&` wedges the persistent shell for the full 120 s timeout | `aisdk/src/tools/bash.ts:125` |
 | T4 | med | todo | `set -x` makes the sentinel `printf` trace line satisfy the marker regex → early return, garbled tail | `aisdk/src/tools/bash.ts:118-133` |

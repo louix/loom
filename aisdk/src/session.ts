@@ -542,6 +542,8 @@ export class AisdkSession implements AgentSession {
     const subMapper = new AisdkEventMapper(this.id, this.#modelId, (m) => this.#limitFor(m));
 
     let report = "";
+    let failure: string | null = null;
+    let lastStepReason: string | undefined;
     try {
       const res = streamText({
         model: this.#model,
@@ -554,10 +556,34 @@ export class AisdkSession implements AgentSession {
       for await (const part of res.fullStream) {
         for (const ev of subMapper.map(part)) this.#emit({ ...ev, agentId: subId } as HarnessEvent);
         if (part.type === "text-delta") report += part.text;
+        if (part.type === "error") failure = "the sub-agent's model stream errored";
+        if (part.type === "finish-step") {
+          const r = (part as { finishReason?: string }).finishReason;
+          if (r) lastStepReason = r;
+        }
         if (part.type === "abort") break;
       }
     } catch (err) {
-      report = report || `sub-agent failed: ${err instanceof Error ? err.message : String(err)}`;
+      failure = err instanceof Error ? err.message : String(err);
+    }
+
+    // The step ceiling cut the sub-agent off mid-work (unlike the main loop it
+    // has no continuation) — tell the parent turn so it doesn't treat a
+    // truncated report as a complete answer.
+    const truncated = failure == null && lastStepReason === "tool-calls";
+    if (failure != null || truncated) {
+      this.#emit({
+        type: "error",
+        sessionId: this.id,
+        ts: Date.now(),
+        message: truncated
+          ? `sub-agent "${name}" hit its ${this.#maxSteps}-step limit; report is partial`
+          : `sub-agent "${name}": ${failure}`,
+        fatal: false,
+        agentId: subId,
+      } as HarnessEvent);
+      if (failure != null) report = report || `sub-agent failed: ${failure}`;
+      else report += "\n\n[sub-agent truncated at its step limit — result may be incomplete]";
     }
 
     this.#emit({ type: "subagent_stopped", sessionId: this.id, ts: Date.now(), subagentId: subId });
@@ -661,6 +687,11 @@ export class AisdkSession implements AgentSession {
           // Meter the summariser call — otherwise a frequently-compacting long
           // session under-reports cost / tokens (and budget enforcement drifts).
           for (const ev of this.#mapper.mapUsage(part.usage)) this.#emit(ev);
+        } else if (part.type === "error" || part.type === "abort") {
+          // A partial summary replaces the *entire* transcript — a mid-stream
+          // provider error or an abort must abandon the compaction, not commit
+          // whatever text arrived so far.
+          return null;
         }
       }
     } catch {
@@ -786,8 +817,8 @@ export class AisdkSession implements AgentSession {
           sessionId: this.id,
           ts: Date.now(),
           message:
-            `turn stopped after ${this.#segmentsRun}×${this.#maxSteps} steps without completing — ` +
-            `likely a loop. The session is idle; send a message to continue it.`,
+            `turn stopped after ${this.#segmentsRun} segments of up to ${this.#maxSteps} steps ` +
+            `without completing — likely a loop. The session is idle; send a message to continue it.`,
           fatal: false,
         });
         this.#segmentsRun = 0;

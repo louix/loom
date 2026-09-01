@@ -16,6 +16,9 @@ export class AisdkEventMapper {
   readonly #limitFor: (model: string | null) => number;
   readonly #text = new Map<string, string>();
   readonly #reasoning = new Map<string, string>();
+  /** Last prompt-token count a provider actually reported, so a step with no
+   *  usage data doesn't flap the context meter to zero. */
+  #lastContextUsed = 0;
 
   constructor(
     sessionId: string,
@@ -145,6 +148,12 @@ export class AisdkEventMapper {
   #usage(u: LanguageModelUsage): HarnessEvent {
     const promptTokens = u.inputTokens ?? 0;
     const cached = u.cachedInputTokens ?? 0;
+    const output = u.outputTokens ?? 0;
+    // Several OpenAI-compatible endpoints omit usage on streamed responses.
+    // Report the last real prompt-token count for `contextUsed` rather than 0,
+    // so the meter holds steady instead of flapping after each such step.
+    const hasData = promptTokens > 0 || cached > 0 || output > 0;
+    if (hasData) this.#lastContextUsed = promptTokens;
     return {
       type: "usage",
       sessionId: this.#sessionId,
@@ -152,11 +161,11 @@ export class AisdkEventMapper {
       tokens: {
         // Loom keeps cached reads out of `input`, like the Claude adapter.
         input: Math.max(0, promptTokens - cached),
-        output: u.outputTokens ?? 0,
+        output,
         cacheRead: cached,
         cacheWrite: 0,
       },
-      contextUsed: promptTokens,
+      contextUsed: hasData ? promptTokens : this.#lastContextUsed,
       contextLimit: this.#limitFor(this.#model),
     };
   }
