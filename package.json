@@ -5,7 +5,7 @@
   "description": "Workspace root for loom — see cli/ for the app package.",
   "type": "module",
   "scripts": {
-    "loom": "oxnode cli/src/loom.ts",
+    "loom": "oxnode --import ./cli/src/oxc-esm-fixup.mjs cli/src/loom.ts",
     "daemon": "oxnode cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
     "watch": "tsc --noEmit --watch",

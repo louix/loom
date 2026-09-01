@@ -100,7 +100,13 @@
             '';
 
             # No compile step — .ts/.tsx run through @oxc-node at load time,
-            # exactly as the repo's own `pnpm loom` script does.
+            # exactly as the repo's own `pnpm loom` script does. The extra
+            # `--import` fixes @oxc-node's ESM hook deciding module format
+            # from the *invoking directory's* package.json rather than the
+            # imported file's: without it, `loom` run from any directory
+            # outside a `"type": "module"` package (i.e. every user project)
+            # crashes importing the TUI with ERR_REQUIRE_CYCLE_MODULE. See
+            # cli/src/oxc-esm-fixup.mjs.
             dontBuild = true;
 
             # Some deps ship intentionally-dangling symlinks (test fixtures);
@@ -118,6 +124,7 @@
 
               for bin in loom loomd; do
                 makeWrapper $out/libexec/loom/node_modules/.bin/oxnode $out/bin/$bin \
+                  --add-flags "--import file://$out/libexec/loom/cli/src/oxc-esm-fixup.mjs" \
                   --add-flags $out/libexec/loom/cli/src/$bin.ts \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nodejs_24 pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version}
