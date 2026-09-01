@@ -681,7 +681,7 @@ export const mkFleetHandle = ({
           prompt: makePrompt({
             kind: "compact",
             sessionId: s.id,
-            label: "compact — focus (blank = full)",
+            label: "compact — steer summary (blank = best effort)",
           }),
         });
       case "keepwarm": {
@@ -987,7 +987,7 @@ export const mkFleetHandle = ({
     const text = p.buffer.text.trim();
     const by = client.clientId;
     // `deny` and `compact` both treat an empty submit as a valid choice
-    // (no reason / compact the whole history); every other prompt needs text.
+    // (no reason / best-effort compaction); every other prompt needs text.
     if (p.kind !== "deny" && p.kind !== "compact" && !text) return;
     const reopen = (): void =>
       dispatch({

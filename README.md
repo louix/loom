@@ -319,8 +319,9 @@ in the transcript; it gives up after six pings with no reply from you, and any
 message you send resets that count. The Detail pane's cache line shows
 `· keep-warm` while it's on.
 
-**Context compaction.** `c` on a running or idle session opens a one-line focus
-prompt (blank compacts the whole history; text steers what the summary keeps) —
+**Context compaction.** `c` on a running or idle session opens a one-line prompt
+— blank gives a best-effort summary of everything; text is the advanced path,
+steering what the summary keeps (e.g. `keep the plan, drop the investigation`) —
 or `loom compact <id> [steer…]`. It drives the provider's own compaction: for
 Claude, `/compact` over the streaming input; for aisdk sessions, a Loom-side
 summariser. Summarising a long history takes a while, so aisdk sessions tick a

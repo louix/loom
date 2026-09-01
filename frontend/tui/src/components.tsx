@@ -90,7 +90,7 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   new: "describe the task…",
   title: "session title",
   discuss: "what should change about the plan?",
-  compact: "what to keep in focus — blank compacts the whole history",
+  compact: "steer the summary (optional) — blank = best-effort summary of everything",
   send: "type a message…",
   answer: "type a message…",
   answerQuestion: 'type your answer — e.g. "a" or "a, but …"',
