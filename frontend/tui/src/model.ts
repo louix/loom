@@ -5,7 +5,12 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import type { AwaitReason, BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
+import type {
+  AwaitReason,
+  BackgroundTaskKind,
+  HarnessEvent,
+  SessionStateKind,
+} from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
@@ -15,6 +20,7 @@ import {
   STATUS_ORDER,
   clock,
   humanTokens,
+  nextThemeMode,
   shortId,
   statusLook,
   truncate,
@@ -561,7 +567,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, connection: a.value };
 
     case "toggleTheme":
-      return { ...s, theme: s.theme === "dark" ? "light" : "dark" };
+      return { ...s, theme: nextThemeMode(s.theme) };
 
     case "move": {
       if (s.sessions.length === 0) return s;
@@ -1753,7 +1759,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],
     ["fullscreen", "fullscreen the event log", "⇥"],
-    ["theme", s.theme === "dark" ? "switch to light theme" : "switch to dark theme", "t"],
+    ["theme", `switch to ${nextThemeMode(s.theme)} theme`, "t"],
     ["restart", "restart the daemon", "R"],
     ["quitall", "quit and stop the daemon", "Q"],
   ];

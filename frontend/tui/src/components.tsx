@@ -1343,7 +1343,7 @@ const HELP_ROWS: Array<[string, string]> = [
     "o  ·  v  ·  ⇥",
     "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log",
   ],
-  ["t", "toggle dark / light theme"],
+  ["t", "cycle theme — dark / light / argonext"],
   [
     "n  ·  f",
     "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session",

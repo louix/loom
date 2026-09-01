@@ -6,7 +6,7 @@
  */
 import type { SessionStateKind } from "@loom/core/events";
 
-export type ThemeMode = "dark" | "light";
+export type ThemeMode = "dark" | "light" | "argonext";
 
 type Palette = {
   accent: string;
@@ -54,6 +54,28 @@ const LIGHT: Palette = {
   bg: "#f4f4f5",
 };
 
+/** "Argonext" — a red-on-navy terminal theme (#0d0f18 bg, #fffaf3 fg, #ff0017
+ *  cursor), mapped onto the palette roles: accent takes the bright red (its
+ *  signature hue, color9), bad the pure red (color1), and the remaining roles
+ *  the theme's bright green / amber / purple. accentDim is the bright blue —
+ *  the only left-over hue that keeps `starting`/`background` from reading as
+ *  an error. `dim` is a foreground↔background blend; the theme ships no mid
+ *  grey, and color8 is reserved for `faint`. */
+const ARGONEXT: Palette = {
+  accent: "#ff273f",
+  accentDim: "#0092ff",
+  await_: "#9a5feb",
+  good: "#abe05a",
+  warn: "#ffd141",
+  bad: "#ff000f",
+  text: "#fffaf3",
+  dim: "#868586",
+  faint: "#444444",
+  bg: "#0d0f18",
+};
+
+const PALETTES: Record<ThemeMode, Palette> = { dark: DARK, light: LIGHT, argonext: ARGONEXT };
+
 let mode: ThemeMode = "dark";
 
 /** Truecolour palette. Mutated in place on {@link setThemeMode} so every
@@ -65,8 +87,17 @@ export const themeMode = (): ThemeMode => mode;
 
 export const setThemeMode = (m: ThemeMode): void => {
   mode = m;
-  Object.assign(C, m === "light" ? LIGHT : DARK);
+  Object.assign(C, PALETTES[m]);
 };
+
+/** `t` cycles dark → light → argonext → dark. */
+const THEME_CYCLE: Record<ThemeMode, ThemeMode> = {
+  dark: "light",
+  light: "argonext",
+  argonext: "dark",
+};
+
+export const nextThemeMode = (m: ThemeMode): ThemeMode => THEME_CYCLE[m];
 
 export type Tone = "plain" | "dim" | "accent" | "good" | "warn" | "bad" | "think";
 

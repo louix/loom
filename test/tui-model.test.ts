@@ -1599,11 +1599,13 @@ test("connection action drives the header lamp state", () => {
   assert.equal(s.connection, "live");
 });
 
-test("toggleTheme flips dark ↔ light, defaulting to dark", () => {
+test("toggleTheme cycles dark → light → argonext, defaulting to dark", () => {
   let s = initialState();
   assert.equal(s.theme, "dark");
   s = reduce(s, { t: "toggleTheme" });
   assert.equal(s.theme, "light");
+  s = reduce(s, { t: "toggleTheme" });
+  assert.equal(s.theme, "argonext");
   s = reduce(s, { t: "toggleTheme" });
   assert.equal(s.theme, "dark");
 });
