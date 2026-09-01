@@ -1061,16 +1061,14 @@ export const REQUEST_PANEL_ROWS = 8;
 
 /** `AskUserQuestion` rendered as lettered choices — a) b) c) … — for one
  *  question at a time (`active`, 0-based), since the answer prompt walks them
- *  singly. A `question N of M` header marks the progress when there's more than
- *  one. Falls back to the generic raw-JSON dump if the call didn't match the
- *  expected shape. */
+ *  singly. Progress (N/M) lives in the panel title, not here. Falls back to
+ *  the generic raw-JSON dump if the call didn't match the expected shape. */
 const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[] => {
   const qs = parseAskUserQuestions(input);
   if (qs.length === 0) return describeRequest(input, w);
   const idx = Math.max(0, Math.min(qs.length - 1, active));
   const q = qs[idx]!;
   const lines: string[] = [];
-  if (qs.length > 1) lines.push(`question ${idx + 1} of ${qs.length} — answered one at a time`);
   lines.push(...wrapText(q.question, w));
   q.options.forEach((opt, oi) => {
     const letter = String.fromCharCode(97 + oi);
@@ -1164,8 +1162,17 @@ export const RequestPanel = ({
   const perms = pending.permissions ?? [];
   if (perms.length > 0) {
     const p0 = perms[0]!;
-    const more = perms.length > 1 ? ` (1 of ${perms.length})` : "";
     const isQuestion = p0.tool === "AskUserQuestion";
+    const qs = isQuestion ? parseAskUserQuestions(p0.input) : [];
+    // Title position marker: which question of this call we're on, plus — if
+    // other requests are queued behind it — where this one sits in the queue.
+    const pos = [
+      qs.length > 1 ? `${questionIdx + 1}/${qs.length}` : "",
+      perms.length > 1 ? `1 of ${perms.length}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const more = pos ? ` (${pos})` : "";
     return box(
       isQuestion ? `? QUESTION${more}` : `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
       (isQuestion
@@ -1176,9 +1183,9 @@ export const RequestPanel = ({
           {l}
         </Text>
       )),
-      isQuestion
-        ? `a answer  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`
-        : `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,
+      `${isQuestion ? "a answer" : "a approve"}  ·  d deny  ·  ⌥o / o view  ·  i interrupt${
+        perms.length > 1 ? "  ·  more queued" : ""
+      }`,
     );
   }
   return null;
