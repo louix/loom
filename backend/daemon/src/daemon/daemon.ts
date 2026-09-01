@@ -1010,11 +1010,18 @@ export class Daemon {
     // prompt with it ("redo this"), so it's kept whole (newlines and all); the
     // TUI clips it for the row label. Unbounded, like the event log.
     const userText = (this.#lastSend.get(id) ?? snap.title ?? "").trim();
+    // Where the working tree is at this turn boundary, so `session.rewind` can
+    // offer to restore it (or at least report how far it has drifted). Skipped
+    // for in-place sessions — no isolated worktree to reset.
+    const headSha = snap.worktree ? (this.#worktrees.headSha(snap.worktree) ?? "") : "";
+    const headDirty = snap.worktree ? this.#worktrees.isDirty(snap.worktree) : false;
     this.#checkpoints.record(id, {
       turn: snap.turns,
       providerRef: this.#registry.store.providerRef(id) ?? "",
       forkPoint,
       userText,
+      headSha,
+      headDirty,
     });
   }
 
@@ -1545,14 +1552,60 @@ export class Daemon {
       // The fork point: a message count for aisdk, a chain-entry ref for Claude.
       let keep = 0;
       let at: string | undefined;
+      let checkpointSha = "";
       if (toTurn > 0) {
         const cp = this.#checkpoints.at(id, toTurn);
         if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
+        checkpointSha = cp.headSha;
         if (aisdk) {
           keep = Number(cp.forkPoint) || 0;
         } else {
           at = cp.forkPoint || undefined;
           if (!at) throw new RpcError("bad_request", `turn ${toTurn} has no fork point recorded`);
+        }
+      }
+
+      // Undo only moves the model's context. Unless the caller opts in, the
+      // working tree is left exactly where it is — which may be many commits /
+      // edits *ahead* of the turn we just rewound to. Figure out the drift now
+      // (before `restoreWorktree` potentially erases it).
+      const restoreWorktree = isObj(params) && params["restoreWorktree"] === true;
+      const wt = snap.worktree;
+      let worktreeDrift: {
+        checkpointSha: string;
+        currentSha: string;
+        dirty: boolean;
+        laterCommits: string[];
+        restored: boolean;
+      } | null = null;
+      if (wt && checkpointSha) {
+        const currentSha = this.#worktrees.headSha(wt) ?? "";
+        const dirty = this.#worktrees.isDirty(wt);
+        if (currentSha !== checkpointSha || dirty) {
+          worktreeDrift = {
+            checkpointSha,
+            currentSha,
+            dirty,
+            laterCommits: this.#worktrees.commitsBetween(wt, checkpointSha, currentSha),
+            restored: false,
+          };
+        }
+      }
+      if (restoreWorktree) {
+        if (!wt) {
+          throw new RpcError("bad_request", "this session has no worktree to restore");
+        }
+        if (!checkpointSha) {
+          throw new RpcError(
+            "bad_request",
+            "no git HEAD was recorded for that turn — can't restore the worktree",
+          );
+        }
+        if (this.#worktrees.isDirty(wt)) {
+          throw new RpcError(
+            "bad_request",
+            "the worktree has uncommitted changes — commit or discard them, then retry with restoreWorktree",
+          );
         }
       }
 
@@ -1566,6 +1619,27 @@ export class Daemon {
       }
       this.#checkpoints.truncate(id, toTurn);
       this.#registry.setTurns(id, toTurn);
+
+      if (restoreWorktree && wt && checkpointSha) {
+        const r = this.#worktrees.restoreTo(wt, checkpointSha);
+        if (!r.ok) throw new RpcError("worktree_error", `could not restore the worktree: ${r.error}`);
+        if (worktreeDrift) worktreeDrift.restored = true;
+        this.#emitNotice(
+          `undo: worktree reset to ${checkpointSha.slice(0, 8)} (turn ${toTurn})`,
+          "info",
+        );
+      } else if (worktreeDrift) {
+        const n = worktreeDrift.laterCommits.length;
+        this.#emitNotice(
+          `undo moved the model's context to turn ${toTurn}, but the worktree is still at ` +
+            `${(worktreeDrift.currentSha || "?").slice(0, 8)}` +
+            (n > 0 ? ` — ${n} later commit(s) now post-date it` : "") +
+            (worktreeDrift.dirty ? " (and it has uncommitted changes)" : "") +
+            ". Re-run undo with restoreWorktree to git reset --hard.",
+          "warn",
+        );
+      }
+
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
 
       // SessionManager.rewind already broadcast a `session_updated` from its
@@ -1575,7 +1649,7 @@ export class Daemon {
         ? this.#registry.mustGet(id)
         : this.#registry.setStatus(id, stateIdle, "rewind");
       this.#emitSessionUpdated(updated, clientLabel(params));
-      return updated;
+      return { ...updated, ...(worktreeDrift ? { worktreeDrift } : {}) };
     });
 
     d.register("session.fork", async (params) => {

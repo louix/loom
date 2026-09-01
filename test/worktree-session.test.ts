@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;
@@ -18,6 +21,54 @@ after(async () => {
 const client = (): Promise<LoomClient> => {
   return LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
 };
+
+const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 1500): Promise<void> => {
+  const start = Date.now();
+  for (;;) {
+    if (await pred()) return;
+    if (Date.now() - start >= ms) throw new Error("condition not met in time");
+    await delay(5);
+  }
+};
+
+/** Create a worktree-backed `fake` session, run `turns` completed turns, and
+ *  (optionally) commit `commitOnTurn`'s file into the worktree before that
+ *  turn's `result` so its checkpoint captures a distinct HEAD. */
+const setupDrift = async (
+  c: LoomClient,
+): Promise<{ id: string; wt: string; fs: FakeSession; shaAtTurn1: string }> => {
+  const fake = (await h.daemon.providers.get("fake")) as unknown as FakeProvider;
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "do work",
+    provider: "fake",
+  });
+  const wt = s.worktree as string;
+  await waitFor(() => fake.session(s.id) !== undefined);
+  const fs = fake.session(s.id) as FakeSession;
+
+  fs.finishTurn();
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 1);
+  const shaAtTurn1 = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+  // The agent commits something in its worktree, then turn 2 lands.
+  writeFileSync(join(wt, "feature.txt"), "turn-2 work\n");
+  execFileSync("git", ["-C", wt, "add", "-A"]);
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "turn 2 work"]);
+  fs.finishTurn();
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 2);
+
+  return { id: s.id, wt, fs, shaAtTurn1 };
+};
+
+interface RewindResult extends SessionSnapshot {
+  worktreeDrift?: {
+    checkpointSha: string;
+    currentSha: string;
+    dirty: boolean;
+    laterCommits: string[];
+    restored: boolean;
+  };
+}
 
 test("session.create gives the session its own worktree + branch off base", async () => {
   const c = await client();
@@ -145,5 +196,69 @@ test("session.remove --delete-branch also drops the branch", async () => {
 test("session.remove on an unknown id is a not_found", async () => {
   const c = await client();
   await assert.rejects(c.request("session.remove", { id: "nope" }), /no such session/);
+  await c.close();
+});
+
+test("undo warns when the worktree has drifted past the rewound turn", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, wt } = await setupDrift(c);
+
+  frames.length = 0;
+  const r = await c.request<RewindResult>("session.rewind", { id, toTurn: 1 });
+
+  assert.ok(r.worktreeDrift, "the response carries the drift record");
+  assert.equal(r.worktreeDrift?.restored, false);
+  assert.equal(r.worktreeDrift?.laterCommits.length, 1, "one commit now post-dates the context");
+  assert.match(r.worktreeDrift?.laterCommits[0] ?? "", /turn 2 work/);
+  assert.ok(
+    frames.some(
+      (f) => f.type === "notice" && f.tone === "warn" && /worktree is still at/.test(f.text),
+    ),
+    "a warn notice named the drift",
+  );
+  // Files are left exactly as they were — undo only moved the model's context.
+  assert.ok(existsSync(join(wt, "feature.txt")));
+  await c.close();
+});
+
+test("undo with restoreWorktree resets the tree to the rewound turn's HEAD", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, wt, shaAtTurn1 } = await setupDrift(c);
+
+  frames.length = 0;
+  const r = await c.request<RewindResult>("session.rewind", {
+    id,
+    toTurn: 1,
+    restoreWorktree: true,
+  });
+
+  assert.equal(r.worktreeDrift?.restored, true);
+  assert.equal(
+    execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    shaAtTurn1,
+    "HEAD is back at the checkpoint SHA",
+  );
+  assert.ok(!existsSync(join(wt, "feature.txt")), "the later turn's committed file is gone");
+  assert.ok(
+    frames.some((f) => f.type === "notice" && f.tone === "info" && /worktree reset/.test(f.text)),
+  );
+  await c.close();
+});
+
+test("undo with restoreWorktree refuses a dirty worktree", async () => {
+  const c = await client();
+  const { id, wt } = await setupDrift(c);
+  writeFileSync(join(wt, "scratch.txt"), "uncommitted\n");
+
+  await assert.rejects(
+    c.request("session.rewind", { id, toTurn: 1, restoreWorktree: true }),
+    /uncommitted changes/,
+  );
+  // The undo was refused whole — turn count unchanged.
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).turns, 2);
   await c.close();
 });

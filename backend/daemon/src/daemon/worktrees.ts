@@ -187,6 +187,44 @@ export class WorktreeManager {
     this.#git(["worktree", "prune"]);
   }
 
+  /** The worktree's current `git HEAD` (full SHA), or null if it can't be read. */
+  headSha(path: string): string | null {
+    if (!path || !existsSync(path)) return null;
+    const sha = this.#gitOut(["rev-parse", "HEAD"], path);
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  }
+
+  /** Whether the worktree has uncommitted (tracked or untracked) changes. */
+  isDirty(path: string): boolean {
+    if (!path || !existsSync(path)) return false;
+    return this.#gitOut(["status", "--porcelain"], path).length > 0;
+  }
+
+  /**
+   * `git reset --hard <sha>` in the worktree — used by `session.rewind` to put
+   * the files back where they were when the kept turn completed. Untracked files
+   * are left alone (no `git clean`). Caller must have verified the tree is clean.
+   */
+  restoreTo(path: string, sha: string): { ok: boolean; error: string } {
+    const res = this.#git(["reset", "--hard", sha], path);
+    this.#factsCache.delete(path);
+    if (res.ok) {
+      this.#log.info("worktree reset", { path, sha: sha.slice(0, 8) });
+      return { ok: true, error: "" };
+    }
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() || `git exit ${res.code}` };
+  }
+
+  /** Subjects of commits in `from..to` (oldest first), capped. For a drift notice. */
+  commitsBetween(path: string, from: string, to: string, limit = 20): string[] {
+    if (!from || !to || from === to) return [];
+    const out = this.#gitOut(
+      ["log", "--reverse", "--format=%h %s", `${from}..${to}`, `--max-count=${limit}`],
+      path,
+    );
+    return out ? out.split("\n") : [];
+  }
+
   /**
    * `git branch -D <branch>` in the repo root. Best-effort: returns false (and
    * logs) if the branch is missing, checked out elsewhere, or git refuses —

@@ -178,4 +178,14 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE session_events ADD COLUMN epoch TEXT NOT NULL DEFAULT '';
   `,
+
+  // 14 — the worktree's git HEAD (and whether it was dirty) at each checkpoint.
+  // Undo/rewind only moves the model's context; without this there was no record
+  // of where the working tree was, so `session.rewind` couldn't offer to restore
+  // it or even tell the operator how far the files had drifted past the context.
+  // Pre-existing rows get '' / 0 — no SHA was captured for them.
+  /* sql */ `
+  ALTER TABLE checkpoints ADD COLUMN head_sha TEXT NOT NULL DEFAULT '';
+  ALTER TABLE checkpoints ADD COLUMN head_dirty INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

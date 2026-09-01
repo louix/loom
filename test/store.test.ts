@@ -290,21 +290,33 @@ test("CheckpointStore records / lists / truncates; setTurns resets the counter",
     sessions.create({ id: "s1", provider: "openai" });
 
     const cps = new CheckpointStore(db);
-    cps.record("s1", { turn: 1, providerRef: "", forkPoint: "2", userText: "first task" });
-    cps.record("s1", { turn: 2, providerRef: "", forkPoint: "6", userText: "follow up" });
-    cps.record("s1", { turn: 3, providerRef: "", forkPoint: "10", userText: "and again" });
+    const cp = (turn: number, forkPoint: string, userText: string) => ({
+      turn,
+      providerRef: "",
+      forkPoint,
+      userText,
+      headSha: "",
+      headDirty: false,
+    });
+    cps.record("s1", cp(1, "2", "first task"));
+    cps.record("s1", { ...cp(2, "6", "follow up"), headSha: "a".repeat(40), headDirty: true });
+    cps.record("s1", cp(3, "10", "and again"));
 
     assert.deepEqual(
       cps.list("s1").map((c) => c.turn),
       [1, 2, 3],
     );
     assert.equal(cps.at("s1", 2)?.forkPoint, "6");
+    assert.equal(cps.at("s1", 2)?.headSha, "a".repeat(40));
+    assert.equal(cps.at("s1", 2)?.headDirty, true, "dirty flag round-trips as a boolean");
+    assert.equal(cps.at("s1", 1)?.headDirty, false);
     assert.equal(cps.at("s1", 9), null);
 
     // re-record turn 2 upserts
-    cps.record("s1", { turn: 2, providerRef: "x", forkPoint: "7", userText: "edited" });
+    cps.record("s1", { ...cp(2, "7", "edited"), providerRef: "x" });
     assert.equal(cps.at("s1", 2)?.forkPoint, "7");
     assert.equal(cps.at("s1", 2)?.userText, "edited");
+    assert.equal(cps.at("s1", 2)?.headSha, "", "upsert cleared the SHA");
 
     cps.truncate("s1", 1);
     assert.deepEqual(

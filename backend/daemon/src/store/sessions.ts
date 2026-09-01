@@ -325,6 +325,11 @@ export interface Checkpoint {
   forkPoint: string;
   /** A snippet of the turn's user message, for the undo picker. */
   userText: string;
+  /** The worktree's git HEAD when this turn completed (`""` = not captured — an
+   *  in-place session, or a pre-migration-14 row). */
+  headSha: string;
+  /** Whether the worktree had uncommitted changes when this turn completed. */
+  headDirty: boolean;
   createdAt: number;
 }
 
@@ -338,33 +343,46 @@ export class CheckpointStore {
   record(sessionId: string, cp: Omit<Checkpoint, "createdAt">): void {
     this.#db
       .prepare(
-        `INSERT INTO checkpoints (session_id, turn, provider_ref, fork_point, user_text, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO checkpoints
+           (session_id, turn, provider_ref, fork_point, user_text, head_sha, head_dirty, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(session_id, turn) DO UPDATE SET
            provider_ref = excluded.provider_ref,
            fork_point   = excluded.fork_point,
-           user_text    = excluded.user_text`,
+           user_text    = excluded.user_text,
+           head_sha     = excluded.head_sha,
+           head_dirty   = excluded.head_dirty`,
       )
-      .run(sessionId, cp.turn, cp.providerRef, cp.forkPoint, cp.userText, Date.now());
+      .run(
+        sessionId,
+        cp.turn,
+        cp.providerRef,
+        cp.forkPoint,
+        cp.userText,
+        cp.headSha,
+        cp.headDirty ? 1 : 0,
+        Date.now(),
+      );
   }
 
+  #cols =
+    "turn, provider_ref AS providerRef, fork_point AS forkPoint, user_text AS userText, " +
+    "head_sha AS headSha, head_dirty AS headDirty, created_at AS createdAt";
+
   list(sessionId: string): Checkpoint[] {
-    return this.#db
-      .prepare(
-        "SELECT turn, provider_ref AS providerRef, fork_point AS forkPoint, user_text AS userText, created_at AS createdAt " +
-          "FROM checkpoints WHERE session_id = ? ORDER BY turn",
-      )
-      .all(sessionId) as unknown as Checkpoint[];
+    const rows = this.#db
+      .prepare(`SELECT ${this.#cols} FROM checkpoints WHERE session_id = ? ORDER BY turn`)
+      .all(sessionId) as unknown as Array<Checkpoint & { headDirty: number | boolean }>;
+    return rows.map((r) => ({ ...r, headDirty: Boolean(r.headDirty) }));
   }
 
   at(sessionId: string, turn: number): Checkpoint | null {
     const row = this.#db
-      .prepare(
-        "SELECT turn, provider_ref AS providerRef, fork_point AS forkPoint, user_text AS userText, created_at AS createdAt " +
-          "FROM checkpoints WHERE session_id = ? AND turn = ?",
-      )
-      .get(sessionId, turn) as unknown as Checkpoint | undefined;
-    return row ?? null;
+      .prepare(`SELECT ${this.#cols} FROM checkpoints WHERE session_id = ? AND turn = ?`)
+      .get(sessionId, turn) as unknown as
+      | (Checkpoint & { headDirty: number | boolean })
+      | undefined;
+    return row ? { ...row, headDirty: Boolean(row.headDirty) } : null;
   }
 
   /** Drop checkpoints after `turn` (called after a rewind). */
