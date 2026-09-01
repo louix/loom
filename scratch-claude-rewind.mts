@@ -2,7 +2,7 @@
  * Manual smoke test for Claude undo (fork-tree F3, step 4). NOT part of the
  * suite — it makes real Claude API calls via ~/.claude-personal.
  *
- *   node --import @oxc-node/core/register --test scratch-claude-rewind.test.ts
+ *   node --import @oxc-node/core/register --test scratch-claude-rewind.mts
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
