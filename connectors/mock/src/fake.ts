@@ -101,6 +101,9 @@ export class FakeSession implements AgentSession {
       cacheWrite: u.cacheWrite ?? 0,
     };
     this.#snap.turns += 1;
+    // A stand-in fork point so the daemon's non-aisdk rewind path (which reads
+    // `rewindRef`, not a message count) is testable against the fake.
+    this.#snap.rewindRef = `fake-turn-${this.#snap.turns}`;
     this.#snap.usage = {
       input: this.#snap.usage.input + tokens.input,
       output: this.#snap.usage.output + tokens.output,
@@ -167,9 +170,9 @@ export class FakeSession implements AgentSession {
     this.interruptCount += 1;
   }
 
-  readonly rewinds: number[] = [];
-  async rewind(keep: number): Promise<void> {
-    this.rewinds.push(keep);
+  readonly rewinds: Array<{ keep: number; at?: string }> = [];
+  async rewind(keep: number, at?: string): Promise<void> {
+    this.rewinds.push(at === undefined ? { keep } : { keep, at });
     this.#snap.status = stateIdle;
   }
 

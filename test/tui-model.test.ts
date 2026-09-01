@@ -118,6 +118,7 @@ const snap = (
     rateLimits: {},
     cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     keepWarm: false,
+    canRewind: true,
     git: null,
     createdAt: now,
     updatedAt: now,

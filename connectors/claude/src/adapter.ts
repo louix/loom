@@ -420,8 +420,12 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  async rewind(_keep: number): Promise<void> {
-    throw new Error("rewind for Claude sessions lands in fork-tree F3 (resumeSessionAt)");
+  async rewind(_keep: number, _at?: string): Promise<void> {
+    // The seams are in place (mapper captures the fork point, the daemon passes
+    // it back as `at`); restarting the live `query()` with `resumeSessionAt`
+    // is the remaining step. Until then `capabilities.rewind` stays false, so
+    // the daemon never routes an undo here.
+    throw new Error("undo for Claude sessions lands in fork-tree F3 (resumeSessionAt restart)");
   }
 
   async setMode(mode: SessionMode): Promise<void> {
@@ -462,6 +466,7 @@ class ClaudeSession implements AgentSession {
       contextLimit: s.contextLimit,
       costUsd: s.costUsd,
       turns: s.turns,
+      ...(s.rewindRef ? { rewindRef: s.rewindRef } : {}),
     };
   }
 

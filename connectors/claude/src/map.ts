@@ -53,6 +53,8 @@ interface SdkMsgLite {
   subtype?: string;
   session_id?: string;
   model?: string;
+  /** Chain-entry UUID on assistant / user frames — the fork point for `resumeSessionAt`. */
+  uuid?: string;
   parent_tool_use_id?: string | null;
   error?: string;
   message?: { role?: string; model?: string; content?: unknown; usage?: RawUsage };
@@ -99,6 +101,12 @@ export interface MapperState {
   /** The main loop's last single request's input-side tokens, and the model's context limit. */
   contextUsed: number;
   contextLimit: number;
+  /**
+   * The last completed turn's last main-loop chain-entry UUID — the fork point
+   * an undo resumes at (`Options.resumeSessionAt`). null until the first turn
+   * lands, or if no frame carried a UUID.
+   */
+  rewindRef: string | null;
 }
 
 const zeroUsage = (): TokenUsage => {
@@ -160,7 +168,12 @@ export class ClaudeEventMapper {
     turns: 0,
     contextUsed: 0,
     contextLimit: 0,
+    rewindRef: null,
   };
+
+  /** Most recent main-loop chain-entry UUID seen this turn; snapshotted into
+   *  `state.rewindRef` at each completed turn boundary. */
+  #lastChainUuid: string | null = null;
 
   /** Open *foreground* `Task` tool calls: tool_use id → sub-agent name. A
    *  backgrounded Task is tracked via `background_tasks_changed` instead. */
@@ -176,6 +189,12 @@ export class ClaudeEventMapper {
   /** Normalize one SDK message. May yield zero, one, or several harness events. */
   map(msg: unknown): HarnessEvent[] {
     const m = msg as SdkMsgLite;
+    // Track the main loop's chain as it streams — every assistant / user frame
+    // is a chain entry `resumeSessionAt` accepts. Subagent frames (parent set)
+    // live in their own window and never become a fork point.
+    if ((m.type === "assistant" || m.type === "user") && m.parent_tool_use_id == null) {
+      if (typeof m.uuid === "string" && m.uuid.length > 0) this.#lastChainUuid = m.uuid;
+    }
     switch (m.type) {
       case "system":
         if (m.subtype === "init") {
@@ -408,6 +427,9 @@ export class ClaudeEventMapper {
     if (ok && (m.queued_turn_count ?? 0) > 0) return out;
 
     if (ok) {
+      // This turn is a real boundary now — its last chain entry is the fork
+      // point a later undo resumes at.
+      this.state.rewindRef = this.#lastChainUuid;
       out.push({ type: "result", ...base, kind: "ok", ...(summary ? { summary } : {}) });
     } else {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });

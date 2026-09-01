@@ -671,9 +671,20 @@ test("a checkpoint is recorded per completed turn; session.checkpoints lists the
   assert.equal(cps[1]?.userText, "the second ask");
   assert.equal(cps[1]?.rewindCostUsd, 0); // fake isn't priced / isn't aisdk
 
-  // A non-aisdk provider is refused before any range check runs.
-  await assert.rejects(c.request("session.rewind", { id, toTurn: 1 }), /aisdk-only/);
-  await assert.rejects(c.request("session.rewind", { id, toTurn: 9 }), /aisdk-only/);
+  // The fake advertises `capabilities.rewind`, so undo runs the harness path:
+  // the daemon hands the adapter the checkpoint's fork ref, not a message count.
+  await c.request("session.rewind", { id, toTurn: 1 });
+  const rewound = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(rewound.turns, 1, "turn counter rolled back");
+  assert.deepEqual(fs.rewinds, [{ keep: 0, at: "fake-turn-1" }], "adapter got the fork ref");
+  const left = await c.request<Array<{ turn: number }>>("session.checkpoints", { id });
+  assert.deepEqual(
+    left.map((x) => x.turn),
+    [1],
+    "checkpoints past turn 1 dropped",
+  );
+  // out-of-range is still rejected
+  await assert.rejects(c.request("session.rewind", { id, toTurn: 9 }), /toTurn must be 0/);
   await c.close();
 });
 

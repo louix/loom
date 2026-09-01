@@ -456,13 +456,17 @@ export class SessionManager {
     await this.#require(id).session.setEffort(effort);
   }
 
-  /** Undo: truncate the live session's transcript to its first `keep` messages. */
-  async rewind(id: string, keep: number): Promise<void> {
+  /**
+   * Undo: drop everything after an earlier turn. `keep` is a message count
+   * (aisdk); `at` is the kept turn's chain-entry ref (Claude — see
+   * {@link AdapterSnapshot.rewindRef}).
+   */
+  async rewind(id: string, keep: number, at?: string): Promise<void> {
     const run = this.#require(id);
     if (run.state.kind === "running" || run.state.kind === "starting") {
       throw new Error("interrupt the session before rewinding it");
     }
-    await run.session.rewind(keep);
+    await run.session.rewind(keep, at);
     this.#transition(id, run, stateIdle, "rewind");
   }
 

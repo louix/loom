@@ -506,6 +506,8 @@ export class Daemon {
     // the snapshot so the TUI never shows it "on" where it can't act.
     const keepWarm = ttlMinutes > 0 && this.#sessions.keepWarm(s.id);
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
+    const canRewind = this.#canRewind(s.provider);
+    if (canRewind !== out.canRewind) out = { ...out, canRewind };
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
     if (gitPath) {
@@ -906,11 +908,25 @@ export class Daemon {
     return this.config.providers.aisdk[providerId] !== undefined;
   }
 
+  /** Whether `providerId`'s adapter can `undo` — its real `capabilities.rewind`
+   *  once the provider's been built, else a guess from the provider type (every
+   *  aisdk adapter and the fake rewind; Claude reports its own once loaded). */
+  #canRewind(providerId: string): boolean {
+    const caps = this.#providers.capsOf(providerId);
+    if (caps) return caps.rewind;
+    return this.#isAisdk(providerId) || providerId === "fake";
+  }
+
   /** Snapshot a completed turn so it can be rewound / forked from later. */
   #recordCheckpoint(id: string): void {
     const snap = this.#registry.get(id);
     if (!snap || snap.turns <= 0) return;
-    const forkPoint = this.#isAisdk(snap.provider) ? String(this.#pmsgs.count(id)) : "";
+    // aisdk owns the transcript array → the fork point is a message count;
+    // Claude rewinds through its harness → it's the turn's last chain-entry UUID
+    // (from the adapter's mapper). Both live in `fork_point`.
+    const forkPoint = this.#isAisdk(snap.provider)
+      ? String(this.#pmsgs.count(id))
+      : (this.#sessions.snapshot(id)?.rewindRef ?? "");
     // The full text that started this turn — the undo picker prefills a fresh
     // prompt with it ("redo this"), so it's kept whole (newlines and all); the
     // TUI clips it for the row label. Unbounded, like the event log.
@@ -1385,11 +1401,9 @@ export class Daemon {
       const toTurn = Number((isObj(params) ? params : {})["toTurn"]);
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!this.#isAisdk(snap.provider)) {
-        throw new RpcError(
-          "bad_request",
-          "rewind is aisdk-only for now (Claude support is fork-tree F3)",
-        );
+      const provider = await this.#providers.get(snap.provider).catch(() => null);
+      if (!provider?.capabilities.rewind) {
+        throw new RpcError("bad_request", "this session's provider can't undo a turn");
       }
       if (snap.turns < 1) {
         throw new RpcError("bad_request", "this session has no turn to undo");
@@ -1404,31 +1418,49 @@ export class Daemon {
         // session never settles until it's interrupted → the RPC would hang.
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
       }
-      // toTurn 0 has no checkpoint row — keep nothing.
+
+      // The fork point: a message count for aisdk (owns the transcript array),
+      // a chain-entry ref for a harness-driven adapter (Claude). toTurn 0 keeps
+      // nothing and has no checkpoint row.
+      const aisdk = this.#isAisdk(snap.provider);
       let keep = 0;
+      let at: string | undefined;
       if (toTurn > 0) {
         const cp = this.#checkpoints.at(id, toTurn);
         if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
-        keep = Number(cp.forkPoint) || 0;
+        if (aisdk) {
+          keep = Number(cp.forkPoint) || 0;
+        } else {
+          at = cp.forkPoint || undefined;
+          if (!at) throw new RpcError("bad_request", `turn ${toTurn} has no fork point recorded`);
+        }
       }
 
-      // Truncate the bookkeeping first so whichever path emits the snapshot
-      // below carries the new turn count.
+      // A harness-driven adapter rewinds by restarting its live query — revive a
+      // cold session first. aisdk can truncate its store while cold.
+      if (!this.#sessions.has(id) && !aisdk) {
+        await this.#reviveSession(id);
+        this.#onActivityChange("session-resumed");
+      }
+
+      // Do the rewind, *then* truncate the bookkeeping — a rewind that throws
+      // (a refused resume, say) must not leave the row claiming fewer turns
+      // than the transcript actually has.
+      if (this.#sessions.has(id)) {
+        await this.#sessions.rewind(id, keep, at);
+      } else {
+        this.#pmsgs.replaceFrom(id, keep, []);
+      }
       this.#checkpoints.truncate(id, toTurn);
       this.#registry.store.setTurns(id, toTurn);
-
-      if (this.#sessions.has(id)) {
-        // SessionManager.rewind → #set(idle, "rewind") already broadcasts the
-        // session_updated; don't re-emit it here.
-        await this.#sessions.rewind(id, keep);
-        this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
-        return this.#registry.mustGet(id);
-      }
-
-      // Not live: truncate the store directly and drive the status ourselves.
-      this.#pmsgs.replaceFrom(id, keep, []);
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
-      const updated = this.#registry.setStatus(id, stateIdle, "rewind");
+
+      // SessionManager.rewind already broadcast a `session_updated` from its
+      // idle transition, but with the pre-truncation turn count — re-emit with
+      // the corrected one. The cold path drives the status itself.
+      const updated = this.#sessions.has(id)
+        ? this.#registry.mustGet(id)
+        : this.#registry.setStatus(id, stateIdle, "rewind");
       this.#emitSessionUpdated(updated, clientLabel(params));
       return updated;
     });

@@ -116,6 +116,13 @@ export interface AdapterSnapshot {
   contextLimit: number;
   costUsd: number;
   turns: number;
+  /**
+   * The last completed turn's fork point, for an adapter that rewinds through
+   * its own harness rather than a message count (Claude: the turn's last
+   * chain-entry UUID, passed back as `rewind`'s `at`). Absent for adapters that
+   * own the transcript array (aisdk).
+   */
+  rewindRef?: string;
 }
 
 export interface AgentSession {
@@ -139,10 +146,13 @@ export interface AgentSession {
   respondToPlan(id: string, decision: PlanDecision): Promise<void>;
   interrupt(): Promise<void>;
   /**
-   * Truncate the transcript to its first `keep` messages (undo). Only called
-   * when `capabilities.rewind` is true; others may throw.
+   * Undo: drop everything after an earlier turn. `keep` is a message count for
+   * adapters that own the transcript (aisdk); `at` is the kept turn's last
+   * chain-entry ref for adapters that rewind through their harness (Claude —
+   * `AdapterSnapshot.rewindRef`). Only called when `capabilities.rewind` is
+   * true; others may throw.
    */
-  rewind(keep: number): Promise<void>;
+  rewind(keep: number, at?: string): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string): Promise<void>;
   setEffort(effort: EffortLevel): Promise<void>;

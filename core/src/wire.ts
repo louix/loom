@@ -179,6 +179,12 @@ export interface SessionSnapshot {
    * runtime-only, not persisted — a daemon restart clears it.
    */
   keepWarm: boolean;
+  /**
+   * The session's provider can `undo` (`session.rewind`) — its adapter reports
+   * `capabilities.rewind`. Lets the TUI offer `u` without encoding which
+   * providers support it. Runtime-only, not persisted.
+   */
+  canRewind: boolean;
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;

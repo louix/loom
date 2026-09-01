@@ -1505,19 +1505,20 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "⌥m", label: "model", act: "model" });
     local.push({ keys: "⌥t", label: "effort", act: "effort" });
-    // undo + hard fork don't work on Claude sessions yet (fork-tree F3), so
-    // don't advertise them there. Hard fork additionally needs an isolated
-    // branch, which an in-place session doesn't have — undo (conversation-only)
-    // still works there.
-    const isAisdk = !isClaudeId(session.provider);
+    // Undo needs a rewind-capable provider (the daemon reports `canRewind`);
+    // it's conversation-only, so an in-place session can still do it. Hard fork
+    // is aisdk-only for now (fork-tree F3) and additionally needs an isolated
+    // branch, which an in-place session doesn't have.
     if (
-      isAisdk &&
+      session.canRewind &&
       (status.kind === "idle" || status.kind === "interrupted") &&
       session.turns >= 1
     ) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    if (isAisdk && !session.inPlace) local.push({ keys: "F", label: "fork", act: "fork" });
+    if (!isClaudeId(session.provider) && !session.inPlace) {
+      local.push({ keys: "F", label: "fork", act: "fork" });
+    }
     local.push({ keys: "e", label: "rename", act: "title" });
     if (session.branch || session.worktree) {
       local.push({ keys: "y", label: "copy branch", act: "copybranch" });

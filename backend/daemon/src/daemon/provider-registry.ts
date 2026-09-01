@@ -40,6 +40,8 @@ export class ProviderRegistry {
   readonly #cache = new Map<string, Promise<AgentProvider>>();
   /** Resolved providers, in construction order — for `live()` / shutdown. */
   readonly #live: AgentProvider[] = [];
+  /** id → resolved provider, for sync capability reads once it's been built. */
+  readonly #resolved = new Map<string, AgentProvider>();
   /** Connector packages whose `createProvider` has run at least once (for `daemon.doctor`). */
   readonly #loaded = new Set<string>();
 
@@ -70,6 +72,12 @@ export class ProviderRegistry {
     return this.#ids.has(id);
   }
 
+  /** Capabilities of `id` if its provider has already been constructed this
+   *  process — sync, for hot paths that can't await a lazy build. */
+  capsOf(id: string): AgentProvider["capabilities"] | undefined {
+    return this.#resolved.get(id)?.capabilities;
+  }
+
   /** Construct (or return the cached) provider for `id`, loading its connector lazily. */
   get(id: string): Promise<AgentProvider> {
     const cached = this.#cache.get(id);
@@ -77,6 +85,7 @@ export class ProviderRegistry {
     if (!this.#ids.has(id)) return Promise.reject(new Error(`unknown provider: ${id}`));
     const built = this.#build(id).then((p) => {
       this.#live.push(p);
+      this.#resolved.set(id, p);
       return p;
     });
     // Don't cache a rejected build forever — a later `get()` (after the env var

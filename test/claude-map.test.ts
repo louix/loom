@@ -212,6 +212,55 @@ test("result error emits an error and a failed result", () => {
   assert.equal(res?.kind, "error");
 });
 
+test("rewindRef snapshots the completed turn's last main-loop chain UUID", () => {
+  const m = new ClaudeEventMapper(SID);
+  assert.equal(m.state.rewindRef, null, "nothing until a turn lands");
+
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a1", message: { content: [] } });
+  // a subagent frame in between — its own window, never a fork point
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: "task-1",
+    uuid: "u-sub",
+    message: { content: [] },
+  });
+  m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    uuid: "u-tr1",
+    message: { content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }] },
+  });
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a2", message: { content: [] } });
+  assert.equal(m.state.rewindRef, null, "still mid-turn");
+
+  m.map({ type: "result", subtype: "success", is_error: false, num_turns: 1, modelUsage: {} });
+  assert.equal(m.state.rewindRef, "u-a2", "the turn's last chain entry, not the subagent's");
+
+  // a failed turn doesn't move the fork point
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a3", message: { content: [] } });
+  m.map({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 2 });
+  assert.equal(m.state.rewindRef, "u-a2", "unchanged after a failed turn");
+
+  // next good turn advances it
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a4", message: { content: [] } });
+  m.map({ type: "result", subtype: "success", is_error: false, num_turns: 3, modelUsage: {} });
+  assert.equal(m.state.rewindRef, "u-a4");
+});
+
+test("a queued interim result doesn't snapshot a fork point", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a1", message: { content: [] } });
+  m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 1,
+    queued_turn_count: 1,
+    modelUsage: {},
+  });
+  assert.equal(m.state.rewindRef, null, "not a real boundary yet");
+});
+
 test("an interim result with more turns queued emits the usage delta but no result marker", () => {
   const m = new ClaudeEventMapper(SID);
   m.map({
