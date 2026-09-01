@@ -35,14 +35,15 @@ Consequences:
 
 ### Navigation
 
-| key                  | action                                                  |
-| -------------------- | ------------------------------------------------------- |
-| `↑` / `↓`, `j` / `k` | move the selection                                      |
-| `PgUp` / `PgDn`      | scroll the event log                                    |
-| `⇥`                  | fullscreen the event log (and back)                     |
-| `Esc`                | leave fullscreen / back out of an overlay — never quits |
-| `Space`              | open the command palette                                |
-| `?`                  | keys & the grammar                                      |
+| key                  | action                                                                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
+| `→` / `←`, `l` / `h` | drill into the selected session's sub-agents & background tasks / back out — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream |
+| `PgUp` / `PgDn`      | scroll the event log                                                                                                                               |
+| `⇥`                  | fullscreen the event log (and back)                                                                                                                |
+| `Esc`                | leave fullscreen / step back out of a drill-down / back out of an overlay — never quits                                                            |
+| `Space`              | open the command palette                                                                                                                           |
+| `?`                  | keys & the grammar                                                                                                                                 |
 
 ### Acting on the selected session (footer verbs)
 

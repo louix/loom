@@ -15,12 +15,14 @@ import {
   commandsFor,
   cacheHeat,
   cacheStatus,
+  childrenOf,
   defaultModeOf,
   defaultModelOf,
   defaultProviderId,
   effortPickItems,
   escapeTarget,
   findPickItems,
+  focusedChildOf,
   footerHints,
   formatEvent,
   groupsOf,
@@ -197,6 +199,142 @@ test("move clamps at both ends of the sorted list", () => {
   s = reduce(s, { t: "move", delta: 1 });
   s = reduce(s, { t: "move", delta: 1 });
   assert.equal(s.selectedId, "c", "cannot move past the bottom");
+});
+
+// ---------------------------------------------------------------------------
+// fleet drill-down (child focus)
+// ---------------------------------------------------------------------------
+
+/** A session with the full fan-out: background tasks + one live, one settled sub-agent. */
+const fanout = snap({
+  id: "fan",
+  status: "working_background",
+  backgroundTasks: [
+    { id: "task1", kind: "shell", title: "npm test --watch" },
+    { id: "task2", kind: "subagent", title: "explore refs" },
+  ],
+  subagents: [
+    { id: "t1", name: "reviewer", active: true },
+    { id: "t2", name: "done-agent", active: false },
+  ],
+});
+
+test("childrenOf lists live background tasks then active sub-agents", () => {
+  assert.deepEqual(
+    childrenOf(fanout).map((k) => k.key),
+    ["bg:task1", "bg:task2", "sub:t1"],
+  );
+  assert.equal(childrenOf(snap({ id: "empty" })).length, 0);
+});
+
+test("childEnter lands on the first child; childMove clamps within the list", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  assert.equal(s.selectedChild, null);
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(s.selectedChild, "bg:task1");
+  s = reduce(s, { t: "childMove", delta: 1 });
+  s = reduce(s, { t: "childMove", delta: 1 });
+  assert.equal(s.selectedChild, "sub:t1", "settled sub-agents are not selectable");
+  s = reduce(s, { t: "childMove", delta: 1 });
+  assert.equal(s.selectedChild, "sub:t1", "cannot move past the last child");
+  s = reduce(s, { t: "childMove", delta: -3 });
+  assert.equal(s.selectedChild, "bg:task1", "cannot move above the first child");
+});
+
+test("childEnter while focused keeps the current child; after an exit it restarts", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  s = reduce(s, { t: "childEnter" });
+  s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(s.selectedChild, "sub:t1", "→ again while focused doesn't jump");
+  s = reduce(s, { t: "childExit" });
+  assert.equal(s.selectedChild, null);
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(s.selectedChild, "bg:task1", "a fresh entry starts at the first child");
+});
+
+test("childEnter on a session with no live children is a no-op", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a" })] });
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(s.selectedChild, null);
+});
+
+test("a drained child snaps to a survivor; an emptied list exits focus", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  s = reduce(s, { t: "childEnter" });
+  s = reduce(s, { t: "childMove", delta: 1 }); // → bg:task2
+  // Membership churn: the background tasks drained → snap to the first survivor.
+  s = reduce(s, {
+    t: "sessions",
+    sessions: [{ ...fanout, backgroundTasks: [] }],
+  });
+  assert.equal(s.selectedChild, "sub:t1");
+  // Everything drains → the drill-down exits rather than pointing at nothing.
+  s = reduce(s, {
+    t: "sessions",
+    sessions: [{ ...fanout, backgroundTasks: [], subagents: [] }],
+  });
+  assert.equal(s.selectedChild, null);
+});
+
+test("changing the session selection clears the child focus", () => {
+  const other = snap({ id: "other", status: "idle" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout, other] });
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(s.selectedChild, "bg:task1");
+  s = reduce(s, { t: "select", id: "other" });
+  assert.equal(s.selectedChild, null);
+  s = reduce(s, { t: "select", id: "fan" });
+  s = reduce(s, { t: "childEnter" });
+  s = reduce(s, { t: "move", delta: 1 });
+  assert.equal(s.selectedId, "other");
+  assert.equal(s.selectedChild, null, "moving between sessions drops the focus too");
+});
+
+test("visibleLog narrows to the focused child's agentId-tagged events", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      2,
+      ev({ sessionId: "fan", type: "assistant_text", text: "from reviewer", agentId: "t1" }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      3,
+      ev({ sessionId: "fan", type: "assistant_text", text: "from task", agentId: "task1" }),
+    ),
+  });
+  assert.equal(visibleLog(s).length, 3);
+  s = reduce(s, { t: "childEnter" });
+  const child = focusedChildOf(s);
+  assert.equal(child?.key, "bg:task1");
+  assert.deepEqual(
+    visibleLog(s, child).map((l) => l.text),
+    ["from task"],
+  );
+  s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
+  assert.deepEqual(
+    visibleLog(s, focusedChildOf(s)).map((l) => l.text),
+    ["from reviewer"],
+  );
+});
+
+test("footerHints advertises the drill-down and the way back out", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  const keys = (st: TuiState) => footerHints(st).map((h) => h.keys);
+  assert.ok(keys(s).includes("→"), "sessions with live children offer →");
+  s = reduce(s, { t: "childEnter" });
+  assert.equal(keys(s)[0], "←", "← leads while drilled in");
+  assert.ok(!keys(s).includes("→"), "→ is redundant once focused");
+  const bare = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a" })] });
+  assert.ok(!keys(bare).includes("→"), "childless sessions don't offer the drill-down");
 });
 
 test("session_updated upserts, re-sorts, and preserves selection", () => {

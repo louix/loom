@@ -108,14 +108,18 @@ the Vercel AI SDK.
 - **Fleet pane** — sessions grouped by status in fleet-view order, a braille
   spinner on running rows, cost per session, and a `⟢` cache dot that grades
   green → amber → red as the prompt cache nears expiry (blank once it's cold or
-  n/a); `↑`/`↓` (or `j`/`k`) moves the selection.
+  n/a); `↑`/`↓` (or `j`/`k`) moves the selection, and `→` drills into a
+  session's live sub-agents & background tasks (`←`/`Esc` backs out, `↑`/`↓`
+  picks among the children).
 - **Detail pane** — the selected session's status / mode / model, a
   context-window meter, token and cost totals, its worktree's git facts, and any
   messages queued for it. When it's `awaiting_input` a panel spells out exactly
   what's being approved / denied / asked (the command, the file, the question).
 - **Event stream** — the normalized harness events for the selected session,
   colourised by kind and word-wrapped to the pane (never clipped — it scrolls).
-  `v` toggles `full` ↔ `chat` (conversation only: tool traffic folds to `⚙ N
+  While the fleet is drilled into a child, it narrows to just that sub-agent's
+  (or task's) own events. `v` toggles `full` ↔ `chat` (conversation only: tool
+  traffic folds to `⚙ N
 tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
   blows it up to fullscreen, and `o` opens the pending request — or the session
   transcript (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR`

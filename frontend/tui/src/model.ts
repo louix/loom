@@ -5,7 +5,7 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import type { HarnessEvent, SessionStateKind } from "@loom/core/events";
+import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
@@ -343,6 +343,15 @@ export interface TuiState {
   providers: ProviderInfo[];
   sessions: SessionSnapshot[];
   selectedId: string | null;
+  /**
+   * The focused child of the selected session — a {@link FleetChild} key from
+   * `childrenOf`, i.e. background work (async subagent, backgrounded shell) or
+   * an in-flight foreground sub-agent. Non-null = "drilled in": ↑/↓ moves
+   * between that session's children and the event pane narrows to just that
+   * child's stream. Cleared by ←/Esc (`childExit`), by an explicit `select`,
+   * and whenever churn empties the child list (`clampChild`).
+   */
+  selectedChild: string | null;
   /** Every event across every session, oldest first — never truncated: the
    *  daemon has the durable copy, but this is what's actually rendered, so a
    *  cap here would silently cut off history (a busy session evicting a quiet
@@ -383,6 +392,7 @@ export const initialState = (): TuiState => {
     providers: [],
     sessions: [],
     selectedId: null,
+    selectedChild: null,
     log: [],
     logFilter: "everything",
     pending: {},
@@ -434,6 +444,9 @@ export type Action =
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
+  | { t: "childEnter" }
+  | { t: "childExit" }
+  | { t: "childMove"; delta: number }
   | { t: "logFilter"; value: LogFilter }
   | { t: "notice"; text: string; tone: Tone }
   | { t: "expireNotice"; now: number; ttlMs?: number }
@@ -474,6 +487,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         daemon: a.daemon,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
+        selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneByLive(s.pending, sessions),
         queue: pruneByLive(s.queue, sessions),
         compacting: pruneByLive(s.compacting, sessions),
@@ -495,6 +509,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         ...s,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
+        selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneByLive(s.pending, sessions),
         queue: pruneByLive(s.queue, sessions),
         compacting: pruneByLive(s.compacting, sessions),
@@ -516,14 +531,41 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       const from = idx < 0 ? 0 : idx;
       const next = Math.max(0, Math.min(s.sessions.length - 1, from + a.delta));
       const picked = s.sessions[next];
-      return picked ? { ...s, selectedId: picked.id } : s;
+      if (!picked || picked.id === s.selectedId) return s;
+      return { ...s, selectedId: picked.id, selectedChild: null };
     }
 
     case "select":
       // Optimistic: a freshly-created / forked session may not be in `sessions`
       // yet (its `session_updated` push can trail the RPC response). Any later
       // `clampSelection` keeps this id if it's real, or falls back to the head.
-      return a.id === s.selectedId ? s : { ...s, selectedId: a.id };
+      // A different session invalidates any child focus along with it.
+      return a.id === s.selectedId ? s : { ...s, selectedId: a.id, selectedChild: null };
+
+    case "childEnter": {
+      const sel = selectedSession(s);
+      const kids = sel ? childrenOf(sel) : [];
+      if (kids.length === 0) return s;
+      // Re-entering restores the remembered child while it's still live;
+      // otherwise the cursor lands on the first one.
+      const again = s.selectedChild != null && kids.some((k) => k.key === s.selectedChild);
+      return { ...s, selectedChild: again ? s.selectedChild : kids[0]!.key };
+    }
+
+    case "childExit":
+      return s.selectedChild == null ? s : { ...s, selectedChild: null };
+
+    case "childMove": {
+      const sel = selectedSession(s);
+      const kids = sel ? childrenOf(sel) : [];
+      if (kids.length === 0) return s;
+      const from = Math.max(
+        0,
+        kids.findIndex((k) => k.key === s.selectedChild),
+      );
+      const next = Math.max(0, Math.min(kids.length - 1, from + a.delta));
+      return { ...s, selectedChild: kids[next]!.key };
+    }
 
     case "logFilter":
       return { ...s, logFilter: a.value };
@@ -899,6 +941,47 @@ export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[
   });
 };
 
+/** One live child of a fleet row: a background task or an in-flight sub-agent. */
+export interface FleetChild {
+  /** Stable selection key — `bg:<task id>` or `sub:<subagent id>`. */
+  key: string;
+  /** Which snapshot array it came from; picks the pane's empty-state wording. */
+  source: "bg" | "sub";
+  /** The id events from this child carry (`HarnessEventBase.agentId`). */
+  id: string;
+  /** One-line label — the task's title, or the sub-agent's name. */
+  label: string;
+  /** Background-task kind (for the glyph); absent for foreground sub-agents. */
+  taskKind?: BackgroundTaskKind;
+}
+
+/**
+ * The work a session has fanned out — background tasks first, then still-running
+ * foreground sub-agents (a backgrounded sub-agent already shows as a task, so
+ * the two never double up). Single source of truth for the fleet's child rows
+ * *and* for child selection, so the cursor can never point at a row the fleet
+ * doesn't render.
+ */
+export const childrenOf = (s: SessionSnapshot): FleetChild[] => {
+  return [
+    ...(s.backgroundTasks ?? []).map((t): FleetChild => ({
+      key: `bg:${t.id}`,
+      source: "bg",
+      id: t.id,
+      label: t.title,
+      taskKind: t.kind,
+    })),
+    ...(s.subagents ?? [])
+      .filter((a) => a.active)
+      .map((a): FleetChild => ({
+        key: `sub:${a.id}`,
+        source: "sub",
+        id: a.id,
+        label: a.name,
+      })),
+  ];
+};
+
 const clampSelection = (
   list: readonly SessionSnapshot[],
   current: string | null,
@@ -907,12 +990,39 @@ const clampSelection = (
   return list[0]?.id ?? null;
 };
 
+/**
+ * Keep a focused child consistent with the live fleet — runs wherever
+ * `clampSelection` does, since a session rebase can silently drop the focused
+ * child (a task drained, a sub-agent finished). Membership churns constantly,
+ * so instead of dropping the user out of the drill-down we snap to the first
+ * surviving sibling; focus exits only when the child list is empty (or the
+ * selected session is gone).
+ */
+const clampChild = (
+  list: readonly SessionSnapshot[],
+  sessionId: string | null,
+  child: string | null,
+): string | null => {
+  if (child == null) return null;
+  const sel = (sessionId && list.find((x) => x.id === sessionId)) || null;
+  const kids = sel ? childrenOf(sel) : [];
+  if (kids.some((k) => k.key === child)) return child;
+  return kids[0]?.key ?? null;
+};
+
 // ---------------------------------------------------------------------------
 // selectors
 // ---------------------------------------------------------------------------
 
 export const selectedSession = (s: TuiState): SessionSnapshot | null => {
   return s.sessions.find((x) => x.id === s.selectedId) ?? null;
+};
+
+/** The focused child of the selected session, when the fleet is drilled in. */
+export const focusedChildOf = (s: TuiState): FleetChild | null => {
+  const sel = selectedSession(s);
+  if (!sel || s.selectedChild == null) return null;
+  return childrenOf(sel).find((k) => k.key === s.selectedChild) ?? null;
 };
 
 export const pendingFor = (s: TuiState, id: string | null): Pending => {
@@ -973,16 +1083,23 @@ export const sessionLog = (s: TuiState): LogLine[] => {
   return s.log.filter((l) => l.sessionId === s.selectedId);
 };
 
-/** What the event pane shows, per {@link LogFilter}. */
-export const visibleLog = (s: TuiState): LogLine[] => {
+/**
+ * What the event pane shows, per {@link LogFilter}. A focused child (fleet
+ * drill-down) narrows the session's log first to the events that child
+ * produced — the `agentId` tag the adapter stamps on sub-agent frames — and
+ * the condensers then run on that narrowed stream, so thinking-runs collapse
+ * within the child rather than across the whole session.
+ */
+export const visibleLog = (s: TuiState, child: FleetChild | null = null): LogLine[] => {
   const rows = sessionLog(s);
+  const base = child ? rows.filter((l) => l.agentId === child.id) : rows;
   switch (s.logFilter) {
     case "chat":
-      return condenseLog(rows);
+      return condenseLog(base);
     case "chat_and_tools":
-      return condenseToolResults(rows);
+      return condenseToolResults(base);
     case "everything":
-      return rows;
+      return base;
     default:
       return absurd(s.logFilter);
   }
@@ -1625,10 +1742,17 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
     case "doctor":
       return [{ keys: "esc", label: "close" }];
     case "browse": {
-      const hints = actionsFor(selectedSession(s))
+      const sel = selectedSession(s);
+      const hints = actionsFor(sel)
         .filter((h) => h.footer)
         .map((h) => ({ keys: h.keys, label: h.label }));
-      return [...hints, { keys: "␣", label: "more" }];
+      // Drill-down affordances: → appears only when there's something to
+      // inspect; ← leads while focused (every other key still acts on the
+      // session, so its hints stay).
+      const tail = [...hints, { keys: "␣", label: "more" }];
+      if (s.selectedChild != null) return [{ keys: "←", label: "fleet" }, ...tail];
+      if (sel && childrenOf(sel).length > 0) return [...tail, { keys: "→", label: "inspect" }];
+      return tail;
     }
     default:
       return absurd(s.mode);

@@ -797,6 +797,43 @@ test("sub-agents show in the Detail pane and prefix their log rows", async () =>
   }
 });
 
+test("→ drills into a session's children; EVENTS follows the focused child", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "spawn helpers",
+    provider: "fake",
+  });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(150);
+    fs?.emit({ type: "assistant_text", text: "mainline chatter" });
+    fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
+    fs?.emit({ type: "assistant_text", text: "reviewing the diff", agentId: "t1" });
+    await delay(220);
+    assert.match(stdout.last, /⑂reviewer/, "the sub-agent's rows prefix in at fleet level");
+
+    stdin.feed("\x1b[C"); // → — drill into the child rows
+    await delay(220);
+    // Breadcrumb + events header name the focused child; the pane narrows to
+    // just that sub-agent's stream.
+    assert.match(stdout.last, /FLEET · \S+ ▸ ⑂ reviewer/);
+    assert.match(stdout.last, /EVENTS · ⑂ reviewer/);
+    assert.match(stdout.last, /reviewing the diff/);
+    assert.doesNotMatch(stdout.last, /mainline chatter/);
+
+    stdin.feed("\x1b"); // esc — back out to the fleet
+    await delay(220);
+    assert.match(stdout.last, /mainline chatter/, "the full session stream returns");
+    assert.doesNotMatch(stdout.last, /EVENTS · ⑂/, "the events header is back to plain");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("Tab toggles the fullscreen event log", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

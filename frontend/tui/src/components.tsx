@@ -11,7 +11,9 @@ import { layout, type Buffer } from "./editor.ts";
 import {
   cacheHeat,
   cacheStatus,
+  childrenOf,
   clock,
+  focusedChildOf,
   footerHints,
   groupsOf,
   parseAskUserQuestions,
@@ -22,6 +24,7 @@ import {
   visibleLog,
   type Connection,
   type ConfirmState,
+  type FleetChild,
   type LogLine,
   type Pending,
   type PickerState,
@@ -186,6 +189,10 @@ export const Fleet = ({
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
   const compactingIds = new Set(Object.keys(state.compacting));
+  // Drilled in? The focus only ever applies to the selected session's rows.
+  const focused = focusedChildOf(state);
+  const childKeyOf = (s: SessionSnapshot): string | null =>
+    focused && s.id === state.selectedId ? focused.key : null;
 
   const blocks =
     groups.length === 0
@@ -208,13 +215,14 @@ export const Fleet = ({
                 {FleetRow({
                   s,
                   selected: s.id === state.selectedId,
+                  focused: childKeyOf(s) != null,
                   tick,
                   iw,
                   now,
                   pcolor,
                   compacting: compactingIds.has(s.id),
                 })}
-                {FleetChildRows({ s, tick, iw })}
+                {FleetChildRows({ s, tick, iw, focusedKey: childKeyOf(s) })}
               </Box>
             ))}
           </Box>
@@ -229,7 +237,14 @@ export const Fleet = ({
       borderBackgroundColor={C.bg}
       paddingX={1}
     >
-      <Text color={C.dim}>{"FLEET"}</Text>
+      <Text color={C.dim} wrap="truncate-end">
+        {focused
+          ? `FLEET · ${shortId(state.selectedId ?? "")} ▸ ${childGlyph(focused)} ${truncate(
+              focused.label.replace(/\s+/g, " ").trim(),
+              Math.max(8, iw - 24),
+            )}`
+          : "FLEET"}
+      </Text>
       <Box flexDirection="column" marginTop={1}>
         {blocks}
       </Box>
@@ -252,6 +267,7 @@ const cacheHeatColor = (h: "fresh" | "fading" | "expiring"): string => {
 const FleetRow = ({
   s,
   selected,
+  focused = false,
   tick,
   iw,
   now,
@@ -260,6 +276,9 @@ const FleetRow = ({
 }: {
   s: SessionSnapshot;
   selected: boolean;
+  /** The fleet is drilled into this row's children — its cursor goes dim and
+   *  the bright one moves onto the focused child row. */
+  focused?: boolean;
   tick: number;
   iw: number;
   now: number;
@@ -283,7 +302,7 @@ const FleetRow = ({
 
   return (
     <Text key={s.id} wrap="truncate-end">
-      <Text color={selected ? C.accent : C.faint}>{selected ? "▍ " : "  "}</Text>
+      <Text color={selected && !focused ? C.accent : C.faint}>{selected ? "▍ " : "  "}</Text>
       <Text color={s.status.kind === "running" ? C.accent : look.color}>{glyph + " "}</Text>
       <Text color={idColor}>{`${idText}  `}</Text>
       {compacting ? (
@@ -308,50 +327,57 @@ const BG_KIND_GLYPH: Record<string, string> = {
   other: "•",
 };
 
+/** Fleet-row glyph for a child — its task kind, or the sub-agent fork. */
+const childGlyph = (c: FleetChild): string =>
+  c.source === "sub" ? "⑂" : (BG_KIND_GLYPH[c.taskKind ?? "other"] ?? "•");
+
 /**
  * Indented rows under a fleet row for the work it has fanned out: live
  * background tasks (async subagents, backgrounded shells) and any still-running
  * foreground sub-agents. Only shown while there is something live — settled
- * sessions collapse back to a single line. Capped, with a "+N more" tail.
+ * sessions collapse back to a single line. Capped, with a "+N more" tail —
+ * except while the fleet is drilled into this session's children, where every
+ * selectable child must be visible, so the cap lifts.
  */
 const FleetChildRows = ({
   s,
   tick,
   iw,
+  focusedKey = null,
 }: {
   s: SessionSnapshot;
   tick: number;
   iw: number;
+  /** The focused child key while drilled into this session; null otherwise. */
+  focusedKey?: string | null;
 }): ReactNode => {
-  const bg = s.backgroundTasks ?? [];
-  const subs = (s.subagents ?? []).filter((a) => a.active);
-  const children: Array<{ key: string; glyph: string; label: string }> = [
-    ...bg.map((t) => ({
-      key: `bg:${t.id}`,
-      glyph: BG_KIND_GLYPH[t.kind] ?? "•",
-      label: t.title,
-    })),
-    // A backgrounded sub-agent already shows via `backgroundTasks`; these are
-    // the foreground ones still in flight during a `running` turn.
-    ...subs.map((a) => ({ key: `sub:${a.id}`, glyph: "⑂", label: a.name })),
-  ];
-  if (children.length === 0) return null;
+  const kids = childrenOf(s);
+  if (kids.length === 0) return null;
 
   const MAX = 4;
-  const shown = children.slice(0, MAX);
-  const extra = children.length - shown.length;
+  const shown = focusedKey != null ? kids : kids.slice(0, MAX);
+  const extra = focusedKey != null ? 0 : kids.length - shown.length;
   const room = Math.max(6, iw - 8);
 
   return (
     <Box flexDirection="column">
-      {shown.map((c, i) => (
-        <Text key={c.key} wrap="truncate-end">
-          <Text color={C.faint}>{i === shown.length - 1 && extra === 0 ? "  └ " : "  ├ "}</Text>
-          <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
-          <Text color={C.faint}>{c.glyph + " "}</Text>
-          <Text color={C.dim}>{truncate(c.label.replace(/\s+/g, " ").trim(), room)}</Text>
-        </Text>
-      ))}
+      {shown.map((c, i) => {
+        // The cursor keeps the parent row's 2-col gutter; the tree connector
+        // follows it, so focused and idle rows stay column-aligned.
+        const sel = c.key === focusedKey;
+        const tree = i === shown.length - 1 && extra === 0 ? "└ " : "├ ";
+        return (
+          <Text key={c.key} wrap="truncate-end">
+            <Text color={sel ? C.accent : C.faint}>{sel ? "▍ " : "  "}</Text>
+            <Text color={C.faint}>{tree}</Text>
+            <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
+            <Text color={C.faint}>{childGlyph(c) + " "}</Text>
+            <Text color={sel ? C.text : C.dim} bold={sel}>
+              {truncate(c.label.replace(/\s+/g, " ").trim(), room)}
+            </Text>
+          </Text>
+        );
+      })}
       {extra > 0 ? (
         <Text key="more" color={C.faint}>
           {`  └ +${extra} more`}
@@ -635,6 +661,8 @@ export const EventLog = ({
   // cheap signature so a `session_updated` that merely bumped a token counter (a
   // fresh `sessions` array, same sub-agents) doesn't invalidate the wrap below.
   const sel = selectedSession(state);
+  // Drilled in? The pane narrows to the focused child's own stream.
+  const child = focusedChildOf(state);
   const subSig = (sel?.subagents ?? []).map((a) => `${a.id}=${a.name}`).join(",");
   const subName = useMemo(() => {
     const m = new Map<string, string>();
@@ -645,17 +673,37 @@ export const EventLog = ({
 
   // Flatten the visible log to physical (wrapped) rows. `wrapLine` memoises per
   // line, so a new event re-wraps one line rather than the whole backlog, and
-  // only the `shown` slice is turned into elements below.
-  const rows = useMemo(
-    () => physicalRows(visibleLog(state), inside(width), subName),
-    [state.log, state.logFilter, state.selectedId, subName, width],
-  );
+  // only the `shown` slice is turned into elements below. Deps use the stable
+  // `selectedChild` key, not the derived child object (a fresh object per render).
+  const rows = useMemo(() => {
+    const c = focusedChildOf(state);
+    return physicalRows(
+      visibleLog(state, c),
+      inside(width),
+      // Every row then belongs to that child — the per-row ⑂name prefix would
+      // just echo the pane header.
+      c ? null : subName,
+    );
+  }, [state.log, state.logFilter, state.selectedId, state.selectedChild, subName, width]);
 
   const maxScroll = Math.max(0, rows.length - capacity);
   const off = Math.min(scroll, maxScroll);
   const end = rows.length - off;
   const shown = rows.slice(Math.max(0, end - capacity), end);
   const above = Math.max(0, end - capacity);
+
+  // Pane title: the focused child's name while drilled in, else the plain
+  // header (with a fullscreen marker when Tab has blown it up).
+  let title = "EVENTS";
+  if (child) {
+    title = `EVENTS · ${childGlyph(child)} ${truncate(
+      child.label.replace(/\s+/g, " ").trim(),
+      Math.max(8, inside(width) - 24),
+    )}`;
+    if (full) title += " · fullscreen";
+  } else if (full) {
+    title = "EVENTS · fullscreen";
+  }
 
   return (
     <Box
@@ -668,7 +716,9 @@ export const EventLog = ({
       flexGrow={1}
     >
       <Box justifyContent="space-between">
-        <Text color={C.dim}>{full ? "EVENTS · fullscreen" : "EVENTS"}</Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {title}
+        </Text>
         <Text color={C.faint}>
           {(state.logFilter === "everything"
             ? "full"
@@ -678,7 +728,11 @@ export const EventLog = ({
         </Text>
       </Box>
       {shown.length === 0 ? (
-        <Text color={C.faint}>{"  (quiet)"}</Text>
+        <Text color={C.faint}>
+          {child
+            ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
+            : "  (quiet)"}
+        </Text>
       ) : (
         shown.map((r) =>
           r.first ? (
@@ -722,13 +776,15 @@ interface PhysicalRow {
 const physicalRows = (
   lines: readonly LogLine[],
   iw: number,
-  subName: ReadonlyMap<string, string>,
+  /** Sub-agent id → display name; null suppresses the prefix entirely (the
+   *  pane is already narrowed to one child, so it would echo the header). */
+  subName: ReadonlyMap<string, string> | null,
 ): PhysicalRow[] => {
   const out: PhysicalRow[] = [];
   for (const l of lines) {
     const ts = `${clock(l.ts)} `;
     // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
-    const sub = l.agentId ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
+    const sub = l.agentId && subName ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
     const indent = ts.length + sub.length + 2; // + "glyph "
     const segs = wrapLine(l, Math.max(8, iw - indent));
     segs.forEach((seg, i) => {
@@ -1263,6 +1319,10 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
 
 const HELP_ROWS: Array<[string, string]> = [
   ["↑ / ↓  ·  j / k", "move the selection"],
+  [
+    "→ / ←  (fleet)",
+    "drill into the session's sub-agents & background tasks — ↑/↓ picks one and EVENTS follows it · back out (esc too)",
+  ],
   ["Space", "command palette — search and run any action available here"],
   [
     "a / ⏎  ·  d",

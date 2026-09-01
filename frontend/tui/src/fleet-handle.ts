@@ -372,8 +372,15 @@ export const mkFleetHandle = ({
     const prev = state;
     state = reduce(state, a);
     if (state === prev) return;
-    // Was `useEffect(() => setLogScroll(0), [selectedId, logFilter])`.
-    if (state.selectedId !== prev.selectedId || state.logFilter !== prev.logFilter) logScroll = 0;
+    // Was `useEffect(() => setLogScroll(0), [selectedId, logFilter])`. Child
+    // focus joins the reset set: entering/leaving a drill-down (or the focused
+    // child draining) re-anchors the pane at the live tail.
+    if (
+      state.selectedId !== prev.selectedId ||
+      state.logFilter !== prev.logFilter ||
+      state.selectedChild !== prev.selectedChild
+    )
+      logScroll = 0;
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
     if (state.theme !== prev.theme) setThemeMode(state.theme);
@@ -1594,6 +1601,23 @@ export const mkFleetHandle = ({
       logScroll = Math.max(0, logScroll - Math.max(1, logPage - 1));
       return publish();
     }
+    // Fleet drill-down: → enters the selected session's child rows (its live
+    // background tasks + sub-agents — the tree already rendered under the row);
+    // ↑/↓ then pick among them and the event pane follows the focused child.
+    // ← / esc steps back out to the fleet. Other keys keep acting on the
+    // session — children carry no actions of their own.
+    if (key.rightArrow || input === "l") {
+      if (sel) dispatch({ t: "childEnter" });
+      return;
+    }
+    if (key.leftArrow || input === "h") {
+      if (state.selectedChild != null) dispatch({ t: "childExit" });
+      return;
+    }
+    if (state.selectedChild != null) {
+      if (key.upArrow || input === "k") return void dispatch({ t: "childMove", delta: -1 });
+      if (key.downArrow || input === "j") return void dispatch({ t: "childMove", delta: 1 });
+    }
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
     // ⇧⇥ cycles the permission mode; plain Tab fullscreens the event log.
@@ -1609,6 +1633,8 @@ export const mkFleetHandle = ({
       if (logFull) {
         logFull = false;
         publish();
+      } else if (state.selectedChild != null) {
+        dispatch({ t: "childExit" }); // back out of the drill-down
       }
       return;
     }
