@@ -14,6 +14,7 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
+import { isLiveState } from "@loom/core/session-state";
 import type { LoomClient } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
@@ -206,7 +207,7 @@ const deriveView = (
   const showRequest =
     (state.mode === "browse" || state.mode === "prompt") &&
     !logFull &&
-    sel?.status === "awaiting_input" &&
+    sel?.status.kind === "awaiting_input" &&
     (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
 
   const cols = Math.max(60, dims.cols);
@@ -310,9 +311,9 @@ export const mkFleetHandle = ({
     for (const [id, q] of Object.entries(state.queue)) {
       if (!q || q.length === 0) continue;
       const s = state.sessions.find((x) => x.id === id);
-      if (!s || s.status === "done" || s.status === "error") {
+      if (!s || s.status.kind === "done" || s.status.kind === "error") {
         note(
-          `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status : "gone"}`,
+          `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status.kind : "gone"}`,
           "bad",
         );
         dispatch({ t: "clearQueue", sessionId: id });
@@ -322,7 +323,7 @@ export const mkFleetHandle = ({
     for (const s of state.sessions) {
       const q = state.queue[s.id];
       if (
-        s.status === "idle" &&
+        s.status.kind === "idle" &&
         q &&
         q.length > 0 &&
         !draining.has(s.id) &&
@@ -577,7 +578,8 @@ export const mkFleetHandle = ({
         const fp = firstPerm(pend);
         if (fp?.tool === "AskUserQuestion") {
           const qs = parseAskUserQuestions(fp.input);
-          if (qs.length === 0) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
+          if (qs.length === 0)
+            return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
           return void dispatch({
             t: "openPrompt",
             prompt: makePrompt({
@@ -1119,9 +1121,7 @@ export const mkFleetHandle = ({
 
   // ---- daemon lifecycle ---------------------------------------
   const confirmFor = (action: "restart" | "quitAll"): ConfirmState => {
-    const liveCount = state.sessions.filter(
-      (s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input",
-    ).length;
+    const liveCount = state.sessions.filter((s) => isLiveState(s.status)).length;
     return {
       title: action === "restart" ? "Restart the daemon?" : "Quit the UI and stop the daemon?",
       ...(liveCount > 0
@@ -1248,7 +1248,7 @@ export const mkFleetHandle = ({
             tone: "dim",
           });
         }
-        if (sel.status === "awaiting_input") {
+        if (sel.status.kind === "awaiting_input") {
           return void dispatch({
             t: "notice",
             text: "answer the pending request first",
@@ -1379,7 +1379,7 @@ export const mkFleetHandle = ({
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
       if (key.meta && key.return && p.kind === "send" && p.sessionId) {
         const target = state.sessions.find((x) => x.id === p.sessionId);
-        if (target && (target.status === "running" || target.status === "starting")) {
+        if (target && (target.status.kind === "running" || target.status.kind === "starting")) {
           const text = p.buffer.text.trim();
           return void (text && queueSend(p.sessionId, text));
         }

@@ -6,6 +6,7 @@
   "exports": {
     "./absurd": "./src/absurd.ts",
     "./events": "./src/events.ts",
+    "./session-state": "./src/session-state.ts",
     "./wire": "./src/wire.ts",
     "./types": "./src/types.ts",
     "./channel": "./src/channel.ts",

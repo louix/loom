@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint, migrate, openDb } from "@loom/daemon/store/db";
 import {
+  stateAwaitingInput,
+  stateIdle,
+  stateInterrupted,
+  stateRunning,
+} from "@loom/core/session-state";
+import {
   ChildStore,
   CheckpointStore,
   ProviderDefaultStore,
@@ -56,7 +62,7 @@ test("session create seeds usage + a starting history row", () => {
 
     const snap = store.get("s1");
     assert.ok(snap);
-    assert.equal(snap.status, "starting");
+    assert.equal(snap.status.kind, "starting");
     assert.equal(snap.provider, "stub");
     assert.equal(snap.title, "do a thing");
     assert.deepEqual(snap.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -70,26 +76,25 @@ test("session create seeds usage + a starting history row", () => {
   }
 });
 
-test("setStatus records history and only keeps await_reason while awaiting", () => {
+test("setStatus round-trips the state union and records history with the note", () => {
   const { path, cleanup } = tmpDb();
   try {
     const db = openDb(path);
     const store = new SessionStore(db);
     store.create({ id: "s1", provider: "stub" });
 
-    store.setStatus("s1", "awaiting_input", "permission");
-    assert.equal(store.get("s1")?.status, "awaiting_input");
-    assert.equal(store.get("s1")?.awaitReason, "permission");
+    store.setStatus("s1", stateAwaitingInput("permission"));
+    assert.deepEqual(store.get("s1")?.status, { kind: "awaiting_input", on: "permission" });
 
-    store.setStatus("s1", "running");
-    assert.equal(store.get("s1")?.awaitReason, null);
+    store.setStatus("s1", stateRunning);
+    assert.deepEqual(store.get("s1")?.status, { kind: "running" });
 
-    store.setStatus("s1", "idle", "clean");
-    assert.equal(store.get("s1")?.awaitReason, null);
+    store.setStatus("s1", stateIdle, "clean");
+    assert.deepEqual(store.get("s1")?.status, { kind: "idle" });
 
     const statuses = store.statusHistory("s1").map((h) => h.status);
     assert.deepEqual(statuses, ["starting", "awaiting_input", "running", "idle"]);
-    // reason is still recorded in history even for non-awaiting transitions
+    // the transition note is recorded in history
     assert.equal(store.statusHistory("s1").at(-1)?.reason, "clean");
     db.close();
   } finally {
@@ -140,16 +145,16 @@ test("markMidRunInterrupted flips starting/running/awaiting to interrupted", () 
     const store = new SessionStore(db);
     store.create({ id: "a", provider: "stub" }); // starting
     store.create({ id: "b", provider: "stub" });
-    store.setStatus("b", "running");
+    store.setStatus("b", stateRunning);
     store.create({ id: "c", provider: "stub" });
-    store.setStatus("c", "awaiting_input", "permission");
+    store.setStatus("c", stateAwaitingInput("permission"));
     store.create({ id: "d", provider: "stub" });
-    store.setStatus("d", "idle");
+    store.setStatus("d", stateIdle);
 
     const flipped = store.markMidRunInterrupted().sort();
     assert.deepEqual(flipped, ["a", "b", "c"]);
-    assert.equal(store.get("a")?.status, "interrupted");
-    assert.equal(store.get("d")?.status, "idle"); // untouched
+    assert.deepEqual(store.get("a")?.status, stateInterrupted("user"));
+    assert.equal(store.get("d")?.status.kind, "idle"); // untouched
     assert.equal(store.statusHistory("b").at(-1)?.reason, "daemon_restart");
     db.close();
   } finally {

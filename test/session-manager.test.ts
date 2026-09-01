@@ -42,7 +42,13 @@ const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 1000): Promi
 };
 
 const statusOf = async (c: LoomClient, id: string): Promise<string> => {
-  return (await c.request<SessionSnapshot>("session.get", { id })).status;
+  return (await c.request<SessionSnapshot>("session.get", { id })).status.kind;
+};
+
+/** The `AwaitReason` a blocked session is on, or null. */
+const awaitReasonOf = async (c: LoomClient, id: string): Promise<string | null> => {
+  const st = (await c.request<SessionSnapshot>("session.get", { id })).status;
+  return st.kind === "awaiting_input" ? st.on : null;
 };
 
 const createFake = async (
@@ -77,12 +83,12 @@ test("create registers a session, streams its events, and derives running → id
       frames.some((f) => f.type === "event" && f.event.type === "assistant_text"),
   );
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
 
   fs.finishTurn({ summary: "all done", usage: { input: 500, output: 40 }, costUsd: 0.03 });
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "idle",
   );
 
   const done = await c.request<SessionSnapshot>("session.get", { id });
@@ -112,7 +118,7 @@ test("permission_request blocks the session; first responder wins", async () => 
 
   await waitFor(async () => {
     const s = await c.request<SessionSnapshot>("session.get", { id });
-    return s.status === "awaiting_input" && s.awaitReason === "permission";
+    return s.status.kind === "awaiting_input" && s.status.on === "permission";
   });
 
   const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>(
@@ -139,7 +145,7 @@ test("permission_request blocks the session; first responder wins", async () => 
   assert.equal(fs.permissionResponses[0]?.decision.behavior, "allow");
 
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
   await c.close();
 });
@@ -156,8 +162,7 @@ test("a stray assistant_text / tool_call after permission_request doesn't unbloc
   fs.emit({ type: "tool_call", id: "t2", name: "bash", input: { command: "pwd" } });
   await delay(60);
   const s = await c.request<SessionSnapshot>("session.get", { id });
-  assert.equal(s.status, "awaiting_input");
-  assert.equal(s.awaitReason, "permission");
+  assert.deepEqual(s.status, { kind: "awaiting_input", on: "permission" });
 
   await c.request("session.respondPermission", { id, requestId: "p1", decision: "allow" });
   await waitFor(async () => (await statusOf(c, id)) === "running");
@@ -176,7 +181,7 @@ test("an ask_user question blocks the session until session.answer resolves it",
 
   await waitFor(async () => {
     const s = await c.request<SessionSnapshot>("session.get", { id });
-    return s.status === "awaiting_input" && s.awaitReason === "question";
+    return s.status.kind === "awaiting_input" && s.status.on === "question";
   });
 
   const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.answer", {
@@ -196,7 +201,7 @@ test("an ask_user question blocks the session until session.answer resolves it",
   assert.equal(fs.questionAnswers.length, 1);
 
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
   await c.close();
 });
@@ -208,7 +213,7 @@ test("a plan_review blocks the session; session.respondPlan resolves it", async 
 
   await waitFor(async () => {
     const s = await c.request<SessionSnapshot>("session.get", { id });
-    return s.status === "awaiting_input" && s.awaitReason === "plan_review";
+    return s.status.kind === "awaiting_input" && s.status.on === "plan_review";
   });
 
   const first = await c.request<{ ok: boolean; alreadyResolved: boolean }>("session.respondPlan", {
@@ -229,7 +234,7 @@ test("a plan_review blocks the session; session.respondPlan resolves it", async 
   assert.equal(second.alreadyResolved, true);
 
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
   await c.close();
 });
@@ -238,10 +243,7 @@ test("session.respondPlan carries the revise plan / discuss message and validate
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "plan_review", id: "pr2", plan: "draft" });
-  await waitFor(
-    async () =>
-      (await c.request<SessionSnapshot>("session.get", { id })).awaitReason === "plan_review",
-  );
+  await waitFor(async () => (await awaitReasonOf(c, id)) === "plan_review");
 
   await assert.rejects(
     c.request("session.respondPlan", { id, requestId: "pr2", action: "revise", plan: "  " }),
@@ -276,13 +278,13 @@ test("send delivers a follow-up turn and returns the session to running", async 
   const { id, fs } = await createFake(c);
   fs.finishTurn();
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "idle",
   );
 
   await c.request("session.send", { id, text: "one more thing" });
   assert.deepEqual(fs.sends, ["one more thing"]);
   const s = await c.request<SessionSnapshot>("session.get", { id });
-  assert.equal(s.status, "running");
+  assert.equal(s.status.kind, "running");
   await c.close();
 });
 
@@ -309,7 +311,7 @@ test("session.compact forwards to the adapter and streams a compact event", asyn
   const { id, fs } = await createFake(c);
   fs.finishTurn({ contextUsed: 80_000 });
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "idle",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "idle",
   );
 
   await c.request("session.compact", { id, instructions: "keep the plan" });
@@ -326,7 +328,7 @@ test("session.compact forwards to the adapter and streams a compact event", asyn
   );
   assert.equal(compact?.event.type === "compact" && compact.event.before, 80_000);
   // compacting an idle session leaves it idle
-  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "idle");
+  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status.kind, "idle");
   await c.close();
 });
 
@@ -341,16 +343,22 @@ test("interrupt is sticky — a trailing stream end does not undo it", async () 
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "midway" });
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
 
   await c.request("session.interrupt", { id });
   assert.equal(fs.interruptCount, 1);
-  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "interrupted");
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id })).status.kind,
+    "interrupted",
+  );
 
   fs.endStream();
   await delay(30);
-  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "interrupted");
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id })).status.kind,
+    "interrupted",
+  );
   await c.close();
 });
 
@@ -359,17 +367,20 @@ test("after an interrupt you can just send — no resume step", async () => {
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "midway" });
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
 
   await c.request("session.interrupt", { id });
-  assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status, "interrupted");
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id })).status.kind,
+    "interrupted",
+  );
 
   // send() on the interrupted (still-live) session starts a fresh turn
   await c.request("session.send", { id, text: "carry on" });
   assert.deepEqual(fs.sends, ["carry on"]);
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
   await c.close();
 });
@@ -379,7 +390,7 @@ test("a fatal error moves the session to error", async () => {
   const { id, fs } = await createFake(c);
   fs.fail("provider exploded");
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "error",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "error",
   );
   const hist = await c.request<Array<{ status: string; reason: string | null }>>(
     "session.history",
@@ -394,11 +405,12 @@ test("an abrupt stream end (still live) becomes interrupted/stream_ended", async
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "half" });
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "running",
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "running",
   );
   fs.endStream();
   await waitFor(
-    async () => (await c.request<SessionSnapshot>("session.get", { id })).status === "interrupted",
+    async () =>
+      (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "interrupted",
   );
   const hist = await c.request<Array<{ status: string; reason: string | null }>>(
     "session.history",
@@ -634,7 +646,7 @@ test("a permission answer that lands after an interrupt does not un-interrupt th
   await c.close();
 });
 
-test("the post-interrupt guard is transient — a later turn's events still drive status", async () => {
+test("interrupted is sticky for its own turn, but a later turn's events re-engage the machine", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
   fs.emit({ type: "assistant_text", text: "working" });

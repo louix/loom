@@ -13,6 +13,13 @@ import { stepCountIs, streamText, tool } from "ai";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import { z } from "zod";
 import type { HarnessEvent } from "@loom/core/events";
+import {
+  stateError,
+  stateIdle,
+  stateInterrupted,
+  stateRunning,
+  stateStarting,
+} from "@loom/core/session-state";
 import { AsyncChannel } from "@loom/core/channel";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import type {
@@ -164,7 +171,7 @@ export class AisdkSession implements AgentSession {
     this.#messages = [...opts.messages];
     this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId);
     this.#snap = {
-      status: "starting",
+      status: stateStarting,
       providerRef: opts.sessionId,
       model: opts.modelId,
       effort: null,
@@ -182,7 +189,7 @@ export class AisdkSession implements AgentSession {
     if (run && this.#lastRole() === "user") {
       this.#kickTurn();
     } else {
-      this.#snap.status = "idle";
+      this.#snap.status = stateIdle;
     }
   }
 
@@ -290,7 +297,7 @@ export class AisdkSession implements AgentSession {
     const n = Math.max(0, Math.min(this.#messages.length, keep));
     this.#messages.length = n;
     this.#store?.replaceFrom(this.id, n, []);
-    this.#snap.status = "idle";
+    this.#snap.status = stateIdle;
   }
 
   async setMode(mode: SessionMode): Promise<void> {
@@ -665,7 +672,7 @@ export class AisdkSession implements AgentSession {
 
       const abort = new AbortController();
       this.#abort = abort;
-      this.#snap.status = "running";
+      this.#snap.status = stateRunning;
 
       const { aborted, errored, hitStepLimit } = await runTurn({
         sessionId: this.id,
@@ -707,7 +714,7 @@ export class AisdkSession implements AgentSession {
           // An errored turn may be resumed; keep a late injection for that.
           this.#flushInjections();
         }
-        this.#snap.status = stopped ? "interrupted" : "error";
+        this.#snap.status = stopped ? stateInterrupted("user") : stateError("turn failed");
         if (this.#oneShot) this.#outbox.close();
         return;
       }
@@ -773,20 +780,20 @@ export class AisdkSession implements AgentSession {
           type: "result",
           sessionId: this.id,
           ts: Date.now(),
-          ok: true,
+          kind: "ok",
           stopReason: "step_limit",
         });
-        this.#snap.status = "idle";
+        this.#snap.status = stateIdle;
         return;
       }
 
       this.#segmentsRun = 0;
       this.#snap.turns += 1;
-      this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), ok: true });
-      this.#snap.status = "idle";
+      this.#emit({ type: "result", sessionId: this.id, ts: Date.now(), kind: "ok" });
+      this.#snap.status = stateIdle;
       if (this.#oneShot) this.#outbox.close();
     } catch (err) {
-      this.#snap.status = "error";
+      this.#snap.status = stateError("turn failed");
       this.#emit({
         type: "error",
         sessionId: this.id,

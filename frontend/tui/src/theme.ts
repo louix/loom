@@ -4,7 +4,7 @@
  * No React in here — components read these constants, and the formatting
  * helpers are unit-tested directly.
  */
-import type { SessionStatus } from "@loom/core/events";
+import type { SessionStateKind } from "@loom/core/events";
 
 export type ThemeMode = "dark" | "light";
 
@@ -97,7 +97,7 @@ export interface StatusLook {
 }
 
 /** Fleet-view group order — mirrors the daemon's registry ranking. */
-export const STATUS_ORDER: readonly SessionStatus[] = [
+export const STATUS_ORDER: readonly SessionStateKind[] = [
   "awaiting_input",
   "running",
   "starting",
@@ -108,7 +108,7 @@ export const STATUS_ORDER: readonly SessionStatus[] = [
 ];
 
 /** Glyph + label per status — unlike the colour, these don't depend on the theme. */
-const STATUS_TEXT: Record<SessionStatus, { glyph: string; label: string }> = {
+const STATUS_TEXT: Record<SessionStateKind, { glyph: string; label: string }> = {
   awaiting_input: { glyph: "◆", label: "awaiting input" },
   running: { glyph: "●", label: "running" },
   starting: { glyph: "◌", label: "starting" },
@@ -118,7 +118,7 @@ const STATUS_TEXT: Record<SessionStatus, { glyph: string; label: string }> = {
   done: { glyph: "✓", label: "done" },
 };
 
-const statusColor = (s: SessionStatus): string => {
+const statusColor = (s: SessionStateKind): string => {
   switch (s) {
     case "awaiting_input":
       return C.await_;
@@ -138,7 +138,7 @@ const statusColor = (s: SessionStatus): string => {
 };
 
 /** Glyph + colour + label for a session status, read fresh (colour follows the theme). */
-export const statusLook = (s: SessionStatus): StatusLook => ({
+export const statusLook = (s: SessionStateKind): StatusLook => ({
   ...STATUS_TEXT[s],
   color: statusColor(s),
 });

@@ -4,17 +4,17 @@
  * wire protocol are all typed against this union so adapters slot in later
  * without reshaping anything downstream.
  */
+import type { SessionState, SessionStateKind } from "./session-state.ts";
 
-export type SessionStatus =
-  | "starting"
-  | "awaiting_input"
-  | "running"
-  | "interrupted"
-  | "idle"
-  | "error"
-  | "done";
+/**
+ * What a blocked turn is waiting on. `user_question` is the SDK's own
+ * multiple-choice `AskUserQuestion` tool (answered, not approved/denied);
+ * `question` is Loom's `ask_user`.
+ */
+export type AwaitReason = "permission" | "question" | "plan_review" | "user_question";
 
-export type AwaitReason = "permission" | "question" | "plan_review";
+// The session's turn state is a closed union — see `./session-state.ts`.
+export type { SessionState, SessionStateKind };
 
 export interface TokenUsage {
   input: number;
@@ -148,8 +148,9 @@ export interface SubagentStoppedEvent extends HarnessEventBase {
 
 export interface StatusChangedEvent extends HarnessEventBase {
   type: "status_changed";
-  status: SessionStatus;
-  reason?: AwaitReason | string;
+  status: SessionState;
+  /** An audit breadcrumb for the transition (`"rewind"`, `"resumed"`, …), not part of the state. */
+  note?: string;
 }
 
 export interface ErrorEvent extends HarnessEventBase {
@@ -158,9 +159,10 @@ export interface ErrorEvent extends HarnessEventBase {
   fatal: boolean;
 }
 
-export interface ResultEvent extends HarnessEventBase {
+/** A turn ended cleanly. `summary` is the model's closing text, if any. */
+export interface ResultOkEvent extends HarnessEventBase {
   type: "result";
-  ok: boolean;
+  kind: "ok";
   summary?: string;
   /**
    * Why the turn ended, when it wasn't the model stopping on its own.
@@ -171,6 +173,15 @@ export interface ResultEvent extends HarnessEventBase {
    */
   stopReason?: "step_limit";
 }
+
+/** A turn ended on a failure. `error` is always populated. */
+export interface ResultErrorEvent extends HarnessEventBase {
+  type: "result";
+  kind: "error";
+  error: string;
+}
+
+export type ResultEvent = ResultOkEvent | ResultErrorEvent;
 
 /**
  * The session was rewound to an earlier turn (`undo`) — the transcript past

@@ -158,4 +158,14 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+
+  // 12 — session status is now a closed union (SessionState). `status` holds
+  // the variant `kind`; `await_reason` is renamed `status_detail` and carries
+  // whichever payload the variant has (awaiting_input → the AwaitReason,
+  // interrupted → "user" | "stream_ended", error → the message). Existing
+  // `awaiting_input` rows already have their reason here; older `interrupted` /
+  // `error` rows have NULL and the reader defaults them.
+  /* sql */ `
+  ALTER TABLE sessions RENAME COLUMN await_reason TO status_detail;
+  `,
 ];

@@ -360,7 +360,7 @@ test("interrupting a turn parked in the gate stops it and heals the transcript f
       false,
       "an interrupted turn emits no result",
     );
-    assert.equal(s.snapshot().status, "interrupted");
+    assert.equal(s.snapshot().status.kind, "interrupted");
     // The dangling assistant tool-call must not survive into the stored transcript.
     assert.deepEqual(
       store.load("s1").map((m) => m.role),
@@ -376,7 +376,7 @@ test("interrupting a turn parked in the gate stops it and heals the transcript f
       true,
       "the follow-up turn completed",
     );
-    assert.equal(s.snapshot().status, "idle");
+    assert.equal(s.snapshot().status.kind, "idle");
 
     await s.close();
     await reader;
@@ -514,8 +514,8 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
     const result = evs.find((e) => e.type === "result") as
       | Extract<HarnessEvent, { type: "result" }>
       | undefined;
-    assert.equal(result?.ok, true);
-    assert.equal(result?.stopReason, "step_limit");
+    assert.equal(result?.kind, "ok");
+    assert.equal(result?.kind === "ok" ? result.stopReason : undefined, "step_limit");
     // a loud, non-fatal heads-up landed before the result
     assert.equal(
       evs.some(
@@ -525,7 +525,7 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
     );
     // exactly one completed turn; session stays usable
     assert.equal(s.snapshot().turns, 1);
-    assert.equal(s.snapshot().status, "idle");
+    assert.equal(s.snapshot().status.kind, "idle");
     // 5 segments × maxSteps 2
     assert.equal(step, 10);
   } finally {

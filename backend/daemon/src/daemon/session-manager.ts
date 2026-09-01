@@ -5,7 +5,17 @@
  * interrupt, permission responses, mode / model — funnels through here so it is
  * serialized per session and the daemon stays thin.
  */
-import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { AwaitReason, HarnessEvent } from "@loom/core/events";
+import {
+  isLiveState,
+  sameSessionState,
+  type SessionState,
+  stateError,
+  stateIdle,
+  stateInterrupted,
+  stateRunning,
+  stateStarting,
+} from "@loom/core/session-state";
 import type { Logger } from "@loom/core/logger";
 import type { UsageDelta } from "../store/sessions.ts";
 import type {
@@ -24,8 +34,8 @@ import { deriveStatus } from "./status-machine.ts";
 export interface ManagerHooks {
   /** Forward a normalized event to the push stream + persistence. */
   emitEvent(ev: HarnessEvent): void;
-  /** A derived status transition. */
-  onStatus(sessionId: string, status: SessionStatus, reason: string | null): void;
+  /** A turn-state transition, with an optional audit breadcrumb for it. */
+  onStatus(sessionId: string, state: SessionState, note?: string): void;
   /** A usage delta to accumulate. */
   onUsage(sessionId: string, delta: UsageDelta): void;
   /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
@@ -54,23 +64,18 @@ export interface RateLimitWindow {
 interface Running {
   provider: string;
   session: AgentSession;
-  status: SessionStatus;
-  /** Last reason handed to onStatus, so we don't re-notify on an unchanged one. */
-  reason: string | null;
+  /** The one source of truth for turn state — `deriveStatus` in, `onStatus` out. */
+  state: SessionState;
   ordinal: number;
-  pendingPerms: Set<string>;
-  pendingQuestions: Set<string>;
-  pendingPlans: Set<string>;
+  /** Outstanding blocking requests: request id → what it blocks on. `awaiting_input` iff non-empty. */
+  pending: Map<string, AwaitReason>;
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
   /** Latest reading per window (`rate_limit` events carry one window each — merge, don't overwrite). */
   rateLimits: Map<string, RateLimitWindow>;
-  interrupting: boolean;
   ended: boolean;
   refReported: boolean;
   pump: Promise<void>;
 }
-
-const LIVE: readonly SessionStatus[] = ["starting", "running", "awaiting_input"];
 
 export class SessionManager {
   readonly #hooks: ManagerHooks;
@@ -112,15 +117,11 @@ export class SessionManager {
     const run: Running = {
       provider: providerId,
       session,
-      status: "starting",
-      reason: null,
+      state: stateStarting,
       ordinal: 0,
-      pendingPerms: new Set(),
-      pendingQuestions: new Set(),
-      pendingPlans: new Set(),
+      pending: new Map(),
       subagents: new Map(),
       rateLimits: new Map(),
-      interrupting: false,
       ended: false,
       refReported: false,
       pump: Promise.resolve(),
@@ -137,34 +138,26 @@ export class SessionManager {
           this.#hooks.log.warn("session error", { id, message: ev.message });
         }
         this.#hooks.emitEvent(ev);
-        this.#trackPerms(run, ev);
-        this.#trackQuestions(run, ev);
-        this.#trackPlans(run, ev);
+        this.#trackPending(run, ev);
         this.#trackSubagents(id, run, ev);
         this.#trackRateLimit(run, ev);
         this.#trackUsage(id, ev);
-        if (ev.type === "result") this.#hooks.onResult(id, ev.ok);
+        if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
         this.#trackRef(id, run);
         this.#applyStatus(id, run, ev);
-        // `interrupting` guards the *interrupted* turn's trailing events only —
-        // once that turn has demonstrably ended (its `result`), lift it so the
-        // next turn's events aren't silently swallowed.
-        if (ev.type === "result") run.interrupting = false;
       }
-      // The adapter stream ended. A clean run leaves status at idle/done/error;
+      // The adapter stream ended. A clean run leaves state at idle/error;
       // anything still live stopped without a clean finish → interrupted.
       run.ended = true;
-      run.interrupting = false;
-      if (LIVE.includes(run.status)) {
-        this.#set(id, run, "interrupted", "stream_ended");
+      if (isLiveState(run.state)) {
+        this.#transition(id, run, stateInterrupted("stream_ended"), "stream_ended");
       }
     } catch (err) {
       run.ended = true;
-      run.interrupting = false;
       const message = err instanceof Error ? err.message : String(err);
       this.#hooks.log.warn("session pump failed", { id, err: message });
       this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
-      this.#set(id, run, "error", message.slice(0, 120));
+      this.#transition(id, run, stateError(message.slice(0, 120)));
     }
   }
 
@@ -177,28 +170,29 @@ export class SessionManager {
     }
   }
 
-  #trackPerms(run: Running, ev: HarnessEvent): void {
-    if (ev.type === "permission_request") {
-      run.pendingPerms.add(ev.id);
-    } else if (ev.type === "tool_result") {
-      // Not `tool_call`: the aisdk adapter emits the tool_call *before* the
-      // permission_request (the gate runs inside the tool's executor), so only
-      // the result reliably marks the request done. Claude emits them the other
-      // way round, and clearing on the result works there too.
-      run.pendingPerms.delete(ev.id);
+  /**
+   * Maintain the outstanding-request map that *is* the `awaiting_input` state.
+   * A `tool_result` clears a permission (not `tool_call`: the aisdk adapter
+   * emits the call *before* its gate's `permission_request`, so only the result
+   * reliably marks it done; Claude emits them the other way and this works
+   * too); an `answer` clears a question. Plans are cleared by `respondToPlan`.
+   */
+  #trackPending(run: Running, ev: HarnessEvent): void {
+    switch (ev.type) {
+      case "permission_request":
+        run.pending.set(ev.id, ev.tool === "AskUserQuestion" ? "user_question" : "permission");
+        break;
+      case "question":
+        run.pending.set(ev.id, "question");
+        break;
+      case "plan_review":
+        run.pending.set(ev.id, "plan_review");
+        break;
+      case "answer":
+      case "tool_result":
+        run.pending.delete(ev.id);
+        break;
     }
-  }
-
-  #trackQuestions(run: Running, ev: HarnessEvent): void {
-    if (ev.type === "question") {
-      run.pendingQuestions.add(ev.id);
-    } else if (ev.type === "answer") {
-      run.pendingQuestions.delete(ev.id);
-    }
-  }
-
-  #trackPlans(run: Running, ev: HarnessEvent): void {
-    if (ev.type === "plan_review") run.pendingPlans.add(ev.id);
   }
 
   #trackSubagents(id: string, run: Running, ev: HarnessEvent): void {
@@ -259,19 +253,17 @@ export class SessionManager {
   }
 
   #applyStatus(id: string, run: Running, ev: HarnessEvent): void {
-    // A user interrupt is sticky — don't let a trailing event undo it, unless
-    // it's a fatal error we should surface.
-    if (run.interrupting && !(ev.type === "error" && ev.fatal)) return;
-    const d = deriveStatus(run.status, ev);
-    if (!d) return;
-    this.#set(id, run, d.status, d.reason);
+    // Stickiness of `interrupted` / `error` now lives in `deriveStatus` itself
+    // (it returns them unchanged for trailing events), so there is no guard
+    // here that could silently swallow a live turn's events.
+    this.#transition(id, run, deriveStatus(run.state, ev));
   }
 
-  #set(id: string, run: Running, status: SessionStatus, reason: string | null): void {
-    if (run.status === status && run.reason === reason) return;
-    run.status = status;
-    run.reason = reason;
-    this.#hooks.onStatus(id, status, reason);
+  /** Apply a state transition. A `note` is an audit breadcrumb and always fires. */
+  #transition(id: string, run: Running, next: SessionState, note?: string): void {
+    if (sameSessionState(run.state, next) && note === undefined) return;
+    run.state = next;
+    this.#hooks.onStatus(id, next, note);
   }
 
   // --- turn control ----------------------------------------------------
@@ -285,16 +277,13 @@ export class SessionManager {
   async send(id: string, text: string): Promise<{ injected: boolean }> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
-    const injected =
-      run.status === "running" || run.status === "awaiting_input" || run.status === "starting";
+    const injected = isLiveState(run.state);
     await run.session.send(text);
-    // Any user send is a fresh engagement — the post-interrupt guard that keeps
-    // a stale permission answer from reviving a dead turn has done its job.
-    run.interrupting = false;
-    // For an injection, leave the status (and its reason, e.g. a pending
-    // permission) alone; the turn's own events drive it.
+    // For an injection, leave the state (and its pending requests) alone; the
+    // turn's own events drive it. Otherwise this send is a fresh engagement —
+    // it supersedes any prior `interrupted` / `idle` / `error`.
     if (injected) return { injected };
-    this.#set(id, run, "running", null);
+    this.#transition(id, run, stateRunning);
     return { injected };
   }
 
@@ -308,12 +297,12 @@ export class SessionManager {
 
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
-    run.interrupting = true;
-    this.#forgetPending(run);
+    run.pending.clear();
     // Reflect the interrupt immediately and unconditionally — the adapter call
     // below can be slow (or, on a wedged turn, throw), and the UI must not be
-    // left showing `running` either way.
-    this.#set(id, run, "interrupted", "user");
+    // left showing `running` either way. `interrupted` is sticky in
+    // `deriveStatus`, so trailing events from the killed turn won't undo it.
+    this.#transition(id, run, stateInterrupted("user"), "user");
     try {
       await run.session.interrupt();
     } catch (err) {
@@ -324,26 +313,14 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Drop the outstanding permission / question / plan ids so a late answer
-   * from a client whose UI still shows the prompt can't flip an
-   * already-interrupted (dead) turn back to `running`.
-   */
-  #forgetPending(run: Running): void {
-    run.pendingPerms.clear();
-    run.pendingQuestions.clear();
-    run.pendingPlans.clear();
-  }
-
   /** Move a settled `awaiting_input` session back to `running` — unless a user
    *  interrupt landed in between (the interrupt sticks), or other requests from
    *  the same turn are still open (parallel tool calls each raise their own
    *  permission_request; the turn stays blocked until the last is answered). */
   #resumeAfterAnswer(id: string, run: Running): void {
-    if (run.interrupting) return;
-    if (run.pendingPerms.size > 0 || run.pendingQuestions.size > 0 || run.pendingPlans.size > 0)
-      return;
-    this.#set(id, run, "running", null);
+    if (run.state.kind === "interrupted") return;
+    if (run.pending.size > 0) return;
+    this.#transition(id, run, stateRunning);
   }
 
   async respondToPermission(
@@ -352,8 +329,8 @@ export class SessionManager {
     decision: PermissionDecision,
   ): Promise<RespondResult> {
     const run = this.#require(id);
-    if (!run.pendingPerms.has(requestId)) return { ok: false, alreadyResolved: true };
-    run.pendingPerms.delete(requestId);
+    if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
+    run.pending.delete(requestId);
     await run.session.respondToPermission(requestId, decision);
     // Optimistic: the approved tool call will confirm `running` on its own.
     this.#resumeAfterAnswer(id, run);
@@ -362,8 +339,8 @@ export class SessionManager {
 
   async answerQuestion(id: string, questionId: string, text: string): Promise<RespondResult> {
     const run = this.#require(id);
-    if (!run.pendingQuestions.has(questionId)) return { ok: false, alreadyResolved: true };
-    run.pendingQuestions.delete(questionId);
+    if (!run.pending.has(questionId)) return { ok: false, alreadyResolved: true };
+    run.pending.delete(questionId);
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
     // running; set it now so a client sees the change without waiting.
@@ -377,8 +354,8 @@ export class SessionManager {
     decision: PlanDecision,
   ): Promise<RespondResult> {
     const run = this.#require(id);
-    if (!run.pendingPlans.has(requestId)) return { ok: false, alreadyResolved: true };
-    run.pendingPlans.delete(requestId);
+    if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
+    run.pending.delete(requestId);
     await run.session.respondToPlan(requestId, decision);
     // Every branch of respondToPlan either leaves plan mode or (for `discuss`)
     // stays in it deliberately; either way, push whatever the adapter landed
@@ -403,11 +380,11 @@ export class SessionManager {
   /** Undo: truncate the live session's transcript to its first `keep` messages. */
   async rewind(id: string, keep: number): Promise<void> {
     const run = this.#require(id);
-    if (run.status === "running" || run.status === "starting") {
+    if (run.state.kind === "running" || run.state.kind === "starting") {
       throw new Error("interrupt the session before rewinding it");
     }
     await run.session.rewind(keep);
-    this.#set(id, run, "idle", "rewind");
+    this.#transition(id, run, stateIdle, "rewind");
   }
 
   // --- teardown ------------------------------------------------------

@@ -43,9 +43,9 @@ test("a daemon restart flips mid-run sessions to interrupted", async () => {
   const c2 = await client();
   const list = await c2.request<SessionSnapshot[]>("session.list");
   const byId = new Map(list.map((s) => [s.id, s]));
-  assert.equal(byId.get(running.id)?.status, "interrupted");
-  assert.equal(byId.get(awaiting.id)?.status, "interrupted");
-  assert.equal(byId.get(idle.id)?.status, "idle");
+  assert.equal(byId.get(running.id)?.status.kind, "interrupted");
+  assert.equal(byId.get(awaiting.id)?.status.kind, "interrupted");
+  assert.equal(byId.get(idle.id)?.status.kind, "idle");
 
   const hist = await c2.request<Array<{ status: string; reason: string | null }>>(
     "session.history",

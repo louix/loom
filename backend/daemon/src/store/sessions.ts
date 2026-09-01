@@ -1,4 +1,5 @@
-import type { SessionStatus, TokenUsage } from "@loom/core/events";
+import type { TokenUsage } from "@loom/core/events";
+import { parseSessionState, type SessionState, sessionStateDetail } from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
 import type { Db } from "./db.ts";
 
@@ -14,7 +15,7 @@ interface SessionRow {
   effort: string | null;
   mode: string;
   status: string;
-  await_reason: string | null;
+  status_detail: string | null;
   title: string | null;
   worktree: string | null;
   branch: string | null;
@@ -139,16 +140,14 @@ export class SessionStore {
     return rows.map((r) => toSnapshot(r, byId.get(r.id)));
   }
 
-  setStatus(id: string, status: SessionStatus, reason: string | null = null): void {
+  setStatus(id: string, state: SessionState, note: string | null = null): void {
     const now = Date.now();
-    // `await_reason` is only meaningful while awaiting input; clear it otherwise.
-    // The reason is still recorded in status_history for every transition.
-    const awaitReason = status === "awaiting_input" ? reason : null;
     const res = this.#db
-      .prepare("UPDATE sessions SET status = ?, await_reason = ?, updated_at = ? WHERE id = ?")
-      .run(status, awaitReason, now, id);
+      .prepare("UPDATE sessions SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?")
+      .run(state.kind, sessionStateDetail(state), now, id);
     if (res.changes === 0) throw new Error(`no such session: ${id}`);
-    this.#appendHistory(id, status, reason, now);
+    // History records the variant plus the transition's audit note.
+    this.#appendHistory(id, state.kind, note, now);
   }
 
   /** Flip every session left mid-run by a crashed daemon to `interrupted`. */
@@ -158,7 +157,7 @@ export class SessionStore {
       .prepare("SELECT id FROM sessions WHERE status IN ('starting', 'running', 'awaiting_input')")
       .all() as Array<{ id: string }>;
     const stmt = this.#db.prepare(
-      "UPDATE sessions SET status = 'interrupted', await_reason = NULL, updated_at = ? WHERE id = ?",
+      "UPDATE sessions SET status = 'interrupted', status_detail = 'user', updated_at = ? WHERE id = ?",
     );
     for (const { id } of rows) {
       stmt.run(now, id);
@@ -513,8 +512,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     model: row.model,
     effort: row.effort,
     mode: row.mode,
-    status: row.status as SessionStatus,
-    awaitReason: row.await_reason,
+    status: parseSessionState(row.status, row.status_detail),
     title: row.title,
     worktree: row.worktree,
     branch: row.branch,

@@ -5,7 +5,8 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { HarnessEvent, SessionStateKind } from "@loom/core/events";
+import { sessionStateLabel } from "@loom/core/session-state";
 import type { ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
@@ -667,7 +668,7 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       const rest = s.sessions.filter((x) => x.id !== frame.session.id);
       const sessions = sortSessions([...rest, frame.session]);
       // Any outstanding round-trip is settled once the session leaves awaiting_input.
-      const settled = frame.session.status !== "awaiting_input";
+      const settled = frame.session.status.kind !== "awaiting_input";
       const pending = settled ? without(s.pending, frame.session.id) : s.pending;
       // An open plan overlay for a session that has moved on is stale — drop it.
       const planGone = settled && s.plan?.sessionId === frame.session.id;
@@ -837,7 +838,7 @@ const pruneByLive = <T>(
 // selection / ordering
 // ---------------------------------------------------------------------------
 
-const RANK: Record<SessionStatus, number> = {
+const RANK: Record<SessionStateKind, number> = {
   awaiting_input: 0,
   running: 1,
   starting: 2,
@@ -850,7 +851,7 @@ const RANK: Record<SessionStatus, number> = {
 /** Fleet-view order: by status group, then most-recently-active first. */
 export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[] => {
   return [...list].sort((a, b) => {
-    const r = RANK[a.status] - RANK[b.status];
+    const r = RANK[a.status.kind] - RANK[b.status.kind];
     if (r !== 0) return r;
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
@@ -1326,13 +1327,13 @@ export const findPickItems = (s: TuiState): PickItem[] => {
   return s.sessions.map((sess) => ({
     id: sess.id,
     label: sess.title ?? shortId(sess.id),
-    hint: `${sess.provider}${sess.model ? `/${sess.model}` : ""} · ${sess.status}`,
+    hint: `${sess.provider}${sess.model ? `/${sess.model}` : ""} · ${sess.status.kind}`,
     blob: (logBySession.get(sess.id) ?? []).join(" "),
   }));
 };
 
 export interface Group {
-  status: SessionStatus;
+  status: SessionStateKind;
   label: string;
   sessions: SessionSnapshot[];
 }
@@ -1340,7 +1341,7 @@ export interface Group {
 export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
-    const inGroup = sessions.filter((x) => x.status === status);
+    const inGroup = sessions.filter((x) => x.status.kind === status);
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }
@@ -1401,22 +1402,22 @@ const GLOBAL_HINTS: KeyHint[] = [
 export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
   const local: KeyHint[] = [];
   if (session) {
-    const { status, awaitReason } = session;
+    const { status } = session;
 
     // Request mode — the turn is parked on a decision. Offer only the keys that
     // resolve it (plus interrupt); mode / model / rename / undo / fork are all
     // noise while the agent is blocked, so they're dropped from both the
     // footer and the permitted set the keymap checks.
-    if (status === "awaiting_input") {
-      if (awaitReason === "question") {
+    if (status.kind === "awaiting_input") {
+      if (status.on === "question") {
         local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
-      } else if (awaitReason === "user_question") {
+      } else if (status.on === "user_question") {
         // AskUserQuestion is a real permission gate underneath, so — unlike
         // Loom's own ask_user — denying it is a meaningful choice, not just
         // "come back later".
         local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
         local.push({ keys: "d", label: "deny", act: "deny", footer: true });
-      } else if (awaitReason === "plan_review") {
+      } else if (status.on === "plan_review") {
         local.push({ keys: "⏎", label: "review plan", act: "planreview", footer: true });
       } else {
         local.push({ keys: "a", label: "approve", act: "approve", footer: true });
@@ -1426,23 +1427,23 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       return [...local, ...GLOBAL_HINTS];
     }
 
-    if (status === "running" || status === "starting") {
+    if (status.kind === "running" || status.kind === "starting") {
       local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
     }
     // `send` is the one "talk to this session" verb, bound to Enter — it works
     // while running (injects), idle, or stopped (interrupted / errored → the
     // daemon revives the session first). No separate "resume" step.
-    if (status !== "starting") {
+    if (status.kind !== "starting") {
       local.push({ keys: "⏎", label: "send", act: "send", footer: true });
     }
     if (
-      (status === "running" || status === "idle") &&
+      (status.kind === "running" || status.kind === "idle") &&
       session.contextLimit > 0 &&
       session.contextUsed / session.contextLimit > 0.5
     ) {
       local.push({ keys: "c", label: "compact", act: "compact", footer: true });
     }
-    if (status === "idle" || status === "error" || status === "interrupted") {
+    if (status.kind === "idle" || status.kind === "error" || status.kind === "interrupted") {
       local.push({ keys: "x", label: "done", act: "done", footer: true });
     }
     // Second tier — palette / help only (see the grammar note at the top of the
@@ -1456,7 +1457,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // branch, which an in-place session doesn't have — undo (conversation-only)
     // still works there.
     const isAisdk = session.provider !== "claude";
-    if (isAisdk && (status === "idle" || status === "interrupted") && session.turns > 1) {
+    if (isAisdk && (status.kind === "idle" || status.kind === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
     if (isAisdk && !session.inPlace) local.push({ keys: "F", label: "fork", act: "fork" });
@@ -1666,13 +1667,17 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
     case "subagent_stopped":
       return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
     case "status_changed":
-      return { glyph: "◈", text: `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`, tone: "dim" };
+      return {
+        glyph: "◈",
+        text: `${sessionStateLabel(ev.status)}${ev.note ? ` (${ev.note})` : ""}`,
+        tone: "dim",
+      };
     case "error":
       return { glyph: "✕", text: oneLine(ev.message, 160), full: body(ev.message), tone: "bad" };
     case "result":
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
-      if (ev.stopReason === "step_limit")
+      if (ev.kind === "ok" && ev.stopReason === "step_limit")
         return {
           glyph: "■",
           text: "turn paused — step ceiling hit repeatedly (send to continue)",
@@ -1680,8 +1685,8 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
         };
       return {
         glyph: "■",
-        text: ev.ok ? "turn complete" : "turn failed",
-        tone: ev.ok ? "good" : "bad",
+        text: ev.kind === "ok" ? "turn complete" : "turn failed",
+        tone: ev.kind === "ok" ? "good" : "bad",
       };
     case "rewind":
       return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
@@ -1765,7 +1770,7 @@ const noticeForEvent = (s: TuiState, ev: HarnessEvent): Notice | null => {
     return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "error" && ev.fatal)
     return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
-  if (ev.type === "result" && ev.stopReason === "step_limit")
+  if (ev.type === "result" && ev.kind === "ok" && ev.stopReason === "step_limit")
     return {
       text: `turn paused at the step ceiling${tag} — send to continue`,
       tone: "accent",

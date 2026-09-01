@@ -15,7 +15,17 @@ import {
 } from "../config/config.ts";
 import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "@loom/core/version";
-import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { HarnessEvent } from "@loom/core/events";
+import {
+  isLiveState,
+  parseSessionState,
+  type SessionState,
+  type SessionStateKind,
+  stateDone,
+  stateError,
+  stateIdle,
+  stateRunning,
+} from "@loom/core/session-state";
 import {
   PROTOCOL_VERSION,
   type HelloParams,
@@ -103,7 +113,7 @@ const AISDK_SYSTEM = [
   "When you are blocked on a decision only the user can make, use `ask_user`. Never ask in plain chat text instead — the session can't distinguish that from finishing normally, so it will show as idle/done rather than waiting on you.",
 ].join("\n");
 
-const VALID_STATUSES: readonly SessionStatus[] = [
+const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
   "starting",
   "awaiting_input",
   "running",
@@ -215,7 +225,7 @@ export class Daemon {
         }
         this.emitEvent(ev);
       },
-      onStatus: (id, status, reason) => this.#onDerivedStatus(id, status, reason),
+      onStatus: (id, state, note) => this.#onDerivedStatus(id, state, note),
       onUsage: (id, delta) => {
         if (this.#stopping) return;
         const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
@@ -630,7 +640,7 @@ export class Daemon {
   async #reviveSession(id: string): Promise<SessionSnapshot> {
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-    if (row.status === "done") throw new RpcError("bad_request", "session is done");
+    if (row.status.kind === "done") throw new RpcError("bad_request", "session is done");
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
@@ -667,26 +677,26 @@ export class Daemon {
       const message = err instanceof Error ? err.message : String(err);
       throw new RpcError("provider_error", `could not resume session: ${message}`);
     }
-    return this.#registry.setStatus(id, "running", "resumed");
+    return this.#registry.setStatus(id, stateRunning, "resumed");
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
     return list.map((s) => this.#enrich(s));
   }
 
-  /** A status transition the session manager derived from the event stream. */
-  #onDerivedStatus(id: string, status: SessionStatus, reason: string | null): void {
+  /** A state transition the session manager derived from the event stream. */
+  #onDerivedStatus(id: string, state: SessionState, note?: string): void {
     if (this.#stopping) return;
-    const snap = this.#registry.setStatus(id, status, reason);
+    const snap = this.#registry.setStatus(id, state, note ?? null);
     this.emitEvent({
       type: "status_changed",
       sessionId: id,
-      status,
+      status: state,
       ts: Date.now(),
-      ...(reason !== null ? { reason } : {}),
+      ...(note !== undefined ? { note } : {}),
     });
     this.#emitSessionUpdated(snap);
-    this.#onActivityChange(`status:${status}`);
+    this.#onActivityChange(`status:${state.kind}`);
   }
 
   /**
@@ -789,11 +799,7 @@ export class Daemon {
 
   #isBusy(): boolean {
     if (this.#server.clientCount > 0) return true;
-    return this.#registry
-      .list()
-      .some(
-        (s) => s.status === "running" || s.status === "starting" || s.status === "awaiting_input",
-      );
+    return this.#registry.list().some((s) => isLiveState(s.status));
   }
 
   // -------------------------------------------------------------------------
@@ -1116,7 +1122,7 @@ export class Daemon {
           }
           this.#registry.setFields(id, { worktree: null });
         }
-        this.#registry.setStatus(id, "error", message.slice(0, 120));
+        this.#registry.setStatus(id, stateError(message.slice(0, 120)));
         throw new RpcError("provider_error", `could not start session: ${message}`);
       }
 
@@ -1199,7 +1205,7 @@ export class Daemon {
       if (!Number.isInteger(toTurn) || toTurn < 1 || toTurn >= snap.turns) {
         throw new RpcError("bad_request", `toTurn must be 1..${snap.turns - 1}`);
       }
-      if (!["idle", "interrupted", "error"].includes(snap.status)) {
+      if (!["idle", "interrupted", "error"].includes(snap.status.kind)) {
         // rewind() awaits the in-flight #turn, which for a running / parked
         // session never settles until it's interrupted → the RPC would hang.
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
@@ -1224,7 +1230,7 @@ export class Daemon {
       // Not live: truncate the store directly and drive the status ourselves.
       this.#pmsgs.replaceFrom(id, keep, []);
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
-      const updated = this.#registry.setStatus(id, "idle", "rewind");
+      const updated = this.#registry.setStatus(id, stateIdle, "rewind");
       this.#emitSessionUpdated(updated, clientLabel(params));
       return updated;
     });
@@ -1245,7 +1251,7 @@ export class Daemon {
           "the parent runs in-place (no worktree) — hard fork needs an isolated branch",
         );
       }
-      if (!["idle", "interrupted", "done", "error"].includes(parent.status)) {
+      if (!["idle", "interrupted", "done", "error"].includes(parent.status.kind)) {
         // Forking mid-turn copies a transcript whose last message is an
         // assistant tool-call with no tool_result yet — the fork's first
         // request would 400 on most endpoints.
@@ -1313,14 +1319,14 @@ export class Daemon {
           // The tree is still on disk — keep the row (worktree path intact) and
           // mark it error so a later `session.gc { id }` can still reclaim it,
           // rather than deleting the row and orphaning the directory.
-          this.#registry.setStatus(newId, "error", "fork start failed");
+          this.#registry.setStatus(newId, stateError("fork start failed"));
         }
         this.#lastSend.delete(newId);
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("provider_error", `could not start the fork: ${m}`);
       }
 
-      this.#registry.setStatus(newId, "idle", "forked");
+      this.#registry.setStatus(newId, stateIdle, "forked");
       if (forkPrompt) {
         this.#lastSend.set(newId, forkPrompt);
         await this.#sessions.send(newId, forkPrompt);
@@ -1469,13 +1475,13 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
       this.#lastSend.delete(id);
-      const snap = this.#registry.setStatus(id, "done", "marked_done");
+      const snap = this.#registry.setStatus(id, stateDone, "marked_done");
       this.emitEvent({
         type: "status_changed",
         sessionId: id,
-        status: "done",
+        status: stateDone,
         ts: Date.now(),
-        reason: "marked_done",
+        note: "marked_done",
       });
       this.#emitSessionUpdated(snap, clientLabel(params));
       this.#onActivityChange("marked-done");
@@ -1526,19 +1532,19 @@ export class Daemon {
       // Bulk sweep: `done` only (an `error` session may still be resumable).
       // An explicit `id` may also target an `error` row — that's how a fork
       // whose worktree-remove failed on the error path gets reclaimed.
-      const eligible = (status: string): boolean =>
-        only ? status === "done" || status === "error" : status === "done";
+      const eligible = (kind: SessionStateKind): boolean =>
+        only ? kind === "done" || kind === "error" : kind === "done";
       if (only) {
         const s = this.#registry.get(only);
         if (!s) throw new RpcError("not_found", `no such session: ${only}`);
-        if (!eligible(s.status)) {
-          throw new RpcError("bad_request", `session ${only} is ${s.status} — nothing to gc`);
+        if (!eligible(s.status.kind)) {
+          throw new RpcError("bad_request", `session ${only} is ${s.status.kind} — nothing to gc`);
         }
       }
       const removed: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
       for (const s of this.#registry.list()) {
-        if (!eligible(s.status) || !s.worktree) continue;
+        if (!eligible(s.status.kind) || !s.worktree) continue;
         if (only && s.id !== only) continue;
         try {
           this.#worktrees.remove(s.worktree, { force });
@@ -1567,19 +1573,20 @@ export class Daemon {
         parentId: typeof p["parentId"] === "string" ? (p["parentId"] as string) : null,
         title: prompt,
       });
-      const status: SessionStatus =
+      const kind =
         typeof p["status"] === "string" &&
-        (VALID_STATUSES as string[]).includes(p["status"] as string)
-          ? (p["status"] as SessionStatus)
+        (VALID_STATUS_KINDS as string[]).includes(p["status"] as string)
+          ? (p["status"] as SessionStateKind)
           : "idle";
-      const reason = typeof p["reason"] === "string" ? (p["reason"] as string) : null;
-      const snap = this.#registry.setStatus(id, status, reason);
+      const detail = typeof p["reason"] === "string" ? (p["reason"] as string) : null;
+      const state = parseSessionState(kind, detail);
+      const snap = this.#registry.setStatus(id, state, detail);
       this.emitEvent({
         type: "status_changed",
         sessionId: id,
-        status,
+        status: state,
         ts: Date.now(),
-        ...(reason !== null ? { reason } : {}),
+        ...(detail !== null ? { note: detail } : {}),
       });
       this.#emitSessionUpdated(snap);
       this.#onActivityChange("stub-created");
@@ -1588,20 +1595,21 @@ export class Daemon {
 
     d.register("session.setStatus", (params) => {
       const id = reqString(params, "id");
-      const status = reqString(params, "status");
-      if (!(VALID_STATUSES as string[]).includes(status)) {
-        throw new RpcError("bad_request", `invalid status: ${status}`);
+      const kind = reqString(params, "status");
+      if (!(VALID_STATUS_KINDS as string[]).includes(kind)) {
+        throw new RpcError("bad_request", `invalid status: ${kind}`);
       }
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const reason =
+      const detail =
         isObj(params) && typeof params["reason"] === "string" ? (params["reason"] as string) : null;
-      const snap = this.#registry.setStatus(id, status as SessionStatus, reason);
+      const state = parseSessionState(kind, detail);
+      const snap = this.#registry.setStatus(id, state, detail);
       this.emitEvent({
         type: "status_changed",
         sessionId: id,
-        status: status as SessionStatus,
+        status: state,
         ts: Date.now(),
-        ...(reason !== null ? { reason } : {}),
+        ...(detail !== null ? { note: detail } : {}),
       });
       this.#emitSessionUpdated(snap, clientLabel(params));
       this.#onActivityChange("set-status");

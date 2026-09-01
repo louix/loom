@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import type { HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -69,7 +70,7 @@ test("createStub inserts a session and it shows up in the sorted list", async ()
     prompt: "do the thing",
     status: "running",
   });
-  assert.equal(stub.status, "running");
+  assert.equal(stub.status.kind, "running");
   assert.equal(stub.title, "do the thing");
 
   const list = await c.request<SessionSnapshot[]>("session.list");
@@ -92,7 +93,7 @@ test("session.list is ordered by status group then recency", async () => {
   const list = await c.request<SessionSnapshot[]>("session.list");
   // awaiting_input group sorts ahead of running, which sorts ahead of idle
   assert.equal(list[0]?.id, awaiting.id);
-  const groups = list.map((s) => s.status);
+  const groups = list.map((s) => s.status.kind);
   const rank = (s: string) =>
     ["awaiting_input", "running", "interrupted", "idle", "error", "done"].indexOf(s);
   for (let i = 1; i < groups.length; i++) {
@@ -137,7 +138,7 @@ test("session.events returns a session's durable history, oldest first, excludin
   // neither of these should end up in the durable history — the TUI never
   // renders them either (see `applyPush` in the frontend model)
   await c.request("dev.emit", {
-    event: { sessionId: stub.id, type: "status_changed", status: "running" },
+    event: { sessionId: stub.id, type: "status_changed", status: { kind: "running" } },
   });
   await c.request("dev.emit", {
     event: {
@@ -183,7 +184,11 @@ test("setStatus broadcasts a session_updated with a bumped version and attributi
   const updates: Array<{ version: number; by?: string; status: string }> = [];
   c.onPush((f) => {
     if (f.type === "session_updated" && f.session.id === stub.id) {
-      updates.push({ version: f.version, status: f.session.status, ...(f.by ? { by: f.by } : {}) });
+      updates.push({
+        version: f.version,
+        status: f.session.status.kind,
+        ...(f.by ? { by: f.by } : {}),
+      });
     }
   });
 
@@ -545,7 +550,7 @@ model    = "gpt-5"
     assert.equal(ref.provider_ref, fork.id);
 
     // forking a mid-turn parent is refused (dangling tool call)
-    hh.daemon.registry.setStatus(parent.id, "running", "test");
+    hh.daemon.registry.setStatus(parent.id, stateRunning, "test");
     await assert.rejects(c.request("session.fork", { id: parent.id }), /mid-turn/);
     // …and so is a rewind while it's not idle
     db.prepare("UPDATE usage SET turns = 3 WHERE session_id = ?").run(parent.id);
@@ -553,7 +558,7 @@ model    = "gpt-5"
       c.request("session.rewind", { id: parent.id, toTurn: 1 }),
       /interrupt the session/,
     );
-    hh.daemon.registry.setStatus(parent.id, "idle", "test");
+    hh.daemon.registry.setStatus(parent.id, stateIdle, "test");
 
     // fork a fake session → rejected for now
     const fk = await c.request<SessionSnapshot>("session.createStub", {

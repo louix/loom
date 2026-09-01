@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { HarnessEvent } from "@loom/core/events";
+import type { AwaitReason, HarnessEvent } from "@loom/core/events";
+import {
+  type SessionState,
+  type SessionStateKind,
+  stateAwaitingInput,
+  stateIdle,
+} from "@loom/core/session-state";
 import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import type { EventPush } from "@loom/core/wire";
 import {
@@ -62,8 +68,31 @@ import {
 
 let clock = 1_000;
 
-const snap = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => {
+/** Build a `SessionState` from a bare kind (+ an await reason), for fixtures. */
+const toState = (
+  kind: SessionStateKind = "idle",
+  awaitReason: AwaitReason | null = null,
+): SessionState => {
+  switch (kind) {
+    case "awaiting_input":
+      return stateAwaitingInput(awaitReason ?? "permission");
+    case "interrupted":
+      return { kind: "interrupted", by: "user" };
+    case "error":
+      return { kind: "error", message: "" };
+    default:
+      return { kind } as SessionState;
+  }
+};
+
+const snap = (
+  over: Partial<Omit<SessionSnapshot, "status">> & {
+    status?: SessionStateKind;
+    awaitReason?: AwaitReason | null;
+  } = {},
+): SessionSnapshot => {
   const now = ++clock;
+  const { status: statusKind, awaitReason, ...rest } = over;
   return {
     id: over.id ?? `s${now}`,
     parentId: null,
@@ -72,8 +101,7 @@ const snap = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => {
     model: null,
     effort: null,
     mode: "default",
-    status: "idle",
-    awaitReason: null,
+    status: toState(statusKind, awaitReason),
     title: "a task",
     worktree: null,
     branch: null,
@@ -91,7 +119,7 @@ const snap = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => {
     git: null,
     createdAt: now,
     updatedAt: now,
-    ...over,
+    ...rest,
   };
 };
 
@@ -422,7 +450,12 @@ test("chat view: tool calls with an input `description` get their own line; thos
   at(2, { type: "tool_result", id: "t1", ok: true, output: {} }, 1_100);
   at(
     3,
-    { type: "tool_call", id: "t2", name: "Bash", input: { command: "ls", description: "List files" } },
+    {
+      type: "tool_call",
+      id: "t2",
+      name: "Bash",
+      input: { command: "ls", description: "List files" },
+    },
     2_000,
   );
   at(4, { type: "tool_result", id: "t2", ok: true, output: {} }, 2_100);
@@ -462,7 +495,7 @@ test("transcriptText renders [time] role + body, skips metadata, no raw JSON", (
       }),
       ts: 8500,
     }),
-    toLogLine(6, { ...ev({ type: "result", ok: true }), ts: 9000 }),
+    toLogLine(6, { ...ev({ type: "result", kind: "ok" }), ts: 9000 }),
   ];
   const t = transcriptText(L);
   assert.match(t, /^\[\d\d:\d\d:\d\d\]  you\ndo the thing\n\n\[\d\d:\d\d:\d\d\]  agent\non it/);
@@ -674,7 +707,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 // ---------------------------------------------------------------------------
 
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
-  const acts = (o: Partial<SessionSnapshot>) => allowedActs(snap(o));
+  const acts = (o: Parameters<typeof snap>[0]) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
   // a settled selected session also gets mode + model + effort + title + delete
   const S = ["mode", "model", "effort", "fork", "title", "delete", ...G];
@@ -1256,11 +1289,11 @@ test("status_changed events stay out of the log; result is a terse marker", () =
   });
   s = reduce(s, {
     t: "push",
-    frame: push(2, ev({ type: "status_changed", status: "idle", reason: "result" })),
+    frame: push(2, ev({ type: "status_changed", status: stateIdle, note: "result" })),
   });
   s = reduce(s, {
     t: "push",
-    frame: push(3, ev({ type: "result", ok: true, summary: "here is the answer" })),
+    frame: push(3, ev({ type: "result", kind: "ok", summary: "here is the answer" })),
   });
   assert.deepEqual(
     s.log.map((l) => l.glyph),

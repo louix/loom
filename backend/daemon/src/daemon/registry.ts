@@ -1,10 +1,10 @@
-import type { SessionStatus } from "@loom/core/events";
+import type { SessionState, SessionStateKind } from "@loom/core/events";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { SessionStore, type NewSession, type UsageDelta } from "../store/sessions.ts";
 import type { Db } from "../store/db.ts";
 
 /** Fleet-view group order (design spec §4). Lower rank sorts first. */
-const GROUP_RANK: Record<SessionStatus, number> = {
+const GROUP_RANK: Record<SessionStateKind, number> = {
   awaiting_input: 0,
   running: 1,
   starting: 1, // transient — sits with running
@@ -56,8 +56,8 @@ export class Registry {
     return sortSnapshots(this.#store.list());
   }
 
-  setStatus(id: string, status: SessionStatus, reason: string | null = null): SessionSnapshot {
-    this.#store.setStatus(id, status, reason);
+  setStatus(id: string, state: SessionState, note: string | null = null): SessionSnapshot {
+    this.#store.setStatus(id, state, note);
     return this.#bump(id);
   }
 
@@ -96,11 +96,11 @@ export class Registry {
 
 export const sortSnapshots = (list: SessionSnapshot[]): SessionSnapshot[] => {
   return [...list].sort((a, b) => {
-    const ga = GROUP_RANK[a.status] ?? 9;
-    const gb = GROUP_RANK[b.status] ?? 9;
+    const ga = GROUP_RANK[a.status.kind] ?? 9;
+    const gb = GROUP_RANK[b.status.kind] ?? 9;
     if (ga !== gb) return ga - gb;
     // awaiting_input: oldest prompt first (longest-blocked is most urgent).
-    if (a.status === "awaiting_input") return a.updatedAt - b.updatedAt;
+    if (a.status.kind === "awaiting_input") return a.updatedAt - b.updatedAt;
     // every other group: most recently active first.
     return b.updatedAt - a.updatedAt;
   });

@@ -336,10 +336,12 @@ export class ClaudeEventMapper {
     // the error is worth seeing even mid-engagement.
     if (ok && (m.queued_turn_count ?? 0) > 0) return out;
 
-    if (!ok) {
+    if (ok) {
+      out.push({ type: "result", ...base, kind: "ok", ...(summary ? { summary } : {}) });
+    } else {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });
+      out.push({ type: "result", ...base, kind: "error", error: summary });
     }
-    out.push({ type: "result", ...base, ok, ...(summary ? { summary } : {}) });
     return out;
   }
 }

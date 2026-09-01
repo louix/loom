@@ -118,8 +118,8 @@ test("result success emits a usage delta then a result; state goes cumulative", 
   assert.equal(usage.costDeltaUsd, 0.02);
 
   const res = byType(out, "result")[0];
-  assert.equal(res?.ok, true);
-  assert.equal(res?.summary, "done");
+  assert.equal(res?.kind, "ok");
+  assert.equal(res?.kind === "ok" ? res.summary : undefined, "done");
   assert.equal(m.state.turns, 1);
   assert.equal(m.state.costUsd, 0.02);
 });
@@ -209,7 +209,7 @@ test("result error emits an error and a failed result", () => {
   });
   assert.equal(byType(out, "error")[0]?.message.includes("hit the turn cap"), true);
   const res = byType(out, "result")[0];
-  assert.equal(res?.ok, false);
+  assert.equal(res?.kind, "error");
 });
 
 test("an interim result with more turns queued emits the usage delta but no result marker", () => {
@@ -227,7 +227,9 @@ test("an interim result with more turns queued emits the usage delta but no resu
     num_turns: 1,
     queued_turn_count: 1,
     usage: { input_tokens: 500, output_tokens: 100 },
-    modelUsage: { x: { inputTokens: 500, outputTokens: 100, costUSD: 0.01, contextWindow: 200000 } },
+    modelUsage: {
+      x: { inputTokens: 500, outputTokens: 100, costUSD: 0.01, contextWindow: 200000 },
+    },
   });
   assert.equal(byType(out, "result").length, 0, "no turn-complete marker mid-engagement");
   assert.equal(byType(out, "usage").length, 1, "usage still accounts");
@@ -248,7 +250,7 @@ test("a failed interim result still surfaces even with turns queued", () => {
     modelUsage: {},
   });
   assert.equal(byType(out, "error")[0]?.message.includes("boom"), true);
-  assert.equal(byType(out, "result")[0]?.ok, false);
+  assert.equal(byType(out, "result")[0]?.kind, "error");
 });
 
 test("a Task tool_use raises subagent_started; its tool_result raises subagent_stopped", () => {

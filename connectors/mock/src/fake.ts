@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
+import { stateError, stateIdle, stateRunning, stateStarting } from "@loom/core/session-state";
 import { AsyncChannel } from "@loom/core/channel";
 import type {
   AdapterSnapshot,
@@ -63,7 +64,7 @@ export class FakeSession implements AgentSession {
     this.providerRef = `fake-${id}`;
     this.resumed = resumed;
     this.#snap = {
-      status: "starting",
+      status: stateStarting,
       providerRef: this.providerRef,
       model: opts.model ?? "fake-1",
       effort: null,
@@ -115,14 +116,14 @@ export class FakeSession implements AgentSession {
       contextLimit: this.#snap.contextLimit,
       ...(opts.costUsd ? { costDeltaUsd: opts.costUsd } : { costDeltaUsd: 0.001 }),
     });
-    this.emit({ type: "result", ok: true, ...(opts.summary ? { summary: opts.summary } : {}) });
-    this.#snap.status = "idle";
+    this.emit({ type: "result", kind: "ok", ...(opts.summary ? { summary: opts.summary } : {}) });
+    this.#snap.status = stateIdle;
   }
 
   /** Emit a fatal error. */
   fail(message: string): void {
     this.emit({ type: "error", message, fatal: true });
-    this.#snap.status = "error";
+    this.#snap.status = stateError(message);
   }
 
   /** End the event stream (the adapter's `events()` loop finishes). */
@@ -138,7 +139,7 @@ export class FakeSession implements AgentSession {
 
   async send(input: UserInput): Promise<void> {
     this.sends.push(input);
-    this.#snap.status = "running";
+    this.#snap.status = stateRunning;
   }
 
   async compact(instructions?: string): Promise<void> {
@@ -159,7 +160,7 @@ export class FakeSession implements AgentSession {
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     this.planResponses.push({ id, decision });
-    this.#snap.status = "running";
+    this.#snap.status = stateRunning;
   }
 
   async interrupt(): Promise<void> {
@@ -169,7 +170,7 @@ export class FakeSession implements AgentSession {
   readonly rewinds: number[] = [];
   async rewind(keep: number): Promise<void> {
     this.rewinds.push(keep);
-    this.#snap.status = "idle";
+    this.#snap.status = stateIdle;
   }
 
   async setMode(mode: SessionMode): Promise<void> {
@@ -217,7 +218,7 @@ export class FakeProvider implements AgentProvider {
       const reply = this.titleReply;
       setTimeout(() => {
         s.emit({ type: "assistant_text", text: reply });
-        s.emit({ type: "result", ok: true, summary: reply });
+        s.emit({ type: "result", kind: "ok", summary: reply });
         s.endStream();
       }, 0);
       return s;

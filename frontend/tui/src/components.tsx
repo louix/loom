@@ -83,7 +83,7 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   compact: "what to keep in focus — blank compacts the whole history",
   send: "type a message…",
   answer: "type a message…",
-  answerQuestion: "type your answer — e.g. \"a\" or \"a, but …\"",
+  answerQuestion: 'type your answer — e.g. "a" or "a, but …"',
 };
 
 /** Context-meter colour by fill fraction. */
@@ -122,9 +122,9 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
 
   const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
   const running = state.sessions.filter(
-    (s) => s.status === "running" || s.status === "starting",
+    (s) => s.status.kind === "running" || s.status.kind === "starting",
   ).length;
-  const waiting = state.sessions.filter((s) => s.status === "awaiting_input").length;
+  const waiting = state.sessions.filter((s) => s.status.kind === "awaiting_input").length;
 
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
@@ -247,8 +247,8 @@ const FleetRow = ({
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
 }): ReactNode => {
-  const look = statusLook(s.status);
-  const glyph = s.status === "running" ? spinnerFrame(tick) : look.glyph;
+  const look = statusLook(s.status.kind);
+  const glyph = s.status.kind === "running" ? spinnerFrame(tick) : look.glyph;
   const id = shortId(s.id);
   const cost = money(s.costUsd);
   const heat = cacheHeat(cacheStatus(s, now));
@@ -263,7 +263,7 @@ const FleetRow = ({
   return (
     <Text key={s.id} wrap="truncate-end">
       <Text color={selected ? C.accent : C.faint}>{selected ? "▍ " : "  "}</Text>
-      <Text color={s.status === "running" ? C.accent : look.color}>{glyph + " "}</Text>
+      <Text color={s.status.kind === "running" ? C.accent : look.color}>{glyph + " "}</Text>
       <Text color={idColor}>{`${idText}  `}</Text>
       {compacting ? (
         <Text color={C.accent}>{"⇊ "}</Text>
@@ -317,7 +317,7 @@ export const Detail = ({
 
   const s = session;
   const w = inside(width);
-  const look = statusLook(s.status);
+  const look = statusLook(s.status.kind);
   const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
   const ctxPct = Math.round(ctxFrac * 100);
   const g = s.git;
@@ -348,7 +348,7 @@ export const Detail = ({
       ) : null}
       <Box marginTop={1} gap={2}>
         <Text color={look.color} bold>
-          {`${look.glyph} ${look.label}${s.awaitReason ? ` · ${s.awaitReason}` : ""}`}
+          {`${look.glyph} ${look.label}${s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : ""}`}
         </Text>
         {/* `[mode]` in the same gold the event log gives tool commands — the one */}
         {/* thing on this row you change mid-session, so it should catch the eye. */}
@@ -505,8 +505,11 @@ export const EventLog = ({
       <Box justifyContent="space-between">
         <Text color={C.dim}>{full ? "EVENTS · fullscreen" : "EVENTS"}</Text>
         <Text color={C.faint}>
-          {(state.logFilter === "everything" ? "full" : state.logFilter === "chat_and_tools" ? "chat+tools" : "chat") +
-            (off > 0 ? `  ·  ↑${above} more` : "")}
+          {(state.logFilter === "everything"
+            ? "full"
+            : state.logFilter === "chat_and_tools"
+              ? "chat+tools"
+              : "chat") + (off > 0 ? `  ·  ↑${above} more` : "")}
         </Text>
       </Box>
       {shown.length === 0 ? (

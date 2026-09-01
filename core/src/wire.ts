@@ -1,4 +1,4 @@
-import type { HarnessEvent, SessionStatus, TokenUsage } from "./events.ts";
+import type { HarnessEvent, SessionState, TokenUsage } from "./events.ts";
 import type { EffortLevel, SessionMode } from "./types.ts";
 
 /**
@@ -133,8 +133,7 @@ export interface SessionSnapshot {
   model: string | null;
   effort: string | null;
   mode: string;
-  status: SessionStatus;
-  awaitReason: string | null;
+  status: SessionState;
   title: string | null;
   worktree: string | null;
   branch: string | null;

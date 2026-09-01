@@ -67,14 +67,14 @@ test("markDone then gc removes the worktree but keeps the row and branch", async
   assert.ok(!gc.removed.includes(s.id));
 
   const done = await c.request<SessionSnapshot>("session.markDone", { id: s.id });
-  assert.equal(done.status, "done");
+  assert.equal(done.status.kind, "done");
 
   gc = await c.request<{ removed: string[]; failed: unknown[] }>("session.gc", { force: true });
   assert.ok(gc.removed.includes(s.id));
   assert.ok(!existsSync(tree));
 
   const after = await c.request<SessionSnapshot>("session.get", { id: s.id });
-  assert.equal(after.status, "done");
+  assert.equal(after.status.kind, "done");
   assert.equal(after.worktree, null);
   assert.equal(after.branch, `loom/${s.id.slice(0, 8)}`); // branch retained
   await c.close();

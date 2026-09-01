@@ -7,6 +7,7 @@ import { setLogFile, setLogStderr } from "@loom/core/logger";
 import { LoomClient } from "@loom/client";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
+import { sessionStateLabel } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
 
 const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
@@ -444,9 +445,7 @@ const main = async (): Promise<void> => {
           by: client.clientId,
           ...(values.reason ? { reason: values.reason } : {}),
         });
-        process.stdout.write(
-          `${r.id} -> ${r.status}${r.awaitReason ? ` (${r.awaitReason})` : ""}\n`,
-        );
+        process.stdout.write(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "emit": {
@@ -519,14 +518,14 @@ const printSessions = (rows: SessionSnapshot[]): void => {
   }
   let group = "";
   for (const s of rows) {
-    if (s.status !== group) {
-      group = s.status;
+    if (s.status.kind !== group) {
+      group = s.status.kind;
       process.stdout.write(`\n${group.toUpperCase()}\n`);
     }
     const id = s.id.slice(0, 8);
     const cost = s.costUsd ? `$${s.costUsd.toFixed(2)}` : "—";
     const title = s.title ? s.title.slice(0, 44) : "(untitled)";
-    const reason = s.awaitReason ? ` · ${s.awaitReason}` : "";
+    const reason = s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : "";
     process.stdout.write(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(46)} ${cost}${reason}\n`);
     const g = s.git;
     if (g) {
@@ -585,7 +584,8 @@ const summarize = (ev: HarnessEvent): string => {
     return `${JSON.stringify(ev.question.slice(0, 60))}  req=${ev.id}  (answer)`;
   if (ev.type === "answer") return `#${ev.id} ${JSON.stringify(ev.text.slice(0, 60))}`;
   if (typeof e["text"] === "string") return JSON.stringify((e["text"] as string).slice(0, 60));
-  if (ev.type === "status_changed") return `${ev.status}${ev.reason ? ` (${ev.reason})` : ""}`;
+  if (ev.type === "status_changed")
+    return `${sessionStateLabel(ev.status)}${ev.note ? ` (${ev.note})` : ""}`;
   if (ev.type === "tool_call") return `${ev.name} #${ev.id}`;
   if (ev.type === "tool_result") return `#${ev.id} ${ev.ok ? "ok" : "error"}`;
   if (ev.type === "permission_request") return `${ev.tool}  req=${ev.id}  (approve/deny)`;
@@ -593,7 +593,7 @@ const summarize = (ev: HarnessEvent): string => {
     return `plan  req=${ev.id}  (plan <id> ${ev.id} implement|fresh|revise|discuss)`;
   if (ev.type === "usage")
     return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
-  if (ev.type === "result") return ev.ok ? "ok" : "failed";
+  if (ev.type === "result") return ev.kind === "ok" ? "ok" : "failed";
   if (ev.type === "error") return ev.message.slice(0, 80);
   return "";
 };

@@ -7,7 +7,7 @@ import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
-import type { HarnessEvent, SessionStatus } from "@loom/core/events";
+import type { HarnessEvent, SessionState } from "@loom/core/events";
 import type { UsageDelta } from "@loom/daemon/store/sessions";
 import { openDb } from "@loom/daemon/store/db";
 import { SessionManager } from "@loom/daemon/daemon/session-manager";
@@ -493,7 +493,7 @@ test("interrupt aborts the running turn — no result, status not idle", async (
       seen.some((e) => e.type === "result"),
       false,
     );
-    assert.notEqual(s.snapshot().status, "idle");
+    assert.notEqual(s.snapshot().status.kind, "idle");
   } finally {
     cleanup();
   }
@@ -658,14 +658,14 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
     });
     await drain(s.events(), (e) => e.type === "error");
     await new Promise((r) => setTimeout(r, 20)); // let #runTurn reach its terminal branch
-    assert.notEqual(s.snapshot().status, "running");
+    assert.notEqual(s.snapshot().status.kind, "running");
 
     // The session is not wedged — a fresh send starts a new turn. If the busy
     // flag were stuck, this would queue as an injection and never run, and the
     // drain below would hang.
     await s.send("try again");
     await drain(s.events(), (e) => e.type === "result");
-    assert.equal(s.snapshot().status, "idle");
+    assert.equal(s.snapshot().status.kind, "idle");
     assert.equal(store.load("s1").at(-1)?.role, "assistant");
     await s.close();
   } finally {
@@ -784,11 +784,11 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
 
     const events: HarnessEvent[] = [];
     const usage: UsageDelta[] = [];
-    const statuses: Array<{ status: SessionStatus; reason: string | null }> = [];
+    const statuses: Array<{ status: SessionState; note: string | undefined }> = [];
     let results = 0;
     const mgr = new SessionManager({
       emitEvent: (ev) => events.push(ev),
-      onStatus: (_id, status, reason) => statuses.push({ status, reason }),
+      onStatus: (_id, status, note) => statuses.push({ status, note }),
       onUsage: (_id, d) => usage.push(d),
       onResult: () => {
         results += 1;
@@ -812,7 +812,7 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
 
     assert.equal(results, 1);
     assert.equal(
-      statuses.some((s) => s.status === "idle"),
+      statuses.some((s) => s.status.kind === "idle"),
       true,
     );
     const withTokens = usage.find((d) => (d.input ?? 0) > 0 || (d.cacheRead ?? 0) > 0);

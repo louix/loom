@@ -19,6 +19,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { HarnessEvent } from "@loom/core/events";
+import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
 import { ClaudeEventMapper } from "./map.ts";
@@ -428,7 +429,7 @@ class ClaudeSession implements AgentSession {
   snapshot(): AdapterSnapshot {
     const s = this.#mapper.state;
     return {
-      status: "running",
+      status: stateRunning,
       providerRef: s.providerRef,
       model: s.model,
       effort: this.#effort,
