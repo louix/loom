@@ -805,14 +805,9 @@ test("compact then rewind serialize; the compact event precedes the rewind's idl
   await compacting;
   await rewinding;
 
-  const compactSeq = frames.find(
-    (f) => f.type === "event" && f.event.type === "compact",
-  )?.seq;
+  const compactSeq = frames.find((f) => f.type === "event" && f.event.type === "compact")?.seq;
   const rewindIdleSeq = frames.find(
-    (f) =>
-      f.type === "event" &&
-      f.event.type === "status_changed" &&
-      f.event.note === "rewind",
+    (f) => f.type === "event" && f.event.type === "status_changed" && f.event.note === "rewind",
   )?.seq;
   assert.ok(compactSeq !== undefined, "a compact frame was emitted");
   assert.ok(rewindIdleSeq !== undefined, "a rewind idle transition was emitted");

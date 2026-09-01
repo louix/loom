@@ -9,6 +9,7 @@ Ranked most severe first.
 ---
 
 ### Auto-rebase can destroy the agent's own in-progress rebase/merge
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:285-299 (driver: daemon.ts:795-835)
 - **Severity:** high
 - **Issue:** `syncOntoBase` decides the tree is safe to touch purely from
@@ -29,6 +30,7 @@ Ranked most severe first.
   run `--abort` if this call actually started the operation.
 
 ### Undo/rewind moves the model's context but never restores worktree files
+
 - **File:** backend/daemon/src/daemon/daemon.ts:921-941 (`#recordCheckpoint`), 1400-1477 (`session.rewind`); store/migrations.ts:103-112
 - **Severity:** high
 - **Issue:** A checkpoint stores only `turn`, `providerRef`, `forkPoint`
@@ -45,6 +47,7 @@ Ranked most severe first.
   post-date the model's context.
 
 ### gc yanks a worktree out from under a still-registered session
+
 - **File:** backend/daemon/src/daemon/daemon.ts:1731-1748 (`markDone`), 1788-1820 (`gc`)
 - **Severity:** medium
 - **Issue:** `markDone` calls `this.#sessions.interrupt(id)` but never
@@ -59,6 +62,7 @@ Ranked most severe first.
   `worktrees.remove`, mirroring `session.remove`.
 
 ### Hard fork silently branches off the configured base when the parent ref doesn't resolve
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:109-119; daemon.ts:1504-1532
 - **Severity:** medium
 - **Issue:** `create()` does
@@ -74,6 +78,7 @@ Ranked most severe first.
   into a clear `worktree_error`.
 
 ### Worktree identity + push-block hook can be silently absent
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:85-97 (`ensureSetup`), 124-131 (`create`)
 - **Severity:** medium
 - **Issue:** Two unchecked-failure paths defeat the "sessions can never push /
@@ -93,6 +98,7 @@ Ranked most severe first.
   rather than warn-and-continue.
 
 ### A large auto-rebase freezes the whole daemon for up to 120s
+
 - **File:** backend/daemon/src/daemon/daemon.ts:785, 795-801; worktrees.ts:289,350-354
 - **Severity:** medium
 - **Issue:** `#maybeAutoRebase` is called synchronously from the idle status
@@ -108,6 +114,7 @@ Ranked most severe first.
   `behind === 0` check done less often, and shorten the timeout.
 
 ### session.remove / failed worktree add can orphan a tree with no row to reclaim it
+
 - **File:** backend/daemon/src/daemon/daemon.ts:1764-1784 (`session.remove`); worktrees.ts:119-122 (`create`)
 - **Severity:** medium
 - **Issue:** `session.remove` catches a `worktrees.remove` failure, only warns,
@@ -121,6 +128,7 @@ Ranked most severe first.
   `this.#worktrees.prune()` after a failed `create`.
 
 ### session.remove force-discards a dirty worktree with no confirmation
+
 - **File:** backend/daemon/src/daemon/daemon.ts:1764-1773
 - **Severity:** medium
 - **Issue:** `session.remove` always calls `this.#worktrees.remove(s.worktree, { force: true })`.
@@ -133,6 +141,7 @@ Ranked most severe first.
   `gc` already threads `force` from the RPC.
 
 ### Auto-rebase "once per base commit" dedupe is in-memory only
+
 - **File:** backend/daemon/src/daemon/daemon.ts:817-818 (`#autoRebaseNudged`), 1736 & 1763 (clears)
 - **Severity:** low
 - **Issue:** The "already nudged this session for this `baseHead`" record lives in
@@ -144,6 +153,7 @@ Ranked most severe first.
   small table), or key the suppression off something derivable after restart.
 
 ### Fragile git-output parsing: conflict/error classification, maxBuffer, timeouts
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:300 (regex), 350-361 (`#git`)
 - **Severity:** low
 - **Issue:** (a) conflict vs error is decided by `/conflict/i.test(stdout+stderr)`
@@ -162,6 +172,7 @@ Ranked most severe first.
   log it.
 
 ### git-facts cache staleness
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:17 (`FACTS_TTL_MS = 8000`), 223-252
 - **Severity:** low
 - **Issue:** The TTL is 8s (the review brief guessed ~2s), so ahead/behind/dirty
@@ -173,6 +184,7 @@ Ranked most severe first.
   (commit tool success, rewind) and lower the TTL.
 
 ### core.hooksPath override disables the repo's real hooks inside worktrees
+
 - **File:** backend/daemon/src/daemon/worktrees.ts:127
 - **Severity:** low
 - **Issue:** Setting `core.hooksPath` to Loom's hooks dir (which contains only
@@ -185,6 +197,7 @@ Ranked most severe first.
   `core.hooksPath`.
 
 ### Concurrent markDone / remove on the same id
+
 - **File:** backend/daemon/src/daemon/daemon.ts:1731-1748, 1755-1784
 - **Severity:** low
 - **Issue:** Both handlers are `async` and both only guard with an initial
@@ -210,7 +223,7 @@ Ranked most severe first.
   build runs before the handler's first `await`, two concurrent `session.create`
   calls can't interleave their ref creation.
 - **Branch-name derivation is consistent:** `loom/<id.slice(0,8)>` with a
-  full-id fallback on collision, and `#maybeAutoTitle` checks *both* forms
+  full-id fallback on collision, and `#maybeAutoTitle` checks _both_ forms
   (`daemon.ts:873`) before renaming.
 - **Normal-path rebase conflict handling** leaves the tree unchanged: abort runs,
   `outcome:"conflict"`, operator nudged once per base commit.

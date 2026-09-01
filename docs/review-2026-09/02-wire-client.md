@@ -10,6 +10,7 @@ Findings ranked most severe first.
 ---
 
 ### No write-side backpressure — one stuck client grows daemon memory unbounded
+
 - **File:** backend/daemon/src/daemon/connection.ts:73-89 (`#write` / `push`); backend/daemon/src/daemon/server.ts:93-95 (`broadcast`)
 - **Severity:** high
 - **Issue:** `Connection.#write` calls `this.socket.write(...)` and ignores the
@@ -29,13 +30,14 @@ Findings ranked most severe first.
 ---
 
 ### `#resync` moves `#lastSeq` backwards → duplicate event replay on a later reconnect
+
 - **File:** client/src/client.ts:358-380 (`#resync`), esp. line 371 `this.#lastSeq = result.seq;`
 - **Severity:** medium
 - **Issue:** `#resync` is fire-and-forget (`void this.#resync(...)` at line 273)
   and `await`s a fresh `hello`. While it is awaiting, live push frames keep
   arriving through `#deliverPush`, each advancing `#lastSeq` (line 271). When the
   awaited `hello` resolves, `#resync` unconditionally assigns
-  `this.#lastSeq = result.seq`, which can be *lower* than the value the concurrent
+  `this.#lastSeq = result.seq`, which can be _lower_ than the value the concurrent
   live frames already set. On the next disconnect, `#handshake(this.#lastSeq)`
   asks the daemon to replay from the regressed seq, so frames the client already
   processed are replayed again — re-appended to `#eventLog` and re-dispatched to
@@ -43,13 +45,14 @@ Findings ranked most severe first.
   double-applies those events.
 - **Fix:** Guard the assignment: `if (result.seq > this.#lastSeq) this.#lastSeq = result.seq;`
   (monotonic, same as `#deliverPush`). Also consider that `#resync` issues a
-  *second* `hello` on a connection `#handshake` already handshook — the rolled
+  _second_ `hello` on a connection `#handshake` already handshook — the rolled
   branch of `#handshake` has already re-baselined `sessions`/`#lastSeq`, so
   `#resync` only needs to fire the `"resync"` listener event, not re-`hello`.
 
 ---
 
 ### In-flight requests are rejected on any socket blip and never retried
+
 - **File:** client/src/client.ts:320-330 (`#onSocketClose`), 103-133 (`request`)
 - **Severity:** medium
 - **Issue:** The client advertises "automatic reconnect", but `#onSocketClose`
@@ -69,6 +72,7 @@ Findings ranked most severe first.
 ---
 
 ### Failed handshake leaves `#helloDone=false` and never clears `#preHelloQueue`
+
 - **File:** client/src/client.ts:291-318 (`#handshake`), 243-254 (`#onFrame`)
 - **Severity:** medium
 - **Issue:** `#handshake` sets `#helloDone = false` then `await this.request("hello")`.
@@ -76,7 +80,7 @@ Findings ranked most severe first.
   propagates to `#reconnectLoop`'s catch and it retries — but `#helloDone` stays
   `false` and `#preHelloQueue` is never emptied. Any push frames that arrived on
   the dead/half-open socket sit in `#preHelloQueue` unbounded (no cap), and the
-  *next* successful `#handshake` drains that stale queue, mixing frames from a
+  _next_ successful `#handshake` drains that stale queue, mixing frames from a
   prior connection into the new session. With no seq de-dupe those become
   duplicate deliveries (or, if their seq ≤ the new `result.seq` and the daemon
   did not restart, silently mis-ordered).
@@ -87,6 +91,7 @@ Findings ranked most severe first.
 ---
 
 ### AsyncChannel has no backpressure and an unbounded queue
+
 - **File:** core/src/channel.ts:27-32 (`push`), 9 (`#queue`)
 - **Severity:** medium
 - **Issue:** `push()` is synchronous, never blocks, and appends to `#queue` with
@@ -104,6 +109,7 @@ Findings ranked most severe first.
 ---
 
 ### Client socket read buffer is unbounded (asymmetric with the daemon)
+
 - **File:** client/src/client.ts:226-241 (`#ingest`), 51 (`#buf`)
 - **Severity:** low-medium
 - **Issue:** `#ingest` does `this.#buf += chunk` and only splits on `"\n"`. Unlike
@@ -116,13 +122,14 @@ Findings ranked most severe first.
 ---
 
 ### Silent frame drop on JSON parse failure → undetected seq divergence
+
 - **File:** client/src/client.ts:234-238 (`#ingest`), backend/daemon/src/daemon/connection.ts:59-64
 - **Severity:** low-medium
 - **Issue:** Both ingest paths `continue` (drop the line) on `JSON.parse` failure.
-  On the client, a dropped *push* frame is never recovered: the next frame's
+  On the client, a dropped _push_ frame is never recovered: the next frame's
   `seq` advances `#lastSeq` past the hole, so no future `sinceSeq` will ever ask
   for it and no `resync` is triggered — the client is permanently missing an
-  event with no signal. A dropped *response* frame hangs that request until its
+  event with no signal. A dropped _response_ frame hangs that request until its
   timeout.
 - **Fix:** On the client, track expected-next-seq contiguity in `#deliverPush`;
   if a frame arrives with `seq > lastSeq + 1` (gap), trigger `#resync`. Log
@@ -131,11 +138,12 @@ Findings ranked most severe first.
 ---
 
 ### `replayHistory` (`sinceSeq: 0`) never yields the documented `resync` fallback
+
 - **File:** client/src/client.ts:26-35 (option doc), backend/daemon/src/daemon/event-log.ts:82
 - **Severity:** low
 - **Issue:** `since()` computes `rolled = from > 0 && from < this.oldest - 1`. When
   a client attaches with `replayHistory: true` it sends `sinceSeq: 0`, so `from > 0`
-  is false and `rolled` is *always* false even when the ring buffer has genuinely
+  is false and `rolled` is _always_ false even when the ring buffer has genuinely
   evicted the oldest frames. The daemon returns `replaying: true` with only the
   frames it still holds; the client (TUI) believes it has full history and gets no
   `resync`, contradicting the option's doc comment ("falls back to a `resync` if
@@ -147,6 +155,7 @@ Findings ranked most severe first.
 ---
 
 ### Reconnect backoff has no jitter; multi-client daemon-respawn storm
+
 - **File:** client/src/client.ts:332-356 (`#reconnectLoop`), 194-202 (`#spawnDaemon`)
 - **Severity:** low
 - **Issue:** `#reconnectLoop` backs off `100 → *2 → 4000` ms with no random
@@ -166,6 +175,7 @@ Findings ranked most severe first.
 ---
 
 ### Client does not validate `result.protocolVersion`
+
 - **File:** client/src/client.ts:291-318 (`#handshake`); daemon side does check at backend/daemon/src/daemon/daemon.ts:1894
 - **Severity:** low
 - **Issue:** The daemon rejects a client whose `protocolVersion` mismatches (and
@@ -179,6 +189,7 @@ Findings ranked most severe first.
 ---
 
 ### Minor / robustness
+
 - **client/src/client.ts:243-254** — a daemon `req` frame with a non-numeric `id`,
   or a `res` with an `id` that matches no pending entry, is silently ignored;
   the corresponding client `request()` (if any) hangs to its timeout. Low.
@@ -205,7 +216,7 @@ Findings ranked most severe first.
   daemon-restart client holding a stale high-water mark; `from === #seq` correctly
   returns "nothing to replay, not rolled".
 - **hello snapshot vs. live subscription race** (daemon.ts:1892-1942) —
-  `#server.subscribe(ctx.conn)` runs synchronously *before* `head` is read and
+  `#server.subscribe(ctx.conn)` runs synchronously _before_ `head` is read and
   before replay frames are pushed; `#hHello` never `await`s, so no frame can be
   appended mid-handshake. Replay frames are written before the `hello` response
   (the response is a `.then` microtask in `server.ts#onFrame`), and the client

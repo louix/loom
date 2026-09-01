@@ -1,6 +1,7 @@
 # Review — Session manager / status machine / registry / session-state / titler
 
 Area owner files:
+
 - `backend/daemon/src/daemon/session-manager.ts`
 - `backend/daemon/src/daemon/status-machine.ts`
 - `backend/daemon/src/daemon/registry.ts`
@@ -12,6 +13,7 @@ Findings ranked most severe first.
 ---
 
 ### A trailing permission / question / plan_review event resurrects a killed turn
+
 - **File:** status-machine.ts:49-62 (with session-manager.ts:285-296, 370-393)
 - **Severity:** high
 - **Issue:** `deriveStatus` returns `stateAwaitingInput(...)` **unconditionally** for `permission_request`, `question`, and `plan_review` — there is no `terminal(current)` guard on those three cases (unlike `assistant_text` / `tool_call` / `result`, which respect stickiness). `interrupt()` sets `stateInterrupted("user")` and clears `run.pending`, but it does **not** stop the pump; the adapter stream keeps delivering the killed turn's trailing frames. A turn with parallel tool calls emits its gate `permission_request`s as the SDK unwinds after an interrupt. Each such trailing event runs through `#applyStatus` → `deriveStatus` → `stateAwaitingInput`, which clobbers `interrupted`, and through `#trackPending`, which re-populates `run.pending`. Result: the user hits stop, the row flips back to `awaiting_input`, and the UI shows an approval prompt for a turn that no longer exists. The comment in `interrupt()` ("`interrupted` is sticky in `deriveStatus`, so trailing events from the killed turn won't undo it") is only true for model-output events, not for blocking-request events. Same hole lets a trailing gate override a settled `error`.
@@ -20,14 +22,16 @@ Findings ranked most severe first.
 ---
 
 ### `send()` force-transition to `running` races the just-started turn and can hide a real block
+
 - **File:** session-manager.ts:341-360
 - **Severity:** medium
-- **Issue:** `injected` is read from `run.state` *before* `await run.session.send(text)`, then for a non-injection the method does an unconditional `this.#transition(id, run, stateRunning)` *after* the await. The pump runs concurrently during that await. If the prior state was `idle` and the new turn starts fast and reaches a permission gate (or emits its own `result`/error) before `session.send()` resolves, the pump sets the correct state (`awaiting_input`, `idle`, `error`) and then `send()` overwrites it with `running`. `run.pending` still holds the gate entry, but nothing re-derives `awaiting_input` (only a *new* `permission_request` event or `#resumeAfterAnswer` moves it), so the session can sit displaying `running` while the turn is actually blocked. `#resumeAfterAnswer`'s `pending.size` guard does not help here.
+- **Issue:** `injected` is read from `run.state` _before_ `await run.session.send(text)`, then for a non-injection the method does an unconditional `this.#transition(id, run, stateRunning)` _after_ the await. The pump runs concurrently during that await. If the prior state was `idle` and the new turn starts fast and reaches a permission gate (or emits its own `result`/error) before `session.send()` resolves, the pump sets the correct state (`awaiting_input`, `idle`, `error`) and then `send()` overwrites it with `running`. `run.pending` still holds the gate entry, but nothing re-derives `awaiting_input` (only a _new_ `permission_request` event or `#resumeAfterAnswer` moves it), so the session can sit displaying `running` while the turn is actually blocked. `#resumeAfterAnswer`'s `pending.size` guard does not help here.
 - **Fix:** Only apply the optimistic `stateRunning` if the tracked state is still the pre-send value (compare with `sameSessionState`), or skip the optimistic transition when `run.pending.size > 0` / when the state already advanced. Alternatively capture the state once and CAS it.
 
 ---
 
 ### Turn-control methods don't check `run.ended`; adapter calls hit a dead session
+
 - **File:** session-manager.ts:370-471 (`interrupt`, `respondToPermission`, `answerQuestion`, `respondToPlan`, `setMode`, `setModel`, `setEffort`, `rewind`)
 - **Severity:** medium
 - **Issue:** `send()` and `compact()` guard with `if (run.ended) throw new Error("session has ended")`, but the other eight turn-control entry points only call `#require(id)` (present-in-map check). A session whose stream ended is `ended = true` but stays in `#running` until `close()`. In that window — which also leaves `run.pending` populated (see next finding) — a client can call `respondToPermission` / `answerQuestion` / `respondToPlan`, all of which will `await run.session.<method>()` on a torn-down adapter session. Depending on the adapter that throws (surfacing as a generic RPC error) or hangs. `rewind` similarly proceeds on an ended session, transitioning it to `idle` and hiding the real terminal state.
@@ -36,6 +40,7 @@ Findings ranked most severe first.
 ---
 
 ### Stream-ended path leaves `run.pending` populated (interrupt clears it)
+
 - **File:** session-manager.ts:160-168
 - **Severity:** medium
 - **Issue:** When the adapter stream ends while `awaiting_input`, `#drain` transitions to `stateInterrupted("stream_ended")` but never clears `run.pending` — unlike `interrupt()`, which does `run.pending.clear()`. Stale request ids remain "resolvable": a later `respondToPermission(id, ...)` finds the id in `pending`, deletes it, and forwards to the dead adapter session (compounded by the missing `run.ended` guard above). `#resumeAfterAnswer` could then even transition the corpse to `running`.
@@ -44,6 +49,7 @@ Findings ranked most severe first.
 ---
 
 ### Cost `NaN` from the adapter propagates into the usage rollup
+
 - **File:** session-manager.ts:266-283 (`costUsd: ev.costDeltaUsd ?? 0`), and daemon.ts:891-905 (`#priceUsage`)
 - **Severity:** medium
 - **Issue:** `?? 0` only replaces `null`/`undefined`. If an adapter computes `costDeltaUsd` as `NaN` (unknown model → `tokens * undefinedRate`), the `NaN` flows straight into `onUsage` → `registry.addUsage` → the persisted total, permanently poisoning `costUsd`. The daemon's `#priceUsage` fallback does not rescue it either: `if ((delta.costUsd ?? 0) > 0)` is `false` for `NaN`, so it returns the delta with `costUsd: NaN` untouched whenever the model isn't in the local price table.
@@ -52,6 +58,7 @@ Findings ranked most severe first.
 ---
 
 ### Version counter resets to 1 on daemon restart — breaks `session_updated` de-dup / stale-guard
+
 - **File:** registry.ts:24-25, 35-39, 99-102
 - **Severity:** medium
 - **Issue:** `#versions` is an in-memory `Map` that starts empty on every daemon boot; the DB row survives but its version does not. After a restart the first `#bump` for a persisted session yields `1`. A client (or reconnecting TUI) that remembers version `7` from before the restart now receives events tagged version `1`, which is `< 7`; any "ignore if not newer than what I have" logic drops fresh updates until the counter climbs back past the client's high-water mark.
@@ -60,6 +67,7 @@ Findings ranked most severe first.
 ---
 
 ### Titler emits a partial / truncated title on timeout instead of bailing
+
 - **File:** titler.ts:114-128
 - **Severity:** medium
 - **Issue:** The timeout callback only does `session.close()`. That makes the `for await` loop throw or end; control falls to `finally`, and the function then returns `cleanTitle(text)` over whatever partial `assistant_text` had accumulated. A slow model that streamed half a phrase before the 30 s cutoff yields a mangled title ("Refactor the session man…") that then replaces the clipped first message. There's no signal that the run was aborted.
@@ -68,14 +76,16 @@ Findings ranked most severe first.
 ---
 
 ### Raw token counts are summed additively though only `costDeltaUsd` is declared a delta
+
 - **File:** session-manager.ts:266-283
 - **Severity:** medium
-- **Issue:** `#trackUsage` feeds `ev.tokens.input/output/cacheRead/cacheWrite` into an additive `UsageDelta` on every `usage` event. Only `costDeltaUsd` is explicitly a *delta* by name; `ev.tokens.*` are not. If any adapter emits `usage` more than once per turn with cumulative-per-turn token figures (Claude's SDK emits incremental usage messages), the rollup double-counts input/output/cache tokens while cost stays correct — silent usage inflation. `lastCacheRead`/`lastCacheWrite` are also set from the same field, implying "last" (level) semantics for cache, which sits uneasily with `cacheRead`/`cacheWrite` being treated as add.
+- **Issue:** `#trackUsage` feeds `ev.tokens.input/output/cacheRead/cacheWrite` into an additive `UsageDelta` on every `usage` event. Only `costDeltaUsd` is explicitly a _delta_ by name; `ev.tokens.*` are not. If any adapter emits `usage` more than once per turn with cumulative-per-turn token figures (Claude's SDK emits incremental usage messages), the rollup double-counts input/output/cache tokens while cost stays correct — silent usage inflation. `lastCacheRead`/`lastCacheWrite` are also set from the same field, implying "last" (level) semantics for cache, which sits uneasily with `cacheRead`/`cacheWrite` being treated as add.
 - **Fix:** Pin down and document the contract: either every adapter guarantees `usage` carries a per-event delta (add a normalization step in the adapter), or `#trackUsage` must diff against the last seen cumulative value per session before calling `onUsage`.
 
 ---
 
 ### `result` error branch neither truncates nor null-guards `ev.error`
+
 - **File:** status-machine.ts:109-119
 - **Severity:** low
 - **Issue:** The fatal-`error`-event branch runs `truncate(ev.message)`, but the failed-`result` branch does `return stateError(ev.error)` verbatim. `ev.error` may be `undefined` (→ `{ kind: "error", message: undefined }`, then persisted via `sessionStateDetail` as `undefined`/null and rendered as bare "error"), and an arbitrarily long provider error string goes unbounded into the state object and the `status_detail` column.
@@ -84,6 +94,7 @@ Findings ranked most severe first.
 ---
 
 ### `setKeepWarm` clears the give-up counter on every call, including idempotent re-asserts
+
 - **File:** session-manager.ts:308-313 (with daemon.ts:970-999, fleet-handle.ts:673)
 - **Severity:** low
 - **Issue:** `setKeepWarm(id, on)` always does `this.#warmPings.delete(id)`. `warmPingCount` drives `keepWarmMove(...)`'s `"giveup"` decision (stop re-priming after `KEEP_WARM_MAX_PINGS` unanswered pings). Any path that re-sends `session.setKeepWarm { on: true }` while it's already on — a TUI toggle bounce, a reconnect re-assertion — resets the counter to 0, so a session nobody is answering can be re-primed indefinitely, never hitting `"giveup"`.
@@ -92,6 +103,7 @@ Findings ranked most severe first.
 ---
 
 ### Ordinal counter restarts at 0 on resume / restart, colliding with persisted ordinals
+
 - **File:** session-manager.ts:124-140, 144-145
 - **Severity:** low
 - **Issue:** `#attach` always creates `ordinal: 0`, and `#drain` stamps every event `ordinal: run.ordinal++`. On `resume()` after a daemon restart, the reattached session's new events get ordinals 0,1,2… which overlap the ordinals already written to the push log for that session pre-restart. Any consumer that orders or de-dupes by `ordinal` will interleave post-restart events among old ones.
@@ -100,6 +112,7 @@ Findings ranked most severe first.
 ---
 
 ### Class doc claims per-session serialization of turn control that the code doesn't enforce
+
 - **File:** session-manager.ts:1-7, 341-471
 - **Severity:** low
 - **Issue:** The header says turn control "funnels through here so it is serialized per session". The methods are plain `async` with no per-session mutex/queue; two overlapping `send()` (or `send()` + `interrupt()`) calls both read state, both `await` the adapter, and interleave their post-await transitions freely. Today the daemon happens to call them from single RPC handlers, but the invariant is asserted, not implemented.
@@ -108,6 +121,7 @@ Findings ranked most severe first.
 ---
 
 ### `interrupt()` / `rewind()` accept non-live / terminal states and can overwrite a clean end
+
 - **File:** session-manager.ts:370-393, 464-471
 - **Severity:** low
 - **Issue:** `interrupt()` does no state check at all — calling it on an already-`idle` or `error` session clears `pending`, fires `onBackgroundTasks`, and transitions to `stateInterrupted("user")`, replacing a legitimate terminal state with a spurious "interrupted by user". `rewind()` blocks only `running`/`starting`, so it will proceed while `awaiting_input` or `working_background` without clearing `run.pending` or the background-task overlay, leaving stale entries after the transition to `idle`.
@@ -116,6 +130,7 @@ Findings ranked most severe first.
 ---
 
 ### `#drain`: a throwing hook kills the drain loop and can produce an unhandled rejection
+
 - **File:** session-manager.ts:142-176
 - **Severity:** low
 - **Issue:** Every per-event hook (`emitEvent`, `onStatus`, `onUsage`, `onResult`, `onSubagents`, `onBackgroundTasks`) is called synchronously inside the `for await`. A transient throw from any of them (e.g. a store write failure inside `onUsage`/`onStatus`) is caught by the outer `catch`, which marks the whole session `error` and stops draining — a persistence hiccup tears down a live session. Worse, the `catch` body itself calls `emitEvent` and `#transition` → `onStatus` again; if those throw, `#drain` rejects. `run.pump` is only ever awaited by `close()`/`shutdown()` (`.catch(() => {})`), so a session torn down via `registry.remove`/other paths leaves the rejected `pump` promise unhandled.

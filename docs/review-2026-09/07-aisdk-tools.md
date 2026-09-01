@@ -7,6 +7,7 @@ Findings ranked most severe first.
 ---
 
 ### Unbounded output buffer — OOM / `RangeError` crash while waiting for the sentinel
+
 - **File:** aisdk/src/tools/bash.ts:42-47 (`onData`), 128-161 (`run` loop)
 - **Severity:** high
 - **Issue:** `onData` does `this.#buf += d` with **no cap**. `clamp()` (120 KB) is only
@@ -18,17 +19,18 @@ Findings ranked most severe first.
      dies (takes every other session with it).
   2. Below that limit, a few hundred MB of retained string on a constrained host is a
      straight OOM.
-  The `MAX_OUTPUT_BYTES` / `clamp` design shows the intent was to bound output; the
-  accumulation path defeats it.
+     The `MAX_OUTPUT_BYTES` / `clamp` design shows the intent was to bound output; the
+     accumulation path defeats it.
 - **Fix:** Bound `#buf` as it grows. Keep a head slice up to ~`HEAD_BYTES` plus a rolling
   tail window (a few KB — must exceed `marker + " " + digits + "\n"` so marker detection
   still works), drop the middle, set a `truncated` flag, and stop unbounded concatenation.
   Continue scanning only the tail for the sentinel. Surface `[output truncated - stream
-  exceeded N bytes]` on return.
+exceeded N bytes]` on return.
 
 ---
 
 ### Timeout / reset kills only the bash process, not its process group — orphaned servers and background jobs
+
 - **File:** aisdk/src/tools/bash.ts:35-39 (`spawn`, no `detached`), 181-185 (`#kill`), 151-159 (timeout path)
 - **Severity:** high
 - **Issue:** `spawn("bash", …)` is started without `detached: true`, so no dedicated
@@ -47,6 +49,7 @@ Findings ranked most severe first.
 ---
 
 ### Trailing backslash / trailing pipe / `&&` wedges the persistent shell for the full timeout
+
 - **File:** aisdk/src/tools/bash.ts:125 (command wrapper), 71-104 (`#unclosedConstruct`)
 - **Severity:** medium
 - **Issue:** The command is wrapped as `{\n${command}\n} </dev/null\nprintf …`. If
@@ -69,6 +72,7 @@ Findings ranked most severe first.
 ---
 
 ### `set -x` makes the sentinel `printf` trace line satisfy the marker regex
+
 - **File:** aisdk/src/tools/bash.ts:118-133
 - **Severity:** medium
 - **Issue:** `set -x` persists in the long-lived shell. With xtrace on, bash prints the
@@ -91,6 +95,7 @@ Findings ranked most severe first.
 ---
 
 ### No timeout on the ripgrep child
+
 - **File:** aisdk/src/tools/grep.ts:24-72
 - **Severity:** medium
 - **Issue:** `bash` and `web_search` both bound their work (120 s / 15 s). `runRipgrep`
@@ -105,6 +110,7 @@ Findings ranked most severe first.
 ---
 
 ### `edit` writes are non-atomic — crash or ENOSPC mid-write corrupts the source file
+
 - **File:** aisdk/src/tools/edit.ts:63, 85 (`writeFileSync(path, updated)`)
 - **Severity:** medium
 - **Issue:** `writeFileSync` opens with `O_TRUNC` and streams the new content in place.
@@ -118,6 +124,7 @@ Findings ranked most severe first.
 ---
 
 ### Failed `bash` spawn can crash the daemon via an unhandled stdin stream error
+
 - **File:** aisdk/src/tools/bash.ts:50-58
 - **Issue:** When `spawn("bash", …)` fails (bash missing, ENOMEM, seccomp sandbox), the
   code has a `child.on("error")` handler on the ChildProcess — good — but line 58 then
@@ -134,12 +141,13 @@ Findings ranked most severe first.
 ---
 
 ### Concurrent `bash` tool calls throw an opaque "busy" error instead of serializing
+
 - **File:** aisdk/src/tools/bash.ts:110
 - **Severity:** low-medium
 - **Issue:** The AI SDK executes tool calls from one assistant step concurrently
   (`Promise.all` over `execute`). If the model emits two `bash` calls, the first sets
   `#busy` synchronously and the second immediately `throw new Error("the bash shell is
-  busy with another command")`. No corruption, but the model gets a confusing hard failure
+busy with another command")`. No corruption, but the model gets a confusing hard failure
   for behaviour it can't predict.
 - **Fix:** Queue commands on the shell (chain on a `#tail: Promise`) so concurrent calls
   run sequentially, or return a structured "retry" result rather than throwing.
@@ -147,6 +155,7 @@ Findings ranked most severe first.
 ---
 
 ### `edit` follows symlinks and accepts unrestricted absolute / `../` paths
+
 - **File:** aisdk/src/tools/edit.ts:41, 63, 85, 174-176
 - **Severity:** low-medium
 - **Issue:** `abs` is `path` verbatim if it starts with `/`, else `cwd + "/" + path` with
@@ -161,11 +170,12 @@ Findings ranked most severe first.
 ---
 
 ### `edit` on a non-UTF8 / binary file silently corrupts it
+
 - **File:** aisdk/src/tools/edit.ts:41
 - **Severity:** low
 - **Issue:** `readFileSync(path, "utf8")` replaces invalid byte sequences with U+FFFD
   instead of throwing. If an exact match then succeeds on an ASCII region, `writeFileSync`
-  persists the U+FFFD-mangled *entire* file — binary content destroyed.
+  persists the U+FFFD-mangled _entire_ file — binary content destroyed.
 - **Fix:** Read as a Buffer, reject (or require an explicit flag) when the content isn't
   valid UTF-8 (`Buffer.compare(Buffer.from(text,"utf8"), raw) !== 0` or a decoder with
   `fatal: true`).
@@ -173,6 +183,7 @@ Findings ranked most severe first.
 ---
 
 ### `edit` fuzzy tiers rewrite CRLF line endings in the matched span
+
 - **File:** aisdk/src/tools/edit.ts:78-79, 122-123, 139
 - **Severity:** low
 - **Issue:** Tiers 2/3 split file and needle on `"\n"` only, so file lines keep a trailing
@@ -187,6 +198,7 @@ Findings ranked most severe first.
 ---
 
 ### Minor: error/success messages embed the resolved absolute path
+
 - **File:** aisdk/src/tools/edit.ts:45, 56, 64, 86, 99, 177
 - **Severity:** low
 - **Issue:** `cannot read /abs/path: …`, `edited /abs/path`, etc. are thrown/returned. Fed
@@ -198,6 +210,7 @@ Findings ranked most severe first.
 ---
 
 ### Minor: `web_search` — `NaN` result count when `cfg.maxResults` is unset
+
 - **File:** aisdk/src/tools/search.ts:27
 - **Severity:** low
 - **Issue:** `Math.min(20, Math.max(1, maxResults ?? cfg.maxResults))` — if
@@ -205,11 +218,12 @@ Findings ranked most severe first.
   and flows into `&count=NaN` (brave) / `max_results: NaN` (tavily), which the backend
   rejects or ignores.
 - **Fix:** `const want = maxResults ?? cfg.maxResults ?? 5; const n = Number.isFinite(want)
-  ? Math.min(20, Math.max(1, want)) : 5;`
+? Math.min(20, Math.max(1, want)) : 5;`
 
 ---
 
 ### Minor: `web_search` — empty API key isn't distinguished from an auth failure
+
 - **File:** aisdk/src/tools/search.ts:22-48; builtins.ts:25
 - **Severity:** low
 - **Issue:** The tool is only registered when a `search` config object exists, but nothing

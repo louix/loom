@@ -8,6 +8,7 @@ Findings ranked most severe first.
 ---
 
 ### Manual `compact()` / `rewind()` race a concurrently-started turn → transcript corruption
+
 - **File:** aisdk/src/session.ts:252-256, 293-301, 551-617; backend/daemon/src/daemon/session-manager.ts:352-365
 - **Severity:** high
 - **Issue:** `compact()` and `rewind()` only `await this.#turn` — they do **not** set
@@ -15,7 +16,7 @@ Findings ranked most severe first.
   (`SUMMARISE_TIMEOUT_MS = 15 min`). During a manual compaction the session is idle:
   `SessionManager.compact` deliberately leaves status alone (session-manager.ts:366-367),
   so a `send()` arriving mid-compaction hits `isLiveState(run.state) === false`
-  (session-manager.ts:352), is treated as a *fresh turn*, and calls `session.send()`.
+  (session-manager.ts:352), is treated as a _fresh turn_, and calls `session.send()`.
   In the adapter `#turnRunning` is `false`, so `send()` claims the turn and `#kickTurn()`
   runs `#runTurn` **concurrently with the still-running `#doCompact`**. When the summariser
   returns, `#doCompact` does `this.#messages.length = 0; this.#messages.push(...rebuilt)`
@@ -32,6 +33,7 @@ Findings ranked most severe first.
 ---
 
 ### `interrupt()` / `close()` do not cancel an in-flight compaction
+
 - **File:** aisdk/src/session.ts:284-291, 325-333, 619-654
 - **Severity:** high
 - **Issue:** `#summarize`'s only abort is `AbortSignal.timeout(SUMMARISE_TIMEOUT_MS)` — it is
@@ -52,6 +54,7 @@ Findings ranked most severe first.
 ---
 
 ### `#summarize` accepts a truncated summary → whole transcript replaced by partial text
+
 - **File:** aisdk/src/session.ts:627-653; loop.ts:113-114
 - **Severity:** medium
 - **Issue:** `#summarize` iterates `res.fullStream` handling only `text-delta` and
@@ -68,6 +71,7 @@ Findings ranked most severe first.
 ---
 
 ### Provider/stream error with an unanswered permission prompt can wedge the turn
+
 - **File:** aisdk/src/loop.ts:113-127; gate.ts:92-98; session.ts:488-505, 345-352
 - **Severity:** medium
 - **Issue:** The turn loop breaks only on `part.type === "abort"`; an `error` part sets
@@ -86,6 +90,7 @@ Findings ranked most severe first.
 ---
 
 ### `#pendingPerms` keyed by provider `toolCallId` — duplicate ids collide and orphan a promise
+
 - **File:** aisdk/src/session.ts:493, 152, 258-267; 507-549
 - **Severity:** medium
 - **Issue:** `#requestPermission` does `this.#pendingPerms.set(toolCallId || randomUUID(), resolve)`.
@@ -104,6 +109,7 @@ Findings ranked most severe first.
 ---
 
 ### Sub-agent failures and step-limit truncation are swallowed
+
 - **File:** aisdk/src/session.ts:507-549
 - **Severity:** medium
 - **Issue:** `#runSubagent` wraps the whole stream in `try/catch` and on any error sets
@@ -121,6 +127,7 @@ Findings ranked most severe first.
 ---
 
 ### `map.ts` usage mapping assumes provider usage fields are present
+
 - **File:** aisdk/src/map.ts:133-150; session.ts:367-377
 - **Severity:** low
 - **Issue:** `#usage` reads `u.inputTokens ?? 0`, `u.outputTokens ?? 0`,
@@ -136,6 +143,7 @@ Findings ranked most severe first.
 ---
 
 ### Interrupt during first-turn MCP connect or top-of-turn auto-compact: no event, message unprocessed
+
 - **File:** aisdk/src/session.ts:656-671
 - **Severity:** low
 - **Issue:** `#runTurn` checks `if (this.#closing || this.#interrupted) return;` after
@@ -153,6 +161,7 @@ Findings ranked most severe first.
 ---
 
 ### No compaction between steps within a single segment
+
 - **File:** aisdk/src/session.ts:662-668; loop.ts:74-111
 - **Severity:** low
 - **Issue:** Auto-compaction runs only at the top of `#runTurn` (each segment re-enters
@@ -168,6 +177,7 @@ Findings ranked most severe first.
 ---
 
 ### Minor / cosmetic
+
 - **session.ts:772-774** — the step-limit error message reports
   `${this.#segmentsRun}×${this.#maxSteps}` steps, but not every segment necessarily hit the
   ceiling (the last one triggered the stop); the number is an upper bound, not actual.

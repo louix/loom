@@ -10,10 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  forkSession as sdkForkSession,
-  query as sdkQuery,
-} from "@anthropic-ai/claude-agent-sdk";
+import { forkSession as sdkForkSession, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
   McpServerConfig,

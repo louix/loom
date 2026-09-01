@@ -50,7 +50,11 @@ const lastSeq = async (c: LoomClient, id: string): Promise<number> => {
 
 test("claude undo: a rewound turn is gone from the model's context", async () => {
   const h = await makeHarness({ config: CONFIG });
-  const c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+  });
   try {
     const created = await c.request<SessionSnapshot>("session.create", {
       prompt: "Reply with only this word: ALPHA",

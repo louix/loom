@@ -10,11 +10,12 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
 ---
 
 ### No "database is newer than this build" guard — old daemon silently runs a newer schema
+
 - **File:** backend/daemon/src/store/db.ts:38-40
 - **Severity:** medium
 - **Issue:** `migrate()` does `if (from >= MIGRATIONS.length) return;` and then proceeds. If a DB was
-  migrated by a newer build (e.g. to v12, which *renamed* `await_reason` → `status_detail` and
-  *dropped* the four `budget_*` columns) and an older daemon binary later opens it — a stale
+  migrated by a newer build (e.g. to v12, which _renamed_ `await_reason` → `status_detail` and
+  _dropped_ the four `budget_*` columns) and an older daemon binary later opens it — a stale
   TUI-spawned daemon racing a freshly-installed one, a user downgrade, a second checkout on an
   older tag — the old code runs against a schema it doesn't understand. `SessionStore` does
   `SELECT * FROM sessions` and the old `toSnapshot`/reader expects `await_reason`; it now gets
@@ -25,6 +26,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   falling through.
 
 ### Compound store writes are not wrapped in a transaction (no `withTransaction` helper anywhere)
+
 - **File:** backend/daemon/src/store/sessions.ts:96-123 (`create`), 143-151 (`setStatus`), 156-171 (`markMidRunInterrupted`); backend/daemon/src/store/provider-messages.ts:59-71 (`replaceFrom`)
 - **Severity:** medium
 - **Issue:** Each of these performs multiple independent `.run()` calls, every one auto-committed.
@@ -44,6 +46,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   and wrap each compound operation.
 
 ### `pricing.reload` RPC has no error handling, unlike config reload
+
 - **File:** backend/daemon/src/daemon/daemon.ts:1136-1139; backend/daemon/src/config/pricing.ts:52-61
 - **Severity:** low-medium
 - **Issue:** `#reloadConfig()` carefully catches a malformed-TOML throw and keeps the running config
@@ -55,12 +58,13 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
 - **Fix:** Mirror `#reloadConfig`: try/catch, keep `this.#pricing`, emit a notice.
 
 ### `deepMerge` does not skip `__proto__` / `constructor` keys; TOML can supply them
+
 - **File:** backend/daemon/src/config/config.ts:549-571
 - **Severity:** low
-- **Issue:** `smol-toml` parses `[__proto__]` into an object with an *own* `__proto__` key
+- **Issue:** `smol-toml` parses `[__proto__]` into an object with an _own_ `__proto__` key
   (verified). `deepMerge` iterates `Object.entries(over)` and does `out[k] = v`; for `k === "__proto__"`
   that invokes the prototype setter and changes the merged object's prototype. Global
-  `Object.prototype` is *not* reachable this way (the spread `{...base}` breaks the chain and
+  `Object.prototype` is _not_ reachable this way (the spread `{...base}` breaks the chain and
   `constructor` is a function so recursion is skipped), and `normalizeConfig` only reads known keys,
   so real-world impact is contained. But `.loom/config.toml` is read from whatever repo the daemon
   is pointed at — a cloned untrusted repo is an input here — so defensively dropping
@@ -68,6 +72,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
 - **Fix:** `if (k === "__proto__" || k === "constructor" || k === "prototype") continue;` in the loop.
 
 ### Migration loop reads `currentVersion()` outside the guarding transaction; `BEGIN` is not `IMMEDIATE`
+
 - **File:** backend/daemon/src/store/db.ts:38-55
 - **Severity:** low (mitigated by the per-repo single-instance pidfile)
 - **Issue:** `from = currentVersion(db)` is read before the loop's `BEGIN`. If two daemon processes
@@ -76,10 +81,11 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   already-applied non-idempotent `ALTER TABLE … RENAME/DROP COLUMN`, throwing
   `migration N failed: no such column` on startup. Plain `BEGIN` (deferred) also upgrades
   reader→writer lazily and can hit `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` does not retry.
-- **Fix:** Use `BEGIN IMMEDIATE`, then re-read `schema_version` *inside* the transaction and skip
+- **Fix:** Use `BEGIN IMMEDIATE`, then re-read `schema_version` _inside_ the transaction and skip
   the step if already applied.
 
 ### `readClaudeAccount` ignores `CLAUDE_CONFIG_DIR`
+
 - **File:** backend/daemon/src/config/claude-profile.ts:76-105; consumed at backend/daemon/src/daemon/daemon.ts:634
 - **Severity:** low
 - **Issue:** The base `claude` profile's `dir` is `~/.claude` (DEFAULT_CONFIG). `provider-registry`
@@ -92,6 +98,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   `process.env.CLAUDE_CONFIG_DIR` if set.
 
 ### `scaffoldUserConfig` — existsSync/copyFileSync TOCTOU, no `COPYFILE_EXCL`
+
 - **File:** backend/daemon/src/scaffold.ts:28-40
 - **Severity:** low
 - **Issue:** `existsSync(dest)` then `copyFileSync(src, dest)` with no exclusive flag. The
@@ -102,17 +109,19 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
 - **Fix:** `copyFileSync(src, dest, constants.COPYFILE_EXCL)` and treat `EEXIST` as "already present".
 
 ### Per-session event / status history tables grow unbounded
+
 - **File:** backend/daemon/src/store/session-events.ts (whole); backend/daemon/src/store/sessions.ts:303-307 (`#appendHistory`)
 - **Severity:** low
 - **Issue:** `session_events` and `status_history` get an append per event / per status transition
   with no pruning, TTL, or cap, and nothing in the codebase ever runs `VACUUM`. `SessionEventStore.list`
-  caps the *read* at 500 rows but the table keeps growing for the life of the project; a busy,
+  caps the _read_ at 500 rows but the table keeps growing for the life of the project; a busy,
   long-lived repo sees monotonic `loom.db` growth (plus WAL) that is never reclaimed even after
   `session.delete` (which cascades the rows but leaves free pages).
 - **Fix:** Trim `session_events` to the last N per session on write (or a periodic sweep), and/or
   run `PRAGMA incremental_vacuum` / `VACUUM` on a schedule.
 
 ### `addUsage` NaN guard is bypassed for `lastTurnAt`
+
 - **File:** backend/daemon/src/store/sessions.ts:216-263
 - **Severity:** low
 - **Issue:** The method explicitly coerces every additive/absolute field through `acc`/`accFloat`/`abs`
@@ -123,6 +132,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
 - **Fix:** Route `lastTurnAt` through the same finite-number guard.
 
 ### `resolveMcpCommand` tokenises on whitespace — mis-splits quoted args
+
 - **File:** backend/daemon/src/daemon/mcp-fallback.ts:25-27
 - **Severity:** low
 - **Issue:** `raw.split(/\s+/)` — a `[[mcp]]` command whose args contain a quoted path with spaces
@@ -132,6 +142,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   must be whitespace-separated with no quoting.
 
 ### provider-registry: `mock` id claimed "always known" but not registered
+
 - **File:** backend/daemon/src/daemon/provider-registry.ts:9-11 (comment), 52-56, 100-102
 - **Severity:** low (cosmetic)
 - **Issue:** The header comment and `#packageFor`/`#contextFor` both handle `"mock"`, but the
@@ -146,7 +157,7 @@ mid-migration resumes cleanly at per-migration granularity. Those sub-areas are 
   (sessions.ts:173-214) builds only `col = ?` fragments and the column names come from a fixed
   whitelist `map`; all values are bound. `ProviderMessageStore.copyTo` / `replaceFrom` interpolate
   nothing. No string-built SQL from caller data anywhere in the area.
-- **provider-registry lazy import:** `get()` caches the *promise*, so concurrent `get`s for the same
+- **provider-registry lazy import:** `get()` caches the _promise_, so concurrent `get`s for the same
   id dedupe on one in-flight build; a rejected build is evicted (`built.catch` → `#cache.delete`)
   so a later call retries after the env var is set / package installed. No "cached failed import"
   bug. Version/path resolution (`#packageFor`) is deterministic.

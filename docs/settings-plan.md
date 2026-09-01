@@ -11,7 +11,7 @@ or only remembered implicitly:
 2. **Default mode** — `manual|plan|acceptEdits|auto`. Today derived from an
    implicit "last mode used" row in the `meta` table, rewritten on every session
    create and every `⇧⇥`. The config knob meant for this, `providers.claude.
-   permissionDefault`, is fully parsed but **read nowhere** — dead since inception.
+permissionDefault`, is fully parsed but **read nowhere** — dead since inception.
 3. **Git working behavior** — worktree+branch / branch-only / in-place. Today only
    two of the three exist (`worktree.enabled` boolean); "branch, no worktree" is
    not implementable without new `WorktreeManager` code.
@@ -26,11 +26,11 @@ or only remembered implicitly:
 - **Deliver in three phases**, all eventually required: **Phase 1** = the settings
   framework + verbosity + default mode + delete-branch. **Phase 2** = git working
   behavior. **Phase 3** = connectors. This plan details Phase 1 and sketches 2–3.
-- **Semantics: "pin, stop remembering."** An explicit setting *is* the default;
+- **Semantics: "pin, stop remembering."** An explicit setting _is_ the default;
   deliberate mid-session switches no longer rewrite it. Applies to `defaultMode`
   in Phase 1 (model/provider/effort "remember" logic is TODO 5, left untouched).
 - **Storage: a new daemon-owned `~/.config/loom/settings.toml`** — machine-managed
-  (not the comment-rich `config.toml`), read *and* written by the daemon. Phase-1
+  (not the comment-rich `config.toml`), read _and_ written by the daemon. Phase-1
   settings are all user-global; Phase 2's git behavior stays per-repo in
   `.loom/config.toml`. Must survive: missing file, unparseable file (→ defaults,
   never crash — unlike `config.toml` which rethrows), file deleted under a running
@@ -49,29 +49,29 @@ canonical shape lives here, not in the daemon.
 - `export type Verbosity = "chat" | "chat_and_tools" | "everything"` +
   `export const VERBOSITY_VALUES`.
 - `export interface SettingsValues { verbosity: Verbosity; defaultMode: SessionMode;
-  deleteBranchOnRemove: boolean }` (reuse `SessionMode` / `SESSION_MODES` from
+deleteBranchOnRemove: boolean }` (reuse `SessionMode` / `SESSION_MODES` from
   `core/src/types.ts`, and `isSessionMode`).
 - `export const DEFAULT_SETTINGS: SettingsValues = { verbosity: "everything",
-  defaultMode: "default", deleteBranchOnRemove: false }`.
+defaultMode: "default", deleteBranchOnRemove: false }`.
   `deleteBranchOnRemove` defaults **false**: matches `session.remove`'s own
   doc-comment and `session.gc`, matches the CLI, keeps
   `test/worktree-session.test.ts:83` green, and destructive-by-default is wrong.
   This is a visible change for TUI users — call it out; the per-delete `b` toggle
   (now seeded from the setting) still lets them opt in.
 - `export const SETTINGS_KEYS` + `export const coerceSettings(raw: unknown):
-  SettingsValues` — flat `{ ...DEFAULT_SETTINGS, ...validated }`, each field
+SettingsValues` — flat `{ ...DEFAULT_SETTINGS, ...validated }`, each field
   enum/boolean-guarded, out-of-range → default. No `deepMerge` (three scalars).
 - Add `SettingsUpdatedPush { kind: "push"; seq: number; type: "settings_updated";
-  settings: SettingsValues }` to the `PushFrame` union.
+settings: SettingsValues }` to the `PushFrame` union.
 
 ### Daemon file I/O — `backend/daemon/src/config/settings.ts` (new)
 
 Only I/O; the type + coercion come from `wire.ts`.
 
 - `loadSettings(path, log): SettingsValues` — `readFileSync` + `smol-toml` `parse`
-  + `coerceSettings`. `ENOENT` → `DEFAULT_SETTINGS` silently; any other read/parse
-  error → `DEFAULT_SETTINGS` + `log.warn` (explicitly unlike `readTomlIfPresent`
-  in `config.ts:437`).
+  - `coerceSettings`. `ENOENT` → `DEFAULT_SETTINGS` silently; any other read/parse
+    error → `DEFAULT_SETTINGS` + `log.warn` (explicitly unlike `readTomlIfPresent`
+    in `config.ts:437`).
 - `writeSettings(path, values)` — `mkdirSync(dirname, { recursive: true })`,
   `writeFileSync(path + ".tmp", …)`, `renameSync(tmp, path)` (same dir → atomic).
   Prepend `# managed by loomd — manual edits are overwritten`.
@@ -160,15 +160,15 @@ and leak state. Pass `settingsPath: join(repoRoot, ".loom", "settings.toml")`
     values) on reject; `Esc` / `q` → `settingsClose`.
   - `runAct` (`:1196`) += `case "settings"` → `dispatch({ t: "settingsOpen" })`.
   - `refetch()` (`:1622`) `Promise.all` += `client.request<SettingsValues>
-    ("settings.get").then(v => dispatch({ t: "settingsLoaded", values: v }))` —
+("settings.get").then(v => dispatch({ t: "settingsLoaded", values: v }))` —
     this is the whole delivery path; it already re-runs on boot + every
     reconnect/resync. **Do not** add `HelloResult.settings` or touch `LoomClient`.
   - `confirmForDelete` (`:1146`) seeds `deleteBranch: state.settings.
-    deleteBranchOnRemove`; its body text branches both ways (currently hard-codes
+deleteBranchOnRemove`; its body text branches both ways (currently hard-codes
     "…and branch go too. Press b to keep").
 - `components.tsx`: new `Settings` component — three rows
   (`Verbosity` / `Default mode` (render via `modeLabel`) / `Delete branch on
-  session delete`), highlight `settingsCursor`, show current value + how to
+session delete`), highlight `settingsCursor`, show current value + how to
   cycle. Model on `Help` (`:1170`) + `Picker` (`:1096`).
 - `app.tsx`: `case "settings":` in the `view.body` switch (`:72`) → `<Settings>`
   (or `absurd(view.body)` throws).
