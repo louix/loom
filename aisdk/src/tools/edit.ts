@@ -38,7 +38,17 @@ export const applyEdit = (
 
   let content: string;
   try {
-    content = readFileSync(path, "utf8");
+    const raw = readFileSync(path);
+    content = raw.toString("utf8");
+    // A binary / non-UTF-8 file decodes with U+FFFD replacements; a successful
+    // match on an ASCII region would then write the mangled *whole* file back.
+    if (!Buffer.from(content, "utf8").equals(raw)) {
+      return {
+        ok: false,
+        message: `${path} is not valid UTF-8 (binary file?) — refusing to edit`,
+        replacements: 0,
+      };
+    }
   } catch (err) {
     return {
       ok: false,

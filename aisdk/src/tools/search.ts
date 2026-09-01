@@ -26,7 +26,14 @@ export const runSearch = async (
   query: string,
   maxResults?: number,
 ): Promise<{ ok: boolean; output: string }> => {
-  const n = Math.min(20, Math.max(1, maxResults ?? cfg.maxResults));
+  if (!cfg.apiKey) {
+    return {
+      ok: false,
+      output: `the "${cfg.backend}" web-search backend has no API key configured`,
+    };
+  }
+  const want = maxResults ?? cfg.maxResults ?? 5;
+  const n = Number.isFinite(want) ? Math.min(20, Math.max(1, want)) : 5;
   const signal = AbortSignal.timeout(15_000); // a hung backend must not stall the turn
   try {
     const output =

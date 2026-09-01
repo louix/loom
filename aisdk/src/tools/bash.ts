@@ -36,9 +36,16 @@ export class BashShell {
       cwd: this.#cwd,
       env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
+      // Own process group, so a timeout / reset SIGKILLs anything the command
+      // backgrounded (dev servers, `foo &`) instead of orphaning it — see #kill.
+      detached: true,
     });
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
+    // A late/buffered write to a stdio stream of a process that failed to spawn
+    // emits an unhandled 'error' (EPIPE / ERR_STREAM_DESTROYED) that would crash
+    // the daemon — the `child.on("error")` below only covers the ChildProcess.
+    for (const s of [child.stdin, child.stdout, child.stderr]) s?.on("error", () => {});
     const onData = (d: string): void => {
       this.#buf += d;
       this.#wake?.();
@@ -110,13 +117,37 @@ export class BashShell {
     if (this.#busy) throw new Error("the bash shell is busy with another command");
     this.#busy = true;
     try {
+      // A trailing line-continuation backslash splices the command group's
+      // closing `}` onto the command, so bash never sees the terminator and the
+      // sentinel never prints — a silent full-timeout wedge. Same for a dangling
+      // `|` / `&&` / `||`. Reject up front (bash -n doesn't reliably catch these
+      // in the wrapped form).
+      const tail = command.replace(/\s+$/, "");
+      if (/(?:^|[^\\])(?:\\\\)*\\$/.test(tail)) {
+        return {
+          output: "bash: command ends with a line-continuation backslash — drop the trailing '\\'",
+          exitCode: 2,
+          timedOut: false,
+        };
+      }
+      if (/(?:\|\||&&|\|)$/.test(tail)) {
+        return {
+          output: "bash: command ends with a dangling '|', '&&' or '||'",
+          exitCode: 2,
+          timedOut: false,
+        };
+      }
       const unclosed = await this.#unclosedConstruct(command);
       if (unclosed) {
         return { output: unclosed, exitCode: 2, timedOut: false };
       }
       const child = this.#ensure();
       const marker = `__LOOM_${randomBytes(12).toString("hex")}__`;
-      const re = new RegExp(`\\n?${marker} (-?\\d+)\\n`);
+      // Anchor the marker to a line start. With `set -x` left on, bash echoes
+      // the sentinel line to the merged stream as `+ printf … <marker> 0` — the
+      // marker there is preceded by a space, so an anchored match skips it and
+      // only the real `\n<marker> N\n` sentinel is picked up.
+      const re = new RegExp(`(?:^|\\n)${marker} (-?\\d+)\\n`);
       this.#buf = "";
       // Group command (not a subshell) so `cd` / `export` persist; the `}` on
       // its own line closes it without a stray `;`. Redirect the group's stdin
@@ -179,9 +210,21 @@ export class BashShell {
   }
 
   #kill(): void {
-    this.#child?.kill("SIGKILL");
+    const c = this.#child;
     this.#child = null;
     this.#buf = "";
+    if (!c) return;
+    // Kill the whole process group (bash was spawned detached) so descendants
+    // the command left running go too. Negative pid = the group.
+    if (typeof c.pid === "number") {
+      try {
+        process.kill(-c.pid, "SIGKILL");
+        return;
+      } catch {
+        // group already gone / never formed — fall through to the direct kill
+      }
+    }
+    c.kill("SIGKILL");
   }
 
   close(): void {

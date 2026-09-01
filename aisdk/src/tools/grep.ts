@@ -8,6 +8,9 @@ import { tool } from "ai";
 import { z } from "zod";
 
 const DEFAULT_MAX = 200;
+/** Wall-clock cap — a scan over `/` or a slow network mount otherwise stalls
+ *  the whole model turn with no recovery (`bash` / `web_search` both bound theirs). */
+const TIMEOUT_MS = 30_000;
 
 export const runRipgrep = (
   opts: {
@@ -31,7 +34,12 @@ export const runRipgrep = (
     let out = "";
     let err = "";
     let capped = false;
+    let timedOut = false;
     const OUT_CAP = 4_000_000; // don't buffer an unbounded match-everything result
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, TIMEOUT_MS);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (d: string) => {
@@ -44,6 +52,7 @@ export const runRipgrep = (
     });
     child.stderr.on("data", (d: string) => (err += d));
     child.on("error", (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
       resolve({
         ok: false,
         output:
@@ -53,6 +62,14 @@ export const runRipgrep = (
       });
     });
     child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        resolve({
+          ok: false,
+          output: `search timed out after ${TIMEOUT_MS / 1000}s — narrow the pattern or pass \`path\` / \`glob\``,
+        });
+        return;
+      }
       if (code === 0 || capped) {
         const lines = out.split("\n").filter((l) => l !== "");
         const max = opts.maxResults ?? DEFAULT_MAX;

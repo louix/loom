@@ -105,14 +105,14 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | A7 | low | done | Usage mapping zeroes `contextUsed` when a provider omits token fields → meter flaps | `aisdk/src/map.ts:133-150` |
 | A10 | cosmetic | done | Step-limit message reports `segments×maxSteps` (upper bound, not actual) | `aisdk/src/session.ts:772-774` |
 | A11 | low | done | Duplicate `fatal: true` error events for one stream failure | `aisdk/src/map.ts:96-105` |
-| T2 | **high** | todo | bash timeout kills only the bash process, not its group → orphaned dev servers holding ports | `aisdk/src/tools/bash.ts:35-39, 181-185` |
-| T3 | med | todo | Trailing `\` / `\|` / `&&` wedges the persistent shell for the full 120 s timeout | `aisdk/src/tools/bash.ts:125` |
-| T4 | med | todo | `set -x` makes the sentinel `printf` trace line satisfy the marker regex → early return, garbled tail | `aisdk/src/tools/bash.ts:118-133` |
-| T5 | med | todo | No timeout on the ripgrep child | `aisdk/src/tools/grep.ts:24-72` |
-| T7 | med | todo | Failed bash spawn → synchronous `child.stdin.write()` → unhandled stream `error` → daemon exits | `aisdk/src/tools/bash.ts:50-58` |
-| T10 | low | todo | `edit` on a non-UTF8 file writes back a U+FFFD-mangled whole file | `aisdk/src/tools/edit.ts:41` |
-| T13 | low | todo | `web_search` `NaN` result count when `cfg.maxResults` is unset | `aisdk/src/tools/search.ts:27` |
-| T14 | low | todo | `web_search` empty API key not distinguished from a 401 | `aisdk/src/tools/search.ts:22-48` |
+| T2 | **high** | done | bash spawned `detached` (own process group); `#kill` signals `-pid` so a timeout / reset takes descendants (dev servers, `foo &`) with it | `aisdk/src/tools/bash.ts:35-39, 181-185` |
+| T3 | med | done | Trailing `\` / `\|` / `&&` wedges the persistent shell for the full 120 s timeout | `aisdk/src/tools/bash.ts:125` |
+| T4 | med | done | `set -x` makes the sentinel `printf` trace line satisfy the marker regex → early return, garbled tail | `aisdk/src/tools/bash.ts:118-133` |
+| T5 | med | done | No timeout on the ripgrep child | `aisdk/src/tools/grep.ts:24-72` |
+| T7 | med | done | Failed bash spawn → synchronous `child.stdin.write()` → unhandled stream `error` → daemon exits | `aisdk/src/tools/bash.ts:50-58` |
+| T10 | low | done | `edit` on a non-UTF8 file writes back a U+FFFD-mangled whole file | `aisdk/src/tools/edit.ts:41` |
+| T13 | low | done | `web_search` `NaN` result count when `cfg.maxResults` is unset | `aisdk/src/tools/search.ts:27` |
+| T14 | low | done | `web_search` empty API key not distinguished from a 401 | `aisdk/src/tools/search.ts:22-48` |
 | D1 | med | todo | No "DB is newer than this build" fence → an old daemon silently runs a newer schema | `store/db.ts:38-40` |
 | D3 | low-med | todo | `pricing.reload` RPC has no error handling (config reload does) | `daemon/daemon.ts:1136-1139` |
 | D4 | low | todo | `deepMerge` doesn't skip `__proto__` / `constructor` — untrusted `.loom/config.toml` is an input | `config/config.ts:549-571` |
