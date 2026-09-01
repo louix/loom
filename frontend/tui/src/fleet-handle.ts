@@ -72,14 +72,11 @@ import {
 } from "./model.ts";
 
 /** Footer label for the `answerQuestion` prompt: the current question's short
- *  `header` chip, plus progress when the `AskUserQuestion` call asked more
- *  than one question. */
-const questionPromptLabel = (qs: AskUserQuestionItem[], answered: number): string => {
-  const cur = qs[0];
-  const tag = cur?.header || "answer";
-  return qs.length > 1 || answered > 0
-    ? `answer ${answered + 1}/${answered + qs.length}: ${tag}`
-    : `answer: ${tag}`;
+ *  `header` chip, plus `N/total` progress when the `AskUserQuestion` call asked
+ *  more than one question. `idx` is the 0-based position in `all`. */
+const questionPromptLabel = (all: AskUserQuestionItem[], idx: number): string => {
+  const tag = all[idx]?.header || "answer";
+  return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
 };
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
@@ -164,6 +161,9 @@ export interface FleetView {
   readonly pend: Pending;
   readonly allowed: ReadonlySet<ActName>;
   readonly showRequest: boolean;
+  /** Which `AskUserQuestion` question the request panel should show — the one
+   *  the open `answerQuestion` prompt is collecting, else the first. */
+  readonly questionIdx: number;
   readonly body: BodyKind;
   readonly cols: number;
   readonly rows: number;
@@ -222,6 +222,11 @@ const deriveView = (
   const logH = logFull ? bodyH : splitLogH;
   const logPage = Math.max(1, logH - 3);
 
+  const questionIdx =
+    state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
+      ? (state.prompt.qaIdx ?? 0)
+      : 0;
+
   let body: BodyKind = "split";
   if (state.mode === "help") body = "help";
   else if (state.mode === "doctor") body = "doctor";
@@ -240,6 +245,7 @@ const deriveView = (
     pend,
     allowed,
     showRequest: showRequest === true,
+    questionIdx,
     body,
     cols,
     rows,
@@ -603,7 +609,8 @@ export const mkFleetHandle = ({
               sessionId: s.id,
               requestId: fp.id,
               label: questionPromptLabel(qs, 0),
-              qaQueue: qs,
+              qaAll: qs,
+              qaIdx: 0,
               qaAnswers: {},
             }),
           });
@@ -1010,18 +1017,23 @@ export const mkFleetHandle = ({
           return r.alreadyResolved ? "already answered" : "answered";
         }
         case "answerQuestion": {
-          if (!p.sessionId || !p.requestId || !p.qaQueue || p.qaQueue.length === 0) return "";
-          const [current, ...rest] = p.qaQueue;
-          const answers = { ...(p.qaAnswers ?? {}), [current!.question]: text };
-          if (rest.length > 0) {
+          if (!p.sessionId || !p.requestId || !p.qaAll || p.qaAll.length === 0) return "";
+          const idx = Math.min(p.qaIdx ?? 0, p.qaAll.length - 1);
+          const answers = { ...p.qaAnswers, [p.qaAll[idx]!.question]: text };
+          if (idx + 1 < p.qaAll.length) {
+            const next = p.qaAll[idx + 1]!;
             dispatch({
               t: "openPrompt",
               prompt: makePrompt({
                 kind: "answerQuestion",
                 sessionId: p.sessionId,
                 requestId: p.requestId,
-                label: questionPromptLabel(rest, Object.keys(answers).length),
-                qaQueue: rest,
+                label: questionPromptLabel(p.qaAll, idx + 1),
+                // pre-fill any answer already given for the next question, so
+                // walking forward after a step-back doesn't lose it
+                text: answers[next.question] ?? "",
+                qaAll: p.qaAll,
+                qaIdx: idx + 1,
                 qaAnswers: answers,
               }),
             });
@@ -1413,6 +1425,25 @@ export const mkFleetHandle = ({
               sessionId: p.sessionId,
               requestId: p.requestId,
               text: state.plan.text,
+            });
+          }
+          // Esc within a multi-question AskUserQuestion steps back to the
+          // previous question (its answer still filled in) rather than
+          // abandoning the whole prompt; Esc on the first question cancels.
+          if (p.kind === "answerQuestion" && p.qaAll && p.requestId && (p.qaIdx ?? 0) > 0) {
+            const prev = (p.qaIdx ?? 0) - 1;
+            return void dispatch({
+              t: "openPrompt",
+              prompt: makePrompt({
+                kind: "answerQuestion",
+                sessionId: p.sessionId,
+                requestId: p.requestId,
+                label: questionPromptLabel(p.qaAll, prev),
+                text: p.qaAnswers?.[p.qaAll[prev]!.question] ?? "",
+                qaAll: p.qaAll,
+                qaIdx: prev,
+                qaAnswers: p.qaAnswers ?? {},
+              }),
             });
           }
           return void dispatch({ t: "closePrompt", saveDraft: true });

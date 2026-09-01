@@ -741,7 +741,9 @@ const promptHints = (p: PromptState, queued: number, sessionMode?: string | null
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
-  bits.push("esc cancel");
+  // A multi-question AskUserQuestion steps back through its questions on Esc
+  // until the first, which cancels the whole prompt.
+  bits.push(p.kind === "answerQuestion" && (p.qaIdx ?? 0) > 0 ? "esc back" : "esc cancel");
   return bits.join("  ·  ");
 };
 
@@ -875,21 +877,23 @@ export const Confirm = ({
 /** Height reserved for {@link RequestPanel} in the layout. */
 export const REQUEST_PANEL_ROWS = 8;
 
-/** `AskUserQuestion`'s `{questions:[{question,options}]}` rendered as lettered
- *  choices — a) b) c) … — instead of the generic raw-JSON dump. Falls back to
- *  that dump if the model's call didn't match the expected shape. */
-const describeAskUserQuestion = (input: unknown, w: number): string[] => {
+/** `AskUserQuestion` rendered as lettered choices — a) b) c) … — for one
+ *  question at a time (`active`, 0-based), since the answer prompt walks them
+ *  singly. A `question N of M` header marks the progress when there's more than
+ *  one. Falls back to the generic raw-JSON dump if the call didn't match the
+ *  expected shape. */
+const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[] => {
   const qs = parseAskUserQuestions(input);
   if (qs.length === 0) return describeRequest(input, w);
+  const idx = Math.max(0, Math.min(qs.length - 1, active));
+  const q = qs[idx]!;
   const lines: string[] = [];
-  qs.forEach((q, qi) => {
-    const prefix = qs.length > 1 ? `${qi + 1}. ` : "";
-    lines.push(...wrapText(`${prefix}${q.question}`, w));
-    q.options.forEach((opt, oi) => {
-      const letter = String.fromCharCode(97 + oi);
-      const desc = opt.description ? ` — ${opt.description}` : "";
-      lines.push(...wrapText(`  ${letter}) ${opt.label}${desc}`, w));
-    });
+  if (qs.length > 1) lines.push(`question ${idx + 1} of ${qs.length} — answered one at a time`);
+  lines.push(...wrapText(q.question, w));
+  q.options.forEach((opt, oi) => {
+    const letter = String.fromCharCode(97 + oi);
+    const desc = opt.description ? ` — ${opt.description}` : "";
+    lines.push(...wrapText(`  ${letter}) ${opt.label}${desc}`, w));
   });
   return lines.slice(0, 5);
 };
@@ -916,9 +920,13 @@ const describeRequest = (input: unknown, w: number): string[] => {
 export const RequestPanel = ({
   pending,
   width,
+  questionIdx = 0,
 }: {
   pending: Pending;
   width: number;
+  /** For `AskUserQuestion`: which question to show — the one the answer prompt
+   *  is currently collecting. */
+  questionIdx?: number;
 }): ReactNode => {
   const w = inside(width);
   const box = (title: string, body: ReactNode[], hint: string): ReactNode => (
@@ -978,13 +986,14 @@ export const RequestPanel = ({
     const isQuestion = p0.tool === "AskUserQuestion";
     return box(
       isQuestion ? `? QUESTION${more}` : `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
-      (isQuestion ? describeAskUserQuestion(p0.input, w) : describeRequest(p0.input, w)).map(
-        (l, i) => (
-          <Text key={i} color={C.text} wrap="truncate-end">
-            {l}
-          </Text>
-        ),
-      ),
+      (isQuestion
+        ? describeAskUserQuestion(p0.input, w, questionIdx)
+        : describeRequest(p0.input, w)
+      ).map((l, i) => (
+        <Text key={i} color={C.text} wrap="truncate-end">
+          {l}
+        </Text>
+      )),
       isQuestion
         ? `a answer  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`
         : `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${more ? "  ·  more queued" : ""}`,

@@ -122,11 +122,15 @@ export interface PromptState {
   histIdx: number;
   /** Live buffer text, stashed while browsing history. */
   draft: string;
-  /** `answerQuestion` only: remaining unanswered `AskUserQuestion` questions —
-   *  index 0 is the one this prompt is currently collecting an answer for. */
-  qaQueue?: AskUserQuestionItem[];
-  /** `answerQuestion` only: answers already collected for earlier questions in
-   *  this same `AskUserQuestion` call, keyed by question text. */
+  /** `answerQuestion` only: every question from this `AskUserQuestion` call, in
+   *  order — the prompt walks them one at a time rather than all at once. */
+  qaAll?: AskUserQuestionItem[];
+  /** `answerQuestion` only: index into {@link qaAll} of the question this prompt
+   *  is currently collecting. `Enter` advances to the next; `Esc` on anything
+   *  past the first steps back to the previous one (its answer still filled in). */
+  qaIdx?: number;
+  /** `answerQuestion` only: answers collected so far, keyed by question text —
+   *  kept across stepping back and forth so nothing typed is lost. */
   qaAnswers?: Record<string, string>;
 }
 
@@ -141,7 +145,8 @@ export const makePrompt = (init: {
   provider?: string;
   model?: string;
   effort?: string;
-  qaQueue?: AskUserQuestionItem[];
+  qaAll?: AskUserQuestionItem[];
+  qaIdx?: number;
   qaAnswers?: Record<string, string>;
 }): PromptState => {
   return {
@@ -153,7 +158,8 @@ export const makePrompt = (init: {
     ...(init.provider ? { provider: init.provider } : {}),
     ...(init.model ? { model: init.model } : {}),
     ...(init.effort ? { effort: init.effort } : {}),
-    ...(init.qaQueue ? { qaQueue: init.qaQueue } : {}),
+    ...(init.qaAll ? { qaAll: init.qaAll } : {}),
+    ...(init.qaIdx !== undefined ? { qaIdx: init.qaIdx } : {}),
     ...(init.qaAnswers ? { qaAnswers: init.qaAnswers } : {}),
     buffer: buffer(init.text ?? ""),
     histIdx: 0,
