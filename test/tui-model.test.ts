@@ -23,6 +23,7 @@ import {
   escapeTarget,
   findPickItems,
   focusedChildOf,
+  focusedPending,
   footerHints,
   formatEvent,
   groupsOf,
@@ -900,6 +901,94 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   assert.equal(s.plan, null);
   assert.equal(s.mode, "browse");
   assert.equal(pendingFor(s, "a").plan, undefined);
+});
+
+test("a plan is cleared by its matching tool_result once the decision lands", () => {
+  // The plan_review is keyed on the ExitPlanMode / exit_plan tool-call id, so
+  // its `tool_result` is the only durable mark that the plan was decided —
+  // the daemon clears its own map in `respondToPlan`, but that never reaches
+  // the event log a client backfills from.
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" })],
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "plan_review", id: "p1", plan: "the plan", sessionId: "a" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      2,
+      ev({ type: "tool_result", id: "p1", ok: true, output: "Plan approved.", sessionId: "a" }),
+    ),
+  });
+  assert.equal(pendingFor(s, "a").plan, undefined);
+
+  // an unrelated tool_result leaves the plan alone
+  s = reduce(s, {
+    t: "push",
+    frame: push(3, ev({ type: "plan_review", id: "p2", plan: "next plan", sessionId: "a" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })),
+  });
+  assert.equal(pendingFor(s, "a").plan, "p2");
+});
+
+test("a replayed plan_review can't resurrect a plan the session already moved past", () => {
+  // Reconnect/history-backfill: the plan was approved while the client
+  // watched live, `session_updated` settled pending — then a selection
+  // change replays the durable history, which still holds the plan_review
+  // (nothing in the event stream marks a plan resolved). Re-applying it
+  // would pin the request panel on the stale plan text while the session
+  // is genuinely parked on something else.
+  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "old plan", sessionId: "a" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 2,
+      type: "session_updated",
+      session: snap({ id: "a", status: "running" }),
+      version: 3,
+    },
+  });
+  assert.equal(pendingFor(s, "a").plan, undefined);
+
+  // the backfill re-dispatches the same (seq, epoch) frame — a duplicate
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "old plan", sessionId: "a" })),
+  });
+  assert.equal(pendingFor(s, "a").plan, undefined);
+});
+
+test("focusedPending keeps only the surface the daemon says the session is parked on", () => {
+  const stale = {
+    plan: "pr-old",
+    planText: "old plan",
+    permissions: [{ id: "p1", tool: "bash", input: { command: "ls" } }],
+  };
+  // parked on a permission → the stale plan must not win the panel
+  assert.deepEqual(focusedPending(stale, "permission"), {
+    permissions: stale.permissions,
+  });
+  // parked on the plan → the plan stays
+  assert.deepEqual(focusedPending(stale, "plan_review"), {
+    plan: "pr-old",
+    planText: "old plan",
+  });
+  // an `on` with nothing matching keeps everything (no info to drop by)
+  assert.deepEqual(focusedPending(stale, "question"), stale);
+  assert.deepEqual(focusedPending(stale, null), stale);
 });
 
 // ---------------------------------------------------------------------------

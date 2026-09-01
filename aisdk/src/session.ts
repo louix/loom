@@ -441,8 +441,8 @@ export class AisdkSession implements AgentSession {
         inputSchema: z.object({
           plan: z.string().describe("The complete implementation plan, in markdown."),
         }),
-        execute: async ({ plan }) => {
-          const decision = await this.#requestPlan(plan);
+        execute: async ({ plan }, { toolCallId }) => {
+          const decision = await this.#requestPlan(plan, toolCallId);
           switch (decision.action) {
             case "discuss":
               return `The user is not ready to implement. Their note:\n\n${decision.message}\n\nStay in planning, address this, and call exit_plan again when ready.`;
@@ -490,8 +490,11 @@ export class AisdkSession implements AgentSession {
     });
   }
 
-  #requestPlan(plan: string): Promise<PlanDecision> {
-    const id = randomUUID();
+  #requestPlan(plan: string, toolCallId?: string): Promise<PlanDecision> {
+    // Keyed on the tool-call id (like `#requestPermission`) so the resolving
+    // `tool_result` matches the `plan_review` — the only durable mark, in the
+    // event log a client backfills from, that the plan was decided.
+    const id = toolCallId || randomUUID();
     return new Promise<PlanDecision>((resolve) => {
       this.#pendingPlans.set(id, resolve);
       this.#emit({ type: "plan_review", sessionId: this.id, ts: Date.now(), id, plan });

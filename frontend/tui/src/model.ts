@@ -5,7 +5,7 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
+import type { AwaitReason, BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
@@ -294,6 +294,30 @@ export interface Pending {
 /** The permission request the UI should surface next (FIFO). */
 export const firstPerm = (p: Pending): PendingPerm | undefined => {
   return p.permissions?.[0];
+};
+
+/**
+ * Keep only the surface the daemon says the session is parked on. `pending` is
+ * reconstructed from the event stream, and not every resolution leaves a mark
+ * there (a plan approved on another client / before a reconnect never emits
+ * one), so a stale entry can outlive the request it describes. `status.on` is
+ * the daemon's own outstanding-request map — authoritative for what the turn
+ * is blocked on *now* — so when it matches something we hold, drop the rest.
+ * An `on` with nothing matching (or none at all) keeps everything.
+ */
+export const focusedPending = (p: Pending, on: AwaitReason | null): Pending => {
+  if (!on) return p;
+  if (on === "plan_review" && p.plan !== undefined)
+    return { plan: p.plan, ...(p.planText ? { planText: p.planText } : {}) };
+  if (on === "question" && p.question !== undefined)
+    return {
+      question: p.question,
+      ...(p.questionText ? { questionText: p.questionText } : {}),
+      ...(p.questionContext ? { questionContext: p.questionContext } : {}),
+    };
+  if ((on === "permission" || on === "user_question") && p.permissions && p.permissions.length > 0)
+    return { permissions: p.permissions };
+  return p;
 };
 
 /** One question from an `AskUserQuestion` tool call, narrowed for display. */
@@ -713,6 +737,16 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
+      // A frame may arrive twice around startup (history backfill overlapping
+      // the live stream) — (epoch, seq) is authoritative, so drop the repeat
+      // whole. Re-deriving `pending` from a repeated `plan_review` /
+      // `permission_request` would resurrect state a `session_updated` has
+      // already settled: the durable history a backfill replays never carries
+      // `session_updated` frames (and nothing in the event stream marks a
+      // plan resolved), so a repeated plan_review would pin the request
+      // panel on long-decided text.
+      const epoch = frame.epoch ?? "";
+      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch)) return s;
       const pending = trackPending(s.pending, ev);
       const compacting = trackCompacting(s.compacting, ev);
       const notice = noticeForEvent(s, ev) ?? s.notice;
@@ -728,14 +762,6 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       // Account-plan usage — surfaced live via the session snapshot's
       // `rateLimits`, not the transcript; it isn't a conversational entry.
       if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
-      // A frame may arrive twice around startup (history backfill overlapping
-      // the live stream) — (epoch, seq) is authoritative, so drop the repeat.
-      // The epoch matters: the daemon's seq counter resets on restart, so a
-      // post-restart frame must not be swallowed by a pre-restart line that
-      // happens to carry the same seq.
-      const epoch = frame.epoch ?? "";
-      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch))
-        return { ...s, pending, compacting, notice };
       const log = [...s.log, toLogLine(frame.seq, epoch, ev)];
       return { ...s, log, pending, compacting, notice };
     }
@@ -861,13 +887,30 @@ const trackPending = (
     // way round), so the matching `tool_result` is the only reliable signal.
     // Without this a replayed/reconnected history leaves long-since-approved
     // requests stuck in `permissions`, and `firstPerm` — the oldest one —
-    // never advances to whatever's genuinely still pending.
+    // never advances to whatever's genuinely still pending. A plan resolves
+    // the same way: the `plan_review` is keyed on the ExitPlanMode /
+    // exit_plan tool-call id, so its `tool_result` is the only durable mark
+    // that the plan was decided (the daemon clears its own map in
+    // `respondToPlan`, but that never reaches the event log).
     const cur = pending[ev.sessionId];
-    if (!cur?.permissions) return pending;
-    const rest = cur.permissions.filter((p) => p.id !== ev.id);
-    if (rest.length === cur.permissions.length) return pending;
-    const { permissions: _drop, ...others } = cur;
-    return { ...pending, [ev.sessionId]: rest.length ? { ...others, permissions: rest } : others };
+    if (!cur) return pending;
+    const keptPerms = cur.permissions?.filter((p) => p.id !== ev.id);
+    const permsChanged =
+      cur.permissions !== undefined &&
+      keptPerms !== undefined &&
+      keptPerms.length !== cur.permissions.length;
+    const planCleared = cur.plan === ev.id;
+    if (!permsChanged && !planCleared) return pending;
+    const next: Pending = { ...cur };
+    if (permsChanged) {
+      if (keptPerms && keptPerms.length > 0) next.permissions = keptPerms;
+      else delete next.permissions;
+    }
+    if (planCleared) {
+      delete next.plan;
+      delete next.planText;
+    }
+    return { ...pending, [ev.sessionId]: next };
   }
   // Any leftovers are also wiped wholesale when the session leaves
   // awaiting_input — see the `session_updated` case.

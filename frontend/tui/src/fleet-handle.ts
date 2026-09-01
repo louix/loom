@@ -44,6 +44,7 @@ import {
   escapeTarget,
   findPickItems,
   firstPerm,
+  focusedPending,
   initialState,
   makePicker,
   makePrompt,
@@ -202,7 +203,16 @@ const deriveView = (
   dims: { cols: number; rows: number },
 ): FleetView => {
   const sel = selectedSession(state);
-  const pend = sel ? pendingFor(state, sel.id) : {};
+  // The request panel shows what the turn is parked on. `pending` is
+  // reconstructed from the event stream and can hold stale entries (a plan
+  // approved elsewhere never emits a clearing event), so narrow it to the
+  // daemon's own answer for what's outstanding.
+  const pend = sel
+    ? focusedPending(
+        pendingFor(state, sel.id),
+        sel.status.kind === "awaiting_input" ? sel.status.on : null,
+      )
+    : {};
   const allowed = allowedActs(sel);
   // The approve / answer / plan panel sits full-width just above the footer in
   // the two modes whose body is the fleet split; fullscreen log and every

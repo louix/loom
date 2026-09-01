@@ -722,6 +722,52 @@ test("the pending permission is spelled out in a panel", async () => {
   }
 });
 
+test("a stale plan in pending never masks the permission the session is parked on", async () => {
+  // The regression from the fleet: a plan that was approved while this client
+  // was detached leaves an unresolvable `pending.plan` behind (nothing in the
+  // event stream marks a plan resolved — here the tool_result carries an
+  // unrelated id, as recorded by older daemons). When the session then parks
+  // on a bash permission, the panel must describe the bash command — the
+  // daemon's `status.on` names the parked request, the reconstruction only
+  // feeds it.
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "stale plan",
+    status: "awaiting_input",
+    reason: "permission",
+    provider: "fake",
+  });
+  const { stdout, app } = mount(client);
+  try {
+    await delay(150);
+    await client.request("dev.emit", {
+      event: { sessionId: s.id, type: "plan_review", id: "pr-old", plan: "1. long-approved step" },
+    });
+    await client.request("dev.emit", {
+      event: { sessionId: s.id, type: "tool_result", id: "unrelated", ok: true, output: "" },
+    });
+    await client.request("dev.emit", {
+      event: {
+        sessionId: s.id,
+        type: "permission_request",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "npm publish" },
+      },
+    });
+    await delay(250);
+    assert.match(stdout.last, /PERMISSION — Bash/);
+    assert.match(stdout.last, /npm publish/);
+    assert.doesNotMatch(stdout.last, /PLAN REVIEW/);
+    assert.doesNotMatch(stdout.last, /long-approved step/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("a plan review opens an overlay; `i` sends the implement decision", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
