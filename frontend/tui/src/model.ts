@@ -498,6 +498,20 @@ export type Action =
   | { t: "doctor"; value: boolean }
   | { t: "doctorLoaded"; report: DoctorReport };
 
+/**
+ * Ceiling on `state.log`. It accumulates every echo / notice / event line for
+ * the whole session and is never otherwise pruned — a long-lived TUI would grow
+ * it without bound. Generous: the transcript view, find, and `$EDITOR` export
+ * all read from it, so this only bites a genuinely marathon session.
+ */
+const LOG_CAP = 10_000;
+
+/** Append one line to the log, trimming the oldest once past {@link LOG_CAP}. */
+const appendLog = (log: readonly LogLine[], line: LogLine): LogLine[] => {
+  const next = [...log, line];
+  return next.length > LOG_CAP ? next.slice(next.length - LOG_CAP) : next;
+};
+
 export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
     case "providers":
@@ -645,7 +659,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     }
 
     case "echo":
-      return { ...s, log: [...s.log, a.line] };
+      return { ...s, log: appendLog(s.log, a.line) };
 
     case "enqueue": {
       const t = a.text.trim();
@@ -762,7 +776,7 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       // Account-plan usage — surfaced live via the session snapshot's
       // `rateLimits`, not the transcript; it isn't a conversational entry.
       if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
-      const log = [...s.log, toLogLine(frame.seq, epoch, ev)];
+      const log = appendLog(s.log, toLogLine(frame.seq, epoch, ev));
       return { ...s, log, pending, compacting, notice };
     }
     case "session_updated": {

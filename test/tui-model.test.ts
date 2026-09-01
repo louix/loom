@@ -412,6 +412,19 @@ test("event pushes append log lines and never truncate", () => {
   );
 });
 
+test("state.log is capped — a marathon session drops the oldest lines, keeps the newest", () => {
+  let s = initialState();
+  for (let i = 0; i < 10_050; i++) {
+    s = reduce(s, {
+      t: "push",
+      frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
+    });
+  }
+  assert.equal(s.log.length, 10_000);
+  assert.equal(s.log[0]?.seq, 50, "oldest 50 lines were trimmed");
+  assert.equal(s.log.at(-1)?.seq, 10_049, "newest line retained");
+});
+
 test("a seq that collides across daemon epochs is a new line, not a dropped dupe", () => {
   // The daemon restarts mid-session and its seq counter resets to 1. Every
   // post-restart frame reuses seqs the log already holds from the previous
