@@ -117,6 +117,7 @@ const snap = (
     backgroundTasks: [],
     rateLimits: {},
     cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
+    keepWarm: false,
     git: null,
     createdAt: now,
     updatedAt: now,

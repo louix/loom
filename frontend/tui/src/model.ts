@@ -1393,6 +1393,7 @@ export type ActName =
   | "interrupt"
   | "done"
   | "compact"
+  | "keepwarm"
   | "planreview"
   | "mode"
   | "model"
@@ -1484,6 +1485,16 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       session.contextUsed / session.contextLimit > 0.5
     ) {
       local.push({ keys: "c", label: "compact", act: "compact", footer: true });
+    }
+    // Keep-warm — palette only (a rarely-flipped toggle). Offered on Claude
+    // sessions with a pinned cache TTL, running or idle; the label reflects the
+    // current state.
+    if ((status.kind === "running" || status.kind === "idle") && session.cache.ttlMinutes > 0) {
+      local.push({
+        keys: "",
+        label: session.keepWarm ? "stop keeping cache warm" : "keep cache warm",
+        act: "keepwarm",
+      });
     }
     if (status.kind === "idle" || status.kind === "error" || status.kind === "interrupted") {
       local.push({ keys: "x", label: "done", act: "done", footer: true });

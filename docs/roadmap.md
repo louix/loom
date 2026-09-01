@@ -456,6 +456,14 @@ warm/cold/unknown + a `hit`/`rewrote` read of the last turn's split. Detail
 line `cache ⟢ warm ~M:SS · last turn hit`. Estimate only — blind to mid-turn
 refreshes, prefix invalidation, server-side eviction.
 
+Keep-warm (shipped): a `Space`-palette toggle per Claude+pinned-TTL session.
+`session.setKeepWarm` RPC → `SessionManager.#keepWarm`; a 30 s daemon sweep
+(`Daemon.#sweepKeepWarm` / pure `keepWarmMove`) sends a one-line no-op turn
+(`opts.keepWarm`) once an idle session's cache drops below the red fraction
+(0.08), restarting the TTL clock. Loop guard: `#warmPings` per session, reset by
+any real `send`, gives up after `KEEP_WARM_MAX_PINGS` (6). Runtime-only —
+`SessionSnapshot.keepWarm` overlaid by `#enrich`, cleared on daemon restart.
+
 ## Rough sequencing notes
 
 - **6** first: self-contained, small SDK spike, and everything after it benefits

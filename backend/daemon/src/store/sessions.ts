@@ -544,6 +544,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
       lastRead: usage?.last_cache_read ?? 0,
       lastWrite: usage?.last_cache_write ?? 0,
     },
+    keepWarm: false, // runtime overlay filled in by the daemon
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

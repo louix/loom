@@ -84,6 +84,10 @@ interface Running {
 export class SessionManager {
   readonly #hooks: ManagerHooks;
   readonly #running = new Map<string, Running>();
+  /** Session ids with keep-warm on (see {@link setKeepWarm}). Runtime-only. */
+  readonly #keepWarm = new Set<string>();
+  /** Consecutive keep-warm pings since the last real user message, per session. */
+  readonly #warmPings = new Map<string, number>();
 
   constructor(hooks: ManagerHooks) {
     this.#hooks = hooks;
@@ -298,6 +302,34 @@ export class SessionManager {
     this.#hooks.onStatus(id, next, note);
   }
 
+  // --- keep-warm -----------------------------------------------------
+
+  /** Turn keep-warm on/off for a live session. No-op once it's gone. */
+  setKeepWarm(id: string, on: boolean): void {
+    if (!this.#running.has(id)) return;
+    if (on) this.#keepWarm.add(id);
+    else this.#keepWarm.delete(id);
+    this.#warmPings.delete(id);
+  }
+
+  /** Whether keep-warm is on for `id`. */
+  keepWarm(id: string): boolean {
+    return this.#keepWarm.has(id);
+  }
+
+  /** Live session ids with keep-warm on. */
+  keepWarmIds(): string[] {
+    return [...this.#keepWarm].filter((id) => {
+      const run = this.#running.get(id);
+      return run !== undefined && !run.ended;
+    });
+  }
+
+  /** Keep-warm pings sent since the last real user message (loop guard). */
+  warmPingCount(id: string): number {
+    return this.#warmPings.get(id) ?? 0;
+  }
+
   // --- turn control ----------------------------------------------------
 
   /**
@@ -306,9 +338,17 @@ export class SessionManager {
    * synchronously from the tracked status before handing off, since the adapter
    * `send()` returns before any turn events land.
    */
-  async send(id: string, text: string): Promise<{ injected: boolean }> {
+  async send(
+    id: string,
+    text: string,
+    opts: { keepWarm?: boolean } = {},
+  ): Promise<{ injected: boolean }> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
+    // A real user message resets the keep-warm loop guard; an automated
+    // keep-warm ping bumps it (see {@link SessionManager.warmPingCount}).
+    if (opts.keepWarm) this.#warmPings.set(id, (this.#warmPings.get(id) ?? 0) + 1);
+    else this.#warmPings.delete(id);
     const injected = isLiveState(run.state);
     await run.session.send(text);
     // For an injection, leave the state (and its pending requests) alone; the
@@ -433,6 +473,8 @@ export class SessionManager {
     const run = this.#running.get(id);
     if (!run) return;
     this.#running.delete(id);
+    this.#keepWarm.delete(id);
+    this.#warmPings.delete(id);
     try {
       await run.session.close();
     } catch {
@@ -444,6 +486,8 @@ export class SessionManager {
   async shutdown(): Promise<void> {
     const runs = [...this.#running.values()];
     this.#running.clear();
+    this.#keepWarm.clear();
+    this.#warmPings.clear();
     await Promise.all(
       runs.map(async (run) => {
         try {

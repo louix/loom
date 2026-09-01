@@ -125,6 +125,43 @@ const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
   "done",
 ];
 
+/** How often the daemon re-checks keep-warm sessions for a cache about to lapse. */
+const KEEP_WARM_SWEEP_MS = 30_000;
+/** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
+const KEEP_WARM_RED_FRACTION = 0.08;
+/** Give up keeping a session warm after this many pings with no reply from the user. */
+const KEEP_WARM_MAX_PINGS = 6;
+/** The turn a keep-warm ping sends: trivial by design — it exists only to re-read
+ *  the cached prefix and restart the TTL clock. */
+const KEEP_WARM_PROMPT =
+  "[loom] Automated keep-warm ping — no task here. The prompt cache was about to " +
+  "expire; this message re-primes it so your next real instruction still hits cache. " +
+  'Reply with just "ok" and take no other action.';
+
+type KeepWarmMove = "skip" | "ping" | "giveup";
+
+/**
+ * What the keep-warm sweep should do for one session right now. Pure, so it can
+ * be unit-tested without timers: `ping` when the session is idle and its cache
+ * has dropped into the red band, `giveup` when that's happened
+ * {@link KEEP_WARM_MAX_PINGS} times running with no user message in between,
+ * `skip` otherwise.
+ */
+export const keepWarmMove = (
+  s: Pick<SessionSnapshot, "status" | "cache">,
+  now: number,
+  pings: number,
+): KeepWarmMove => {
+  if (s.status.kind !== "idle") return "skip"; // never perturb a live turn / parked decision
+  const { ttlMinutes, lastTurnAt } = s.cache;
+  if (ttlMinutes <= 0 || lastTurnAt <= 0) return "skip";
+  const ttlMs = ttlMinutes * 60_000;
+  const remainingMs = lastTurnAt + ttlMs - now;
+  // Already cold (a full re-prime isn't what was asked for), or still comfortably warm.
+  if (remainingMs <= 0 || remainingMs / ttlMs >= KEEP_WARM_RED_FRACTION) return "skip";
+  return pings >= KEEP_WARM_MAX_PINGS ? "giveup" : "ping";
+};
+
 export interface DaemonStartOptions {
   repoRoot: string;
   /** Connector packages this daemon can load, keyed by package name. Supplied by the CLI. */
@@ -168,6 +205,10 @@ export class Daemon {
   #hygiene: HygieneReport | null = null;
   #configWatchers: FSWatcher[] = [];
   #reloadTimer: NodeJS.Timeout | null = null;
+  /** Periodic sweep that re-primes the prompt cache for keep-warm sessions. */
+  #warmSweep: NodeJS.Timeout | null = null;
+  /** Re-entrancy guard: a slow ping must not let two sweeps overlap. */
+  #sweepingWarm = false;
   #tilthFallbackLogged = false;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
@@ -342,6 +383,11 @@ export class Daemon {
     if (!this.#standalone) this.#installSignalHandlers();
     this.#idle.poke(this.#isBusy());
 
+    this.#warmSweep = setInterval(() => {
+      void this.#sweepKeepWarm();
+    }, KEEP_WARM_SWEEP_MS);
+    this.#warmSweep.unref();
+
     this.#log.info("daemon up", {
       pid: process.pid,
       epoch: this.epoch,
@@ -357,6 +403,7 @@ export class Daemon {
     this.#log.info("daemon stopping", { reason });
 
     this.#idle.stop();
+    if (this.#warmSweep) clearInterval(this.#warmSweep);
     if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
     for (const w of this.#configWatchers) w.close();
     this.#configWatchers = [];
@@ -455,6 +502,10 @@ export class Daemon {
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };
     }
+    // Keep-warm only bites when there's a pinned TTL to race — mirror that in
+    // the snapshot so the TUI never shows it "on" where it can't act.
+    const keepWarm = ttlMinutes > 0 && this.#sessions.keepWarm(s.id);
+    if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
     if (gitPath) {
@@ -892,6 +943,49 @@ export class Daemon {
   #isBusy(): boolean {
     if (this.#server.clientCount > 0) return true;
     return this.#registry.list().some((s) => isLiveState(s.status));
+  }
+
+  /**
+   * Re-prime the prompt cache for any keep-warm session whose TTL is about to
+   * lapse. Runs on a timer ({@link KEEP_WARM_SWEEP_MS}); a no-op unless a
+   * session has keep-warm on and has gone quiet with its cache in the red band.
+   */
+  async #sweepKeepWarm(): Promise<void> {
+    if (this.#stopping || this.#sweepingWarm) return;
+    this.#sweepingWarm = true;
+    try {
+      for (const id of this.#sessions.keepWarmIds()) {
+        const snap = this.#registry.get(id);
+        if (!snap) continue;
+        const move = keepWarmMove(
+          this.#enrich(snap, false),
+          Date.now(),
+          this.#sessions.warmPingCount(id),
+        );
+        if (move === "skip") continue;
+        if (move === "giveup") {
+          this.#sessions.setKeepWarm(id, false);
+          this.#emitSessionUpdated(this.#registry.mustGet(id));
+          this.#emitNotice(
+            `keep-warm off for ${id.slice(0, 8)} — re-primed ${KEEP_WARM_MAX_PINGS}× with no reply`,
+            "info",
+          );
+          continue;
+        }
+        try {
+          await this.#sessions.send(id, KEEP_WARM_PROMPT, { keepWarm: true });
+          this.#log.debug("keep-warm ping", { id });
+          this.#onActivityChange("keep-warm");
+        } catch (err) {
+          this.#log.warn("keep-warm ping failed", {
+            id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } finally {
+      this.#sweepingWarm = false;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1452,6 +1546,23 @@ export class Daemon {
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       await this.#sessions.compact(id, instructions);
       return this.#registry.mustGet(id);
+    });
+
+    d.register("session.setKeepWarm", async (params) => {
+      const id = reqString(params, "id");
+      const p = isObj(params) ? params : {};
+      const on = p["on"] === true;
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      const snap = this.#registry.mustGet(id);
+      if (on && !(isClaudeId(snap.provider) && this.#cacheTtlMinutes > 0)) {
+        throw new RpcError(
+          "bad_request",
+          "keep-warm needs a Claude session with a pinned prompt-cache TTL",
+        );
+      }
+      this.#sessions.setKeepWarm(id, on);
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return this.#enrich(this.#registry.mustGet(id));
     });
 
     d.register("session.respondPermission", async (params) => {

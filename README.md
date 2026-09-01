@@ -289,6 +289,15 @@ from that turn's cache read/write split. It's still an estimate — a context
 edit, a tool-list change, or server-side eviction drops the cache regardless of
 the clock.
 
+**Keep-warm.** For a Claude session with a pinned TTL, the `Space` palette's
+_keep cache warm_ toggle has the daemon babysit the cache: while the session
+sits idle and its `⟢` dot goes red (<8% of the TTL left), the daemon sends a
+one-line "no-op" turn to re-read the cached prefix and restart the clock, so the
+next real message still hits cache. Each ping is a real (cheap) turn and lands
+in the transcript; it gives up after six pings with no reply from you, and any
+message you send resets that count. The Detail pane's cache line shows
+`· keep-warm` while it's on.
+
 **Context compaction.** `c` on a running or idle session opens a one-line focus
 prompt (blank compacts the whole history; text steers what the summary keeps) —
 or `loom compact <id> [steer…]`. It drives the provider's own compaction: for

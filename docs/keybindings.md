@@ -57,17 +57,18 @@ Consequences:
 
 ### Second tier (palette + `?` only)
 
-| key  | action                                                                     |
-| ---- | -------------------------------------------------------------------------- |
-| `⇧⇥` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`)     |
-| `⌥m` | switch the session's model — applies next turn                             |
-| `⌥t` | switch the session's thinking-effort level (models that support one)       |
-| `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost) |
-| `e`  | rename the session                                                         |
-| `y`  | copy the session's branch name to the clipboard                            |
-| `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only     |
-| `v`  | event log: cycle chat only → chat + tool calls → everything                |
-| `t`  | toggle dark / light theme                                                  |
+| key  | action                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------ |
+| `⇧⇥` | cycle the permission mode (`manual` → `plan` → `acceptEdits` → `auto`)                                       |
+| `⌥m` | switch the session's model — applies next turn                                                               |
+| `⌥t` | switch the session's thinking-effort level (models that support one)                                         |
+| `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost)                                   |
+| —    | keep cache warm — daemon re-primes the prompt cache before its TTL lapses (Claude, pinned TTL; palette only) |
+| `e`  | rename the session                                                                                           |
+| `y`  | copy the session's branch name to the clipboard                                                              |
+| `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
+| `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |
+| `t`  | toggle dark / light theme                                                                                    |
 
 ### Structural (`Shift`)
 

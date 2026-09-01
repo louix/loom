@@ -122,6 +122,7 @@ type DelegatedAct =
   | "interrupt"
   | "done"
   | "compact"
+  | "keepwarm"
   | "planreview"
   | "mode"
   | "undo"
@@ -661,6 +662,13 @@ export const mkFleetHandle = ({
             label: "compact — focus (blank = full)",
           }),
         });
+      case "keepwarm": {
+        const on = !s.keepWarm;
+        return perform(async () => {
+          await client.request("session.setKeepWarm", { id: s.id, on, by });
+          return on ? "keep-warm on — re-primes the cache before it lapses" : "keep-warm off";
+        });
+      }
       case "done":
         return perform(async () => {
           await client.request("session.markDone", { id: s.id, by });
@@ -1307,6 +1315,7 @@ export const mkFleetHandle = ({
       case "interrupt":
       case "done":
       case "compact":
+      case "keepwarm":
       case "planreview":
       case "mode":
       case "undo":

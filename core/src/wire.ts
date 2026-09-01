@@ -172,6 +172,13 @@ export interface SessionSnapshot {
    * read/write split of the last turn says whether that turn actually hit cache.
    */
   cache: { ttlMinutes: number; lastTurnAt: number; lastRead: number; lastWrite: number };
+  /**
+   * Keep-warm is on for this session: while it sits idle the daemon re-primes
+   * the prompt cache with a tiny turn just before the TTL lapses, so the next
+   * real message still hits cache. Claude-only (needs a pinned `cache.ttlMinutes`);
+   * runtime-only, not persisted — a daemon restart clears it.
+   */
+  keepWarm: boolean;
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;

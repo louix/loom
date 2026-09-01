@@ -825,6 +825,65 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   }
 });
 
+test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const p = provider(() => textReply("ok"), store);
+    let results = 0;
+    const mgr = new SessionManager({
+      emitEvent: () => {},
+      onStatus: () => {},
+      onUsage: () => {},
+      onResult: () => {
+        results += 1;
+      },
+      onSubagents: () => {},
+      onProviderRef: () => {},
+      onMode: () => {},
+      log: makeLogger("test"),
+    });
+    const settle = async () => {
+      const target = results + 1;
+      for (let i = 0; i < 200 && results < target; i++) await new Promise((r) => setTimeout(r, 5));
+    };
+
+    await mgr.create(p, {
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "hello",
+      mode: "default",
+      mcpServers: [],
+    });
+    await settle();
+
+    assert.equal(mgr.keepWarm("s1"), false);
+    mgr.setKeepWarm("s1", true);
+    assert.equal(mgr.keepWarm("s1"), true);
+    assert.deepEqual(mgr.keepWarmIds(), ["s1"]);
+
+    // A keep-warm ping bumps the loop-guard counter…
+    await mgr.send("s1", "ping", { keepWarm: true });
+    await settle();
+    await mgr.send("s1", "ping", { keepWarm: true });
+    await settle();
+    assert.equal(mgr.warmPingCount("s1"), 2);
+
+    // …and a real user message resets it.
+    await mgr.send("s1", "actual work");
+    await settle();
+    assert.equal(mgr.warmPingCount("s1"), 0);
+
+    await mgr.close("s1");
+    assert.equal(mgr.keepWarm("s1"), false);
+    assert.deepEqual(mgr.keepWarmIds(), []);
+
+    await mgr.shutdown();
+  } finally {
+    cleanup();
+  }
+});
+
 // --- resolveModelFactory: the @ai-sdk/* backend per connector --------------
 
 test("connector-generic / -gemini build the right SDK client for each `sdk`", async () => {

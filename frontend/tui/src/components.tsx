@@ -480,15 +480,16 @@ export const Detail = ({
         const hit = cs.lastHit
           ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
           : "";
+        const warm = s.keepWarm ? "  ·  keep-warm" : "";
         return (
           <Field label="cache">
             {cs.state === "warm" ? (
               <Text
                 color={C.good}
                 wrap="truncate-end"
-              >{`⟢ warm ~${mmss(cs.remainingMs)}${hit}`}</Text>
+              >{`⟢ warm ~${mmss(cs.remainingMs)}${hit}${warm}`}</Text>
             ) : (
-              <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}`}</Text>
+              <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}${warm}`}</Text>
             )}
           </Field>
         );
@@ -1190,6 +1191,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["R  ·  Q", "restart the daemon  ·  quit the UI and stop the daemon  (both confirm)"],
   ["q  ·  ⌃c  ·  esc", "quit the UI, daemon keeps running  ·  quit  ·  back out of any overlay"],
   ["⟢ (fleet)", "prompt cache still warm — green → amber → red as it lapses"],
+  ["␣ keep cache warm", "daemon re-primes the cache before its TTL lapses (Claude, pinned TTL)"],
   ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
 ];
 
