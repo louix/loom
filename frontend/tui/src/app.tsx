@@ -15,6 +15,7 @@ import { C } from "./theme.ts";
 import {
   Confirm,
   Detail,
+  Doctor,
   EventLog,
   Fleet,
   FooterArea,
@@ -74,6 +75,13 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       body = (
         <Box paddingX={1} paddingTop={1}>
           <Help width={cols - 2} />
+        </Box>
+      );
+      break;
+    case "doctor":
+      body = (
+        <Box paddingX={1} paddingTop={1}>
+          <Doctor report={state.doctor} width={cols - 2} />
         </Box>
       );
       break;

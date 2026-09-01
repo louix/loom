@@ -1231,6 +1231,64 @@ test("help toggles the mode without disturbing the rest of the state", () => {
   assert.equal(s.mode, "browse");
 });
 
+test("doctor: open sets the mode, doctorLoaded caches the report, close returns to browse", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  assert.equal(s.doctor, null);
+
+  s = reduce(s, { t: "doctor", value: true });
+  assert.equal(s.mode, "doctor");
+  assert.equal(s.selectedId, "a");
+
+  const report = {
+    daemon: {
+      pid: 1,
+      version: "0.0.1",
+      startedAt: 0,
+      uptimeMs: 5,
+      epoch: "e",
+      repoRoot: "/r",
+      clients: 1,
+      connections: 1,
+      eventSeq: 3,
+      eventBuffer: 3,
+      sessions: 1,
+      runningSessions: 1,
+    },
+    connectors: [{ pkg: "@loom/connector-claude", providerIds: ["claude"], loaded: false }],
+    mcp: [
+      {
+        name: "tilth",
+        command: "tilth mcp --edit",
+        resolved: "tilth mcp --edit",
+        status: "ok" as const,
+        note: "",
+      },
+    ],
+    tools: {
+      loom: ["ask_user", "commit"],
+      claude: [],
+      aisdk: [],
+      claudeDisabled: ["Grep", "Glob"],
+    },
+    webSearch: { backend: "none" as const, enabled: false, note: "no backend configured" },
+    configWarnings: [],
+  };
+  s = reduce(s, { t: "doctorLoaded", report });
+  assert.equal(s.doctor?.mcp[0]?.name, "tilth");
+  assert.equal(s.mode, "doctor");
+
+  s = reduce(s, { t: "doctor", value: false });
+  assert.equal(s.mode, "browse");
+  // the cached report survives a close so a reopen paints immediately
+  assert.equal(s.doctor?.daemon.pid, 1);
+});
+
+test("commandsFor lists doctor in the Space palette", () => {
+  const s = reduce(initialState(), { t: "hello", daemon, sessions: [] });
+  assert.ok(commandsFor(s).some((it) => it.id === "doctor"));
+});
+
 test("connection action drives the header lamp state", () => {
   let s = reduce(initialState(), { t: "connection", value: "reconnecting" });
   assert.equal(s.connection, "reconnecting");

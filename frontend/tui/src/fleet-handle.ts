@@ -17,7 +17,7 @@ import { absurd } from "@loom/core/absurd";
 import { isLiveState } from "@loom/core/session-state";
 import type { LoomClient } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
-import type { EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
@@ -148,7 +148,7 @@ export interface Term {
 }
 
 /** Which body the layout draws — the overlay modes each own the screen. */
-export type BodyKind = "help" | "confirm" | "plan" | "picker" | "logFull" | "split";
+export type BodyKind = "help" | "doctor" | "confirm" | "plan" | "picker" | "logFull" | "split";
 
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
@@ -223,6 +223,7 @@ const deriveView = (
 
   let body: BodyKind = "split";
   if (state.mode === "help") body = "help";
+  else if (state.mode === "doctor") body = "doctor";
   else if (state.mode === "confirm" && state.confirm) body = "confirm";
   else if (state.mode === "plan" && state.plan) body = "plan";
   else if (state.mode === "picker" && state.picker) body = "picker";
@@ -444,6 +445,20 @@ export const mkFleetHandle = ({
       ext: "log",
       aside: { name: "tui.log", body: tailFileSync(logs.tui, LOG_TAIL_BYTES) },
     });
+  };
+
+  /** Command palette: toggle the doctor overlay, refetching `daemon.doctor`
+   *  each time it opens (the last snapshot stays painted until the reply lands). */
+  const openDoctor = (): void => {
+    const opening = state.mode !== "doctor";
+    dispatch({ t: "doctor", value: opening });
+    if (!opening) return;
+    client
+      .request<DoctorReport>("daemon.doctor")
+      .then((report) => dispatch({ t: "doctorLoaded", report }))
+      .catch((e: unknown) =>
+        note(`couldn't load doctor: ${e instanceof Error ? e.message : String(e)}`, "bad"),
+      );
   };
 
   const copyToClipboard = (text: string, label: string): void => {
@@ -1201,6 +1216,8 @@ export const mkFleetHandle = ({
         return void viewInEditor();
       case "logs":
         return void viewLogs();
+      case "doctor":
+        return void openDoctor();
       case "model":
         return void switchModel();
       case "effort":
@@ -1444,6 +1461,11 @@ export const mkFleetHandle = ({
 
     if (state.mode === "help") {
       if (input === "?" || input === "q" || key.escape) dispatch({ t: "help", value: false });
+      return;
+    }
+
+    if (state.mode === "doctor") {
+      if (input === "q" || key.escape) dispatch({ t: "doctor", value: false });
       return;
     }
 

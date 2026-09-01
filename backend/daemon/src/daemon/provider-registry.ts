@@ -33,6 +33,8 @@ export class ProviderRegistry {
   readonly #cache = new Map<string, Promise<AgentProvider>>();
   /** Resolved providers, in construction order — for `live()` / shutdown. */
   readonly #live: AgentProvider[] = [];
+  /** Connector packages whose `createProvider` has run at least once (for `daemon.doctor`). */
+  readonly #loaded = new Set<string>();
 
   constructor(config: LoomConfig, transcript: TranscriptStore, manifest: ConnectorManifest) {
     this.#config = config;
@@ -94,7 +96,32 @@ export class ProviderRegistry {
       );
     }
     const { createProvider } = await load();
-    return createProvider(this.#contextFor(id));
+    const provider = await createProvider(this.#contextFor(id));
+    this.#loaded.add(pkg);
+    return provider;
+  }
+
+  /**
+   * Per-package view for `daemon.doctor`: which configured providers each
+   * connector serves, and whether it's been constructed this process.
+   */
+  connectorReport(): Array<{ pkg: string; providerIds: string[]; loaded: boolean }> {
+    const byPkg = new Map<string, string[]>();
+    for (const pkg of Object.keys(this.#manifest)) byPkg.set(pkg, []);
+    for (const id of this.#ids) {
+      let pkg: string;
+      try {
+        pkg = this.#packageFor(id);
+      } catch {
+        continue; // an id with no resolvable package — leave it out
+      }
+      byPkg.set(pkg, [...(byPkg.get(pkg) ?? []), id]);
+    }
+    return [...byPkg].map(([pkg, providerIds]) => ({
+      pkg,
+      providerIds: [...providerIds].sort(),
+      loaded: this.#loaded.has(pkg),
+    }));
   }
 
   #contextFor(id: string): ConnectorContext {

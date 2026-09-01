@@ -232,6 +232,80 @@ export interface ProviderInfo {
   isDefault: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// daemon.doctor — diagnostics
+// ---------------------------------------------------------------------------
+
+/** One connector package the daemon can load lazily, for `daemon.doctor`. */
+export interface DoctorConnector {
+  /** npm package name, e.g. `@loom/connector-claude`. */
+  pkg: string;
+  /** Configured provider ids this package serves (`claude`, `fake`, aisdk profiles). */
+  providerIds: string[];
+  /** A provider from this package has actually been constructed this process —
+   *  the thunk stays unevaluated until a session first uses that provider. */
+  loaded: boolean;
+}
+
+/** One MCP server mounted into every session, and whether its command resolves. */
+export interface DoctorMcpServer {
+  name: string;
+  /** As written in `config.toml`'s `[[mcp]]`. */
+  command: string;
+  /** What actually gets spawned — the `tilth`→`npx` fallback rewrites this. */
+  resolved: string;
+  /** `ok` on PATH · `fallback` rewritten to a pinned `npx` · `missing` unrunnable. */
+  status: "ok" | "fallback" | "missing";
+  /** Set only when the command was rewritten or a binary is missing. */
+  note: string;
+}
+
+/**
+ * `daemon.doctor` — a read-only snapshot of the tool / connector / MCP
+ * environment a new session would get, plus daemon vitals. Backs the TUI's
+ * doctor overlay (Space palette → "doctor").
+ */
+export interface DoctorReport {
+  daemon: {
+    pid: number;
+    version: string;
+    startedAt: number;
+    uptimeMs: number;
+    epoch: string;
+    repoRoot: string;
+    /** Distinct attached clients / raw socket connections. */
+    clients: number;
+    connections: number;
+    /** Push-stream head seq / frames still buffered for gap replay. */
+    eventSeq: number;
+    eventBuffer: number;
+    sessions: number;
+    runningSessions: number;
+  };
+  connectors: DoctorConnector[];
+  mcp: DoctorMcpServer[];
+  /**
+   * Tool names a session sees, by origin. `claude` / `aisdk` are the
+   * provider-native built-ins (indicative — the daemon doesn't own those
+   * lists); every session additionally gets `loom` and every `mcp` server.
+   */
+  tools: {
+    loom: string[];
+    claude: string[];
+    aisdk: string[];
+    /** Built-ins Loom disables on Claude sessions (steered onto `fff` instead). */
+    claudeDisabled: string[];
+  };
+  webSearch: {
+    backend: "none" | "brave" | "tavily";
+    /** Backend set and its key resolved — aisdk sessions then get `web_search`. */
+    enabled: boolean;
+    note: string;
+  };
+  /** `lintConfig` output — misconfigured providers, unset env vars, keyless search. */
+  configWarnings: string[];
+}
+
 export interface HelloResult {
   protocolVersion: number;
   daemon: {

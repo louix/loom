@@ -6,7 +6,7 @@
  */
 import { useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import { layout, type Buffer } from "./editor.ts";
 import {
   cacheHeat,
@@ -1219,5 +1219,137 @@ export const Help = ({ width }: { width: number }): ReactNode => {
         {"loom drives worktrees only — it never pushes or touches your remotes."}
       </Text>
     </Box>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// doctor overlay — enabled tools, connector plugins, daemon vitals
+// ---------------------------------------------------------------------------
+
+const DocRow = ({ label, children }: { label: string; children: ReactNode }): ReactNode => (
+  <Box gap={2}>
+    <Box width={13} flexShrink={0}>
+      <Text color={C.faint}>{label}</Text>
+    </Box>
+    <Text color={C.dim}>{children}</Text>
+  </Box>
+);
+
+const DocHead = ({ children }: { children: ReactNode }): ReactNode => (
+  <>
+    <Box height={1} />
+    <Text color={C.dim} bold>
+      {children}
+    </Text>
+  </>
+);
+
+const MCP_MARK: Record<DoctorMcpServer["status"], { glyph: string; color: string }> = {
+  ok: { glyph: "✓", color: C.good },
+  fallback: { glyph: "≈", color: C.warn },
+  missing: { glyph: "✗", color: C.bad },
+};
+
+export const Doctor = ({
+  report,
+  width,
+}: {
+  report: DoctorReport | null;
+  width: number;
+}): ReactNode => (
+  <Box
+    width={width}
+    borderStyle="round"
+    borderColor={C.accent}
+    borderBackgroundColor={C.bg}
+    paddingX={2}
+    paddingY={1}
+    flexDirection="column"
+  >
+    <Text color={C.accent} bold>
+      {"loom — doctor"}
+    </Text>
+    {report ? (
+      <DoctorBody report={report} />
+    ) : (
+      <Text color={C.faint}>{"  querying the daemon…"}</Text>
+    )}
+  </Box>
+);
+
+const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
+  const d = report.daemon;
+  const ws = report.webSearch;
+
+  return (
+    <>
+      <DocHead>{"daemon"}</DocHead>
+      <DocRow label="version">
+        {`${d.version}  ·  pid ${d.pid}  ·  up ${humanDuration(d.uptimeMs)}`}
+      </DocRow>
+      <DocRow label="repo">{d.repoRoot}</DocRow>
+      <DocRow label="clients">{`${d.clients}  (${d.connections} connection${d.connections === 1 ? "" : "s"})`}</DocRow>
+      <DocRow label="events">{`seq ${d.eventSeq}  ·  ${d.eventBuffer} buffered`}</DocRow>
+      <DocRow label="sessions">{`${d.sessions}  ·  ${d.runningSessions} running`}</DocRow>
+
+      <DocHead>{"connectors"}</DocHead>
+      {report.connectors.map((c) => (
+        <Box key={c.pkg} gap={2}>
+          <Box width={13} flexShrink={0}>
+            <Text color={c.loaded ? C.good : C.faint}>{c.loaded ? "● loaded" : "○ idle"}</Text>
+          </Box>
+          <Text color={C.dim}>
+            {c.pkg.replace(/^@loom\/connector-/, "")}
+            <Text color={C.faint}>{`  ${c.providerIds.join(", ") || "—"}`}</Text>
+          </Text>
+        </Box>
+      ))}
+
+      <DocHead>{"mcp servers"}</DocHead>
+      <Text color={C.faint}>{"  mounted into every session"}</Text>
+      {report.mcp.map((m) => {
+        const mk = MCP_MARK[m.status];
+        return (
+          <Box key={m.name} flexDirection="column">
+            <Box gap={2}>
+              <Box width={13} flexShrink={0}>
+                <Text color={mk.color}>{`${mk.glyph} ${m.name}`}</Text>
+              </Box>
+              <Text color={C.dim}>{m.resolved}</Text>
+            </Box>
+            {m.note ? <Text color={C.faint}>{`               ${m.note}`}</Text> : null}
+          </Box>
+        );
+      })}
+
+      <DocHead>{"tools"}</DocHead>
+      <DocRow label="loom">{report.tools.loom.join(", ")}</DocRow>
+      <DocRow label="claude">
+        {report.tools.claude.join(", ")}
+        <Text color={C.faint}>{"  + native"}</Text>
+      </DocRow>
+      <DocRow label="aisdk">{report.tools.aisdk.join(", ")}</DocRow>
+      <DocRow label="disabled">
+        {report.tools.claudeDisabled.join(", ")}
+        <Text color={C.faint}>{"  (Claude — use fff)"}</Text>
+      </DocRow>
+      <DocRow label="web_search">
+        <Text color={ws.enabled ? C.good : C.faint}>
+          {ws.backend === "none" ? "off" : `${ws.backend} · ${ws.enabled ? "enabled" : "disabled"}`}
+        </Text>
+        {ws.note ? <Text color={C.faint}>{`  ${ws.note}`}</Text> : null}
+      </DocRow>
+
+      {report.configWarnings.length > 0 ? (
+        <>
+          <DocHead>{"config warnings"}</DocHead>
+          {report.configWarnings.map((w, i) => (
+            <Text key={i} color={C.warn} wrap="wrap">
+              {`  ${w}`}
+            </Text>
+          ))}
+        </>
+      ) : null}
+    </>
   );
 };

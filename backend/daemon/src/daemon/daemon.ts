@@ -3,7 +3,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
-import { ensureLoomDir, loomPaths, type LoomPaths } from "@loom/core/paths";
+import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveMcpCommand } from "./mcp-fallback.ts";
 import {
@@ -28,6 +28,8 @@ import {
 } from "@loom/core/session-state";
 import {
   PROTOCOL_VERSION,
+  type DoctorMcpServer,
+  type DoctorReport,
   type HelloParams,
   type HelloResult,
   type ModelChoice,
@@ -979,6 +981,8 @@ export class Daemon {
 
     d.register("config.check", () => ({ warnings: lintConfig(this.config) }));
 
+    d.register("daemon.doctor", () => this.#doctorReport());
+
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));
 
     d.register("session.get", (params) => {
@@ -1706,7 +1710,80 @@ export class Daemon {
       return { name: m.name, spec: { transport: "stdio", command, args } };
     });
   }
+
+  /**
+   * `daemon.doctor` — what a new session's tool / connector / MCP environment
+   * looks like right now, plus daemon vitals. The provider-native built-in
+   * lists (`tools.claude` / `tools.aisdk`) mirror the connector packages
+   * (`aisdk/src/tools/builtins.ts`; Claude Code's own suite minus
+   * {@link TOOL_STEER}'s disables) — the daemon never imports them, so they're
+   * spelled out here and flagged as indicative.
+   */
+  #doctorReport(): DoctorReport {
+    const mcp: DoctorMcpServer[] = this.config.mcp.map((m) => {
+      const { command, args, note } = resolveMcpCommand(m.command);
+      return {
+        name: m.name,
+        command: m.command,
+        resolved: [command, ...args].join(" "),
+        status: mcpStatusOf(command, note),
+        note: note ?? "",
+      };
+    });
+
+    const s = this.config.search;
+    const searchKey = s.backend === "none" ? "" : resolveApiKey(s);
+
+    return {
+      daemon: {
+        pid: process.pid,
+        version: LOOM_VERSION,
+        startedAt: this.startedAt,
+        uptimeMs: Date.now() - this.startedAt,
+        epoch: this.epoch,
+        repoRoot: this.repoRoot,
+        clients: this.#server.clientCount,
+        connections: this.#server.connectionCount,
+        eventSeq: this.#events.head,
+        eventBuffer: this.#events.size,
+        sessions: this.#registry.list().length,
+        runningSessions: this.#sessions.count,
+      },
+      connectors: this.#providers.connectorReport(),
+      mcp,
+      tools: {
+        loom: ["ask_user", "commit"],
+        claude: ["Read", "Write", "Edit", "Bash", "Task", "TodoWrite", "WebFetch"],
+        aisdk: ["bash", "edit", "grep"],
+        claudeDisabled: ["Grep", "Glob"],
+      },
+      webSearch: {
+        backend: s.backend,
+        enabled: s.backend !== "none" && searchKey !== "",
+        note: searchNoteOf(s.backend, searchKey),
+      },
+      configWarnings: lintConfig(this.config),
+    };
+  }
 }
+
+// ---------------------------------------------------------------------------
+// daemon.doctor helpers
+// ---------------------------------------------------------------------------
+
+/** MCP command health for {@link DoctorReport}. `note` is set by
+ *  {@link resolveMcpCommand} only when it rewrote the command or found a
+ *  binary missing; a `npx` rewrite is the pinned tilth fallback. */
+const mcpStatusOf = (command: string, note: string | undefined): DoctorMcpServer["status"] => {
+  if (note === undefined) return onPath(command) ? "ok" : "missing";
+  return command === "npx" ? "fallback" : "missing";
+};
+
+const searchNoteOf = (backend: string, resolvedKey: string): string => {
+  if (backend === "none") return "no backend configured";
+  if (resolvedKey === "") return "backend set but no api_key / api_key_env resolved";
+  return "";
+};
 
 // ---------------------------------------------------------------------------
 // param helpers

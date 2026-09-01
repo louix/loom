@@ -7,7 +7,7 @@
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
@@ -22,7 +22,7 @@ import {
 } from "./theme.ts";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
-export type UiMode = "browse" | "prompt" | "help" | "confirm" | "plan" | "picker";
+export type UiMode = "browse" | "prompt" | "help" | "doctor" | "confirm" | "plan" | "picker";
 /**
  * Keybinding grammar (see docs/keybindings.md):
  *   • bare key  → act on the selected session, or move
@@ -343,6 +343,9 @@ export interface TuiState {
   compacting: Record<string, { startedAt: number; generated: number; before: number }>;
   notice: Notice | null;
   mode: UiMode;
+  /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
+   *  on open; kept between opens so a reopen paints immediately. */
+  doctor: DoctorReport | null;
   prompt: PromptState | null;
   confirm: ConfirmState | null;
   /** An open plan-review overlay: the plan text + the ids to resolve it with. */
@@ -374,6 +377,7 @@ export const initialState = (): TuiState => {
     compacting: {},
     notice: null,
     mode: "browse",
+    doctor: null,
     prompt: null,
     confirm: null,
     plan: null,
@@ -440,7 +444,9 @@ export type Action =
   | { t: "pickerMove"; delta: number }
   | { t: "closePicker" }
   | { t: "resolvePerm"; sessionId: string; id: string }
-  | { t: "help"; value: boolean };
+  | { t: "help"; value: boolean }
+  | { t: "doctor"; value: boolean }
+  | { t: "doctorLoaded"; report: DoctorReport };
 
 export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
@@ -636,6 +642,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };
+
+    case "doctor":
+      return { ...s, mode: a.value ? "doctor" : "browse" };
+
+    case "doctorLoaded":
+      return { ...s, doctor: a.report };
 
     default:
       return absurd(a);
@@ -1380,6 +1392,7 @@ export type ActName =
   | "find"
   | "filter"
   | "help"
+  | "doctor"
   | "quit";
 
 export interface KeyHint {
@@ -1491,6 +1504,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     items.push({ id: h.act, label: h.label, hint: h.keys });
   }
   const extra: Array<[ActName, string, string]> = [
+    ["doctor", "doctor — tools, connectors, daemon", ""],
     ["viewlog", "view the log in $EDITOR", "o"],
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],
@@ -1544,6 +1558,8 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
       ];
     case "help":
       return [{ keys: "? / esc", label: "close help" }];
+    case "doctor":
+      return [{ keys: "esc", label: "close" }];
     case "browse": {
       const hints = actionsFor(selectedSession(s))
         .filter((h) => h.footer)

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
-import type { HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
@@ -319,6 +319,48 @@ test("daemon.status reflects live counts", async () => {
   assert.ok(s.sessions >= 1);
   assert.ok(s.clients >= 1);
   assert.ok(s.eventSeq >= 1);
+  await c.close();
+});
+
+test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () => {
+  const c = await client();
+  const rep = await c.request<DoctorReport>("daemon.doctor");
+
+  assert.match(rep.daemon.version, /^\d+\.\d+\.\d+/);
+  assert.ok(rep.daemon.pid > 0);
+  assert.ok(rep.daemon.uptimeMs >= 0);
+  assert.ok(rep.daemon.clients >= 1);
+
+  // Every configured connector package is listed; claude serves `claude`, the
+  // mock connector serves `fake`. `loaded` flips only once a session uses it.
+  const byPkg = new Map(rep.connectors.map((x) => [x.pkg, x]));
+  assert.ok(byPkg.get("@loom/connector-claude")?.providerIds.includes("claude"));
+  assert.ok(byPkg.get("@loom/connector-mock")?.providerIds.includes("fake"));
+  assert.equal(byPkg.get("@loom/connector-gemini")?.loaded, false);
+
+  // The default config mounts tilth + fff into every session.
+  const mcpNames = rep.mcp.map((m) => m.name).sort();
+  assert.deepEqual(mcpNames, ["fff", "tilth"]);
+  for (const m of rep.mcp) {
+    assert.ok(m.resolved.length > 0);
+    assert.ok(["ok", "fallback", "missing"].includes(m.status));
+  }
+
+  assert.deepEqual(rep.tools.loom, ["ask_user", "commit"]);
+  assert.deepEqual(rep.tools.claudeDisabled, ["Grep", "Glob"]);
+  assert.equal(rep.webSearch.backend, "none");
+  assert.equal(rep.webSearch.enabled, false);
+  assert.ok(Array.isArray(rep.configWarnings));
+
+  await c.close();
+});
+
+test("daemon.doctor marks a connector loaded once a session uses it", async () => {
+  const c = await client();
+  await c.request<SessionSnapshot>("session.create", { prompt: "doctor probe", provider: "fake" });
+  const rep = await c.request<DoctorReport>("daemon.doctor");
+  const mock = rep.connectors.find((x) => x.pkg === "@loom/connector-mock");
+  assert.equal(mock?.loaded, true);
   await c.close();
 });
 

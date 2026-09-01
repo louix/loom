@@ -424,6 +424,37 @@ test("Space opens the command palette; a filtered pick runs the action", async (
   }
 });
 
+test("the palette's 'doctor' opens an overlay of tools, connectors and daemon vitals", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "x",
+    status: "idle",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(160);
+    stdin.feed(" "); // leader
+    await delay(100);
+    stdin.feed("doctor");
+    await delay(80);
+    stdin.feed("\r");
+    await waitFor(stdout, /loom — doctor/);
+    assert.match(stdout.last, /connectors/);
+    assert.match(stdout.last, /tilth/); // an mcp mount is listed
+    assert.match(stdout.last, /ask_user, commit/); // the loom tools row
+
+    stdin.feed(ESC);
+    await delay(80);
+    assert.doesNotMatch(stdout.last, /loom — doctor/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("the palette's 'view logs' opens the daemon + TUI logs in $EDITOR", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
