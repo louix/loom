@@ -174,6 +174,10 @@ class ClaudeSession implements AgentSession {
   #log: Logger;
   #mode: SessionMode;
   #effort: EffortLevel | null;
+  /** The model currently in force — `opts.model` at start, updated by
+   *  `setModel()`. `rewind()` composes the resumed query from this (and the
+   *  live `#mode` / `#effort`), not the frozen `#startOpts`. */
+  #model: string | undefined;
   /** Spans the whole `rewind()` call (incl. the async fork *and* the query
    *  swap) — rejects a second concurrent undo, and tells `#drain`'s cleanup to
    *  leave `#outbox` / `#inbox` open because a resumed query will reuse them. */
@@ -208,6 +212,7 @@ class ClaudeSession implements AgentSession {
     this.#mapper = new ClaudeEventMapper(opts.sessionId);
     this.#mode = opts.mode;
     this.#effort = opts.effort ?? null;
+    this.#model = opts.model;
     this.#log = makeLogger("claude").child(opts.sessionId.slice(0, 8));
   }
 
@@ -531,7 +536,20 @@ class ClaudeSession implements AgentSession {
       // Fresh inbox for the resumed fork; `#outbox` stays as-is.
       this.#inbox = new AsyncChannel<SDKUserMessage>();
       this.#interrupted = false;
-      this.start({ ...this.#startOpts, prompt: "" }, { ...this.#startExtra, resume: forkedId });
+      // C1: resume with the *live* model / mode / effort, not the values frozen
+      // into `#startOpts` at creation — a `setModel` / `setMode` / `setEffort`
+      // before the undo would otherwise be silently reverted.
+      this.#mapper.onQuerySwap();
+      this.start(
+        {
+          ...this.#startOpts,
+          prompt: "",
+          mode: this.#mode,
+          ...(this.#model ? { model: this.#model } : {}),
+          ...(this.#effort ? { effort: this.#effort } : {}),
+        },
+        { ...this.#startExtra, resume: forkedId },
+      );
     } finally {
       this.#rewindInFlight = false;
     }
@@ -581,6 +599,7 @@ class ClaudeSession implements AgentSession {
   async setModel(model: string): Promise<void> {
     try {
       await this.#query?.setModel(model);
+      this.#model = model;
     } catch (err) {
       // Keep the old model and give the caller a readable reason (matches
       // setMode / setEffort); an out-of-catalog id otherwise surfaces raw.

@@ -16,19 +16,22 @@ type FakeCanUseTool = (
   ctx: { toolUseID?: string; requestId?: string },
 ) => Promise<PermissionResult>;
 
-/** A `Query` stand-in: an async iterator that idles until `close()`, plus the
- *  control methods the adapter calls. No generator (keeps oxlint happy). */
-const fakeQuery = () => {
+/** A `Query` stand-in: an async iterator that yields any seeded messages, then
+ *  idles until `close()`, plus the control methods the adapter calls. No
+ *  generator (keeps oxlint happy). */
+const fakeQuery = (msgs: unknown[] = []) => {
   let stop = false;
+  const queue = [...msgs];
   const iter = {
     [Symbol.asyncIterator]() {
       return iter;
     },
-    async next(): Promise<IteratorResult<never, void>> {
-      while (!stop) await delay(15);
+    async next(): Promise<IteratorResult<unknown, void>> {
+      while (queue.length === 0 && !stop) await delay(10);
+      if (queue.length > 0) return { done: false, value: queue.shift() };
       return { done: true, value: undefined };
     },
-    async return(): Promise<IteratorResult<never, void>> {
+    async return(): Promise<IteratorResult<unknown, void>> {
       stop = true;
       return { done: true, value: undefined };
     },
@@ -93,6 +96,61 @@ test("C6: interrupt() denies a parked canUseTool and muzzles later calls without
   assert.ok(
     !seen.some((e) => e.type === "permission_request"),
     "no permission_request after the interrupt",
+  );
+
+  await s.close();
+  await reader;
+});
+
+test("C1: rewind() resumes with the live model / mode, not the frozen start opts", async () => {
+  const queryOpts: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      const opts = (args as { options: Record<string, unknown> }).options;
+      queryOpts.push(opts);
+      return fakeQuery(
+        queryOpts.length === 1
+          ? [
+              { type: "system", subtype: "init", session_id: "claude-src", model: "claude-sonnet-5" },
+              { type: "assistant", parent_tool_use_id: null, uuid: "u-1", message: { content: [] } },
+              { type: "result", subtype: "success", is_error: false, num_turns: 1, modelUsage: {} },
+            ]
+          : [],
+      ) as never;
+    },
+    forkSession: async () => ({ sessionId: "claude-forked" }),
+  });
+
+  const provider = new ClaudeProvider();
+  const s = await provider.createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    model: "claude-sonnet-5",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const reader = (async () => {
+    for await (const _ev of s.events()) void _ev;
+  })();
+  await delay(60); // let the seeded init / result frames land (providerRef, rewindRef)
+
+  await s.setModel("claude-opus-5");
+  await s.setMode("acceptEdits");
+  await s.rewind(0, "u-1");
+
+  assert.equal(queryOpts.length, 2, "the query was rebuilt for the resumed fork");
+  assert.equal(queryOpts[1]?.["resume"], "claude-forked");
+  assert.equal(
+    queryOpts[1]?.["model"],
+    "claude-opus-5",
+    "resumed with the model set live, not the creation-time one",
+  );
+  assert.equal(
+    queryOpts[1]?.["permissionMode"],
+    "acceptEdits",
+    "resumed with the mode set live",
   );
 
   await s.close();
