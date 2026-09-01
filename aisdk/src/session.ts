@@ -97,6 +97,8 @@ export interface AisdkSessionOptions {
   loomServer: boolean;
   /** Resolved `web_search` config, when configured. */
   search?: SearchConfig;
+  /** The repo's base branch, for the `status` tool's ahead/behind counts. */
+  base?: string;
   /** null for a throwaway one-shot. */
   store: TranscriptStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
@@ -121,6 +123,7 @@ export class AisdkSession implements AgentSession {
   #mode: SessionMode;
   readonly #cwd: string;
   readonly #search: SearchConfig | undefined;
+  readonly #base: string | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
   readonly #store: TranscriptStore | null;
@@ -174,6 +177,7 @@ export class AisdkSession implements AgentSession {
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
     this.#search = opts.search;
+    this.#base = opts.base;
     this.#mcpHandles = opts.mcpHandles;
     this.#loomServer = opts.loomServer;
     this.#store = opts.store;
@@ -440,7 +444,11 @@ export class AisdkSession implements AgentSession {
           // must not be shadowed by a same-named MCP tool.
           Object.assign(
             base,
-            buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }),
+            buildLoomTools({
+              cwd: this.#cwd,
+              ...(this.#base ? { base: this.#base } : {}),
+              askUser: (q, c) => this.#askUser(q, c),
+            }),
           );
           Object.assign(base, this.#planAndTaskTools());
           // Builtins fill only the names no MCP server claimed.

@@ -8,6 +8,7 @@
  *                   `question` HarnessEvent and resolved via `session.answer`.
  *   - `commit`    — commit the session's worktree under its pinned Loom
  *                   identity (spec §6) without the agent shelling out to git.
+ *   - `status`   — report the worktree's git state: branch, changed files, diffstat.
  *
  * Only the Claude adapter imports this; nothing above the provider layer does.
  */
@@ -15,6 +16,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { commitInWorktree, type CommitResult } from "@loom/core/commit";
+import { statusInWorktree } from "@loom/core/status";
 
 // Re-exported for the tests that still import it from here.
 export { commitInWorktree, type CommitResult };
@@ -22,6 +24,8 @@ export { commitInWorktree, type CommitResult };
 export interface LoomMcpDeps {
   /** The session's worktree — `commit` runs here. */
   cwd: string;
+  /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
+  base?: string;
   /** Round-trip a question to the user; resolves with their answer text. */
   askUser(question: string, context: string | undefined): Promise<string>;
 }
@@ -35,6 +39,11 @@ const COMMIT_DESC =
   "Commit the current changes in this session's git worktree. Stages every change " +
   "first by default. Commits are made under this session's Loom identity. Returns " +
   "the new commit's short hash, subject, and a diffstat.";
+
+const STATUS_DESC =
+  "Show the current state of this session's git worktree: the branch (with " +
+  "ahead/behind counts vs the base branch when known), the changed files, and " +
+  "a diffstat. Read-only and cheap — prefer it over shelling out to git.";
 
 export const buildLoomMcpServer = (deps: LoomMcpDeps): McpSdkServerConfigWithInstance => {
   const askUser = tool(
@@ -79,12 +88,34 @@ export const buildLoomMcpServer = (deps: LoomMcpDeps): McpSdkServerConfigWithIns
     },
   );
 
-  // `alwaysLoad` keeps these two tools in every prompt rather than deferring
+  const status = tool(
+    "status",
+    STATUS_DESC,
+    {
+      patch: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include the working diff against HEAD (clamped; untracked files are not included).",
+        ),
+    },
+    async (args) => {
+      const res = statusInWorktree(deps.cwd, {
+        ...(deps.base ? { base: deps.base } : {}),
+        ...(args.patch ? { patch: true } : {}),
+      });
+      return res.ok
+        ? { content: [{ type: "text", text: res.text }] }
+        : { content: [{ type: "text", text: res.text }], isError: true };
+    },
+  );
+
+  // `alwaysLoad` keeps these tools in every prompt rather than deferring
   // them behind tool-search — they're few and broadly relevant to any session.
   return createSdkMcpServer({
     name: "loom",
     version: "1",
     alwaysLoad: true,
-    tools: [askUser, commit],
+    tools: [askUser, commit, status],
   });
 };

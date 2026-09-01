@@ -161,6 +161,7 @@ interface StartExtra {
   cli?: string;
   promptCacheTtl?: string;
   configDir?: string;
+  base?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +269,7 @@ class ClaudeSession implements AgentSession {
     if (opts.loomServer) {
       mcpServers["loom"] = buildLoomMcpServer({
         cwd: opts.cwd,
+        ...(extra.base ? { base: extra.base } : {}),
         askUser: (question, context) => this.#askUser(question, context),
       });
     }
@@ -639,6 +641,8 @@ export interface ClaudeProviderOptions {
   promptCacheTtl?: string;
   /** `CLAUDE_CONFIG_DIR` for this profile — "" leaves the SDK's default. */
   configDir?: string;
+  /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
+  base?: string;
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -646,6 +650,7 @@ export class ClaudeProvider implements AgentProvider {
   readonly capabilities = CAPS;
 
   readonly #cliPathOption: string;
+  readonly #base: string;
   readonly #promptCacheTtl: string;
   readonly #configDir: string;
   #cli: string | undefined;
@@ -654,6 +659,7 @@ export class ClaudeProvider implements AgentProvider {
   constructor(opts: ClaudeProviderOptions = {}) {
     this.id = opts.id ?? "claude";
     this.#cliPathOption = opts.cliPath ?? "";
+    this.#base = opts.base ?? "";
     this.#promptCacheTtl = opts.promptCacheTtl ?? "";
     this.#configDir = opts.configDir ?? "";
   }
@@ -666,11 +672,12 @@ export class ClaudeProvider implements AgentProvider {
     return this.#cli;
   }
 
-  #extra(cli: string | undefined): { cli?: string; promptCacheTtl?: string; configDir?: string } {
+  #extra(cli: string | undefined) {
     return {
       ...(cli ? { cli } : {}),
       ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
       ...(this.#configDir ? { configDir: this.#configDir } : {}),
+      ...(this.#base ? { base: this.#base } : {}),
     };
   }
 

@@ -69,6 +69,8 @@ export interface ConnectorContext {
   transcript?: TranscriptStore;
   /** Provided when a `web_search` backend + key are configured. */
   search?: SearchConfig;
+  /** The repo's base branch (`base_branch`) — feeds `status` ahead/behind counts. */
+  baseBranch?: string;
   logger: Logger;
 }
 

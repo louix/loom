@@ -39,6 +39,8 @@ export interface AisdkProviderOptions {
   makeModel: (id: string) => LanguageModel;
   /** Resolved `web_search` config, when a backend + key are set. */
   search?: SearchConfig;
+  /** The repo's base branch, for the `status` tool's ahead/behind counts. */
+  base?: string;
 }
 
 export class AisdkProvider implements AgentProvider {
@@ -49,6 +51,7 @@ export class AisdkProvider implements AgentProvider {
   readonly #store: TranscriptStore;
   readonly #makeModel: (id: string) => LanguageModel;
   readonly #search: SearchConfig | undefined;
+  readonly #base: string | undefined;
   readonly #maxSteps: number | undefined;
   readonly #modelContext: Record<string, number> | undefined;
 
@@ -58,6 +61,7 @@ export class AisdkProvider implements AgentProvider {
     this.#store = store;
     this.#makeModel = opts.makeModel;
     this.#search = opts.search;
+    this.#base = opts.base;
     this.#maxSteps = opts.maxSteps;
     this.#modelContext = opts.modelContext;
     this.capabilities = {
@@ -108,6 +112,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: opts.cwd,
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
+      ...(this.#base ? { base: this.#base } : {}),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
@@ -136,6 +141,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: ref.cwd,
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
+      ...(this.#base ? { base: this.#base } : {}),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,

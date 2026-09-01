@@ -12,5 +12,6 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     cliPath: ctx.config.cliPath ?? "",
     promptCacheTtl: ctx.config.promptCacheTtl ?? "",
     configDir: ctx.config.configDir ?? "",
+    ...(ctx.baseBranch ? { base: ctx.baseBranch } : {}),
   });
 };

@@ -6,6 +6,7 @@
  *   - `ask_user` — put a question to the human and block the turn on their reply
  *     (surfaces as a `question` HarnessEvent, resolved via `answerQuestion`).
  *   - `commit`   — commit the session's worktree under its pinned Loom identity.
+ *   - `status`   — report the worktree's git state (branch, changes, diffstat).
  *
  * `commit` reuses {@link commitInWorktree} from the Claude loom server, which is
  * SDK-agnostic.
@@ -13,10 +14,13 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { commitInWorktree } from "@loom/core/commit";
+import { statusInWorktree } from "@loom/core/status";
 
 export interface LoomToolDeps {
   /** The session's worktree — `commit` runs here. */
   cwd: string;
+  /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
+  base?: string;
   /** Round-trip a question to the user; resolves with their answer text. */
   askUser(question: string, context: string | undefined): Promise<string>;
 }
@@ -30,6 +34,11 @@ const COMMIT_DESC =
   "Commit the current changes in this session's git worktree. Stages every change " +
   "first by default. Commits are made under this session's Loom identity. Returns " +
   "the new commit's short hash, subject, and a diffstat.";
+
+const STATUS_DESC =
+  "Show the current state of this session's git worktree: the branch (with " +
+  "ahead/behind counts vs the base branch when known), the changed files, and " +
+  "a diffstat. Read-only and cheap — prefer it over shelling out to git.";
 
 export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
   return {
@@ -66,6 +75,24 @@ export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
       }),
       execute: async ({ message, stage_all }) => {
         const res = commitInWorktree(deps.cwd, message, { stageAll: stage_all !== false });
+        return res.text;
+      },
+    }),
+    status: tool({
+      description: STATUS_DESC,
+      inputSchema: z.object({
+        patch: z
+          .boolean()
+          .optional()
+          .describe(
+            "Include the working diff against HEAD (clamped; untracked files are not included).",
+          ),
+      }),
+      execute: async ({ patch }) => {
+        const res = statusInWorktree(deps.cwd, {
+          ...(deps.base ? { base: deps.base } : {}),
+          ...(patch ? { patch: true } : {}),
+        });
         return res.text;
       },
     }),

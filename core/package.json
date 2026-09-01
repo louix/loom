@@ -12,6 +12,7 @@
     "./channel": "./src/channel.ts",
     "./logger": "./src/logger.ts",
     "./commit": "./src/commit.ts",
+    "./status": "./src/status.ts",
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",
     "./provider-id": "./src/provider-id.ts",

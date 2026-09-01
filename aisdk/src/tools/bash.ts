@@ -12,7 +12,7 @@ import { tool } from "ai";
 import { z } from "zod";
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_BYTES = 120_000;
+export const MAX_OUTPUT_BYTES = 120_000;
 const HEAD_BYTES = 80_000;
 /**
  * Live cap on the accumulating output buffer. `clamp()` only runs once the
@@ -252,7 +252,7 @@ const clamp = (s: string): string => {
  *  tail total stays just under `MAX_OUTPUT_BYTES` so the final `clamp()` is a
  *  no-op (no doubled truncation marker); the tail is wide enough that a
  *  not-yet-arrived sentinel line is never cut off. */
-const collapseLive = (s: string): string => {
+export const collapseLive = (s: string): string => {
   const head = s.slice(0, HEAD_BYTES);
   const tail = s.slice(-(MAX_OUTPUT_BYTES - HEAD_BYTES - 100));
   return `${head}\n… [output truncated mid-stream] …\n${tail}`;

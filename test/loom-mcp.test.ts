@@ -87,3 +87,13 @@ test("buildLoomMcpServer exposes an in-process sdk server named loom", async () 
   assert.equal(server.name, "loom");
   assert.ok(server.instance, "carries a live McpServer instance");
 });
+
+test("buildLoomMcpServer accepts a base branch for the status tool", () => {
+  const server = buildLoomMcpServer({
+    cwd: "/tmp",
+    base: "main",
+    askUser: async (q) => q,
+  });
+  assert.equal(server.type, "sdk");
+  assert.equal(server.name, "loom");
+});

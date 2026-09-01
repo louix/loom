@@ -157,8 +157,9 @@ export class ProviderRegistry {
   #contextFor(id: string): ConnectorContext {
     const logger = makeLogger("connector").child(id);
     const search = this.#resolveSearch();
+    const baseBranch = this.#config.baseBranch;
     if (id === "fake" || id === "mock") {
-      return { id, config: {}, logger, ...(search ? { search } : {}) };
+      return { id, config: {}, logger, baseBranch, ...(search ? { search } : {}) };
     }
     if (isClaudeId(id)) {
       const c = this.#config.providers.claude;
@@ -170,6 +171,7 @@ export class ProviderRegistry {
       return {
         id,
         config: { cliPath: c.cliPath, promptCacheTtl: c.promptCacheTtl, configDir },
+        baseBranch,
         logger,
         ...(search ? { search } : {}),
       };
@@ -186,7 +188,14 @@ export class ProviderRegistry {
       includeUsage: p.includeUsage,
       ...(p.maxSteps !== undefined ? { maxSteps: p.maxSteps } : {}),
     };
-    return { id, config, transcript: this.#transcript, logger, ...(search ? { search } : {}) };
+    return {
+      id,
+      config,
+      transcript: this.#transcript,
+      logger,
+      baseBranch,
+      ...(search ? { search } : {}),
+    };
   }
 
   /** `[search]` → a resolved `web_search` config, or undefined when off / keyless. */
