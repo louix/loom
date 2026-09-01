@@ -1276,14 +1276,19 @@ export const mkFleetHandle = ({
   const confirmForDelete = (s: SessionSnapshot): ConfirmState => {
     const name = `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}”`;
     const canBranch = !s.inPlace && !!s.branch;
+    const dirty = s.git?.dirty === true;
+    const what = canBranch
+      ? "its worktree, stored transcript, and branch"
+      : "its worktree and stored transcript";
     return {
       title: `Delete session ${shortId(s.id)}?`,
-      body: canBranch
-        ? `${name} — its worktree, stored transcript, and branch go too. Press b to keep the branch.`
-        : `${name} — its worktree and stored transcript go too.`,
+      body:
+        `${name} — ${what} go too${dirty ? ", including uncommitted changes" : ""}.` +
+        (canBranch ? " Press b to keep the branch." : ""),
       danger: true,
       action: "deleteSession",
       sessionId: s.id,
+      ...(dirty ? { force: true } : {}),
       ...(canBranch ? { branchName: s.branch as string, deleteBranch: true } : {}),
     };
   };
@@ -1301,6 +1306,7 @@ export const mkFleetHandle = ({
           id,
           by: client.clientId,
           ...(alsoBranch ? { deleteBranch: true } : {}),
+          ...(c.force ? { force: true } : {}),
         })
         .then((r) =>
           note(

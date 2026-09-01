@@ -293,6 +293,9 @@ export interface ConfirmState {
    *  whether it's deleted along with the row + worktree. */
   branchName?: string;
   deleteBranch?: boolean;
+  /** `deleteSession`: the worktree had uncommitted changes — confirming the
+   *  delete also discards those, so the request passes `force`. */
+  force?: boolean;
 }
 
 export interface PendingPerm {

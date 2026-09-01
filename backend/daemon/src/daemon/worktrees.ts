@@ -85,8 +85,16 @@ export class WorktreeManager {
   /** Idempotent one-time repo prep: worktree-scoped config + the push hook. */
   ensureSetup(): void {
     if (this.#setupDone) return;
-    // Per-worktree `git config --worktree` requires this extension.
-    this.#git(["config", "extensions.worktreeConfig", "true"]);
+    // Per-worktree `git config --worktree` requires this extension. If it can't
+    // be set, every later `--worktree` write silently lands in the *shared* repo
+    // config instead — the last session created would repoint the main repo's
+    // commit identity and hooks path. Refuse to proceed.
+    const ext = this.#git(["config", "extensions.worktreeConfig", "true"]);
+    if (!ext.ok) {
+      throw new Error(
+        `git config extensions.worktreeConfig failed: ${ext.stderr.trim() || ext.stdout.trim()}`,
+      );
+    }
     mkdirSync(this.#treesDir, { recursive: true });
     mkdirSync(this.#hooksDir, { recursive: true });
     const hook = join(this.#hooksDir, "pre-push");
@@ -127,16 +135,33 @@ export class WorktreeManager {
 
     const add = this.#git(["worktree", "add", path, "-b", branch, baseRef]);
     if (!add.ok) {
+      // A partial checkout (disk full mid-`add`) leaves the dir behind — reclaim
+      // it so the next attempt / `gc` isn't blocked by a stale entry.
+      this.#git(["worktree", "prune"]);
       throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
     }
 
+    // These three are the "sessions always commit as Loom, never push" guarantee.
+    // A failure here is fatal: a worktree with no `core.hooksPath` has no
+    // push-block hook, and one with no `user.email` commits under whatever
+    // ambient identity git finds. Tear the tree down rather than run it unsafe.
     for (const [key, value] of [
       ["user.name", IDENTITY_NAME],
       ["user.email", IDENTITY_EMAIL],
       ["core.hooksPath", this.#hooksDir],
     ] as const) {
       const res = this.#git(["config", "--worktree", key, value], path);
-      if (!res.ok) this.#log.warn("worktree config failed", { key, err: res.stderr.trim() });
+      if (!res.ok) {
+        try {
+          this.remove(path, { force: true });
+          this.deleteBranch(branch);
+        } catch {
+          this.#git(["worktree", "prune"]); // best-effort cleanup
+        }
+        throw new Error(
+          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
+        );
+      }
     }
 
     this.#log.info("worktree created", { slug, branch, baseRef, path });

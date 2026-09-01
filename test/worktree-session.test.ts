@@ -199,6 +199,28 @@ test("session.remove on an unknown id is a not_found", async () => {
   await c.close();
 });
 
+test("session.remove refuses a dirty worktree unless force is passed (G8)", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "has uncommitted work",
+    provider: "fake",
+  });
+  const wt = s.worktree as string;
+  writeFileSync(join(wt, "unsaved.txt"), "work in progress\n");
+
+  await assert.rejects(
+    c.request("session.remove", { id: s.id }),
+    /uncommitted changes/,
+  );
+  assert.ok(existsSync(wt), "the worktree survives the refused remove");
+  assert.ok(await c.request<SessionSnapshot>("session.get", { id: s.id }), "the row survives");
+
+  const r = await c.request<{ removed: string }>("session.remove", { id: s.id, force: true });
+  assert.equal(r.removed, s.id);
+  assert.ok(!existsSync(wt));
+  await c.close();
+});
+
 test("undo warns when the worktree has drifted past the rewound turn", async () => {
   const c = await client();
   const frames: PushFrame[] = [];

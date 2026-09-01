@@ -412,6 +412,7 @@ const main = async (): Promise<void> => {
             id,
             by: client.clientId,
             ...(values["delete-branch"] ? { deleteBranch: true } : {}),
+            ...(values["force"] ? { force: true } : {}),
           },
         );
         process.stdout.write(

@@ -1947,8 +1947,19 @@ export class Daemon {
       const id = reqString(params, "id");
       const p = isObj(params) ? params : {};
       const alsoBranch = p["deleteBranch"] === true;
+      const force = p["force"] === true;
       const s = this.#registry.get(id);
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
+      // Removing a worktree with uncommitted / untracked changes discards that
+      // work silently. Make the caller opt in, the way `gc` already threads
+      // `force` — the row / transcript deletion is inherently destructive, but
+      // live file changes deserve an explicit ack.
+      if (!force && s.worktree && this.#worktrees.isDirty(s.worktree)) {
+        throw new RpcError(
+          "bad_request",
+          "the worktree has uncommitted changes — commit them, or pass force to discard",
+        );
+      }
       if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
       this.#lastSend.delete(id);
       this.#autoRebaseNudged.delete(id);
@@ -1956,10 +1967,18 @@ export class Daemon {
         try {
           this.#worktrees.remove(s.worktree, { force: true });
         } catch (err) {
-          this.#log.warn("session.remove", {
+          // The tree is still on disk. Dropping the row now would orphan it —
+          // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
+          // flip it to `error` so `session.gc {id}` can retry, and surface it.
+          const msg = err instanceof Error ? err.message : String(err);
+          this.#log.warn("session.remove: worktree removal failed", { id, error: msg });
+          const errSnap = this.#registry.setStatus(
             id,
-            error: err instanceof Error ? err.message : String(err),
-          });
+            stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
+            "remove_failed",
+          );
+          this.#emitSessionUpdated(errSnap, clientLabel(params));
+          throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
         }
       }
       let branchDeleted = false;
