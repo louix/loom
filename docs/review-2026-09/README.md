@@ -200,19 +200,21 @@ _Done (`loom/audit-codebase-and-delegate-to`): migration 14 records the worktree
 
 ### Phase 4 — git worktree safety
 
+_Done (`loom/audit-codebase-and-delegate-to`): auto-rebase bails `busy` on an agent's own in-progress rebase/merge (G1); worktree-config failures are fatal + teardown, failed `worktree add` prunes (G5); `session.remove` keeps the row as `error` on a remove failure (G7) and refuses a dirty tree without `force` (G8); the nudge marker is persisted (migration 15, G9); `#git` gets `maxBuffer` + surfaces spawn errors, conflict-vs-error is index-driven, rebase timeout 120→90s, facts TTL 8→3s (G6/G10/G11); worktree hooks chain to the repo's own (G12); lifecycle ops serialise per id (G13); `listen()` binds before touching the socket file (W9b). +5 tests._
+
 | ID  | Sev      | Status | Finding                                                                                                     | Where                                |
 | --- | -------- | ------ | ----------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| G1  | **high** | todo   | Auto-rebase destroys the agent's own in-progress rebase/merge (only checks `git status --porcelain`)        | `daemon/worktrees.ts:285-299`        |
-| G5  | med      | todo   | Worktree `user.email` / `core.hooksPath` config failures only warn-logged → push-block hook silently absent | `daemon/worktrees.ts:85-97, 124-131` |
-| G6  | med      | todo   | A large auto-rebase (`spawnSync`, 120 s) freezes the whole daemon event loop                                | `daemon/daemon.ts:795-801`           |
-| G7  | med      | todo   | `session.remove` / a failed `worktree add` can orphan a tree/branch with no row to reclaim it               | `daemon/daemon.ts:1764-1784`         |
-| G8  | med      | todo   | `session.remove` force-discards a dirty worktree with no confirmation                                       | `daemon/daemon.ts:1764-1773`         |
-| G9  | low      | todo   | Auto-rebase "once per base commit" dedupe is in-memory only → duplicate nudge turns after restart           | `daemon/daemon.ts:817-818`           |
-| G10 | low      | todo   | Fragile git-output parsing: locale-dependent conflict regex, unset `maxBuffer`, ignored `res.error`         | `daemon/worktrees.ts:300, 350-361`   |
-| G11 | low      | todo   | git-facts cache staleness (8 s TTL; `cachedFacts` ignores TTL; not invalidated on commit)                   | `daemon/worktrees.ts:17, 223-252`    |
-| G12 | low      | todo   | `core.hooksPath` override disables the repo's real `pre-commit` / `commit-msg` inside worktrees             | `daemon/worktrees.ts:127`            |
-| G13 | low      | todo   | Concurrent `markDone` / `remove` on the same id race (both only guard on an initial `get`)                  | `daemon/daemon.ts:1731-1784`         |
-| W9b | low      | todo   | `SocketServer.listen()` `isSocketLive` → `unlink` → `bind` TOCTOU; treat `EADDRINUSE` as "connect instead"  | `daemon/server.ts`                   |
+| G1  | **high** | done   | Auto-rebase destroys the agent's own in-progress rebase/merge (only checks `git status --porcelain`)        | `daemon/worktrees.ts:285-299`        |
+| G5  | med      | done   | Worktree `user.email` / `core.hooksPath` config failures only warn-logged → push-block hook silently absent | `daemon/worktrees.ts:85-97, 124-131` |
+| G6  | med      | done   | A large auto-rebase (`spawnSync`, 120 s) freezes the whole daemon event loop                                | `daemon/daemon.ts:795-801`           |
+| G7  | med      | done   | `session.remove` / a failed `worktree add` can orphan a tree/branch with no row to reclaim it               | `daemon/daemon.ts:1764-1784`         |
+| G8  | med      | done   | `session.remove` force-discards a dirty worktree with no confirmation                                       | `daemon/daemon.ts:1764-1773`         |
+| G9  | low      | done   | Auto-rebase "once per base commit" dedupe is in-memory only → duplicate nudge turns after restart           | `daemon/daemon.ts:817-818`           |
+| G10 | low      | done   | Fragile git-output parsing: locale-dependent conflict regex, unset `maxBuffer`, ignored `res.error`         | `daemon/worktrees.ts:300, 350-361`   |
+| G11 | low      | done   | git-facts cache staleness (8 s TTL; `cachedFacts` ignores TTL; not invalidated on commit)                   | `daemon/worktrees.ts:17, 223-252`    |
+| G12 | low      | done   | `core.hooksPath` override disables the repo's real `pre-commit` / `commit-msg` inside worktrees             | `daemon/worktrees.ts:127`            |
+| G13 | low      | done   | Concurrent `markDone` / `remove` on the same id race (both only guard on an initial `get`)                  | `daemon/daemon.ts:1731-1784`         |
+| W9b | low      | done   | `SocketServer.listen()` `isSocketLive` → `unlink` → `bind` TOCTOU; treat `EADDRINUSE` as "connect instead"  | `daemon/server.ts`                   |
 
 ### Phase 5 — client / TUI replay discipline
 
