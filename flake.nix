@@ -90,6 +90,23 @@
               pkgs.makeWrapper
             ];
 
+            # fetchPnpmDeps' tarball round-trip strips the exec bit from pnpm's
+            # content-addressed store blobs. pnpm v11 records executability in a
+            # `-exec` suffix on the blob *name* rather than the file mode, and
+            # `pnpm install` clones/copies blobs into node_modules without
+            # consulting it — so every binary a dependency ships lands
+            # un-executable. The one that matters is
+            # @anthropic-ai/claude-agent-sdk-linux-x64's bundled `claude`: the
+            # SDK spawns it for model discovery (and for sessions when no
+            # `claude` is on PATH), and a non-executable copy fails with
+            # "exists but failed to launch", silently pinning the TUI's model
+            # picker to the single configured model. This hook runs inside
+            # pnpmConfigHook after the store is unpacked and configured, before
+            # the install materialises node_modules from it.
+            prePnpmInstall = ''
+              find "$STORE_PATH" -type f -name '*-exec' -exec chmod +x {} +
+            '';
+
             postPatch = ''
               # `virtualStoreType: global` (pnpm-workspace.yaml) makes pnpm
               # symlink node_modules into a CAS shared across the repo's many git
