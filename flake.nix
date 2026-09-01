@@ -7,7 +7,16 @@
     { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # claude-code is unfree (proprietary CLI) but a required dependency —
+      # connectors/claude prefers a `claude` on PATH over the agent SDK's
+      # bundled binary. Allow exactly that package, not unfree globally.
+      pkgsFor = system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate =
+            pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "claude-code" ];
+        };
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));
 
       # nixpkgs' own `pnpm` is 11.22 — one patch short of this repo's
       # `engines.pnpm >= 11.23.0` / `virtualStoreType: global` requirement.
@@ -30,10 +39,13 @@
           # `corepack` ships a `pnpm` shim that reads package.json's
           # `packageManager` field and materialises the exact `pnpm@11.24.0`
           # on first use (cached under COREPACK_HOME thereafter).
+          # `claude-code` is a required dependency: connectors/claude/src/cli.ts
+          # prefers a `claude` on PATH over the agent SDK's bundled binary.
           packages = [
             pkgs.nodejs_24
             pkgs.corepack
             pkgs.git
+            pkgs.claude-code
           ];
 
           shellHook = ''
@@ -143,7 +155,11 @@
                 makeWrapper $out/libexec/loom/node_modules/.bin/oxnode $out/bin/$bin \
                   --add-flags "--import file://$out/libexec/loom/cli/src/oxc-esm-fixup.mjs" \
                   --add-flags $out/libexec/loom/cli/src/$bin.ts \
-                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nodejs_24 pkgs.git ]} \
+                  --prefix PATH : ${pkgs.lib.makeBinPath [
+                    pkgs.nodejs_24
+                    pkgs.git
+                    pkgs.claude-code
+                  ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version}
               done
 
