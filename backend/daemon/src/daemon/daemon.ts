@@ -909,12 +909,13 @@ export class Daemon {
   }
 
   /** Whether `providerId`'s adapter can `undo` — its real `capabilities.rewind`
-   *  once the provider's been built, else a guess from the provider type (every
-   *  aisdk adapter and the fake rewind; Claude reports its own once loaded). */
+   *  once the provider's been built, else a guess from the provider type. Every
+   *  adapter Loom ships rewinds; the guess only bridges the gap before a
+   *  provider's first construction. */
   #canRewind(providerId: string): boolean {
     const caps = this.#providers.capsOf(providerId);
     if (caps) return caps.rewind;
-    return this.#isAisdk(providerId) || providerId === "fake";
+    return this.#isAisdk(providerId) || providerId === "fake" || isClaudeId(providerId);
   }
 
   /** Snapshot a completed turn so it can be rewound / forked from later. */

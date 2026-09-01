@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
   McpServerConfig,
@@ -46,7 +46,7 @@ import type {
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
   forking: true,
-  rewind: false, // F3: resumeSessionAt / resumeDropsTurn
+  rewind: true, // fork the transcript truncated, then resume it — ClaudeSession.rewind
   subagents: true,
   compaction: true,
   oneShot: true,
@@ -122,6 +122,14 @@ const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> 
   return out;
 };
 
+/** Extra `start()` inputs the provider supplies (and `rewind()` re-supplies). */
+interface StartExtra {
+  resume?: string;
+  cli?: string;
+  promptCacheTtl?: string;
+  configDir?: string;
+}
+
 // ---------------------------------------------------------------------------
 
 class ClaudeSession implements AgentSession {
@@ -132,6 +140,12 @@ class ClaudeSession implements AgentSession {
   #log: Logger;
   #mode: SessionMode;
   #effort: EffortLevel | null;
+  /** Set while `rewind()` swaps the `query()` — tells `#drain`'s cleanup to
+   *  leave `#outbox` / `#inbox` open for the replacement. */
+  #rewinding = false;
+  /** The args `start()` last ran with, so `rewind()` can rebuild the query. */
+  #startOpts: CreateSessionOptions | null = null;
+  #startExtra: StartExtra = {};
 
   /** Follow-up turns fed into the streaming-input prompt. */
   #inbox = new AsyncChannel<SDKUserMessage>();
@@ -167,10 +181,9 @@ class ClaudeSession implements AgentSession {
   }
 
   /** Build the `query()` and start pumping its messages into the outbox. */
-  start(
-    opts: CreateSessionOptions,
-    extra: { resume?: string; cli?: string; promptCacheTtl?: string; configDir?: string } = {},
-  ): void {
+  start(opts: CreateSessionOptions, extra: StartExtra = {}): void {
+    this.#startOpts = opts;
+    this.#startExtra = extra;
     const { resume, cli, promptCacheTtl, configDir } = extra;
     if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
 
@@ -278,7 +291,7 @@ class ClaudeSession implements AgentSession {
         for (const ev of events) this.#outbox.push(ev);
       }
     } catch (err) {
-      if (!this.#closing) {
+      if (!this.#closing && !this.#rewinding) {
         this.#outbox.push({
           type: "error",
           sessionId: this.id,
@@ -292,8 +305,12 @@ class ClaudeSession implements AgentSession {
       // resolve any outstanding gate/ask_user/plan promise so the MCP tool's
       // `execute` doesn't hang forever.
       this.#rejectPending("the session ended before this was answered");
-      this.#outbox.close();
-      this.#inbox.close();
+      // `rewind()` deliberately ends this query to start a resumed one — keep
+      // the channels the daemon holds open for the replacement.
+      if (!this.#rewinding) {
+        this.#outbox.close();
+        this.#inbox.close();
+      }
     }
   }
 
@@ -420,12 +437,64 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  async rewind(_keep: number, _at?: string): Promise<void> {
-    // The seams are in place (mapper captures the fork point, the daemon passes
-    // it back as `at`); restarting the live `query()` with `resumeSessionAt`
-    // is the remaining step. Until then `capabilities.rewind` stays false, so
-    // the daemon never routes an undo here.
-    throw new Error("undo for Claude sessions lands in fork-tree F3 (resumeSessionAt restart)");
+  /**
+   * Undo. `resumeSessionAt` isn't honoured in streaming-input mode, so instead
+   * {@link forkSession} writes a *new* transcript file sliced at `at` (the kept
+   * turn's last chain-entry UUID — {@link ClaudeEventMapper} tracks it), and we
+   * swap the live `query()` for a plain resume of that shorter fork. `#outbox`
+   * and any queued `send()` survive the swap; the mapper is kept, so cumulative
+   * cost never regresses (the first turn after an undo may under-report token
+   * deltas until the resumed total catches up). `_keep` is the aisdk message
+   * count — unused here.
+   *
+   * Conversation only: anything the dropped turns wrote to disk / a memory tool
+   * stays. That's the same contract as the aisdk path.
+   */
+  async rewind(_keep: number, at?: string): Promise<void> {
+    if (this.#closing) throw new Error("session is closing");
+    if (!at) throw new Error("Claude undo needs a fork ref (a chain-entry UUID)");
+    if (!this.#startOpts) throw new Error("this session was never started");
+    const source = this.#mapper.state.providerRef;
+    if (!source) throw new Error("this Claude session has no id to fork from");
+
+    // End the live query first so its transcript file is fully flushed.
+    this.#rewinding = true;
+    try {
+      this.#inbox.drain();
+      try {
+        this.#query?.close();
+      } catch {
+        // best effort — we're replacing it regardless
+      }
+      await this.#pump?.catch(() => {});
+    } finally {
+      this.#rewinding = false;
+    }
+
+    const forkedId = await this.#forkTruncated(source, at);
+
+    // Fresh inbox for the resumed fork; `#outbox` stays as-is.
+    this.#inbox = new AsyncChannel<SDKUserMessage>();
+    this.#interrupted = false;
+    this.start({ ...this.#startOpts, prompt: "" }, { ...this.#startExtra, resume: forkedId });
+  }
+
+  /** `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
+   *  a subprocess), so point it at this session's profile dir for the call. */
+  async #forkTruncated(sourceId: string, upToMessageId: string): Promise<string> {
+    const dir = this.#startExtra.configDir;
+    const key = "CLAUDE_CONFIG_DIR";
+    const prev = process.env[key];
+    if (dir) process.env[key] = expandTilde(dir);
+    try {
+      const { sessionId } = await forkSession(sourceId, { upToMessageId });
+      return sessionId;
+    } finally {
+      if (dir) {
+        if (prev === undefined) delete process.env[key];
+        else process.env[key] = prev;
+      }
+    }
   }
 
   async setMode(mode: SessionMode): Promise<void> {
