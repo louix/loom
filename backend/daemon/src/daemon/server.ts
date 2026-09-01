@@ -60,6 +60,11 @@ export class SocketServer {
       server.once("error", reject);
       server.listen(sockPath, () => {
         server.removeListener("error", reject);
+        // `net.Server` keeps emitting `error` for the rest of its life on
+        // accept-time failures (EMFILE/ENFILE/ENOBUFS under fd pressure). With
+        // no listener that's an uncaught exception and the whole daemon dies —
+        // log and keep serving instead; the failed accept is already lost.
+        server.on("error", (err) => log.error("socket server error", { err: String(err) }));
         try {
           chmodSync(sockPath, 0o600);
         } catch {

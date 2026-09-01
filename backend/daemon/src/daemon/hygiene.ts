@@ -6,6 +6,9 @@ import type { LoomPaths } from "@loom/core/paths";
 import type { ChildStore } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
 
+/** A git `index.lock` younger than this may still belong to a live operation. */
+const LOCK_STALE_MS = 30_000;
+
 export interface HygieneInput {
   paths: LoomPaths;
   registry: Registry;
@@ -117,16 +120,26 @@ const tidyWorktrees = (
       }
       // A worktree's .git is a file pointing at the real gitdir; the index.lock
       // that a killed git process leaves behind lives in that gitdir. Check the
-      // common in-tree location too.
+      // common in-tree location too. Only clear a lock that's been sitting for a
+      // while — a fresh one may belong to a git command an operator is running
+      // in the worktree right now, and yanking it mid-operation corrupts the index.
       for (const lock of [join(treeDir, ".git", "index.lock"), join(treeDir, "index.lock")]) {
-        if (existsSync(lock)) {
-          try {
-            rmSync(lock);
-            clearedLocks.push(lock);
-            log.warn("cleared stale git lock", { lock });
-          } catch {
-            /* leave it; git will complain later, loudly */
-          }
+        let ageMs = Infinity;
+        try {
+          ageMs = Date.now() - statSync(lock).mtimeMs;
+        } catch {
+          continue; // not there
+        }
+        if (ageMs < LOCK_STALE_MS) {
+          log.debug("leaving a recent git lock alone", { lock, ageMs });
+          continue;
+        }
+        try {
+          rmSync(lock);
+          clearedLocks.push(lock);
+          log.warn("cleared stale git lock", { lock });
+        } catch {
+          /* leave it; git will complain later, loudly */
         }
       }
     }

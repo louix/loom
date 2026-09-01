@@ -70,16 +70,16 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 
 | ID | Sev | Status | Finding | Where |
 |----|-----|--------|---------|-------|
-| L1 | med | todo | `net.Server` has no lifetime `error` listener after `listen()` → accept-time `EMFILE` crashes the daemon | `daemon/server.ts:59-71` |
-| L2 | med | todo | Signal handlers installed only at end of `#bringUp`; a throw after `acquirePidfile` leaks pidfile + DB handle (no `try/catch`) | `daemon/daemon.ts:357-398` |
-| L3 | med | todo | Shutdown unbounded + 2nd signal no-ops → daemon unkillable, pidfile blocks restart | `daemon/daemon.ts:400-444` |
-| L5 | low-med | todo | `reapChildren` forgets the child row before confirming death; SIGKILL escalation is an `unref`'d timer | `daemon/hygiene.ts:59-97` |
-| L6 | low-med | todo | `#reloadConfig` aliases `this.config` as `before` then mutates it in place | `daemon/daemon.ts:1045-1091` |
-| L7 | low-med | todo | Model probes block the socket ~10 s before `listen()` | `daemon/daemon.ts:374-380` |
-| L8 | low | todo | `tidyWorktrees` deletes `index.lock` unconditionally (no age/pid check) | `daemon/hygiene.ts:99-133` |
-| L9 | low | todo | `stop()` has no `try/finally` guaranteeing `#resolveClosed()` + `releasePidfile()` | `daemon/daemon.ts:400-434` |
-| L10 | low | todo | Claude model-discovery timeout timer never cleared | `daemon/daemon.ts:585-590` |
-| L11 | low | todo | `acquirePidfile` writes non-atomically (use tmp+rename) | `daemon/lifecycle.ts:24-54` |
+| L1 | med | done | `net.Server` has no lifetime `error` listener after `listen()` → accept-time `EMFILE` crashes the daemon | `daemon/server.ts:59-71` |
+| L2 | med | done | Signal handlers installed only at end of `#bringUp`; a throw after `acquirePidfile` leaks pidfile + DB handle (no `try/catch`) | `daemon/daemon.ts:357-398` |
+| L3 | med | done | Shutdown unbounded + 2nd signal no-ops → daemon unkillable, pidfile blocks restart | `daemon/daemon.ts:400-444` |
+| L5 | low-med | backlog | `reapChildren` forgets the child row before confirming death. A correct fix needs an async hygiene path; `test/hygiene.test.ts` currently locks the synchronous "one restart clears the row" contract. | `daemon/hygiene.ts:59-97` |
+| L6 | low-med | done | `#reloadConfig` aliases `this.config` as `before` then mutates it in place | `daemon/daemon.ts:1045-1091` |
+| L7 | low-med | done | Model probes block the socket ~10 s before `listen()` — now listen first | `daemon/daemon.ts:374-380` |
+| L8 | low | done | `tidyWorktrees` deletes `index.lock` unconditionally (no age/pid check) | `daemon/hygiene.ts:99-133` |
+| L9 | low | done | `stop()` has no `try/finally` guaranteeing `#resolveClosed()` + `releasePidfile()` | `daemon/daemon.ts:400-434` |
+| L10 | low | done | Claude model-discovery timeout timer never cleared | `daemon/daemon.ts:585-590` |
+| L11 | low | wontfix | `acquirePidfile` — the `wx` exclusive create is the single-instance guard and matters more than the theoretical torn write of a ~60-byte JSON payload (one `write(2)`). tmp+rename would lose the exclusivity. | `daemon/lifecycle.ts:24-54` |
 | W9a | low | todo | Reconnect backoff has no jitter | `client/client.ts:332-356` |
 | W10 | low | todo | Client never validates `result.protocolVersion` | `client/client.ts:291-318` |
 | W11 | low | todo | Non-numeric `req` id / unmatched `res` id silently ignored → request hangs to timeout | `client/client.ts:243-254` |

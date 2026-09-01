@@ -115,6 +115,11 @@ const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
 
 /** How often the daemon re-checks keep-warm sessions for a cache about to lapse. */
 const KEEP_WARM_SWEEP_MS = 30_000;
+
+/** How long `stop()` waits for session shutdown before proceeding to release
+ *  the pidfile and resolve `whenClosed()` regardless. A wedged adapter must not
+ *  make the daemon unkillable. */
+const SHUTDOWN_GRACE_MS = 5_000;
 /** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
 const KEEP_WARM_RED_FRACTION = 0.08;
 /** Give up keeping a session warm after this many pings with no reply from the user. */
@@ -308,7 +313,14 @@ export class Daemon {
 
   static async start(opts: DaemonStartOptions): Promise<Daemon> {
     const d = new Daemon(opts);
-    await d.#bringUp();
+    try {
+      await d.#bringUp();
+    } catch (err) {
+      // Unwind whatever bring-up managed to claim — the pidfile (naming this
+      // live pid) and the open DB handle would otherwise block every restart.
+      await d.stop("bring-up failed").catch(() => {});
+      throw err;
+    }
     return d;
   }
 
@@ -359,16 +371,22 @@ export class Daemon {
       this.#emitSessionUpdated(this.#registry.mustGet(id));
     }
 
+    this.#watchConfig();
+    if (!this.#standalone) this.#installSignalHandlers();
+
+    // Listen before the model probes: a client that just spawned us can start
+    // talking immediately, and a signal during the (up to ~10s) probe window is
+    // now caught by the handlers above rather than hitting the default terminate.
+    await this.#server.listen();
+
     await this.#resolveAutoModels();
     await this.#resolveClaudeModels();
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
 
-    await this.#server.listen();
+    if (this.#stopping) return; // a signal landed mid-probe; stop() has the wheel
 
-    this.#watchConfig();
-    if (!this.#standalone) this.#installSignalHandlers();
     this.#idle.poke(this.#isBusy());
 
     this.#warmSweep = setInterval(() => {
@@ -398,32 +416,44 @@ export class Daemon {
     for (const [sig, fn] of this.#signalHandlers) process.removeListener(sig, fn);
     this.#signalHandlers = [];
 
-    await this.#sessions.shutdown();
-    // Give in-flight auto-title jobs (one-shot titler sessions live outside the
-    // SessionManager) a brief window to finish before the DB closes under them.
-    if (this.#titleJobs.size > 0) {
-      await Promise.race([
-        Promise.allSettled(this.#titleJobs),
-        new Promise((r) => setTimeout(r, 2_000).unref()),
-      ]);
-    }
-    await this.#server.close();
     try {
-      checkpoint(this.#db);
-      this.#db.close();
-    } catch (err) {
-      this.#log.warn("db close failed", { err: String(err) });
+      // Time-bound the session drain: one adapter whose close() never settles
+      // must not hang shutdown before the pidfile is released.
+      await Promise.race([
+        this.#sessions.shutdown(),
+        new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS).unref()),
+      ]);
+      // Give in-flight auto-title jobs (one-shot titler sessions live outside
+      // the SessionManager) a brief window to finish before the DB closes.
+      if (this.#titleJobs.size > 0) {
+        await Promise.race([
+          Promise.allSettled(this.#titleJobs),
+          new Promise((r) => setTimeout(r, 2_000).unref()),
+        ]);
+      }
+      await this.#server.close();
+      try {
+        checkpoint(this.#db);
+        this.#db.close();
+      } catch (err) {
+        this.#log.warn("db close failed", { err: String(err) });
+      }
+    } finally {
+      if (this.#pidfile) releasePidfile(this.paths.pid);
+      this.#log.info("daemon stopped", { reason });
+      this.#resolveClosed();
     }
-    if (this.#pidfile) releasePidfile(this.paths.pid);
-
-    this.#log.info("daemon stopped", { reason });
-    this.#resolveClosed();
     return this.#closed;
   }
 
   #installSignalHandlers(): void {
     for (const sig of ["SIGINT", "SIGTERM"] as const) {
       const fn = () => {
+        if (this.#stopping) {
+          // Operator is hammering Ctrl-C because shutdown is wedged — oblige.
+          this.#log.warn("second signal during shutdown; forcing exit", { sig });
+          process.exit(1);
+        }
         void this.stop(sig);
       };
       process.on(sig, fn);
@@ -599,12 +629,16 @@ export class Daemon {
     try {
       const provider = await this.#providers.get(this.#claudeCatalogId);
       if (!provider.listModels) return;
+      let timer: NodeJS.Timeout | undefined;
       const models = await Promise.race([
         provider.listModels(),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error("timed out after 10s")), 10_000).unref?.(),
-        ),
-      ]);
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error("timed out after 10s")), 10_000);
+          timer.unref();
+        }),
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
       if (models.length === 0) return;
       this.#claudeChoices = models.map((m) => ({
         id: m.id,
@@ -1096,7 +1130,9 @@ export class Daemon {
       this.#emitNotice("config has a syntax error — kept the running one", "warn");
       return;
     }
-    const before = this.config;
+    // Deep copy, not an alias: the hot-apply block below mutates `this.config`
+    // in place, and `needsRestart` must diff `next` against the pre-reload state.
+    const before = JSON.parse(JSON.stringify(this.config)) as LoomConfig;
     if (JSON.stringify(next) === JSON.stringify(before)) return;
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
