@@ -133,11 +133,11 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 
 | ID | Sev | Status | Finding | Where |
 |----|-----|--------|---------|-------|
-| S2 | med | todo | `send()` post-await unconditional `stateRunning` races the just-started turn, can mask a real block | `daemon/session-manager.ts:341-360` |
-| S3 | med | todo | 8 turn-control methods skip the `run.ended` check `send`/`compact` have → forward to a torn-down adapter | `daemon/session-manager.ts:370-471` |
+| S2 | med | done | `send()` post-await unconditional `stateRunning` races the just-started turn, can mask a real block | `daemon/session-manager.ts:341-360` |
+| S3 | med | done | 8 turn-control methods skip the `run.ended` check `send`/`compact` have → forward to a torn-down adapter | `daemon/session-manager.ts:370-471` |
 | S8 | med | todo | Raw `ev.tokens.*` summed additively though only `costDeltaUsd` is a declared delta → double-count risk | `daemon/session-manager.ts:266-283` |
-| S12 | low | todo | Class doc claims per-session serialization the code doesn't implement (this phase) | `daemon/session-manager.ts:1-7` |
-| S13 | low | todo | `interrupt()`/`rewind()` accept terminal states and overwrite a clean end | `daemon/session-manager.ts:370-393` |
+| S12 | low | done | Class doc claims per-session serialization the code doesn't implement (this phase) | `daemon/session-manager.ts:1-7` |
+| S13 | low | done | `interrupt()`/`rewind()` accept terminal states and overwrite a clean end | `daemon/session-manager.ts:370-393` |
 | A1 | **high** | todo | Manual `compact()`/`rewind()` race a concurrently-started turn → transcript corruption | `aisdk/src/session.ts:252-256, 551-617` |
 | A2 | **high** | todo | `interrupt()`/`close()` can't cancel an in-flight compaction; `close()` emits to a closed channel post-teardown | `aisdk/src/session.ts:284-291, 619-654` |
 | A4 | med | todo | Provider/stream error with an unanswered permission prompt can wedge the turn (loop breaks only on `abort`) | `aisdk/src/loop.ts:113-127` |

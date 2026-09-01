@@ -1462,6 +1462,17 @@ export class Daemon {
         await this.#reviveSession(id);
         this.#onActivityChange("session-resumed");
       }
+      // A `compact` / `rewind` holds the session's op gate — a straight send
+      // would park behind it (a compaction can run for minutes). Fast-fail with
+      // a distinct `code` the TUI recognises and re-routes to its own outgoing
+      // queue (which drains when the compaction boundary lands).
+      const restructuring = this.#sessions.isRestructuring(id);
+      if (restructuring) {
+        throw new RpcError(
+          "busy",
+          `session is ${restructuring}ing — the message was not sent, retry in a moment`,
+        );
+      }
       const { injected } = await this.#sessions.send(id, text);
       // Always emit the message so every client renders it from one source
       // (clients don't local-echo sends). `injected: true` = it landed in a

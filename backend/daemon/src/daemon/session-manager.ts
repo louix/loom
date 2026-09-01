@@ -1,9 +1,11 @@
 /**
  * Owns every live adapter session: one pump task per session drains the
  * adapter's normalized `HarnessEvent` stream, forwards each frame to the daemon,
- * derives status (design spec §4) and rolls usage up. Turn control — send,
- * interrupt, permission responses, mode / model — funnels through here so it is
- * serialized per session and the daemon stays thin.
+ * derives status (design spec §4) and rolls usage up. Turn control funnels
+ * through here so the daemon stays thin. The three ops that restructure the
+ * transcript / turn ownership — `send`, `compact`, `rewind` — are serialized
+ * per session through `#enqueue`; `interrupt` / `close` deliberately preempt
+ * that chain rather than queue behind it.
  */
 import type { AwaitReason, BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
 import {
@@ -79,6 +81,12 @@ interface Running {
   ended: boolean;
   refReported: boolean;
   pump: Promise<void>;
+  /** Per-session op chain — `send` / `compact` / `rewind` run one at a time through {@link SessionManager.#enqueue}. */
+  gate: Promise<unknown>;
+  /** Set for the duration of a gated `compact` / `rewind`; a straight `send` is fast-failed while non-null. */
+  restructuring: "compact" | "rewind" | null;
+  /** Set around a gated `rewind` — `interrupt` no-ops rather than clobber a fork in progress. */
+  rewinding: boolean;
 }
 
 export class SessionManager {
@@ -109,6 +117,12 @@ export class SessionManager {
     return this.#running.get(id)?.session.snapshot() ?? null;
   }
 
+  /** Non-null while a `compact` / `rewind` holds the session's op gate — the
+   *  daemon `session.send` handler fast-fails with `code: "busy"` on it. */
+  isRestructuring(id: string): "compact" | "rewind" | null {
+    return this.#running.get(id)?.restructuring ?? null;
+  }
+
   // --- lifecycle --------------------------------------------------------
 
   async create(provider: AgentProvider, opts: CreateSessionOptions): Promise<void> {
@@ -134,6 +148,9 @@ export class SessionManager {
       ended: false,
       refReported: false,
       pump: Promise.resolve(),
+      gate: Promise.resolve(),
+      restructuring: null,
+      rewinding: false,
     };
     this.#running.set(id, run);
     // `#drain` handles its own stream errors; this catch is for the pathological
@@ -366,6 +383,28 @@ export class SessionManager {
   // --- turn control ----------------------------------------------------
 
   /**
+   * Run `op` after every op already queued on this session's gate has settled —
+   * the per-session serialization for `send` / `compact` / `rewind`. The gate
+   * swap MUST stay synchronous (no `await` before it): a re-entrant caller
+   * (`#maybeAutoRebase` → `void this.send(...)`) then chains *after* the current
+   * op instead of racing it. `interrupt` / `close` deliberately do NOT go
+   * through here — they preempt.
+   */
+  async #enqueue<T>(run: Running, op: () => Promise<T>): Promise<T> {
+    const prev = run.gate;
+    let release!: () => void;
+    run.gate = new Promise<void>((r) => {
+      release = r;
+    });
+    await prev.catch(() => {});
+    try {
+      return await op();
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Deliver `text` to the session. Returns whether it was an injection into an
    * already-live turn (`injected: true`) vs. the start of a fresh turn — read
    * synchronously from the tracked status before handing off, since the adapter
@@ -382,26 +421,66 @@ export class SessionManager {
     // keep-warm ping bumps it (see {@link SessionManager.warmPingCount}).
     if (opts.keepWarm) this.#warmPings.set(id, (this.#warmPings.get(id) ?? 0) + 1);
     else this.#warmPings.delete(id);
-    const injected = isLiveState(run.state);
-    await run.session.send(text);
-    // For an injection, leave the state (and its pending requests) alone; the
-    // turn's own events drive it. Otherwise this send is a fresh engagement —
-    // it supersedes any prior `interrupted` / `idle` / `error`.
-    if (injected) return { injected };
-    this.#transition(id, run, stateRunning);
-    return { injected };
+    // Defensive backstop — the real fast-fail is in the daemon `session.send`
+    // handler (a distinct `code: "busy"` the TUI re-routes to its own queue).
+    // A send that reached the gate mid-restructure would otherwise park for the
+    // whole (up-to-15-min) compaction.
+    if (run.restructuring) throw new Error(`session is ${run.restructuring}ing`);
+    return this.#enqueue(run, async () => {
+      const injected = isLiveState(run.state);
+      const before = run.state;
+      await run.session.send(text);
+      // Closed out from under us mid-send — let teardown settle the state.
+      if (this.#running.get(id) !== run) return { injected };
+      // For an injection, leave the state (and its pending requests) alone; the
+      // turn's own events drive it. Otherwise this send is a fresh engagement —
+      // it supersedes any prior `interrupted` / `idle` / `error`.
+      if (injected) return { injected };
+      // S2: only claim `running` if nothing already moved the state while the
+      // adapter `send()` was in flight (a fast turn that already blocked / ended)
+      // — an unconditional `stateRunning` here would mask a real state.
+      if (sameSessionState(run.state, before)) this.#transition(id, run, stateRunning);
+      return { injected };
+    });
   }
 
   async compact(id: string, instructions?: string): Promise<void> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
-    await run.session.compact(instructions);
-    // Status is left to the event stream: `/compact` runs a turn that ends with
-    // its own `result`, and a session compacted while idle stays idle.
+    return this.#enqueue(run, async () => {
+      run.restructuring = "compact";
+      try {
+        await run.session.compact(instructions);
+        // Status is left to the event stream: `/compact` runs a turn that ends
+        // with its own `result`, and a session compacted while idle stays idle.
+      } finally {
+        run.restructuring = null;
+      }
+    });
   }
 
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
+    // A fork / rewind is mid-flight — there is no turn to stop and clobbering
+    // state here would race the rewind's own idle transition.
+    if (run.rewinding) return;
+    if (run.restructuring === "compact") {
+      // A2: cancel an in-flight compaction. No state clobber — a manual compact
+      // of an idle session leaves `run.state === "idle"`, so a plain
+      // `!isLiveState` guard would wrongly no-op and leave the compaction running.
+      try {
+        await run.session.interrupt();
+      } catch (err) {
+        this.#hooks.log.warn("adapter interrupt failed", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+    // S13: an interrupt on a session that already ended cleanly (idle / error /
+    // interrupted / done) must not overwrite that settled state.
+    if (run.ended || !isLiveState(run.state)) return;
     run.pending.clear();
     // The SDK's interrupt kills the session's background tasks too; clear the
     // overlay now rather than wait for a `background_tasks` event that a
@@ -441,6 +520,7 @@ export class SessionManager {
     decision: PermissionDecision,
   ): Promise<RespondResult> {
     const run = this.#require(id);
+    if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(requestId);
     await run.session.respondToPermission(requestId, decision);
@@ -451,6 +531,7 @@ export class SessionManager {
 
   async answerQuestion(id: string, questionId: string, text: string): Promise<RespondResult> {
     const run = this.#require(id);
+    if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(questionId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(questionId);
     await run.session.answerQuestion(questionId, text);
@@ -466,6 +547,7 @@ export class SessionManager {
     decision: PlanDecision,
   ): Promise<RespondResult> {
     const run = this.#require(id);
+    if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(requestId);
     await run.session.respondToPlan(requestId, decision);
@@ -478,15 +560,21 @@ export class SessionManager {
   }
 
   async setMode(id: string, mode: SessionMode): Promise<void> {
-    await this.#require(id).session.setMode(mode);
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    await run.session.setMode(mode);
   }
 
   async setModel(id: string, model: string): Promise<void> {
-    await this.#require(id).session.setModel(model);
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    await run.session.setModel(model);
   }
 
   async setEffort(id: string, effort: EffortLevel): Promise<void> {
-    await this.#require(id).session.setEffort(effort);
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    await run.session.setEffort(effort);
   }
 
   /**
@@ -496,11 +584,24 @@ export class SessionManager {
    */
   async rewind(id: string, keep: number, at?: string): Promise<void> {
     const run = this.#require(id);
-    if (run.state.kind === "running" || run.state.kind === "starting") {
+    if (run.ended) throw new Error("session has ended");
+    // S13: only a settled, non-terminal session (`idle` / `error` /
+    // `interrupted`) may rewind — anything live or `done` must be interrupted
+    // first so a clean end isn't overwritten.
+    if (isLiveState(run.state) || run.state.kind === "done") {
       throw new Error("interrupt the session before rewinding it");
     }
-    await run.session.rewind(keep, at);
-    this.#transition(id, run, stateIdle, "rewind");
+    return this.#enqueue(run, async () => {
+      run.restructuring = "rewind";
+      run.rewinding = true;
+      try {
+        await run.session.rewind(keep, at);
+        if (this.#running.get(id) === run) this.#transition(id, run, stateIdle, "rewind");
+      } finally {
+        run.restructuring = null;
+        run.rewinding = false;
+      }
+    });
   }
 
   // --- teardown ------------------------------------------------------
@@ -517,6 +618,10 @@ export class SessionManager {
     } catch {
       // best effort
     }
+    // Let any queued `send` / `compact` / `rewind` unwind against the now-closed
+    // adapter before we drop the run — otherwise `#enqueue`'s `finally` fires
+    // after teardown.
+    await run.gate.catch(() => {});
     await run.pump.catch(() => {});
   }
 
@@ -532,6 +637,7 @@ export class SessionManager {
         } catch {
           // best effort
         }
+        await run.gate.catch(() => {});
         await run.pump.catch(() => {});
       }),
     );
