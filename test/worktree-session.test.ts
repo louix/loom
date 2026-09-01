@@ -199,6 +199,30 @@ test("session.remove on an unknown id is a not_found", async () => {
   await c.close();
 });
 
+test("concurrent markDone + remove on one id don't corrupt each other (G13)", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "race target",
+    provider: "fake",
+  });
+  const wt = s.worktree as string;
+
+  // Fire both without awaiting — the lifecycle gate serialises them.
+  const done = c.request("session.markDone", { id: s.id }).catch((e: unknown) => e);
+  const removed = c.request("session.remove", { id: s.id }).catch((e: unknown) => e);
+  await Promise.all([done, removed]);
+
+  // Exactly one outcome: the row is gone, or it's `done` — never a torn state,
+  // never an unhandled throw that isn't a clean RpcError.
+  const row = await c.request<SessionSnapshot | null>("session.get", { id: s.id }).catch(() => null);
+  if (row) {
+    assert.equal(row.status.kind, "done");
+  } else {
+    assert.ok(!existsSync(wt), "if the row went, so did the worktree");
+  }
+  await c.close();
+});
+
 test("session.remove refuses a dirty worktree unless force is passed (G8)", async () => {
   const c = await client();
   const s = await c.request<SessionSnapshot>("session.create", {

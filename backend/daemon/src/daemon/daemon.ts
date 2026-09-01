@@ -182,6 +182,10 @@ export class Daemon {
   #claudeChoices: ModelChoice[] | null = null;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
+  /** Per-session-id gate serialising lifecycle ops (`markDone` / `remove` / `gc`)
+   *  so two of them can't interleave their awaits and act on a half-torn-down
+   *  or already-deleted row. */
+  readonly #lifecycleGate = new Map<string, Promise<unknown>>();
   // The "already nudged for this base head" record is persisted on the session
   // row (`auto_rebase_nudged_sha`) — see `SessionStore.autoRebaseNudgedSha` —
   // so it survives a daemon restart.
@@ -1032,6 +1036,27 @@ export class Daemon {
     });
   }
 
+  /**
+   * Run `fn` after any lifecycle op already in flight for `id` has finished, so
+   * `markDone` / `remove` / `gc` on the same session can't interleave their
+   * awaits (G13). The gate swap is synchronous before the first `await`.
+   */
+  async #withLifecycleGate<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.#lifecycleGate.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    this.#lifecycleGate.set(id, gate);
+    await prev.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.#lifecycleGate.get(id) === gate) this.#lifecycleGate.delete(id);
+    }
+  }
+
   /** ~cost to re-prime an aisdk transcript truncated to `keepMessages` (a cache write). */
   #rewindCostUsd(model: string | null, keepMessages: number, id: string): number {
     const keep = Math.min(Math.max(0, keepMessages), this.#pmsgs.count(id));
@@ -1621,7 +1646,8 @@ export class Daemon {
       // already checked clean above.
       if (restoreWorktree && wt && checkpointSha) {
         const r = this.#worktrees.restoreTo(wt, checkpointSha);
-        if (!r.ok) throw new RpcError("worktree_error", `could not restore the worktree: ${r.error}`);
+        if (!r.ok)
+          throw new RpcError("worktree_error", `could not restore the worktree: ${r.error}`);
         if (worktreeDrift) worktreeDrift.restored = true;
       }
 
@@ -1922,20 +1948,23 @@ export class Daemon {
 
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
-      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
-      this.#lastSend.delete(id);
-      const snap = this.#registry.setStatus(id, stateDone, "marked_done");
-      this.emitEvent({
-        type: "status_changed",
-        sessionId: id,
-        status: stateDone,
-        ts: Date.now(),
-        note: "marked_done",
+      return this.#withLifecycleGate(id, async () => {
+        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+        if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
+        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+        this.#lastSend.delete(id);
+        const snap = this.#registry.setStatus(id, stateDone, "marked_done");
+        this.emitEvent({
+          type: "status_changed",
+          sessionId: id,
+          status: stateDone,
+          ts: Date.now(),
+          note: "marked_done",
+        });
+        this.#emitSessionUpdated(snap, clientLabel(params));
+        this.#onActivityChange("marked-done");
+        return this.#enrich(snap);
       });
-      this.#emitSessionUpdated(snap, clientLabel(params));
-      this.#onActivityChange("marked-done");
-      return this.#enrich(snap);
     });
 
     // remove: delete a session row for good — its worktree and its stored
@@ -1948,48 +1977,50 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const alsoBranch = p["deleteBranch"] === true;
       const force = p["force"] === true;
-      const s = this.#registry.get(id);
-      if (!s) throw new RpcError("not_found", `no such session: ${id}`);
-      // Removing a worktree with uncommitted / untracked changes discards that
-      // work silently. Make the caller opt in, the way `gc` already threads
-      // `force` — the row / transcript deletion is inherently destructive, but
-      // live file changes deserve an explicit ack.
-      if (!force && s.worktree && this.#worktrees.isDirty(s.worktree)) {
-        throw new RpcError(
-          "bad_request",
-          "the worktree has uncommitted changes — commit them, or pass force to discard",
-        );
-      }
-      if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
-      this.#lastSend.delete(id);
-      if (s.worktree) {
-        try {
-          this.#worktrees.remove(s.worktree, { force: true });
-        } catch (err) {
-          // The tree is still on disk. Dropping the row now would orphan it —
-          // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
-          // flip it to `error` so `session.gc {id}` can retry, and surface it.
-          const msg = err instanceof Error ? err.message : String(err);
-          this.#log.warn("session.remove: worktree removal failed", { id, error: msg });
-          const errSnap = this.#registry.setStatus(
-            id,
-            stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
-            "remove_failed",
+      return this.#withLifecycleGate(id, async () => {
+        const s = this.#registry.get(id);
+        if (!s) throw new RpcError("not_found", `no such session: ${id}`);
+        // Removing a worktree with uncommitted / untracked changes discards that
+        // work silently. Make the caller opt in, the way `gc` already threads
+        // `force` — the row / transcript deletion is inherently destructive, but
+        // live file changes deserve an explicit ack.
+        if (!force && s.worktree && this.#worktrees.isDirty(s.worktree)) {
+          throw new RpcError(
+            "bad_request",
+            "the worktree has uncommitted changes — commit them, or pass force to discard",
           );
-          this.#emitSessionUpdated(errSnap, clientLabel(params));
-          throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
         }
-      }
-      let branchDeleted = false;
-      if (alsoBranch && s.branch && !s.inPlace) {
-        this.#worktrees.prune(); // release the worktree's hold on the branch first
-        branchDeleted = this.#worktrees.deleteBranch(s.branch);
-      }
-      this.#registry.remove(id);
-      this.#emitSessionRemoved(id);
-      this.#worktrees.prune();
-      this.#onActivityChange("session-removed");
-      return { removed: id, branchDeleted };
+        if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
+        this.#lastSend.delete(id);
+        if (s.worktree) {
+          try {
+            this.#worktrees.remove(s.worktree, { force: true });
+          } catch (err) {
+            // The tree is still on disk. Dropping the row now would orphan it —
+            // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
+            // flip it to `error` so `session.gc {id}` can retry, and surface it.
+            const msg = err instanceof Error ? err.message : String(err);
+            this.#log.warn("session.remove: worktree removal failed", { id, error: msg });
+            const errSnap = this.#registry.setStatus(
+              id,
+              stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
+              "remove_failed",
+            );
+            this.#emitSessionUpdated(errSnap, clientLabel(params));
+            throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+          }
+        }
+        let branchDeleted = false;
+        if (alsoBranch && s.branch && !s.inPlace) {
+          this.#worktrees.prune(); // release the worktree's hold on the branch first
+          branchDeleted = this.#worktrees.deleteBranch(s.branch);
+        }
+        this.#registry.remove(id);
+        this.#emitSessionRemoved(id);
+        this.#worktrees.prune();
+        this.#onActivityChange("session-removed");
+        return { removed: id, branchDeleted };
+      });
     });
 
     // gc: remove worktrees for sessions marked done. Branches are never
@@ -2012,21 +2043,27 @@ export class Daemon {
       }
       const removed: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
-      for (const s of this.#registry.list()) {
-        if (!eligible(s.status.kind) || !s.worktree) continue;
-        if (only && s.id !== only) continue;
-        try {
-          // A `done` session was only interrupted, not closed — its provider
-          // process is still registered with this worktree as its cwd. Close it
-          // before pulling the directory out from under it.
-          if (this.#sessions.has(s.id)) await this.#sessions.close(s.id).catch(() => {});
-          this.#worktrees.remove(s.worktree, { force });
-          const snap = this.#registry.setFields(s.id, { worktree: null });
-          this.#emitSessionUpdated(snap, clientLabel(params));
-          removed.push(s.id);
-        } catch (err) {
-          failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) });
-        }
+      const targets = this.#registry
+        .list()
+        .filter((s) => eligible(s.status.kind) && s.worktree && (!only || s.id === only));
+      for (const t of targets) {
+        await this.#withLifecycleGate(t.id, async () => {
+          // Re-read under the gate: a concurrent `remove` may have deleted it.
+          const s = this.#registry.get(t.id);
+          if (!s?.worktree || !eligible(s.status.kind)) return;
+          try {
+            // A `done` session was only interrupted, not closed — its provider
+            // process is still registered with this worktree as its cwd. Close
+            // it before pulling the directory out from under it.
+            if (this.#sessions.has(s.id)) await this.#sessions.close(s.id).catch(() => {});
+            this.#worktrees.remove(s.worktree, { force });
+            const snap = this.#registry.setFields(s.id, { worktree: null });
+            this.#emitSessionUpdated(snap, clientLabel(params));
+            removed.push(s.id);
+          } catch (err) {
+            failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) });
+          }
+        });
       }
       this.#worktrees.prune();
       return { removed, failed };
