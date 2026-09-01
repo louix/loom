@@ -115,24 +115,29 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
     });
 
     for await (const part of res.fullStream) {
-      if (part.type === "error") {
-        errored = true;
-        sawErrorPart = true;
-      }
       if (part.type === "finish-step") {
         const r = (part as { finishReason?: string }).finishReason;
         if (r) lastStepReason = r;
       }
-      // Let the mapper see `abort` too — it flushes any half-streamed
-      // assistant text into the feed before we stop.
+      // Let the mapper see `abort` / `error` too — it flushes any half-streamed
+      // assistant text into the feed (and, for `error`, emits the fatal event)
+      // before we stop.
       for (const ev of mapper.map(part)) hooks.emit(ev);
       if (part.type === "abort") {
         aborted = true;
         break;
       }
+      // A4: stop reading on a stream error, mirroring `abort`. Consuming the
+      // rest of the stream would leave a tool parked in the permission gate
+      // (its `execute` still awaiting) with nothing to release it → wedged turn.
+      if (part.type === "error") {
+        errored = true;
+        sawErrorPart = true;
+        break;
+      }
     }
 
-    if (aborted) return { aborted, errored, hitStepLimit: false };
+    if (aborted || errored) return { aborted, errored, hitStepLimit: false };
 
     try {
       // Surface a late failure the stream didn't already report; messages were

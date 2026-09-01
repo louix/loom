@@ -138,11 +138,11 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | S8 | med | todo | Raw `ev.tokens.*` summed additively though only `costDeltaUsd` is a declared delta → double-count risk | `daemon/session-manager.ts:266-283` |
 | S12 | low | done | Class doc claims per-session serialization the code doesn't implement (this phase) | `daemon/session-manager.ts:1-7` |
 | S13 | low | done | `interrupt()`/`rewind()` accept terminal states and overwrite a clean end | `daemon/session-manager.ts:370-393` |
-| A1 | **high** | todo | Manual `compact()`/`rewind()` race a concurrently-started turn → transcript corruption | `aisdk/src/session.ts:252-256, 551-617` |
-| A2 | **high** | todo | `interrupt()`/`close()` can't cancel an in-flight compaction; `close()` emits to a closed channel post-teardown | `aisdk/src/session.ts:284-291, 619-654` |
-| A4 | med | todo | Provider/stream error with an unanswered permission prompt can wedge the turn (loop breaks only on `abort`) | `aisdk/src/loop.ts:113-127` |
-| A5 | med | todo | `#pendingPerms` keyed by provider `toolCallId` → duplicate ids under concurrent sub-agents orphan a promise | `aisdk/src/session.ts:493` |
-| A8 | low | todo | Interrupt during first-turn MCP connect / auto-compact: no event, message left unprocessed | `aisdk/src/session.ts:656-671` |
+| A1 | **high** | done | Manual `compact()`/`rewind()` race a concurrently-started turn → transcript corruption | `aisdk/src/session.ts:252-256, 551-617` |
+| A2 | **high** | done | `interrupt()`/`close()` can't cancel an in-flight compaction; `close()` emits to a closed channel post-teardown | `aisdk/src/session.ts:284-291, 619-654` |
+| A4 | med | done | Provider/stream error with an unanswered permission prompt can wedge the turn (loop breaks only on `abort`) | `aisdk/src/loop.ts:113-127` |
+| A5 | med | done | `#pendingPerms` keyed by provider `toolCallId` → duplicate ids under concurrent sub-agents orphan a promise | `aisdk/src/session.ts:493` |
+| A8 | low | done | Interrupt during first-turn MCP connect / auto-compact: no event, message left unprocessed | `aisdk/src/session.ts:656-671` |
 | C4 | med | todo | Global `process.env.CLAUDE_CONFIG_DIR` mutated across an `await` in `#forkTruncated` (serialize forkSession) | `connectors/claude/src/adapter.ts:498-514` |
 | C6 | med | todo | `interrupt()` doesn't cancel pending gates / `ask_user`; `canUseTool` bypasses the `#interrupted` muzzle. Also subsumes **S1**: gate the `permission_request`/`plan_review` emission on `#interrupted` so a killed turn's unwinding tool calls don't resurface a stopped session, without touching the (deliberately non-sticky) status machine. | `connectors/claude/src/adapter.ts:193-226` |
 | C12 | low | todo | `snapshot()` always reports `stateRunning`, even after the CLI process exits | `connectors/claude/src/adapter.ts:541-545` |

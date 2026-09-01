@@ -149,6 +149,11 @@ export class AisdkSession implements AgentSession {
   readonly #injections: string[] = [];
   #closing = false;
   #compacting = false;
+  /** The in-flight `#doCompact`, tracked so `interrupt()` / `close()` can await
+   *  its unwind after aborting it. Null between compactions. */
+  #compaction: Promise<void> | null = null;
+  /** Aborts the current summariser stream on `interrupt()` / `close()`. */
+  #compactAbort: AbortController | null = null;
   #implementAfterTurn: { plan: string; fresh: boolean } | null = null;
   #snap: AdapterSnapshot;
 
@@ -229,6 +234,7 @@ export class AisdkSession implements AgentSession {
     this.#turnRunning = true;
     try {
       await this.#turn?.catch(() => {});
+      await this.#compaction?.catch(() => {});
       const msg: ModelMessage = { role: "user", content: input };
       this.#messages.push(msg);
       this.#store?.append(this.id, [msg]);
@@ -259,7 +265,26 @@ export class AisdkSession implements AgentSession {
   async compact(instructions?: string): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     await this.#turn?.catch(() => {});
-    await this.#doCompact(instructions, "manual");
+    await this.#compactTracked(instructions, "manual");
+  }
+
+  /**
+   * Run `#doCompact` under a tracked promise + abort controller so `interrupt()`
+   * / `close()` can cancel an in-flight summarise — which legitimately runs for
+   * minutes on a long transcript — and await its unwind.
+   */
+  async #compactTracked(
+    instructions: string | undefined,
+    trigger: "manual" | "auto",
+  ): Promise<void> {
+    this.#compactAbort = new AbortController();
+    this.#compaction = this.#doCompact(instructions, trigger);
+    try {
+      await this.#compaction;
+    } finally {
+      this.#compaction = null;
+      this.#compactAbort = null;
+    }
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
@@ -291,16 +316,22 @@ export class AisdkSession implements AgentSession {
   async interrupt(): Promise<void> {
     this.#interrupted = true;
     this.#abort?.abort();
+    // Abort a compaction too — a manual one is tracked by `#compaction`, an
+    // in-`#runTurn` auto-compaction is awaited via `#turn`. Order the abort
+    // before both awaits.
+    this.#compactAbort?.abort();
     // A turn parked in the permission gate won't see the abort until its tool
     // `execute` returns — resolve the parked gate(s) so `#turn` can settle.
     this.#failPendingGates("the turn was interrupted");
     await this.#turn?.catch(() => {});
+    await this.#compaction?.catch(() => {});
   }
 
   /** Undo: keep the first `keep` messages, discard the rest (in memory + store). */
   async rewind(keep: number): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     await this.#turn?.catch(() => {});
+    await this.#compaction?.catch(() => {});
     const n = Math.max(0, Math.min(this.#messages.length, keep));
     this.#messages.length = n;
     this.#store?.replaceFrom(this.id, n, []);
@@ -332,7 +363,9 @@ export class AisdkSession implements AgentSession {
   async close(): Promise<void> {
     this.#closing = true;
     this.#abort?.abort();
+    this.#compactAbort?.abort();
     await this.#turn?.catch(() => {});
+    await this.#compaction?.catch(() => {});
     this.#failPendingGates("the session was closed");
     this.#builtins?.close();
     await this.#hub?.close().catch(() => {});
@@ -504,9 +537,12 @@ export class AisdkSession implements AgentSession {
   #requestPermission(
     toolName: string,
     input: unknown,
-    toolCallId: string,
+    _toolCallId: string,
   ): Promise<{ allow: boolean; message?: string }> {
-    const id = toolCallId || randomUUID();
+    // A5: key the gate on a fresh id, never the provider's `toolCallId` — under
+    // concurrent `task` sub-agents two calls can share one id, and the second
+    // would overwrite the first's resolver in `#pendingPerms` → orphaned await.
+    const id = randomUUID();
     return new Promise((resolve) => {
       this.#pendingPerms.set(id, resolve);
       this.#emit({
@@ -623,9 +659,13 @@ export class AisdkSession implements AgentSession {
     beat();
     schedule();
     try {
-      const summary = await this.#summarize(instructions, (n) => {
-        generated = n;
-      });
+      const summary = await this.#summarize(
+        instructions,
+        (n) => {
+          generated = n;
+        },
+        this.#compactAbort?.signal,
+      );
       if (!summary) {
         // Timed out or errored inside the summariser. Nothing was rewritten —
         // the transcript is intact. Emit a non-fatal error so clients can clear
@@ -635,6 +675,19 @@ export class AisdkSession implements AgentSession {
           sessionId: this.id,
           ts: Date.now(),
           message: "compaction failed — the transcript was left as-is",
+          fatal: false,
+        });
+        return;
+      }
+      // A1/A2: bail before the destructive rewrite if the session was
+      // interrupted / closed while the summariser ran (a partial or complete
+      // summary must not replace the live transcript out from under a caller).
+      if (this.#closing || this.#interrupted || this.#compactAbort?.signal.aborted) {
+        this.#emit({
+          type: "error",
+          sessionId: this.id,
+          ts: Date.now(),
+          message: "compaction was cancelled — the transcript was left as-is",
           fatal: false,
         });
         return;
@@ -661,6 +714,7 @@ export class AisdkSession implements AgentSession {
   async #summarize(
     instructions: string | undefined,
     onProgress?: (chars: number) => void,
+    cancel?: AbortSignal,
   ): Promise<string | null> {
     const ask =
       instructions?.trim() ||
@@ -677,7 +731,9 @@ export class AisdkSession implements AgentSession {
             content: `Summarise this conversation so work can continue with the summary standing in for the full history. ${ask} Respond with only the summary.`,
           },
         ],
-        abortSignal: AbortSignal.timeout(SUMMARISE_TIMEOUT_MS),
+        abortSignal: cancel
+          ? AbortSignal.any([AbortSignal.timeout(SUMMARISE_TIMEOUT_MS), cancel])
+          : AbortSignal.timeout(SUMMARISE_TIMEOUT_MS),
       });
       for await (const part of res.fullStream) {
         if (part.type === "text-delta") {
@@ -704,18 +760,27 @@ export class AisdkSession implements AgentSession {
     // `chained` = this turn kicked a follow-up that now owns `#turnRunning`.
     let chained = false;
     try {
-      if (this.#closing || this.#interrupted) return;
+      // A8: interrupt / close during pre-turn setup (MCP connect, auto-compact)
+      // still lands a settled status — set it here, emit nothing (the daemon
+      // derives its own state; a synthetic `result` would corrupt turn counts).
+      if (this.#closing || this.#interrupted) {
+        this.#snap.status = this.#interrupted ? stateInterrupted("user") : stateIdle;
+        return;
+      }
 
       if (
         !this.#oneShot &&
         this.#snap.contextLimit > 0 &&
         estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION
       ) {
-        await this.#doCompact(undefined, "auto");
+        await this.#compactTracked(undefined, "auto");
       }
 
       const tools = await this.#turnToolSet();
-      if (this.#closing || this.#interrupted) return;
+      if (this.#closing || this.#interrupted) {
+        this.#snap.status = this.#interrupted ? stateInterrupted("user") : stateIdle;
+        return;
+      }
 
       const abort = new AbortController();
       this.#abort = abort;
@@ -748,6 +813,11 @@ export class AisdkSession implements AgentSession {
       const stopped = aborted || this.#interrupted;
       if (stopped || errored) {
         this.#segmentsRun = 0;
+        // A4: a stream error while a tool sat parked in the permission gate —
+        // `runTurn` now breaks the read loop on an `error` part, but the gate's
+        // `execute` is still awaiting. Release it so the transcript heal below
+        // sees the real tail. (`stopped` already went through `interrupt()`.)
+        if (errored && !stopped) this.#failPendingGates("the turn errored");
         // Whether the turn stopped in the gate or on a provider error, the
         // transcript may now end on an unanswered tool-call — trim it (before
         // re-attaching any injection) so the next `send` starts from valid
@@ -774,7 +844,7 @@ export class AisdkSession implements AgentSession {
         this.#mode = "acceptEdits";
         this.#snap.mode = "acceptEdits";
         if (impl.fresh) {
-          await this.#doCompact(
+          await this.#compactTracked(
             "Keep the approved plan and the original goal verbatim; drop the exploration transcript.",
             "auto",
           );
