@@ -69,15 +69,21 @@ export class AsyncChannel<T> implements AsyncIterable<T> {
     for (const w of this.#waiters.splice(0)) w({ done: true, value: undefined as never });
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<T> {
+  [Symbol.asyncIterator](): AsyncGenerator<T> {
     // Single-consumer: two concurrent iterators would each park waiters and
-    // split the stream between them with no ordering guarantee. A *sequential*
-    // re-iteration (drain, break, drain again) is fine — the flag clears when
-    // the generator returns / is `.return()`d on break.
+    // split the stream between them with no ordering guarantee. Checked here
+    // (synchronously) rather than in the generator body so a second consumer
+    // fails loudly at the call site. A *sequential* re-iteration (drain, break,
+    // drain again) is fine — the flag clears when the generator returns / is
+    // `.return()`d on break.
     if (this.#consumed) {
       throw new Error("AsyncChannel is single-consumer and is already being iterated");
     }
     this.#consumed = true;
+    return this.#iterate();
+  }
+
+  async *#iterate(): AsyncGenerator<T> {
     try {
       for (;;) {
         if (this.#queue.length > 0) {
