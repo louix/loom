@@ -112,17 +112,32 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
   }
 
   let text = "";
-  const timer = setTimeout(() => void session.close().catch(() => {}), req.timeoutMs ?? 30_000);
+  let okResult = false;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void session.close().catch(() => {});
+  }, req.timeoutMs ?? 30_000);
   try {
     for await (const ev of session.events()) {
       if (ev.type === "assistant_text") text += ev.text;
-      else if (ev.type === "result" || (ev.type === "error" && ev.fatal)) break;
+      else if (ev.type === "result") {
+        okResult = ev.kind === "ok";
+        break;
+      } else if (ev.type === "error" && ev.fatal) break;
     }
   } catch (err) {
     log.debug("titler: stream failed", { err: String(err) });
   } finally {
     clearTimeout(timer);
     await session.close().catch(() => {});
+  }
+  // Only trust the reply when the one-shot actually finished. A timeout or a
+  // torn-off stream leaves `text` holding half a phrase — better to keep the
+  // clipped first message than show a mangled title.
+  if (timedOut || !okResult) {
+    log.debug("titler: no clean result", { timedOut });
+    return null;
   }
   return cleanTitle(text);
 };

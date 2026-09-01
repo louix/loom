@@ -110,7 +110,7 @@ export const deriveStatus = (
       // A trailing `result` from a turn the user already killed must not
       // un-stick `interrupted` (nor a settled `error`).
       if (terminal(current)) return current;
-      if (ev.kind !== "ok") return stateError(ev.error);
+      if (ev.kind !== "ok") return stateError(truncate(ev.error));
       // Clean finish: `idle`, unless the turn left background work running that
       // will wake it again — then `working_background`. If that "empty set"
       // `background_tasks` event is somehow missed, the task's own re-drive

@@ -84,13 +84,13 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | W10 | low | todo | Client never validates `result.protocolVersion` | `client/client.ts:291-318` |
 | W11 | low | todo | Non-numeric `req` id / unmatched `res` id silently ignored → request hangs to timeout | `client/client.ts:243-254` |
 | W13 | low | todo | `client.close()` is `async` but awaits nothing | `client/client.ts:164-168` |
-| S1 | **high** | todo | `deriveStatus` has no `terminal(current)` guard on `permission_request`/`question`/`plan_review` → killed/errored turn resurrected (guard only; full fix needs Phase 1) | `daemon/status-machine.ts:49-62` |
-| S4 | med | todo | Stream-ended path never clears `run.pending` (interrupt does) | `daemon/session-manager.ts:160-168` |
-| S5 | med | todo | Cost `NaN` from an adapter survives `?? 0` and both `#priceUsage` guards → poisons persisted total | `daemon/session-manager.ts:266-283` |
-| S7 | med | todo | Titler returns a truncated partial title on timeout instead of `null` | `daemon/titler.ts:114-128` |
-| S9 | low | todo | `result` error branch doesn't truncate / null-guard `ev.error` | `daemon/status-machine.ts:109-119` |
-| S10 | low | todo | `setKeepWarm` clears the give-up counter on idempotent re-asserts | `daemon/session-manager.ts:308-313` |
-| S14 | low-med | todo | A throwing per-event hook kills the `#drain` loop; `run.pump` rejection can go unhandled | `daemon/session-manager.ts:142-176` |
+| S1 | **high** | moved→P1 | `deriveStatus` resurrecting a killed turn on a trailing gate. The status-machine guard conflicts with a deliberate, tested design choice ("a new turn's blocking request re-engages an interrupted / errored session", `status-machine.test.ts:67`). The correct layer is the adapter muzzle — folded into **C6**. | `daemon/status-machine.ts:49-62` |
+| S4 | med | done | Stream-ended path never clears `run.pending` (interrupt does) | `daemon/session-manager.ts:160-168` |
+| S5 | med | done | Cost `NaN` — sanitized at the `#trackUsage` boundary (the store's `accFloat`/`abs` already guarded the columns; this keeps the in-memory delta finite for `#priceUsage`) | `daemon/session-manager.ts:266-283` |
+| S7 | med | done | Titler returns a truncated partial title on timeout instead of `null` | `daemon/titler.ts:114-128` |
+| S9 | low | done | `result` error branch now `truncate()`s `ev.error` (it's typed `string`, so no null-guard needed) | `daemon/status-machine.ts:109-119` |
+| S10 | low | done | `setKeepWarm` clears the give-up counter on idempotent re-asserts | `daemon/session-manager.ts:308-313` |
+| S14 | low-med | done | A throwing per-event hook kills the `#drain` loop; `run.pump` rejection can go unhandled | `daemon/session-manager.ts:142-176` |
 | G3 | med | todo | `gc` removes a worktree without `close()`ing the still-registered session | `daemon/daemon.ts:1788-1820` |
 | G4 | med | todo | Hard fork silently branches off base when the parent ref doesn't resolve — throw instead | `daemon/worktrees.ts:109-119` |
 | C3 | med | todo | Zeroed `modelUsage` on a crash/startup-error `result` resets mapper counters → false spike next turn | `connectors/claude/src/map.ts:375-401` |
@@ -144,7 +144,7 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | A5 | med | todo | `#pendingPerms` keyed by provider `toolCallId` → duplicate ids under concurrent sub-agents orphan a promise | `aisdk/src/session.ts:493` |
 | A8 | low | todo | Interrupt during first-turn MCP connect / auto-compact: no event, message left unprocessed | `aisdk/src/session.ts:656-671` |
 | C4 | med | todo | Global `process.env.CLAUDE_CONFIG_DIR` mutated across an `await` in `#forkTruncated` (serialize forkSession) | `connectors/claude/src/adapter.ts:498-514` |
-| C6 | med | todo | `interrupt()` doesn't cancel pending gates / `ask_user`; `canUseTool` bypasses the `#interrupted` muzzle | `connectors/claude/src/adapter.ts:193-226` |
+| C6 | med | todo | `interrupt()` doesn't cancel pending gates / `ask_user`; `canUseTool` bypasses the `#interrupted` muzzle. Also subsumes **S1**: gate the `permission_request`/`plan_review` emission on `#interrupted` so a killed turn's unwinding tool calls don't resurface a stopped session, without touching the (deliberately non-sticky) status machine. | `connectors/claude/src/adapter.ts:193-226` |
 | C12 | low | todo | `snapshot()` always reports `stateRunning`, even after the CLI process exits | `connectors/claude/src/adapter.ts:541-545` |
 
 ### Phase 2 — bounded buffers + write atomicity

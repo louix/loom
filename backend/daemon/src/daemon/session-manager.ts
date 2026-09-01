@@ -136,7 +136,15 @@ export class SessionManager {
       pump: Promise.resolve(),
     };
     this.#running.set(id, run);
-    run.pump = this.#drain(id, run);
+    // `#drain` handles its own stream errors; this catch is for the pathological
+    // case where the error path itself throws, so the rejection is never left
+    // unhandled (callers only `.catch(() => {})` it from close()/shutdown()).
+    run.pump = this.#drain(id, run).catch((err) => {
+      this.#hooks.log.error("session pump rejected", {
+        id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   async #drain(id: string, run: Running): Promise<void> {
@@ -146,19 +154,34 @@ export class SessionManager {
         if (ev.type === "error" && ev.fatal) {
           this.#hooks.log.warn("session error", { id, message: ev.message });
         }
-        this.#hooks.emitEvent(ev);
-        this.#trackPending(run, ev);
-        this.#trackSubagents(id, run, ev);
-        this.#trackBackgroundTasks(id, run, ev);
-        this.#trackRateLimit(run, ev);
-        this.#trackUsage(id, ev);
-        if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
-        this.#trackRef(id, run);
-        this.#applyStatus(id, run, ev);
+        // A transient failure in a downstream hook (a store write hiccup inside
+        // onStatus / onUsage) must not end the drain and tear down a live agent
+        // session — log it and keep consuming the stream.
+        try {
+          this.#hooks.emitEvent(ev);
+          this.#trackPending(run, ev);
+          this.#trackSubagents(id, run, ev);
+          this.#trackBackgroundTasks(id, run, ev);
+          this.#trackRateLimit(run, ev);
+          this.#trackUsage(id, ev);
+          if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
+          this.#trackRef(id, run);
+          this.#applyStatus(id, run, ev);
+        } catch (err) {
+          this.#hooks.log.error("event hook threw; continuing drain", {
+            id,
+            evType: ev.type,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       // The adapter stream ended. A clean run leaves state at idle/error;
       // anything still live stopped without a clean finish → interrupted.
       run.ended = true;
+      // Whatever was still outstanding can no longer be answered — the adapter
+      // session is gone. Drop it so a late respondTo* doesn't forward to a
+      // dead session (interrupt() does the same).
+      run.pending.clear();
       if (run.backgroundTasks.length > 0) {
         run.backgroundTasks = [];
         this.#hooks.onBackgroundTasks(id);
@@ -168,6 +191,7 @@ export class SessionManager {
       }
     } catch (err) {
       run.ended = true;
+      run.pending.clear();
       const message = err instanceof Error ? err.message : String(err);
       this.#hooks.log.warn("session pump failed", { id, err: message });
       this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
@@ -265,12 +289,17 @@ export class SessionManager {
 
   #trackUsage(id: string, ev: HarnessEvent): void {
     if (ev.type === "usage") {
+      // A provider that computes cost as tokens×rate can hand us a NaN when the
+      // rate is unknown; `?? 0` only catches null/undefined. The store guards
+      // its columns too, but keep the in-memory delta finite so `#priceUsage`'s
+      // `costUsd > 0` check classifies the cost source correctly.
+      const cost = ev.costDeltaUsd ?? 0;
       this.#hooks.onUsage(id, {
         input: ev.tokens.input,
         output: ev.tokens.output,
         cacheRead: ev.tokens.cacheRead,
         cacheWrite: ev.tokens.cacheWrite,
-        costUsd: ev.costDeltaUsd ?? 0,
+        costUsd: Number.isFinite(cost) ? cost : 0,
         contextUsed: ev.contextUsed,
         contextLimit: ev.contextLimit,
         lastTurnAt: ev.ts,
@@ -307,9 +336,13 @@ export class SessionManager {
   /** Turn keep-warm on/off for a live session. No-op once it's gone. */
   setKeepWarm(id: string, on: boolean): void {
     if (!this.#running.has(id)) return;
+    const was = this.#keepWarm.has(id);
     if (on) this.#keepWarm.add(id);
     else this.#keepWarm.delete(id);
-    this.#warmPings.delete(id);
+    // Reset the unanswered-ping give-up counter only on a real off→on / on→off
+    // edge — a redundant re-assert (TUI bounce, reconnect) must not let a
+    // session nobody answers get re-primed forever.
+    if (was !== on) this.#warmPings.delete(id);
   }
 
   /** Whether keep-warm is on for `id`. */
