@@ -187,14 +187,16 @@ _Out of scope: **D8** (`backlog`)._
 
 ### Phase 3 — rewind/undo record
 
+_Done (`loom/audit-codebase-and-delegate-to`): migration 14 records the worktree HEAD + dirty state per checkpoint; `session.rewind` warns on drift and takes an opt-in `restoreWorktree` (`git reset --hard`, refuses a dirty tree). Claude `rewind()` resumes with the live model/mode/effort and, via `mapper.onQuerySwap()`, keeps cumulative usage/cost monotonic + drops stale chain/bg/subagent carry-over. aisdk ends a segment early when the transcript nears the window so the next segment compacts. +9 tests._
+
 | ID  | Sev      | Status | Finding                                                                                                | Where                                      |
 | --- | -------- | ------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| G2  | **high** | todo   | Undo/rewind never restores worktree files — checkpoint stores no git SHA                               | `daemon/daemon.ts:921-941, 1400-1477`      |
-| C1  | **high** | todo   | `rewind()` silently reverts live model/effort/mode changes                                             | `connectors/claude/src/adapter.ts:492`     |
-| C2  | **high** | todo   | `rewind()` regresses cumulative token/cost totals, contradicting its docstring                         | `connectors/claude/src/map.ts:399-401`     |
+| G2  | **high** | done   | Undo/rewind never restores worktree files — checkpoint stores no git SHA                               | `daemon/daemon.ts:921-941, 1400-1477`      |
+| C1  | **high** | done   | `rewind()` silently reverts live model/effort/mode changes                                             | `connectors/claude/src/adapter.ts:492`     |
+| C2  | **high** | done   | `rewind()` regresses cumulative token/cost totals, contradicting its docstring                         | `connectors/claude/src/map.ts:399-401`     |
 | C5  | med      | done   | Live query ending during the pre-teardown fork window → permanently silent session                     | `connectors/claude/src/adapter.ts:285-318` |
-| C13 | low      | todo   | Mapper carry-over state (`#lastChainUuid`, `#lastBgSig`, `#openSubagents`) not reset across `rewind()` | `connectors/claude/src/map.ts:176-183`     |
-| A9  | low      | todo   | No compaction between steps within a single 50-step segment                                            | `aisdk/src/session.ts:662-668`             |
+| C13 | low      | done   | Mapper carry-over state (`#lastChainUuid`, `#lastBgSig`, `#openSubagents`) not reset across `rewind()` | `connectors/claude/src/map.ts:176-183`     |
+| A9  | low      | done   | No compaction between steps within a single 50-step segment                                            | `aisdk/src/session.ts:662-668`             |
 
 ### Phase 4 — git worktree safety
 
