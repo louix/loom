@@ -869,6 +869,12 @@ export class Daemon {
     const { mode } = this.config.autoRebase;
     const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
     if (res.outcome === "no-base" || res.outcome === "current") return;
+    // The agent is mid-rebase/merge in its own worktree — leave it entirely
+    // alone (don't nudge, don't clear the nudge record) and try again next idle.
+    if (res.outcome === "busy") {
+      this.#log.debug("auto-rebase skipped — agent op in progress", { id, op: res.op });
+      return;
+    }
 
     if (res.outcome === "updated") {
       this.#autoRebaseNudged.delete(id);

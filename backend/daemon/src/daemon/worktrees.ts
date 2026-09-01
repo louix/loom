@@ -42,6 +42,7 @@ interface BaseInfo {
 export type RebaseOutcome =
   | { outcome: "no-base" }
   | ({ outcome: "current" | "dirty" | "conflict" | "error" } & BaseInfo)
+  | ({ outcome: "busy"; op: string } & BaseInfo)
   | ({ outcome: "updated"; head: string } & BaseInfo);
 
 export interface WorktreeManagerOptions {
@@ -310,6 +311,8 @@ export class WorktreeManager {
    *  - `no-base`   — `baseBranch` doesn't resolve; nothing to do.
    *  - `current`   — the branch already contains every base commit.
    *  - `dirty`     — the worktree has uncommitted changes; skipped untouched.
+   *  - `busy`      — the agent has its own rebase / merge / cherry-pick in
+   *                  progress; skipped untouched (`op` names it).
    *  - `updated`   — replayed / merged cleanly; `head` is the new short SHA.
    *  - `conflict`  — `git` reported conflicts; the abort ran, tree unchanged.
    *  - `error`     — git failed for some other reason; best-effort abort ran.
@@ -326,6 +329,16 @@ export class WorktreeManager {
     const baseHead = this.#gitOut(["rev-parse", "--short", base], path);
     const behind = numOr0(this.#gitOut(["rev-list", "--count", `HEAD..${base}`], path));
     const info = { base, baseHead, behind };
+
+    // The agent may be part-way through its own `git rebase` / `git merge` /
+    // cherry-pick from the Bash tool, paused at a clean stopping point. Running
+    // our rebase (and then `--abort` on the "already a rebase in progress"
+    // failure) would wipe its resolved state — bail before anything else. Checked
+    // before `behind === 0` too: a paused rebase leaves HEAD on top of the base,
+    // so `behind` reads 0 and would otherwise look "current".
+    const op = this.#opInProgress(path);
+    if (op) return { outcome: "busy", op, ...info };
+
     if (behind === 0) return { outcome: "current", ...info };
 
     if (this.#gitOut(["status", "--porcelain"], path).length > 0) {
@@ -356,6 +369,23 @@ export class WorktreeManager {
   }
 
   // --- internals -------------------------------------------------
+
+  /** The name of a git operation currently in progress in `path`
+   *  (rebase / merge / cherry-pick / revert), or null. Worktree-aware — each
+   *  linked worktree has its own state dir. */
+  #opInProgress(path: string): string | null {
+    for (const marker of [
+      "rebase-merge",
+      "rebase-apply",
+      "MERGE_HEAD",
+      "CHERRY_PICK_HEAD",
+      "REVERT_HEAD",
+    ]) {
+      const rel = this.#gitOut(["rev-parse", "--git-path", marker], path);
+      if (rel && existsSync(rel.startsWith("/") ? rel : join(path, rel))) return marker;
+    }
+    return null;
+  }
 
   #resolveBase(): string {
     if (this.#git(["rev-parse", "--verify", "--quiet", this.#baseBranch]).ok)

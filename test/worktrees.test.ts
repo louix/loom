@@ -306,6 +306,47 @@ test("syncOntoBase: mode 'merge' brings the base in as a merge commit", () => {
   }
 });
 
+test("syncOntoBase: bails 'busy' when the agent has its own rebase in progress (G1)", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    // The agent's own branch has a commit that will clash with an interactive
+    // rebase it starts and then pauses at a conflict.
+    writeFileSync(join(wt.path, "clash.txt"), "agent side\n");
+    execFileSync("git", ["-C", wt.path, "add", "-A"]);
+    execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "agent work"]);
+    advanceMain(root, "clash.txt", "base side\n");
+    // Start a rebase onto main that stops on the conflict → leaves rebase-merge/.
+    try {
+      execFileSync("git", ["-C", wt.path, "rebase", "main"], { stdio: "pipe" });
+    } catch {
+      // expected — the rebase halts with a conflict
+    }
+    // A linked worktree's rebase state lives under the main repo's gitdir.
+    const rel = execFileSync("git", ["-C", wt.path, "rev-parse", "--git-path", "rebase-merge"], {
+      encoding: "utf8",
+    }).trim();
+    const rebaseDir = rel.startsWith("/") ? rel : join(wt.path, rel);
+    assert.ok(existsSync(rebaseDir), "a rebase is mid-flight");
+    const beforeStatus = execFileSync("git", ["-C", wt.path, "status", "--porcelain"], {
+      encoding: "utf8",
+    });
+
+    const res = m.syncOntoBase(wt.path, "main", "rebase");
+    assert.equal(res.outcome, "busy");
+    assert.equal(res.outcome === "busy" && res.op, "rebase-merge");
+    // Loom didn't touch the agent's in-progress rebase.
+    assert.ok(existsSync(rebaseDir));
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }),
+      beforeStatus,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("remove drops the worktree", () => {
   const { root, cleanup } = repo();
   try {
