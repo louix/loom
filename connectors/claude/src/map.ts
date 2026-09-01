@@ -175,6 +175,18 @@ export class ClaudeEventMapper {
    *  `state.rewindRef` at each completed turn boundary. */
   #lastChainUuid: string | null = null;
 
+  /**
+   * Usage / cost totalled by `query()` calls that ran *before* an undo swapped
+   * the live query. The SDK restarts `modelUsage` / `total_cost_usd` from ~0 for
+   * a resumed query, so the reported cumulative is `#carry + current query` —
+   * kept so `snapshot().usage` / `costUsd` never regress across a rewind (C2).
+   */
+  readonly #carry = { usage: zeroUsage(), costUsd: 0 };
+  /** The current query's own running totals — the baseline the SDK's cumulative
+   *  `modelUsage` / `total_cost_usd` is diffed against for the per-turn delta. */
+  #queryUsage: TokenUsage = zeroUsage();
+  #queryCostUsd = 0;
+
   /** Open *foreground* `Task` tool calls: tool_use id → sub-agent name. A
    *  backgrounded Task is tracked via `background_tasks_changed` instead. */
   readonly #openSubagents = new Map<string, string>();
@@ -217,6 +229,32 @@ export class ClaudeEventMapper {
         // stream_event (partials, not requested), tool_progress, notifications, …
         return [];
     }
+  }
+
+  /**
+   * The adapter calls this when `rewind()` forks + resumes a fresh `query()`.
+   * Fold the finished query's totals into `#carry` so the reported cumulative
+   * stays monotonic (C2), and drop per-query carry-over state that would
+   * otherwise point into the truncated-away transcript (C13): the last chain
+   * UUID (a stale `rewindRef` source), the background-task signature (would
+   * suppress a legitimate re-emit), and any open foreground sub-agents.
+   */
+  onQuerySwap(): void {
+    this.#carry.usage = {
+      input: this.#carry.usage.input + this.#queryUsage.input,
+      output: this.#carry.usage.output + this.#queryUsage.output,
+      cacheRead: this.#carry.usage.cacheRead + this.#queryUsage.cacheRead,
+      cacheWrite: this.#carry.usage.cacheWrite + this.#queryUsage.cacheWrite,
+    };
+    this.#carry.costUsd += this.#queryCostUsd;
+    this.#queryUsage = zeroUsage();
+    this.#queryCostUsd = 0;
+    this.#lastChainUuid = null;
+    // The prior fork ref points into the turns we just undid past — drop it so a
+    // second undo before the next completed turn can't fork from a truncated ref.
+    this.state.rewindRef = null;
+    this.#lastBgSig = null;
+    this.#openSubagents.clear();
   }
 
   #base(agentId: string | null | undefined): { sessionId: string; ts: number; agentId?: string } {
@@ -384,24 +422,28 @@ export class ClaudeEventMapper {
         rawMu.costUsd > 0)
         ? rawMu
         : null;
+    // `cum` is the *current query's* cumulative (SDK `modelUsage` is cumulative
+    // per `query()` and restarts on a resumed query). Diff it against the
+    // current-query baseline, not the reported total — the reported total also
+    // carries pre-undo history via `#carry`.
     const cum = mu
       ? mu
       : {
-          input: this.state.usage.input + (m.usage?.input_tokens ?? 0),
-          output: this.state.usage.output + (m.usage?.output_tokens ?? 0),
-          cacheRead: this.state.usage.cacheRead + (m.usage?.cache_read_input_tokens ?? 0),
-          cacheWrite: this.state.usage.cacheWrite + (m.usage?.cache_creation_input_tokens ?? 0),
-          costUsd: typeof m.total_cost_usd === "number" ? m.total_cost_usd : this.state.costUsd,
+          input: this.#queryUsage.input + (m.usage?.input_tokens ?? 0),
+          output: this.#queryUsage.output + (m.usage?.output_tokens ?? 0),
+          cacheRead: this.#queryUsage.cacheRead + (m.usage?.cache_read_input_tokens ?? 0),
+          cacheWrite: this.#queryUsage.cacheWrite + (m.usage?.cache_creation_input_tokens ?? 0),
+          costUsd: typeof m.total_cost_usd === "number" ? m.total_cost_usd : this.#queryCostUsd,
           contextLimit: this.state.contextLimit,
         };
 
     const delta: TokenUsage = {
-      input: Math.max(0, cum.input - this.state.usage.input),
-      output: Math.max(0, cum.output - this.state.usage.output),
-      cacheRead: Math.max(0, cum.cacheRead - this.state.usage.cacheRead),
-      cacheWrite: Math.max(0, cum.cacheWrite - this.state.usage.cacheWrite),
+      input: Math.max(0, cum.input - this.#queryUsage.input),
+      output: Math.max(0, cum.output - this.#queryUsage.output),
+      cacheRead: Math.max(0, cum.cacheRead - this.#queryUsage.cacheRead),
+      cacheWrite: Math.max(0, cum.cacheWrite - this.#queryUsage.cacheWrite),
     };
-    const costDeltaUsd = Math.max(0, cum.costUsd - this.state.costUsd);
+    const costDeltaUsd = Math.max(0, cum.costUsd - this.#queryCostUsd);
 
     // `contextUsed` is already current — kept up to date per main-loop
     // assistant message in #assistant(), from that single request's own
@@ -409,8 +451,22 @@ export class ClaudeEventMapper {
     const contextUsed = this.state.contextUsed;
     const contextLimit = cum.contextLimit || this.state.contextLimit;
 
-    this.state.usage = { ...cum };
-    this.state.costUsd = cum.costUsd;
+    // Advance the current-query baseline, then report `#carry + current query`
+    // so `state.usage` / `state.costUsd` never regress across a rewind (C2).
+    this.#queryUsage = {
+      input: cum.input,
+      output: cum.output,
+      cacheRead: cum.cacheRead,
+      cacheWrite: cum.cacheWrite,
+    };
+    this.#queryCostUsd = cum.costUsd;
+    this.state.usage = {
+      input: this.#carry.usage.input + this.#queryUsage.input,
+      output: this.#carry.usage.output + this.#queryUsage.output,
+      cacheRead: this.#carry.usage.cacheRead + this.#queryUsage.cacheRead,
+      cacheWrite: this.#carry.usage.cacheWrite + this.#queryUsage.cacheWrite,
+    };
+    this.state.costUsd = this.#carry.costUsd + this.#queryCostUsd;
     this.state.contextLimit = contextLimit;
 
     out.push({

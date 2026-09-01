@@ -247,6 +247,46 @@ test("rewindRef snapshots the completed turn's last main-loop chain UUID", () =>
   assert.equal(m.state.rewindRef, "u-a4");
 });
 
+test("onQuerySwap keeps cumulative usage/cost monotonic and drops stale carry-over (C2/C13)", () => {
+  const m = new ClaudeEventMapper(SID);
+
+  // Two turns on the original query() — cumulative modelUsage.
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a1", message: { content: [] } });
+  m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 1,
+    modelUsage: { x: { inputTokens: 3000, outputTokens: 400, costUSD: 0.05, contextWindow: 200000 } },
+  });
+  assert.equal(m.state.usage.input, 3000);
+  assert.ok(Math.abs(m.state.costUsd - 0.05) < 1e-9);
+  assert.equal(m.state.rewindRef, "u-a1");
+
+  // Undo: the adapter forks + resumes a fresh query() and calls this.
+  m.onQuerySwap();
+  assert.equal(m.state.rewindRef, null, "C13: stale fork ref cleared for the swap");
+
+  // The resumed query() restarts modelUsage from ~0.
+  m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-b1", message: { content: [] } });
+  const out = m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 1,
+    modelUsage: { x: { inputTokens: 800, outputTokens: 90, costUSD: 0.012, contextWindow: 200000 } },
+  });
+
+  // C2: reported cumulative = carry (pre-undo) + resumed query's total — never regresses.
+  assert.equal(m.state.usage.input, 3800, "3000 carried + 800 new");
+  assert.equal(m.state.usage.output, 490);
+  assert.ok(Math.abs(m.state.costUsd - 0.062) < 1e-9, "0.05 carried + 0.012 new");
+  // The per-turn delta is the resumed turn's own usage, not clamped to 0.
+  const usage = out.find((e) => e.type === "usage") as Extract<HarnessEvent, { type: "usage" }>;
+  assert.equal(usage.tokens.input, 800);
+  assert.ok(Math.abs((usage.costDeltaUsd ?? 0) - 0.012) < 1e-9);
+});
+
 test("a queued interim result doesn't snapshot a fork point", () => {
   const m = new ClaudeEventMapper(SID);
   m.map({ type: "assistant", parent_tool_use_id: null, uuid: "u-a1", message: { content: [] } });
