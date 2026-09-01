@@ -1562,8 +1562,8 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
     mcp: [
       {
         name: "tilth",
-        command: "tilth mcp --edit",
-        resolved: "tilth mcp --edit",
+        command: "tilth --mcp --edit",
+        resolved: "tilth --mcp --edit",
         status: "ok" as const,
         note: "",
       },

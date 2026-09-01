@@ -1,9 +1,16 @@
 /**
- * Resolve a `[[mcp]]` command string to what actually gets spawned. The only
- * special case: the default `tilth` file-tools server missing from `$PATH` →
- * fall back to a pinned `npx` download so a fresh checkout still gets the good
- * tools. If `npx` is missing too, the command is left as-is and the session
- * runs with just the built-in tools.
+ * Resolve a `[[mcp]]` command string to what actually gets spawned. Two
+ * special cases, both about the default `tilth` file-tools server:
+ *
+ *   - the legacy / misspelled `tilth mcp …` invocation is rewritten to
+ *     `tilth --mcp …` — tilth's MCP server is a *flag*, and a bare `mcp`
+ *     parses as a search query, so the "server" prints results and exits
+ *     (the MCP client sees `Connection closed` and the tools silently
+ *     vanish from every session);
+ *   - `tilth` missing from `$PATH` → fall back to a pinned `npx` download
+ *     so a fresh checkout still gets the good tools. If `npx` is missing
+ *     too, the command is left as-is and the session runs with just the
+ *     built-in tools.
  */
 import { onPath } from "@loom/core/paths";
 
@@ -33,20 +40,36 @@ export const resolveMcpCommand = (
 ): ResolvedCommand => {
   const parts = tokenize(raw);
   const command = parts[0] ?? raw;
-  const args = parts.slice(1);
+  let args = parts.slice(1);
+  const notes: string[] = [];
 
-  if (command !== "tilth" || has("tilth")) return { command, args };
+  // Heal the legacy `tilth mcp …` spelling (shipped in early defaults and the
+  // example config before this was caught). No released tilth has an `mcp`
+  // subcommand, and a `[[mcp]]` command must launch a server, never run a
+  // one-shot search — so the rewrite is unambiguous.
+  if (command === "tilth" && args[0] === "mcp") {
+    args = ["--mcp", ...args.slice(1)];
+    notes.push("tilth's serve flag is `--mcp` — rewrote legacy `tilth mcp`");
+  }
+
+  if (command !== "tilth" || has("tilth")) {
+    return notes.length === 0 ? { command, args } : { command, args, note: notes.join("; ") };
+  }
 
   if (has("npx")) {
     return {
       command: "npx",
       args: ["-y", TILTH_FALLBACK, ...args],
-      note: `tilth not on PATH — falling back to \`npx -y ${TILTH_FALLBACK}\``,
+      note: [`tilth not on PATH — falling back to \`npx -y ${TILTH_FALLBACK}\``, ...notes].join(
+        "; ",
+      ),
     };
   }
   return {
     command,
     args,
-    note: "tilth and npx both missing — its tools won't be available this session",
+    note: ["tilth and npx both missing — its tools won't be available this session", ...notes].join(
+      "; ",
+    ),
   };
 };

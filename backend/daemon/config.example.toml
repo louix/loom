@@ -119,7 +119,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 
 [[mcp]] # mounted into every session, in order, after the
 name = "tilth" # built-in `loom` server. The system prompt steers
-command = "tilth mcp --edit" # code reading + editing to tilth and file finding
+command = "tilth --mcp --edit" # code reading + editing to tilth and file finding
 # / text search to fff; Claude's own Grep / Glob
 [[mcp]] # are disabled below (providers.claude.disable_builtin).
 name = "fff"

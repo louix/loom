@@ -229,7 +229,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
     aisdk: {},
   },
   mcp: [
-    { name: "tilth", command: "tilth mcp --edit" },
+    { name: "tilth", command: "tilth --mcp --edit" },
     { name: "fff", command: "fff-mcp" },
   ],
   titles: { enabled: true, model: "" },
