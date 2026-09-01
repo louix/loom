@@ -255,7 +255,7 @@ export class SessionStore {
         acc(d.turns),
         abs(d.contextUsed),
         abs(d.contextLimit),
-        d.lastTurnAt ?? null,
+        abs(d.lastTurnAt),
         abs(d.lastCacheRead),
         abs(d.lastCacheWrite),
         now,

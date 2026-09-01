@@ -18,11 +18,20 @@ export interface ResolvedCommand {
   note?: string;
 }
 
+/** Split a command line on whitespace, but keep a `'…'` / `"…"` quoted run
+ *  (e.g. a path with spaces) as one token. No escape handling — `[[mcp]]`
+ *  commands are simple. */
+const tokenize = (s: string): string[] => {
+  const out: string[] = [];
+  for (const m of s.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return out;
+};
+
 export const resolveMcpCommand = (
   raw: string,
   has: (cmd: string) => boolean = onPath,
 ): ResolvedCommand => {
-  const parts = raw.split(/\s+/).filter((s) => s.length > 0);
+  const parts = tokenize(raw);
   const command = parts[0] ?? raw;
   const args = parts.slice(1);
 

@@ -113,14 +113,14 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | T10 | low | done | `edit` on a non-UTF8 file writes back a U+FFFD-mangled whole file | `aisdk/src/tools/edit.ts:41` |
 | T13 | low | done | `web_search` `NaN` result count when `cfg.maxResults` is unset | `aisdk/src/tools/search.ts:27` |
 | T14 | low | done | `web_search` empty API key not distinguished from a 401 | `aisdk/src/tools/search.ts:22-48` |
-| D1 | med | todo | No "DB is newer than this build" fence → an old daemon silently runs a newer schema | `store/db.ts:38-40` |
-| D3 | low-med | todo | `pricing.reload` RPC has no error handling (config reload does) | `daemon/daemon.ts:1136-1139` |
-| D4 | low | todo | `deepMerge` doesn't skip `__proto__` / `constructor` — untrusted `.loom/config.toml` is an input | `config/config.ts:549-571` |
-| D6 | low | todo | `readClaudeAccount` ignores `CLAUDE_CONFIG_DIR` → stale provider-list account line | `config/claude-profile.ts:76-105` |
-| D7 | low | todo | `scaffoldUserConfig` existsSync/copyFileSync TOCTOU, no `COPYFILE_EXCL` | `daemon/scaffold.ts:28-40` |
-| D9 | low | todo | `addUsage` NaN guard bypassed for `lastTurnAt` | `store/sessions.ts:216-263` |
-| D10 | low | todo | `resolveMcpCommand` splits on whitespace → mis-splits quoted args | `daemon/mcp-fallback.ts:25-27` |
-| D11 | cosmetic | todo | `provider-registry` `mock` id documented as known but not in `#ids` | `daemon/provider-registry.ts` |
+| D1 | med | done | No "DB is newer than this build" fence → an old daemon silently runs a newer schema | `store/db.ts:38-40` |
+| D3 | low-med | done | `pricing.reload` RPC has no error handling (config reload does) | `daemon/daemon.ts:1136-1139` |
+| D4 | low | done | `deepMerge` doesn't skip `__proto__` / `constructor` — untrusted `.loom/config.toml` is an input | `config/config.ts:549-571` |
+| D6 | low | done | `readClaudeAccount` ignores `CLAUDE_CONFIG_DIR` → stale provider-list account line | `config/claude-profile.ts:76-105` |
+| D7 | low | done | `scaffoldUserConfig` existsSync/copyFileSync TOCTOU, no `COPYFILE_EXCL` | `daemon/scaffold.ts:28-40` |
+| D9 | low | done | `addUsage` NaN guard bypassed for `lastTurnAt` | `store/sessions.ts:216-263` |
+| D10 | low | done | `resolveMcpCommand` splits on whitespace → mis-splits quoted args | `daemon/mcp-fallback.ts:25-27` |
+| D11 | cosmetic | done | `provider-registry` `mock` id documented as known but not in `#ids` | `daemon/provider-registry.ts` |
 | U3 | med | todo | `logScroll` grows unbounded past the top of the log (clamp only at render) | `frontend/tui/src/fleet-handle.ts:1372, 1568-1570` |
 | U7 | med | todo | `$EDITOR` quit-without-saving (`:q`, non-zero exit) treated as an edit → agent implements untouched plan | `frontend/tui/src/editor-handoff.ts:48-57` |
 | U8 | med | todo | `s.subagents` dereferenced without the `?? []` guard every other site uses → render crash | `frontend/tui/src/components.tsx:542-552` |

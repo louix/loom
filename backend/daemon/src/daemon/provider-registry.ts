@@ -50,7 +50,10 @@ export class ProviderRegistry {
     this.#transcript = transcript;
     this.#manifest = manifest;
     this.#ids = new Set([
+      // Both spellings resolve to the mock connector (see #packageFor); the
+      // header comment promises both are always known.
       "fake",
+      "mock",
       ...config.claudeProfiles.map(claudeProfileId),
       ...Object.keys(config.providers.aisdk),
     ]);

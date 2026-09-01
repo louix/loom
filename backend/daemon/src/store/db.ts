@@ -37,7 +37,15 @@ const setVersion = (db: Db, v: number): void => {
 
 export const migrate = (db: Db): void => {
   const from = currentVersion(db);
-  if (from >= MIGRATIONS.length) return;
+  if (from > MIGRATIONS.length) {
+    // A newer build already migrated this file (a stale daemon racing a fresh
+    // install, a downgrade, an older checkout). Running against a schema we
+    // don't understand silently mis-reads every row — refuse instead.
+    throw new Error(
+      `loom.db is schema v${from} but this build only understands v${MIGRATIONS.length} — upgrade loom`,
+    );
+  }
+  if (from === MIGRATIONS.length) return;
   for (let v = from; v < MIGRATIONS.length; v++) {
     const sql = MIGRATIONS[v];
     if (sql === undefined) continue;

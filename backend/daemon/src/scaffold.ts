@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -32,7 +32,10 @@ export const scaffoldUserConfig = (): string | null => {
   if (!existsSync(src)) return null;
   try {
     mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(src, dest);
+    // COPYFILE_EXCL: fail rather than clobber if the file appeared between the
+    // existsSync above and now (two daemons for two repos on first run, or a
+    // user hand-editing it immediately).
+    copyFileSync(src, dest, constants.COPYFILE_EXCL);
     return dest;
   } catch {
     return null;

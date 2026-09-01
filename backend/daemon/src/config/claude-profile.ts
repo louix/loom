@@ -74,7 +74,12 @@ const CACHE = new Map<string, CacheEntry>();
  * `.claude.json` can be multi-MB, so this parses it only on an mtime change.
  */
 export const readClaudeAccount = (dir: string): ClaudeAccount | null => {
-  const root = expandTilde(dir);
+  let root = expandTilde(dir);
+  // The `claude` CLI/SDK honours $CLAUDE_CONFIG_DIR for the default profile;
+  // match it so the provider-list account line isn't read from `~/.claude`
+  // while sessions actually authenticate against the env-pointed dir.
+  const envDir = process.env["CLAUDE_CONFIG_DIR"];
+  if (envDir && root === join(homedir(), ".claude")) root = expandTilde(envDir);
   const credPath = join(root, ".credentials.json");
   const cfgPaths = configJsonCandidates(root);
 

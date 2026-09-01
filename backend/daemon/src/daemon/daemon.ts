@@ -1214,9 +1214,17 @@ export class Daemon {
     });
 
     d.register("pricing.reload", () => {
-      this.#pricing = loadPriceTable(resolveAgainstRepo(this.repoRoot, this.config.pricing.table));
+      const path = resolveAgainstRepo(this.repoRoot, this.config.pricing.table);
+      try {
+        this.#pricing = loadPriceTable(path);
+      } catch (err) {
+        // Malformed models.toml — keep the running table, mirror #reloadConfig.
+        this.#log.warn("price table reload failed — keeping the running one", { err: String(err) });
+        this.#emitNotice("price table has a syntax error — kept the running one", "warn");
+        return { models: [...this.#pricing.keys()], reloaded: false };
+      }
       this.#mergeEndpointPricing();
-      return { models: [...this.#pricing.keys()] };
+      return { models: [...this.#pricing.keys()], reloaded: true };
     });
 
     d.register("providers.list", () => this.#providerList());

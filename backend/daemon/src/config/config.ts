@@ -595,6 +595,10 @@ export const deepMerge = (
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...base };
   for (const [k, v] of Object.entries(over)) {
+    // `.loom/config.toml` comes from whatever repo the daemon runs against — an
+    // untrusted input. A TOML `[__proto__]` table parses to an own key that
+    // would otherwise walk the prototype on assignment.
+    if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
     const b = out[k];
     if (
       b &&
