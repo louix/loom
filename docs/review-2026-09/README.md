@@ -93,13 +93,13 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | S14 | low-med | done | A throwing per-event hook kills the `#drain` loop; `run.pump` rejection can go unhandled | `daemon/session-manager.ts:142-176` |
 | G3 | med | todo | `gc` removes a worktree without `close()`ing the still-registered session | `daemon/daemon.ts:1788-1820` |
 | G4 | med | todo | Hard fork silently branches off base when the parent ref doesn't resolve — throw instead | `daemon/worktrees.ts:109-119` |
-| C3 | med | todo | Zeroed `modelUsage` on a crash/startup-error `result` resets mapper counters → false spike next turn | `connectors/claude/src/map.ts:375-401` |
-| C7 | med | todo | `partialTokens: true` capability is inaccurate — set `false` | `connectors/claude/src/adapter.ts:53` |
-| C8 | low-med | todo | `setModel()` is unguarded, unlike `setMode()`/`setEffort()` | `connectors/claude/src/adapter.ts:527-529` |
-| C9 | low-med | todo | `listModels()` probe has no timeout or stderr capture | `connectors/claude/src/adapter.ts:652-687` |
-| C10 | low | todo | Foreground `Task` that never returns a `tool_result` leaks a `subagent_started` | `connectors/claude/src/map.ts:326-337` |
-| C11 | low | todo | `result` with `queued_turn_count > 0` still emits the `result` marker on the error path → state flap | `connectors/claude/src/map.ts:412-437` |
-| C14 | low | todo | `send()` forwards leading-slash text unfiltered (`/clear` resets usage) | `connectors/claude/src/adapter.ts:334-350` |
+| C3 | med | done | Zeroed `modelUsage` on a crash/startup-error `result` resets mapper counters → false spike next turn | `connectors/claude/src/map.ts:375-401` |
+| C7 | med | done | `partialTokens` set `false` on the Claude caps (usage is only emitted from `result`). aisdk still declares `true` — unverified, left for its own pass. | `connectors/claude/src/adapter.ts:53` |
+| C8 | low-med | done | `setModel()` now wraps the control call and rethrows a readable reason (matches `setMode`/`setEffort`) | `connectors/claude/src/adapter.ts:527-529` |
+| C9 | low-med | done | `listModels()` races a 15s handshake timeout and always closes the throwaway `query()`; stderr is logged | `connectors/claude/src/adapter.ts:652-687` |
+| C10 | low | done | On a terminal `result` segment, `subagent_stopped` is emitted for any still-open foreground `Task` | `connectors/claude/src/map.ts:326-337` |
+| C11 | low | wontfix | `test/claude-map.test.ts:289` ("a failed interim result still surfaces even with turns queued") explicitly locks emitting `result kind:error` mid-engagement. Suppressing the marker needs a design decision on how the daemon should show a mid-engagement failure. | `connectors/claude/src/map.ts:412-437` |
+| C14 | low | backlog | Transforming leading-slash user text safely needs knowledge of the Claude CLI's slash-command grammar; a wrong transform corrupts legitimate messages. Low severity. | `connectors/claude/src/adapter.ts:334-350` |
 | A3 | med | todo | `#summarize` swallows mid-stream `error` parts → whole transcript replaced by a truncated summary | `aisdk/src/session.ts:627-653` |
 | A6 | med | todo | Sub-agent failures and step-limit truncation are swallowed (no `error` event) | `aisdk/src/session.ts:507-549` |
 | A7 | low | todo | Usage mapping zeroes `contextUsed` when a provider omits token fields → meter flaps | `aisdk/src/map.ts:133-150` |

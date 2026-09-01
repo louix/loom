@@ -50,7 +50,9 @@ const CAPS: ProviderCapabilities = {
   subagents: true,
   compaction: true,
   oneShot: true,
-  partialTokens: true,
+  // `includePartialMessages` is off and the mapper drops `stream_event`, so
+  // usage is only emitted from the final `result` — no interim token counts.
+  partialTokens: false,
   // All four map 1:1 onto the SDK's PermissionMode. In particular `auto` is the
   // SDK's own "auto" (Claude proceeds, but still prompts for anything it judges
   // unsafe) — *not* `bypassPermissions`, which is the one that needs the CLI to
@@ -61,6 +63,13 @@ const CAPS: ProviderCapabilities = {
 
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
+
+/** Module logger for provider-level work that isn't tied to a session. */
+const log = makeLogger("claude");
+
+/** Cap on the model-discovery handshake — the caller also races a timeout, but
+ *  bounding it here means the throwaway `query()` subprocess is always closed. */
+const LIST_MODELS_TIMEOUT_MS = 15_000;
 
 /** Expand a leading `~` / `~/`; other paths (incl. "") pass through. */
 const expandTilde = (p: string): string => {
@@ -525,7 +534,14 @@ class ClaudeSession implements AgentSession {
   }
 
   async setModel(model: string): Promise<void> {
-    await this.#query?.setModel(model);
+    try {
+      await this.#query?.setModel(model);
+    } catch (err) {
+      // Keep the old model and give the caller a readable reason (matches
+      // setMode / setEffort); an out-of-catalog id otherwise surfaces raw.
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`Claude rejected the model "${model}": ${raw}`);
+    }
   }
 
   async setEffort(effort: EffortLevel): Promise<void> {
@@ -657,10 +673,21 @@ export class ClaudeProvider implements AgentProvider {
       options: {
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
         ...(env ? { env } : {}),
+        stderr: (data) => log.debug("listModels cli stderr", { data: data.slice(0, 500) }),
       },
     });
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const init = await q.initializationResult();
+      const init = await Promise.race([
+        q.initializationResult(),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(
+            () => rej(new Error("timed out waiting for the Claude CLI handshake")),
+            LIST_MODELS_TIMEOUT_MS,
+          );
+          timer.unref();
+        }),
+      ]);
       const seen = new Set<string>();
       const out: DiscoveredModel[] = [];
       for (const m of init.models) {
@@ -682,6 +709,7 @@ export class ClaudeProvider implements AgentProvider {
       }
       return out;
     } finally {
+      if (timer) clearTimeout(timer);
       await Promise.resolve(q.close?.()).catch(() => {});
     }
   }

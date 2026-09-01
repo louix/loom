@@ -370,9 +370,22 @@ export class ClaudeEventMapper {
 
     // Prefer modelUsage (covers subagents + internal calls); fall back to the
     // per-turn main-loop `usage` + cumulative `total_cost_usd`.
-    const mu = m.modelUsage;
+    const rawMu = m.modelUsage ? sumModelUsage(m.modelUsage) : null;
+    // A crash / startup-error `result` can carry an all-zero modelUsage. Taking
+    // it as the new cumulative would reset the running totals to 0, so the next
+    // healthy turn diffs its real cumulative against 0 and emits a huge false
+    // spike — treat all-zero as "no info" and use the per-turn path instead.
+    const mu =
+      rawMu &&
+      (rawMu.input > 0 ||
+        rawMu.output > 0 ||
+        rawMu.cacheRead > 0 ||
+        rawMu.cacheWrite > 0 ||
+        rawMu.costUsd > 0)
+        ? rawMu
+        : null;
     const cum = mu
-      ? sumModelUsage(mu)
+      ? mu
       : {
           input: this.state.usage.input + (m.usage?.input_tokens ?? 0),
           output: this.state.usage.output + (m.usage?.output_tokens ?? 0),
@@ -424,7 +437,8 @@ export class ClaudeEventMapper {
     // and flap the session to `idle` while it's plainly still working. Keep
     // the usage delta above; drop the marker. A failed turn still surfaces —
     // the error is worth seeing even mid-engagement.
-    if (ok && (m.queued_turn_count ?? 0) > 0) return out;
+    const queued = (m.queued_turn_count ?? 0) > 0;
+    if (ok && queued) return out;
 
     if (ok) {
       // This turn is a real boundary now — its last chain entry is the fork
@@ -434,6 +448,17 @@ export class ClaudeEventMapper {
     } else {
       out.push({ type: "error", ...base, message: `result: ${summary}`, fatal: false });
       out.push({ type: "result", ...base, kind: "error", error: summary });
+    }
+
+    // A foreground `Task` that crashed without emitting its `tool_result` would
+    // otherwise leave `subagent_started` unbalanced for the session's life.
+    // This engagement segment has ended (no more turns queued) — close any
+    // still-open ones.
+    if (!queued && this.#openSubagents.size > 0) {
+      for (const subId of this.#openSubagents.keys()) {
+        out.push({ type: "subagent_stopped", ...base, subagentId: subId });
+      }
+      this.#openSubagents.clear();
     }
     return out;
   }
