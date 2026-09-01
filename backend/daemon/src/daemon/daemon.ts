@@ -1609,6 +1609,15 @@ export class Daemon {
         }
       }
 
+      // Restore the worktree first (when opted in) — a `git reset --hard`
+      // failure then aborts the whole undo with nothing touched. The tree was
+      // already checked clean above.
+      if (restoreWorktree && wt && checkpointSha) {
+        const r = this.#worktrees.restoreTo(wt, checkpointSha);
+        if (!r.ok) throw new RpcError("worktree_error", `could not restore the worktree: ${r.error}`);
+        if (worktreeDrift) worktreeDrift.restored = true;
+      }
+
       // Do the rewind, *then* truncate the bookkeeping — a rewind that throws
       // (a refused resume, say) must not leave the row claiming fewer turns
       // than the transcript actually has.
@@ -1620,10 +1629,7 @@ export class Daemon {
       this.#checkpoints.truncate(id, toTurn);
       this.#registry.setTurns(id, toTurn);
 
-      if (restoreWorktree && wt && checkpointSha) {
-        const r = this.#worktrees.restoreTo(wt, checkpointSha);
-        if (!r.ok) throw new RpcError("worktree_error", `could not restore the worktree: ${r.error}`);
-        if (worktreeDrift) worktreeDrift.restored = true;
+      if (worktreeDrift?.restored) {
         this.#emitNotice(
           `undo: worktree reset to ${checkpointSha.slice(0, 8)} (turn ${toTurn})`,
           "info",
