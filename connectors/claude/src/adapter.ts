@@ -10,7 +10,10 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  forkSession as sdkForkSession,
+  query as sdkQuery,
+} from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
   McpServerConfig,
@@ -63,6 +66,30 @@ const CAPS: ProviderCapabilities = {
 
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
+
+/**
+ * The two SDK entry points behind a mutable indirection so tests can swap in
+ * fakes (`__setClaudeSdk`) — there is otherwise no way to exercise ClaudeSession
+ * without a real `claude` subprocess. Mirrors the `bin?` seam in
+ * `aisdk/src/tools/grep.ts`.
+ */
+const sdk: { query: typeof sdkQuery; forkSession: typeof sdkForkSession } = {
+  query: sdkQuery,
+  forkSession: sdkForkSession,
+};
+
+/** Test-only: override one or both SDK entry points. Omitted fields are kept. */
+export const __setClaudeSdk = (partial: Partial<typeof sdk>): void => {
+  Object.assign(sdk, partial);
+};
+
+/**
+ * Serialises `forkSession` across every session in this process. It reads the
+ * transcript from `CLAUDE_CONFIG_DIR`, which `#forkTruncated` mutates on
+ * `process.env` for the duration of the call — two concurrent multi-profile
+ * undos would otherwise fork from the wrong profile.
+ */
+let forkLock: Promise<unknown> = Promise.resolve();
 
 /** Module logger for provider-level work that isn't tied to a session. */
 const log = makeLogger("claude");
@@ -149,11 +176,9 @@ class ClaudeSession implements AgentSession {
   #log: Logger;
   #mode: SessionMode;
   #effort: EffortLevel | null;
-  /** Set while `rewind()` swaps the `query()` — tells `#drain`'s cleanup to
-   *  leave `#outbox` / `#inbox` open for the replacement. */
-  #rewinding = false;
-  /** Spans the whole `rewind()` call (incl. the async fork) — rejects a second
-   *  concurrent undo instead of racing two query swaps. */
+  /** Spans the whole `rewind()` call (incl. the async fork *and* the query
+   *  swap) — rejects a second concurrent undo, and tells `#drain`'s cleanup to
+   *  leave `#outbox` / `#inbox` open because a resumed query will reuse them. */
   #rewindInFlight = false;
   /** The args `start()` last ran with, so `rewind()` can rebuild the query. */
   #startOpts: CreateSessionOptions | null = null;
@@ -200,6 +225,14 @@ class ClaudeSession implements AgentSession {
     if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
+      // C6: a turn already sitting in the SDK's own command queue when the user
+      // interrupted still calls `canUseTool` as it unwinds. Deny outright — do
+      // not push a `permission_request` / `plan_review` that would resurface a
+      // stopped session as `awaiting_input`. (`#drain`'s muzzle only covers
+      // *mapped* events, not these.)
+      if (this.#interrupted) {
+        return Promise.resolve({ behavior: "deny", message: "session interrupted" });
+      }
       const reqId = ctx.toolUseID || ctx.requestId;
       // In plan mode the agent presents its plan via ExitPlanMode; surface that
       // as a first-class plan review rather than a generic permission prompt.
@@ -287,7 +320,7 @@ class ClaudeSession implements AgentSession {
         : {}),
     };
 
-    this.#query = query({ prompt: this.#inbox, options });
+    this.#query = sdk.query({ prompt: this.#inbox, options });
     this.#pump = this.#drain();
   }
 
@@ -303,7 +336,7 @@ class ClaudeSession implements AgentSession {
         for (const ev of events) this.#outbox.push(ev);
       }
     } catch (err) {
-      if (!this.#closing && !this.#rewinding) {
+      if (!this.#closing && !this.#rewindInFlight) {
         this.#outbox.push({
           type: "error",
           sessionId: this.id,
@@ -317,9 +350,11 @@ class ClaudeSession implements AgentSession {
       // resolve any outstanding gate/ask_user/plan promise so the MCP tool's
       // `execute` doesn't hang forever.
       this.#rejectPending("the session ended before this was answered");
-      // `rewind()` deliberately ends this query to start a resumed one — keep
-      // the channels the daemon holds open for the replacement.
-      if (!this.#rewinding) {
+      // C5: gate cleanup on `#rewindInFlight`, which spans the *whole* rewind
+      // (fork + query swap). If the live stream ends while `#forkTruncated` is
+      // still running, a resumed query is about to reuse these channels —
+      // closing them here would leave the resumed session permanently silent.
+      if (!this.#rewindInFlight) {
         this.#outbox.close();
         this.#inbox.close();
       }
@@ -441,6 +476,9 @@ class ClaudeSession implements AgentSession {
     // in the SDK's own command queue — 0.3.251's `interrupt()` takes no
     // `cancel_queued`, so that queue can't be emptied from here.
     this.#interrupted = true;
+    // C6: release any gate / ask_user / plan promise parked on this turn now —
+    // don't wait for the stream to end or `close()` to run.
+    this.#rejectPending("the turn was interrupted");
     this.#inbox.drain();
     const receipt = await this.#query?.interrupt();
     const queued = receipt?.still_queued;
@@ -480,19 +518,15 @@ class ClaudeSession implements AgentSession {
       const forkedId = await this.#forkTruncated(source, at);
       if (this.#closing) return; // close() raced the fork
 
-      // Now end the live query without closing the channels the daemon holds.
-      this.#rewinding = true;
+      // Now end the live query without closing the channels the daemon holds —
+      // `#drain`'s cleanup is gated on `#rewindInFlight`, still true here.
+      this.#inbox.drain();
       try {
-        this.#inbox.drain();
-        try {
-          this.#query?.close();
-        } catch {
-          // best effort — we're replacing it regardless
-        }
-        await this.#pump?.catch(() => {});
-      } finally {
-        this.#rewinding = false;
+        this.#query?.close();
+      } catch {
+        // best effort — we're replacing it regardless
       }
+      await this.#pump?.catch(() => {});
       if (this.#closing) return; // ...or raced the teardown
 
       // Fresh inbox for the resumed fork; `#outbox` stays as-is.
@@ -504,15 +538,27 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  /** `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
-   *  a subprocess), so point it at this session's profile dir for the call. */
-  async #forkTruncated(sourceId: string, upToMessageId: string): Promise<string> {
+  /**
+   * `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
+   * a subprocess), so `#forkTruncatedUnlocked` points `process.env` at this
+   * session's profile dir for the call. That global mutation is held across an
+   * `await`, so every fork in the process is serialised through `forkLock` —
+   * two concurrent multi-profile undos would otherwise interleave and fork from
+   * the wrong profile (C4).
+   */
+  #forkTruncated(sourceId: string, upToMessageId: string): Promise<string> {
+    const run = forkLock.then(() => this.#forkTruncatedUnlocked(sourceId, upToMessageId));
+    forkLock = run.catch(() => {});
+    return run;
+  }
+
+  async #forkTruncatedUnlocked(sourceId: string, upToMessageId: string): Promise<string> {
     const dir = this.#startExtra.configDir;
     const key = "CLAUDE_CONFIG_DIR";
     const prev = process.env[key];
     if (dir) process.env[key] = expandTilde(dir);
     try {
-      const { sessionId } = await forkSession(sourceId, { upToMessageId });
+      const { sessionId } = await sdk.forkSession(sourceId, { upToMessageId });
       return sessionId;
     } finally {
       if (dir) {
@@ -668,7 +714,7 @@ export class ClaudeProvider implements AgentProvider {
   async listModels(): Promise<DiscoveredModel[]> {
     const cli = this.#resolveCli();
     const env = queryEnv({ configDir: this.#configDir });
-    const q = query({
+    const q = sdk.query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
       options: {
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),

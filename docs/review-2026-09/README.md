@@ -84,7 +84,7 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | W10 | low | done | Client never validates `result.protocolVersion` | `client/client.ts:291-318` |
 | W11 | low | wontfix | The per-request 30s timeout already bounds this and produces a clear error; a corrupted frame id isn't worth special-casing (client has no logger). | `client/client.ts:243-254` |
 | W13 | low | done | `client.close()` is `async` but awaits nothing | `client/client.ts:164-168` |
-| S1 | **high** | moved→P1 | `deriveStatus` resurrecting a killed turn on a trailing gate. The status-machine guard conflicts with a deliberate, tested design choice ("a new turn's blocking request re-engages an interrupted / errored session", `status-machine.test.ts:67`). The correct layer is the adapter muzzle — folded into **C6**. | `daemon/status-machine.ts:49-62` |
+| S1 | **high** | done (via C6) | `deriveStatus` resurrecting a killed turn on a trailing gate. The status-machine guard conflicts with a deliberate, tested design choice ("a new turn's blocking request re-engages an interrupted / errored session", `status-machine.test.ts:67`). The correct layer is the adapter muzzle — folded into **C6**. | `daemon/status-machine.ts:49-62` |
 | S4 | med | done | Stream-ended path never clears `run.pending` (interrupt does) | `daemon/session-manager.ts:160-168` |
 | S5 | med | done | Cost `NaN` — sanitized at the `#trackUsage` boundary (the store's `accFloat`/`abs` already guarded the columns; this keeps the in-memory delta finite for `#priceUsage`) | `daemon/session-manager.ts:266-283` |
 | S7 | med | done | Titler returns a truncated partial title on timeout instead of `null` | `daemon/titler.ts:114-128` |
@@ -143,8 +143,8 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | A4 | med | done | Provider/stream error with an unanswered permission prompt can wedge the turn (loop breaks only on `abort`) | `aisdk/src/loop.ts:113-127` |
 | A5 | med | done | `#pendingPerms` keyed by provider `toolCallId` → duplicate ids under concurrent sub-agents orphan a promise | `aisdk/src/session.ts:493` |
 | A8 | low | done | Interrupt during first-turn MCP connect / auto-compact: no event, message left unprocessed | `aisdk/src/session.ts:656-671` |
-| C4 | med | todo | Global `process.env.CLAUDE_CONFIG_DIR` mutated across an `await` in `#forkTruncated` (serialize forkSession) | `connectors/claude/src/adapter.ts:498-514` |
-| C6 | med | todo | `interrupt()` doesn't cancel pending gates / `ask_user`; `canUseTool` bypasses the `#interrupted` muzzle. Also subsumes **S1**: gate the `permission_request`/`plan_review` emission on `#interrupted` so a killed turn's unwinding tool calls don't resurface a stopped session, without touching the (deliberately non-sticky) status machine. | `connectors/claude/src/adapter.ts:193-226` |
+| C4 | med | done | Global `process.env.CLAUDE_CONFIG_DIR` mutated across an `await` in `#forkTruncated` (serialize forkSession) | `connectors/claude/src/adapter.ts:498-514` |
+| C6 | med | done | `interrupt()` doesn't cancel pending gates / `ask_user`; `canUseTool` bypasses the `#interrupted` muzzle. Also subsumes **S1**: gate the `permission_request`/`plan_review` emission on `#interrupted` so a killed turn's unwinding tool calls don't resurface a stopped session, without touching the (deliberately non-sticky) status machine. | `connectors/claude/src/adapter.ts:193-226` |
 | C12 | low | todo | `snapshot()` always reports `stateRunning`, even after the CLI process exits | `connectors/claude/src/adapter.ts:541-545` |
 
 ### Phase 2 — bounded buffers + write atomicity
@@ -169,7 +169,7 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | G2 | **high** | todo | Undo/rewind never restores worktree files — checkpoint stores no git SHA | `daemon/daemon.ts:921-941, 1400-1477` |
 | C1 | **high** | todo | `rewind()` silently reverts live model/effort/mode changes | `connectors/claude/src/adapter.ts:492` |
 | C2 | **high** | todo | `rewind()` regresses cumulative token/cost totals, contradicting its docstring | `connectors/claude/src/map.ts:399-401` |
-| C5 | med | todo | Live query ending during the pre-teardown fork window → permanently silent session | `connectors/claude/src/adapter.ts:285-318` |
+| C5 | med | done | Live query ending during the pre-teardown fork window → permanently silent session | `connectors/claude/src/adapter.ts:285-318` |
 | C13 | low | todo | Mapper carry-over state (`#lastChainUuid`, `#lastBgSig`, `#openSubagents`) not reset across `rewind()` | `connectors/claude/src/map.ts:176-183` |
 | A9 | low | todo | No compaction between steps within a single 50-step segment | `aisdk/src/session.ts:662-668` |
 
