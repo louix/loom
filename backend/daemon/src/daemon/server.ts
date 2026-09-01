@@ -30,20 +30,6 @@ export class SocketServer {
 
   async listen(): Promise<void> {
     const { sockPath } = this.#opts;
-    // A leftover socket file is either stale (unclean exit) or a live daemon.
-    // Probe before removing it so two daemons never race for the same repo.
-    if (existsSync(sockPath)) {
-      if (await isSocketLive(sockPath)) {
-        throw Object.assign(new Error(`another daemon is listening on ${sockPath}`), {
-          code: "EADDRINUSE",
-        });
-      }
-      try {
-        unlinkSync(sockPath);
-      } catch {
-        // fall through — listen() will report the real problem
-      }
-    }
 
     const server = createServer((socket) => {
       const conn = new Connection(
@@ -56,24 +42,52 @@ export class SocketServer {
     });
     this.#server = server;
 
-    return new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(sockPath, () => {
-        server.removeListener("error", reject);
-        // `net.Server` keeps emitting `error` for the rest of its life on
-        // accept-time failures (EMFILE/ENFILE/ENOBUFS under fd pressure). With
-        // no listener that's an uncaught exception and the whole daemon dies —
-        // log and keep serving instead; the failed accept is already lost.
-        server.on("error", (err) => log.error("socket server error", { err: String(err) }));
-        try {
-          chmodSync(sockPath, 0o600);
-        } catch {
-          // non-fatal; directory perms already constrain access
-        }
-        log.info("listening", { sock: sockPath });
-        resolve();
+    const bind = (): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const onErr = (err: unknown): void => {
+          server.removeListener("listening", onOk);
+          reject(err);
+        };
+        const onOk = (): void => {
+          server.removeListener("error", onErr);
+          resolve();
+        };
+        server.once("error", onErr);
+        server.once("listening", onOk);
+        server.listen(sockPath);
       });
-    });
+
+    // Bind first, then react to `EADDRINUSE` — no `exists` → `probe` → `unlink`
+    // → `bind` window where a second daemon can unlink/rebind over the first.
+    try {
+      await bind();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+      // Something holds the path. A live daemon → bail; a stale socket file from
+      // an unclean exit → clear it and try once more.
+      if (existsSync(sockPath) && (await isSocketLive(sockPath))) {
+        throw Object.assign(new Error(`another daemon is listening on ${sockPath}`), {
+          code: "EADDRINUSE",
+        });
+      }
+      try {
+        unlinkSync(sockPath);
+      } catch {
+        // fall through — the retry will report the real problem
+      }
+      await bind();
+    }
+
+    // `net.Server` keeps emitting `error` for the rest of its life on accept-time
+    // failures (EMFILE/ENFILE/ENOBUFS under fd pressure). With no listener that's
+    // an uncaught exception and the whole daemon dies — log and keep serving.
+    server.on("error", (err) => log.error("socket server error", { err: String(err) }));
+    try {
+      chmodSync(sockPath, 0o600);
+    } catch {
+      // non-fatal; directory perms already constrain access
+    }
+    log.info("listening", { sock: sockPath });
   }
 
   #onFrame(frame: Frame, conn: Connection): void {
