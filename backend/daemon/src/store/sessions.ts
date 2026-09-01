@@ -288,6 +288,22 @@ export class SessionStore {
     return row?.provider_ref ?? null;
   }
 
+  /** The base short-SHA the operator was last nudged to integrate for this
+   *  session (`""` = never / integrated since). Persisted so a daemon restart
+   *  doesn't re-inject the same "base advanced" nudge turn. */
+  autoRebaseNudgedSha(id: string): string {
+    const row = this.#db
+      .prepare("SELECT auto_rebase_nudged_sha FROM sessions WHERE id = ?")
+      .get(id) as { auto_rebase_nudged_sha: string } | undefined;
+    return row?.auto_rebase_nudged_sha ?? "";
+  }
+
+  setAutoRebaseNudgedSha(id: string, sha: string): void {
+    this.#db
+      .prepare("UPDATE sessions SET auto_rebase_nudged_sha = ?, updated_at = ? WHERE id = ?")
+      .run(sha, Date.now(), id);
+  }
+
   /** True once a manual rename has pinned the title against the auto-titler. */
   titleLocked(id: string): boolean {
     const row = this.#db.prepare("SELECT title_locked FROM sessions WHERE id = ?").get(id) as

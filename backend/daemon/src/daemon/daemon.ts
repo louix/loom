@@ -182,9 +182,9 @@ export class Daemon {
   #claudeChoices: ModelChoice[] | null = null;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
-  /** Per session, the base short-SHA we last nudged the agent to integrate —
-   *  so a stuck rebase conflict prompts once, not on every idle. */
-  readonly #autoRebaseNudged = new Map<string, string>();
+  // The "already nudged for this base head" record is persisted on the session
+  // row (`auto_rebase_nudged_sha`) — see `SessionStore.autoRebaseNudgedSha` —
+  // so it survives a daemon restart.
   #events: EventLog;
   #server: SocketServer;
   #dispatcher: RpcDispatcher;
@@ -877,7 +877,7 @@ export class Daemon {
     }
 
     if (res.outcome === "updated") {
-      this.#autoRebaseNudged.delete(id);
+      this.#registry.store.setAutoRebaseNudgedSha(id, "");
       this.#emitNotice(
         `${snap.branch}: ${mode === "merge" ? "merged" : "rebased onto"} ` +
           `${res.base} (+${res.behind}) → ${res.head}`,
@@ -888,9 +888,10 @@ export class Daemon {
     }
 
     // dirty | conflict | error — the agent has to integrate it. Nudge once per
-    // base commit so a branch that stays behind doesn't nag every turn.
-    if (this.#autoRebaseNudged.get(id) === res.baseHead) return;
-    this.#autoRebaseNudged.set(id, res.baseHead);
+    // base commit so a branch that stays behind doesn't nag every turn (and,
+    // now that it's persisted, doesn't nag again after a daemon restart).
+    if (this.#registry.store.autoRebaseNudgedSha(id) === res.baseHead) return;
+    this.#registry.store.setAutoRebaseNudgedSha(id, res.baseHead);
 
     const verb = mode === "merge" ? "merge" : "rebase";
     const why =
@@ -1924,7 +1925,6 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
       this.#lastSend.delete(id);
-      this.#autoRebaseNudged.delete(id);
       const snap = this.#registry.setStatus(id, stateDone, "marked_done");
       this.emitEvent({
         type: "status_changed",
@@ -1962,7 +1962,6 @@ export class Daemon {
       }
       if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
       this.#lastSend.delete(id);
-      this.#autoRebaseNudged.delete(id);
       if (s.worktree) {
         try {
           this.#worktrees.remove(s.worktree, { force: true });

@@ -188,4 +188,12 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE checkpoints ADD COLUMN head_sha TEXT NOT NULL DEFAULT '';
   ALTER TABLE checkpoints ADD COLUMN head_dirty INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 15 — the base commit a session was last auto-rebase-nudged about. The
+  // "already nudged for this base head" suppression lived in a daemon-instance
+  // Map, so a restart re-injected the "base branch advanced" turn for a branch
+  // still behind. Persist it instead.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN auto_rebase_nudged_sha TEXT NOT NULL DEFAULT '';
+  `,
 ];

@@ -1100,6 +1100,22 @@ test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to inte
     assert.equal(userMsgs.length, 1);
     assert.match(userMsgs[0] ?? "", /\[loom\].*\bmain\b.*rebase/s);
     assert.equal(hh.daemon.registry.get(snap.id)?.status.kind, "running");
+
+    // G9: the "already nudged for this base head" record is persisted on the
+    // row, not a daemon-instance Map — so a restart won't re-inject the nudge.
+    const row = hh.daemon.db
+      .prepare("SELECT auto_rebase_nudged_sha FROM sessions WHERE id = ?")
+      .get(snap.id) as { auto_rebase_nudged_sha: string };
+    const baseShort = execFileSync("git", ["-C", wt, "rev-parse", "--short", "main"], {
+      encoding: "utf8",
+    }).trim();
+    assert.equal(row.auto_rebase_nudged_sha, baseShort);
+
+    // a second idle transition against the same base head does not nudge again
+    userMsgs.length = 0;
+    fs?.finishTurn();
+    await delay(120);
+    assert.equal(userMsgs.length, 0, "no repeat nudge for the same base commit");
   } finally {
     await c.close();
     await hh.cleanup();
