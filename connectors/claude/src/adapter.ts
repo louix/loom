@@ -8,6 +8,8 @@
  * Auth is not brokered here — the SDK uses Claude's OAuth in `~/.claude`.
  */
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
@@ -59,6 +61,30 @@ const CAPS: ProviderCapabilities = {
 
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
+
+/** Expand a leading `~` / `~/`; other paths (incl. "") pass through. */
+const expandTilde = (p: string): string => {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+};
+
+/**
+ * The subprocess env for a `query()`: `process.env` plus Loom's overrides. `env`
+ * REPLACES the child environment, so the spread is load-bearing. Returns
+ * `undefined` when there's nothing to override (SDK then inherits ours).
+ */
+const queryEnv = (opts: {
+  promptCacheTtl?: string | undefined;
+  configDir?: string | undefined;
+}): NodeJS.ProcessEnv | undefined => {
+  const over: Record<string, string> = {};
+  // Pinning the cache TTL makes the TUI's liveness countdown exact.
+  if (opts.promptCacheTtl) over["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
+  // Points this session's `claude` at a non-default profile dir.
+  if (opts.configDir) over["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
+  return Object.keys(over).length > 0 ? { ...process.env, ...over } : undefined;
+};
 
 /** Pull a context-window size out of a `[1m]` / `[200k]` style tag; 0 if none. */
 const parseContextTag = (s: string): number => {
@@ -143,9 +169,9 @@ class ClaudeSession implements AgentSession {
   /** Build the `query()` and start pumping its messages into the outbox. */
   start(
     opts: CreateSessionOptions,
-    extra: { resume?: string; cli?: string; promptCacheTtl?: string } = {},
+    extra: { resume?: string; cli?: string; promptCacheTtl?: string; configDir?: string } = {},
   ): void {
-    const { resume, cli, promptCacheTtl } = extra;
+    const { resume, cli, promptCacheTtl, configDir } = extra;
     if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
@@ -191,6 +217,7 @@ class ClaudeSession implements AgentSession {
       });
     }
 
+    const env = queryEnv({ promptCacheTtl, configDir });
     const options: Options = {
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
@@ -198,11 +225,7 @@ class ClaudeSession implements AgentSession {
       includePartialMessages: false,
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
-      // `env` REPLACES the subprocess environment, so spread process.env first.
-      // Pinning the cache TTL makes the TUI's liveness countdown exact.
-      ...(promptCacheTtl
-        ? { env: { ...process.env, CLAUDE_CODE_PROMPT_CACHE_TTL: promptCacheTtl } }
-        : {}),
+      ...(env ? { env } : {}),
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
@@ -459,24 +482,31 @@ class ClaudeSession implements AgentSession {
 // ---------------------------------------------------------------------------
 
 export interface ClaudeProviderOptions {
+  /** Provider id this instance serves — `claude` or `claude:<profile>`. */
+  id?: string;
   /** `providers.claude.cli_path` — "" means discover / bundled. */
   cliPath?: string;
   /** `providers.claude.prompt_cache_ttl` — "5m" | "1h" | "" (CLI decides). */
   promptCacheTtl?: string;
+  /** `CLAUDE_CONFIG_DIR` for this profile — "" leaves the SDK's default. */
+  configDir?: string;
 }
 
 export class ClaudeProvider implements AgentProvider {
-  readonly id = "claude";
+  readonly id: string;
   readonly capabilities = CAPS;
 
   readonly #cliPathOption: string;
   readonly #promptCacheTtl: string;
+  readonly #configDir: string;
   #cli: string | undefined;
   #cliResolved = false;
 
   constructor(opts: ClaudeProviderOptions = {}) {
+    this.id = opts.id ?? "claude";
     this.#cliPathOption = opts.cliPath ?? "";
     this.#promptCacheTtl = opts.promptCacheTtl ?? "";
+    this.#configDir = opts.configDir ?? "";
   }
 
   #resolveCli(): string | undefined {
@@ -487,10 +517,11 @@ export class ClaudeProvider implements AgentProvider {
     return this.#cli;
   }
 
-  #extra(cli: string | undefined): { cli?: string; promptCacheTtl?: string } {
+  #extra(cli: string | undefined): { cli?: string; promptCacheTtl?: string; configDir?: string } {
     return {
       ...(cli ? { cli } : {}),
       ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
+      ...(this.#configDir ? { configDir: this.#configDir } : {}),
     };
   }
 
@@ -530,9 +561,13 @@ export class ClaudeProvider implements AgentProvider {
    */
   async listModels(): Promise<DiscoveredModel[]> {
     const cli = this.#resolveCli();
+    const env = queryEnv({ configDir: this.#configDir });
     const q = query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
-      options: cli ? { pathToClaudeCodeExecutable: cli } : {},
+      options: {
+        ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
+        ...(env ? { env } : {}),
+      },
     });
     try {
       const init = await q.initializationResult();

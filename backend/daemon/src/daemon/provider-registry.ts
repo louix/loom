@@ -5,10 +5,17 @@
  * actually uses, so a Claude-only daemon never evaluates `ai` / `@ai-sdk/*` and
  * an aisdk-only daemon never evaluates `@anthropic-ai/claude-agent-sdk`.
  *
- * `claude` and `fake`/`mock` are always known; every `[providers.<id>]` /
+ * `fake`/`mock` and the Claude profiles are always known (`[[claude_profiles]]`,
+ * defaulting to a lone `~/.claude` → id `claude`); every `[providers.<id>]` /
  * `[custom-provider.<id>]` / `[google]` / `[anthropic]` profile adds an id.
  */
-import { resolveApiKey, type LoomConfig } from "../config/config.ts";
+import {
+  claudeProfileId,
+  resolveApiKey,
+  type ClaudeProfile,
+  type LoomConfig,
+} from "../config/config.ts";
+import { isClaudeId } from "@loom/core/provider-id";
 import type { AgentProvider } from "@loom/core/types";
 import type {
   ConnectorConfig,
@@ -40,7 +47,18 @@ export class ProviderRegistry {
     this.#config = config;
     this.#transcript = transcript;
     this.#manifest = manifest;
-    this.#ids = new Set(["claude", "fake", ...Object.keys(config.providers.aisdk)]);
+    this.#ids = new Set([
+      "fake",
+      ...config.claudeProfiles.map(claudeProfileId),
+      ...Object.keys(config.providers.aisdk),
+    ]);
+  }
+
+  /** The `[[claude_profiles]]` entry an id serves. */
+  #claudeProfile(id: string): ClaudeProfile {
+    const p = this.#config.claudeProfiles.find((x) => claudeProfileId(x) === id);
+    if (!p) throw new Error(`unknown provider: ${id}`);
+    return p;
   }
 
   get defaultId(): string {
@@ -73,7 +91,7 @@ export class ProviderRegistry {
   /** The connector package name that serves `id`. */
   #packageFor(id: string): string {
     if (id === "fake" || id === "mock") return MOCK;
-    if (id === "claude") return CLAUDE;
+    if (isClaudeId(id)) return CLAUDE;
     const profile = this.#config.providers.aisdk[id];
     if (!profile) throw new Error(`unknown provider: ${id}`);
     if (profile.connector) return profile.connector;
@@ -130,11 +148,16 @@ export class ProviderRegistry {
     if (id === "fake" || id === "mock") {
       return { id, config: {}, logger, ...(search ? { search } : {}) };
     }
-    if (id === "claude") {
+    if (isClaudeId(id)) {
       const c = this.#config.providers.claude;
+      // The base `claude` id keeps the SDK's own default resolution untouched —
+      // setting `CLAUDE_CONFIG_DIR` even to `~/.claude` would relocate where the
+      // CLI keeps `.claude.json` (it moves inside the dir). A named profile
+      // always scopes its own dir. `cli_path` / `prompt_cache_ttl` stay global.
+      const configDir = id === "claude" ? "" : this.#claudeProfile(id).dir;
       return {
         id,
-        config: { cliPath: c.cliPath, promptCacheTtl: c.promptCacheTtl },
+        config: { cliPath: c.cliPath, promptCacheTtl: c.promptCacheTtl, configDir },
         logger,
         ...(search ? { search } : {}),
       };

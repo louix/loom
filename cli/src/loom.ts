@@ -211,16 +211,24 @@ const main = async (): Promise<void> => {
             defaultModel: string;
             color: string;
             isDefault: boolean;
+            account?: { loginMethod: string; org: string };
           }>
         >("providers.list");
         if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
         else
-          for (const p of rows)
+          for (const p of rows) {
+            const acct = p.account
+              ? [p.account.loginMethod, p.account.org ? `(${p.account.org})` : ""]
+                  .filter(Boolean)
+                  .join(" ")
+              : "";
             process.stdout.write(
               `  ${p.id}${p.isDefault ? " [default]" : ""}` +
                 `${p.defaultModel ? `  ${p.defaultModel}` : ""}` +
-                `${p.models.length ? `  (${p.models.length} models)` : ""}\n`,
+                `${p.models.length ? `  (${p.models.length} models)` : ""}` +
+                `${acct ? `  ${acct}` : ""}\n`,
             );
+          }
         break;
       }
       case "models": {

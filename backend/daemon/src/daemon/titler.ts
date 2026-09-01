@@ -5,6 +5,7 @@
  * rename (`session.setTitle`) locks the title and this never runs again.
  */
 import { randomUUID } from "node:crypto";
+import { isClaudeId } from "@loom/core/provider-id";
 import type { AgentProvider } from "@loom/core/types";
 import type { Logger } from "@loom/core/logger";
 
@@ -46,7 +47,7 @@ const NO_TOOLS = [
 
 /** A cheap model for the one-shot when `[titles] model` is unset. */
 export const cheapModelFor = (providerId: string): string | undefined => {
-  return providerId === "claude" ? "claude-haiku-4-5-20251001" : undefined;
+  return isClaudeId(providerId) ? "claude-haiku-4-5-20251001" : undefined;
 };
 
 /**

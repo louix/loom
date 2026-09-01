@@ -40,6 +40,12 @@ export interface ConnectorConfig {
   cliPath?: string;
   /** Claude: prompt-cache TTL — "5m" | "1h" | "". */
   promptCacheTtl?: string;
+  /**
+   * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
+   * config directory, already tilde-expanded and absolute. "" = the SDK's
+   * default (`~/.claude`).
+   */
+  configDir?: string;
 }
 
 export interface ConnectorContext {

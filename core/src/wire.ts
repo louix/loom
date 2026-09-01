@@ -230,6 +230,13 @@ export interface ProviderInfo {
   color: string;
   /** True for the provider new sessions use when none is named. */
   isDefault: boolean;
+  /**
+   * Claude only — the OAuth identity behind this profile's `~/.claude` dir, read
+   * from `.claude.json` / `.credentials.json`. Omitted when neither field could
+   * be resolved; either string may still be "". Shown in the Detail pane to
+   * disambiguate a personal vs work profile.
+   */
+  account?: { loginMethod: string; org: string };
 }
 
 // ---------------------------------------------------------------------------

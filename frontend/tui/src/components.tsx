@@ -282,12 +282,24 @@ const FleetRow = ({
 // detail (right column, top)
 // ---------------------------------------------------------------------------
 
+/** Left gutter (chars) for the label ∶ value rows in the Detail pane. */
+const DETAIL_GUTTER = 8;
+
+/** A fixed-width label gutter + a value that truncates to the rest of the row. */
+const Field = ({ label, children }: { label: string; children: ReactNode }): ReactNode => (
+  <Box>
+    <Text color={C.dim}>{label.padEnd(DETAIL_GUTTER)}</Text>
+    <Box flexGrow={1}>{children}</Box>
+  </Box>
+);
+
 export const Detail = ({
   session,
   width,
   queued = [],
   now = Date.now(),
   engineColor = "",
+  account = "",
   compacting = null,
 }: {
   session: SessionSnapshot | null;
@@ -296,6 +308,8 @@ export const Detail = ({
   now?: number;
   /** Ink colour for the provider/model line; matches the Fleet id colour. */
   engineColor?: string;
+  /** `<login method> (<org>)` for a Claude profile; "" hides the line. */
+  account?: string;
   /** Set while a compaction is in flight on this session. */
   compacting?: { startedAt: number; before: number } | null;
 }): ReactNode => {
@@ -332,14 +346,21 @@ export const Detail = ({
       paddingX={1}
       flexDirection="column"
     >
-      <Box justifyContent="space-between">
+      <Box>
         <Text color={C.dim}>{`DETAIL  ${shortId(s.id)}`}</Text>
-        <Text>
-          <Text color={C.faint}>{"engine "}</Text>
-          <Text color={engineColor || C.faint}>{s.provider}</Text>
-          <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
-        </Text>
+        <Box flexGrow={1} justifyContent="flex-end">
+          <Text wrap="truncate-end">
+            <Text color={C.faint}>{"engine "}</Text>
+            <Text color={engineColor || C.faint}>{s.provider}</Text>
+            <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
+          </Text>
+        </Box>
       </Box>
+      {account ? (
+        <Text color={C.faint} wrap="truncate-end">
+          {account}
+        </Text>
+      ) : null}
       <Text color={C.text} wrap="truncate-end">
         {truncate(titleLine(s.title), w)}
       </Text>
@@ -347,7 +368,7 @@ export const Detail = ({
         <Text color={C.faint}>{`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}</Text>
       ) : null}
       <Box marginTop={1} gap={2}>
-        <Text color={look.color} bold>
+        <Text color={look.color} bold wrap="truncate-end">
           {`${look.glyph} ${look.label}${s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : ""}`}
         </Text>
         {/* `[mode]` in the same gold the event log gives tool commands — the one */}
@@ -358,21 +379,23 @@ export const Detail = ({
         </Text>
         <Text color={C.dim}>{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Text>
       </Box>
-      <Box marginTop={1} gap={2}>
-        <Text color={C.dim}>{"context"}</Text>
-        <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
-        <Text color={C.dim}>
-          {`${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
-        </Text>
-      </Box>
-      {compacting ? (
-        <Box gap={2}>
-          <Text color={C.dim}>{"       "}</Text>
-          <Text color={C.accent}>
-            {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
+      <Field label="context">
+        <Text wrap="truncate-end">
+          <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
+          <Text color={C.dim}>
+            {`  ${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
           </Text>
-          <Text color={C.faint}>{`from ${humanTokens(compacting.before)}`}</Text>
-        </Box>
+        </Text>
+      </Field>
+      {compacting ? (
+        <Field label="">
+          <Text wrap="truncate-end">
+            <Text color={C.accent}>
+              {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
+            </Text>
+            <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
+          </Text>
+        </Field>
       ) : null}
       {(() => {
         const cs = cacheStatus(s, now);
@@ -381,41 +404,46 @@ export const Detail = ({
           ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
           : "";
         return (
-          <Box gap={2}>
-            <Text color={C.dim}>{"cache  "}</Text>
+          <Field label="cache">
             {cs.state === "warm" ? (
-              <Text color={C.good}>{`⟢ warm ~${mmss(cs.remainingMs)}${hit}`}</Text>
+              <Text
+                color={C.good}
+                wrap="truncate-end"
+              >{`⟢ warm ~${mmss(cs.remainingMs)}${hit}`}</Text>
             ) : (
-              <Text color={C.faint}>{`⟢ cold${hit}`}</Text>
+              <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}`}</Text>
             )}
-          </Box>
+          </Field>
         );
       })()}
-      <Box gap={2}>
-        <Text color={C.dim}>{"tokens "}</Text>
-        <Text color={C.faint}>
-          {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`}
-        </Text>
+      <Box>
+        <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
+        <Box flexGrow={1}>
+          <Text color={C.faint} wrap="truncate-end">
+            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`}
+          </Text>
+        </Box>
         <Text color={s.costUsd ? C.good : C.faint}>
-          {(s.costSource === "table" ? "~" : "") + money(s.costUsd)}
+          {` ${(s.costSource === "table" ? "~" : "") + money(s.costUsd)}`}
         </Text>
       </Box>
       {Object.keys(s.rateLimits).length > 0 ? (
-        <Box gap={2}>
-          <Text color={C.dim}>{"plan "}</Text>
-          {Object.entries(s.rateLimits).map(([window, w]) => {
-            let col: string = C.faint;
-            if (w.status === "rejected") col = C.bad;
-            else if (w.status === "allowed_warning") col = C.warn;
-            const pct = w.utilization != null ? `${Math.round(w.utilization)}%` : "?%";
-            const resets = w.resetsAt != null ? `  ⟳ ${humanDuration(w.resetsAt - now)}` : "";
-            return (
-              <Text key={window} color={col}>
-                {`${window} ${pct}${resets}`}
-              </Text>
-            );
-          })}
-        </Box>
+        <Field label="plan">
+          <Text wrap="truncate-end">
+            {Object.entries(s.rateLimits).map(([window, rl], i) => {
+              let col: string = C.faint;
+              if (rl.status === "rejected") col = C.bad;
+              else if (rl.status === "allowed_warning") col = C.warn;
+              const pct = rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%";
+              const resets = rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : "";
+              return (
+                <Text key={window} color={col}>
+                  {`${i > 0 ? "   " : ""}${window} ${pct}${resets}`}
+                </Text>
+              );
+            })}
+          </Text>
+        </Field>
       ) : null}
       <Box marginTop={1}>
         <Text color={C.faint}>{"⌥ "}</Text>

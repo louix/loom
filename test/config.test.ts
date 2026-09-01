@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import {
+  claudeProfileId,
   deepMerge,
   lintConfig,
   loadConfig,
   normalizeConfig,
   resolveApiKey,
+  slugifyProfile,
 } from "@loom/daemon/config/config";
 import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "@loom/daemon/scaffold";
 
@@ -379,6 +381,78 @@ max_results = 8
   assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);
+});
+
+// --- claude profiles -----------------------------------------------------
+
+test("slugifyProfile is kebab, trimmed, and collapses '' / 'claude' onto the base id", () => {
+  assert.equal(slugifyProfile(""), "");
+  assert.equal(slugifyProfile("Claude"), "");
+  assert.equal(slugifyProfile("Work"), "work");
+  assert.equal(slugifyProfile("  My Work Box! "), "my-work-box");
+  assert.equal(claudeProfileId({ name: "" }), "claude");
+  assert.equal(claudeProfileId({ name: "Work" }), "claude:work");
+});
+
+test("no [[claude_profiles]] → a single expanded ~/.claude profile with id 'claude'", () => {
+  const c = cfg("");
+  assert.equal(c.claudeProfiles.length, 1);
+  assert.equal(c.claudeProfiles[0]?.dir, join(homedir(), ".claude"));
+  assert.equal(claudeProfileId(c.claudeProfiles[0] ?? { name: "x" }), "claude");
+});
+
+test("a named profile gets id claude:<slug>; the first / unnamed one stays 'claude'", () => {
+  const c = cfg(`
+[[claude_profiles]]
+dir = "~/.claude"
+
+[[claude_profiles]]
+dir   = "~/.claude-work"
+name  = "Work"
+color = "yellow"
+`);
+  assert.deepEqual(c.claudeProfiles.map(claudeProfileId), ["claude", "claude:work"]);
+  assert.equal(c.claudeProfiles[1]?.dir, join(homedir(), ".claude-work"));
+  assert.equal(c.claudeProfiles[1]?.color, "yellow");
+});
+
+test("claude_profiles: a blank dir is dropped and a colliding id is de-duplicated", () => {
+  const c = cfg(`
+[[claude_profiles]]
+dir = ""
+
+[[claude_profiles]]
+dir = "/one/.claude"
+
+[[claude_profiles]]
+dir = "/two/.claude"
+`);
+  // both unnamed → both resolve to id "claude"; first wins, blank is gone
+  assert.equal(c.claudeProfiles.length, 1);
+  assert.equal(c.claudeProfiles[0]?.dir, "/one/.claude");
+});
+
+test("default_provider may name a claude profile id", () => {
+  const c = cfg(`
+default_provider = "claude:work"
+[[claude_profiles]]
+dir = "~/.claude"
+[[claude_profiles]]
+dir  = "~/.claude-work"
+name = "Work"
+`);
+  assert.equal(c.defaultProvider, "claude:work");
+  // an unconfigured id still falls back to claude
+  assert.equal(cfg(`default_provider = "claude:ghost"`).defaultProvider, "claude");
+});
+
+test("a claude:<slug> id can't be claimed by an aisdk profile", () => {
+  const c = cfg(`
+[custom-provider."claude:work"]
+base_url = "http://localhost:1234/v1"
+model    = "x"
+`);
+  assert.deepEqual(c.providers.aisdk, {});
 });
 
 // --- first-run scaffold ----------------------------------------------------

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -415,6 +416,56 @@ color    = "red"
     assert.equal(byId.get("deepseek")?.color, "red");
   } finally {
     await hh.cleanup();
+  }
+});
+
+test("providers.list expands [[claude_profiles]] into distinct ids, tags, colours and accounts", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "loom-claude-work-"));
+  writeFileSync(
+    join(workDir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { subscriptionType: "enterprise" } }),
+  );
+  writeFileSync(
+    join(workDir, ".claude.json"),
+    JSON.stringify({ oauthAccount: { organizationName: "Globex" } }),
+  );
+  const hh = await makeHarness({
+    config: `
+[[claude_profiles]]
+dir = "~/.claude"
+
+[[claude_profiles]]
+dir  = ${JSON.stringify(workDir)}
+name = "Work"
+`,
+  });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const list = await c.request<
+      Array<{
+        id: string;
+        tag: string;
+        color: string;
+        account?: { loginMethod: string; org: string };
+      }>
+    >("providers.list");
+    await c.close();
+
+    const byId = new Map(list.map((p) => [p.id, p]));
+    assert.ok(byId.has("claude"));
+    assert.equal(byId.get("claude")?.color, ""); // base profile stays plain
+    const work = byId.get("claude:work");
+    assert.ok(work, "the named profile is its own provider");
+    assert.equal(work?.tag, "Work");
+    assert.notEqual(work?.color, ""); // auto-assigned from the palette
+    assert.deepEqual(work?.account, { loginMethod: "Claude Enterprise account", org: "Globex" });
+  } finally {
+    await hh.cleanup();
+    rmSync(workDir, { recursive: true, force: true });
   }
 });
 

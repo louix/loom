@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { isClaudeId } from "@loom/core/provider-id";
 
 /**
  * Loom configuration. Mirrors the `.loom/config.toml` sketch in the design spec.
@@ -73,9 +75,31 @@ export interface AisdkProfile {
   connector: string;
 }
 
+/**
+ * One Claude profile — a named `~/.claude`-style config directory. Each becomes
+ * its own provider: the first / unnamed one keeps the id `claude`, a named one
+ * gets `claude:<slug>` (see {@link claudeProfileId}). The `dir` is handed to the
+ * SDK subprocess as `CLAUDE_CONFIG_DIR`, so a user with `~/.claude-personal` and
+ * `~/.claude-work` can run both at once without symlink-swapping.
+ */
+export interface ClaudeProfile {
+  /** Config dir, tilde-expanded and absolute after `normalizeConfig`. */
+  dir: string;
+  /** Display label + id-slug source; "" → the base `claude` id, tag "Claude". */
+  name: string;
+  /** Fleet-row id colour (Ink name); "" → auto-assign from a palette. */
+  color: string;
+}
+
 export interface LoomConfig {
   baseBranch: string;
   worktreeDir: string;
+  /**
+   * Claude config directories to expose as providers. Always non-empty —
+   * defaults to a single `~/.claude` (id `claude`). Order is stable: entry 0 is
+   * the fallback `default_provider`.
+   */
+  claudeProfiles: ClaudeProfile[];
   /**
    * Worktree isolation for new sessions. `enabled` (the default) gives each
    * session its own `git worktree` + branch off `baseBranch`. Off → sessions
@@ -148,6 +172,7 @@ export interface LoomConfig {
 export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
+  claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   db: ".loom/loom.db",
   runIsolation: "in-process",
@@ -200,6 +225,60 @@ const strArray = (v: unknown, fallback: string[]): string[] => {
   // Keep the string entries rather than reverting the whole list (and losing an
   // explicit `[]`) because of one stray non-string element.
   return v.filter((x): x is string => typeof x === "string");
+};
+
+/** Expand a leading `~` / `~/` against the home directory; other paths pass through. */
+export const expandTilde = (p: string): string => {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+};
+
+/**
+ * A Claude profile `name` → id slug: lowercased, non-alphanumerics collapsed to
+ * `-`, trimmed. "" (and the redundant "claude") collapse onto the base id.
+ */
+export const slugifyProfile = (name: string): string => {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug === "claude" ? "" : slug;
+};
+
+/** Provider id for a Claude profile: `claude`, or `claude:<slug>` when named. */
+export const claudeProfileId = (p: { name: string }): string => {
+  const slug = slugifyProfile(p.name);
+  return slug ? `claude:${slug}` : "claude";
+};
+
+/**
+ * `[[claude_profiles]]` → a stable, de-duplicated list. A missing / empty `dir`
+ * drops the entry; a second entry that resolves to an id already taken is
+ * dropped (both flagged by {@link lintConfig}). Always returns at least the
+ * default `~/.claude` profile.
+ */
+const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
+  const rows = Array.isArray(raw) ? raw : [];
+  const out: ClaudeProfile[] = [];
+  const seen = new Set<string>();
+  for (const entry of rows) {
+    const e = asRecord(entry);
+    const dir = str(e["dir"], "").trim();
+    if (dir === "") continue;
+    const profile: ClaudeProfile = {
+      dir: expandTilde(dir),
+      name: str(e["name"], "").trim(),
+      color: str(e["color"], "").trim(),
+    };
+    const id = claudeProfileId(profile);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(profile);
+  }
+  if (out.length === 0)
+    return DEFAULT_CONFIG.claudeProfiles.map((p) => ({ ...p, dir: expandTilde(p.dir) }));
+  return out;
 };
 
 /**
@@ -255,7 +334,7 @@ const buildAisdkProfile = (
 const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkProfile> => {
   const out: Record<string, AisdkProfile> = {};
   const put = (id: string, p: AisdkProfile | null): void => {
-    if (p && id !== "claude" && !(id in out)) out[id] = p;
+    if (p && !isClaudeId(id) && !(id in out)) out[id] = p;
   };
 
   // [google] / [anthropic] — one profile per vendor, id = the vendor name.
@@ -271,7 +350,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
 
   // [providers.<id>] adapter = "aisdk" — kept, and wins a duplicate id.
   for (const [id, t0] of Object.entries(asRecord(raw["providers"]))) {
-    if (id === "claude") continue;
+    if (isClaudeId(id)) continue;
     const t = asRecord(t0);
     if (t["adapter"] !== "aisdk") continue;
     const sdk: AisdkKind = t["sdk"] === "google" || t["sdk"] === "anthropic" ? t["sdk"] : "openai";
@@ -305,6 +384,11 @@ export const resolveApiKey = (
  */
 export const lintConfig = (cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env): string[] => {
   const w: string[] = [];
+  for (const p of cfg.claudeProfiles) {
+    if (!existsSync(p.dir)) {
+      w.push(`claude profile "${claudeProfileId(p)}": dir ${p.dir} does not exist`);
+    }
+  }
   for (const [id, p] of Object.entries(cfg.providers.aisdk)) {
     if (p.sdk === "openai" && p.baseUrl === "") {
       w.push(`provider "${id}": sdk = "openai" needs a base_url`);
@@ -355,9 +439,13 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
 
   const runIsolation = r["run_isolation"] === "subprocess" ? "subprocess" : "in-process";
 
+  const claudeProfiles = parseClaudeProfiles(r["claude_profiles"]);
+  const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
+
   // The default provider must actually be configured; fall back to claude.
   const wantDefault = str(r["default_provider"], d.defaultProvider);
-  const defaultProvider = wantDefault === "claude" || wantDefault in aisdk ? wantDefault : "claude";
+  const defaultProvider =
+    claudeIds.has(wantDefault) || wantDefault in aisdk ? wantDefault : "claude";
 
   // "manual" is the user-facing name for "default" (you approve everything).
   const permDefault =
@@ -383,6 +471,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
+    claudeProfiles,
     worktree: {
       enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,
     },

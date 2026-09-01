@@ -10,7 +10,7 @@ import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
-import { providerColorOf, queueFor } from "./model.ts";
+import { providerAccountOf, providerColorOf, queueFor } from "./model.ts";
 import { C } from "./theme.ts";
 import {
   Confirm,
@@ -134,6 +134,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               queued={sel ? queueFor(state, sel.id) : []}
               now={Date.now()}
               engineColor={sel ? providerColorOf(state, sel.provider) : ""}
+              account={sel ? providerAccountOf(state, sel.provider) : ""}
               compacting={sel ? (state.compacting[sel.id] ?? null) : null}
             />
             <EventLog

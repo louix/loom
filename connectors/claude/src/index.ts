@@ -8,7 +8,9 @@ import { ClaudeProvider } from "./adapter.ts";
 
 export const createProvider = (ctx: ConnectorContext): AgentProvider => {
   return new ClaudeProvider({
+    id: ctx.id,
     cliPath: ctx.config.cliPath ?? "",
     promptCacheTtl: ctx.config.promptCacheTtl ?? "",
+    configDir: ctx.config.configDir ?? "",
   });
 };

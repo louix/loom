@@ -39,6 +39,19 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # the TUI's cache-liveness countdown exact; 1h cache
 # writes cost more on metered billing.
 
+# Claude profiles — each is a `~/.claude`-style config dir exposed as its own
+# provider (dir handed to the CLI as CLAUDE_CONFIG_DIR). Omit this and you get
+# one profile, `~/.claude`, with the id `claude`. The first / unnamed entry
+# keeps the id `claude`; a named one gets `claude:<slug>` (e.g. `claude:work`)
+# and shows its OAuth login method + org in the Detail pane. `model` /
+# `cli_path` / `prompt_cache_ttl` above are shared across all profiles.
+# [[claude_profiles]]
+# dir = "~/.claude"                   # required
+# [[claude_profiles]]
+# dir   = "~/.claude-work"
+# name  = "Work"                      # → id "claude:work", Detail-pane label
+# color = "yellow"                    # Fleet-row id colour; "" → auto from a palette
+
 # This file is the per-repo layer. A user-level file at
 # $XDG_CONFIG_HOME/loom/config.toml (→ ~/.config/loom/config.toml) is loaded
 # *under* it — put provider profiles + credentials there and let each repo

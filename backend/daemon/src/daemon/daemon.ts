@@ -7,12 +7,15 @@ import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/pat
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveMcpCommand } from "./mcp-fallback.ts";
 import {
+  claudeProfileId,
   lintConfig,
   loadConfig,
   resolveApiKey,
   resolveAgainstRepo,
   type LoomConfig,
 } from "../config/config.ts";
+import { readClaudeAccount } from "../config/claude-profile.ts";
+import { isClaudeId } from "@loom/core/provider-id";
 import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "@loom/core/version";
 import type { HarnessEvent } from "@loom/core/events";
@@ -438,7 +441,7 @@ export class Daemon {
     if (subs.length > 0) out = { ...out, subagents: subs };
     const rateLimits = this.#sessions.rateLimitsOf(s.id);
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
-    const ttlMinutes = s.provider === "claude" ? this.#cacheTtlMinutes : 0;
+    const ttlMinutes = isClaudeId(s.provider) ? this.#cacheTtlMinutes : 0;
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };
     }
@@ -514,7 +517,7 @@ export class Daemon {
     if (this.#standalone) return;
     if (this.config.providers.claude.models.length > 0) return;
     try {
-      const provider = await this.#providers.get("claude");
+      const provider = await this.#providers.get(this.#claudeCatalogId);
       if (!provider.listModels) return;
       const models = await Promise.race([
         provider.listModels(),
@@ -542,28 +545,44 @@ export class Daemon {
     }
   }
 
+  /** The Claude provider id that owns the shared model catalog — profile 0. */
+  get #claudeCatalogId(): string {
+    return claudeProfileId(this.config.claudeProfiles[0] ?? { name: "" });
+  }
+
   /** Configured providers for the TUI's creation flow / model switcher. */
   #providerList(): ProviderInfo[] {
     const def = this.#defaultProviderId();
     const mode = this.#defaultMode();
     const claude = this.config.providers.claude;
     const claudeModelPin = claude.model ? [claude.model] : [];
-    const out: ProviderInfo[] = [
-      {
-        id: "claude",
-        // Discovered catalog if we have it, else the single configured pin so
-        // the picker isn't empty.
-        models: claude.models.length ? claude.models : claudeModelPin,
+    // One shared model catalog (all profiles run the same `claude` binary).
+    const claudeModels = claude.models.length ? claude.models : claudeModelPin;
+
+    // `paletteIx` walks PROVIDER_PALETTE for any provider without an explicit
+    // colour — shared across named Claude profiles and aisdk profiles so the
+    // Fleet-row tints don't collide. The base `claude` id stays plain ("").
+    let paletteIx = 0;
+    const autoColor = (explicit: string): string =>
+      explicit || (PROVIDER_PALETTE[paletteIx++ % PROVIDER_PALETTE.length] ?? "");
+
+    const out: ProviderInfo[] = this.config.claudeProfiles.map((profile) => {
+      const id = claudeProfileId(profile);
+      const account = readClaudeAccount(profile.dir);
+      return {
+        id,
+        models: claudeModels,
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
-        defaultModel: this.#defaultModelFor("claude"),
-        defaultEffort: this.#defaultEffortFor("claude"),
+        defaultModel: this.#defaultModelFor(id),
+        defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
-        tag: "claude",
-        color: "",
-        isDefault: def === "claude",
-      },
-    ];
-    let i = 0;
+        tag: profile.name || "Claude",
+        color: id === "claude" ? profile.color : autoColor(profile.color),
+        isDefault: def === id,
+        ...(account ? { account: { loginMethod: account.loginMethod, org: account.org } } : {}),
+      };
+    });
+
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
       out.push({
         id,
@@ -572,10 +591,9 @@ export class Daemon {
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
         tag: p.tag || id,
-        color: p.color || (PROVIDER_PALETTE[i % PROVIDER_PALETTE.length] ?? ""),
+        color: autoColor(p.color),
         isDefault: def === id,
       });
-      i += 1;
     }
     return out;
   }
@@ -609,9 +627,10 @@ export class Daemon {
    * of the provider's detected list is ignored.
    */
   #defaultModelFor(providerId: string): string {
-    if (providerId === "claude") {
+    if (isClaudeId(providerId)) {
+      // Shared model pin / catalog, but each profile remembers its own last model.
       const c = this.config.providers.claude;
-      const remembered = this.#providerDefaults.model("claude");
+      const remembered = this.#providerDefaults.model(providerId);
       if (remembered && (c.models.length === 0 || c.models.includes(remembered))) return remembered;
       return c.model || c.models[0] || "";
     }
@@ -878,6 +897,7 @@ export class Daemon {
 
     const needsRestart =
       JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
+      JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       next.db !== before.db ||
@@ -946,9 +966,11 @@ export class Daemon {
 
     d.register("providers.probeModels", async (params) => {
       const id = reqString(params, "id");
-      if (id === "claude") {
+      if (isClaudeId(id)) {
         try {
-          const provider = await this.#providers.get("claude");
+          const provider = await this.#providers.get(
+            this.#providers.has(id) ? id : this.#claudeCatalogId,
+          );
           const discovered = await provider.listModels?.();
           const models = discovered
             ? discovered.map((m) => m.id)
@@ -1090,14 +1112,14 @@ export class Daemon {
 
       // Remember what this session was created with, so the next `new`
       // defaults here without any of it being pinned in config.
-      if (model && (aisdkProfile || providerId === "claude")) {
+      if (model && (aisdkProfile || isClaudeId(providerId))) {
         this.#providerDefaults.remember(providerId, model);
       }
       if (effort) this.#providerDefaults.rememberEffort(providerId, effort);
       this.#providerDefaults.rememberProvider(providerId);
       this.#providerDefaults.rememberMode(mode);
 
-      const isClaude = providerId === "claude";
+      const isClaude = isClaudeId(providerId);
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
       const mcpHandles = this.#mcpHandles();
       const aisdkSystem = mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
@@ -1448,7 +1470,7 @@ export class Daemon {
       if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
       const snap = this.#registry.setFields(id, { model });
       // A deliberate switch is also "the last model used" for this provider.
-      if (row.provider === "claude" || this.config.providers.aisdk[row.provider]) {
+      if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
       }
       this.#emitSessionUpdated(snap, clientLabel(params));
@@ -1463,7 +1485,7 @@ export class Daemon {
       if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort as EffortLevel);
       const snap = this.#registry.setFields(id, { effort });
       // A deliberate switch is also "the last effort used" for this provider.
-      if (row.provider === "claude" || this.config.providers.aisdk[row.provider]) {
+      if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.rememberEffort(row.provider, effort);
       }
       this.#emitSessionUpdated(snap, clientLabel(params));

@@ -6,6 +6,7 @@
  */
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent, SessionStateKind } from "@loom/core/events";
+import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
@@ -1166,6 +1167,14 @@ export const providerInfo = (s: TuiState, providerId: string): ProviderInfo | nu
   return s.providers.find((p) => p.id === providerId) ?? null;
 };
 
+/** `<login method> (<org>)` for a Claude profile, or "" when unknown. */
+export const providerAccountOf = (s: TuiState, providerId: string): string => {
+  const a = providerInfo(s, providerId)?.account;
+  if (!a) return "";
+  if (a.loginMethod && a.org) return `${a.loginMethod} (${a.org})`;
+  return a.loginMethod || a.org;
+};
+
 export const defaultProviderId = (s: TuiState): string => {
   return s.providers.find((p) => p.isDefault)?.id ?? "claude";
 };
@@ -1210,7 +1219,7 @@ export const modelPickItems = (s: TuiState, providerId: string): PickItem[] => {
 
 /** Message for an empty model picker — why there's nothing to pick. */
 export const modelPickEmptyText = (providerId: string): string => {
-  if (providerId === "claude") return "claude uses its configured model — enter to continue";
+  if (isClaudeId(providerId)) return "claude uses its configured model — enter to continue";
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };
 
@@ -1469,7 +1478,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // don't advertise them there. Hard fork additionally needs an isolated
     // branch, which an in-place session doesn't have — undo (conversation-only)
     // still works there.
-    const isAisdk = session.provider !== "claude";
+    const isAisdk = !isClaudeId(session.provider);
     if (isAisdk && (status.kind === "idle" || status.kind === "interrupted") && session.turns > 1) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }

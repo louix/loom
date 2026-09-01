@@ -14,6 +14,7 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
+import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import type { LoomClient } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
@@ -1251,7 +1252,7 @@ export const mkFleetHandle = ({
         return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
       case "fork": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        if (sel.provider === "claude") {
+        if (isClaudeId(sel.provider)) {
           return void dispatch({
             t: "notice",
             text: "hard fork isn't available for Claude sessions yet",
