@@ -106,6 +106,26 @@ tag      = "lb"
   );
 });
 
+test("model_context parses per-model token sizes; junk rows are skipped", () => {
+  const c = cfg(`
+[custom-provider.sf]
+base_url      = "https://sf.example/v1"
+model_context = { "glm-5.3-flash" = 1048576, "glm-5" = "200000" }
+`);
+  const p = c.providers.aisdk["sf"];
+  assert.deepEqual(p?.modelContext, { "glm-5.3-flash": 1_048_576, "glm-5": 200_000 });
+  // junk: non-numeric, negative, empty key
+  const junk = cfg(
+    `[custom-provider.j]\nbase_url = "http://j/v1"\nmodel_context = { a = "nope", b = -5, "" = 7, c = 1000 }\n`,
+  ).providers.aisdk["j"];
+  assert.deepEqual(junk?.modelContext, { c: 1000 });
+  // absent → empty map
+  assert.deepEqual(
+    cfg(`[custom-provider.z]\nbase_url = "http://z/v1"\n`).providers.aisdk["z"]?.modelContext,
+    {},
+  );
+});
+
 test("max_steps defaults to 50 and is clamped to 1–500", () => {
   const base = `[custom-provider.p]\nbase_url = "http://p/v1"\nmodel = "m"\n`;
   assert.equal(cfg(base).providers.aisdk["p"]?.maxSteps, 50);

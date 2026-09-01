@@ -48,7 +48,7 @@ import {
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { SessionEventStore } from "../store/session-events.ts";
-import { estimateTokens } from "@loom/core/tokens";
+import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -93,18 +93,52 @@ const TOOL_STEER = [
 /** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
 
-/** `GET {base_url}/models` → sorted model ids (OpenAI list shape). */
-const probeOpenAiModels = async (baseUrl: string, apiKey: string): Promise<string[]> => {
+/**
+ * Context-window field names endpoints actually put on `/models` rows, in
+ * preference order: OpenRouter `context_length`, vLLM `max_model_len`,
+ * LiteLLM `max_input_tokens` (deliberately not `max_tokens` — that's the
+ * output-side cap there), LM Studio `max_context_length`. First positive
+ * value wins; numbers and numeric strings both accepted.
+ */
+const MODEL_CONTEXT_FIELDS = [
+  "context_length",
+  "max_model_len",
+  "max_input_tokens",
+  "max_context_length",
+] as const;
+
+const advertisedContext = (row: Record<string, unknown>): number | undefined => {
+  for (const field of MODEL_CONTEXT_FIELDS) {
+    const v = row[field];
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return undefined;
+};
+
+/** One row of a `/models` probe: the id plus a context window when advertised. */
+export interface ProbedModel {
+  id: string;
+  context?: number;
+}
+
+/** `GET {base_url}/models` → id-sorted rows (OpenAI list shape). Endpoints may
+ *  extend rows with metadata (OpenRouter, vLLM, LiteLLM, LM Studio) — the
+ *  context-window fields are kept, the rest ignored. */
+const probeOpenAiModels = async (baseUrl: string, apiKey: string): Promise<ProbedModel[]> => {
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+  const body = (await res.json()) as { data?: Array<Record<string, unknown>> };
   return (body.data ?? [])
-    .map((m) => m.id)
-    .filter((x): x is string => typeof x === "string")
-    .sort();
+    .filter((m): m is Record<string, unknown> & { id: string } => typeof m.id === "string")
+    .map((m) => {
+      const context = advertisedContext(m);
+      return { id: m.id, ...(context !== undefined ? { context } : {}) };
+    })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 };
 
 const AISDK_SYSTEM = [
@@ -562,13 +596,19 @@ export class Daemon {
         try {
           const models = await probeOpenAiModels(p.baseUrl, resolveApiKey(p));
           if (models.length === 0) throw new Error("endpoint returned no models");
-          p.models = models;
-          p.model = models[0] ?? "";
+          p.models = models.map((m) => m.id);
+          p.model = p.models[0] ?? "";
+          // Advertised context windows ride along; a `model_context` config pin
+          // wins over the endpoint's own claim.
+          const probed: Record<string, number> = {};
+          for (const m of models) if (m.context !== undefined) probed[m.id] = m.context;
+          p.modelContext = { ...probed, ...p.modelContext };
           p.autoModels = false;
           this.#log.info("auto-detected models", {
             provider: id,
             count: models.length,
             model: p.model,
+            withContext: Object.keys(probed).length,
           });
         } catch (err) {
           this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
@@ -659,9 +699,22 @@ export class Daemon {
     });
 
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
+      // Picker rows carry the context window when it's actually known —
+      // endpoint-reported via the `/models` probe, or a `model_context` pin —
+      // same treatment as the Claude catalog. Unknown sizes stay unhinted
+      // rather than echoing the prefix-table guess as authoritative.
+      const hasContext = Object.keys(p.modelContext).length > 0;
       out.push({
         id,
         models: p.models,
+        ...(hasContext
+          ? {
+              modelChoices: p.models.map((m) => {
+                const ctx = knownContextLimit(m, p.modelContext);
+                return { id: m, label: m, ...(ctx !== undefined ? { context: ctx } : {}) };
+              }),
+            }
+          : {}),
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
@@ -1177,7 +1230,8 @@ export class Daemon {
       // native SDKs just hand back the configured list.
       if (profile.sdk !== "openai") return { models: profile.models };
       try {
-        return { models: await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile)) };
+        const probed = await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile));
+        return { models: probed.map((m) => m.id) };
       } catch (err) {
         throw new RpcError(
           "provider_error",

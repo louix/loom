@@ -27,6 +27,12 @@ export interface AisdkProviderOptions {
   model: string;
   /** Model ids offered in the picker (M10e). */
   models: string[];
+  /**
+   * Known per-model context-window sizes in tokens — endpoint-reported
+   * (`/models` metadata) or `model_context` config pins. Sessions prefer them
+   * over the built-in prefix table.
+   */
+  modelContext?: Record<string, number>;
   /** Per-segment step ceiling for turns (`max_steps`); undefined → session default. */
   maxSteps?: number;
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
@@ -44,6 +50,7 @@ export class AisdkProvider implements AgentProvider {
   readonly #makeModel: (id: string) => LanguageModel;
   readonly #search: SearchConfig | undefined;
   readonly #maxSteps: number | undefined;
+  readonly #modelContext: Record<string, number> | undefined;
 
   constructor(opts: AisdkProviderOptions, store: TranscriptStore) {
     this.id = opts.id;
@@ -52,6 +59,7 @@ export class AisdkProvider implements AgentProvider {
     this.#makeModel = opts.makeModel;
     this.#search = opts.search;
     this.#maxSteps = opts.maxSteps;
+    this.#modelContext = opts.modelContext;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
@@ -73,6 +81,7 @@ export class AisdkProvider implements AgentProvider {
       const s = new AisdkSession({
         sessionId: opts.sessionId,
         modelId,
+        ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
         makeModel: this.#makeModel,
         system: opts.systemPromptAppend,
         messages,
@@ -91,6 +100,7 @@ export class AisdkProvider implements AgentProvider {
     const s = new AisdkSession({
       sessionId: opts.sessionId,
       modelId,
+      ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: opts.systemPromptAppend,
       messages,
@@ -118,6 +128,7 @@ export class AisdkProvider implements AgentProvider {
     const s = new AisdkSession({
       sessionId: ref.sessionId,
       modelId: ref.model || this.#defaultModel,
+      ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: undefined,
       messages,

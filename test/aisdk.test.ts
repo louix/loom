@@ -17,7 +17,7 @@ import { resolveModelFactory } from "@loom/connector-generic";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
 import { runTurn } from "@loom/aisdk/loop";
-import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
+import { contextLimitFor, estimateTokens, knownContextLimit } from "@loom/core/tokens";
 
 setLogLevel("error");
 
@@ -145,7 +145,11 @@ test("contextLimitFor matches on model-id prefix, falls back to 128k", () => {
   assert.equal(contextLimitFor("glm-5.3-flash"), 1_048_576);
   assert.equal(contextLimitFor("glm-5.3-flash-0824"), 1_048_576);
   assert.equal(contextLimitFor("zai-org/glm-5.3-flash"), 1_048_576);
-  assert.equal(contextLimitFor("glm-5"), 200_000);
+  // real-world id shape: vendor prefix + mixed case still resolves
+  assert.equal(contextLimitFor("zai-org/GLM-5.3-Flash"), 1_048_576);
+  // separator-fuzzy fallback when the strict pass misses
+  assert.equal(contextLimitFor("GLM5.3Flash"), 1_048_576);
+  assert.equal(contextLimitFor("glm_5.3_flash"), 1_048_576);
   assert.equal(contextLimitFor("something-unknown"), 128_000);
   assert.equal(contextLimitFor(null), 128_000);
   // native anthropic / google aisdk backends
@@ -153,6 +157,22 @@ test("contextLimitFor matches on model-id prefix, falls back to 128k", () => {
   assert.equal(contextLimitFor("anthropic/claude-3-5-haiku"), 200_000);
   assert.equal(contextLimitFor("gemini-2.5-pro"), 1_000_000);
   assert.equal(contextLimitFor("gemini-1.5-pro"), 1_000_000);
+});
+
+test("context overrides (endpoint-reported / model_context pins) beat the table", () => {
+  assert.equal(contextLimitFor("gpt-5", { "gpt-5": 999_999 }), 999_999);
+  // a pin keyed on the bare name covers the vendor-prefixed id…
+  assert.equal(contextLimitFor("zai-org/GLM-5.3-Flash", { "glm-5.3-flash": 500_000 }), 500_000);
+  // …but never leaks to a sibling model
+  assert.equal(contextLimitFor("gpt-5-mini", { "gpt-5": 999_999 }), 400_000);
+  // knownContextLimit distinguishes "reported" from the table's guess
+  assert.equal(knownContextLimit("gpt-5", undefined), undefined);
+  assert.equal(knownContextLimit("totally-unknown", { other: 123 }), undefined);
+  assert.equal(knownContextLimit("gpt-5-mini", { "gpt-5": 999_999 }), undefined);
+  assert.equal(
+    knownContextLimit("zai-org/GLM-5.3-Flash", { "zai-org/GLM-5.3-Flash": 1_048_576 }),
+    1_048_576,
+  );
 });
 
 test("estimateTokens is chars/4 over message content, and shrugs off malformed rows", () => {
@@ -265,6 +285,50 @@ test("mapper splits cached tokens out of input on finish-step", () => {
   });
   assert.equal((ev as { contextUsed: number }).contextUsed, 100);
   assert.equal((ev as { contextLimit: number }).contextLimit, 400_000);
+});
+
+test("mapper takes a context-limit resolver (endpoint-reported sizes)", () => {
+  const m = new AisdkEventMapper("s1", "zai-org/GLM-5.3-Flash", () => 1_048_576);
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    response: {},
+    providerMetadata: undefined,
+  } as never)[0];
+  assert.equal((ev as { contextLimit: number }).contextLimit, 1_048_576);
+});
+
+test("provider modelContext reaches the session's context meter", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const p = new AisdkProvider(
+      {
+        id: "openai",
+        model: "zai-org/GLM-5.3-Flash",
+        models: ["zai-org/GLM-5.3-Flash"],
+        // keyed on the bare name — the after-slash candidate must still hit
+        modelContext: { "glm-5.3-flash": 1_048_576 },
+        makeModel: () => textReply("done", { inputTokens: 30, outputTokens: 4, totalTokens: 34 }),
+      },
+      store,
+    );
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "hello",
+      mode: "default",
+      mcpServers: [],
+    });
+    assert.equal(s.snapshot().contextLimit, 1_048_576);
+    const events = await drain(s.events(), (e) => e.type === "result");
+    const usage = events.find((e) => e.type === "usage") as { contextLimit: number };
+    assert.equal(usage?.contextLimit, 1_048_576);
+    await s.close();
+  } finally {
+    cleanup();
+  }
 });
 
 test("mapper surfaces a stream error part as a fatal error event", () => {

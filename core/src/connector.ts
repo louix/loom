@@ -36,6 +36,13 @@ export interface ConnectorConfig {
   sdk?: "openai" | "google" | "anthropic";
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;
+  /**
+   * Known per-model context-window sizes in tokens, keyed by model id — from
+   * the endpoint's `/models` metadata (`context_length` et al.) or a
+   * `model_context` config pin. Sessions prefer these over the built-in
+   * prefix table in `@loom/core/tokens`.
+   */
+  modelContext?: Record<string, number>;
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
   cliPath?: string;
   /** Claude: prompt-cache TTL — "5m" | "1h" | "". */

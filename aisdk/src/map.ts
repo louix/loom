@@ -13,12 +13,20 @@ type Part = TextStreamPart<ToolSet>;
 export class AisdkEventMapper {
   readonly #sessionId: string;
   #model: string | null;
+  readonly #limitFor: (model: string | null) => number;
   readonly #text = new Map<string, string>();
   readonly #reasoning = new Map<string, string>();
 
-  constructor(sessionId: string, model: string | null) {
+  constructor(
+    sessionId: string,
+    model: string | null,
+    /** Context-limit resolver — sessions pass one that consults endpoint-reported
+     *  / pinned sizes; the default is the built-in prefix table. */
+    limitFor: (model: string | null) => number = (m) => contextLimitFor(m),
+  ) {
     this.#sessionId = sessionId;
     this.#model = model;
+    this.#limitFor = limitFor;
   }
 
   setModel(model: string | null): void {
@@ -145,7 +153,7 @@ export class AisdkEventMapper {
         cacheWrite: 0,
       },
       contextUsed: promptTokens,
-      contextLimit: contextLimitFor(this.#model),
+      contextLimit: this.#limitFor(this.#model),
     };
   }
 }

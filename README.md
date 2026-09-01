@@ -234,6 +234,12 @@ nothing, a
 keyless search backend. A first launch with no `~/.config/loom/config.toml`
 drops an annotated copy of `config.example.toml` there.
 
+**Context windows.** When the endpoint advertises one on its `/models` rows
+(`context_length` on OpenRouter, `max_model_len` on vLLM, `max_input_tokens` on
+LiteLLM, …) it wins over the built-in per-model prefix table that otherwise
+drives the context meter. Endpoints that report nothing can be pinned per
+provider with `model_context = { "<model-id>" = <tokens> }`.
+
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
 

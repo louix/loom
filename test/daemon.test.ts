@@ -12,13 +12,17 @@ import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
-/** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn. */
-const modelsStub = (ids: string[]): Promise<{ base: string; close: () => void }> => {
+/** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn.
+ *  Rows may be bare ids or full objects (endpoints like OpenRouter extend rows
+ *  with `context_length`-style metadata). */
+const modelsStub = (
+  rows: Array<string | Record<string, unknown>>,
+): Promise<{ base: string; close: () => void }> => {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       if ((req.url ?? "").endsWith("/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ data: ids.map((id) => ({ id })) }));
+        res.end(JSON.stringify({ data: rows.map((r) => (typeof r === "string" ? { id: r } : r)) }));
       } else {
         res.writeHead(404).end();
       }
@@ -801,12 +805,20 @@ test("session.rewind: a harness-driven (non-aisdk) provider can't wipe-to-zero o
 });
 
 test("aisdk model auto-detection fills the picker list at start-up; config.check reports warnings", async () => {
-  const srv = await modelsStub(["z-model", "a-model", "m-model"]);
+  const srv = await modelsStub([
+    "z-model",
+    "a-model",
+    "m-model",
+    // OpenRouter-style row: the endpoint advertises the context window
+    { id: "zai-org/GLM-5.3-Flash", context_length: 1_048_576 },
+  ]);
   const hh = await makeHarness({
     config: `
 [providers.oai]
 adapter  = "aisdk"
 base_url = "${srv.base}"
+# a user pin for a model the endpoint says nothing about
+model_context = { "m-model" = 12345 }
 
 [providers.needkey]
 adapter     = "aisdk"
@@ -823,9 +835,26 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     });
 
     // probed at start-up, sorted, and the first becomes the default model
-    const provs = await c.request<Array<{ id: string; models: string[] }>>("providers.list");
+    const provs = await c.request<
+      Array<{
+        id: string;
+        models: string[];
+        modelChoices?: Array<{ id: string; label: string; context?: number }>;
+      }>
+    >("providers.list");
     const oai = provs.find((p) => p.id === "oai");
-    assert.deepEqual(oai?.models, ["a-model", "m-model", "z-model"]);
+    assert.deepEqual(oai?.models, ["a-model", "m-model", "z-model", "zai-org/GLM-5.3-Flash"]);
+
+    // picker rows carry the context window where it's known: endpoint-reported…
+    const choices = new Map((oai?.modelChoices ?? []).map((ch) => [ch.id, ch]));
+    assert.equal(choices.get("zai-org/GLM-5.3-Flash")?.context, 1_048_576);
+    // …user-pinned via model_context…
+    assert.equal(choices.get("m-model")?.context, 12345);
+    // …and unhinted (no table guess echoed) when nothing is known
+    assert.equal(choices.get("a-model")?.context, undefined);
+    // a provider with no context knowledge emits no modelChoices at all
+    const needkey = provs.find((p) => p.id === "needkey");
+    assert.equal(needkey?.modelChoices, undefined);
 
     // lint surfaces the unset key var; the auto profile resolved, so no note for it
     const { warnings } = await c.request<{ warnings: string[] }>("config.check");

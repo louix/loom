@@ -179,6 +179,7 @@ export class ProviderRegistry {
       baseUrl: p.baseUrl,
       apiKey: resolveApiKey(p),
       sdk: p.sdk,
+      ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       ...(p.maxSteps !== undefined ? { maxSteps: p.maxSteps } : {}),
     };
     return { id, config, transcript: this.#transcript, logger, ...(search ? { search } : {}) };

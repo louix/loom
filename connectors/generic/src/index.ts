@@ -43,6 +43,7 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
       id: ctx.id,
       model: config.model ?? "",
       models: config.models ?? [],
+      ...(config.modelContext ? { modelContext: config.modelContext } : {}),
       ...(config.maxSteps !== undefined ? { maxSteps: config.maxSteps } : {}),
       makeModel,
       ...(ctx.search ? { search: ctx.search } : {}),

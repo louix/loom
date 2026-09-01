@@ -53,9 +53,50 @@ const candidates = (model: string): string[] => {
 
 export const DEFAULT_CONTEXT_LIMIT = 128_000;
 
-export const contextLimitFor = (model: string | null | undefined): number => {
+/**
+ * Exact-id context size from an override map (endpoint-reported `/models`
+ * metadata, or a `model_context` config pin). Matched case-insensitively
+ * against the full id and the part after the last slash — so a pin keyed
+ * `glm-5.3-flash` covers an id like `zai-org/GLM-5.3-Flash`. `undefined` when
+ * nothing is known: callers use this to distinguish "reported" from "guessed".
+ */
+export const knownContextLimit = (
+  model: string | null | undefined,
+  overrides: Readonly<Record<string, number>> | undefined,
+): number | undefined => {
+  if (!model || !overrides) return undefined;
+  // Keys are matched case-insensitively — endpoint ids and hand-typed config
+  // pins don't agree on case (e.g. `zai-org/GLM-5.3-Flash`).
+  const byLower = new Map<string, number>();
+  for (const [k, v] of Object.entries(overrides)) {
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) byLower.set(k.toLowerCase(), v);
+  }
+  for (const n of candidates(model)) {
+    const hit = byLower.get(n);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+};
+
+export const contextLimitFor = (
+  model: string | null | undefined,
+  overrides?: Readonly<Record<string, number>>,
+): number => {
+  const known = knownContextLimit(model, overrides);
+  if (known !== undefined) return known;
   if (!model) return DEFAULT_CONTEXT_LIMIT;
   const names = candidates(model);
+  // Separator-stripped pass first: `GLM5.3Flash` / `glm_5.3_flash` squash to
+  // `glm53flash`, which the strict pass below would wrongly hand to the short
+  // `glm` prefix. Same table order, so this stays at least as specific —
+  // and it subsumes plain prefix matching.
+  const squashed = names.map((n) => n.replace(/[^a-z0-9]/g, ""));
+  for (const [prefix, limit] of MODEL_CONTEXT) {
+    const p = prefix.replace(/[^a-z0-9]/g, "");
+    if (p && squashed.some((n) => n.startsWith(p))) return limit;
+  }
+  // Strict pass — catches a mid-id `vendor/gpt-5/x` shape the after-slash
+  // candidate and the squashed pass both miss.
   for (const [prefix, limit] of MODEL_CONTEXT) {
     if (names.some((n) => n.startsWith(prefix) || n.includes(`/${prefix}`))) return limit;
   }

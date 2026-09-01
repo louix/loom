@@ -103,6 +103,11 @@ export interface AisdkSessionOptions {
   oneShot: boolean;
   /** Per-segment step ceiling. Defaults to {@link DEFAULT_MAX_STEPS}. */
   maxSteps?: number;
+  /**
+   * Known per-model context-window sizes (endpoint-reported `/models` metadata
+   * or `model_context` pins). Consulted before the built-in prefix table.
+   */
+  modelContext?: Record<string, number>;
   log?: Logger;
 }
 
@@ -121,6 +126,7 @@ export class AisdkSession implements AgentSession {
   readonly #store: TranscriptStore | null;
   readonly #oneShot: boolean;
   readonly #maxSteps: number;
+  readonly #modelContext: Record<string, number>;
   /** Consecutive step-ceiling continuations in the current user turn. */
   #segmentsRun = 0;
   readonly #log: Logger;
@@ -156,6 +162,7 @@ export class AisdkSession implements AgentSession {
   constructor(opts: AisdkSessionOptions) {
     this.id = opts.sessionId;
     this.#modelId = opts.modelId;
+    this.#modelContext = opts.modelContext ?? {};
     this.#makeModel = opts.makeModel;
     this.#model = opts.makeModel(opts.modelId);
     this.#system = opts.system;
@@ -169,7 +176,7 @@ export class AisdkSession implements AgentSession {
     this.#maxSteps = Math.max(1, Math.trunc(opts.maxSteps ?? DEFAULT_MAX_STEPS));
     this.#log = opts.log ?? makeLogger("aisdk").child(opts.sessionId.slice(0, 8));
     this.#messages = [...opts.messages];
-    this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId);
+    this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId, (m) => this.#limitFor(m));
     this.#snap = {
       status: stateStarting,
       providerRef: opts.sessionId,
@@ -178,7 +185,7 @@ export class AisdkSession implements AgentSession {
       mode: opts.mode,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextUsed: 0,
-      contextLimit: contextLimitFor(opts.modelId),
+      contextLimit: this.#limitFor(opts.modelId),
       costUsd: 0,
       turns: 0,
     };
@@ -310,7 +317,7 @@ export class AisdkSession implements AgentSession {
     this.#model = this.#makeModel(model);
     this.#mapper.setModel(model);
     this.#snap.model = model;
-    this.#snap.contextLimit = contextLimitFor(model);
+    this.#snap.contextLimit = this.#limitFor(model);
   }
 
   /** No OpenAI-compatible endpoint Loom talks to today takes a request-side
@@ -333,6 +340,12 @@ export class AisdkSession implements AgentSession {
   }
 
   // --- internals -----------------------------------------------------------
+
+  /** Context limit for a model id: endpoint-reported / pinned sizes first,
+   *  then the built-in prefix table. */
+  #limitFor(model: string | null): number {
+    return contextLimitFor(model, this.#modelContext);
+  }
 
   #lastRole(): string | undefined {
     return this.#messages[this.#messages.length - 1]?.role;
@@ -523,7 +536,7 @@ export class AisdkSession implements AgentSession {
       mode: () => effectiveMode,
       ask: (nm, input, id) => this.#requestPermission(`${name} › ${nm}`, input, id),
     });
-    const subMapper = new AisdkEventMapper(this.id, this.#modelId);
+    const subMapper = new AisdkEventMapper(this.id, this.#modelId, (m) => this.#limitFor(m));
 
     let report = "";
     try {

@@ -92,6 +92,11 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # model  = "gpt-5"                  # force this model
 # models = ["gpt-5", "gpt-5-mini"]  # or a fixed picker list
 #
+# Context windows: a `context_length`-style field on /models rows (OpenRouter,
+# vLLM, LiteLLM, LM Studio) is picked up automatically. Pin sizes for endpoints
+# that report none — wins over the built-in per-model table:
+# model_context = { "zai-org/GLM-5.3-Flash" = 1048576 }
+#
 # [google] / [anthropic] — one native profile each (@ai-sdk/google,
 # @ai-sdk/anthropic). The provider id is "google" / "anthropic". base_url is
 # optional (override for a proxy); a model is required (no /models probe).

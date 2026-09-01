@@ -45,6 +45,13 @@ export interface AisdkProfile {
   /** Optional explicit picker list, when `/models` can't be trusted. Defaults to `[model]`. */
   models: string[];
   /**
+   * Per-model context-window sizes in tokens, keyed by model id. Filled from
+   * `{base_url}/models` when the endpoint advertises it (`context_length` /
+   * `max_model_len` / …); set `model_context` in the config to pin sizes for
+   * endpoints that don't report one. Wins over the built-in prefix table.
+   */
+  modelContext: Record<string, number>;
+  /**
    * Per-segment ceiling on tool round-trips in one turn (`max_steps`). Not a
    * hard turn limit — a turn whose model is still working continues past it
    * automatically — so this is a granularity knob: raise it for a model that
@@ -302,6 +309,17 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
  *  `src/provider/aisdk/session.ts`. */
 const DEFAULT_AISDK_MAX_STEPS = 50;
 
+/** `model_context` table → per-model token sizes; junk rows are skipped. */
+const modelContextOf = (v: unknown): Record<string, number> => {
+  const out: Record<string, number> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    const n = typeof val === "number" ? val : typeof val === "string" ? Number(val) : NaN;
+    if (k !== "" && Number.isFinite(n) && n > 0) out[k] = Math.round(n);
+  }
+  return out;
+};
+
 const buildAisdkProfile = (
   id: string,
   t: Record<string, unknown>,
@@ -323,6 +341,7 @@ const buildAisdkProfile = (
     apiKey: str(t["api_key"], ""),
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModelList,
+    modelContext: modelContextOf(t["model_context"]),
     autoModels,
     maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),
