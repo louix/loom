@@ -36,6 +36,13 @@ export interface TurnArgs {
    * persisted immediately, in order, via `hooks.appendMessages`.
    */
   drainInjections?: () => ModelMessage[];
+  /**
+   * Evaluated after each step as an extra stop condition. Return true when the
+   * transcript has grown close to the model's context window so the segment
+   * ends and the caller can compact before the next one — otherwise a long
+   * segment of big tool reads 400s on context length mid-turn (A9).
+   */
+  shouldStopForContext?: () => boolean;
 }
 
 export interface TurnResult {
@@ -48,6 +55,11 @@ export interface TurnResult {
    * step budget. Always `false` when `aborted` or `errored`.
    */
   hitStepLimit: boolean;
+  /**
+   * The segment was stopped early by `shouldStopForContext` — the caller should
+   * compact, then continue the turn. Always `false` when `aborted` / `errored`.
+   */
+  hitContextLimit: boolean;
 }
 
 export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
@@ -74,13 +86,26 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   const genCount = (steps: ReadonlyArray<{ response: { messages: unknown[] } }>): number =>
     steps.length > 0 ? (steps[steps.length - 1]?.response.messages.length ?? 0) : 0;
 
+  // Set by the `shouldStopForContext` stop condition so the caller can tell a
+  // context-driven segment end from the model finishing / the step ceiling.
+  let stoppedForContext = false;
+  const stopForContext = args.shouldStopForContext;
+
   try {
     const res = streamText({
       model,
       ...(system ? { system } : {}),
       messages: [...messages],
       ...(args.tools ? { tools: args.tools } : {}),
-      stopWhen: stepCountIs(args.maxSteps),
+      stopWhen: stopForContext
+        ? [
+            stepCountIs(args.maxSteps),
+            () => {
+              if (stopForContext()) stoppedForContext = true;
+              return stoppedForContext;
+            },
+          ]
+        : stepCountIs(args.maxSteps),
       abortSignal: args.abortSignal,
       ...(args.drainInjections
         ? {
@@ -137,7 +162,9 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
       }
     }
 
-    if (aborted || errored) return { aborted, errored, hitStepLimit: false };
+    if (aborted || errored) {
+      return { aborted, errored, hitStepLimit: false, hitContextLimit: false };
+    }
 
     try {
       // Surface a late failure the stream didn't already report; messages were
@@ -159,6 +186,8 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
     }
   }
 
-  const hitStepLimit = !aborted && !errored && lastStepReason === "tool-calls";
-  return { aborted, errored, hitStepLimit };
+  const hitContextLimit = !aborted && !errored && stoppedForContext;
+  const hitStepLimit =
+    !aborted && !errored && !hitContextLimit && lastStepReason === "tool-calls";
+  return { aborted, errored, hitStepLimit, hitContextLimit };
 };

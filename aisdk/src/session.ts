@@ -803,7 +803,7 @@ export class AisdkSession implements AgentSession {
       this.#abort = abort;
       this.#snap.status = stateRunning;
 
-      const { aborted, errored, hitStepLimit } = await runTurn({
+      const { aborted, errored, hitStepLimit, hitContextLimit } = await runTurn({
         sessionId: this.id,
         model: this.#model,
         system: this.#system,
@@ -814,6 +814,12 @@ export class AisdkSession implements AgentSession {
         mapper: this.#mapper,
         drainInjections: () =>
           this.#injections.splice(0).map((content) => ({ role: "user", content }) as ModelMessage),
+        // A9: end the segment early if a run of big tool reads pushes the
+        // transcript near the window — the next segment compacts at its top.
+        shouldStopForContext: () =>
+          !this.#oneShot &&
+          this.#snap.contextLimit > 0 &&
+          estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION,
         hooks: {
           emit: (ev) => this.#emit(ev),
           appendMessages: (msgs) => {
@@ -892,7 +898,7 @@ export class AisdkSession implements AgentSession {
       // a fresh budget rather than emitting `result` and flapping to idle
       // mid-task — the transcript already ends with the tool results it needs to
       // react to. `MAX_TURN_SEGMENTS` is the runaway-loop backstop.
-      if (!this.#oneShot && hitStepLimit) {
+      if (!this.#oneShot && (hitStepLimit || hitContextLimit)) {
         this.#segmentsRun += 1;
         if (this.#segmentsRun < MAX_TURN_SEGMENTS) {
           chained = true;
