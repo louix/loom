@@ -15,7 +15,7 @@ import { makeAisdkProvider } from "@loom/aisdk/provider";
  */
 export const resolveModelFactory = async (
   sdk: "openai" | "anthropic",
-  opts: { id: string; baseUrl: string; apiKey: string },
+  opts: { id: string; baseUrl: string; apiKey: string; includeUsage?: boolean },
 ): Promise<(modelId: string) => LanguageModel> => {
   const key = opts.apiKey ? { apiKey: opts.apiKey } : {};
   if (sdk === "anthropic") {
@@ -24,7 +24,16 @@ export const resolveModelFactory = async (
     return (id) => a(id);
   }
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
-  const p = createOpenAICompatible({ name: opts.id, baseURL: opts.baseUrl, ...key });
+  // `includeUsage` asks the endpoint for `stream_options.include_usage` —
+  // without it many endpoints (sference among them) stream no token usage and
+  // Loom's context meter / cost stay at zero. Opt out per provider with
+  // `include_usage = false` for an endpoint that rejects the field.
+  const p = createOpenAICompatible({
+    name: opts.id,
+    baseURL: opts.baseUrl,
+    includeUsage: opts.includeUsage !== false,
+    ...key,
+  });
   return (id) => p(id);
 };
 
@@ -37,6 +46,7 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
     id: ctx.id,
     baseUrl: config.baseUrl ?? "",
     apiKey: config.apiKey ?? "",
+    ...(config.includeUsage !== undefined ? { includeUsage: config.includeUsage } : {}),
   });
   return makeAisdkProvider(
     {

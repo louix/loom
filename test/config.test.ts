@@ -126,6 +126,14 @@ model_context = { "glm-5.3-flash" = 1048576, "glm-5" = "200000" }
   );
 });
 
+test("include_usage defaults to true and can be turned off per provider", () => {
+  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\n`;
+  assert.equal(cfg(base).providers.aisdk["p"]?.includeUsage, true);
+  assert.equal(cfg(base + `include_usage = false\n`).providers.aisdk["p"]?.includeUsage, false);
+  // a non-boolean value doesn't flip the default
+  assert.equal(cfg(base + `include_usage = "no"\n`).providers.aisdk["p"]?.includeUsage, true);
+});
+
 test("max_steps defaults to 50 and is clamped to 1–500", () => {
   const base = `[custom-provider.p]\nbase_url = "http://p/v1"\nmodel = "m"\n`;
   assert.equal(cfg(base).providers.aisdk["p"]?.maxSteps, 50);

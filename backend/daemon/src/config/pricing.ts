@@ -60,6 +60,21 @@ export const loadPriceTable = (path: string): PriceTable => {
   return parsePriceTable(raw);
 };
 
+/**
+ * Price-table lookup, tolerating id shape: an exact key first, then
+ * case-insensitively, then the part after the last `/` (so a hand-written
+ * `["glm-5.3-flash"]` row prices a session running `zai-org/GLM-5.3-Flash`).
+ */
+const lookupRow = (table: PriceTable, model: string): PriceRow | undefined => {
+  const exact = table.get(model);
+  if (exact) return exact;
+  const lower = model.toLowerCase();
+  const lowerHit = table.get(lower);
+  if (lowerHit) return lowerHit;
+  const slash = lower.lastIndexOf("/");
+  return slash >= 0 ? table.get(lower.slice(slash + 1)) : undefined;
+};
+
 /** Dollar cost of a token delta at the given model's prices, or `null` when unpriced. */
 export const costOf = (
   table: PriceTable,
@@ -67,7 +82,7 @@ export const costOf = (
   delta: TokenUsage,
 ): number | null => {
   if (!model) return null;
-  const row = table.get(model);
+  const row = lookupRow(table, model);
   if (!row) return null;
   return (
     (delta.input * row.input +

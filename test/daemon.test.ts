@@ -809,8 +809,17 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
     "z-model",
     "a-model",
     "m-model",
-    // OpenRouter-style row: the endpoint advertises the context window
-    { id: "zai-org/GLM-5.3-Flash", context_length: 1_048_576 },
+    // sference-style row: display name, context window, advertised pricing
+    {
+      id: "zai-org/GLM-5.3-Flash",
+      display_name: "GLM 5.3 Flash",
+      context_tokens: 1_048_576,
+      pricing: {
+        input_per_million_usd: 0.2,
+        output_per_million_usd: 0.5,
+        cached_input_per_million_usd: 0.07,
+      },
+    },
   ]);
   const hh = await makeHarness({
     config: `
@@ -848,6 +857,8 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     // picker rows carry the context window where it's known: endpoint-reported…
     const choices = new Map((oai?.modelChoices ?? []).map((ch) => [ch.id, ch]));
     assert.equal(choices.get("zai-org/GLM-5.3-Flash")?.context, 1_048_576);
+    // …with the endpoint's display name as the label…
+    assert.equal(choices.get("zai-org/GLM-5.3-Flash")?.label, "GLM 5.3 Flash");
     // …user-pinned via model_context…
     assert.equal(choices.get("m-model")?.context, 12345);
     // …and unhinted (no table guess echoed) when nothing is known
@@ -855,6 +866,11 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     // a provider with no context knowledge emits no modelChoices at all
     const needkey = provs.find((p) => p.id === "needkey");
     assert.equal(needkey?.modelChoices, undefined);
+
+    // advertised pricing feeds the cost table for models models.toml
+    // doesn't price — visible through pricing.reload's key list
+    const priced = await c.request<{ models: string[] }>("pricing.reload");
+    assert.ok(priced.models.includes("zai-org/GLM-5.3-Flash"));
 
     // lint surfaces the unset key var; the auto profile resolved, so no note for it
     const { warnings } = await c.request<{ warnings: string[] }>("config.check");

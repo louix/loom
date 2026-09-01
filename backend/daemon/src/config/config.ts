@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isClaudeId } from "@loom/core/provider-id";
+import type { PriceRow } from "./pricing.ts";
 
 /**
  * Loom configuration. Mirrors the `.loom/config.toml` sketch in the design spec.
@@ -51,6 +52,22 @@ export interface AisdkProfile {
    * endpoints that don't report one. Wins over the built-in prefix table.
    */
   modelContext: Record<string, number>;
+  /**
+   * Per-model USD-per-million prices advertised by the endpoint's `/models`
+   * (`pricing` rows — sference, OpenRouter). Filled from the probe; feeds the
+   * cost table for models the user's `models.toml` doesn't price.
+   */
+  modelPricing: Record<string, PriceRow>;
+  /** Per-model display names advertised by the endpoint (`display_name`). */
+  modelLabels: Record<string, string>;
+  /**
+   * Ask the endpoint to include token usage in streaming responses
+   * (`stream_options.include_usage`). On by default — without it, endpoints
+   * like sference stream no usage at all, leaving the context meter and cost
+   * at zero. Set `include_usage = false` for an endpoint that rejects the
+   * field outright.
+   */
+  includeUsage: boolean;
   /**
    * Per-segment ceiling on tool round-trips in one turn (`max_steps`). Not a
    * hard turn limit — a turn whose model is still working continues past it
@@ -342,6 +359,9 @@ const buildAisdkProfile = (
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModelList,
     modelContext: modelContextOf(t["model_context"]),
+    modelPricing: {},
+    modelLabels: {},
+    includeUsage: t["include_usage"] === false ? false : true,
     autoModels,
     maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),

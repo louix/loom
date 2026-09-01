@@ -16,7 +16,7 @@ import {
 } from "../config/config.ts";
 import { readClaudeAccount } from "../config/claude-profile.ts";
 import { isClaudeId } from "@loom/core/provider-id";
-import { loadPriceTable, costOf, type PriceTable } from "../config/pricing.ts";
+import { loadPriceTable, costOf, type PriceRow, type PriceTable } from "../config/pricing.ts";
 import { LOOM_VERSION } from "@loom/core/version";
 import type { HarnessEvent } from "@loom/core/events";
 import {
@@ -49,6 +49,7 @@ import {
 import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { SessionEventStore } from "../store/session-events.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
+import { mergeAdvertisedPricing, probeOpenAiModels } from "./model-catalog.ts";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -92,54 +93,6 @@ const TOOL_STEER = [
  */
 /** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
-
-/**
- * Context-window field names endpoints actually put on `/models` rows, in
- * preference order: OpenRouter `context_length`, vLLM `max_model_len`,
- * LiteLLM `max_input_tokens` (deliberately not `max_tokens` — that's the
- * output-side cap there), LM Studio `max_context_length`. First positive
- * value wins; numbers and numeric strings both accepted.
- */
-const MODEL_CONTEXT_FIELDS = [
-  "context_length",
-  "max_model_len",
-  "max_input_tokens",
-  "max_context_length",
-] as const;
-
-const advertisedContext = (row: Record<string, unknown>): number | undefined => {
-  for (const field of MODEL_CONTEXT_FIELDS) {
-    const v = row[field];
-    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-    if (Number.isFinite(n) && n > 0) return Math.round(n);
-  }
-  return undefined;
-};
-
-/** One row of a `/models` probe: the id plus a context window when advertised. */
-export interface ProbedModel {
-  id: string;
-  context?: number;
-}
-
-/** `GET {base_url}/models` → id-sorted rows (OpenAI list shape). Endpoints may
- *  extend rows with metadata (OpenRouter, vLLM, LiteLLM, LM Studio) — the
- *  context-window fields are kept, the rest ignored. */
-const probeOpenAiModels = async (baseUrl: string, apiKey: string): Promise<ProbedModel[]> => {
-  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-    signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const body = (await res.json()) as { data?: Array<Record<string, unknown>> };
-  return (body.data ?? [])
-    .filter((m): m is Record<string, unknown> & { id: string } => typeof m.id === "string")
-    .map((m) => {
-      const context = advertisedContext(m);
-      return { id: m.id, ...(context !== undefined ? { context } : {}) };
-    })
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-};
 
 const AISDK_SYSTEM = [
   "You are a coding agent working in a git worktree under Loom, an agent harness.",
@@ -598,17 +551,27 @@ export class Daemon {
           if (models.length === 0) throw new Error("endpoint returned no models");
           p.models = models.map((m) => m.id);
           p.model = p.models[0] ?? "";
-          // Advertised context windows ride along; a `model_context` config pin
-          // wins over the endpoint's own claim.
+          // Advertised metadata rides along; a `model_context` config pin wins
+          // over the endpoint's own claim.
           const probed: Record<string, number> = {};
-          for (const m of models) if (m.context !== undefined) probed[m.id] = m.context;
+          const probedPricing: Record<string, PriceRow> = {};
+          const probedLabels: Record<string, string> = {};
+          for (const m of models) {
+            if (m.context !== undefined) probed[m.id] = m.context;
+            if (m.label !== undefined) probedLabels[m.id] = m.label;
+            if (m.pricing !== undefined) probedPricing[m.id] = m.pricing;
+          }
           p.modelContext = { ...probed, ...p.modelContext };
+          p.modelPricing = probedPricing;
+          p.modelLabels = probedLabels;
           p.autoModels = false;
+          this.#mergeEndpointPricing();
           this.#log.info("auto-detected models", {
             provider: id,
             count: models.length,
             model: p.model,
             withContext: Object.keys(probed).length,
+            withPricing: Object.keys(probedPricing).length,
           });
         } catch (err) {
           this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
@@ -699,19 +662,24 @@ export class Daemon {
     });
 
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
-      // Picker rows carry the context window when it's actually known —
-      // endpoint-reported via the `/models` probe, or a `model_context` pin —
-      // same treatment as the Claude catalog. Unknown sizes stay unhinted
-      // rather than echoing the prefix-table guess as authoritative.
-      const hasContext = Object.keys(p.modelContext).length > 0;
+      // Picker rows carry what the endpoint (or a pin) actually says — display
+      // name and context window — same treatment as the Claude catalog.
+      // Unknown sizes stay unhinted rather than echoing the prefix-table guess
+      // as authoritative.
+      const hasMeta =
+        Object.keys(p.modelContext).length > 0 || Object.keys(p.modelLabels).length > 0;
       out.push({
         id,
         models: p.models,
-        ...(hasContext
+        ...(hasMeta
           ? {
               modelChoices: p.models.map((m) => {
                 const ctx = knownContextLimit(m, p.modelContext);
-                return { id: m, label: m, ...(ctx !== undefined ? { context: ctx } : {}) };
+                return {
+                  id: m,
+                  label: p.modelLabels[m] ?? m,
+                  ...(ctx !== undefined ? { context: ctx } : {}),
+                };
               }),
             }
           : {}),
@@ -946,6 +914,15 @@ export class Daemon {
     } finally {
       this.#titling.delete(id);
     }
+  }
+
+  /**
+   * Fold endpoint-advertised pricing into the cost table for models the user's
+   * `models.toml` doesn't price. Runs after the `/models` probes and again on
+   * `pricing.reload`, so a re-read TOML stays authoritative.
+   */
+  #mergeEndpointPricing(): void {
+    mergeAdvertisedPricing(this.#pricing, Object.values(this.config.providers.aisdk));
   }
 
   /**
@@ -1200,6 +1177,7 @@ export class Daemon {
 
     d.register("pricing.reload", () => {
       this.#pricing = loadPriceTable(resolveAgainstRepo(this.repoRoot, this.config.pricing.table));
+      this.#mergeEndpointPricing();
       return { models: [...this.#pricing.keys()] };
     });
 

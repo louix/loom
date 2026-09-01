@@ -62,3 +62,14 @@ test("costOf returns null for an unpriced or unknown model", () => {
   assert.equal(costOf(t, "other", { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 }), null);
   assert.equal(costOf(t, null, { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 }), null);
 });
+
+test("costOf matches past a vendor prefix and case, so hand-written rows price endpoint ids", () => {
+  const t = parsePriceTable({ "glm-5.3-flash": { input: 0.2, output: 0.5, cache_read: 0.07 } });
+  const delta = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+  // the session's model id, exactly as sference lists it
+  assert.ok(Math.abs((costOf(t, "zai-org/GLM-5.3-Flash", delta) ?? 0) - 0.2) < 1e-9);
+  // lowercase / prefixed variants hit the same row
+  assert.equal(costOf(t, "zai-org/glm-5.3-flash", delta), costOf(t, "GLM-5.3-Flash", delta));
+  // a different family stays unpriced
+  assert.equal(costOf(t, "zai-org/GLM-5.2", delta), null);
+});

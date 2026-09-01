@@ -43,6 +43,12 @@ export interface ConnectorConfig {
    * prefix table in `@loom/core/tokens`.
    */
   modelContext?: Record<string, number>;
+  /**
+   * Request `stream_options.include_usage` on streamed completions (default
+   * true). Endpoints that validate strictly against an older OpenAI schema
+   * may reject the field — turn it off per provider with `include_usage`.
+   */
+  includeUsage?: boolean;
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
   cliPath?: string;
   /** Claude: prompt-cache TTL — "5m" | "1h" | "". */

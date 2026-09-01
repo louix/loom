@@ -180,6 +180,7 @@ export class ProviderRegistry {
       apiKey: resolveApiKey(p),
       sdk: p.sdk,
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
+      includeUsage: p.includeUsage,
       ...(p.maxSteps !== undefined ? { maxSteps: p.maxSteps } : {}),
     };
     return { id, config, transcript: this.#transcript, logger, ...(search ? { search } : {}) };

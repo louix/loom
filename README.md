@@ -235,10 +235,22 @@ keyless search backend. A first launch with no `~/.config/loom/config.toml`
 drops an annotated copy of `config.example.toml` there.
 
 **Context windows.** When the endpoint advertises one on its `/models` rows
-(`context_length` on OpenRouter, `max_model_len` on vLLM, `max_input_tokens` on
-LiteLLM, …) it wins over the built-in per-model prefix table that otherwise
-drives the context meter. Endpoints that report nothing can be pinned per
-provider with `model_context = { "<model-id>" = <tokens> }`.
+(`context_length` on OpenRouter, `context_tokens` on sference, `max_model_len`
+on vLLM, `max_input_tokens` on LiteLLM, …) it wins over the built-in per-model
+prefix table that otherwise drives the context meter. Endpoints that report
+nothing can be pinned per provider with
+`model_context = { "<model-id>" = <tokens> }`.
+
+**Advertised pricing and names.** `/models` rows that carry per-model pricing
+(sference's `input_per_million_usd`, OpenRouter's per-token `pricing`) feed the
+cost table for models `.loom/models.toml` doesn't price — the file always wins,
+and these still show as `~` estimates. Display names (`display_name`) label the
+model picker.
+
+**Streaming usage.** Loom asks endpoints to include token usage in streamed
+responses (`stream_options.include_usage`) — without it, endpoints like
+sference stream no usage at all and the context meter and cost stay at zero.
+Set `include_usage = false` on a provider whose endpoint rejects the field.
 
 Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
 server-side with no TTL to show).
