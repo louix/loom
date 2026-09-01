@@ -344,7 +344,7 @@ export interface DoctorReport {
     claudeDisabled: string[];
   };
   webSearch: {
-    backend: "none" | "brave" | "tavily";
+    backend: "none" | "brave" | "tavily" | "kagi";
     /** Backend set and its key resolved — aisdk sessions then get `web_search`. */
     enabled: boolean;
     note: string;

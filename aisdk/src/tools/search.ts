@@ -1,9 +1,11 @@
 /**
  * A `web_search` tool for aisdk sessions — Claude has its own built-in, this
  * fills the gap for OpenAI-compatible / Gemini / Anthropic-via-aisdk sessions.
- * Pluggable backend (`[search] backend`): Brave Search API or Tavily. Off
- * unless a backend + key are configured.
+ * Pluggable backend (`[search] backend`): Brave Search API, Tavily, or Kagi —
+ * Kagi dials their hosted MCP server (kagimcp), so there's nothing to install.
+ * Off unless a backend + key are configured.
  */
+import { experimental_createMCPClient } from "@ai-sdk/mcp";
 import { tool } from "ai";
 import { z } from "zod";
 import type { SearchConfig } from "@loom/core/connector";
@@ -11,7 +13,10 @@ import type { SearchConfig } from "@loom/core/connector";
 const DEFAULT_BASE = {
   brave: "https://api.search.brave.com/res/v1",
   tavily: "https://api.tavily.com",
+  kagi: "https://mcp.kagi.com",
 } as const;
+
+const KAGI_SEARCH_TOOL = "kagi_search_fetch";
 
 interface Hit {
   title: string;
@@ -28,17 +33,16 @@ export const runSearch = async (
   const base = (cfg.apiBase || DEFAULT_BASE[cfg.backend]).replace(/\/$/, "");
   const signal = AbortSignal.timeout(15_000); // a hung backend must not stall the turn
   try {
-    const hits =
-      cfg.backend === "brave"
-        ? await brave(base, cfg.apiKey, query, n, signal)
-        : await tavily(base, cfg.apiKey, query, n, signal);
-    if (hits.length === 0) return { ok: true, output: "(no results)" };
-    return {
-      ok: true,
-      output: hits
-        .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${oneLine(h.snippet)}`)
-        .join("\n"),
-    };
+    const output =
+      cfg.backend === "kagi"
+        ? await kagi(base, cfg.apiKey, query, signal)
+        : hitsToText(
+            cfg.backend === "brave"
+              ? await brave(base, cfg.apiKey, query, n, signal)
+              : await tavily(base, cfg.apiKey, query, n, signal),
+          );
+    if (output === "") return { ok: true, output: "(no results)" };
+    return { ok: true, output };
   } catch (err) {
     return {
       ok: false,
@@ -46,6 +50,9 @@ export const runSearch = async (
     };
   }
 };
+
+const hitsToText = (hits: Hit[]): string =>
+  hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${oneLine(h.snippet)}`).join("\n");
 
 const brave = async (
   base: string,
@@ -91,6 +98,69 @@ const tavily = async (
     url: str(r.url),
     snippet: str(r.content),
   }));
+};
+
+/**
+ * Kagi runs `kagi_search_fetch` on their hosted MCP server (`<base>/mcp`,
+ * bearer auth). One short-lived MCP session per search — connect, discover,
+ * call, close — so the tool's own schema owns everything but the query (its
+ * server-side default is 10 results, and a hidden param would reject extra
+ * arguments). Kagi formats the results itself; we pass the text through.
+ */
+const kagi = async (base: string, key: string, q: string, signal: AbortSignal): Promise<string> => {
+  // `connect` / `tools()` don't take a signal — bound them by the deadline by
+  // hand, or a hung server would stall the turn past the fetch timeout below.
+  const raced = <T>(p: Promise<T>): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<never>((_, rej) =>
+        signal.addEventListener("abort", () => rej(new Error("kagi search timed out")), {
+          once: true,
+        }),
+      ),
+    ]);
+  const client = await raced(
+    experimental_createMCPClient({
+      transport: {
+        type: "http",
+        url: `${base}/mcp`,
+        headers: { Authorization: `Bearer ${key}` },
+      },
+    }),
+  );
+  try {
+    const tools = await raced(client.tools());
+    const search = tools[KAGI_SEARCH_TOOL];
+    if (!search) throw new Error(`kagi mcp server offers no ${KAGI_SEARCH_TOOL} tool`);
+    const result = (await search.execute(
+      { query: q },
+      { toolCallId: KAGI_SEARCH_TOOL, messages: [], abortSignal: signal },
+    )) as {
+      content?: Array<{ type: string; text?: string }>;
+      isError?: boolean;
+      toolResult?: unknown;
+    };
+    const text = mcpText(result);
+    if (result.isError) throw new Error(text || `${KAGI_SEARCH_TOOL} failed`);
+    return text;
+  } finally {
+    await client.close().catch(() => {});
+  }
+};
+
+/** Pull the text out of an MCP `CallToolResult` (kagimcp returns markdown text). */
+const mcpText = (result: {
+  content?: Array<{ type: string; text?: string }>;
+  toolResult?: unknown;
+}): string => {
+  if (Array.isArray(result.content)) {
+    return result.content
+      .map((b) => (b.type === "text" && typeof b.text === "string" ? b.text : ""))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return typeof result.toolResult === "string" ? result.toolResult : "";
 };
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");

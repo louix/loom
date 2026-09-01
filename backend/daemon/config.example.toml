@@ -136,7 +136,11 @@ table = ".loom/models.toml"
 webhook = "" # best-effort POST on awaiting_input / error when no client attached
 
 [search] # web_search tool for aisdk sessions (Claude
-backend = "none" # has its own). "none" | "brave" | "tavily".
+backend = "none" # has its own). "none" | "brave" | "tavily" | "kagi".
 api_key_env = "" # env var with the API key; tool is off if unset
 # api_base  = ""                   # override the backend URL (proxy / self-host)
 max_results = 5
+# kagi dials Kagi's hosted MCP server (https://mcp.kagi.com/mcp, the key sent
+# as a bearer token — grab one at kagi.com/api/keys); nothing to install.
+# api_base points it at a self-hosted kagimcp instead. Kagi formats the
+# results itself (its server-side default is 10, so max_results doesn't apply).

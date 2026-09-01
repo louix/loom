@@ -379,10 +379,12 @@ transcript copied over. `⌃f` in the TUI; the fork shows a `⑂` in the fleet a
 
 **`web_search` tool (post-M10).** aisdk sessions get a first-party `web_search`
 tool alongside `bash` / `edit` / `grep`, mounted only when `[search]` names a
-backend (`brave` / `tavily`) whose `api_key_env` var is set — off by default,
-and Claude sessions keep their own. `runSearch` normalises Brave
+backend (`brave` / `tavily` / `kagi`) whose `api_key_env` var is set — off by
+default, and Claude sessions keep their own. `runSearch` normalises Brave
 (`GET /web/search`) and Tavily (`POST /search`) to a numbered
-title / url / snippet list; the tool is readonly (never prompts). Resolved once
+title / url / snippet list; Kagi dials their hosted MCP server
+(`https://mcp.kagi.com/mcp`, bearer auth) and passes its formatted results
+through. The tool is readonly (never prompts). Resolved once
 in `ProviderRegistry.#resolveSearch()` and handed to every aisdk provider.
 
 **Mid-turn message injection (post-M10).** The send-choice modal's "asap" is now

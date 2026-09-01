@@ -188,10 +188,11 @@ export interface LoomConfig {
   notify: { webhook: string };
   /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
-   * backend is chosen and its key env var is set.
+   * backend is chosen and its key env var is set. `kagi` dials Kagi's hosted
+   * MCP server with the key as a bearer token.
    */
   search: {
-    backend: "none" | "brave" | "tavily";
+    backend: "none" | "brave" | "tavily" | "kagi";
     /** Env var holding the API key. */
     apiKeyEnv: string;
     /** Literal API key; wins over `apiKeyEnv`. Prefer the env var. */
@@ -563,7 +564,9 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     search: {
       backend:
-        search["backend"] === "brave" || search["backend"] === "tavily"
+        search["backend"] === "brave" ||
+        search["backend"] === "tavily" ||
+        search["backend"] === "kagi"
           ? search["backend"]
           : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),

@@ -204,7 +204,8 @@ was created with (or later switched to) become the default for the _next_
   calls), `edit` (exact then whitespace-insensitive string replacement), and
   `grep` (ripgrep) tools, mounted alongside the MCP + `loom` tools and gated the
   same way. A `web_search` tool joins them when `[search]` names a backend
-  (`brave` / `tavily`) whose key env var is set.
+  (`brave` / `tavily` / `kagi`) whose key env var is set — `kagi` talks to
+  Kagi's hosted MCP server (`mcp.kagi.com`, key as a bearer token).
 - **10d** — `plan` mode withholds the mutating tools and offers `exit_plan`;
   approving a plan flips the session to `acceptEdits` and implements it.
   Compaction is Loom's own: a summariser rebuilds the history to one message,

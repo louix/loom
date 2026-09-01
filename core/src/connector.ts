@@ -10,7 +10,7 @@ import type { Logger } from "./logger.ts";
 
 /** A resolved `web_search` backend. `[search] backend = "none"` yields no config at all. */
 export interface SearchConfig {
-  backend: "brave" | "tavily";
+  backend: "brave" | "tavily" | "kagi";
   /** The resolved key, not the env-var name. */
   apiKey: string;
   /** Backend URL override; "" uses the backend default. */
