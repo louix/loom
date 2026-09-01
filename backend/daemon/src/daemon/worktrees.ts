@@ -25,6 +25,18 @@ echo "loom: push is blocked in session worktrees" >&2
 exit 1
 `;
 
+/** Loom overrides `core.hooksPath` per worktree to install its push block, which
+ *  also shadows the repo's own `pre-commit` / `commit-msg` / … . These wrappers
+ *  chain through to the repo's real hooks dir so formatting / message checks
+ *  still run on agent commits. `$0`'s basename is the hook being invoked. */
+const CHAINED_HOOKS = ["pre-commit", "commit-msg", "prepare-commit-msg", "post-commit"] as const;
+const chainHookScript = (origHooksDir: string): string =>
+  `#!/bin/sh\n` +
+  `# Installed by Loom — delegates to the repo's own hook.\n` +
+  `h="${origHooksDir}/$(basename "$0")"\n` +
+  `[ -x "$h" ] && exec "$h" "$@"\n` +
+  `exit 0\n`;
+
 export interface WorktreeInfo {
   slug: string;
   path: string;
@@ -106,6 +118,27 @@ export class WorktreeManager {
     if (!existsSync(hook)) {
       writeFileSync(hook, PRE_PUSH_HOOK);
       chmodSync(hook, 0o755);
+    }
+
+    // G12: `core.hooksPath` per worktree shadows the repo's own hooks. Resolve
+    // where they really live and drop delegating wrappers so `pre-commit` etc.
+    // still fire. Skip if the repo already points its hooks at us (no self-loop).
+    const abs = (p: string): string => {
+      if (!p) return "";
+      return p.startsWith("/") ? p : join(this.#repoRoot, p);
+    };
+    const custom = abs(this.#gitOut(["config", "--get", "core.hooksPath"]));
+    const commonDir = abs(this.#gitOut(["rev-parse", "--git-common-dir"])) || join(this.#repoRoot, ".git");
+    const origHooksDir = custom || join(commonDir, "hooks");
+    if (origHooksDir !== this.#hooksDir) {
+      const script = chainHookScript(origHooksDir);
+      for (const name of CHAINED_HOOKS) {
+        const p = join(this.#hooksDir, name);
+        if (!existsSync(p)) {
+          writeFileSync(p, script);
+          chmodSync(p, 0o755);
+        }
+      }
     }
     this.#setupDone = true;
   }

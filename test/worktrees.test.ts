@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorktreeManager, slugify } from "@loom/daemon/daemon/worktrees";
@@ -342,6 +350,30 @@ test("syncOntoBase: bails 'busy' when the agent has its own rebase in progress (
       execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }),
       beforeStatus,
     );
+  } finally {
+    cleanup();
+  }
+});
+
+test("a worktree still runs the repo's own pre-commit hook (G12)", () => {
+  const { root, cleanup } = repo();
+  try {
+    // The repo has its own pre-commit that stamps a marker.
+    const marker = join(root, "pre-commit-ran");
+    const hookPath = join(root, ".git", "hooks", "pre-commit");
+    writeFileSync(hookPath, `#!/bin/sh\ntouch "${marker}"\n`);
+    chmodSync(hookPath, 0o755);
+
+    const m = mgr(root);
+    const wt = m.create("hooked", fakeId("aaaaaaaa"));
+
+    writeFileSync(join(wt.path, "f.txt"), "x\n");
+    execFileSync("git", ["-C", wt.path, "add", "-A"]);
+    execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "in the worktree"]);
+
+    assert.ok(existsSync(marker), "the repo's pre-commit fired inside the session worktree");
+    // Loom's own push block is still in place.
+    assert.ok(existsSync(join(root, ".loom", "hooks", "pre-push")));
   } finally {
     cleanup();
   }
