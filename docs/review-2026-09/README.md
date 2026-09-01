@@ -91,8 +91,8 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | S9 | low | done | `result` error branch now `truncate()`s `ev.error` (it's typed `string`, so no null-guard needed) | `daemon/status-machine.ts:109-119` |
 | S10 | low | done | `setKeepWarm` clears the give-up counter on idempotent re-asserts | `daemon/session-manager.ts:308-313` |
 | S14 | low-med | done | A throwing per-event hook kills the `#drain` loop; `run.pump` rejection can go unhandled | `daemon/session-manager.ts:142-176` |
-| G3 | med | todo | `gc` removes a worktree without `close()`ing the still-registered session | `daemon/daemon.ts:1788-1820` |
-| G4 | med | todo | Hard fork silently branches off base when the parent ref doesn't resolve — throw instead | `daemon/worktrees.ts:109-119` |
+| G3 | med | done | `gc` removes a worktree without `close()`ing the still-registered session | `daemon/daemon.ts:1788-1820` |
+| G4 | med | done | Hard fork silently branches off base when the parent ref doesn't resolve — throw instead | `daemon/worktrees.ts:109-119` |
 | C3 | med | done | Zeroed `modelUsage` on a crash/startup-error `result` resets mapper counters → false spike next turn | `connectors/claude/src/map.ts:375-401` |
 | C7 | med | done | `partialTokens` set `false` on the Claude caps (usage is only emitted from `result`). aisdk still declares `true` — unverified, left for its own pass. | `connectors/claude/src/adapter.ts:53` |
 | C8 | low-med | done | `setModel()` now wraps the control call and rethrows a readable reason (matches `setMode`/`setEffort`) | `connectors/claude/src/adapter.ts:527-529` |

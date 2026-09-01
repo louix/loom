@@ -1879,7 +1879,7 @@ export class Daemon {
 
     // gc: remove worktrees for sessions marked done. Branches are never
     // auto-deleted; the session row is retained as a record (spec §6).
-    d.register("session.gc", (params) => {
+    d.register("session.gc", async (params) => {
       const p = isObj(params) ? params : {};
       const only = typeof p["id"] === "string" ? (p["id"] as string) : null;
       const force = p["force"] === true;
@@ -1901,6 +1901,10 @@ export class Daemon {
         if (!eligible(s.status.kind) || !s.worktree) continue;
         if (only && s.id !== only) continue;
         try {
+          // A `done` session was only interrupted, not closed — its provider
+          // process is still registered with this worktree as its cwd. Close it
+          // before pulling the directory out from under it.
+          if (this.#sessions.has(s.id)) await this.#sessions.close(s.id).catch(() => {});
           this.#worktrees.remove(s.worktree, { force });
           const snap = this.#registry.setFields(s.id, { worktree: null });
           this.#emitSessionUpdated(snap, clientLabel(params));

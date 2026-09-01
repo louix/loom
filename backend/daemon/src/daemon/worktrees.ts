@@ -108,10 +108,18 @@ export class WorktreeManager {
    */
   create(hint: string, id: string, baseRefOverride?: string): WorktreeInfo {
     this.ensureSetup();
-    const baseRef =
-      baseRefOverride && this.#git(["rev-parse", "--verify", "--quiet", baseRefOverride]).ok
-        ? baseRefOverride
-        : this.#resolveBase();
+    let baseRef: string;
+    if (baseRefOverride != null && baseRefOverride !== "") {
+      // A fork asks for a specific base (the parent's branch). If that ref no
+      // longer resolves, silently branching off the configured base would give
+      // the fork a tree unrelated to the transcript it inherits — fail instead.
+      if (!this.#git(["rev-parse", "--verify", "--quiet", baseRefOverride]).ok) {
+        throw new Error(`base ref "${baseRefOverride}" does not resolve`);
+      }
+      baseRef = baseRefOverride;
+    } else {
+      baseRef = this.#resolveBase();
+    }
     const slug = this.#uniqueSlug(hint);
     const path = join(this.#treesDir, slug);
     const branch = this.#uniqueBranch(id);
