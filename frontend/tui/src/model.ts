@@ -792,6 +792,9 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
     case "session_removed": {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
       const planGone = s.plan?.sessionId === frame.sessionId;
+      // A send/answer/title/compact prompt aimed at a session another client
+      // just removed would loop on submit (RPC error → reopen). Close it.
+      const promptGone = s.prompt?.sessionId === frame.sessionId;
       const pickerGone = s.picker?.ctx?.liveSessionId === frame.sessionId;
       // A `find` picker lists sessions by id — drop the vanished row so `enter`
       // can't land on a ghost.
@@ -813,6 +816,9 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
         compacting: without(s.compacting, frame.sessionId),
         ...(planGone
           ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
+          : {}),
+        ...(promptGone
+          ? { prompt: null, mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode }
           : {}),
         ...(pickerGone
           ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }

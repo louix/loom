@@ -80,10 +80,10 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | L9 | low | done | `stop()` has no `try/finally` guaranteeing `#resolveClosed()` + `releasePidfile()` | `daemon/daemon.ts:400-434` |
 | L10 | low | done | Claude model-discovery timeout timer never cleared | `daemon/daemon.ts:585-590` |
 | L11 | low | wontfix | `acquirePidfile` — the `wx` exclusive create is the single-instance guard and matters more than the theoretical torn write of a ~60-byte JSON payload (one `write(2)`). tmp+rename would lose the exclusivity. | `daemon/lifecycle.ts:24-54` |
-| W9a | low | todo | Reconnect backoff has no jitter | `client/client.ts:332-356` |
-| W10 | low | todo | Client never validates `result.protocolVersion` | `client/client.ts:291-318` |
-| W11 | low | todo | Non-numeric `req` id / unmatched `res` id silently ignored → request hangs to timeout | `client/client.ts:243-254` |
-| W13 | low | todo | `client.close()` is `async` but awaits nothing | `client/client.ts:164-168` |
+| W9a | low | done | Reconnect backoff has no jitter | `client/client.ts:332-356` |
+| W10 | low | done | Client never validates `result.protocolVersion` | `client/client.ts:291-318` |
+| W11 | low | wontfix | The per-request 30s timeout already bounds this and produces a clear error; a corrupted frame id isn't worth special-casing (client has no logger). | `client/client.ts:243-254` |
+| W13 | low | done | `client.close()` is `async` but awaits nothing | `client/client.ts:164-168` |
 | S1 | **high** | moved→P1 | `deriveStatus` resurrecting a killed turn on a trailing gate. The status-machine guard conflicts with a deliberate, tested design choice ("a new turn's blocking request re-engages an interrupted / errored session", `status-machine.test.ts:67`). The correct layer is the adapter muzzle — folded into **C6**. | `daemon/status-machine.ts:49-62` |
 | S4 | med | done | Stream-ended path never clears `run.pending` (interrupt does) | `daemon/session-manager.ts:160-168` |
 | S5 | med | done | Cost `NaN` — sanitized at the `#trackUsage` boundary (the store's `accFloat`/`abs` already guarded the columns; this keeps the in-memory delta finite for `#priceUsage`) | `daemon/session-manager.ts:266-283` |
@@ -121,13 +121,13 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 | D9 | low | done | `addUsage` NaN guard bypassed for `lastTurnAt` | `store/sessions.ts:216-263` |
 | D10 | low | done | `resolveMcpCommand` splits on whitespace → mis-splits quoted args | `daemon/mcp-fallback.ts:25-27` |
 | D11 | cosmetic | done | `provider-registry` `mock` id documented as known but not in `#ids` | `daemon/provider-registry.ts` |
-| U3 | med | todo | `logScroll` grows unbounded past the top of the log (clamp only at render) | `frontend/tui/src/fleet-handle.ts:1372, 1568-1570` |
-| U7 | med | todo | `$EDITOR` quit-without-saving (`:q`, non-zero exit) treated as an edit → agent implements untouched plan | `frontend/tui/src/editor-handoff.ts:48-57` |
-| U8 | med | todo | `s.subagents` dereferenced without the `?? []` guard every other site uses → render crash | `frontend/tui/src/components.tsx:542-552` |
-| U10 | low-med | todo | `loom tail` / `--json` not pipe-safe → uncaught `EPIPE` stack trace instead of exit 0 | `cli/src/loom.ts:554-587` |
-| U12 | low | todo | Prompt targeting a session removed elsewhere is left open → error loop | `frontend/tui/src/model.ts:708-737` |
-| U14 | low | todo | 120 ms TUI ticker runs unconditionally (full render ~8×/s on an idle TUI) | `frontend/tui/src/fleet-handle.ts:1689-1693` |
-| U16 | low | todo | Unhandled rejection on quit-all `client.close()` | `frontend/tui/src/fleet-handle.ts:1234-1244` |
+| U3 | med | done | `logScroll` grows unbounded past the top of the log (clamp only at render) | `frontend/tui/src/fleet-handle.ts:1372, 1568-1570` |
+| U7 | med | done | `$EDITOR` quit-without-saving (`:q`, non-zero exit) treated as an edit → agent implements untouched plan | `frontend/tui/src/editor-handoff.ts:48-57` |
+| U8 | med | done | `s.subagents` dereferenced without the `?? []` guard every other site uses → render crash | `frontend/tui/src/components.tsx:542-552` |
+| U10 | low-med | done | `loom tail` / `--json` not pipe-safe → uncaught `EPIPE` stack trace instead of exit 0 | `cli/src/loom.ts:554-587` |
+| U12 | low | done | Prompt targeting a session removed elsewhere is left open → error loop | `frontend/tui/src/model.ts:708-737` |
+| U14 | low | done | 120 ms TUI ticker runs unconditionally (full render ~8×/s on an idle TUI) | `frontend/tui/src/fleet-handle.ts:1689-1693` |
+| U16 | low | done | Unhandled rejection on quit-all `client.close()` | `frontend/tui/src/fleet-handle.ts:1234-1244` |
 
 ### Phase 1 — per-session serialization
 

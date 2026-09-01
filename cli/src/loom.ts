@@ -98,6 +98,14 @@ const USAGE: Record<string, string> = {
   --delete-branch              also \`git branch -D\` the session's branch`,
 };
 
+// `loom tail | head` (or any consumer that closes early) fires an async EPIPE
+// on stdout that `main().catch` can't intercept — exit cleanly, not with a
+// stack trace.
+process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
+
 const main = async (): Promise<void> => {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -610,10 +618,18 @@ const summarize = (ev: HarnessEvent): string => {
 
 main().catch((err) => {
   const code = (err as { code?: string }).code;
+  let msg: string;
   if (code === "ENOENT" || code === "ECONNREFUSED") {
-    process.stderr.write("loom: could not reach the daemon (and autospawn failed)\n");
+    msg = "could not reach the daemon (and autospawn failed)";
   } else {
-    process.stderr.write(`loom: ${err instanceof Error ? err.message : String(err)}\n`);
+    msg = err instanceof Error ? err.message : String(err);
+  }
+  // Keep --json consumers on one format: a JSON error object on stdout rather
+  // than plain text on stderr.
+  if (process.argv.includes("--json")) {
+    process.stdout.write(JSON.stringify({ error: msg }) + "\n");
+  } else {
+    process.stderr.write(`loom: ${msg}\n`);
   }
   process.exit(1);
 });

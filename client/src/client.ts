@@ -163,8 +163,13 @@ export class LoomClient {
 
   async close(): Promise<void> {
     this.#closed = true;
-    this.#sock?.destroy();
+    const sock = this.#sock;
     this.#sock = null;
+    if (!sock) return;
+    await new Promise<void>((resolve) => {
+      sock.once("close", () => resolve());
+      sock.destroy();
+    });
   }
 
   /**
@@ -295,6 +300,13 @@ export class LoomClient {
       clientId: this.clientId,
       ...(sinceSeq !== undefined ? { sinceSeq } : {}),
     });
+    // The daemon rejects a mismatched request version, but a future lenient
+    // daemon on a changed frame shape would slip through — check both ways.
+    if (result.protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error(
+        `daemon speaks wire protocol v${result.protocolVersion}, this client is v${PROTOCOL_VERSION} — upgrade`,
+      );
+    }
     // A different epoch across a reconnect ⇒ the daemon restarted: its seq and
     // in-memory version counters reset, so any replay it offered against our
     // stale sinceSeq is meaningless. Re-baseline and tell the app to resync.
@@ -349,7 +361,9 @@ export class LoomClient {
         this.#fire("reconnect", { lastSeq: this.#lastSeq });
         return;
       } catch {
-        await delay(waitMs);
+        // Full-ish jitter so a fleet of clients (TUI + `loom tail` + CLI) that
+        // dropped together don't retry — and re-spawn a daemon — in lockstep.
+        await delay(waitMs / 2 + Math.random() * (waitMs / 2));
         waitMs = Math.min(waitMs * 2, 4000);
       }
     }

@@ -51,6 +51,9 @@ export const spawnEditor = (text: string, opts: EditorOpts = {}): string | null 
     if (r.error) {
       throw new Error(`couldn't launch "${editor}" (${r.error.message}) — set $EDITOR or $VISUAL`);
     }
+    // `:cq`, a crash, or a kill — the user abandoned the edit; don't feed the
+    // (possibly unchanged) buffer back as if it were saved.
+    if (r.signal != null || (typeof r.status === "number" && r.status !== 0)) return null;
     return readFileSync(file, "utf8");
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -575,13 +575,14 @@ export const Detail = ({
           {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
         </Text>
       ) : null}
-      {s.subagents.length > 0
+      {(s.subagents ?? []).length > 0
         ? (() => {
-            const active = s.subagents.filter((a) => a.active);
-            const names = s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
+            const subs = s.subagents ?? [];
+            const active = subs.filter((a) => a.active);
+            const names = subs.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
             return (
               <Text color={C.dim} wrap="truncate-end">
-                {`⑂ ${active.length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
+                {`⑂ ${active.length}/${subs.length} sub-agent${subs.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
               </Text>
             );
           })()

@@ -62,6 +62,7 @@ import {
   selectedSession,
   sessionLog,
   transcriptText,
+  visibleLog,
   versionMismatchAction,
   type ActName,
   type Action,
@@ -323,6 +324,15 @@ export const mkFleetHandle = ({
 
   const store = mkStore<FleetView>(deriveView(state, boot, tick, logScroll, logFull, dims));
   const publish = (): void => store.set(deriveView(state, boot, tick, logScroll, logFull, dims));
+
+  // Ceiling for `logScroll` so scrolling up past the top of the log doesn't run
+  // the counter away (leaving you to scroll back down the same distance before
+  // the viewport moves). Wrapped rows ≥ line count; the extra page covers wrap.
+  const scrollUp = (by: number): void => {
+    const ceiling = visibleLog(state).length + store.get().logPage;
+    logScroll = Math.min(ceiling, logScroll + by);
+    publish();
+  };
 
   const backfillHistory = (): void => {
     const id = state.selectedId;
@@ -1203,7 +1213,8 @@ export const mkFleetHandle = ({
     if (!pl) return;
     const edited = await openEditor(pl.text, { ext: "md" });
     const plan = edited?.trim();
-    if (!plan) return note("plan unchanged — nothing sent", "dim");
+    // No save, or quit-without-changes (`:q`) — don't kick off an implement.
+    if (!plan || plan === pl.text.trim()) return note("plan unchanged — nothing sent", "dim");
     respondPlan({ action: "revise", plan }, "implementing your edited plan");
   };
 
@@ -1277,7 +1288,7 @@ export const mkFleetHandle = ({
         } catch {
           /* going down regardless */
         }
-        await client.close();
+        await client.close().catch(() => {});
         term.exit();
       })();
     }
@@ -1408,8 +1419,7 @@ export const mkFleetHandle = ({
     if (wheel) {
       const base = Number(wheel[1]) & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
       if (base === 64) {
-        logScroll = logScroll + 3; // wheel up → back in history
-        return publish();
+        return scrollUp(3); // wheel up → back in history
       }
       if (base === 65) {
         logScroll = Math.max(0, logScroll - 3); // wheel down → toward live tail
@@ -1604,8 +1614,7 @@ export const mkFleetHandle = ({
 
     // ---- browse ----
     if (key.pageUp) {
-      logScroll = logScroll + Math.max(1, logPage - 1);
-      return publish();
+      return scrollUp(Math.max(1, logPage - 1));
     }
     if (key.pageDown) {
       logScroll = Math.max(0, logScroll - Math.max(1, logPage - 1));
@@ -1745,6 +1754,14 @@ export const mkFleetHandle = ({
     ];
 
     const iv = setInterval(() => {
+      // Only spend a frame when something is actually animating — a spinner
+      // row, a live compaction, or a notice waiting to expire. An idle fleet
+      // otherwise re-renders ~8×/s for nothing.
+      const animating =
+        state.notice !== null ||
+        Object.keys(state.compacting).length > 0 ||
+        state.sessions.some((s) => s.status.kind === "running" || s.status.kind === "starting");
+      if (!animating) return;
       tick = (tick + 1) % 100000;
       dispatch({ t: "expireNotice", now: Date.now() });
       publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
