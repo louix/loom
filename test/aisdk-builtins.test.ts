@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -200,6 +209,27 @@ test("applyEdit: exact single replacement", () => {
     assert.equal(r.ok, true);
     assert.equal(r.tier, "exact");
     assert.equal(readFileSync(f, "utf8"), "one TWO three\n");
+  } finally {
+    cleanup();
+  }
+});
+
+test("applyEdit: writes atomically — preserves file mode, leaves no temp behind", () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const f = join(dir, "script.sh");
+    writeFileSync(f, "echo one\n");
+    chmodSync(f, 0o755);
+
+    const r = applyEdit(f, "one", "two", false);
+    assert.equal(r.ok, true);
+    assert.equal(readFileSync(f, "utf8"), "echo two\n");
+    assert.equal(statSync(f).mode & 0o777, 0o755, "executable bit survived the edit");
+    assert.deepEqual(
+      readdirSync(dir).filter((n) => n.startsWith(".loom-edit-")),
+      [],
+      "no temp file left in the directory",
+    );
   } finally {
     cleanup();
   }

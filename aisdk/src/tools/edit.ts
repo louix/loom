@@ -10,9 +10,36 @@
  * replaced; `new_string` is inserted verbatim, so its indentation is the
  * caller's responsibility.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
+
+/**
+ * Replace `path`'s contents without a truncation window: write a sibling temp
+ * file, match its mode to the original, then `rename` over the target (atomic on
+ * a single filesystem). A crash / ENOSPC leaves the original file untouched.
+ */
+const atomicWrite = (path: string, content: string): void => {
+  const tmp = join(dirname(path), `.loom-edit-${randomBytes(6).toString("hex")}`);
+  try {
+    writeFileSync(tmp, content);
+    try {
+      chmodSync(tmp, statSync(path).mode);
+    } catch {
+      // original mode unreadable — keep the default; not worth failing the edit
+    }
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // temp never created, or already gone
+    }
+    throw err;
+  }
+};
 
 export interface EditOutcome {
   ok: boolean;
@@ -70,7 +97,7 @@ export const applyEdit = (
     const updated = replaceAll
       ? content.split(oldString).join(newString)
       : content.slice(0, exact[0]) + newString + content.slice(exact[0]! + oldString.length);
-    writeFileSync(path, updated);
+    atomicWrite(path, updated);
     return {
       ok: true,
       message: `edited ${path}`,
@@ -92,7 +119,7 @@ export const applyEdit = (
     const spans = windowMatches(content, oldString, normalize, dedent);
     if (spans.length === 1) {
       const [start, end] = spans[0]!;
-      writeFileSync(path, content.slice(0, start) + newString + content.slice(end));
+      atomicWrite(path, content.slice(0, start) + newString + content.slice(end));
       return { ok: true, message: `edited ${path} (${tier} match)`, replacements: 1, tier };
     }
     if (spans.length > 1) {
