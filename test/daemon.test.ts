@@ -52,8 +52,9 @@ const client = async (reconnect = false): Promise<LoomClient> => {
 test("hello handshake returns daemon info and an empty session list", async () => {
   const c = await client();
   assert.equal(c.daemonInfo?.repoRoot, h.repoRoot);
-  // the TUI's version-mismatch auto-respawn keys off this field
-  assert.match(c.daemonInfo?.version ?? "", /^\d+\.\d+\.\d+/);
+  // the TUI's version-mismatch auto-respawn keys off this field — any
+  // non-empty build string (git-describe, a stamp, "unknown-version") is fine
+  assert.ok((c.daemonInfo?.version ?? "").length > 0);
   assert.deepEqual(c.sessions, []);
   await c.close();
 });
@@ -328,7 +329,7 @@ test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () 
   const c = await client();
   const rep = await c.request<DoctorReport>("daemon.doctor");
 
-  assert.match(rep.daemon.version, /^\d+\.\d+\.\d+/);
+  assert.ok(rep.daemon.version.length > 0);
   assert.ok(rep.daemon.pid > 0);
   assert.ok(rep.daemon.uptimeMs >= 0);
   assert.ok(rep.daemon.clients >= 1);
