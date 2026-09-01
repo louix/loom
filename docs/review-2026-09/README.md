@@ -159,17 +159,27 @@ Phase 2; **C12** (`snapshot()` always `stateRunning`) → cosmetic, unscheduled.
 
 ### Phase 2 — bounded buffers + write atomicity
 
+_Done (`loom/audit-codebase-and-delegate-to`): `Connection.push` drops a client
+whose write backlog passes 8 MB; `MAX_FRAME_BYTES` shared via `core/wire` and
+enforced on the client's read buffer too; `AsyncChannel` gains a capacity (drop
+-oldest + `dropped` count) and a synchronous single-consumer guard; bash collapses
+its output buffer in flight; `edit` writes atomically (temp + rename); a
+`withTransaction` helper wraps `SessionStore.create` / `ProviderMessageStore`
+compound writes / `markMidRunInterrupted`, and `migrate()` re-checks the version
+under `BEGIN IMMEDIATE`; the TUI caps `state.log` at 10k lines. +10 tests._
+_Out of scope: **D8** (`backlog`)._
+
 | ID | Sev | Status | Finding | Where |
 |----|-----|--------|---------|-------|
-| W1 / L4 | **high** | todo | No write-side backpressure on the daemon push fan-out → one stuck client OOMs the daemon | `daemon/connection.ts:73-89`, `daemon/server.ts:93-95` |
-| W5 | med | todo | `AsyncChannel` has no queue bound / backpressure — hot path of every adapter | `core/src/channel.ts:27-32` |
-| W6 | low-med | todo | Client socket read buffer is unbounded (asymmetric with the daemon's `MAX_FRAME_BYTES`) | `client/src/client.ts:226-241` |
-| W12 | low | todo | `AsyncChannel` `[Symbol.asyncIterator]` obtainable twice; early `break` leaks the queue | `core/src/channel.ts:41-52` |
-| T1 | **high** | todo | bash unbounded output buffer → `RangeError` in a data handler / OOM → daemon dies | `aisdk/src/tools/bash.ts:42-47` |
-| T6 | med | todo | `edit` writes non-atomic (`writeFileSync` O_TRUNC, no backup) → crash/ENOSPC corrupts source | `aisdk/src/tools/edit.ts:63, 85` |
-| D2 | med | todo | Compound store writes not wrapped in a transaction → interrupted `create()` leaves a session with no `usage` row | `store/sessions.ts:96-123`, `store/provider-messages.ts:59-71` |
-| D5 | low | todo | Migration loop reads `currentVersion()` outside the txn; `BEGIN` is not `IMMEDIATE` | `store/db.ts:38-55` |
-| U13 | low | todo | `state.log` accumulates echo/notice cruft and is never truncated | `frontend/tui/src/model.ts:340-344` |
+| W1 / L4 | **high** | done | No write-side backpressure on the daemon push fan-out → one stuck client OOMs the daemon | `daemon/connection.ts:73-89`, `daemon/server.ts:93-95` |
+| W5 | med | done | `AsyncChannel` has no queue bound / backpressure — hot path of every adapter | `core/src/channel.ts:27-32` |
+| W6 | low-med | done | Client socket read buffer is unbounded (asymmetric with the daemon's `MAX_FRAME_BYTES`) | `client/src/client.ts:226-241` |
+| W12 | low | done | `AsyncChannel` `[Symbol.asyncIterator]` obtainable twice; early `break` leaks the queue | `core/src/channel.ts:41-52` |
+| T1 | **high** | done | bash unbounded output buffer → `RangeError` in a data handler / OOM → daemon dies | `aisdk/src/tools/bash.ts:42-47` |
+| T6 | med | done | `edit` writes non-atomic (`writeFileSync` O_TRUNC, no backup) → crash/ENOSPC corrupts source | `aisdk/src/tools/edit.ts:63, 85` |
+| D2 | med | done | Compound store writes not wrapped in a transaction → interrupted `create()` leaves a session with no `usage` row | `store/sessions.ts:96-123`, `store/provider-messages.ts:59-71` |
+| D5 | low | done | Migration loop reads `currentVersion()` outside the txn; `BEGIN` is not `IMMEDIATE` | `store/db.ts:38-55` |
+| U13 | low | done | `state.log` accumulates echo/notice cruft and is never truncated | `frontend/tui/src/model.ts:340-344` |
 | D8 | low | backlog | `session_events` / `status_history` grow unbounded, no `VACUUM` ever | `store/session-events.ts` |
 
 ### Phase 3 — rewind/undo record
