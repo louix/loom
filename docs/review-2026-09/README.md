@@ -51,7 +51,7 @@ disconnect-and-resync), applied at ~5 sites. — **Phase 2**.
 
 | Phase | What | Approach | Gate |
 |---|---|---|---|
-| **0** | ~40 mechanical, independent fixes | solo, batched by area into ~5 commits | typecheck + `pnpm test` per commit |
+| **0 ✅** | mechanical, independent fixes — **done** (52 fixed, 3 wontfix, 2 backlog, S1→P1) across 7 commits `a00abaa`..`7a1bf75`; 376 tests green throughout | solo, batched by area | typecheck + `pnpm test` per commit |
 | **1** | Per-session serialization + cooperative cancellation | design note → your sign-off → implement on a branch → subagent review | full test run + new tests |
 | **2** | Bounded-queue primitive + `withTransaction`, applied at all sites | solo → subagent review | " |
 | **3** | Rewind/undo record: `{ turn, transcriptRef, headSha, model, effort, mode }` | solo → subagent review | " |
