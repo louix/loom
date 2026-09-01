@@ -143,4 +143,6 @@ max_results = 5
 # kagi dials Kagi's hosted MCP server (https://mcp.kagi.com/mcp, the key sent
 # as a bearer token — grab one at kagi.com/api/keys); nothing to install.
 # api_base points it at a self-hosted kagimcp instead. Kagi formats the
-# results itself (its server-side default is 10, so max_results doesn't apply).
+# results itself (its server-side default is 10, so max_results doesn't apply),
+# and kagi sessions also get web_fetch — a page's full content as markdown
+# (their kagi_extract) — so a search hit can be read in full.

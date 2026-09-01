@@ -384,8 +384,9 @@ default, and Claude sessions keep their own. `runSearch` normalises Brave
 (`GET /web/search`) and Tavily (`POST /search`) to a numbered
 title / url / snippet list; Kagi dials their hosted MCP server
 (`https://mcp.kagi.com/mcp`, bearer auth) and passes its formatted results
-through. The tool is readonly (never prompts). Resolved once
-in `ProviderRegistry.#resolveSearch()` and handed to every aisdk provider.
+through, with a `web_fetch` companion (`kagi_extract` — a page as markdown)
+so a hit can be read in full. The tools are readonly (never prompt). Resolved
+once in `ProviderRegistry.#resolveSearch()` and handed to every aisdk provider.
 
 **Mid-turn message injection (post-M10).** The send-choice modal's "asap" is now
 "inject now". A `session.send` while a turn is live no longer blocks: aisdk
