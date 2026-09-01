@@ -126,12 +126,16 @@ export class AisdkEventMapper {
 
   #flushOpenBlocks(ts: number): HarnessEvent[] {
     const out: HarnessEvent[] = [];
+    // Reasoning first: within a step a model reasons, then answers. When the
+    // provider omits the `*-end` parts (flush at `tool-call` / `finish`), this
+    // is the only place that order can be restored — flushing text first made
+    // the answer render above the thinking that produced it.
+    for (const [, text] of this.#reasoning) {
+      if (text.trim() !== "") out.push({ type: "thinking", sessionId: this.#sessionId, ts, text });
+    }
     for (const [, text] of this.#text) {
       if (text.trim() !== "")
         out.push({ type: "assistant_text", sessionId: this.#sessionId, ts, text });
-    }
-    for (const [, text] of this.#reasoning) {
-      if (text.trim() !== "") out.push({ type: "thinking", sessionId: this.#sessionId, ts, text });
     }
     this.#text.clear();
     this.#reasoning.clear();

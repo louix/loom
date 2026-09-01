@@ -6,7 +6,7 @@ import type { PushFrame } from "@loom/core/wire";
 const evt = (
   sessionId: string,
   text: string,
-): Omit<Extract<PushFrame, { type: "event" }>, "seq"> => {
+): Omit<Extract<PushFrame, { type: "event" }>, "seq" | "epoch"> => {
   return {
     kind: "push",
     type: "event",
@@ -15,7 +15,7 @@ const evt = (
 };
 
 test("append assigns strictly increasing seq from 1", () => {
-  const log = new EventLog(10);
+  const log = new EventLog(10, "ep1");
   assert.equal(log.head, 0);
   const a = log.append(evt("s1", "a"));
   const b = log.append(evt("s1", "b"));
@@ -27,7 +27,7 @@ test("append assigns strictly increasing seq from 1", () => {
 });
 
 test("since() returns frames strictly after the given seq", () => {
-  const log = new EventLog(10);
+  const log = new EventLog(10, "ep1");
   for (const c of ["a", "b", "c", "d"]) log.append(evt("s1", c));
 
   const r = log.since(2);
@@ -43,7 +43,7 @@ test("since() returns frames strictly after the given seq", () => {
 });
 
 test("since() reports rolled when the buffer has evicted the requested point", () => {
-  const log = new EventLog(3);
+  const log = new EventLog(3, "ep1");
   for (let i = 0; i < 6; i++) log.append(evt("s1", String(i)));
   // buffer now holds seq 4,5,6
   assert.equal(log.oldest, 4);
@@ -62,7 +62,7 @@ test("since() reports rolled when the buffer has evicted the requested point", (
 });
 
 test("since() with a seq ahead of head signals rolled (daemon restart)", () => {
-  const log = new EventLog(10);
+  const log = new EventLog(10, "ep1");
   log.append(evt("s1", "a"));
   const r = log.since(50);
   assert.equal(r.rolled, true);
@@ -70,7 +70,7 @@ test("since() with a seq ahead of head signals rolled (daemon restart)", () => {
 });
 
 test("capacity is enforced by evicting the oldest frame", () => {
-  const log = new EventLog(2);
+  const log = new EventLog(2, "ep1");
   log.append(evt("s1", "a"));
   log.append(evt("s1", "b"));
   log.append(evt("s1", "c"));
@@ -80,7 +80,7 @@ test("capacity is enforced by evicting the oldest frame", () => {
 });
 
 test("subscribers receive every appended frame and can unsubscribe", () => {
-  const log = new EventLog(10);
+  const log = new EventLog(10, "ep1");
   const seen: number[] = [];
   const off = log.subscribe((f) => seen.push(f.seq));
   log.append(evt("s1", "a"));
@@ -92,7 +92,7 @@ test("subscribers receive every appended frame and can unsubscribe", () => {
 });
 
 test("a throwing subscriber does not stall the fan-out", () => {
-  const log = new EventLog(10);
+  const log = new EventLog(10, "ep1");
   const seen: number[] = [];
   log.subscribe(() => {
     throw new Error("boom");
@@ -103,5 +103,16 @@ test("a throwing subscriber does not stall the fan-out", () => {
 });
 
 test("constructor rejects a capacity below 1", () => {
-  assert.throws(() => new EventLog(0));
+  assert.throws(() => new EventLog(0, "ep1"));
+  assert.throws(() => new EventLog(10, ""));
+});
+
+test("every frame is stamped with the epoch it was issued under", () => {
+  const log = new EventLog(10, "ep1");
+  const a = log.append(evt("s1", "a")) as Extract<PushFrame, { type: "event" }>;
+  assert.equal(a.epoch, "ep1");
+  // Replay (hello) hands back the same stamp, so a client can key identity on
+  // (epoch, seq) — seq alone resets on the next daemon start.
+  const r = log.since(0);
+  assert.ok(r.frames.every((f) => (f as Extract<PushFrame, { type: "event" }>).epoch === "ep1"));
 });

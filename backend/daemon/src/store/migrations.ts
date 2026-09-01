@@ -168,4 +168,14 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions RENAME COLUMN await_reason TO status_detail;
   `,
+
+  // 13 — the daemon epoch that issued each event's `seq`. The EventLog seq
+  // counter resets to 1 on every daemon start, so `seq` alone is only unique
+  // within one daemon's lifetime; without the epoch a replayed row can
+  // silently dedupe against an unrelated pre-restart frame on the client.
+  // Rows written before this column existed get `''` — they predate epoch
+  // tracking and are only ever ambiguous among themselves.
+  /* sql */ `
+  ALTER TABLE session_events ADD COLUMN epoch TEXT NOT NULL DEFAULT '';
+  `,
 ];

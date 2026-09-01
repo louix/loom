@@ -378,6 +378,7 @@ export const mkFleetHandle = ({
 
   const echoLine = (sessionId: string, text: string): LogLine => ({
     seq: (echoSeq -= 1),
+    epoch: "", // locally synthesised — daemon epochs are UUIDs, never ""
     sessionId,
     kind: "echo",
     glyph: "›",

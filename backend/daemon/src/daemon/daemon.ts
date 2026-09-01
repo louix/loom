@@ -33,6 +33,7 @@ import {
   PROTOCOL_VERSION,
   type DoctorMcpServer,
   type DoctorReport,
+  type EventPush,
   type HelloParams,
   type HelloResult,
   type ModelChoice,
@@ -233,7 +234,7 @@ export class Daemon {
     this.#pmsgs = new ProviderMessageStore(this.#db);
     this.#sessionEvents = new SessionEventStore(this.#db);
     this.#providerDefaults = new ProviderDefaultStore(this.#db);
-    this.#events = new EventLog(this.config.daemon.eventBufferSize);
+    this.#events = new EventLog(this.config.daemon.eventBufferSize, this.epoch);
     this.#dispatcher = new RpcDispatcher();
     this.#server = new SocketServer({
       sockPath: this.paths.sock,
@@ -442,7 +443,8 @@ export class Daemon {
     // model) — skip both so the durable log only holds what a client would
     // ever actually backfill.
     if (event.type !== "status_changed" && event.type !== "compact_progress") {
-      this.#sessionEvents.append(event.sessionId, frame.seq, event);
+      const { seq, epoch } = frame as EventPush;
+      this.#sessionEvents.append(event.sessionId, seq, epoch, event);
     }
     this.#server.broadcast(frame);
     return frame.seq;

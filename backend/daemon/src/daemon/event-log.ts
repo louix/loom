@@ -1,8 +1,8 @@
 import type { PushFrame } from "@loom/core/wire";
 
-/** A push frame before it has been assigned a sequence number. */
+/** A push frame before it has been assigned a sequence number and epoch. */
 export type UnsequencedPush =
-  | Omit<Extract<PushFrame, { type: "event" }>, "seq">
+  | Omit<Extract<PushFrame, { type: "event" }>, "seq" | "epoch">
   | Omit<Extract<PushFrame, { type: "session_updated" }>, "seq">
   | Omit<Extract<PushFrame, { type: "session_removed" }>, "seq">
   | Omit<Extract<PushFrame, { type: "providers_updated" }>, "seq">
@@ -30,13 +30,17 @@ export interface ReplayResult {
  */
 export class EventLog {
   #capacity: number;
+  /** Issued with every frame — `seq` resets per process, the epoch doesn't. */
+  readonly #epoch: string;
   #buf: PushFrame[] = [];
   #seq = 0;
   #listeners = new Set<(f: PushFrame) => void>();
 
-  constructor(capacity: number) {
+  constructor(capacity: number, epoch: string) {
     if (capacity < 1) throw new Error("event log capacity must be >= 1");
+    if (!epoch) throw new Error("event log epoch must be non-empty");
     this.#capacity = capacity;
+    this.#epoch = epoch;
   }
 
   /** Sequence number of the most recently appended frame (0 if none yet). */
@@ -54,9 +58,9 @@ export class EventLog {
     return this.#buf.length;
   }
 
-  /** Assign the next seq, buffer the frame, and fan it out to live listeners. */
+  /** Assign the next seq, stamp the epoch, buffer the frame, and fan it out. */
   append(frame: UnsequencedPush): PushFrame {
-    const sequenced = { ...frame, seq: ++this.#seq } as PushFrame;
+    const sequenced = { ...frame, seq: ++this.#seq, epoch: this.#epoch } as PushFrame;
     this.#buf.push(sequenced);
     if (this.#buf.length > this.#capacity) this.#buf.shift();
     for (const l of this.#listeners) {

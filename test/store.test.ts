@@ -301,17 +301,35 @@ test("SessionEventStore: append/list preserves order, respects limit, cascades o
     sessions.create({ id: "s1", provider: "claude" });
 
     const events = new SessionEventStore(db);
-    events.append("s1", 10, { type: "assistant_text", sessionId: "s1", ts: 1, text: "one" });
-    events.append("s1", 11, { type: "assistant_text", sessionId: "s1", ts: 2, text: "two" });
-    events.append("s1", 12, { type: "assistant_text", sessionId: "s1", ts: 3, text: "three" });
+    events.append("s1", 10, "epoch-a", {
+      type: "assistant_text",
+      sessionId: "s1",
+      ts: 1,
+      text: "one",
+    });
+    events.append("s1", 11, "epoch-a", {
+      type: "assistant_text",
+      sessionId: "s1",
+      ts: 2,
+      text: "two",
+    });
+    // The seq counter restarts with the daemon; the row's epoch is what makes
+    // (seq 10, pre-restart) and (seq 10, post-restart) distinct on replay.
+    events.append("s1", 10, "epoch-b", {
+      type: "user_message",
+      sessionId: "s1",
+      ts: 3,
+      text: "after restart",
+      injected: false,
+    });
 
     const all = events.list("s1");
     assert.deepEqual(
-      all.map((f) => [f.seq, (f.event as { text: string }).text]),
+      all.map((f) => [f.seq, f.epoch, (f.event as { text: string }).text]),
       [
-        [10, "one"],
-        [11, "two"],
-        [12, "three"],
+        [10, "epoch-a", "one"],
+        [11, "epoch-a", "two"],
+        [10, "epoch-b", "after restart"],
       ],
     );
     assert.ok(all.every((f) => f.kind === "push" && f.type === "event"));
@@ -320,7 +338,7 @@ test("SessionEventStore: append/list preserves order, respects limit, cascades o
     const capped = events.list("s1", { limit: 2 });
     assert.deepEqual(
       capped.map((f) => (f.event as { text: string }).text),
-      ["two", "three"],
+      ["two", "after restart"],
     );
 
     sessions.delete("s1");

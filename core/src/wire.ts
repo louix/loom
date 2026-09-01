@@ -54,6 +54,13 @@ export interface WireError {
 export interface EventPush {
   kind: "push";
   seq: number;
+  /**
+   * The daemon epoch (a fresh id per daemon process) that issued `seq`. The
+   * seq counter resets to 1 on every daemon start, so it is only unique
+   * *within* an epoch — clients must key dedupe / identity on (epoch, seq),
+   * or a post-restart frame silently collides with a pre-restart one.
+   */
+  epoch: string;
   type: "event";
   event: HarnessEvent;
 }

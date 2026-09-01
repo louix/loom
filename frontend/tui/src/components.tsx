@@ -682,7 +682,9 @@ const physicalRows = (
     const segs = wrapLine(l, Math.max(8, iw - indent));
     segs.forEach((seg, i) => {
       out.push({
-        key: `${l.seq}-${l.ts}-${i}`,
+        // Epoch-qualified: seqs restart on a daemon restart, so a bare seq can
+        // repeat across epochs within one long-lived TUI's log.
+        key: `${l.epoch}:${l.seq}-${l.ts}-${i}`,
         first: i === 0,
         ts,
         sub,

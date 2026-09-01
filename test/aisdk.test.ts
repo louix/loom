@@ -200,6 +200,20 @@ test("mapper buffers text deltas and flushes assistant_text at text-end", () => 
   assert.equal((out[0] as { text: string }).text, "Hello");
 });
 
+test("a flush with no *-end parts emits thinking before the answer it produced", () => {
+  // Some OpenAI-compatible endpoints (GLM via e.g. Sference) never send
+  // text-end / reasoning-end; the blocks flush together at the next tool call.
+  // The model reasoned first, so the log must show thinking above the answer.
+  const m = new AisdkEventMapper("s1", "gpt-5");
+  m.map({ type: "reasoning-delta", id: "r", text: "the user asks about…" } as never);
+  m.map({ type: "text-delta", id: "a", text: "Good question — no." } as never);
+  const out = m.map({ type: "tool-call", toolCallId: "c1", toolName: "bash", input: {} } as never);
+  assert.deepEqual(
+    out.map((e) => e.type),
+    ["thinking", "assistant_text", "tool_call"],
+  );
+});
+
 test("mapper turns reasoning into thinking and tool parts into tool_call/tool_result", () => {
   const m = new AisdkEventMapper("s1", "gpt-5");
   m.map({ type: "reasoning-delta", id: "r", text: "hmm" } as never);
@@ -255,9 +269,9 @@ test("mapper flushes buffered text / reasoning before a tool_call (no text-end s
   } as never);
   assert.deepEqual(
     out.map((e) => e.type),
-    ["assistant_text", "thinking", "tool_call"],
+    ["thinking", "assistant_text", "tool_call"],
   );
-  assert.equal((out[0] as { text: string }).text, "I'll check the repo.");
+  assert.equal((out[1] as { text: string }).text, "I'll check the repo.");
   // a second parallel tool call has nothing left to flush
   assert.deepEqual(
     m

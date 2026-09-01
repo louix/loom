@@ -66,6 +66,12 @@ export interface DaemonInfo {
 
 export interface LogLine {
   seq: number;
+  /**
+   * The daemon epoch that issued {@link seq} — seq resets on every daemon
+   * restart, so (epoch, seq) is the real frame identity and the dedupe key.
+   * `""` for locally synthesised lines (echoes).
+   */
+  epoch: string;
   sessionId: string;
   /** The event kind, so `chat` view can collapse tool / thinking runs. */
   kind: HarnessEvent["type"] | "echo";
@@ -681,10 +687,14 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       // `rateLimits`, not the transcript; it isn't a conversational entry.
       if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
       // A frame may arrive twice around startup (history backfill overlapping
-      // the live stream) — the seq is authoritative, so drop the repeat.
-      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq))
+      // the live stream) — (epoch, seq) is authoritative, so drop the repeat.
+      // The epoch matters: the daemon's seq counter resets on restart, so a
+      // post-restart frame must not be swallowed by a pre-restart line that
+      // happens to carry the same seq.
+      const epoch = frame.epoch ?? "";
+      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch))
         return { ...s, pending, compacting, notice };
-      const log = [...s.log, toLogLine(frame.seq, ev)];
+      const log = [...s.log, toLogLine(frame.seq, epoch, ev)];
       return { ...s, log, pending, compacting, notice };
     }
     case "session_updated": {
@@ -989,6 +999,7 @@ const collapseThinking = (lines: readonly LogLine[], i: number): [LogLine, numbe
   return [
     {
       seq: first.seq,
+      epoch: first.epoch,
       sessionId: first.sessionId,
       kind: "thinking",
       ...(first.agentId ? { agentId: first.agentId } : {}),
@@ -1031,6 +1042,7 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
         if (!pending) return;
         out.push({
           seq: pending.seq,
+          epoch: pending.epoch,
           sessionId: pending.sessionId,
           kind: "tool_call",
           ...(pending.agentId ? { agentId: pending.agentId } : {}),
@@ -1052,6 +1064,7 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
             flushPending();
             out.push({
               seq: line.seq,
+              epoch: line.epoch,
               sessionId: line.sessionId,
               kind: "tool_call",
               ...(line.agentId ? { agentId: line.agentId } : {}),
@@ -1626,10 +1639,11 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
 // event → log line
 // ---------------------------------------------------------------------------
 
-export const toLogLine = (seq: number, ev: HarnessEvent): LogLine => {
+export const toLogLine = (seq: number, epoch: string, ev: HarnessEvent): LogLine => {
   const f = formatEvent(ev);
   return {
     seq,
+    epoch,
     sessionId: ev.sessionId,
     kind: ev.type,
     ...(ev.agentId ? { agentId: ev.agentId } : {}),

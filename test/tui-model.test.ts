@@ -130,8 +130,8 @@ const ev = (over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): Harne
   return { sessionId: "s1", ts: 5_000, ...(over as object) } as HarnessEvent;
 };
 
-const push = (seq: number, event: HarnessEvent): EventPush => {
-  return { kind: "push", seq, type: "event", event };
+const push = (seq: number, event: HarnessEvent, epoch = "e1"): EventPush => {
+  return { kind: "push", seq, epoch, type: "event", event };
 };
 
 const daemon = { pid: 1, version: "0.0.1", repoRoot: "/tmp/demo" };
@@ -270,6 +270,47 @@ test("event pushes append log lines and never truncate", () => {
     s.log.map((l) => l.seq),
     [0, 1, 2, 3, 4],
   );
+});
+
+test("a seq that collides across daemon epochs is a new line, not a dropped dupe", () => {
+  // The daemon restarts mid-session and its seq counter resets to 1. Every
+  // post-restart frame reuses seqs the log already holds from the previous
+  // epoch — keying dedupe on seq alone silently swallowed the whole new epoch
+  // (the user's messages vanished while the agent kept responding to them).
+  let s = initialState();
+  s = reduce(s, {
+    t: "push",
+    frame: push(464, ev({ type: "tool_call", id: "t1", name: "bash", input: {}, sessionId: "s1" })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      464,
+      ev({
+        type: "user_message",
+        text: "So how did we get on with the context status?",
+        sessionId: "s1",
+      }),
+      "e2", // a different daemon epoch — same seq, different event
+    ),
+  });
+  assert.equal(s.log.length, 2, "post-restart frame must not collide with a pre-restart seq");
+  assert.equal(s.log[1]?.kind, "user_message");
+
+  // Within one epoch a repeated seq is still the startup overlap dupe → dropped.
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      464,
+      ev({
+        type: "user_message",
+        text: "So how did we get on with the context status?",
+        sessionId: "s1",
+      }),
+      "e2",
+    ),
+  });
+  assert.equal(s.log.length, 2);
 });
 
 test("compact_progress drives the compacting indicator without hitting the log", () => {
@@ -492,20 +533,20 @@ test("chat view: tool calls with an input `description` get their own line; thos
 
 test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {
   const L = [
-    toLogLine(1, {
+    toLogLine(1, "e1", {
       ...ev({ type: "user_message", text: "do the thing", injected: false }),
       ts: 5000,
     }),
-    toLogLine(2, { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
-    toLogLine(3, {
+    toLogLine(2, "e1", { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
+    toLogLine(3, "e1", {
       ...ev({ type: "tool_call", id: "t", name: "Bash", input: { command: "ls -la" } }),
       ts: 7000,
     }),
-    toLogLine(4, {
+    toLogLine(4, "e1", {
       ...ev({ type: "tool_result", id: "t", ok: true, output: { text: "a\nb" } }),
       ts: 8000,
     }),
-    toLogLine(5, {
+    toLogLine(5, "e1", {
       ...ev({
         type: "usage",
         tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
@@ -514,7 +555,7 @@ test("transcriptText renders [time] role + body, skips metadata, no raw JSON", (
       }),
       ts: 8500,
     }),
-    toLogLine(6, { ...ev({ type: "result", kind: "ok" }), ts: 9000 }),
+    toLogLine(6, "e1", { ...ev({ type: "result", kind: "ok" }), ts: 9000 }),
   ];
   const t = transcriptText(L);
   assert.match(t, /^\[\d\d:\d\d:\d\d\]  you\ndo the thing\n\n\[\d\d:\d\d:\d\d\]  agent\non it/);
@@ -527,6 +568,7 @@ test("transcriptText renders [time] role + body, skips metadata, no raw JSON", (
 test("condenseLog: a lone thinking / tool line still collapses; other kinds pass through", () => {
   const mk = (kind: LogLine["kind"], ts: number): LogLine => ({
     seq: ts,
+    epoch: "e1",
     sessionId: "a",
     kind,
     glyph: "x",
@@ -1012,8 +1054,8 @@ test("formatEvent keeps the full body for long / multi-line events", () => {
   assert.doesNotMatch(multi.text, /\n/);
 
   // a short event doesn't carry a redundant `full` on the stored LogLine
-  assert.equal(toLogLine(1, ev({ type: "assistant_text", text: "hi" })).full, undefined);
-  assert.equal(toLogLine(2, ev({ type: "assistant_text", text: long })).full, long);
+  assert.equal(toLogLine(1, "e1", ev({ type: "assistant_text", text: "hi" })).full, undefined);
+  assert.equal(toLogLine(2, "e1", ev({ type: "assistant_text", text: long })).full, long);
 });
 
 test("prompt open / edit / close transitions", () => {
@@ -1121,6 +1163,7 @@ test("echo appends a local log line and never truncates", () => {
   let s = initialState();
   const echo = (seq: number, text: string, ts: number): LogLine => ({
     seq,
+    epoch: "",
     sessionId: "a",
     kind: "echo",
     glyph: "›",
