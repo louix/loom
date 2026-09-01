@@ -479,6 +479,18 @@ export class Daemon {
     this.#server.broadcast(frame);
   }
 
+  /** The remembered new-session defaults changed — push the fresh provider
+   *  list so every client's `new` prompt seeds from current defaults. */
+  #emitProvidersUpdated(): void {
+    if (this.#stopping) return;
+    const frame = this.#events.append({
+      kind: "push",
+      type: "providers_updated",
+      providers: this.#providerList(),
+    });
+    this.#server.broadcast(frame);
+  }
+
   /** A daemon-level advisory for the operator (config reload feedback). */
   #emitNotice(text: string, tone: "info" | "warn"): void {
     if (this.#stopping) return;
@@ -1294,6 +1306,7 @@ export class Daemon {
       if (effort) this.#providerDefaults.rememberEffort(providerId, effort);
       this.#providerDefaults.rememberProvider(providerId);
       this.#providerDefaults.rememberMode(mode);
+      this.#emitProvidersUpdated();
 
       const isClaude = isClaudeId(providerId);
       const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
@@ -1683,6 +1696,7 @@ export class Daemon {
       const snap = this.#registry.setFields(id, { mode });
       // A deliberate switch is also "the last mode used" for the next new session.
       this.#providerDefaults.rememberMode(mode);
+      this.#emitProvidersUpdated();
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;
     });
@@ -1698,6 +1712,7 @@ export class Daemon {
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
       }
+      this.#emitProvidersUpdated();
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;
     });
@@ -1713,6 +1728,7 @@ export class Daemon {
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.rememberEffort(row.provider, effort);
       }
+      this.#emitProvidersUpdated();
       this.#emitSessionUpdated(snap, clientLabel(params));
       return snap;
     });

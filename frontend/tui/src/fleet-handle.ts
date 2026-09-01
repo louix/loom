@@ -1403,7 +1403,7 @@ export const mkFleetHandle = ({
       // ⌥m swaps the model without leaving the prompt.
       if (key.meta && input === "m") {
         if (p.kind === "new") {
-          const pid = p.provider ?? state.providers[0]?.id ?? "claude";
+          const pid = p.provider ?? defaultProviderId(state);
           const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
           return void openModelStep(pid, tag, p.buffer.text);
         }
@@ -1413,7 +1413,7 @@ export const mkFleetHandle = ({
       // ⌥t swaps the thinking-effort level without leaving the prompt.
       if (key.meta && input === "t") {
         if (p.kind === "new") {
-          const pid = p.provider ?? state.providers[0]?.id ?? "claude";
+          const pid = p.provider ?? defaultProviderId(state);
           const mid = p.model || defaultModelOf(state, pid);
           if (!mid || !modelSupportsEffort(state, pid, mid)) {
             return void dispatch({

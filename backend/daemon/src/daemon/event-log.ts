@@ -5,6 +5,7 @@ export type UnsequencedPush =
   | Omit<Extract<PushFrame, { type: "event" }>, "seq">
   | Omit<Extract<PushFrame, { type: "session_updated" }>, "seq">
   | Omit<Extract<PushFrame, { type: "session_removed" }>, "seq">
+  | Omit<Extract<PushFrame, { type: "providers_updated" }>, "seq">
   | Omit<Extract<PushFrame, { type: "resync" }>, "seq">
   | Omit<Extract<PushFrame, { type: "notice" }>, "seq">;
 

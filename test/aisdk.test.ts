@@ -841,6 +841,7 @@ test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", asy
       onSubagents: () => {},
       onProviderRef: () => {},
       onMode: () => {},
+      onBackgroundTasks: () => {},
       log: makeLogger("test"),
     });
     const settle = async () => {

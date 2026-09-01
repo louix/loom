@@ -575,6 +575,8 @@ const runTail = async (client: LoomClient): Promise<void> => {
       );
     } else if (f.type === "session_removed") {
       process.stdout.write(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
+    } else if (f.type === "providers_updated") {
+      process.stdout.write(`#${f.seq} providers_updated ${f.providers.length} provider(s)\n`);
     } else if (f.type === "notice") {
       process.stdout.write(`#${f.seq} notice           ${f.tone}: ${f.text}\n`);
     }

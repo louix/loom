@@ -91,6 +91,19 @@ export interface ResyncPush {
 }
 
 /**
+ * The remembered new-session defaults changed — a session was created, or a
+ * live session switched its model / thinking-effort / permission mode. Carries
+ * a fresh `providers.list` so clients re-seed new-session prompts without a
+ * refetch round trip.
+ */
+export interface ProvidersUpdatedPush {
+  kind: "push";
+  seq: number;
+  type: "providers_updated";
+  providers: ProviderInfo[];
+}
+
+/**
  * A daemon-originated advisory for the operator — not tied to a session. The
  * TUI shows it as a transient notice. Used for config-reload feedback.
  */
@@ -106,6 +119,7 @@ export type PushFrame =
   | EventPush
   | SessionUpdatedPush
   | SessionRemovedPush
+  | ProvidersUpdatedPush
   | ResyncPush
   | NoticePush;
 

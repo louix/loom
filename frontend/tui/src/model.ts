@@ -705,6 +705,12 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
           : {}),
       };
     }
+    case "providers_updated":
+      // The daemon's remembered new-session defaults (last provider / model /
+      // effort / mode) changed — adopt the fresh provider list so the `new`
+      // prompt seeds from what the next create would actually use.
+      return { ...s, providers: frame.providers };
+
     case "session_removed": {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
       const planGone = s.plan?.sessionId === frame.sessionId;

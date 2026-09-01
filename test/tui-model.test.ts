@@ -237,6 +237,22 @@ test("session_removed drops the row and reselects the head", () => {
   assert.equal(s.selectedId, "a");
 });
 
+test("providers_updated adopts the pushed list as the new-session defaults", () => {
+  let s = withProviders();
+  // The daemon remembered a different last-used provider / model — the push
+  // replaces the connect-time snapshot wholesale.
+  const fresh: ProviderInfo[] = [
+    { ...PROVIDERS[1]!, isDefault: true, defaultModel: "gpt-5-mini" },
+    { ...PROVIDERS[0]!, isDefault: false },
+  ];
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 2, type: "providers_updated", providers: fresh },
+  });
+  assert.equal(defaultProviderId(s), "openai");
+  assert.equal(defaultModelOf(s, "openai"), "gpt-5-mini");
+});
+
 // ---------------------------------------------------------------------------
 // event log
 // ---------------------------------------------------------------------------

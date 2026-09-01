@@ -551,6 +551,48 @@ models   = ["pin-a"]
   }
 });
 
+test("remembering defaults broadcasts a providers_updated push with the fresh list", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.local]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "pin-a"
+models   = ["pin-a", "pin-b"]
+`,
+  });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const pushes: PushFrame[] = [];
+    c.onPush((f) => pushes.push(f));
+
+    const s = await c.request<{ id: string }>("session.createStub", {
+      prompt: "x",
+      provider: "local",
+      model: "pin-a",
+    });
+    await c.request("session.setModel", { id: s.id, model: "pin-b", by: "t" });
+    await c.request("session.setEffort", { id: s.id, effort: "high", by: "t" });
+
+    await delay(20);
+    const updates = pushes.filter((f) => f.type === "providers_updated");
+    assert.ok(updates.length >= 2, "setModel and setEffort each push a providers_updated");
+    const last = updates.at(-1)!;
+    if (last.type !== "providers_updated") return assert.fail("unreachable");
+    const local = last.providers.find((p) => p.id === "local");
+    assert.equal(local?.defaultModel, "pin-b");
+    assert.equal(local?.defaultEffort, "high");
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("the provider and mode a session was created with become the default for the next new session", async () => {
   const hh = await makeHarness({ config: `default_provider = "claude"\n` });
   try {
