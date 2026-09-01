@@ -301,6 +301,96 @@ test("a failed summariser emits a non-fatal error and leaves the transcript inta
   }
 });
 
+/** Call #1 (the first turn) is instant; every later call (the summariser) drips
+ *  its chunks slowly, so a test can `interrupt()` / `close()` mid-summarise. */
+const slowSummariserModel = (): LanguageModel => {
+  let n = 0;
+  return new MockLanguageModelV2({
+    doStream: async () => {
+      n += 1;
+      const chunks = n === 1 ? textStep("did a thing") : textStep("A SUMMARY of the work so far");
+      return {
+        stream: simulateReadableStream({
+          chunks,
+          initialDelayInMs: 0,
+          ...(n === 1 ? {} : { chunkDelayInMs: 80 }),
+        }),
+      };
+    },
+  }) as unknown as LanguageModel;
+};
+
+test("interrupt() during a compaction abandons it and leaves the transcript intact (A2)", async () => {
+  const { store, cleanup } = env();
+  try {
+    const s = await provider(slowSummariserModel, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "do a long thing",
+      mode: "default",
+      mcpServers: [],
+    });
+    await pump(s.events(), {});
+    const before = store.load("s1");
+
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const ev of s.events()) seen.push(ev);
+    })();
+
+    const compacting = s.compact();
+    await new Promise((r) => setTimeout(r, 60)); // let the summariser start streaming
+    await s.interrupt();
+    await compacting;
+
+    assert.ok(!seen.some((e) => e.type === "compact"), "no compact boundary landed");
+    const err = seen.find((e) => e.type === "error") as
+      | Extract<HarnessEvent, { type: "error" }>
+      | undefined;
+    assert.ok(err && err.fatal === false, "a non-fatal cancellation error was emitted");
+    assert.match(err.message, /cancel|left as-is|failed/i);
+    assert.deepEqual(store.load("s1"), before, "transcript untouched");
+
+    await s.close();
+    await reader;
+  } finally {
+    cleanup();
+  }
+});
+
+test("close() during a compaction returns promptly and commits nothing (A2)", async () => {
+  const { store, cleanup } = env();
+  try {
+    const s = await provider(slowSummariserModel, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "x",
+      mode: "default",
+      mcpServers: [],
+    });
+    await pump(s.events(), {});
+    const before = store.load("s1");
+
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const ev of s.events()) seen.push(ev);
+    })();
+
+    const compacting = s.compact();
+    await new Promise((r) => setTimeout(r, 60));
+    const t0 = Date.now();
+    await s.close();
+    assert.ok(Date.now() - t0 < 2000, "close() did not wait out the summariser");
+    await compacting;
+    await reader;
+
+    assert.ok(!seen.some((e) => e.type === "compact"), "no compact boundary delivered");
+    assert.deepEqual(store.load("s1"), before, "transcript untouched after close");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a bloated history auto-compacts before the next turn", async () => {
   const { store, cleanup } = env();
   try {

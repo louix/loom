@@ -131,6 +131,16 @@ Status: `todo` / `wip` / `done` / `backlog` (deferred, tracked) / `wontfix`.
 
 ### Phase 1 — per-session serialization
 
+_Done (`loom/audit-codebase-and-delegate-to`): SessionManager `#enqueue` gate over
+`send`/`compact`/`rewind` + `restructuring`/`rewinding` flags + daemon `busy`
+fast-fail; aisdk `#compactTracked` + `AbortSignal.any` cancellation + A4/A5/A8;
+Claude `#rejectPending` on interrupt + `canUseTool` muzzle + `#rewindInFlight`
+widening + module `forkLock` + `__setClaudeSdk` seam; TUI queues a send typed
+during a compaction. +11 tests. Design note:
+`~/.claude-personal/plans/eager-yawning-stearns.md`._
+_Still open here, out of that design's scope: **S8** (usage double-count) →
+Phase 2; **C12** (`snapshot()` always `stateRunning`) → cosmetic, unscheduled._
+
 | ID | Sev | Status | Finding | Where |
 |----|-----|--------|---------|-------|
 | S2 | med | done | `send()` post-await unconditional `stateRunning` races the just-started turn, can mask a real block | `daemon/session-manager.ts:341-360` |

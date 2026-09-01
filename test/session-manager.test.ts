@@ -758,3 +758,183 @@ test("a compaction drops the checkpoints (their offsets are no longer valid)", a
   assert.deepEqual(cps, [], "checkpoints cleared after a compaction");
   await c.close();
 });
+
+// --- Phase 1: per-session serialization + cooperative cancellation ----------
+
+test("session.send is refused with code=busy while a compact is in flight", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.finishTurn({ contextUsed: 50_000 });
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+  const release = fs.blockCompact();
+  const compacting = c.request("session.compact", { id }); // held on the gate
+  await waitFor(() => fs.compacts.length === 1);
+
+  await assert.rejects(
+    c.request("session.send", { id, text: "hi" }),
+    (e: unknown) => (e as { code?: unknown }).code === "busy",
+  );
+
+  release();
+  await compacting;
+  assert.equal(fs.compacts.length, 1);
+  assert.deepEqual(fs.sends, [], "the send never reached the adapter");
+  await c.close();
+});
+
+test("compact then rewind serialize; the compact event precedes the rewind's idle transition", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, fs } = await createFake(c);
+  fs.finishTurn();
+  fs.finishTurn();
+  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2);
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+  const release = fs.blockCompact();
+  const compacting = c.request("session.compact", { id });
+  await waitFor(() => fs.compacts.length === 1);
+
+  const rewinding = c.request("session.rewind", { id, toTurn: 1 });
+  await delay(20);
+  assert.deepEqual(fs.rewinds, [], "rewind is queued behind the compact, not racing it");
+
+  release();
+  await compacting;
+  await rewinding;
+
+  const compactSeq = frames.find(
+    (f) => f.type === "event" && f.event.type === "compact",
+  )?.seq;
+  const rewindIdleSeq = frames.find(
+    (f) =>
+      f.type === "event" &&
+      f.event.type === "status_changed" &&
+      f.event.note === "rewind",
+  )?.seq;
+  assert.ok(compactSeq !== undefined, "a compact frame was emitted");
+  assert.ok(rewindIdleSeq !== undefined, "a rewind idle transition was emitted");
+  assert.ok(
+    (compactSeq as number) < (rewindIdleSeq as number),
+    `compact ${compactSeq} should precede the rewind's idle ${rewindIdleSeq}`,
+  );
+  await c.close();
+});
+
+test("interrupt during a compact cancels it without clobbering state", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, fs } = await createFake(c);
+  fs.finishTurn({ contextUsed: 50_000 });
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+  const release = fs.blockCompact();
+  const compacting = c.request("session.compact", { id });
+  await waitFor(() => fs.compacts.length === 1);
+
+  await c.request("session.interrupt", { id });
+  assert.equal(fs.interruptCount, 1, "the adapter was told to cancel");
+  assert.equal(await statusOf(c, id), "idle", "the pre-compact state is untouched");
+
+  release();
+  await compacting;
+  await delay(20);
+
+  assert.equal(await statusOf(c, id), "idle");
+  assert.ok(
+    !frames.some(
+      (f) =>
+        f.type === "event" &&
+        f.event.type === "status_changed" &&
+        f.event.status.kind === "interrupted",
+    ),
+    "no interrupted transition was emitted",
+  );
+  assert.ok(
+    !frames.some((f) => f.type === "event" && f.event.type === "compact"),
+    "the compact boundary never landed",
+  );
+  await c.close();
+});
+
+test("interrupt on an idle session does not clobber status", async () => {
+  const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
+  const { id, fs } = await createFake(c);
+  fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+  await c.request("session.interrupt", { id });
+  assert.equal(await statusOf(c, id), "idle");
+  assert.equal(fs.interruptCount, 0, "the adapter is not touched for a settled session");
+  assert.ok(
+    !frames.some(
+      (f) =>
+        f.type === "event" &&
+        f.event.type === "status_changed" &&
+        f.event.status.kind === "interrupted",
+    ),
+  );
+  await c.close();
+});
+
+test("rewind is rejected for awaiting_input and working_background", async () => {
+  const c = await client();
+
+  const a = await createFake(c);
+  a.fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, a.id)) === "idle");
+  a.fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+  await waitFor(async () => (await statusOf(c, a.id)) === "awaiting_input");
+  await assert.rejects(
+    c.request("session.rewind", { id: a.id, toTurn: 0 }),
+    /interrupt the session before rewinding it/,
+  );
+
+  const b = await createFake(c);
+  b.fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, b.id)) === "idle");
+  b.fs.emit({
+    type: "background_tasks",
+    tasks: [{ id: "b1", kind: "shell", title: "sleep 100" }],
+  });
+  await waitFor(async () => (await statusOf(c, b.id)) === "working_background");
+  await assert.rejects(
+    c.request("session.rewind", { id: b.id, toTurn: 0 }),
+    /interrupt the session before rewinding it/,
+  );
+  await c.close();
+});
+
+test("respondPermission after stream end is alreadyResolved and does not forward", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+  await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+  fs.endStream();
+  await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+
+  const r = await c.request<{ ok: boolean; alreadyResolved: boolean }>(
+    "session.respondPermission",
+    { id, requestId: "p1", decision: "allow" },
+  );
+  assert.equal(r.alreadyResolved, true);
+  assert.deepEqual(fs.permissionResponses, [], "nothing was forwarded to the dead adapter");
+  await c.close();
+});
+
+test("setMode after stream end throws /session has ended/", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "assistant_text", text: "x" });
+  await waitFor(async () => (await statusOf(c, id)) === "running");
+  fs.endStream();
+  await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+
+  await assert.rejects(c.request("session.setMode", { id, mode: "plan" }), /session has ended/);
+  await c.close();
+});

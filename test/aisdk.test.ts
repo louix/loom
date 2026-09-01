@@ -510,6 +510,48 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
   assert.equal(done.hitStepLimit, false);
 });
 
+test("runTurn breaks on an error part and stops consuming the stream (A4)", async () => {
+  const events: HarnessEvent[] = [];
+  const chunks: Chunk[] = [
+    { type: "stream-start", warnings: [] },
+    { type: "response-metadata", id: "r", modelId: "mock", timestamp: new Date(0) },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: "before" },
+    { type: "text-end", id: "t" },
+    { type: "error", error: new Error("mid-stream boom") },
+    // Anything past the error must not be mapped — the loop has already broken.
+    { type: "text-start", id: "u" },
+    { type: "text-delta", id: "u", delta: "after the error" },
+    { type: "text-end", id: "u" },
+    {
+      type: "finish",
+      finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    },
+  ];
+  const r = await runTurn({
+    sessionId: "s1",
+    model: model(chunks),
+    system: undefined,
+    messages: [{ role: "user", content: "hi" }],
+    maxSteps: 1,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    hooks: { emit: (e) => events.push(e), appendMessages: () => {} },
+  });
+  assert.deepEqual(r, { aborted: false, errored: true, hitStepLimit: false });
+  assert.ok(
+    events.some((e) => e.type === "error" && (e as { fatal?: boolean }).fatal),
+    "the error part surfaced as a fatal error event",
+  );
+  assert.ok(
+    !events.some(
+      (e) => e.type === "assistant_text" && (e as { text: string }).text.includes("after"),
+    ),
+    "text streamed after the error part was not mapped",
+  );
+});
+
 // --- session via provider ------------------------------------------------
 
 test("createSession runs the first turn, emits result, and persists the transcript", async () => {
