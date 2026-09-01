@@ -11,7 +11,7 @@ import type {
   ResponseFrame,
   SessionSnapshot,
 } from "@loom/core/wire";
-import { PROTOCOL_VERSION } from "@loom/core/wire";
+import { MAX_FRAME_BYTES, PROTOCOL_VERSION } from "@loom/core/wire";
 
 export interface ConnectOptions {
   repoRoot: string;
@@ -230,6 +230,15 @@ export class LoomClient {
 
   #ingest(chunk: string): void {
     this.#buf += chunk;
+    // Symmetric with the daemon's `Connection.#ingest`: a frame (or a stream
+    // with no newline) past the cap means a daemon bug or a corrupt stream —
+    // drop the socket and let the reconnect path re-baseline rather than grow
+    // the buffer without bound.
+    if (this.#buf.length > MAX_FRAME_BYTES) {
+      this.#buf = "";
+      this.#sock?.destroy();
+      return;
+    }
     let nl: number;
     while ((nl = this.#buf.indexOf("\n")) !== -1) {
       const line = this.#buf.slice(0, nl).trim();

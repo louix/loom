@@ -13,6 +13,14 @@ import type { EffortLevel, SessionMode } from "./types.ts";
 
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
+ * both ends of the socket — a peer that sends a frame this large (or a stream
+ * with no newline) is buggy or hostile, so the reader drops the connection
+ * rather than grow its buffer without bound.
+ */
+export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Request / response
 // ---------------------------------------------------------------------------

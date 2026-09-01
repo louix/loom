@@ -1,11 +1,16 @@
 import type { Socket } from "node:net";
 import { makeLogger } from "@loom/core/logger";
-import type { Frame, PushFrame, ResponseFrame } from "@loom/core/wire";
+import { MAX_FRAME_BYTES, type Frame, type PushFrame, type ResponseFrame } from "@loom/core/wire";
 
 const log = makeLogger("conn");
 
-/** Reject any single frame larger than this (bytes) to bound memory. */
-const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+/**
+ * Ceiling on a connection's unflushed write buffer. A client that stops reading
+ * its socket (suspended laptop, SIGSTOP'd TUI, a frontend wedged in a render
+ * loop) lets Node queue push frames in memory without bound. Past this we drop
+ * the connection — it can reconnect and gap-replay from the ring buffer.
+ */
+const PUSH_BACKLOG_LIMIT_BYTES = 8 * 1024 * 1024;
 
 let nextConnId = 1;
 
@@ -84,7 +89,18 @@ export class Connection {
   }
 
   push(frame: PushFrame): void {
-    if (!this.subscribed) return;
+    if (!this.subscribed || this.#closed) return;
+    // A client that isn't draining its socket backs frames up in Node's write
+    // buffer with no cap. Drop it once that crosses the ceiling — reconnect +
+    // `sinceSeq` replay recovers whatever it missed.
+    if (this.socket.writableLength > PUSH_BACKLOG_LIMIT_BYTES) {
+      log.warn("client not draining its socket — dropping connection", {
+        conn: this.id,
+        backlog: this.socket.writableLength,
+      });
+      this.close();
+      return;
+    }
     this.#write(frame);
   }
 
