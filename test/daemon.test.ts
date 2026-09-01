@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -813,6 +814,114 @@ test("session.send always broadcasts a user_message; injected reflects whether a
     await delay(60);
     assert.equal(r2.injected, false);
     assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("[auto_rebase]: a clean idle replays the branch onto an advanced base, silently", async () => {
+  const hh = await makeHarness({ config: `[auto_rebase]\nenabled = true\n` });
+  const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const notices: string[] = [];
+    const userMsgs: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "notice") notices.push(f.text);
+      if (f.type === "event" && (f.event as { type?: string }).type === "user_message") {
+        userMsgs.push((f.event as { text: string }).text);
+      }
+    });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "keep me current",
+      provider: "fake",
+    });
+    assert.ok(snap.worktree);
+
+    // base branch moves on a file the branch never touched → a clean replay
+    writeFileSync(join(hh.repoRoot, "upstream.txt"), "from main");
+    git("add", "-A");
+    git("commit", "-q", "-m", "main: upstream.txt");
+
+    const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    fs?.emit({ type: "assistant_text", text: "…" }); // → running
+    await delay(40);
+    notices.length = 0;
+    userMsgs.length = 0; // drop the opening-prompt echo
+    fs?.finishTurn(); // → idle → auto-rebase
+    await delay(120);
+
+    assert.ok(
+      existsSync(join(snap.worktree as string, "upstream.txt")),
+      "branch picked up the base commit",
+    );
+    assert.ok(
+      notices.some((t) => /rebased onto main/.test(t)),
+      `expected a rebase notice, got ${JSON.stringify(notices)}`,
+    );
+    assert.deepEqual(userMsgs, [], "a clean replay must not message the agent");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to integrate", async () => {
+  const hh = await makeHarness({ config: `[auto_rebase]\nenabled = true\n` });
+  const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const userMsgs: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "event" && (f.event as { type?: string }).type === "user_message") {
+        userMsgs.push((f.event as { text: string }).text);
+      }
+    });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "conflict me",
+      provider: "fake",
+    });
+    const wt = snap.worktree as string;
+    const wtGit = (...a: string[]) => execFileSync("git", ["-C", wt, ...a], { stdio: "pipe" });
+
+    // both sides commit `clash.txt` with different content
+    writeFileSync(join(wt, "clash.txt"), "branch side");
+    wtGit("add", "-A");
+    wtGit("commit", "-q", "-m", "branch: clash.txt");
+    const branchHead = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" });
+
+    writeFileSync(join(hh.repoRoot, "clash.txt"), "main side");
+    git("add", "-A");
+    git("commit", "-q", "-m", "main: clash.txt");
+
+    const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(40);
+    userMsgs.length = 0; // drop the opening-prompt echo
+    fs?.finishTurn();
+    await delay(120);
+
+    // branch HEAD is untouched, no rebase left in progress
+    assert.equal(
+      execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }),
+      branchHead,
+    );
+    assert.ok(!existsSync(join(wt, ".git", "rebase-merge")));
+    // the agent got exactly one nudge, and the session is running it
+    assert.equal(userMsgs.length, 1);
+    assert.match(userMsgs[0] ?? "", /\[loom\].*\bmain\b.*rebase/s);
+    assert.equal(hh.daemon.registry.get(snap.id)?.status.kind, "running");
   } finally {
     await c.close();
     await hh.cleanup();

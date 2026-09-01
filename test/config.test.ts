@@ -383,6 +383,22 @@ max_results = 8
   assert.equal(cfg(``).search.maxResults, 5);
 });
 
+// --- [auto_rebase] --------------------------------------------------------
+
+test("[auto_rebase] defaults off/rebase; parses enabled + mode, unknown mode → rebase", () => {
+  assert.deepEqual(cfg("").autoRebase, { enabled: false, mode: "rebase" });
+
+  const c = cfg(`
+[auto_rebase]
+enabled = true
+mode    = "merge"
+`);
+  assert.deepEqual(c.autoRebase, { enabled: true, mode: "merge" });
+
+  assert.equal(cfg(`[auto_rebase]\nmode = "cherry-pick"\n`).autoRebase.mode, "rebase");
+  assert.equal(cfg(`[auto_rebase]\nenabled = "yes"\n`).autoRebase.enabled, false);
+});
+
 // --- claude profiles -----------------------------------------------------
 
 test("slugifyProfile is kebab, trimmed, and collapses '' / 'claude' onto the base id", () => {

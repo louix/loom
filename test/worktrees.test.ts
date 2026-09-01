@@ -186,6 +186,126 @@ test("renameBranch suffixes on a name clash and no-ops when the slug already mat
   }
 });
 
+// --- syncOntoBase --------------------------------------------------------
+
+/** Advance `main` (checked out in `root`) with a commit touching `file`. */
+const advanceMain = (root: string, file: string, body: string): void => {
+  writeFileSync(join(root, file), body);
+  execFileSync("git", ["-C", root, "add", "-A"], { stdio: "pipe" });
+  execFileSync("git", ["-C", root, "commit", "-q", "-m", `main: ${file}`], { stdio: "pipe" });
+};
+
+test("syncOntoBase: no-base when the base ref is unknown, current when nothing to do", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    assert.equal(m.syncOntoBase(wt.path, "nope/missing", "rebase").outcome, "no-base");
+    assert.equal(m.syncOntoBase(wt.path, "main", "rebase").outcome, "current");
+  } finally {
+    cleanup();
+  }
+});
+
+test("syncOntoBase: replays the branch onto an advanced base", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    writeFileSync(join(wt.path, "branch.txt"), "mine");
+    execFileSync("git", ["-C", wt.path, "add", "-A"]);
+    execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
+
+    advanceMain(root, "base.txt", "theirs");
+
+    const res = m.syncOntoBase(wt.path, "main", "rebase");
+    assert.equal(res.outcome, "updated");
+    assert.equal(res.outcome === "updated" && res.behind, 1);
+    // the branch now carries both commits, linearly
+    assert.ok(existsSync(join(wt.path, "base.txt")));
+    assert.ok(existsSync(join(wt.path, "branch.txt")));
+    assert.equal(mgr(root).facts(wt.path, "main")?.behindBase, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("syncOntoBase: leaves the tree untouched on a conflict", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    writeFileSync(join(wt.path, "clash.txt"), "branch side");
+    execFileSync("git", ["-C", wt.path, "add", "-A"]);
+    execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch clash"]);
+    const before = execFileSync("git", ["-C", wt.path, "rev-parse", "HEAD"], { encoding: "utf8" });
+
+    advanceMain(root, "clash.txt", "base side");
+
+    const res = m.syncOntoBase(wt.path, "main", "rebase");
+    assert.equal(res.outcome, "conflict");
+    // HEAD is back where it was, no rebase left in progress, tree clean
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "rev-parse", "HEAD"], { encoding: "utf8" }),
+      before,
+    );
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }).trim(),
+      "",
+    );
+    assert.ok(!existsSync(join(wt.path, ".git", "rebase-merge")));
+  } finally {
+    cleanup();
+  }
+});
+
+test("syncOntoBase: skips a dirty worktree", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    advanceMain(root, "base.txt", "theirs");
+    writeFileSync(join(wt.path, "wip.txt"), "uncommitted");
+
+    const res = m.syncOntoBase(wt.path, "main", "rebase");
+    assert.equal(res.outcome, "dirty");
+    assert.equal(res.outcome === "dirty" && res.behind, 1);
+    assert.ok(!existsSync(join(wt.path, "base.txt"))); // untouched
+  } finally {
+    cleanup();
+  }
+});
+
+test("syncOntoBase: mode 'merge' brings the base in as a merge commit", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("sync", fakeId("aaaaaaaa"));
+    writeFileSync(join(wt.path, "branch.txt"), "mine");
+    execFileSync("git", ["-C", wt.path, "add", "-A"]);
+    execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
+
+    advanceMain(root, "base.txt", "theirs");
+
+    const res = m.syncOntoBase(wt.path, "main", "merge");
+    assert.equal(res.outcome, "updated");
+    assert.ok(existsSync(join(wt.path, "base.txt")));
+    // a merge commit has two parents
+    const parents = execFileSync(
+      "git",
+      ["-C", wt.path, "rev-list", "--parents", "-n", "1", "HEAD"],
+      {
+        encoding: "utf8",
+      },
+    )
+      .trim()
+      .split(/\s+/);
+    assert.equal(parents.length, 3);
+  } finally {
+    cleanup();
+  }
+});
+
 test("remove drops the worktree", () => {
   const { root, cleanup } = repo();
   try {

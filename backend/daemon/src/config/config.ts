@@ -108,6 +108,15 @@ export interface LoomConfig {
    * `session.create` takes a per-session `worktree` boolean that overrides it.
    */
   worktree: { enabled: boolean };
+  /**
+   * Keep a session's branch current with its base. When `enabled`, the daemon —
+   * each time a session goes idle — replays (or merges) the branch onto the
+   * base branch if the base has advanced and the worktree is clean. A clean
+   * update is silent (an operator notice only); a conflict, or an uncommitted
+   * worktree, sends the agent a message asking it to integrate the base itself.
+   * Off by default: history is only rewritten when you opt in.
+   */
+  autoRebase: { enabled: boolean; mode: "rebase" | "merge" };
   db: string;
   runIsolation: "in-process" | "subprocess";
   /** Provider id new sessions use when the client doesn't name one. */
@@ -174,6 +183,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   worktreeDir: ".loom/trees",
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
+  autoRebase: { enabled: false, mode: "rebase" },
   db: ".loom/loom.db",
   runIsolation: "in-process",
   defaultProvider: "claude",
@@ -429,6 +439,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
 
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
+  const autoRebase = asRecord(r["auto_rebase"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
   const aisdk = parseAisdkProfiles(r);
@@ -474,6 +485,11 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     claudeProfiles,
     worktree: {
       enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,
+    },
+    autoRebase: {
+      enabled:
+        typeof autoRebase["enabled"] === "boolean" ? autoRebase["enabled"] : d.autoRebase.enabled,
+      mode: autoRebase["mode"] === "merge" ? "merge" : "rebase",
     },
     db: str(r["db"], d.db),
     runIsolation,

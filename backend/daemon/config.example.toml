@@ -19,6 +19,14 @@ enabled = true # true: each session gets its own git worktree + branch.
 # is unavailable (undo still works). `loom run --in-place` /
 # `--worktree` overrides this per session.
 
+[auto_rebase] # keep each session's branch current with its base
+enabled = false # true: when a session goes idle and the base branch has
+# advanced, replay its branch onto the new base (clean tree
+# only). A clean replay is silent; a conflict — or an
+# uncommitted worktree — asks the agent to integrate the
+# base itself. Never fetches; reacts to the local base ref.
+mode = "rebase" # "rebase" (linear history) | "merge" (a merge commit)
+
 [daemon]
 idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0 disables
 event_buffer_size = 4096 # push-stream ring buffer, in frames

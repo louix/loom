@@ -152,6 +152,9 @@ export class Daemon {
   #claudeChoices: ModelChoice[] | null = null;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
+  /** Per session, the base short-SHA we last nudged the agent to integrate —
+   *  so a stuck rebase conflict prompts once, not on every idle. */
+  readonly #autoRebaseNudged = new Map<string, string>();
   #events: EventLog;
   #server: SocketServer;
   #dispatcher: RpcDispatcher;
@@ -722,6 +725,60 @@ export class Daemon {
     });
     this.#emitSessionUpdated(snap);
     this.#onActivityChange(`status:${state.kind}`);
+
+    // A turn just ended (this hook only fires for event-stream-derived
+    // transitions — not rewind / fork, which set idle directly). Good moment to
+    // pull the branch up to its base if the operator asked for that.
+    if (state.kind === "idle") this.#maybeAutoRebase(id);
+  }
+
+  /**
+   * Keep a session's branch current with its base (`[auto_rebase]`). Runs
+   * synchronously — the `git` shell-out blocks the loop, which is also what
+   * keeps it from racing an incoming `session.send`. A clean replay is silent
+   * bar an operator notice; a conflict or a dirty worktree hands the problem to
+   * the agent as a fresh turn, once per base commit.
+   */
+  #maybeAutoRebase(id: string): void {
+    if (this.#stopping || !this.config.autoRebase.enabled) return;
+    const snap = this.#registry.get(id);
+    if (!snap?.worktree) return; // in-place sessions have no branch to move
+
+    const { mode } = this.config.autoRebase;
+    const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
+    if (res.outcome === "no-base" || res.outcome === "current") return;
+
+    if (res.outcome === "updated") {
+      this.#autoRebaseNudged.delete(id);
+      this.#emitNotice(
+        `${snap.branch}: ${mode === "merge" ? "merged" : "rebased onto"} ` +
+          `${res.base} (+${res.behind}) → ${res.head}`,
+        "info",
+      );
+      this.#emitSessionUpdated(this.#registry.mustGet(id));
+      return;
+    }
+
+    // dirty | conflict | error — the agent has to integrate it. Nudge once per
+    // base commit so a branch that stays behind doesn't nag every turn.
+    if (this.#autoRebaseNudged.get(id) === res.baseHead) return;
+    this.#autoRebaseNudged.set(id, res.baseHead);
+
+    const verb = mode === "merge" ? "merge" : "rebase";
+    const why =
+      res.outcome === "dirty"
+        ? "your worktree has uncommitted changes, so it was left alone"
+        : `an automatic ${verb} hit conflicts, so your branch is unchanged`;
+    const text =
+      `[loom] The base branch \`${res.base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
+      `When you're at a clean stopping point, ${verb} \`${res.base}\` into this branch ` +
+      `and resolve any conflicts.`;
+    // Mirror the `session.send` RPC's echo, minus `#lastSend`: this nudge is
+    // Loom's, so it shouldn't seed the undo picker or the next auto-title.
+    this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
+    void this.#sessions.send(id, text).catch((err) => {
+      this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
+    });
   }
 
   /**
@@ -889,6 +946,7 @@ export class Daemon {
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     this.config.worktree = next.worktree;
+    this.config.autoRebase = next.autoRebase;
     this.config.notify = next.notify;
     this.config.titles = next.titles;
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
@@ -1515,6 +1573,7 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
       this.#lastSend.delete(id);
+      this.#autoRebaseNudged.delete(id);
       const snap = this.#registry.setStatus(id, stateDone, "marked_done");
       this.emitEvent({
         type: "status_changed",
@@ -1541,6 +1600,7 @@ export class Daemon {
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
       this.#lastSend.delete(id);
+      this.#autoRebaseNudged.delete(id);
       if (s.worktree) {
         try {
           this.#worktrees.remove(s.worktree, { force: true });

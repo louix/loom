@@ -71,6 +71,13 @@ the Vercel AI SDK.
   hook that hard-fails. Loom runs no remote operations itself.
 - **Git facts on every snapshot** — branch, commit count, ahead/behind base,
   dirty/clean, last commit subject (cached ~2s).
+- **Auto-rebase** — `[auto_rebase] enabled = true`: whenever a session goes
+  idle and its base branch has moved, the daemon replays the branch onto the
+  new base (`mode = "merge"` for a merge commit instead). A clean update is
+  silent bar an operator notice; a conflict — or an uncommitted worktree —
+  leaves the tree untouched and sends the agent a message to integrate the
+  base itself, once per base commit. Never fetches: it reacts to the local
+  base ref moving. Off by default.
 - **`gc`** — removes worktrees for sessions you've marked `done`; the session
   row and the branch are kept.
 

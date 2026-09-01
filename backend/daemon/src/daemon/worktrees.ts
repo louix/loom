@@ -29,6 +29,21 @@ export interface WorktreeInfo {
   baseRef: string;
 }
 
+/** Result of {@link WorktreeManager.syncOntoBase}. `base` / `baseHead` / `behind`
+ *  are absent only on `no-base`, where there's no base ref to describe. */
+interface BaseInfo {
+  /** Base branch name. */
+  base: string;
+  /** Base branch's short SHA — a caller can key repeat-nudge suppression on it. */
+  baseHead: string;
+  /** How many base commits the branch was missing. */
+  behind: number;
+}
+export type RebaseOutcome =
+  | { outcome: "no-base" }
+  | ({ outcome: "current" | "dirty" | "conflict" | "error" } & BaseInfo)
+  | ({ outcome: "updated"; head: string } & BaseInfo);
+
 export interface WorktreeManagerOptions {
   repoRoot: string;
   /** Absolute directory that holds the trees (`<repo>/.loom/trees`). */
@@ -236,6 +251,64 @@ export class WorktreeManager {
     return this.#factsCache.get(path)?.facts ?? null;
   }
 
+  // --- keep-current --------------------------------------------------
+
+  /**
+   * Bring the branch checked out at `path` up to date with `baseBranch` when the
+   * base has advanced. `mode` picks `git rebase` (replay, linear history — the
+   * default) or `git merge --no-edit` (a merge commit, no history rewrite).
+   * Never fetches: the base ref is read as-is, so this only reacts to the local
+   * base moving. On conflict the operation is aborted and the tree is left
+   * exactly as it was.
+   *
+   *  - `no-base`   — `baseBranch` doesn't resolve; nothing to do.
+   *  - `current`   — the branch already contains every base commit.
+   *  - `dirty`     — the worktree has uncommitted changes; skipped untouched.
+   *  - `updated`   — replayed / merged cleanly; `head` is the new short SHA.
+   *  - `conflict`  — `git` reported conflicts; the abort ran, tree unchanged.
+   *  - `error`     — git failed for some other reason; best-effort abort ran.
+   *
+   * `base` is the base branch name and `baseHead` its short SHA (so a caller can
+   * de-dupe repeated nudges for the same base commit); `behind` is how many
+   * base commits the branch was missing.
+   */
+  syncOntoBase(path: string, baseBranch: string | null, mode: "rebase" | "merge"): RebaseOutcome {
+    const base = baseBranch ?? this.#baseBranch;
+    if (!base || !this.#git(["rev-parse", "--verify", "--quiet", base], path).ok) {
+      return { outcome: "no-base" };
+    }
+    const baseHead = this.#gitOut(["rev-parse", "--short", base], path);
+    const behind = numOr0(this.#gitOut(["rev-list", "--count", `HEAD..${base}`], path));
+    const info = { base, baseHead, behind };
+    if (behind === 0) return { outcome: "current", ...info };
+
+    if (this.#gitOut(["status", "--porcelain"], path).length > 0) {
+      return { outcome: "dirty", ...info };
+    }
+
+    const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, 120_000);
+    if (run.ok) {
+      this.#factsCache.delete(path);
+      const head = this.#gitOut(["rev-parse", "--short", "HEAD"], path);
+      this.#log.info("branch synced onto base", { path, base, mode, behind, head });
+      return { outcome: "updated", head, ...info };
+    }
+
+    // Undo whatever half-applied state git left behind, whichever way it failed.
+    const abort = this.#git([mode, "--abort"], path);
+    this.#factsCache.delete(path);
+    const conflict = /conflict/i.test(`${run.stdout}\n${run.stderr}`);
+    this.#log.warn("branch sync onto base failed", {
+      path,
+      base,
+      mode,
+      conflict,
+      aborted: abort.ok,
+      error: run.stderr.trim() || run.stdout.trim(),
+    });
+    return { outcome: conflict ? "conflict" : "error", ...info };
+  }
+
   // --- internals -------------------------------------------------
 
   #resolveBase(): string {
@@ -274,10 +347,10 @@ export class WorktreeManager {
     }
   }
 
-  #git(args: string[], cwd?: string): GitResult {
+  #git(args: string[], cwd?: string, timeout = 15_000): GitResult {
     const res = spawnSync("git", ["-C", cwd ?? this.#repoRoot, ...args], {
       encoding: "utf8",
-      timeout: 15_000,
+      timeout,
     });
     return {
       ok: res.status === 0,
