@@ -35,8 +35,10 @@ export const withTransaction = <T>(db: Db, fn: () => T): T => {
     throw new Error("withTransaction is not re-entrant");
   }
   inTransaction.add(db);
-  db.exec("BEGIN IMMEDIATE");
   try {
+    // Inside the try so a throwing BEGIN (e.g. SQLITE_BUSY past the busy_timeout)
+    // still hits the `finally` that clears the re-entrancy guard.
+    db.exec("BEGIN IMMEDIATE");
     const out = fn();
     db.exec("COMMIT");
     return out;
@@ -44,7 +46,7 @@ export const withTransaction = <T>(db: Db, fn: () => T): T => {
     try {
       db.exec("ROLLBACK");
     } catch {
-      // already rolled back by SQLite (e.g. a fatal error) — nothing to undo
+      // BEGIN never took, or SQLite already rolled back — nothing to undo
     }
     throw err;
   } finally {
