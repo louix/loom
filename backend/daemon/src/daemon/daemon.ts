@@ -1420,10 +1420,27 @@ export class Daemon {
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
       }
 
-      // The fork point: a message count for aisdk (owns the transcript array),
-      // a chain-entry ref for a harness-driven adapter (Claude). toTurn 0 keeps
-      // nothing and has no checkpoint row.
+      // aisdk owns the transcript array and can truncate it (or wipe it, for
+      // toTurn 0) while cold. A harness-driven adapter (Claude) rewinds by
+      // forking + resuming its live query, so it needs the session loaded and
+      // can't fork "to empty".
       const aisdk = this.#isAisdk(snap.provider);
+      if (!aisdk) {
+        if (toTurn === 0) {
+          throw new RpcError(
+            "bad_request",
+            "can't undo the first turn of this session — start a new one instead",
+          );
+        }
+        if (!this.#sessions.has(id)) {
+          throw new RpcError(
+            "bad_request",
+            "send this session a message before undoing it — it isn't loaded",
+          );
+        }
+      }
+
+      // The fork point: a message count for aisdk, a chain-entry ref for Claude.
       let keep = 0;
       let at: string | undefined;
       if (toTurn > 0) {
@@ -1437,13 +1454,6 @@ export class Daemon {
         }
       }
 
-      // A harness-driven adapter rewinds by restarting its live query — revive a
-      // cold session first. aisdk can truncate its store while cold.
-      if (!this.#sessions.has(id) && !aisdk) {
-        await this.#reviveSession(id);
-        this.#onActivityChange("session-resumed");
-      }
-
       // Do the rewind, *then* truncate the bookkeeping — a rewind that throws
       // (a refused resume, say) must not leave the row claiming fewer turns
       // than the transcript actually has.
@@ -1453,7 +1463,7 @@ export class Daemon {
         this.#pmsgs.replaceFrom(id, keep, []);
       }
       this.#checkpoints.truncate(id, toTurn);
-      this.#registry.store.setTurns(id, toTurn);
+      this.#registry.setTurns(id, toTurn);
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
 
       // SessionManager.rewind already broadcast a `session_updated` from its

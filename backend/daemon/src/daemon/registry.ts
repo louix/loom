@@ -72,6 +72,13 @@ export class Registry {
     return this.#bump(id);
   }
 
+  /** Set the turn counter directly (undo) and bump the version so a
+   *  version-tracking client doesn't keep a stale count. */
+  setTurns(id: string, turns: number): SessionSnapshot {
+    this.#store.setTurns(id, turns);
+    return this.#bump(id);
+  }
+
   markMidRunInterrupted(): string[] {
     const ids = this.#store.markMidRunInterrupted();
     for (const id of ids) this.#bump(id);

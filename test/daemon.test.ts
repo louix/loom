@@ -721,6 +721,43 @@ model    = "gpt-5"
   }
 });
 
+test("session.rewind: a harness-driven (non-aisdk) provider can't wipe-to-zero or rewind cold", async () => {
+  const hh = await makeHarness();
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    // a `fake` session: capabilities.rewind is true, but it isn't aisdk, so it
+    // takes the harness-restart path — which needs a loaded session and a
+    // turn-1 fork point to keep.
+    const s = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "x",
+      status: "idle",
+      provider: "fake",
+    });
+    const db = hh.daemon.db;
+    db.prepare(
+      "INSERT INTO checkpoints (session_id, turn, provider_ref, fork_point, user_text, created_at) VALUES (?, 1, '', 'fake-turn-1', 'x', 0)",
+    ).run(s.id);
+    db.prepare("UPDATE usage SET turns = 2 WHERE session_id = ?").run(s.id);
+
+    // cold (never `create`d live) → refused with a "load it first" message
+    await assert.rejects(c.request("session.rewind", { id: s.id, toTurn: 1 }), /isn't loaded/);
+
+    // toTurn 0 (undo the very first turn) is refused for this provider class
+    await assert.rejects(
+      c.request("session.rewind", { id: s.id, toTurn: 0 }),
+      /can't undo the first turn/,
+    );
+
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("aisdk model auto-detection fills the picker list at start-up; config.check reports warnings", async () => {
   const srv = await modelsStub(["z-model", "a-model", "m-model"]);
   const hh = await makeHarness({

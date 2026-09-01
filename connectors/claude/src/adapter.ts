@@ -143,6 +143,9 @@ class ClaudeSession implements AgentSession {
   /** Set while `rewind()` swaps the `query()` — tells `#drain`'s cleanup to
    *  leave `#outbox` / `#inbox` open for the replacement. */
   #rewinding = false;
+  /** Spans the whole `rewind()` call (incl. the async fork) — rejects a second
+   *  concurrent undo instead of racing two query swaps. */
+  #rewindInFlight = false;
   /** The args `start()` last ran with, so `rewind()` can rebuild the query. */
   #startOpts: CreateSessionOptions | null = null;
   #startExtra: StartExtra = {};
@@ -442,41 +445,54 @@ class ClaudeSession implements AgentSession {
    * {@link forkSession} writes a *new* transcript file sliced at `at` (the kept
    * turn's last chain-entry UUID — {@link ClaudeEventMapper} tracks it), and we
    * swap the live `query()` for a plain resume of that shorter fork. `#outbox`
-   * and any queued `send()` survive the swap; the mapper is kept, so cumulative
-   * cost never regresses (the first turn after an undo may under-report token
-   * deltas until the resumed total catches up). `_keep` is the aisdk message
-   * count — unused here.
+   * survives the swap so the daemon's event stream is unbroken; the mapper is
+   * kept, so cumulative cost never regresses (the first turn after an undo may
+   * under-report token deltas until the resumed total catches up). `_keep` is
+   * the aisdk message count — unused here.
+   *
+   * The fork runs *before* the live query is touched, so a fork failure (a bad
+   * ref, a missing transcript) leaves the session completely intact.
    *
    * Conversation only: anything the dropped turns wrote to disk / a memory tool
    * stays. That's the same contract as the aisdk path.
    */
   async rewind(_keep: number, at?: string): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    if (this.#rewindInFlight) throw new Error("an undo is already in progress");
     if (!at) throw new Error("Claude undo needs a fork ref (a chain-entry UUID)");
     if (!this.#startOpts) throw new Error("this session was never started");
     const source = this.#mapper.state.providerRef;
     if (!source) throw new Error("this Claude session has no id to fork from");
 
-    // End the live query first so its transcript file is fully flushed.
-    this.#rewinding = true;
+    this.#rewindInFlight = true;
     try {
-      this.#inbox.drain();
+      // Fork first — the last turn's `result` already flushed the transcript
+      // file, and if this throws the live query is still untouched.
+      const forkedId = await this.#forkTruncated(source, at);
+      if (this.#closing) return; // close() raced the fork
+
+      // Now end the live query without closing the channels the daemon holds.
+      this.#rewinding = true;
       try {
-        this.#query?.close();
-      } catch {
-        // best effort — we're replacing it regardless
+        this.#inbox.drain();
+        try {
+          this.#query?.close();
+        } catch {
+          // best effort — we're replacing it regardless
+        }
+        await this.#pump?.catch(() => {});
+      } finally {
+        this.#rewinding = false;
       }
-      await this.#pump?.catch(() => {});
+      if (this.#closing) return; // ...or raced the teardown
+
+      // Fresh inbox for the resumed fork; `#outbox` stays as-is.
+      this.#inbox = new AsyncChannel<SDKUserMessage>();
+      this.#interrupted = false;
+      this.start({ ...this.#startOpts, prompt: "" }, { ...this.#startExtra, resume: forkedId });
     } finally {
-      this.#rewinding = false;
+      this.#rewindInFlight = false;
     }
-
-    const forkedId = await this.#forkTruncated(source, at);
-
-    // Fresh inbox for the resumed fork; `#outbox` stays as-is.
-    this.#inbox = new AsyncChannel<SDKUserMessage>();
-    this.#interrupted = false;
-    this.start({ ...this.#startOpts, prompt: "" }, { ...this.#startExtra, resume: forkedId });
   }
 
   /** `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
