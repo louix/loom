@@ -85,11 +85,12 @@ the Vercel AI SDK.
   - **`commit`** — commits the session's worktree under its pinned
     `Loom (claude)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
-- **Tool steer** — a system-prompt append points file writes at tilth
-  (`tilth_write` / `tilth_edit`) and search at fff; Claude's built-in `Grep` /
-  `Glob` are disabled outright (`providers.claude.disable_builtin`). If `tilth`
-  isn't on `$PATH` the daemon falls back to `npx -y tilth@0.9.0` (and, if `npx`
-  is missing too, just runs with the built-ins).
+- **Tool steer** — a system-prompt append points code reading + editing at tilth
+  (`tilth_write` / `tilth_edit`, tree-sitter-backed) and file finding / text
+  search at fff; Claude's built-in `Grep` / `Glob` are disabled
+  (`providers.claude.disable_builtin`). If `tilth` isn't on `$PATH` the daemon
+  falls back to `npx -y tilth@0.9.0` (and, if `npx` is missing too, just runs
+  with the built-ins).
 
 **5 · terminal UI**
 

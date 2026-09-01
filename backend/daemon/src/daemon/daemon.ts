@@ -70,14 +70,14 @@ import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./l
 
 /**
  * Appended to the Claude system prompt for every session (spec §11.4). Steers
- * the agent onto the mounted MCP tools: tilth for file writes/edits, fff for
- * search (its Grep / Glob are disabled outright), and the in-process `loom`
- * server for committing and for asking the user when blocked.
+ * the agent onto the mounted MCP tools: tilth for reading and editing code,
+ * fff for file finding and text search, and the in-process `loom` server for
+ * committing and for asking the user when blocked.
  */
 const TOOL_STEER = [
-  "This session runs under Loom. Prefer the mounted MCP tools over the built-ins:",
-  "- Use tilth for editing files — `tilth_write` to create or replace a file, `tilth_edit` for in-place edits. Do not use the built-in Write/Edit for changes you intend to keep.",
-  "- Use fff to find files and search code. The built-in Grep and Glob are disabled.",
+  "This session runs under Loom, which mounts a few MCP tools you should reach for first:",
+  "- Use tilth for working with code — locating a symbol or its references, reading source structurally, and editing (`tilth_write` creates or replaces a file, `tilth_edit` makes in-place changes). It understands code structure via tree-sitter, so prefer it over the built-in Read / Write / Edit for source files.",
+  "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
   "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
   "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Never pose the question as plain chat text instead — the session has no way to tell that apart from finishing normally, so it will show as idle/done instead of waiting on you.",
 ].join("\n");
@@ -1716,8 +1716,8 @@ export class Daemon {
    * looks like right now, plus daemon vitals. The provider-native built-in
    * lists (`tools.claude` / `tools.aisdk`) mirror the connector packages
    * (`aisdk/src/tools/builtins.ts`; Claude Code's own suite minus
-   * {@link TOOL_STEER}'s disables) — the daemon never imports them, so they're
-   * spelled out here and flagged as indicative.
+   * `providers.claude.disable_builtin`) — the daemon never imports them, so
+   * they're spelled out here and flagged as indicative.
    */
   #doctorReport(): DoctorReport {
     const mcp: DoctorMcpServer[] = this.config.mcp.map((m) => {
