@@ -369,6 +369,10 @@ export const mkFleetHandle = ({
       const q = state.queue[s.id];
       if (
         s.status.kind === "idle" &&
+        // A session compacting while otherwise idle would have its queue
+        // drained straight into the daemon's `busy` gate. Hold until the
+        // `compact` boundary clears `state.compacting[id]`.
+        !state.compacting[s.id] &&
         q &&
         q.length > 0 &&
         !draining.has(s.id) &&
@@ -407,7 +411,15 @@ export const mkFleetHandle = ({
     publish();
     if (state.selectedId !== prev.selectedId) backfillHistory();
     if (state.sessions !== prev.sessions) forgetDeadSessions();
-    if (state.sessions !== prev.sessions || state.queue !== prev.queue) drainQueues();
+    if (
+      state.sessions !== prev.sessions ||
+      state.queue !== prev.queue ||
+      // A compaction finishing (or being cancelled) lifts the drain hold added
+      // for compacting sessions — it may not touch `sessions` (an aisdk manual
+      // compact emits no `result`).
+      state.compacting !== prev.compacting
+    )
+      drainQueues();
   };
 
   // ---- helpers ----------------------------------------------------
@@ -1016,6 +1028,17 @@ export const mkFleetHandle = ({
     // `deny` and `compact` both treat an empty submit as a valid choice
     // (no reason / best-effort compaction); every other prompt needs text.
     if (p.kind !== "deny" && p.kind !== "compact" && !text) return;
+
+    // A send typed while the target session is compacting: the daemon holds the
+    // op gate for the whole (multi-minute) summarise and would reject with
+    // `code:"busy"`. Reuse the outgoing queue instead — `drainQueues` releases
+    // it on the first update after the `compact` boundary clears
+    // `state.compacting[id]`. (`code:"busy"` is still caught below for a race.)
+    if (p.kind === "send" && p.sessionId && text && state.compacting[p.sessionId]) {
+      queueSend(p.sessionId, text, "queued until compaction finishes");
+      return;
+    }
+
     const reopen = (): void =>
       dispatch({
         t: "openPrompt",
@@ -1157,14 +1180,26 @@ export const mkFleetHandle = ({
     run()
       .then((m) => m && note(m, "good"))
       .catch((e: unknown) => {
+        // Lost the race with a compaction that started between the pre-check
+        // above and the RPC — queue rather than error.
+        if (
+          p.kind === "send" &&
+          p.sessionId &&
+          text &&
+          (e as { code?: unknown })?.code === "busy"
+        ) {
+          queueSend(p.sessionId, text, "queued until compaction finishes");
+          return;
+        }
         note(e instanceof Error ? e.message : String(e), "bad");
         reopen(); // retryable — the text comes back so it can be edited and re-sent
       });
   };
 
   // ⌥⏎ on a `send` prompt targeting a running/starting session: queue for
-  // turn end instead of the normal bare-⏎ "send now" path.
-  const queueSend = (sessionId: string, text: string): void => {
+  // turn end instead of the normal bare-⏎ "send now" path. Also reused when a
+  // send is typed during a compaction (`why` overrides the status line).
+  const queueSend = (sessionId: string, text: string, why = "queued for turn end"): void => {
     dispatch({ t: "closePrompt" });
     dispatch({ t: "enqueue", sessionId, text });
     dispatch({ t: "pushHistory", text });
@@ -1177,7 +1212,7 @@ export const mkFleetHandle = ({
         text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
       },
     });
-    note("queued for turn end", "dim");
+    note(why, "dim");
   };
 
   /** Resolve the open plan review with `params` (an `action` plus any payload). */

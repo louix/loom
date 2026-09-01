@@ -59,6 +59,16 @@ export class FakeSession implements AgentSession {
   closed = false;
   readonly resumed: boolean;
 
+  /** Opt-in async gates so a test can hold `compact()` / `rewind()` open and
+   *  drive `interrupt()` / `send()` against a mid-restructure session. Null
+   *  (the default) keeps both synchronous, so existing tests are unchanged. */
+  #compactGate: Promise<void> | null = null;
+  #rewindGate: Promise<void> | null = null;
+  /** Set by `interrupt()` while a gated `compact()` is parked → it emits a
+   *  non-fatal "cancelled" error instead of the `compact` boundary (the real
+   *  adapters' A2 behaviour). */
+  #compactInterrupted = false;
+
   constructor(id: string, opts: { model?: string; mode: SessionMode }, resumed = false) {
     this.id = id;
     this.providerRef = `fake-${id}`;
@@ -134,6 +144,30 @@ export class FakeSession implements AgentSession {
     this.#channel.close();
   }
 
+  /** Park the next `compact()` until the returned fn is called. */
+  blockCompact(): () => void {
+    let release!: () => void;
+    this.#compactGate = new Promise<void>((r) => {
+      release = r;
+    });
+    return () => {
+      this.#compactGate = null;
+      release();
+    };
+  }
+
+  /** Park the next `rewind()` until the returned fn is called. */
+  blockRewind(): () => void {
+    let release!: () => void;
+    this.#rewindGate = new Promise<void>((r) => {
+      release = r;
+    });
+    return () => {
+      this.#rewindGate = null;
+      release();
+    };
+  }
+
   // --- AgentSession -----------------------------------------------------
 
   events(): AsyncIterable<HarnessEvent> {
@@ -147,6 +181,19 @@ export class FakeSession implements AgentSession {
 
   async compact(instructions?: string): Promise<void> {
     this.compacts.push(instructions);
+    if (this.#compactGate) {
+      this.#compactInterrupted = false;
+      await this.#compactGate;
+    }
+    if (this.#compactInterrupted) {
+      this.#compactInterrupted = false;
+      this.emit({
+        type: "error",
+        message: "compaction was cancelled — the transcript was left as-is",
+        fatal: false,
+      });
+      return;
+    }
     const before = this.#snap.contextUsed || 100_000;
     const after = Math.round(before * 0.3);
     this.#snap.contextUsed = after;
@@ -168,10 +215,13 @@ export class FakeSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     this.interruptCount += 1;
+    // A gated compact in flight → tell it to abandon the boundary.
+    if (this.#compactGate) this.#compactInterrupted = true;
   }
 
   readonly rewinds: Array<{ keep: number; at?: string }> = [];
   async rewind(keep: number, at?: string): Promise<void> {
+    if (this.#rewindGate) await this.#rewindGate;
     this.rewinds.push(at === undefined ? { keep } : { keep, at });
     this.#snap.status = stateIdle;
   }

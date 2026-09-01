@@ -144,6 +144,14 @@ export interface AgentSession {
   answerQuestion(id: string, text: string): Promise<void>;
   /** Resolve an outstanding `plan_review` with the user's decision. */
   respondToPlan(id: string, decision: PlanDecision): Promise<void>;
+  /**
+   * Stop the current turn. Together with {@link close}, this MUST cancel any
+   * in-flight long-running operation — a turn, a compaction, a sub-agent, a
+   * fork — and settle promptly (do not wait out a multi-minute summarise).
+   * Parked permission / question / plan promises MUST be resolved so a gated
+   * tool `execute` unwinds. Idempotent; safe to call on an already-stopped
+   * session.
+   */
   interrupt(): Promise<void>;
   /**
    * Undo: drop everything after an earlier turn. `keep` is a message count for
@@ -157,6 +165,11 @@ export interface AgentSession {
   setModel(model: string): Promise<void>;
   setEffort(effort: EffortLevel): Promise<void>;
   snapshot(): AdapterSnapshot;
+  /**
+   * Tear the session down. MUST cancel any in-flight operation (as
+   * {@link interrupt}) and MUST NOT emit an event or write persistence after it
+   * returns. After `close()` the `events()` iterator is ended.
+   */
   close(): Promise<void>;
 }
 
