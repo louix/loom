@@ -150,11 +150,15 @@ export class SessionStore {
     this.#appendHistory(id, state.kind, note, now);
   }
 
-  /** Flip every session left mid-run by a crashed daemon to `interrupted`. */
+  /** Flip every session left mid-run by a crashed daemon to `interrupted`.
+   *  `working_background` counts as mid-run: its background tasks died with the
+   *  old CLI process, so the turn will not resume on its own. */
   markMidRunInterrupted(): string[] {
     const now = Date.now();
     const rows = this.#db
-      .prepare("SELECT id FROM sessions WHERE status IN ('starting', 'running', 'awaiting_input')")
+      .prepare(
+        "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'awaiting_input', 'working_background')",
+      )
       .all() as Array<{ id: string }>;
     const stmt = this.#db.prepare(
       "UPDATE sessions SET status = 'interrupted', status_detail = 'user', updated_at = ? WHERE id = ?",
@@ -532,6 +536,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     costSource: (usage?.cost_source as SessionSnapshot["costSource"]) ?? "none",
     turns: usage?.turns ?? 0,
     subagents: [], // runtime overlay filled in by the daemon
+    backgroundTasks: [], // runtime overlay filled in by the daemon
     rateLimits: {}, // runtime overlay filled in by the daemon
     cache: {
       ttlMinutes: 0, // overlaid from config by the daemon

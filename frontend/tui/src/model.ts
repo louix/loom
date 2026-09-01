@@ -673,6 +673,10 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       // is a bare heartbeat — it drives the "compacting…" indicator, nothing more.
       if (ev.type === "status_changed") return { ...s, pending, compacting, notice };
       if (ev.type === "compact_progress") return { ...s, compacting, notice };
+      // The live background-task set — surfaced via the session status (the
+      // `working_background` group) and the fleet's nested task rows, not the
+      // transcript. REPLACE-semantics level signal, not a conversational entry.
+      if (ev.type === "background_tasks") return { ...s, pending, compacting, notice };
       // Account-plan usage — surfaced live via the session snapshot's
       // `rateLimits`, not the transcript; it isn't a conversational entry.
       if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
@@ -861,10 +865,11 @@ const RANK: Record<SessionStateKind, number> = {
   awaiting_input: 0,
   running: 1,
   starting: 2,
-  interrupted: 3,
-  idle: 4,
-  error: 5,
-  done: 6,
+  working_background: 3,
+  interrupted: 4,
+  idle: 5,
+  error: 6,
+  done: 7,
 };
 
 /** Fleet-view order: by status group, then most-recently-active first. */
@@ -1130,6 +1135,7 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "status_changed":
     case "compact_progress":
     case "rate_limit":
+    case "background_tasks":
       return null;
     default:
       return absurd(l.kind);
@@ -1455,7 +1461,13 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       return [...local, ...GLOBAL_HINTS];
     }
 
-    if (status.kind === "running" || status.kind === "starting") {
+    if (
+      status.kind === "running" ||
+      status.kind === "starting" ||
+      status.kind === "working_background"
+    ) {
+      // `working_background` is settled-but-not-done: interrupt kills the
+      // outstanding background work too.
       local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
     }
     // `send` is the one "talk to this session" verb, bound to Enter — it works
@@ -1465,7 +1477,9 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       local.push({ keys: "⏎", label: "send", act: "send", footer: true });
     }
     if (
-      (status.kind === "running" || status.kind === "idle") &&
+      (status.kind === "running" ||
+        status.kind === "idle" ||
+        status.kind === "working_background") &&
       session.contextLimit > 0 &&
       session.contextUsed / session.contextLimit > 0.5
     ) {
@@ -1697,6 +1711,16 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
       return { glyph: "⤷", text: `sub-agent “${ev.name}” started`, tone: "dim" };
     case "subagent_stopped":
       return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
+    case "background_tasks":
+      // Never reaches the log (filtered in applyPush); here for exhaustiveness.
+      return {
+        glyph: "◐",
+        text:
+          ev.tasks.length === 0
+            ? "background work drained"
+            : `${ev.tasks.length} background task${ev.tasks.length === 1 ? "" : "s"} running`,
+        tone: "dim",
+      };
     case "status_changed":
       return {
         glyph: "◈",

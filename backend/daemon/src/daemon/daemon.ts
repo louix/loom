@@ -247,6 +247,11 @@ export class Daemon {
         const snap = this.#registry.get(id);
         if (snap) this.#emitSessionUpdated(snap);
       },
+      onBackgroundTasks: (id) => {
+        if (this.#stopping) return;
+        const snap = this.#registry.get(id);
+        if (snap) this.#emitSessionUpdated(snap);
+      },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
         this.#registry.setFields(id, { providerRef: ref });
@@ -439,6 +444,8 @@ export class Daemon {
     let out = s;
     const subs = this.#sessions.subagentsOf(s.id);
     if (subs.length > 0) out = { ...out, subagents: subs };
+    const bgTasks = this.#sessions.backgroundTasksOf(s.id);
+    if (bgTasks.length > 0) out = { ...out, backgroundTasks: bgTasks };
     const rateLimits = this.#sessions.rateLimitsOf(s.id);
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
     const ttlMinutes = isClaudeId(s.provider) ? this.#cacheTtlMinutes : 0;

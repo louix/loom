@@ -485,6 +485,61 @@ test("sub-agent start/stop events surface on the session snapshot", async () => 
   await c.close();
 });
 
+test("background tasks hold a finished turn in working_background, then release it", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+
+  fs.emit({ type: "assistant_text", text: "spawning a background agent" });
+  fs.emit({
+    type: "background_tasks",
+    tasks: [{ id: "b1", kind: "subagent", title: "audit deps" }],
+  });
+  // a live turn is unmoved by the background set…
+  await waitFor(async () => {
+    const s = await c.request<SessionSnapshot>("session.get", { id });
+    return s.backgroundTasks.length === 1;
+  });
+  assert.equal(await statusOf(c, id), "running");
+
+  // …but a clean result now settles to working_background, not idle
+  fs.emit({ type: "result", kind: "ok" });
+  await waitFor(async () => (await statusOf(c, id)) === "working_background");
+  let snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.deepEqual(
+    snap.backgroundTasks.map((t) => [t.id, t.kind, t.title]),
+    [["b1", "subagent", "audit deps"]],
+  );
+
+  // the task re-drives the loop → running
+  fs.emit({ type: "assistant_text", text: "background agent finished, continuing" });
+  await waitFor(async () => (await statusOf(c, id)) === "running");
+
+  // and once the set drains, the next clean result is a plain idle
+  fs.emit({ type: "background_tasks", tasks: [] });
+  fs.emit({ type: "result", kind: "ok" });
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+  snap = await c.request<SessionSnapshot>("session.get", { id });
+  assert.deepEqual(snap.backgroundTasks, []);
+  await c.close();
+});
+
+test("a background task appearing while idle moves the session to working_background", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+  fs.emit({
+    type: "background_tasks",
+    tasks: [{ id: "b1", kind: "shell", title: "npm run build" }],
+  });
+  await waitFor(async () => (await statusOf(c, id)) === "working_background");
+
+  fs.emit({ type: "background_tasks", tasks: [] });
+  await waitFor(async () => (await statusOf(c, id)) === "idle");
+  await c.close();
+});
+
 test("rate_limit events surface on the session snapshot, keyed by window", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);

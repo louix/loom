@@ -101,6 +101,7 @@ export const STATUS_ORDER: readonly SessionStateKind[] = [
   "awaiting_input",
   "running",
   "starting",
+  "working_background",
   "interrupted",
   "idle",
   "error",
@@ -112,6 +113,7 @@ const STATUS_TEXT: Record<SessionStateKind, { glyph: string; label: string }> = 
   awaiting_input: { glyph: "◆", label: "awaiting input" },
   running: { glyph: "●", label: "running" },
   starting: { glyph: "◌", label: "starting" },
+  working_background: { glyph: "◐", label: "background" },
   interrupted: { glyph: "⊘", label: "interrupted" },
   idle: { glyph: "○", label: "idle" },
   error: { glyph: "✕", label: "error" },
@@ -125,6 +127,8 @@ const statusColor = (s: SessionStateKind): string => {
     case "running":
       return C.accent;
     case "starting":
+      return C.accentDim;
+    case "working_background":
       return C.accentDim;
     case "interrupted":
       return C.warn;

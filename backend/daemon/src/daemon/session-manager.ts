@@ -5,7 +5,7 @@
  * interrupt, permission responses, mode / model — funnels through here so it is
  * serialized per session and the daemon stays thin.
  */
-import type { AwaitReason, HarnessEvent } from "@loom/core/events";
+import type { AwaitReason, BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
 import {
   isLiveState,
   sameSessionState,
@@ -42,6 +42,8 @@ export interface ManagerHooks {
   onResult(sessionId: string, ok: boolean): void;
   /** The session's set of sub-agents changed (one started or stopped). */
   onSubagents(sessionId: string): void;
+  /** The session's set of live background tasks changed (REPLACE semantics). */
+  onBackgroundTasks(sessionId: string): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
   /** The adapter's own mode changed outside of an explicit `session.setMode` call. */
@@ -70,6 +72,8 @@ interface Running {
   /** Outstanding blocking requests: request id → what it blocks on. `awaiting_input` iff non-empty. */
   pending: Map<string, AwaitReason>;
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
+  /** Live, non-ambient background tasks — last `background_tasks` event's set. */
+  backgroundTasks: BackgroundTaskInfo[];
   /** Latest reading per window (`rate_limit` events carry one window each — merge, don't overwrite). */
   rateLimits: Map<string, RateLimitWindow>;
   ended: boolean;
@@ -121,6 +125,7 @@ export class SessionManager {
       ordinal: 0,
       pending: new Map(),
       subagents: new Map(),
+      backgroundTasks: [],
       rateLimits: new Map(),
       ended: false,
       refReported: false,
@@ -140,6 +145,7 @@ export class SessionManager {
         this.#hooks.emitEvent(ev);
         this.#trackPending(run, ev);
         this.#trackSubagents(id, run, ev);
+        this.#trackBackgroundTasks(id, run, ev);
         this.#trackRateLimit(run, ev);
         this.#trackUsage(id, ev);
         if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
@@ -149,6 +155,10 @@ export class SessionManager {
       // The adapter stream ended. A clean run leaves state at idle/error;
       // anything still live stopped without a clean finish → interrupted.
       run.ended = true;
+      if (run.backgroundTasks.length > 0) {
+        run.backgroundTasks = [];
+        this.#hooks.onBackgroundTasks(id);
+      }
       if (isLiveState(run.state)) {
         this.#transition(id, run, stateInterrupted("stream_ended"), "stream_ended");
       }
@@ -217,6 +227,22 @@ export class SessionManager {
       .map(([subId, v]) => ({ id: subId, name: v.name, active: v.active }));
   }
 
+  /**
+   * Maintain the live background-task set that gates `working_background`. The
+   * `background_tasks` event carries the whole set (adapter already dropped
+   * ambient entries and de-duped no-op repeats), so this is a straight replace.
+   */
+  #trackBackgroundTasks(id: string, run: Running, ev: HarnessEvent): void {
+    if (ev.type !== "background_tasks") return;
+    run.backgroundTasks = ev.tasks;
+    this.#hooks.onBackgroundTasks(id);
+  }
+
+  /** Live background tasks this session has spawned (async subagents, shells). */
+  backgroundTasksOf(id: string): BackgroundTaskInfo[] {
+    return this.#running.get(id)?.backgroundTasks ?? [];
+  }
+
   #trackRateLimit(run: Running, ev: HarnessEvent): void {
     if (ev.type !== "rate_limit") return;
     run.rateLimits.set(ev.window ?? "default", {
@@ -255,8 +281,14 @@ export class SessionManager {
   #applyStatus(id: string, run: Running, ev: HarnessEvent): void {
     // Stickiness of `interrupted` / `error` now lives in `deriveStatus` itself
     // (it returns them unchanged for trailing events), so there is no guard
-    // here that could silently swallow a live turn's events.
-    this.#transition(id, run, deriveStatus(run.state, ev));
+    // here that could silently swallow a live turn's events. `backgroundTasks`
+    // is already updated for this event (see `#trackBackgroundTasks`), so a
+    // `result` sees the current count.
+    this.#transition(
+      id,
+      run,
+      deriveStatus(run.state, ev, { backgroundTasks: run.backgroundTasks.length }),
+    );
   }
 
   /** Apply a state transition. A `note` is an audit breadcrumb and always fires. */
@@ -298,6 +330,13 @@ export class SessionManager {
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
     run.pending.clear();
+    // The SDK's interrupt kills the session's background tasks too; clear the
+    // overlay now rather than wait for a `background_tasks` event that a
+    // torn-down stream might never send.
+    if (run.backgroundTasks.length > 0) {
+      run.backgroundTasks = [];
+      this.#hooks.onBackgroundTasks(id);
+    }
     // Reflect the interrupt immediately and unconditionally — the adapter call
     // below can be slow (or, on a wedged turn, throw), and the UI must not be
     // left showing `running` either way. `interrupted` is sticky in

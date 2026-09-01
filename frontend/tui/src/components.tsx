@@ -48,6 +48,16 @@ import {
 
 const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
 
+/** The ` · …` tail after a status label in the Detail pane. */
+const statusDetailSuffix = (s: SessionSnapshot): string => {
+  if (s.status.kind === "awaiting_input") return ` · ${s.status.on}`;
+  if (s.status.kind === "working_background") {
+    const n = (s.backgroundTasks ?? []).length;
+    return n > 0 ? ` · ${n} task${n === 1 ? "" : "s"}` : "";
+  }
+  return "";
+};
+
 /** Inner width of a `borderStyle:"round"` + `paddingX:1` box. */
 const inside = (w: number): number => Math.max(4, w - 4);
 
@@ -125,6 +135,7 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
     (s) => s.status.kind === "running" || s.status.kind === "starting",
   ).length;
   const waiting = state.sessions.filter((s) => s.status.kind === "awaiting_input").length;
+  const bg = state.sessions.filter((s) => s.status.kind === "working_background").length;
 
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
@@ -142,6 +153,7 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
         <Text color={C.dim}>{`${state.sessions.length} sessions`}</Text>
         {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
         {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
+        {bg ? <Text color={C.accentDim}>{`◐ ${bg}`}</Text> : null}
         <Text color={C.faint}>{"·"}</Text>
         <Text color={lamp.color}>{lamp.text}</Text>
       </Box>
@@ -185,17 +197,20 @@ export const Fleet = ({
               <Text color={C.dim}>{g.label.toUpperCase()}</Text>
               <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
             </Text>
-            {g.sessions.map((s) =>
-              FleetRow({
-                s,
-                selected: s.id === state.selectedId,
-                tick,
-                iw,
-                now,
-                pcolor,
-                compacting: compactingIds.has(s.id),
-              }),
-            )}
+            {g.sessions.map((s) => (
+              <Box key={s.id} flexDirection="column">
+                {FleetRow({
+                  s,
+                  selected: s.id === state.selectedId,
+                  tick,
+                  iw,
+                  now,
+                  pcolor,
+                  compacting: compactingIds.has(s.id),
+                })}
+                {FleetChildRows({ s, tick, iw })}
+              </Box>
+            ))}
           </Box>
         ));
 
@@ -275,6 +290,68 @@ const FleetRow = ({
       </Text>
       <Text color={C.faint}>{` ${cost}`}</Text>
     </Text>
+  );
+};
+
+/** Glyph per background-task kind — a hint at what the child is. */
+const BG_KIND_GLYPH: Record<string, string> = {
+  subagent: "⑂",
+  shell: "$",
+  workflow: "⚙",
+  monitor: "◉",
+  other: "•",
+};
+
+/**
+ * Indented rows under a fleet row for the work it has fanned out: live
+ * background tasks (async subagents, backgrounded shells) and any still-running
+ * foreground sub-agents. Only shown while there is something live — settled
+ * sessions collapse back to a single line. Capped, with a "+N more" tail.
+ */
+const FleetChildRows = ({
+  s,
+  tick,
+  iw,
+}: {
+  s: SessionSnapshot;
+  tick: number;
+  iw: number;
+}): ReactNode => {
+  const bg = s.backgroundTasks ?? [];
+  const subs = (s.subagents ?? []).filter((a) => a.active);
+  const children: Array<{ key: string; glyph: string; label: string }> = [
+    ...bg.map((t) => ({
+      key: `bg:${t.id}`,
+      glyph: BG_KIND_GLYPH[t.kind] ?? "•",
+      label: t.title,
+    })),
+    // A backgrounded sub-agent already shows via `backgroundTasks`; these are
+    // the foreground ones still in flight during a `running` turn.
+    ...subs.map((a) => ({ key: `sub:${a.id}`, glyph: "⑂", label: a.name })),
+  ];
+  if (children.length === 0) return null;
+
+  const MAX = 4;
+  const shown = children.slice(0, MAX);
+  const extra = children.length - shown.length;
+  const room = Math.max(6, iw - 8);
+
+  return (
+    <Box flexDirection="column">
+      {shown.map((c, i) => (
+        <Text key={c.key} wrap="truncate-end">
+          <Text color={C.faint}>{i === shown.length - 1 && extra === 0 ? "  └ " : "  ├ "}</Text>
+          <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
+          <Text color={C.faint}>{c.glyph + " "}</Text>
+          <Text color={C.dim}>{truncate(c.label.replace(/\s+/g, " ").trim(), room)}</Text>
+        </Text>
+      ))}
+      {extra > 0 ? (
+        <Text key="more" color={C.faint}>
+          {`  └ +${extra} more`}
+        </Text>
+      ) : null}
+    </Box>
   );
 };
 
@@ -369,7 +446,7 @@ export const Detail = ({
       ) : null}
       <Box marginTop={1} gap={2}>
         <Text color={look.color} bold wrap="truncate-end">
-          {`${look.glyph} ${look.label}${s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : ""}`}
+          {`${look.glyph} ${look.label}${statusDetailSuffix(s)}`}
         </Text>
         {/* `[mode]` in the same gold the event log gives tool commands — the one */}
         {/* thing on this row you change mid-session, so it should catch the eye. */}
@@ -472,6 +549,14 @@ export const Detail = ({
             );
           })()
         : null}
+      {(s.backgroundTasks ?? []).length > 0 ? (
+        <Text color={C.accentDim} wrap="truncate-end">
+          {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(
+            s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "),
+            w - 24,
+          )}`}
+        </Text>
+      ) : null}
     </Box>
   );
 };

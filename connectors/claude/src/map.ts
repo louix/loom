@@ -11,7 +11,12 @@
  * can drive many internal model calls, and `result.usage` sums all of them,
  * so it isn't the current window fill.
  */
-import type { HarnessEvent, TokenUsage } from "@loom/core/events";
+import type {
+  BackgroundTaskInfo,
+  BackgroundTaskKind,
+  HarnessEvent,
+  TokenUsage,
+} from "@loom/core/events";
 
 // --- minimal shapes we depend on -------------------------------------------
 
@@ -64,6 +69,14 @@ interface SdkMsgLite {
   // compact_boundary system message
   compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
   summary?: string;
+  // background_tasks_changed system message — full live set, REPLACE semantics.
+  tasks?: Array<{
+    task_id?: string;
+    task_type?: string;
+    description?: string;
+    /** Housekeeping task the CLI hides from activity indicators — we drop these. */
+    ambient?: boolean;
+  }>;
   // rate_limit_event
   rate_limit_info?: {
     status?: string;
@@ -95,6 +108,23 @@ const zeroUsage = (): TokenUsage => {
 const blocks = (content: unknown): ContentBlock[] => {
   return Array.isArray(content) ? (content as ContentBlock[]) : [];
 };
+
+/** Map the SDK's free-text `task_type` onto our coarse {@link BackgroundTaskKind}. */
+const taskKind = (t: string | undefined): BackgroundTaskKind => {
+  const s = (t ?? "").toLowerCase();
+  if (s.includes("agent")) return "subagent"; // local_agent / remote_agent / subagent
+  if (s.includes("bash") || s.includes("shell")) return "shell";
+  if (s.includes("workflow")) return "workflow";
+  if (s.includes("monitor") || s.includes("mcp")) return "monitor";
+  return "other";
+};
+
+/** Trim the SDK's "… [+N chars]" clip marker and collapse whitespace. */
+const cleanTitle = (s: string | undefined): string =>
+  (s ?? "")
+    .replace(/…\s*\[\+\d+\s*chars\]\s*$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const sumModelUsage = (
   mu: Record<string, ModelUsageEntry> | undefined,
@@ -132,8 +162,12 @@ export class ClaudeEventMapper {
     contextLimit: 0,
   };
 
-  /** Open `Task` tool calls: tool_use id → sub-agent name. */
+  /** Open *foreground* `Task` tool calls: tool_use id → sub-agent name. A
+   *  backgrounded Task is tracked via `background_tasks_changed` instead. */
   readonly #openSubagents = new Map<string, string>();
+
+  /** Ids of the last `background_tasks` set we emitted — to suppress no-op repeats. */
+  #lastBgSig: string | null = null; // null until the first set is emitted
 
   constructor(sessionId: string) {
     this.#sessionId = sessionId;
@@ -150,6 +184,7 @@ export class ClaudeEventMapper {
           return [];
         }
         if (m.subtype === "compact_boundary") return this.#compactBoundary(m);
+        if (m.subtype === "background_tasks_changed") return this.#backgroundTasks(m);
         return [];
       case "assistant":
         return this.#assistant(m);
@@ -208,6 +243,34 @@ export class ClaudeEventMapper {
     ];
   }
 
+  /**
+   * `background_tasks_changed` carries the full live set every time membership
+   * changes (and a snapshot right after a re-init). We forward it as a single
+   * REPLACE-semantics `background_tasks` event, minus ambient/housekeeping
+   * entries, and skip it when the membership is byte-for-byte what we last sent
+   * — the daemon de-dupes *status* transitions but not arbitrary events.
+   */
+  #backgroundTasks(m: SdkMsgLite): HarnessEvent[] {
+    const raw = Array.isArray(m.tasks) ? m.tasks : [];
+    const tasks: BackgroundTaskInfo[] = raw
+      .filter((t): t is { task_id: string; task_type?: string; description?: string } =>
+        Boolean(t && t.ambient !== true && typeof t.task_id === "string" && t.task_id.length > 0),
+      )
+      .map((t) => ({
+        id: t.task_id,
+        kind: taskKind(t.task_type),
+        title: cleanTitle(t.description) || t.task_type || "background task",
+      }));
+    // Membership is the id set; churn in title/kind alone isn't worth re-emitting.
+    const sig = tasks
+      .map((t) => t.id)
+      .sort()
+      .join(",");
+    if (sig === this.#lastBgSig) return [];
+    this.#lastBgSig = sig;
+    return [{ type: "background_tasks", ...this.#base(null), tasks }];
+  }
+
   #assistant(m: SdkMsgLite): HarnessEvent[] {
     const out: HarnessEvent[] = [];
     const base = this.#base(m.parent_tool_use_id);
@@ -236,14 +299,22 @@ export class ClaudeEventMapper {
         out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });
         // The `Task` tool spawns a sub-agent; its own messages then carry
         // parent_tool_use_id === this id until the matching tool_result.
+        // A *foreground* Task brackets cleanly (subagent_started here,
+        // subagent_stopped on the tool_result). A *backgrounded* one returns
+        // its tool_result immediately with the agent still running, so pairing
+        // those edges would report it finished at birth — those are surfaced
+        // via `background_tasks_changed` instead.
         if (b.name === "Task" && id) {
           const i = (b.input ?? {}) as Record<string, unknown>;
           const name =
             (typeof i["subagent_type"] === "string" && i["subagent_type"]) ||
             (typeof i["description"] === "string" && i["description"]) ||
             "task";
-          this.#openSubagents.set(id, name);
-          out.push({ type: "subagent_started", ...base, subagentId: id, name });
+          const backgrounded = i["run_in_background"] === true || i["isolation"] === "remote";
+          if (!backgrounded) {
+            this.#openSubagents.set(id, name);
+            out.push({ type: "subagent_started", ...base, subagentId: id, name });
+          }
         }
       }
     }

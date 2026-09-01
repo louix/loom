@@ -299,6 +299,79 @@ test("a Task tool_use raises subagent_started; its tool_result raises subagent_s
   assert.equal(byType(again, "subagent_stopped").length, 0);
 });
 
+test("a backgrounded Task does NOT bracket as a foreground sub-agent", () => {
+  const m = new ClaudeEventMapper(SID);
+  const started = m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id: "task-bg",
+          name: "Task",
+          input: { subagent_type: "researcher", description: "dig", run_in_background: true },
+        },
+      ],
+    },
+  });
+  // the tool_call still surfaces, but no subagent_started (it's tracked via
+  // background_tasks_changed instead)
+  assert.equal(byType(started, "tool_call").length, 1);
+  assert.equal(byType(started, "subagent_started").length, 0);
+  // …and its immediate "launched" tool_result must not fake a subagent_stopped
+  const res = m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        { type: "tool_result", tool_use_id: "task-bg", content: { status: "async_launched" } },
+      ],
+    },
+  });
+  assert.equal(byType(res, "subagent_stopped").length, 0);
+});
+
+test("background_tasks_changed → a background_tasks event; ambient filtered; repeats suppressed", () => {
+  const m = new ClaudeEventMapper(SID);
+  const first = m.map({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: [
+      { task_id: "b1", task_type: "local_agent", description: "audit deps" },
+      { task_id: "b2", task_type: "local_bash", description: "npm run build" },
+      { task_id: "hk", task_type: "monitor", description: "live-update watcher", ambient: true },
+    ],
+  });
+  const ev1 = byType(first, "background_tasks")[0];
+  assert.ok(ev1);
+  assert.deepEqual(
+    ev1.tasks.map((t) => [t.id, t.kind]),
+    [
+      ["b1", "subagent"],
+      ["b2", "shell"],
+    ],
+  );
+  assert.equal(ev1.tasks[0]?.title, "audit deps");
+
+  // same membership (ambient churn only) → no event
+  const again = m.map({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: [
+      { task_id: "b1", task_type: "local_agent", description: "audit deps — now 40%" },
+      { task_id: "b2", task_type: "local_bash", description: "npm run build" },
+    ],
+  });
+  assert.equal(byType(again, "background_tasks").length, 0);
+
+  // membership shrinks → event with the smaller set
+  const drained = m.map({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  const ev2 = byType(drained, "background_tasks")[0];
+  assert.ok(ev2);
+  assert.deepEqual(ev2.tasks, []);
+});
+
 test("a compact_boundary system message becomes a compact event", () => {
   const m = new ClaudeEventMapper(SID);
   m.map({ type: "system", subtype: "init", session_id: "c1", model: "claude-sonnet-5" });

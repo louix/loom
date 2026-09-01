@@ -114,6 +114,7 @@ const snap = (
     costSource: "none",
     turns: 0,
     subagents: [],
+    backgroundTasks: [],
     rateLimits: {},
     cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     git: null,

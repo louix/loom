@@ -146,6 +146,34 @@ export interface SubagentStoppedEvent extends HarnessEventBase {
   subagentId: string;
 }
 
+/** Coarse classification of a background task, for an icon / label. */
+export type BackgroundTaskKind = "subagent" | "shell" | "workflow" | "monitor" | "other";
+
+export interface BackgroundTaskInfo {
+  /** The provider's task id — stable for the task's lifetime. */
+  id: string;
+  kind: BackgroundTaskKind;
+  /** A one-line human label (task description, or the shell command). */
+  title: string;
+}
+
+/**
+ * The session's full set of live background tasks after a membership change —
+ * an async subagent spawned, a backgrounded shell started or exited, a workflow
+ * settled. REPLACE semantics: a consumer swaps its whole set for `tasks` and
+ * never pairs start/stop edges (mirrors the SDK's own level signal). An empty
+ * `tasks` means all background work has drained. Housekeeping / ambient tasks
+ * are filtered out by the adapter, and the adapter suppresses a repeat event
+ * whose membership is unchanged.
+ *
+ * State-bearing: a non-empty set holds a settled turn in `working_background`
+ * instead of `idle`; an empty set releases it.
+ */
+export interface BackgroundTasksEvent extends HarnessEventBase {
+  type: "background_tasks";
+  tasks: BackgroundTaskInfo[];
+}
+
 export interface StatusChangedEvent extends HarnessEventBase {
   type: "status_changed";
   status: SessionState;
@@ -238,6 +266,7 @@ export type HarnessEvent =
   | CompactProgressEvent
   | SubagentStartedEvent
   | SubagentStoppedEvent
+  | BackgroundTasksEvent
   | StatusChangedEvent
   | ErrorEvent
   | ResultEvent

@@ -1409,7 +1409,12 @@ export const mkFleetHandle = ({
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
       if (key.meta && key.return && p.kind === "send" && p.sessionId) {
         const target = state.sessions.find((x) => x.id === p.sessionId);
-        if (target && (target.status.kind === "running" || target.status.kind === "starting")) {
+        if (
+          target &&
+          (target.status.kind === "running" ||
+            target.status.kind === "starting" ||
+            target.status.kind === "working_background")
+        ) {
           const text = p.buffer.text.trim();
           return void (text && queueSend(p.sessionId, text));
         }

@@ -8,10 +8,11 @@ const GROUP_RANK: Record<SessionStateKind, number> = {
   awaiting_input: 0,
   running: 1,
   starting: 1, // transient — sits with running
-  interrupted: 2,
-  idle: 3,
-  error: 4,
-  done: 5,
+  working_background: 2, // settled main loop, background work still in flight
+  interrupted: 3,
+  idle: 4,
+  error: 5,
+  done: 6,
 };
 
 /**

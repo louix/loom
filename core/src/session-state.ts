@@ -22,6 +22,7 @@ export type SessionState =
   | { readonly kind: "awaiting_input"; readonly on: AwaitReason }
   | { readonly kind: "interrupted"; readonly by: "user" | "stream_ended" }
   | { readonly kind: "idle" }
+  | { readonly kind: "working_background" }
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "done" };
 
@@ -30,6 +31,15 @@ export type SessionStateKind = SessionState["kind"];
 export const stateStarting: SessionState = { kind: "starting" };
 export const stateRunning: SessionState = { kind: "running" };
 export const stateIdle: SessionState = { kind: "idle" };
+/**
+ * The turn's main loop settled cleanly, but background work it spawned (an async
+ * subagent, a backgrounded shell, a workflow) is still running and will re-drive
+ * the session when it finishes. Distinct from `idle` so a client doesn't read
+ * the session as done, and from `running` so it doesn't read as token-burning.
+ * Entered only when ≥1 non-ambient background task is outstanding; left for
+ * `running` on the re-drive or `idle` once the set drains.
+ */
+export const stateWorkingBackground: SessionState = { kind: "working_background" };
 export const stateDone: SessionState = { kind: "done" };
 export const stateAwaitingInput = (on: AwaitReason): SessionState => ({
   kind: "awaiting_input",
@@ -47,6 +57,7 @@ interface FoldSessionState<B> {
   readonly onAwaitingInput: (on: AwaitReason) => B;
   readonly onInterrupted: (by: "user" | "stream_ended") => B;
   readonly onIdle: () => B;
+  readonly onWorkingBackground: () => B;
   readonly onError: (message: string) => B;
   readonly onDone: () => B;
 }
@@ -65,6 +76,8 @@ export const foldSessionState =
         return fns.onInterrupted(s.by);
       case "idle":
         return fns.onIdle();
+      case "working_background":
+        return fns.onWorkingBackground();
       case "error":
         return fns.onError(s.message);
       case "done":
@@ -74,9 +87,17 @@ export const foldSessionState =
     }
   };
 
-/** `starting` / `running` / `awaiting_input` — a turn that hasn't settled. */
+/**
+ * `starting` / `running` / `awaiting_input` / `working_background` — an
+ * engagement that hasn't settled. `working_background` counts: the CLI process
+ * is still up with work in flight that will resume the turn, so a stream that
+ * ends there ended abnormally (→ `interrupted`), not cleanly.
+ */
 export const isLiveState = (s: SessionState): boolean =>
-  s.kind === "starting" || s.kind === "running" || s.kind === "awaiting_input";
+  s.kind === "starting" ||
+  s.kind === "running" ||
+  s.kind === "awaiting_input" ||
+  s.kind === "working_background";
 
 /** Same-state check for de-duping transitions (kind + payload). */
 export const sameSessionState = (a: SessionState, b: SessionState): boolean => {
@@ -95,6 +116,7 @@ export const sessionStateLabel = (s: SessionState): string =>
     onAwaitingInput: (on) => `awaiting_input · ${on}`,
     onInterrupted: (by) => `interrupted · ${by}`,
     onIdle: () => "idle",
+    onWorkingBackground: () => "working_background",
     onError: (message) => (message ? `error · ${message}` : "error"),
     onDone: () => "done",
   })(s);
@@ -112,6 +134,12 @@ export const parseSessionState = (kind: string, detail: string | null): SessionS
       return stateRunning;
     case "idle":
       return stateIdle;
+    case "working_background":
+      // Round-trips faithfully — the daemon re-reads status from the DB on
+      // every snapshot, so this is the live path, not just restart recovery.
+      // A row genuinely orphaned by a crash is swept to `interrupted` by
+      // `markMidRunInterrupted` on the next boot before anything reads it.
+      return stateWorkingBackground;
     case "done":
       return stateDone;
     case "awaiting_input":
@@ -133,6 +161,7 @@ export const sessionStateDetail = (s: SessionState): string | null =>
     onAwaitingInput: (on) => on,
     onInterrupted: (by) => by,
     onIdle: () => null,
+    onWorkingBackground: () => null,
     onError: (message) => message,
     onDone: () => null,
   })(s);

@@ -10,6 +10,7 @@ import {
   stateInterrupted,
   stateRunning,
   stateStarting,
+  stateWorkingBackground,
 } from "@loom/core/session-state";
 
 const ev = (e: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent =>
@@ -169,6 +170,73 @@ test("only fatal errors change status", () => {
   assert.deepEqual(
     deriveStatus(stateRunning, ev({ type: "error", message: "dead", fatal: true })),
     stateError("dead"),
+  );
+});
+
+const bgEv = (n: number) =>
+  ev({
+    type: "background_tasks",
+    tasks: Array.from({ length: n }, (_, i) => ({
+      id: `t${i}`,
+      kind: "subagent" as const,
+      title: `task ${i}`,
+    })),
+  });
+
+test("a clean result with background work outstanding settles to working_background", () => {
+  assert.deepEqual(
+    deriveStatus(stateRunning, ev({ type: "result", kind: "ok" }), { backgroundTasks: 2 }),
+    stateWorkingBackground,
+  );
+  // …and to plain idle when nothing is in flight (the default context).
+  assert.deepEqual(deriveStatus(stateRunning, ev({ type: "result", kind: "ok" })), stateIdle);
+  // A failed result still errors regardless of background work.
+  assert.deepEqual(
+    deriveStatus(stateRunning, ev({ type: "result", kind: "error", error: "boom" }), {
+      backgroundTasks: 3,
+    }),
+    stateError("boom"),
+  );
+});
+
+test("background_tasks holds/releases a settled turn, and never disturbs a live or terminal one", () => {
+  // idle ⇄ working_background at the set's edges
+  assert.deepEqual(deriveStatus(stateIdle, bgEv(1)), stateWorkingBackground);
+  assert.deepEqual(deriveStatus(stateWorkingBackground, bgEv(0)), stateIdle);
+  // no-ops: non-empty while already parked, empty while already idle
+  unchanged(stateWorkingBackground, bgEv(2));
+  unchanged(stateIdle, bgEv(0));
+  // a live turn owns its own transition — a background task spawned mid-turn
+  // must not knock `running` sideways
+  unchanged(stateRunning, bgEv(1));
+  unchanged(stateStarting, bgEv(1));
+  // blocked / terminal states are untouched
+  unchanged(stateAwaitingInput("permission"), bgEv(1));
+  unchanged(stateAwaitingInput("permission"), bgEv(0));
+  unchanged(stateInterrupted("user"), bgEv(0));
+  unchanged(stateError("x"), bgEv(0));
+  unchanged({ kind: "done" } as SessionState, bgEv(1));
+});
+
+test("fresh model output heals working_background → running (the re-drive)", () => {
+  for (const e of [
+    ev({ type: "assistant_text", text: "task finished, continuing" }),
+    ev({ type: "thinking", text: "…" }),
+    ev({ type: "tool_call", id: "1", name: "x", input: {} }),
+  ]) {
+    assert.deepEqual(deriveStatus(stateWorkingBackground, e), stateRunning);
+  }
+  // plumbing events alone don't
+  unchanged(stateWorkingBackground, ev({ type: "tool_result", id: "1", ok: true, output: null }));
+});
+
+test("a background subagent's permission prompt still surfaces from working_background", () => {
+  assert.deepEqual(
+    deriveStatus(
+      stateWorkingBackground,
+      ev({ type: "permission_request", id: "p", tool: "Bash", input: {} }),
+    ),
+    stateAwaitingInput("permission"),
   );
 });
 

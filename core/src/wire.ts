@@ -1,4 +1,4 @@
-import type { HarnessEvent, SessionState, TokenUsage } from "./events.ts";
+import type { BackgroundTaskKind, HarnessEvent, SessionState, TokenUsage } from "./events.ts";
 import type { EffortLevel, SessionMode } from "./types.ts";
 
 /**
@@ -151,6 +151,12 @@ export interface SessionSnapshot {
   turns: number;
   /** Sub-agents this session has spawned (Claude's Task tool). Runtime-only, not persisted. */
   subagents: Array<{ id: string; name: string; active: boolean }>;
+  /**
+   * Live background tasks the session spawned — async subagents, backgrounded
+   * shells, workflows. Non-empty implies `status.kind === "working_background"`
+   * (or a live state that will settle there). Runtime-only, not persisted.
+   */
+  backgroundTasks: Array<{ id: string; kind: BackgroundTaskKind; title: string }>;
   /**
    * The provider's account-plan usage windows (Claude: `five_hour` / `seven_day`),
    * keyed by window name. Empty for API-key sessions, which have no such plan.
