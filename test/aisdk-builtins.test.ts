@@ -171,6 +171,24 @@ test("BashShell clamps very large output", async () => {
   }
 });
 
+test("BashShell caps a multi-megabyte stream in flight without buffering it all", async () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const sh = new BashShell(dir);
+    // ~8 MB — well past MAX_LIVE_BYTES. Pre-fix this grew #buf unbounded until
+    // it landed the sentinel; now it collapses to head + tail as it streams.
+    const r = await sh.run("head -c 8000000 /dev/zero | tr '\\0' 'x'; echo done");
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.timedOut, false);
+    assert.ok(r.output.length < 200_000, `output should be bounded, was ${r.output.length}`);
+    assert.match(r.output, /truncated/);
+    assert.match(r.output, /done\s*$/); // the sentinel-adjacent tail survived
+    sh.close();
+  } finally {
+    cleanup();
+  }
+});
+
 // --- edit --------------------------------------------------------------------
 
 test("applyEdit: exact single replacement", () => {

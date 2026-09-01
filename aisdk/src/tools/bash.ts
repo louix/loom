@@ -14,6 +14,14 @@ import { z } from "zod";
 export const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 120_000;
 const HEAD_BYTES = 80_000;
+/**
+ * Live cap on the accumulating output buffer. `clamp()` only runs once the
+ * command's sentinel arrives — a command that streams gigabytes first (`yes`,
+ * `cat /dev/urandom | base64`) would grow `#buf` until V8 throws
+ * `Invalid string length` or the daemon OOMs. Collapse to head + tail on the
+ * fly instead; the sentinel line is always in the retained tail.
+ */
+const MAX_LIVE_BYTES = 512 * 1024;
 
 export class BashShell {
   readonly #cwd: string;
@@ -48,6 +56,7 @@ export class BashShell {
     for (const s of [child.stdin, child.stdout, child.stderr]) s?.on("error", () => {});
     const onData = (d: string): void => {
       this.#buf += d;
+      if (this.#buf.length > MAX_LIVE_BYTES) this.#buf = collapseLive(this.#buf);
       this.#wake?.();
     };
     child.stdout?.on("data", onData);
@@ -237,6 +246,16 @@ const clamp = (s: string): string => {
   const head = s.slice(0, HEAD_BYTES);
   const tail = s.slice(-(MAX_OUTPUT_BYTES - HEAD_BYTES));
   return `${head}\n… [output truncated] …\n${tail}`;
+};
+
+/** In-stream collapse when the buffer outgrows {@link MAX_LIVE_BYTES}. Head +
+ *  tail total stays just under `MAX_OUTPUT_BYTES` so the final `clamp()` is a
+ *  no-op (no doubled truncation marker); the tail is wide enough that a
+ *  not-yet-arrived sentinel line is never cut off. */
+const collapseLive = (s: string): string => {
+  const head = s.slice(0, HEAD_BYTES);
+  const tail = s.slice(-(MAX_OUTPUT_BYTES - HEAD_BYTES - 100));
+  return `${head}\n… [output truncated mid-stream] …\n${tail}`;
 };
 
 export const bashTool = (shell: BashShell) => {
