@@ -114,7 +114,7 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
     );
     assert.equal(hub.serverCount, 1);
     const names = Object.keys(hub.tools).sort();
-    assert.deepEqual(names, ["echo_text", "write_note"]);
+    assert.deepEqual(names, ["ask_user", "echo_text", "grep", "write_note"]);
 
     const echo = hub.tools["echo_text"] as {
       execute: (i: unknown, c: unknown) => Promise<unknown>;
@@ -234,6 +234,53 @@ test("wrapToolSet: readonly runs unprompted; gated asks; denial throws Permissio
 });
 
 // --- session with tools ----------------------------------------------------
+
+test("an MCP tool with a builtin's name (fff's grep) replaces the builtin", async () => {
+  const { dir, store, cleanup } = tmpEnv();
+  try {
+    let offered: Array<{ name: string; description?: string }> = [];
+    const model = new MockLanguageModelV2({
+      doStream: async (options) => {
+        offered = (options.tools ?? []).map((t) =>
+          "description" in t ? { name: t.name, description: t.description } : { name: t.name },
+        );
+        return { stream: simulateReadableStream({ chunks: textStep("ok"), initialDelayInMs: 0 }) };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => model, store);
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "hi",
+      mode: "default",
+      loomServer: true,
+      mcpServers: [
+        { name: "fff", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
+    });
+
+    const evs = await collect(s.events(), null, null);
+    await s.close();
+
+    assert.equal(evs.at(-1)?.type, "result");
+    const names = offered.map((t) => t.name);
+    assert.ok(names.includes("grep"), `expected a grep in: ${names.join(", ")}`);
+    // the offered grep is the MCP server's, not the first-party ripgrep one
+    const grep = offered.find((t) => t.name === "grep");
+    assert.match(grep?.description ?? "", /Fake MCP grep/);
+    // builtins still fill the names the server didn't claim
+    assert.ok(names.includes("bash"));
+    assert.ok(names.includes("edit"));
+    // session-control tools stay first-party even when a server claims the
+    // name — the daemon's question / plan / subagent plumbing answers them
+    const ask = offered.find((t) => t.name === "ask_user");
+    assert.match(ask?.description ?? "", /supervising this session/);
+    assert.doesNotMatch(ask?.description ?? "", /Fake MCP/);
+    assert.ok(names.includes("task"));
+  } finally {
+    cleanup();
+  }
+});
 
 test("a gated MCP tool call emits permission_request; allow → tool runs → result", async () => {
   const { dir, db, store, cleanup } = tmpEnv();

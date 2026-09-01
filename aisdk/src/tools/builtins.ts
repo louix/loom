@@ -2,10 +2,12 @@
  * The first-party tool suite for aisdk sessions: a persistent-shell Bash, a
  * string-replacement Edit, and a ripgrep-backed Grep. These fill the gap left
  * by not having Claude Code's built-ins; official MCP servers (filesystem,
- * fetch, git) cover the rest. `[search]` adds `web_search` when a backend is
- * configured, and `web_fetch` (page → markdown) alongside it on the kagi
- * backend. All of them go through the same permission gate as every other
- * tool.
+ * fetch, git) cover the rest — and win name collisions: a configured server
+ * offering `grep` (fff) replaces the Grep here, since the session builds MCP
+ * tools first and only adds builtins for unclaimed names. `[search]` adds
+ * `web_search` when a backend is configured, and `web_fetch` (page → markdown)
+ * alongside it on the kagi backend. All of them go through the same permission
+ * gate as every other tool.
  */
 import type { ToolSet } from "ai";
 import type { SearchConfig } from "@loom/core/connector";

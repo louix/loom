@@ -427,18 +427,27 @@ export class AisdkSession implements AgentSession {
     if (!this.#baseToolsPromise) {
       this.#baseToolsPromise = (async () => {
         const base: ToolSet = {};
+        // MCP servers claim their names first: a configured server offering a
+        // builtin's name (fff's `grep`) replaces it — the tool steer points
+        // the model at those servers, so it must see their tools, not ours.
         if (this.#mcpHandles.length > 0) {
           this.#hub = await McpHub.connect(this.#mcpHandles, this.#log);
           Object.assign(base, this.#hub.tools);
         }
         if (this.#loomServer) {
+          // Session-control tools are unconditional — they wire into the
+          // daemon's permission / question / plan / subagent plumbing and
+          // must not be shadowed by a same-named MCP tool.
           Object.assign(
             base,
             buildLoomTools({ cwd: this.#cwd, askUser: (q, c) => this.#askUser(q, c) }),
           );
-          this.#builtins = new BuiltinTools(this.#cwd, this.#search);
-          Object.assign(base, this.#builtins.tools);
           Object.assign(base, this.#planAndTaskTools());
+          // Builtins fill only the names no MCP server claimed.
+          this.#builtins = new BuiltinTools(this.#cwd, this.#search);
+          for (const [name, t] of Object.entries(this.#builtins.tools)) {
+            if (!(name in base)) base[name] = t;
+          }
         }
         return base;
       })();

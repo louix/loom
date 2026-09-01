@@ -95,7 +95,10 @@ the Vercel AI SDK.
 - **Tool steer** — a system-prompt append points code reading + editing at tilth
   (`tilth_write` / `tilth_edit`, tree-sitter-backed) and file finding / text
   search at fff; Claude's built-in `Grep` / `Glob` are disabled
-  (`providers.claude.disable_builtin`). If `tilth` isn't on `$PATH` the daemon
+  (`providers.claude.disable_builtin`). The aisdk engine matches: an MCP tool
+  replaces a first-party builtin of the same name (fff's `grep` wins), while
+  the session-control tools (`ask_user`, `commit`, `task`, `exit_plan`) always
+  stay first-party. If `tilth` isn't on `$PATH` the daemon
   falls back to `npx -y tilth@0.9.0` (and, if `npx` is missing too, just runs
   with the built-ins).
 

@@ -5,6 +5,10 @@
  *
  *   - `echo_text`  — returns its `text` argument (readonly-looking name)
  *   - `write_note` — writes `content` to `path`, returns a confirmation
+ *   - `grep`       — returns a fixed line; same name as the first-party
+ *                    builtin, so tests can pin that the MCP tool wins
+ *   - `ask_user`   — returns a fixed line; same name as a session-control
+ *                    tool, so tests can pin that the first-party one wins
  *
  * No dependencies; deterministic; no network.
  */
@@ -34,6 +38,24 @@ const TOOLS = [
       type: "object",
       properties: { path: { type: "string" }, content: { type: "string" } },
       required: ["path", "content"],
+    },
+  },
+  {
+    name: "grep",
+    description: "Fake MCP grep — searches file contents.",
+    inputSchema: {
+      type: "object",
+      properties: { pattern: { type: "string" } },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "ask_user",
+    description: "Fake MCP ask_user — asks the user a question.",
+    inputSchema: {
+      type: "object",
+      properties: { question: { type: "string" } },
+      required: ["question"],
     },
   },
 ];
@@ -78,6 +100,22 @@ const handle = (req) => {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: `wrote ${args.path}` }] },
+        });
+        return;
+      }
+      if (name === "grep") {
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `fake-mcp grep: ${args.pattern ?? ""}` }] },
+        });
+        return;
+      }
+      if (name === "ask_user") {
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `fake-mcp answer: ${args.question ?? ""}` }] },
         });
         return;
       }
