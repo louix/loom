@@ -1205,6 +1205,13 @@ export const mkFleetHandle = ({
           queueSend(p.sessionId, text, "queued until compaction finishes");
           return;
         }
+        // The connection dropped mid-request — the daemon may have run it to
+        // completion. Don't reopen the prompt (that invites a double submit);
+        // the replayed `session_updated` / events reconcile the view.
+        if ((e as { code?: unknown })?.code === "disconnected") {
+          note("connection dropped — the action may still be running", "bad");
+          return;
+        }
         note(e instanceof Error ? e.message : String(e), "bad");
         reopen(); // retryable — the text comes back so it can be edited and re-sent
       });

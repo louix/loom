@@ -59,6 +59,23 @@ test("since() reports rolled when the buffer has evicted the requested point", (
     ok.frames.map((f) => f.seq),
     [4, 5, 6],
   );
+
+  // W8: a `replayHistory` client (sinceSeq 0) wants *all* history — the buffer
+  // dropped seq 1..3, so that's rolled too, not a silent partial replay.
+  const fromZero = log.since(0);
+  assert.equal(fromZero.rolled, true);
+  assert.deepEqual(
+    fromZero.frames.map((f) => f.seq),
+    [4, 5, 6],
+  );
+});
+
+test("since(0) on a buffer that still holds seq 1 is not rolled", () => {
+  const log = new EventLog(10, "ep1");
+  for (let i = 0; i < 4; i++) log.append(evt("s1", String(i)));
+  const r = log.since(0);
+  assert.equal(r.rolled, false);
+  assert.equal(r.frames.length, 4);
 });
 
 test("since() with a seq ahead of head signals rolled (daemon restart)", () => {

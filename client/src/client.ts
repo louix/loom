@@ -220,6 +220,11 @@ export class LoomClient {
   }
 
   #attach(sock: Socket): void {
+    // Fresh socket ⇒ fresh pre-hello buffer. A previous handshake that failed
+    // (timeout, socket dropped again) would otherwise leave frames from the
+    // dead connection here for the next successful `#handshake` to drain.
+    this.#preHelloQueue = [];
+    this.#buf = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => this.#ingest(chunk));
     sock.on("close", () => this.#onSocketClose());
@@ -259,7 +264,9 @@ export class LoomClient {
       this.#settle(frame);
     } else if (frame.kind === "push") {
       if (!this.#helloDone) {
-        this.#preHelloQueue.push(frame);
+        // Bounded: a handshake that never completes must not let a chatty
+        // daemon grow this without limit before the reconnect loop gives up.
+        if (this.#preHelloQueue.length < 20_000) this.#preHelloQueue.push(frame);
         return;
       }
       this.#deliverPush(frame);
@@ -282,6 +289,13 @@ export class LoomClient {
   }
 
   #deliverPush(frame: PushFrame): void {
+    // The daemon issues seqs strictly contiguously. A jump means a frame went
+    // missing — an unparseable line dropped in `#ingest`, or a bug — and our
+    // seq view now has a hole no future `sinceSeq` will ever fill. Re-baseline.
+    if (frame.type !== "resync" && this.#lastSeq > 0 && frame.seq > this.#lastSeq + 1) {
+      void this.#resync("seq gap");
+      return;
+    }
     if (frame.seq > this.#lastSeq) this.#lastSeq = frame.seq;
     if (frame.type === "resync") {
       void this.#resync(frame.reason);
@@ -340,7 +354,18 @@ export class LoomClient {
 
   #onSocketClose(): void {
     this.#sock = null;
-    for (const [, waiter] of this.#pending) waiter.reject(new Error("connection closed"));
+    // The daemon may still run an in-flight `session.create` / `session.compact`
+    // to completion — the caller can't know. Tag the rejection so it can choose
+    // to reconcile (poll / wait for the replayed `session_updated`) rather than
+    // treat it as a hard failure.
+    for (const [, waiter] of this.#pending) {
+      waiter.reject(
+        Object.assign(
+          new Error("connection dropped before the daemon replied — the operation may have completed"),
+          { code: "disconnected" },
+        ),
+      );
+    }
     this.#pending.clear();
     if (this.#closed || !this.#opts.reconnect) {
       this.#fire("close");
@@ -391,7 +416,11 @@ export class LoomClient {
       this.daemonInfo = result.daemon;
       this.#daemonEpoch = result.daemon.epoch; // keep it fresh so the next handshake doesn't false-detect a restart
       this.sessions = result.sessions;
-      this.#lastSeq = result.seq;
+      // Monotonic: live frames delivered while this `hello` was in flight may
+      // already have advanced `#lastSeq` past the fresh head — keeping the
+      // higher value means the next reconnect's `sinceSeq` doesn't re-request
+      // frames we already processed (there is no seq de-dupe on delivery).
+      if (result.seq > this.#lastSeq) this.#lastSeq = result.seq;
     } catch {
       try {
         this.sessions = await this.request<SessionSnapshot[]>("session.list");

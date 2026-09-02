@@ -75,8 +75,10 @@ export class EventLog {
 
   /**
    * Frames after `sinceSeq`. If `sinceSeq` is 0 / undefined the caller wants
-   * everything currently buffered. `rolled` is true when frames between
-   * `sinceSeq` and `oldest - 1` have already been evicted.
+   * everything currently buffered. `rolled` is true when frames the caller
+   * needs have already been evicted — including the `sinceSeq: 0` case, where a
+   * `replayHistory` client wants *all* history but the buffer has dropped its
+   * start (`oldest > 1`).
    */
   since(sinceSeq: number | undefined): ReplayResult {
     const from = sinceSeq ?? 0;
@@ -84,7 +86,7 @@ export class EventLog {
     // reset the counter while the client held a stale high-water mark.
     if (from > this.#seq) return { frames: [], rolled: true };
     if (from === this.#seq) return { frames: [], rolled: false };
-    const rolled = from > 0 && from < this.oldest - 1;
+    const rolled = from < this.oldest - 1;
     const frames = this.#buf.filter((f) => f.seq > from);
     return { frames, rolled };
   }
