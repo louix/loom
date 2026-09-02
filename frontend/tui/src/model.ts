@@ -218,8 +218,8 @@ export interface PickerState {
   items: PickItem[];
   /** Shown when `items` is empty (e.g. no models detected for a provider). */
   emptyText?: string;
-  /** Live filter text. */
-  filter: string;
+  /** Live filter text, as an editor buffer — the readline motions work on it. */
+  filter: Buffer;
   /** Highlight into the *filtered* list. */
   index: number;
   /** Carried context: provider id from the provider step; `model` id from the
@@ -258,7 +258,7 @@ export const makePicker = (init: {
     kind: init.kind,
     title: init.title,
     items: init.items,
-    filter: "",
+    filter: buffer(),
     index: init.index !== undefined ? Math.max(0, Math.min(init.index, init.items.length - 1)) : 0,
     ...(init.emptyText ? { emptyText: init.emptyText } : {}),
     ...(init.ctx ? { ctx: init.ctx } : {}),
@@ -280,8 +280,9 @@ const fuzzyMatch = (hay: string, q: string): boolean => {
 
 /** The picker's items narrowed to the current filter (label + blob). */
 export const pickerVisible = (p: PickerState): PickItem[] => {
-  if (p.filter === "") return p.items;
-  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, p.filter));
+  const q = p.filter.text;
+  if (q === "") return p.items;
+  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, q));
 };
 
 /** The currently-highlighted item, honouring the filter. */
@@ -550,7 +551,7 @@ export type Action =
   | { t: "toggleConfirmBranch" }
   | { t: "closeConfirm" }
   | { t: "openPicker"; picker: PickerState }
-  | { t: "pickerFilter"; value: string }
+  | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
   | { t: "closePicker" }
   | { t: "resolvePerm"; sessionId: string; id: string }
@@ -819,7 +820,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, mode: "picker", picker: a.picker, prompt: null, confirm: null };
 
     case "pickerFilter":
-      return s.picker ? { ...s, picker: { ...s.picker, filter: a.value, index: 0 } } : s;
+      return s.picker ? { ...s, picker: { ...s.picker, filter: a.buffer, index: 0 } } : s;
 
     case "pickerMove": {
       if (!s.picker) return s;

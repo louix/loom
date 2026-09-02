@@ -6,13 +6,13 @@ fuzzy, searchable list of every action valid right where you are.
 
 ## The grammar
 
-| modifier        | means                                                                                                          |
-| --------------- | -------------------------------------------------------------------------------------------------------------- |
-| **bare key**    | act on the selected session, or move the selection                                                             |
-| **`Shift`+key** | the heavier / structural sibling of the lowercase — creates or destroys session / daemon state                 |
-| **`Ctrl`+key**  | text editing only, and only inside the prompt — the readline motions. `⌃c` quits (the one universal exception) |
-| **`Alt`+key**   | run an action _without leaving the prompt_ — "step out to a bigger tool"                                       |
-| **`Space`**     | the command palette: everything valid right now, fuzzy-filtered, each row showing its key                      |
+| modifier        | means                                                                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **bare key**    | act on the selected session, or move the selection                                                                                 |
+| **`Shift`+key** | the heavier / structural sibling of the lowercase — creates or destroys session / daemon state                                     |
+| **`Ctrl`+key**  | text editing only, inside the prompt and the pickers' filter line — the readline motions. `⌃c` quits (the one universal exception) |
+| **`Alt`+key**   | run an action _without leaving the prompt_ — "step out to a bigger tool"                                                           |
+| **`Space`**     | the command palette: everything valid right now, fuzzy-filtered, each row showing its key                                          |
 
 Consequences:
 
@@ -124,7 +124,7 @@ for heavier multi-line editing.
 
 Each overlay owns the screen and shows its own fixed key set on the footer:
 
-- **Command palette / pickers** — type to filter, `↑↓` move, `Enter` pick, `Esc` cancel.
+- **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel.
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
 - **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⇧⇥` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥p` retarget `f` for model / thinking-effort / provider (pre-selected to the session's current; a different provider forks a fresh session) · `⌥o`/`o` view. The overlay also shows the session's context meter. A plan review must be answered — `Esc` does nothing.
 

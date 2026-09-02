@@ -159,3 +159,26 @@ test("layoutWrapped maps the caret across wrap points and logical lines", () => 
   assert.deepEqual(multi.rows, ["aaa bbb", "cc"]);
   assert.deepEqual([multi.row, multi.col], [1, 1]);
 });
+
+test("single-line mode: pasted line breaks become spaces and ⇧/⌥⏎ inserts nothing", () => {
+  const paste = applyKey(buffer("ab", 2), "x\r\ny", K(), { multiline: false });
+  assert.deepEqual(paste, { kind: "buffer", buffer: { text: "abx y", cursor: 5 } });
+  assert.deepEqual(
+    applyKey(buffer("ab", 2), "", K({ return: true, shift: true }), { multiline: false }),
+    { kind: "ignore" },
+  );
+  // The multiline default still inserts a newline for ⇧⏎.
+  assert.equal((press("ab", 2, "", { return: true, shift: true }) as any).buffer.text, "ab\n");
+});
+
+test("single-line mode keeps ⏎ submit and the ⌃ readline motions", () => {
+  assert.equal(
+    applyKey(buffer("ab", 2), "", K({ return: true }), { multiline: false }).kind,
+    "submit",
+  );
+  assert.equal(
+    (applyKey(buffer("one two", 7), "u", K({ ctrl: true }), { multiline: false }) as any).buffer
+      .text,
+    "",
+  );
+});

@@ -158,7 +158,7 @@ tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
   into the running turn right after the current tool result (the model sees it
   on its next step); on a Claude session the SDK queues it for the next turn
   boundary. Queued messages drain automatically and `⌥x` (in the send prompt)
-  or the palette clears them. In a prompt, `Ctrl` carries the readline
+  or the palette clears them. In a prompt — and on a picker's filter line — `Ctrl` carries the readline
   motions; `⌥e` hands the text to `$EDITOR` (event log alongside to copy from;
   nothing is sent until you press enter back in the UI), `⌥o` opens just the log
   read-only, `⌥p` picks the provider-model for a new session, `⇧⇥` / `⌥m` change

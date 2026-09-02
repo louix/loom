@@ -5,7 +5,10 @@
  * `⌃u`/`⌃k`/`⌃w` kills, `⌃←`/`⌃→` word steps, arrow navigation) and renders fine when multi-line text
  * arrives from a paste or the `⌥e` `$EDITOR` handoff. No React or Ink
  * dependency: `applyKey` maps one keypress to an {@link EditResult}; the
- * component renders {@link Buffer} and re-dispatches the result.
+ * component renders {@link Buffer} and re-dispatches the result. An
+ * `{ multiline: false }` option tames it for single-line input lines (the
+ * pickers' filter): pasted line breaks become spaces and ⇧/⌥⏎ inserts nothing,
+ * while bare ⏎ still submits.
  *
  * Grammar: `Ctrl` is the text-editing modifier and nothing else — every `⌃`
  * combo here is a readline motion. The app's `⌥`-prefixed prompt actions
@@ -45,6 +48,12 @@ export type EditResult =
   | { kind: "history"; dir: -1 | 1 }
   | { kind: "ignore" };
 
+/** Options for {@link applyKey}. */
+export interface ApplyOpts {
+  /** Single-line input line (the pickers' filter): pasted line breaks become
+   *  spaces and ⇧/⌥⏎ inserts nothing; ⏎ still submits. Default `true`. */
+  multiline?: boolean;
+}
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
 /** Start / end offsets of the line containing `cursor`. */
@@ -100,7 +109,12 @@ const isInsertable = (s: string): boolean => {
   return true;
 };
 
-export const applyKey = (buf: Buffer, input: string, key: KeyLike): EditResult => {
+export const applyKey = (
+  buf: Buffer,
+  input: string,
+  key: KeyLike,
+  { multiline = true }: ApplyOpts = {},
+): EditResult => {
   const { text, cursor } = buf;
 
   if (key.escape) return { kind: "cancel" };
@@ -108,8 +122,10 @@ export const applyKey = (buf: Buffer, input: string, key: KeyLike): EditResult =
   if (key.return) {
     // ⇧⏎ / ⌥⏎ insert a newline; bare ⏎ submits. (Shift+Enter only reaches us in
     // terminals that send a distinct code — Alt+Enter is the portable one; ⌥e
-    // still opens $EDITOR for heavier editing.)
+    // still opens $EDITOR for heavier editing.) A single-line input line has
+    // neither — ⇧/⌥⏎ is ignored there.
     if (key.shift || key.meta) {
+      if (!multiline) return { kind: "ignore" };
       return edit(text.slice(0, cursor) + "\n" + text.slice(cursor), cursor + 1);
     }
     return { kind: "submit" };
@@ -161,9 +177,13 @@ export const applyKey = (buf: Buffer, input: string, key: KeyLike): EditResult =
 
   // Printable input, including a bracketed paste delivered as one chunk. The
   // regex strips the paste-bracket escapes (ESC [200~ / ESC [201~); the ESC is
-  // load-bearing, so the control-character match is deliberate.
-  // oxlint-disable-next-line no-control-regex
-  const clean = input.replace(/\x1b\[20[01]~/g, "").replace(/\r\n?/g, "\n");
+  // load-bearing, so the control-character match is deliberate. Line breaks
+  // normalize to newlines — or spaces on a single-line input line.
+  const clean = input
+    // oxlint-disable-next-line no-control-regex
+    .replace(/\x1b\[20[01]~/g, "")
+    // oxlint-disable-next-line no-control-regex
+    .replace(/\r\n?|\n/g, multiline ? "\n" : " ");
   if (clean !== "" && isInsertable(clean)) {
     return edit(text.slice(0, cursor) + clean + text.slice(cursor), cursor + clean.length);
   }

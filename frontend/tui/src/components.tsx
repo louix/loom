@@ -8,7 +8,7 @@ import { useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
-import { layoutWrapped, type Buffer } from "./editor.ts";
+import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import {
   cacheHeat,
   cacheStatus,
@@ -821,7 +821,7 @@ const wrapLine = (l: LogLine, room: number): readonly string[] => {
 };
 
 // ---------------------------------------------------------------------------
-// text editor view (used by the prompt)
+// input line (the prompt's editor, the pickers' filter)
 // ---------------------------------------------------------------------------
 
 /** Max rows the editor draws; `promptRows` reserves the same so the footer
@@ -831,17 +831,38 @@ export const MAX_EDITOR_ROWS = 8;
 
 /** Columns the prompt editor wraps to, given the terminal width: the footer's
  *  paddingX (1 + 1) and the 2-char caret gutter come off first. Single source
- *  of truth for both `EditorView`'s wrap and `promptRows`' height budget. */
+ *  of truth for both `InputLine`'s wrap and `promptRows`' height budget. */
 const editorRoom = (cols: number): number => Math.max(8, cols - 4);
 
-export const EditorView = ({
+/** One drawn row with the block caret at `col`, windowed to `room` columns so
+ *  the caret stays visible in text longer than the row. */
+const caretCell = (ln: string, col: number, room: number): ReactNode => {
+  const off = Math.max(0, col - (room - 1));
+  return (
+    <Text wrap="truncate-end">
+      <Text color={C.text}>{ln.slice(off, col)}</Text>
+      <Text inverse>{ln.slice(col, col + 1) || " "}</Text>
+      <Text color={C.text}>{ln.slice(col + 1, off + room)}</Text>
+    </Text>
+  );
+};
+
+/**
+ * The one input-line component: an editor buffer drawn with the `▍ ` gutter and
+ * a block caret. `multiline` (the default) soft-wraps and scrolls within
+ * {@link MAX_EDITOR_ROWS} — the prompt; `multiline={false}` pins the buffer to
+ * a single row, windowing the text around the caret — the pickers' filter line.
+ */
+export const InputLine = ({
   buf,
   room,
   placeholder,
+  multiline = true,
 }: {
   buf: Buffer;
   room: number;
   placeholder?: string;
+  multiline?: boolean;
 }): ReactNode => {
   if (buf.text === "") {
     return (
@@ -853,6 +874,16 @@ export const EditorView = ({
             {` ${placeholder}`}
           </Text>
         ) : null}
+      </Box>
+    );
+  }
+
+  if (!multiline) {
+    const { lines, row, col } = layout(buf);
+    return (
+      <Box>
+        <Text color={C.accent}>{"▍ "}</Text>
+        {caretCell(lines[row] ?? "", col, room)}
       </Box>
     );
   }
@@ -875,23 +906,14 @@ export const EditorView = ({
         const r = start + i;
         const gutter =
           (i === 0 && moreAbove) || (i === shown.length - 1 && moreBelow) ? "⋮ " : "▍ ";
-        let content: ReactNode;
-        if (r === row) {
-          const off = Math.max(0, col - (room - 1));
-          content = (
-            <Text wrap="truncate-end">
-              <Text color={C.text}>{ln.slice(off, col)}</Text>
-              <Text inverse>{ln.slice(col, col + 1) || " "}</Text>
-              <Text color={C.text}>{ln.slice(col + 1, off + room)}</Text>
-            </Text>
-          );
-        } else {
-          content = (
+        const content: ReactNode =
+          r === row ? (
+            caretCell(ln, col, room)
+          ) : (
             <Text color={C.text} wrap="truncate-end">
               {ln.length ? ln : " "}
             </Text>
           );
-        }
         return (
           <Box key={r}>
             <Text color={C.accent}>{gutter}</Text>
@@ -992,7 +1014,7 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
           ) : null}
           {p.kind === "new" ? <Text color={C.faint}>{"⌥p change"}</Text> : null}
         </Box>
-        <EditorView buf={p.buffer} room={editorRoom(width)} placeholder={placeholder} />
+        <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={placeholder} />
         {/* Truncate, never wrap — this row is budgeted as exactly one line
             (see promptRows); wrapping it grows the frame past the terminal. */}
         <Text color={C.faint} wrap="truncate-end">
@@ -1474,14 +1496,9 @@ export const Picker = ({
       <Text color={C.accent} bold>
         {`▸ ${picker.title.toUpperCase()}`}
       </Text>
-      {/* A prompt-style input line so it reads as "type here", with a block caret */}
-      {/* and a placeholder when empty. */}
-      <Box>
-        <Text color={C.accent}>{"▍ "}</Text>
-        <Text color={C.text}>{picker.filter}</Text>
-        <Text inverse> </Text>
-        {picker.filter ? null : <Text color={C.faint}>{" type to search"}</Text>}
-      </Box>
+      {/* The prompt's input line, pinned to one row, so the filter reads as
+          "type here" and takes the same readline motions. */}
+      <InputLine buf={picker.filter} room={w - 4} placeholder="type to search" multiline={false} />
       <Text color={C.faint}>
         {picker.items.length === 0
           ? " "

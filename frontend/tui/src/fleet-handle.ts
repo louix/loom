@@ -1841,14 +1841,12 @@ export const mkFleetHandle = ({
         }
         return void choosePicked();
       }
-      if (key.backspace || key.delete) {
-        return void dispatch({ t: "pickerFilter", value: p.filter.slice(0, -1) });
-      }
-      // append printable input (single keys and fast/pasted runs alike)
-      if (input && !key.ctrl && !key.meta && !key.tab && /^[\x20-\x7e]+$/.test(input)) {
-        return void dispatch({ t: "pickerFilter", value: p.filter + input });
-      }
-      return;
+      // The filter is an input line — the same readline motions as the prompt
+      // (⌃a/⌃e/⌃b/⌃f/⌃u/⌃k/⌃w, ←/→, paste at the caret); esc / ⏎ / ↑ / ↓ were
+      // resolved above, before the editor saw them.
+      const res = applyKey(p.filter, input, key, { multiline: false });
+      if (res.kind === "buffer") return void dispatch({ t: "pickerFilter", buffer: res.buffer });
+      return; // submit / cancel / history / ignore — all resolved above
     }
 
     // ---- browse ----

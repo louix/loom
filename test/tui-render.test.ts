@@ -1138,6 +1138,10 @@ test("/ opens the find picker and filters the fleet by text", async () => {
     assert.match(stdout.last, /refactor the parser/);
     assert.doesNotMatch(stdout.last, /update the docs/);
 
+    stdin.feed("\x15"); // ⌃u — readline kill-to-start clears the filter
+    await delay(120);
+    assert.match(stdout.last, /update the docs/); // list un-narrows with it
+
     stdin.feed(ESC);
     await delay(100);
     assert.match(stdout.last, /▍ loom/);

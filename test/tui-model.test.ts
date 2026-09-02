@@ -2001,7 +2001,7 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
   s = reduce(s, { t: "pickerMove", delta: 5 });
   assert.equal(s.picker!.index, 2); // clamped to last
 
-  s = reduce(s, { t: "pickerFilter", value: "mini" });
+  s = reduce(s, { t: "pickerFilter", buffer: buffer("mini") });
   assert.equal(pickerVisible(s.picker!).length, 1);
   assert.equal(s.picker!.index, 0); // reset on filter
   assert.equal(pickerCurrent(s.picker!)?.id, "gpt-5-mini");
@@ -2036,7 +2036,7 @@ test("find picker items fold message text into the fuzzy blob", () => {
   assert.match(bbb.blob ?? "", /refactor the parser/);
 
   const picker = makePicker({ kind: "find", title: "find", items });
-  const filtered = pickerVisible({ ...picker, filter: "parser" });
+  const filtered = pickerVisible({ ...picker, filter: buffer("parser") });
   assert.deepEqual(
     filtered.map((i) => i.id),
     ["bbb"],
