@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { absurd } from "@loom/core/absurd";
 import { MAX_OUTPUT_BYTES, collapseLive } from "./bash.ts";
 
 /** Default wall-clock limit per task; `timeout_ms: 0` runs without one. */
@@ -22,20 +23,70 @@ export const DEFAULT_BG_TIMEOUT_MS = 600_000;
 const MAX_RUNNING = 8;
 /** Default `wait_ms` for `read`/`background_output` when the caller omits it. */
 const DEFAULT_WAIT_MS = 30_000;
+/** After a task exits, how long `read` still waits for its pipe to flush the
+ *  last output before reporting "(no new output)". */
+const DRAIN_MS = 250;
+
+/**
+ * A task's process lifecycle as one closed union — so "running with an exit
+ * code" or "closed but still running" can't be written down:
+ *
+ *   running ──'exit'──▶ exited ──'close'──▶ closed
+ *      └────────────────'error'──────────────▶ closed   (spawn failed: no exit code)
+ *
+ * `exited` and `closed` both mean the process is gone; they differ in whether
+ * its stdout/stderr have finished draining into our buffer. A `read` keeps
+ * waiting through `exited` — a fast command (`pwd`) can exit with its last line
+ * still queued in the pipe — but not through `closed`. `timedOut` marks the
+ * wall-clock timeout, not the model, as the killer; `timer` is that timeout's
+ * pending handle and exists only while running.
+ */
+type TaskLifecycle =
+  | { readonly phase: "running"; readonly timer: NodeJS.Timeout | null; readonly timedOut: boolean }
+  | { readonly phase: "exited"; readonly exitCode: number | null; readonly timedOut: boolean }
+  | { readonly phase: "closed"; readonly exitCode: number | null; readonly timedOut: boolean };
+
+interface FoldTaskLifecycle<B> {
+  readonly onRunning: (timer: NodeJS.Timeout | null, timedOut: boolean) => B;
+  readonly onExited: (exitCode: number | null, timedOut: boolean) => B;
+  readonly onClosed: (exitCode: number | null, timedOut: boolean) => B;
+}
+
+const foldTaskLifecycle =
+  <B>(fns: FoldTaskLifecycle<B>) =>
+  (l: TaskLifecycle): B => {
+    switch (l.phase) {
+      case "running":
+        return fns.onRunning(l.timer, l.timedOut);
+      case "exited":
+        return fns.onExited(l.exitCode, l.timedOut);
+      case "closed":
+        return fns.onClosed(l.exitCode, l.timedOut);
+      default:
+        return absurd(l);
+    }
+  };
+
+/** What `read` / `background_output` report about the process — derived from the
+ *  lifecycle so the three fields can never disagree. */
+const lifecycleReport = (
+  l: TaskLifecycle,
+): { running: boolean; exitCode: number | null; timedOut: boolean } =>
+  foldTaskLifecycle<{ running: boolean; exitCode: number | null; timedOut: boolean }>({
+    onRunning: () => ({ running: true, exitCode: null, timedOut: false }),
+    onExited: (exitCode, timedOut) => ({ running: false, exitCode, timedOut }),
+    onClosed: (exitCode, timedOut) => ({ running: false, exitCode, timedOut }),
+  })(l);
 
 interface Task {
-  id: string;
-  child: ChildProcess;
+  readonly id: string;
+  readonly child: ChildProcess;
   /** Output since the last read, clamped live by {@link collapseLive}. */
   unread: string;
   /** Characters the live clamp discarded since the last read. */
   dropped: number;
-  running: boolean;
-  exitCode: number | null;
-  /** Set when the timeout — not the model — killed the task. */
-  timedOut: boolean;
-  timer: NodeJS.Timeout | null;
-  /** Wakes a pending `read(waitMs)` on new output or exit. */
+  lifecycle: TaskLifecycle;
+  /** Wakes a pending `read(waitMs)` on new output, exit, or close. */
   wake: (() => void) | null;
 }
 
@@ -55,9 +106,14 @@ export class BackgroundTasks {
     this.#cwd = cwd;
   }
 
+  /** Tasks whose process is still alive. */
+  #running(): Task[] {
+    return [...this.#tasks.values()].filter((t) => t.lifecycle.phase === "running");
+  }
+
   /** Spawn `command` detached in its own process group; returns the id at once. */
   start(command: string, timeoutMs: number = DEFAULT_BG_TIMEOUT_MS): string {
-    const running = [...this.#tasks.values()].filter((t) => t.running).length;
+    const running = this.#running().length;
     if (running >= MAX_RUNNING) {
       throw new Error(
         `${running} background tasks are already running — kill one with background_kill first`,
@@ -76,10 +132,7 @@ export class BackgroundTasks {
       child,
       unread: "",
       dropped: 0,
-      running: true,
-      exitCode: null,
-      timedOut: false,
-      timer: null,
+      lifecycle: { phase: "running", timer: null, timedOut: false },
       wake: null,
     };
     this.#tasks.set(id, task);
@@ -99,27 +152,37 @@ export class BackgroundTasks {
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
     child.on("exit", (code) => {
-      task.running = false;
-      task.exitCode = code;
-      if (task.timer) {
-        clearTimeout(task.timer);
-        task.timer = null;
+      const timedOut = task.lifecycle.phase === "running" && task.lifecycle.timedOut;
+      if (task.lifecycle.phase === "running" && task.lifecycle.timer) {
+        clearTimeout(task.lifecycle.timer);
       }
+      task.lifecycle = { phase: "exited", exitCode: code, timedOut };
+      task.wake?.();
+    });
+    // Fires after `'exit'`, once stdout/stderr have flushed and closed — the
+    // point at which a `read` can stop waiting for more output.
+    child.on("close", () => {
+      const { exitCode, timedOut } =
+        task.lifecycle.phase === "running" ? { exitCode: null, timedOut: false } : task.lifecycle;
+      task.lifecycle = { phase: "closed", exitCode, timedOut };
       task.wake?.();
     });
     child.on("error", (err) => {
       // Spawn failure (bash missing, ENOMEM): surface it as the task's output.
-      task.running = false;
+      // Neither `'exit'` nor `'close'` follows, so go straight to `closed`.
+      task.lifecycle = { phase: "closed", exitCode: null, timedOut: false };
       task.unread += `bash: ${err.message}\n`;
       task.wake?.();
     });
     if (timeoutMs > 0) {
-      task.timer = setTimeout(() => {
-        if (!task.running) return;
-        task.timedOut = true;
+      // Spawn events are async — the task is still `running` here.
+      const timer = setTimeout(() => {
+        if (task.lifecycle.phase !== "running") return;
+        task.lifecycle = { ...task.lifecycle, timedOut: true };
         killGroup(task);
       }, timeoutMs);
-      task.timer.unref(); // never keep the process alive just to kill a task
+      timer.unref(); // never keep the process alive just to kill a task
+      task.lifecycle = { phase: "running", timer, timedOut: false };
     }
     return id;
   }
@@ -137,18 +200,35 @@ export class BackgroundTasks {
     // `wait_ms` has no upper cap, but Node timers clamp delays above 2^31-1 ms
     // down to fire (almost) immediately — pin huge waits there instead.
     const waitMs = Math.min(2_147_483_647, Math.max(0, Math.trunc(opts.waitMs ?? DEFAULT_WAIT_MS)));
-    if (waitMs > 0 && task.unread === "" && task.running) {
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          task.wake = null;
-          resolve();
-        }, waitMs);
-        task.wake = () => {
-          clearTimeout(t);
-          task.wake = null;
-          resolve();
-        };
-      });
+    // A closure so the compiler can't stale-narrow `phase` across the `await`
+    // (the event handlers reassign `task.lifecycle` while we're parked).
+    const phase = (): TaskLifecycle["phase"] => task.lifecycle.phase;
+    // Wait for output or a clean `'close'`. `'exit'` alone isn't enough: a
+    // short-lived command (`pwd`) can exit with its last line still queued in
+    // the pipe, and reading then would wrongly report "no new output". Once the
+    // process has exited, cap the extra wait at a short drain window so a task
+    // that left its stdio open (a detached grandchild) still returns fast.
+    if (waitMs > 0 && task.unread === "" && phase() !== "closed") {
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        const draining = phase() !== "running";
+        const slice = draining ? Math.min(remaining, DRAIN_MS) : remaining;
+        const woke = await new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => {
+            task.wake = null;
+            resolve(false);
+          }, slice);
+          task.wake = () => {
+            clearTimeout(t);
+            task.wake = null;
+            resolve(true);
+          };
+        });
+        if (task.unread !== "" || phase() === "closed") break;
+        if (!woke && draining) break; // drain window elapsed after exit
+      }
     }
     let output = task.unread;
     const dropped = task.dropped;
@@ -168,13 +248,13 @@ export class BackgroundTasks {
       output =
         `${kept.length} of ${lines.length} lines matched /${opts.filter}/:\n` + kept.join("\n");
     }
-    return { running: task.running, exitCode: task.exitCode, timedOut: task.timedOut, output };
+    return { ...lifecycleReport(task.lifecycle), output };
   }
 
   /** Kill the task's process group (descendants included); returns the unread tail. */
   kill(id: string): { output: string } {
     const task = this.#task(id);
-    if (task.running) killGroup(task);
+    if (task.lifecycle.phase === "running") killGroup(task);
     const output = task.unread === "" ? "(no output)" : task.unread;
     task.unread = "";
     task.dropped = 0;
@@ -184,8 +264,10 @@ export class BackgroundTasks {
   /** Kill everything — the session is going away. */
   close(): void {
     for (const task of this.#tasks.values()) {
-      if (task.timer) clearTimeout(task.timer);
-      if (task.running) killGroup(task);
+      if (task.lifecycle.phase === "running") {
+        if (task.lifecycle.timer) clearTimeout(task.lifecycle.timer);
+        killGroup(task);
+      }
       task.wake?.();
     }
     this.#tasks.clear();
@@ -194,7 +276,7 @@ export class BackgroundTasks {
   #task(id: string): Task {
     const task = this.#tasks.get(id);
     if (!task) {
-      const live = [...this.#tasks.values()].filter((t) => t.running).map((t) => t.id);
+      const live = this.#running().map((t) => t.id);
       throw new Error(
         `unknown background task "${id}"` +
           (live.length > 0 ? ` — running: ${live.join(", ")}` : " — none are running"),

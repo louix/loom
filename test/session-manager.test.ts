@@ -820,19 +820,26 @@ test("session.send is refused with code=busy while a compact is in flight", asyn
 
   const frames: PushFrame[] = [];
   c.onPush((f) => frames.push(f));
+  const latestCompacting = () =>
+    [...frames]
+      .reverse()
+      .find(
+        (f): f is Extract<PushFrame, { type: "session_updated" }> =>
+          f.type === "session_updated" && f.session.id === id,
+      )?.session.compacting;
+
   const release = fs.blockCompact();
   const compacting = c.request("session.compact", { id }); // held on the gate
   await waitFor(() => fs.compacts.length === 1);
+  // `fs.compacts` ticks synchronously in the adapter; the `session_updated` that
+  // carries the flag still has a socket round-trip to make — wait for it rather
+  // than racing the delivery.
+  await waitFor(() => latestCompacting() !== undefined);
 
   // The in-flight compaction rides the snapshot (beats aren't persisted), so a
   // client that attaches mid-compaction still shows "compacting…" — with the
   // context fill it started from.
-  const flag = [...frames]
-    .reverse()
-    .find(
-      (f): f is Extract<PushFrame, { type: "session_updated" }> =>
-        f.type === "session_updated" && f.session.id === id,
-    )?.session.compacting;
+  const flag = latestCompacting();
   assert.ok(flag, "the snapshot reports the in-flight compaction");
   assert.equal(typeof flag.startedAt, "number");
   assert.equal(flag.before, 50_000, "`before` is the pre-compact context fill");
@@ -844,15 +851,10 @@ test("session.send is refused with code=busy while a compact is in flight", asyn
 
   release();
   await compacting;
-  await delay(40);
-  // The overlay rides the snapshot only while the gate is held.
-  const cleared = [...frames]
-    .reverse()
-    .find(
-      (f): f is Extract<PushFrame, { type: "session_updated" }> =>
-        f.type === "session_updated" && f.session.id === id,
-    )?.session.compacting;
-  assert.equal(cleared, undefined, "the overlay clears when the gate releases");
+  // The overlay rides the snapshot only while the gate is held — the release
+  // emits a fresh `session_updated` without the flag.
+  await waitFor(() => latestCompacting() === undefined);
+  assert.equal(latestCompacting(), undefined, "the overlay clears when the gate releases");
   assert.equal(fs.compacts.length, 1);
   assert.deepEqual(fs.sends, [], "the send never reached the adapter");
   await c.close();
