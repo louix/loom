@@ -53,6 +53,11 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
       id: ctx.id,
       model: config.model ?? "",
       models: config.models ?? [],
+      // `@ai-sdk/openai-compatible` reads its `providerOptions` under the name
+      // it was built with (the id) — how a chosen reasoning effort reaches the
+      // request as `reasoning_effort`. The native SDKs have their own thinking
+      // options and take none today.
+      ...(sdk === "openai" ? { providerOptionsName: ctx.id } : {}),
       ...(config.modelContext ? { modelContext: config.modelContext } : {}),
       ...(config.maxSteps !== undefined ? { maxSteps: config.maxSteps } : {}),
       makeModel,

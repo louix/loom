@@ -659,6 +659,91 @@ test("createSession runs the first turn, emits result, and persists the transcri
     cleanup();
   }
 });
+test("a chosen reasoning effort rides into providerOptions on every model call", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    let roundTrips = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async (opts) => {
+        roundTrips += 1;
+        seen.push(opts.providerOptions as Record<string, unknown> | undefined);
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              {
+                type: "response-metadata",
+                id: `r${roundTrips}`,
+                modelId: "mock",
+                timestamp: new Date(0),
+              },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "ok" },
+              { type: "text-end", id: "t" },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+              },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = new AisdkProvider(
+      {
+        id: "mygw",
+        model: "gpt-5",
+        models: ["gpt-5"],
+        makeModel: () => model,
+        providerOptionsName: "mygw",
+      },
+      store,
+    );
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+      effort: "high",
+    });
+    assert.equal(s.snapshot().effort, "high");
+    const results: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) if (e.type === "result") results.push(e);
+    })();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(seen[0], { mygw: { reasoningEffort: "high" } });
+
+    // a live switch takes effect from the next turn on
+    await s.setEffort("low");
+    assert.equal(s.snapshot().effort, "low");
+    await s.send("again");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(roundTrips, 2);
+    assert.deepEqual(seen.at(-1), { mygw: { reasoningEffort: "low" } });
+    await s.close();
+    await reader;
+    assert.equal(results.length, 2);
+
+    // a resume restores the effort from the session ref
+    const s2 = await p.resumeSession({
+      sessionId: "s2",
+      providerRef: "s2",
+      cwd: "/tmp",
+      mode: "default",
+      effort: "xhigh",
+    });
+    assert.equal(s2.snapshot().effort, "xhigh");
+    await s2.close();
+  } finally {
+    cleanup();
+  }
+});
 
 test("interrupt aborts the running turn — no result, status not idle", async () => {
   const { db, cleanup } = tmpDb();

@@ -61,6 +61,14 @@ export interface AisdkProfile {
   /** Per-model display names advertised by the endpoint (`display_name`). */
   modelLabels: Record<string, string>;
   /**
+   * Per-model reasoning-effort levels advertised by the endpoint's `/models`
+   * (`supported_reasoning_efforts`, or OpenRouter's `reasoning.supported_efforts`).
+   * Filled from the probe; gates the thinking-effort picker for this provider.
+   */
+  modelEfforts: Record<string, string[]>;
+  /** Per-model default effort advertised by the endpoint (`default_reasoning_effort`). */
+  modelDefaultEffort: Record<string, string>;
+  /**
    * Ask the endpoint to include token usage in streaming responses
    * (`stream_options.include_usage`). On by default — without it, endpoints
    * like sference stream no usage at all, leaving the context meter and cost
@@ -363,6 +371,8 @@ const buildAisdkProfile = (
     modelContext: modelContextOf(t["model_context"]),
     modelPricing: {},
     modelLabels: {},
+    modelEfforts: {},
+    modelDefaultEffort: {},
     includeUsage: t["include_usage"] === false ? false : true,
     autoModels,
     maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),

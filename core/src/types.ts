@@ -200,8 +200,10 @@ export interface DiscoveredModel {
   context?: number;
   /** Whether this model accepts a thinking-effort level. */
   supportsEffort?: boolean;
-  /** The effort levels it accepts, when the provider enumerates them. */
-  effortLevels?: EffortLevel[];
+  /** The effort levels it accepts, when the provider enumerates them.
+   *  Endpoint-advertised lists pass through verbatim — they may name levels
+   *  outside Loom's own {@link EffortLevel} set (OpenAI's `minimal`, …). */
+  effortLevels?: string[];
 }
 
 /** Map a Loom session mode to the closest provider permission mode label. */

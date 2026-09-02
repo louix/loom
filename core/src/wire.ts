@@ -1,5 +1,5 @@
 import type { BackgroundTaskKind, HarnessEvent, SessionState, TokenUsage } from "./events.ts";
-import type { EffortLevel, SessionMode } from "./types.ts";
+import type { SessionMode } from "./types.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -248,8 +248,13 @@ export interface ModelChoice {
   context?: number;
   /** Whether this model accepts a thinking-effort level. */
   supportsEffort?: boolean;
-  /** The effort levels it accepts, when the provider enumerates them. */
-  effortLevels?: EffortLevel[];
+  /** The effort levels it accepts, when the provider enumerates them.
+   *  Endpoint-advertised lists pass through verbatim — they may name levels
+   *  outside Loom's own effort-level union (OpenAI's `minimal`, …). */
+  effortLevels?: string[];
+  /** The effort the provider defaults to for this model, when advertised —
+   *  the picker marks it, and a session created without a choice sends it. */
+  defaultEffort?: string;
 }
 
 /** A configured provider, for the TUI's creation flow and model switcher. */

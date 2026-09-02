@@ -35,6 +35,13 @@ export interface AisdkProviderOptions {
   modelContext?: Record<string, number>;
   /** Per-segment step ceiling for turns (`max_steps`); undefined → session default. */
   maxSteps?: number;
+  /**
+   * The `providerOptions` key the `@ai-sdk/*` provider reads its options under —
+   * for `@ai-sdk/openai-compatible`, the name given to `createOpenAICompatible`
+   * (the connector's id). A chosen reasoning effort rides to the request as
+   * `reasoning_effort` under it. Omitted → effort is accepted but never sent.
+   */
+  providerOptionsName?: string;
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
   makeModel: (id: string) => LanguageModel;
   /** Resolved `web_search` config, when a backend + key are set. */
@@ -54,6 +61,7 @@ export class AisdkProvider implements AgentProvider {
   readonly #base: string | undefined;
   readonly #maxSteps: number | undefined;
   readonly #modelContext: Record<string, number> | undefined;
+  readonly #providerOptionsName: string | undefined;
 
   constructor(opts: AisdkProviderOptions, store: TranscriptStore) {
     this.id = opts.id;
@@ -64,6 +72,7 @@ export class AisdkProvider implements AgentProvider {
     this.#base = opts.base;
     this.#maxSteps = opts.maxSteps;
     this.#modelContext = opts.modelContext;
+    this.#providerOptionsName = opts.providerOptionsName;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
@@ -85,6 +94,8 @@ export class AisdkProvider implements AgentProvider {
       const s = new AisdkSession({
         sessionId: opts.sessionId,
         modelId,
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
         ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
         makeModel: this.#makeModel,
         system: opts.systemPromptAppend,
@@ -104,6 +115,8 @@ export class AisdkProvider implements AgentProvider {
     const s = new AisdkSession({
       sessionId: opts.sessionId,
       modelId,
+      ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: opts.systemPromptAppend,
@@ -133,6 +146,8 @@ export class AisdkProvider implements AgentProvider {
     const s = new AisdkSession({
       sessionId: ref.sessionId,
       modelId: ref.model || this.#defaultModel,
+      ...(ref.effort ? { effort: ref.effort } : {}),
+      ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: undefined,

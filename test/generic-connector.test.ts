@@ -103,6 +103,25 @@ test("include_usage = false leaves stream_options out (strict endpoints)", async
   }
 });
 
+test("reasoningEffort provider options under the connector id reach the body as reasoning_effort", async () => {
+  const srv = await serve();
+  try {
+    // the connector builds the SDK client with `name: <provider id>` — the key
+    // sessions must put their reasoning effort under for openai-compatible
+    const make = await resolveModelFactory("openai", { id: "mygw", baseUrl: srv.base, apiKey: "" });
+    const res = streamText({
+      model: make("m"),
+      prompt: "hi",
+      providerOptions: { mygw: { reasoningEffort: "high" } },
+    });
+    await res.consumeStream();
+    const body = JSON.parse(srv.body()) as { reasoning_effort?: string };
+    assert.equal(body.reasoning_effort, "high");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("usage from the final chunk reaches the AI SDK when requested", async () => {
   const srv = await serve();
   try {

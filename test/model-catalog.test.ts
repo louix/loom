@@ -74,6 +74,58 @@ test("parseModelRows: vLLM / LiteLLM context fields, bare ids, junk tolerated", 
   assert.deepEqual(parseModelRows({}), []);
 });
 
+test("parseModelRows reads reasoning-effort metadata: flat and OpenRouter-nested dialects", () => {
+  const rows = parseModelRows({
+    data: [
+      {
+        id: "codex/gpt-5",
+        // flat dialect — supported_reasoning_efforts / default_reasoning_effort
+        supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
+        default_reasoning_effort: "medium",
+      },
+      {
+        id: "anthropic/claude-fable-5.1",
+        // OpenRouter nests the same facts under `reasoning`
+        reasoning: {
+          mandatory: true,
+          supported_efforts: ["max", "high", "low"],
+          default_effort: "high",
+        },
+      },
+      { id: "no-efforts", default_reasoning_effort: "high" }, // list missing → nothing
+      { id: "junk-efforts", supported_reasoning_efforts: ["high", 7] }, // non-strings → dropped
+      { id: "empty-efforts", supported_reasoning_efforts: [] },
+      {
+        id: "default-not-in-list",
+        supported_reasoning_efforts: ["low"],
+        default_reasoning_effort: "bogus",
+      },
+    ],
+  });
+  // ids are sorted, so the anthropic row comes first
+  assert.deepEqual(rows[1], {
+    id: "codex/gpt-5",
+    efforts: ["minimal", "low", "medium", "high"],
+    defaultEffort: "medium",
+  });
+  assert.deepEqual(rows[0], {
+    id: "anthropic/claude-fable-5.1",
+    efforts: ["max", "high", "low"],
+    defaultEffort: "high",
+  });
+  for (const r of rows.slice(3)) {
+    assert.equal(r.efforts, undefined, r.id);
+    assert.equal(r.defaultEffort, undefined, r.id);
+  }
+  // the advertised default passes through even when it's not in the list —
+  // the picker just fails to mark it
+  assert.deepEqual(rows[2], {
+    id: "default-not-in-list",
+    efforts: ["low"],
+    defaultEffort: "bogus",
+  });
+});
+
 test("mergeAdvertisedPricing fills gaps in the table; the TOML row wins", () => {
   const tomlRow: PriceRow = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
   const table = new Map<string, PriceRow>([["claude-sonnet-5", tomlRow]]);

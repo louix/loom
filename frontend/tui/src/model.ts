@@ -1606,7 +1606,13 @@ export const modelSupportsEffort = (s: TuiState, providerId: string, modelId: st
 export const effortPickItems = (s: TuiState, providerId: string, modelId: string): PickItem[] => {
   const choice = providerInfo(s, providerId)?.modelChoices?.find((c) => c.id === modelId);
   const levels = choice?.effortLevels?.length ? choice.effortLevels : DEFAULT_EFFORT_LEVELS;
-  return levels.map((lvl) => ({ id: lvl, label: lvl }));
+  return levels.map((lvl) => ({
+    id: lvl,
+    label: lvl,
+    // The endpoint's advertised default (`default_reasoning_effort`) — also
+    // what a new session sends when this step is skipped.
+    ...(choice?.defaultEffort === lvl ? { hint: "default" } : {}),
+  }));
 };
 
 /**

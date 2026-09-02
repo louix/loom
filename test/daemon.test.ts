@@ -868,6 +868,12 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
         cached_input_per_million_usd: 0.07,
       },
     },
+    // codex-style row: advertised reasoning-effort levels + default
+    {
+      id: "oaic/gpt-5",
+      supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
+      default_reasoning_effort: "medium",
+    },
   ]);
   const hh = await makeHarness({
     config: `
@@ -896,11 +902,24 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
       Array<{
         id: string;
         models: string[];
-        modelChoices?: Array<{ id: string; label: string; context?: number }>;
+        modelChoices?: Array<{
+          id: string;
+          label: string;
+          context?: number;
+          supportsEffort?: boolean;
+          effortLevels?: string[];
+          defaultEffort?: string;
+        }>;
       }>
     >("providers.list");
     const oai = provs.find((p) => p.id === "oai");
-    assert.deepEqual(oai?.models, ["a-model", "m-model", "z-model", "zai-org/GLM-5.3-Flash"]);
+    assert.deepEqual(oai?.models, [
+      "a-model",
+      "m-model",
+      "oaic/gpt-5",
+      "z-model",
+      "zai-org/GLM-5.3-Flash",
+    ]);
 
     // picker rows carry the context window where it's known: endpoint-reported…
     const choices = new Map((oai?.modelChoices ?? []).map((ch) => [ch.id, ch]));
@@ -911,6 +930,12 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     assert.equal(choices.get("m-model")?.context, 12345);
     // …and unhinted (no table guess echoed) when nothing is known
     assert.equal(choices.get("a-model")?.context, undefined);
+    // reasoning-effort metadata rides to the picker rows…
+    assert.equal(choices.get("oaic/gpt-5")?.supportsEffort, true);
+    assert.deepEqual(choices.get("oaic/gpt-5")?.effortLevels, ["minimal", "low", "medium", "high"]);
+    assert.equal(choices.get("oaic/gpt-5")?.defaultEffort, "medium");
+    // …models the endpoint says nothing about get no effort offer
+    assert.equal(choices.get("a-model")?.supportsEffort, undefined);
     // a provider with no context knowledge emits no modelChoices at all
     const needkey = provs.find((p) => p.id === "needkey");
     assert.equal(needkey?.modelChoices, undefined);

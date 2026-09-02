@@ -606,14 +606,20 @@ export class Daemon {
           const probed: Record<string, number> = {};
           const probedPricing: Record<string, PriceRow> = {};
           const probedLabels: Record<string, string> = {};
+          const probedEfforts: Record<string, string[]> = {};
+          const probedDefaultEffort: Record<string, string> = {};
           for (const m of models) {
             if (m.context !== undefined) probed[m.id] = m.context;
             if (m.label !== undefined) probedLabels[m.id] = m.label;
             if (m.pricing !== undefined) probedPricing[m.id] = m.pricing;
+            if (m.efforts !== undefined) probedEfforts[m.id] = m.efforts;
+            if (m.defaultEffort !== undefined) probedDefaultEffort[m.id] = m.defaultEffort;
           }
           p.modelContext = { ...probed, ...p.modelContext };
           p.modelPricing = probedPricing;
           p.modelLabels = probedLabels;
+          p.modelEfforts = probedEfforts;
+          p.modelDefaultEffort = probedDefaultEffort;
           p.autoModels = false;
           this.#mergeEndpointPricing();
           this.#log.info("auto-detected models", {
@@ -622,6 +628,7 @@ export class Daemon {
             model: p.model,
             withContext: Object.keys(probed).length,
             withPricing: Object.keys(probedPricing).length,
+            withEfforts: Object.keys(probedEfforts).length,
           });
         } catch (err) {
           this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
@@ -717,11 +724,13 @@ export class Daemon {
 
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
       // Picker rows carry what the endpoint (or a pin) actually says — display
-      // name and context window — same treatment as the Claude catalog.
-      // Unknown sizes stay unhinted rather than echoing the prefix-table guess
-      // as authoritative.
+      // name, context window, and reasoning-effort support — same treatment as
+      // the Claude catalog. Unknown sizes stay unhinted rather than echoing the
+      // prefix-table guess as authoritative.
       const hasMeta =
-        Object.keys(p.modelContext).length > 0 || Object.keys(p.modelLabels).length > 0;
+        Object.keys(p.modelContext).length > 0 ||
+        Object.keys(p.modelLabels).length > 0 ||
+        Object.keys(p.modelEfforts).length > 0;
       out.push({
         id,
         models: p.models,
@@ -729,10 +738,19 @@ export class Daemon {
           ? {
               modelChoices: p.models.map((m) => {
                 const ctx = knownContextLimit(m, p.modelContext);
+                const efforts = p.modelEfforts[m];
+                const dflt = p.modelDefaultEffort[m];
                 return {
                   id: m,
                   label: p.modelLabels[m] ?? m,
                   ...(ctx !== undefined ? { context: ctx } : {}),
+                  ...(efforts?.length
+                    ? {
+                        supportsEffort: true,
+                        effortLevels: efforts,
+                        ...(dflt ? { defaultEffort: dflt } : {}),
+                      }
+                    : {}),
                 };
               }),
             }
@@ -792,11 +810,16 @@ export class Daemon {
   }
 
   /** The effort level a new session on `providerId` gets when none is chosen —
-   *  the last one used there, remembered across restarts. Unlike models, an
-   *  effort level isn't tied to a provider-reported catalog, so there's no
-   *  "still valid" check to make. */
-  #defaultEffortFor(providerId: string): string {
-    return this.#providerDefaults.effort(providerId) || "";
+   *  the last one used there, remembered across restarts; else the endpoint's
+   *  own default for `model` (`default_reasoning_effort`), so a new session on
+   *  a reasoning model sends something the endpoint endorses rather than
+   *  nothing. Unlike models, a remembered effort isn't tied to a
+   *  provider-reported catalog, so there's no "still valid" check to make. */
+  #defaultEffortFor(providerId: string, model?: string): string {
+    const remembered = this.#providerDefaults.effort(providerId);
+    if (remembered) return remembered;
+    if (model) return this.config.providers.aisdk[providerId]?.modelDefaultEffort[model] ?? "";
+    return "";
   }
 
   /**
@@ -1381,7 +1404,8 @@ export class Daemon {
       }
       const model = explicitModel ?? (this.#defaultModelFor(providerId) || null);
       const explicitEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : null;
-      const effort = explicitEffort ?? (this.#defaultEffortFor(providerId) || null);
+      const effort =
+        explicitEffort ?? (this.#defaultEffortFor(providerId, model ?? undefined) || null);
       if (aisdkProfile && !model) {
         throw new RpcError(
           "bad_request",

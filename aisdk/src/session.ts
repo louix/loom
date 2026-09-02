@@ -33,7 +33,7 @@ import type {
   UserInput,
 } from "@loom/core/types";
 import { AisdkEventMapper } from "./map.ts";
-import { runTurn } from "./loop.ts";
+import { runTurn, type VendorOptions } from "./loop.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
 import { McpHub } from "./mcp.ts";
 import { buildLoomTools } from "./loom-tools.ts";
@@ -86,6 +86,12 @@ export interface AisdkSessionOptions {
   modelId: string;
   /** Resolve a model id (from config / `setModel`) to a live model. */
   makeModel: (id: string) => LanguageModel;
+  /** Reasoning-effort level sent with each request — openai-compatible maps it
+   *  to the `reasoning_effort` body field. Ignored when no options key is set. */
+  effort?: EffortLevel;
+  /** The `providerOptions` key the model's SDK reads under — the connector
+   *  sets it for openai-compatible; native SDKs take no effort today. */
+  providerOptionsName?: string;
   system: string | undefined;
   messages: ModelMessage[];
   mode: SessionMode;
@@ -119,6 +125,9 @@ export class AisdkSession implements AgentSession {
   #modelId: string;
   #model: LanguageModel;
   readonly #makeModel: (id: string) => LanguageModel;
+  /** Reasoning effort sent with every request, when the connector supports one. */
+  #effort: EffortLevel | null = null;
+  readonly #providerOptionsName: string | undefined;
   readonly #system: string | undefined;
   #mode: SessionMode;
   readonly #cwd: string;
@@ -171,6 +180,8 @@ export class AisdkSession implements AgentSession {
     this.id = opts.sessionId;
     this.#modelId = opts.modelId;
     this.#modelContext = opts.modelContext ?? {};
+    this.#providerOptionsName = opts.providerOptionsName;
+    this.#effort = opts.effort ?? null;
     this.#makeModel = opts.makeModel;
     this.#model = opts.makeModel(opts.modelId);
     this.#system = opts.system;
@@ -190,7 +201,7 @@ export class AisdkSession implements AgentSession {
       status: stateStarting,
       providerRef: opts.sessionId,
       model: opts.modelId,
-      effort: null,
+      effort: opts.effort ?? null,
       mode: opts.mode,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextUsed: 0,
@@ -355,10 +366,14 @@ export class AisdkSession implements AgentSession {
     this.#snap.contextLimit = this.#limitFor(model);
   }
 
-  /** No OpenAI-compatible endpoint Loom talks to today takes a request-side
-   *  effort/reasoning param — {@link DiscoveredModel.supportsEffort} is never
-   *  set for aisdk models, so the picker never offers this. */
-  async setEffort(_effort: EffortLevel): Promise<void> {}
+  /** Reasoning effort rides into `streamText` as `providerOptions` —
+   *  `@ai-sdk/openai-compatible` maps it to the OpenAI `reasoning_effort`
+   *  request field. Takes effect from the next turn on. A connector that gave
+   *  no provider-options name (native Gemini / Anthropic SDKs) never sends it. */
+  async setEffort(effort: EffortLevel): Promise<void> {
+    this.#effort = effort;
+    this.#snap.effort = effort;
+  }
 
   snapshot(): AdapterSnapshot {
     return { ...this.#snap, usage: { ...this.#snap.usage } };
@@ -377,6 +392,13 @@ export class AisdkSession implements AgentSession {
   }
 
   // --- internals -----------------------------------------------------------
+
+  /** `streamText` providerOptions carrying the chosen reasoning effort, or
+   *  undefined when no effort is set / the connector gave no options key. */
+  #providerOptions(): VendorOptions | undefined {
+    if (this.#effort == null || !this.#providerOptionsName) return undefined;
+    return { [this.#providerOptionsName]: { reasoningEffort: this.#effort } };
+  }
 
   /** Context limit for a model id: endpoint-reported / pinned sizes first,
    *  then the built-in prefix table. */
@@ -609,9 +631,12 @@ export class AisdkSession implements AgentSession {
     let report = "";
     let failure: string | null = null;
     let lastStepReason: string | undefined;
+    const po = this.#providerOptions();
     try {
       const res = streamText({
         model: this.#model,
+        // Sub-agents run the same model for the same session — carry the effort.
+        ...(po ? { providerOptions: po } : {}),
         system: SUBAGENT_SYSTEM,
         messages: [{ role: "user", content: prompt }],
         tools: subTools,
@@ -815,9 +840,11 @@ export class AisdkSession implements AgentSession {
       this.#abort = abort;
       this.#snap.status = stateRunning;
 
+      const po = this.#providerOptions();
       const { aborted, errored, hitStepLimit, hitContextLimit } = await runTurn({
         sessionId: this.id,
         model: this.#model,
+        ...(po ? { providerOptions: po } : {}),
         system: this.#system,
         messages: this.#messages,
         ...(Object.keys(tools).length > 0 ? { tools } : {}),

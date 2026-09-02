@@ -16,6 +16,11 @@ export interface ProbedModel {
   label?: string;
   /** Advertised USD-per-million prices, when the endpoint lists them. */
   pricing?: PriceRow;
+  /** Reasoning-effort levels the endpoint advertises for this model
+   *  (`supported_reasoning_efforts`, or OpenRouter's `reasoning.supported_efforts`). */
+  efforts?: string[];
+  /** The endpoint's default effort, when it names one (`default_reasoning_effort`). */
+  defaultEffort?: string;
 }
 
 /** Context-window field names seen in the wild, in preference order.
@@ -87,6 +92,33 @@ const advertisedPricing = (row: Record<string, unknown>): PriceRow | undefined =
   return undefined;
 };
 
+/**
+ * Advertised reasoning-effort metadata, in two dialects: flat
+ * `supported_reasoning_efforts` / `default_reasoning_effort` (OpenAI-codex-style
+ * `/models` rows) or nested `reasoning.supported_efforts` /
+ * `reasoning.default_effort` (OpenRouter). A list is required — a lone default
+ * without an enumeration tells the picker nothing it can trust. Levels pass
+ * through verbatim (they may name values outside Loom's `EffortLevel` union).
+ */
+const advertisedEfforts = (
+  row: Record<string, unknown>,
+): { efforts: string[]; defaultEffort?: string } | undefined => {
+  const levels = (v: unknown): string[] | undefined =>
+    Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "")
+      ? (v as string[])
+      : undefined;
+  const nested =
+    row["reasoning"] && typeof row["reasoning"] === "object"
+      ? (row["reasoning"] as Record<string, unknown>)
+      : undefined;
+  const efforts =
+    levels(row["supported_reasoning_efforts"]) ?? levels(nested?.["supported_efforts"]);
+  if (!efforts) return undefined;
+  const dflt =
+    nonEmptyString(row["default_reasoning_effort"]) ?? nonEmptyString(nested?.["default_effort"]);
+  return { efforts, ...(dflt !== undefined ? { defaultEffort: dflt } : {}) };
+};
+
 /** Parse a `/models` response body into probed rows (ids sorted). */
 export const parseModelRows = (body: unknown): ProbedModel[] => {
   const data =
@@ -99,11 +131,20 @@ export const parseModelRows = (body: unknown): ProbedModel[] => {
       const context = advertisedContext(m);
       const pricing = advertisedPricing(m);
       const label = nonEmptyString(m["display_name"]) ?? nonEmptyString(m["name"]);
+      const efforts = advertisedEfforts(m);
       return {
         id: m.id,
         ...(context !== undefined ? { context } : {}),
         ...(label !== undefined ? { label } : {}),
         ...(pricing !== undefined ? { pricing } : {}),
+        ...(efforts
+          ? {
+              efforts: efforts.efforts,
+              ...(efforts.defaultEffort !== undefined
+                ? { defaultEffort: efforts.defaultEffort }
+                : {}),
+            }
+          : {}),
       };
     })
     .sort((a, b) => {

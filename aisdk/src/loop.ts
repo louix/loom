@@ -14,6 +14,14 @@ import { type LanguageModel, type ModelMessage, type ToolSet, stepCountIs, strea
 import type { HarnessEvent } from "@loom/core/events";
 import type { AisdkEventMapper } from "./map.ts";
 
+/**
+ * Vendor-options bag for a model request — structurally the SDK's
+ * `ProviderOptions` (`ai` declares but doesn't re-export it): provider name →
+ * options, e.g. `{ [name]: { reasoningEffort } }` on openai-compatible, which
+ * becomes the `reasoning_effort` request-body field.
+ */
+export type VendorOptions = Record<string, Record<string, string>>;
+
 export interface TurnHooks {
   emit(ev: HarnessEvent): void;
   /** Response messages (assistant text, tool calls/results) to append + persist. */
@@ -29,6 +37,9 @@ export interface TurnArgs {
   maxSteps: number;
   abortSignal: AbortSignal;
   mapper: AisdkEventMapper;
+  /** Vendor options for the request — e.g. `{ [name]: { reasoningEffort } }`
+   *  on openai-compatible, which becomes the `reasoning_effort` body field. */
+  providerOptions?: VendorOptions;
   hooks: TurnHooks;
   /**
    * Polled before each step (after the previous step's tool results are in).
@@ -111,6 +122,7 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   try {
     const res = streamText({
       model,
+      ...(args.providerOptions ? { providerOptions: args.providerOptions } : {}),
       ...(system ? { system } : {}),
       messages: [...messages],
       ...(args.tools ? { tools: args.tools } : {}),

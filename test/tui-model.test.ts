@@ -1826,6 +1826,7 @@ const PROVIDERS: ProviderInfo[] = [
         context: 1_000_000,
         supportsEffort: true,
         effortLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "high",
       },
       { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     ],
@@ -1897,6 +1898,20 @@ test("modelSupportsEffort / effortPickItems: gated per model, per its own enumer
     effortPickItems(s, "claude", "claude-opus-5").map((i) => i.id),
     ["low", "medium", "high", "xhigh", "max"],
   );
+  // the endpoint's advertised default effort is marked in the picker
+  assert.deepEqual(
+    effortPickItems(s, "claude", "claude-opus-5").map((i) => i.hint ?? ""),
+    ["", "", "default", "", ""],
+  );
+  // a choice without an advertised default marks nothing (falls back to the
+  // full EffortLevel set)
+  assert.deepEqual(effortPickItems(s, "claude", "claude-sonnet-5"), [
+    { id: "low", label: "low" },
+    { id: "medium", label: "medium" },
+    { id: "high", label: "high" },
+    { id: "xhigh", label: "xhigh" },
+    { id: "max", label: "max" },
+  ]);
 });
 
 test("versionMismatchAction: bounce only when alone, otherwise prompt then nag", () => {
