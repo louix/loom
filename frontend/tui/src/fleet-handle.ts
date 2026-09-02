@@ -171,6 +171,8 @@ export interface FleetView {
   readonly boot: Loadable<string, void>;
   readonly tick: number;
   readonly logScroll: number;
+  /** Top-anchored offset into the plan-review body (PgUp/PgDn/wheel). */
+  readonly planScroll: number;
   readonly logFull: boolean;
   readonly sel: SessionSnapshot | null;
   readonly pend: Pending;
@@ -214,6 +216,7 @@ const deriveView = (
   boot: Loadable<string, void>,
   tick: number,
   logScroll: number,
+  planScroll: number,
   logFull: boolean,
   dims: { cols: number; rows: number },
 ): FleetView => {
@@ -286,6 +289,7 @@ const deriveView = (
     boot,
     tick,
     logScroll,
+    planScroll,
     logFull,
     sel,
     pend,
@@ -321,6 +325,7 @@ export const mkFleetHandle = ({
   let boot: Loadable<string, void> = loadableIdle;
   let tick = 0;
   let logScroll = 0;
+  let planScroll = 0;
   let logFull = false;
   let dims = term.getSize();
 
@@ -351,8 +356,11 @@ export const mkFleetHandle = ({
     for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
   };
 
-  const store = mkStore<FleetView>(deriveView(state, boot, tick, logScroll, logFull, dims));
-  const publish = (): void => store.set(deriveView(state, boot, tick, logScroll, logFull, dims));
+  const store = mkStore<FleetView>(
+    deriveView(state, boot, tick, logScroll, planScroll, logFull, dims),
+  );
+  const publish = (): void =>
+    store.set(deriveView(state, boot, tick, logScroll, planScroll, logFull, dims));
 
   // Ceiling for `logScroll` so scrolling up past the top of the log doesn't run
   // the counter away (leaving you to scroll back down the same distance before
@@ -360,6 +368,15 @@ export const mkFleetHandle = ({
   const scrollUp = (by: number): void => {
     const ceiling = visibleLog(state).length + store.get().logPage;
     logScroll = Math.min(ceiling, logScroll + by);
+    publish();
+  };
+
+  // Plan-review body scroll: a top-anchored offset (0 = first line; larger =
+  // further down — the opposite sense to `logScroll`). No line count is known
+  // here, so clamp only at ≥ 0; `PlanReview` clamps the bottom against its
+  // window.
+  const planScrollBy = (by: number): void => {
+    planScroll = Math.max(0, planScroll + by);
     publish();
   };
 
@@ -449,6 +466,9 @@ export const mkFleetHandle = ({
       state.selectedChild !== prev.selectedChild
     )
       logScroll = 0;
+    // A different plan review (or the overlay opening / closing) re-anchors the
+    // plan body at its top.
+    if (state.plan?.requestId !== prev.plan?.requestId) planScroll = 0;
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
     if (state.theme !== prev.theme) {
@@ -1700,12 +1720,18 @@ export const mkFleetHandle = ({
       return;
     }
 
-    // Mouse wheel → always scrolls the event log. `run.tsx` turns on SGR mouse
-    // reporting so the wheel arrives as its own `[<Cb;Cx;Cy(M|m)` sequence —
-    // Ink passes it through as raw `input` with every `key.*` flag false.
+    // Mouse wheel → scrolls the plan-review body while that overlay owns the
+    // screen, otherwise the event log. `run.tsx` turns on SGR mouse reporting so
+    // the wheel arrives as its own `[<Cb;Cx;Cy(M|m)` sequence — Ink passes it
+    // through as raw `input` with every `key.*` flag false.
     const wheel = /^\[<(\d+);\d+;\d+[Mm]/.exec(input);
     if (wheel) {
       const base = Number(wheel[1]) & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
+      if (state.mode === "plan") {
+        if (base === 64) return planScrollBy(-3); // wheel up → toward the top
+        if (base === 65) return planScrollBy(3); // wheel down → toward the end
+        return;
+      }
       if (base === 64) {
         return scrollUp(3); // wheel up → back in history
       }
@@ -1838,6 +1864,10 @@ export const mkFleetHandle = ({
     }
 
     if (state.mode === "plan") {
+      // PgUp/PgDn scroll the plan body (a page ≈ the visible window less a row);
+      // the mouse wheel is handled up top, `o` still opens it in $EDITOR.
+      if (key.pageDown) return void planScrollBy(15);
+      if (key.pageUp) return void planScrollBy(-15);
       // ⇧⇥ cycles the mode the implementation will run in.
       if (key.tab && key.shift) return void dispatch({ t: "cyclePlanMode" });
       // ⌥p retargets model / effort / provider for `f` (implement fresh).
@@ -1865,7 +1895,11 @@ export const mkFleetHandle = ({
           }),
         });
       }
-      return; // esc / everything else: a plan review must be answered
+      // esc backs out to the fleet without answering — the daemon stays blocked
+      // on the decision, `pend.plan` keeps the request panel's prompt, and `a`
+      // re-opens the overlay.
+      if (key.escape) return void dispatch({ t: "closePlan" });
+      return; // everything else: a plan review must still be answered
     }
 
     if (state.mode === "confirm") {

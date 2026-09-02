@@ -290,8 +290,10 @@ the permission mode the implementation will run in; `⇧⇥` cycles it
 shown. `⌥p` retargets `f` (implement fresh) — the provider → model →
 thinking-effort wizard, pre-selected to the session's current settings; a
 model / effort change rides on the decision, a different provider forks a fresh
-session seeded with the plan + goal and parks this one. `esc` does nothing — a
-plan review must be answered. `session.respondPlan` is the RPC (implementing
+session seeded with the plan + goal and parks this one. A long plan scrolls with
+`PgUp` / `PgDn` / the mouse wheel (`o` still opens it in `$EDITOR`). `esc` backs
+out to the fleet without answering — the review stays pending and `a` re-opens
+it. `session.respondPlan` is the RPC (implementing
 actions carry the chosen `mode`, and `implement_fresh` an optional
 `model` / `effort` / `provider`); `loom plan <id> <reqId>
 implement|fresh|revise|discuss [--mode M]` from the CLI.

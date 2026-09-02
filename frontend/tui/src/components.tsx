@@ -1360,12 +1360,20 @@ export const RequestPanel = ({
 export const PlanReview = ({
   plan,
   width,
+  height,
+  scroll,
   ctx,
   impl,
   cur,
+  target,
 }: {
   plan: { text: string; mode: SessionMode };
   width: number;
+  /** Row budget for the whole overlay — the plan body fills whatever the fixed
+   *  chrome leaves and scrolls (PgUp/PgDn/wheel) past that. */
+  height: number;
+  /** First wrapped plan line to show — a top-anchored offset, clamped here. */
+  scroll?: number;
   /** The plan's session context meter — the input for the implement-here vs
    *  implement-fresh call (`i` vs `f`). Absent when the limit is unknown. */
   ctx?: { used: number; limit: number };
@@ -1374,10 +1382,19 @@ export const PlanReview = ({
   /** The plan's session's current provider / model / effort, to show what a
    *  staged `impl` diverges from. */
   cur?: { provider: string; model?: string | null; effort?: string | null };
+  /** Display resolution for whichever of `impl` / `cur` is the effective
+   *  implement-fresh target: the provider's fleet tag + its Ink colour. */
+  target?: { tag: string; color: string };
 }): ReactNode => {
   const w = inside(width);
   const lines = plan.text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
-  const body = lines.slice(0, 16);
+  // Fixed chrome around the plan body: title + spacer + scroll line + spacer +
+  // context meter + mode + implement-fresh + forks + spacer + 4 actions +
+  // spacer + hint (15 rows), plus the border and paddingY rows (4).
+  const WINDOW = Math.max(3, height - 19);
+  const off = Math.min(Math.max(0, scroll ?? 0), Math.max(0, lines.length - WINDOW));
+  const body = lines.slice(off, off + WINDOW);
+  const overflow = lines.length > WINDOW;
   const frac = ctx && ctx.limit > 0 ? Math.min(1, ctx.used / ctx.limit) : null;
 
   const shown =
@@ -1385,10 +1402,6 @@ export const PlanReview = ({
     (cur
       ? { provider: cur.provider, model: cur.model ?? undefined, effort: cur.effort ?? undefined }
       : null);
-  const targetText = shown
-    ? [shown.provider, shown.model].filter(Boolean).join(" / ") +
-      (shown.effort ? ` · ${shown.effort}` : "")
-    : "the session's current model";
   const providerForks = impl !== undefined && cur !== undefined && impl.provider !== cur.provider;
   const diverged =
     impl !== undefined &&
@@ -1425,11 +1438,11 @@ export const PlanReview = ({
           {l || " "}
         </Text>
       ))}
-      {lines.length > body.length ? (
-        <Text color={C.faint}>
-          {`  … ${lines.length - body.length} more lines — ⌥o / o to read it all`}
-        </Text>
-      ) : null}
+      <Text color={C.faint} wrap="truncate-end">
+        {overflow
+          ? `  ↕ lines ${off + 1}–${off + body.length} of ${lines.length}  ·  PgUp/PgDn`
+          : " "}
+      </Text>
       <Box height={1} />
       {frac !== null && ctx ? (
         <Text>
@@ -1446,7 +1459,14 @@ export const PlanReview = ({
       </Text>
       <Text wrap="truncate-end">
         {"implement fresh → "}
-        <Text color={diverged ? C.warn : C.faint}>{targetText}</Text>
+        {shown ? (
+          <Text color={target?.color || C.faint}>{target?.tag ?? shown.provider}</Text>
+        ) : (
+          <Text color={C.faint}>{"the session's current model"}</Text>
+        )}
+        {shown?.model ? <Text color={C.text}>{` / ${shown.model}`}</Text> : null}
+        {shown?.effort ? <Text color={C.warn}>{`  ·  ${shown.effort}`}</Text> : null}
+        {diverged ? <Text color={C.faint}>{"  ·  differs from this session"}</Text> : null}
         <Text color={C.faint}>{"  ·  ⌥p retarget"}</Text>
       </Text>
       {providerForks ? (
@@ -1458,8 +1478,8 @@ export const PlanReview = ({
       {row("e", "edit the plan in $EDITOR, then implement what you saved")}
       {row("d", "discuss — send a note back; the agent stays in plan mode")}
       <Box height={1} />
-      <Text color={C.faint}>
-        {"⌥o / o view read-only  ·  a plan review must be answered — esc does nothing"}
+      <Text color={C.faint} wrap="truncate-end">
+        {"⌥o / o view read-only  ·  esc backs out — the review stays pending"}
       </Text>
     </Box>
   );

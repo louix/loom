@@ -10,7 +10,13 @@ import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
-import { providerAccountOf, providerColorOf, promptOnPane, queueFor } from "./model.ts";
+import {
+  providerAccountOf,
+  providerColorOf,
+  providerInfo,
+  promptOnPane,
+  queueFor,
+} from "./model.ts";
 import { C } from "./theme.ts";
 import {
   Confirm,
@@ -103,17 +109,30 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       const ps = state.plan
         ? state.sessions.find((s) => s.id === state.plan?.sessionId)
         : undefined;
+      // The provider whose model an `f` (implement fresh) would run on: a staged
+      // ⌥p retarget if any, else the plan session's own — resolved to its fleet
+      // tag + colour so the overlay can paint it like the rest of the UI.
+      const tgtProv = state.plan?.impl?.provider ?? ps?.provider;
+      const tgt = tgtProv
+        ? {
+            tag: providerInfo(state, tgtProv)?.tag ?? tgtProv,
+            color: providerColorOf(state, tgtProv),
+          }
+        : undefined;
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
           {state.plan ? (
             <PlanReview
               plan={state.plan}
               width={Math.min(cols - 4, 96)}
+              height={Math.max(8, bodyH - 2)}
+              scroll={view.planScroll}
               {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
               {...(state.plan.impl ? { impl: state.plan.impl } : {})}
               {...(ps
                 ? { cur: { provider: ps.provider, model: ps.model, effort: ps.effort } }
                 : {})}
+              {...(tgt ? { target: tgt } : {})}
             />
           ) : null}
         </Box>

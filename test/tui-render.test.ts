@@ -904,6 +904,62 @@ test("plan review · ⌥p retargets implement-fresh; a new provider forks a sess
   }
 });
 
+test("plan review · a long plan scrolls; esc backs out and `a` re-opens", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "plan this",
+    provider: "fake",
+  });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(150);
+    const plan = Array.from({ length: 25 }, (_, i) => `${i + 1}. step ${i + 1} of the plan`).join(
+      "\n",
+    );
+    fs?.emit({ type: "plan_review", id: "pr1", plan });
+    await delay(200);
+
+    stdin.feed("a"); // open the overlay
+    await delay(150);
+    assert.match(stdout.last, /implement — the agent proceeds/, "the overlay is open");
+    assert.match(stdout.last, /1\. step 1 of the plan/, "top of the plan is visible");
+    assert.doesNotMatch(stdout.last, /25\. step 25 of the plan/, "the tail is below the fold");
+    assert.match(
+      stdout.last,
+      /↕ lines 1–\d+ of 25 {2}· {2}PgUp\/PgDn/,
+      "the scroll-position indicator",
+    );
+
+    stdin.feed("\x1b[6~"); // PgDn
+    await delay(120);
+    assert.match(stdout.last, /25\. step 25 of the plan/, "PgDn reveals the tail");
+    assert.doesNotMatch(stdout.last, /1\. step 1 of the plan/);
+
+    stdin.feed("\x1b[5~"); // PgUp — back to the top
+    await delay(120);
+    assert.match(stdout.last, /1\. step 1 of the plan/);
+    assert.doesNotMatch(stdout.last, /25\. step 25 of the plan/);
+
+    // esc backs out to the fleet without answering — the daemon stays blocked,
+    // so the request panel keeps flagging the review and `a` re-opens it.
+    stdin.feed(ESC);
+    await delay(120);
+    assert.doesNotMatch(stdout.last, /implement — the agent proceeds/, "overlay closed");
+    assert.match(stdout.last, /PLAN REVIEW/, "request panel still flags the pending review");
+    assert.equal(fs?.planResponses.length, 0, "nothing was sent to the daemon");
+
+    stdin.feed("a"); // re-open
+    await delay(150);
+    assert.match(stdout.last, /implement — the agent proceeds/, "the overlay is back");
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("sub-agents show in the Detail pane and prefix their log rows", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
