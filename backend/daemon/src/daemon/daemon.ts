@@ -293,6 +293,11 @@ export class Daemon {
         const snap = this.#registry.get(id);
         if (snap) this.#emitSessionUpdated(snap);
       },
+      onRestructuring: (id) => {
+        if (this.#stopping) return;
+        const snap = this.#registry.get(id);
+        if (snap) this.#emitSessionUpdated(snap);
+      },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
         this.#registry.setFields(id, { providerRef: ref });
@@ -533,6 +538,15 @@ export class Daemon {
     if (bgTasks.length > 0) out = { ...out, backgroundTasks: bgTasks };
     const rateLimits = this.#sessions.rateLimitsOf(s.id);
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
+    // A compaction holds the op gate for its whole (multi-minute) run; surface
+    // it on the snapshot so a freshly attached client (reopened TUI, second
+    // window) still shows "compacting…" — `compact_progress` beats are not
+    // persisted. `contextUsed` is the pre-compact fill: the mapper re-measures
+    // only at the boundary / next turn.
+    const compacting = this.#sessions.compacting(s.id);
+    if (compacting) {
+      out = { ...out, compacting: { startedAt: compacting.startedAt, before: s.contextUsed } };
+    }
     const ttlMinutes = isClaudeId(s.provider) ? this.#cacheTtlMinutes : 0;
     if (ttlMinutes !== out.cache.ttlMinutes) {
       out = { ...out, cache: { ...out.cache, ttlMinutes } };

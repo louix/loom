@@ -335,10 +335,15 @@ message you send resets that count. The Detail pane's cache line shows
 — blank gives a best-effort summary of everything; text is the advanced path,
 steering what the summary keeps (e.g. `keep the plan, drop the investigation`) —
 or `loom compact <id> [steer…]`. It drives the provider's own compaction: for
-Claude, `/compact` over the streaming input; for aisdk sessions, a Loom-side
-summariser. Summarising a long history takes a while, so aisdk sessions tick a
+Claude, `/compact` over the streaming input (Loom tracks the wait and ticks the
+heartbeat itself — the CLI reports no progress); for aisdk sessions, a Loom-side
+summariser. Summarising a long history takes a while, so both tick a
 `compact_progress` heartbeat — the Detail pane shows `⇊ compacting… Ns` and the
-Fleet row a `⇊` dot — with a 15-minute hard ceiling. When the boundary lands it
+Fleet row a `⇊` dot — with a 15-minute hard ceiling, and the indicator is
+snapshot-backed: close and reopen the TUI (or open a second one) mid-compaction
+and it's still there. While it runs, the session's op gate is held — sends
+bounce with `busy` and the TUI queues them until the boundary lands. When the
+boundary lands it
 shows in the event log as `⇊ context compacted 154k → …`; the context meter
 re-measures on the next turn. `session.compact` is the RPC.
 

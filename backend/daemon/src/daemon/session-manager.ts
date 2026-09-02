@@ -50,6 +50,8 @@ export interface ManagerHooks {
   onProviderRef(sessionId: string, providerRef: string): void;
   /** The adapter's own mode changed outside of an explicit `session.setMode` call. */
   onMode(sessionId: string, mode: SessionMode): void;
+  /** The session's restructuring gate (compact / rewind) opened or closed. */
+  onRestructuring(sessionId: string): void;
   log: Logger;
 }
 
@@ -85,6 +87,8 @@ interface Running {
   gate: Promise<unknown>;
   /** Set for the duration of a gated `compact` / `rewind`; a straight `send` is fast-failed while non-null. */
   restructuring: "compact" | "rewind" | null;
+  /** Epoch ms the gate opened — seeds the snapshot's `compacting` overlay. */
+  restructuringSince: number | null;
   /** Set around a gated `rewind` — `interrupt` no-ops rather than clobber a fork in progress. */
   rewinding: boolean;
 }
@@ -123,6 +127,18 @@ export class SessionManager {
     return this.#running.get(id)?.restructuring ?? null;
   }
 
+  /**
+   * The `compacting` snapshot overlay — set while a gated `compact` holds the
+   * op gate. Beats aren't persisted, so this is what a freshly attached client
+   * (reopened TUI, second window) reads instead.
+   */
+  compacting(id: string): { startedAt: number } | null {
+    const run = this.#running.get(id);
+    return run !== undefined && run.restructuring === "compact" && run.restructuringSince !== null
+      ? { startedAt: run.restructuringSince }
+      : null;
+  }
+
   // --- lifecycle --------------------------------------------------------
 
   async create(provider: AgentProvider, opts: CreateSessionOptions): Promise<void> {
@@ -154,6 +170,7 @@ export class SessionManager {
       pump: Promise.resolve(),
       gate: Promise.resolve(),
       restructuring: null,
+      restructuringSince: null,
       rewinding: false,
     };
     this.#running.set(id, run);
@@ -453,12 +470,18 @@ export class SessionManager {
     if (run.ended) throw new Error("session has ended");
     return this.#enqueue(run, async () => {
       run.restructuring = "compact";
+      run.restructuringSince = Date.now();
+      // Snapshots carry a `compacting` overlay for the whole gate hold, so a
+      // client that attaches mid-compaction still shows "compacting…".
+      this.#hooks.onRestructuring(id);
       try {
         await run.session.compact(instructions);
         // Status is left to the event stream: `/compact` runs a turn that ends
         // with its own `result`, and a session compacted while idle stays idle.
       } finally {
         run.restructuring = null;
+        run.restructuringSince = null;
+        this.#hooks.onRestructuring(id);
       }
     });
   }
@@ -597,12 +620,16 @@ export class SessionManager {
     }
     return this.#enqueue(run, async () => {
       run.restructuring = "rewind";
+      run.restructuringSince = Date.now();
+      this.#hooks.onRestructuring(id);
       run.rewinding = true;
       try {
         await run.session.rewind(keep, at);
         if (this.#running.get(id) === run) this.#transition(id, run, stateIdle, "rewind");
       } finally {
         run.restructuring = null;
+        run.restructuringSince = null;
+        this.#hooks.onRestructuring(id);
         run.rewinding = false;
       }
     });

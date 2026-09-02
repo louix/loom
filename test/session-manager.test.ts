@@ -785,9 +785,24 @@ test("session.send is refused with code=busy while a compact is in flight", asyn
   fs.finishTurn({ contextUsed: 50_000 });
   await waitFor(async () => (await statusOf(c, id)) === "idle");
 
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
   const release = fs.blockCompact();
   const compacting = c.request("session.compact", { id }); // held on the gate
   await waitFor(() => fs.compacts.length === 1);
+
+  // The in-flight compaction rides the snapshot (beats aren't persisted), so a
+  // client that attaches mid-compaction still shows "compacting…" — with the
+  // context fill it started from.
+  const flag = [...frames]
+    .reverse()
+    .find(
+      (f): f is Extract<PushFrame, { type: "session_updated" }> =>
+        f.type === "session_updated" && f.session.id === id,
+    )?.session.compacting;
+  assert.ok(flag, "the snapshot reports the in-flight compaction");
+  assert.equal(typeof flag.startedAt, "number");
+  assert.equal(flag.before, 50_000, "`before` is the pre-compact context fill");
 
   await assert.rejects(
     c.request("session.send", { id, text: "hi" }),
@@ -796,6 +811,15 @@ test("session.send is refused with code=busy while a compact is in flight", asyn
 
   release();
   await compacting;
+  await delay(40);
+  // The overlay rides the snapshot only while the gate is held.
+  const cleared = [...frames]
+    .reverse()
+    .find(
+      (f): f is Extract<PushFrame, { type: "session_updated" }> =>
+        f.type === "session_updated" && f.session.id === id,
+    )?.session.compacting;
+  assert.equal(cleared, undefined, "the overlay clears when the gate releases");
   assert.equal(fs.compacts.length, 1);
   assert.deepEqual(fs.sends, [], "the send never reached the adapter");
   await c.close();

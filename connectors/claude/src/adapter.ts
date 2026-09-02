@@ -61,6 +61,34 @@ const CAPS: ProviderCapabilities = {
   models: [],
 };
 
+/**
+ * Heartbeat cadence while a `/compact` summarise is in flight — same shape as
+ * the aisdk engine's beats (`aisdk/src/session.ts`): fast for the first half
+ * minute, then back off. The CLI reports no compaction progress, so `generated`
+ * stays 0 and the beats are pure liveness.
+ */
+const COMPACT_BEAT_FAST_MS = 2_000;
+const COMPACT_BEAT_SLOW_MS = 10_000;
+const COMPACT_BEAT_BACKOFF_AFTER_MS = 30_000;
+/**
+ * Hard ceiling on one `/compact`. Nothing reports a failure mid-summarise, so
+ * without a ceiling a wedged compaction would hold the daemon's op gate (and
+ * every queued send) forever. Kept in step with the aisdk engine's
+ * `SUMMARISE_TIMEOUT_MS` and the client's `session.compact` RPC timeout.
+ */
+const COMPACT_CEILING_MS = 15 * 60_000;
+
+/** An in-flight `/compact` — see {@link ClaudeSession.#compactWait}. */
+interface CompactWait {
+  /** Settles when the compaction ends (boundary, failed turn, teardown, ceiling). */
+  done: Promise<void>;
+  resolve: () => void;
+  readonly startedAt: number;
+  /** Context-token estimate when the `/compact` was pushed — labels the beats. */
+  readonly before: number;
+  beatTimer: ReturnType<typeof setTimeout> | null;
+  deadlineTimer: ReturnType<typeof setTimeout> | null;
+}
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
 
@@ -207,6 +235,19 @@ class ClaudeSession implements AgentSession {
    */
   #interrupted = false;
 
+  /**
+   * An in-flight `/compact` pushed by {@link compact}: the promise the daemon's
+   * op gate parks on (a `send` during the summarise fast-fails with `busy` and
+   * the TUI queues it, instead of racing into the CLI's own input queue) plus
+   * the heartbeat / ceiling timers that keep clients showing "compacting…" for
+   * the whole run. The CLI reports nothing between the pushed command and the
+   * final `compact_boundary`, so liveness is synthesized here. Settled by the
+   * boundary, by a failed turn carrying it, by interrupt / close / teardown, or
+   * by the ceiling — never by an ok `result`, which a `/compact` queued behind
+   * a live turn passes through *before* the boundary lands.
+   */
+  #compactWait: CompactWait | null = null;
+
   constructor(opts: CreateSessionOptions) {
     this.id = opts.sessionId;
     this.#mapper = new ClaudeEventMapper(opts.sessionId);
@@ -336,6 +377,17 @@ class ClaudeSession implements AgentSession {
         // Always run the mapper — it carries cumulative token / cost state
         // that must stay correct even for a turn we're suppressing.
         const events = this.#mapper.map(msg);
+        // A tracked compaction ends at its `compact_boundary` — or when the
+        // turn carrying it fails. Checked before the interrupt muzzle so the
+        // wait (and the daemon's op gate) releases even for events we drop.
+        if (this.#compactWait) {
+          for (const ev of events) {
+            if (ev.type === "compact" || (ev.type === "result" && ev.kind === "error")) {
+              this.#settleCompact();
+              break;
+            }
+          }
+        }
         if (this.#interrupted) continue;
         for (const ev of events) this.#outbox.push(ev);
       }
@@ -373,6 +425,10 @@ class ClaudeSession implements AgentSession {
     this.#pendingQuestions.clear();
     for (const [, resolve] of this.#pendingPlans) resolve({ behavior: "deny", message: reason });
     this.#pendingPlans.clear();
+    // An in-flight compaction is pending on the same process: interrupt /
+    // stream-end / close all abandon it. The error event is what clients use
+    // to clear the "compacting…" indicator (trackCompacting in the TUI model).
+    this.#settleCompact(`compaction abandoned — ${reason}`);
   }
 
   events(): AsyncIterable<HarnessEvent> {
@@ -390,11 +446,101 @@ class ClaudeSession implements AgentSession {
    * The CLI treats a leading-slash user message as a command; when the summary
    * lands it emits a `compact_boundary` system message, which the mapper turns
    * into a `compact` event.
+   *
+   * The promise resolves only when that boundary (or a failure) lands, holding
+   * the daemon's op gate for the whole summarise; `compact_progress` beats keep
+   * clients showing "compacting…" in the meantime.
    */
   async compact(instructions?: string): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     const trimmed = instructions?.trim();
     this.#inbox.push(userMessage(trimmed ? `/compact ${trimmed}` : "/compact"));
+    // One tracked compaction at a time. The daemon's op gate serialises
+    // `session.compact` calls, so this only spins for the plan-approval path
+    // racing a manual one; the CLI runs the queued `/compact`s in input order.
+    while (this.#compactWait) await this.#compactWait.done.catch(() => {});
+    if (this.#closing) return;
+    // Park here until the `compact_boundary` (or a failed turn / interrupt /
+    // close / the 15-minute ceiling) settles the wait. This is what holds the
+    // daemon's op gate closed for the whole summarise — without it the gate
+    // reopens instantly, a racing `send` streams straight into the CLI's input
+    // queue instead of bouncing with `busy`, and the "compacting…" overlay
+    // clears while the CLI is still working.
+    await this.#trackCompact().done;
+  }
+
+  /** Start the beats and open the wait the daemon's op gate parks on. */
+  #trackCompact(): CompactWait {
+    const startedAt = Date.now();
+    const before = this.#mapper.state.contextUsed;
+    let resolve!: () => void;
+    const done = new Promise<void>((r) => {
+      resolve = r;
+    });
+    const wait: CompactWait = {
+      done,
+      resolve,
+      startedAt,
+      before,
+      beatTimer: null,
+      deadlineTimer: null,
+    };
+    this.#compactWait = wait;
+    const beat = (): void =>
+      this.#outbox.push({
+        type: "compact_progress",
+        sessionId: this.id,
+        ts: Date.now(),
+        elapsedMs: Date.now() - startedAt,
+        // The CLI streams no summary text we can see — the beat is liveness only.
+        generated: 0,
+        before,
+      });
+    const schedule = (): void => {
+      if (this.#compactWait !== wait) return;
+      const slow = Date.now() - startedAt > COMPACT_BEAT_BACKOFF_AFTER_MS;
+      wait.beatTimer = setTimeout(
+        () => {
+          beat();
+          schedule();
+        },
+        slow ? COMPACT_BEAT_SLOW_MS : COMPACT_BEAT_FAST_MS,
+      );
+      if (typeof wait.beatTimer.unref === "function") wait.beatTimer.unref();
+    };
+    beat();
+    schedule();
+    wait.deadlineTimer = setTimeout(() => {
+      this.#log.warn("compaction ceiling reached — releasing the op gate", {
+        elapsedMs: Date.now() - startedAt,
+      });
+      this.#settleCompact(
+        "the compaction hit its 15-minute ceiling — the transcript was left as-is",
+      );
+    }, COMPACT_CEILING_MS);
+    if (typeof wait.deadlineTimer.unref === "function") wait.deadlineTimer.unref();
+    return wait;
+  }
+
+  /** End the tracked compaction (if any): stop the timers, release the waiter. */
+  #settleCompact(abandoned?: string): void {
+    const wait = this.#compactWait;
+    if (!wait) return;
+    this.#compactWait = null;
+    if (wait.beatTimer) clearTimeout(wait.beatTimer);
+    if (wait.deadlineTimer) clearTimeout(wait.deadlineTimer);
+    wait.resolve();
+    if (abandoned) {
+      // Mirrors the aisdk engine's "compaction was cancelled" error — clients
+      // clear the "compacting…" indicator on any `error` event for the session.
+      this.#outbox.push({
+        type: "error",
+        sessionId: this.id,
+        ts: Date.now(),
+        message: abandoned,
+        fatal: false,
+      });
+    }
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
@@ -465,9 +611,13 @@ class ClaudeSession implements AgentSession {
 
     resolve({ behavior: "deny", message: "Plan accepted — implementing now." });
     if (decision.action === "implement_fresh") {
-      await this.compact(
+      // Fire-and-forget: the CLI consumes the inbox FIFO, so the `/compact`
+      // lands ahead of the implement turn below without parking this RPC (a
+      // 30s client timeout) for the multi-minute summarise. The tracked wait
+      // still beats and holds the op gate until the boundary lands.
+      void this.compact(
         "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
-      );
+      ).catch(() => {});
     }
     await this.setMode(decision.mode ?? "acceptEdits");
     const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";

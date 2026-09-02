@@ -2137,3 +2137,85 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
 // keep a reference to TuiState so the import is load-bearing for type checks
 const _typecheck: TuiState = initialState();
 void _typecheck;
+
+// --- snapshot-backed compacting (survives a reopen / second client) ---------
+
+test("a snapshot's compacting overlay seeds the indicator across a reopen", () => {
+  // hello: a session already mid-compaction at attach time shows "compacting…".
+  const mid = snap({
+    id: "a",
+    status: "idle",
+    compacting: { startedAt: 9_000, before: 120_000 },
+  });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [mid] });
+  assert.deepEqual(s.compacting["a"], { startedAt: 9_000, generated: 0, before: 120_000 });
+
+  // The gate released — a snapshot without the flag clears the entry (the
+  // daemon only clears it after the boundary has already been broadcast).
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 1,
+      type: "session_updated",
+      session: snap({ id: "a", status: "idle", updatedAt: 99 }),
+      version: 2,
+    },
+  });
+  assert.equal(s.compacting["a"], undefined);
+});
+
+test("session_updated seeds the overlay mid-flight and never clobbers live beats", () => {
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "s1" })] });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({
+        type: "compact_progress",
+        sessionId: "s1",
+        ts: 10_000,
+        elapsedMs: 4_000,
+        generated: 128,
+        before: 90_000,
+      }),
+    ),
+  });
+  // A live beat-driven entry is fresher than any snapshot — the seed skips it.
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 2,
+      type: "session_updated",
+      session: snap({
+        id: "s1",
+        status: "idle",
+        compacting: { startedAt: 1, before: 1 },
+        updatedAt: 50,
+      }),
+      version: 3,
+    },
+  });
+  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+
+  // Another session's compaction seeds on its own session_updated without
+  // touching the first.
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 3,
+      type: "session_updated",
+      session: snap({
+        id: "s2",
+        status: "idle",
+        compacting: { startedAt: 42_000, before: 77_000 },
+        updatedAt: 51,
+      }),
+      version: 4,
+    },
+  });
+  assert.deepEqual(s.compacting["s2"], { startedAt: 42_000, generated: 0, before: 77_000 });
+  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+});

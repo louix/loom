@@ -573,7 +573,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
-        compacting: pruneByLive(s.compacting, sessions),
+        compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
       };
     }
 
@@ -596,7 +596,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
-        compacting: pruneByLive(s.compacting, sessions),
+        compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
       };
     }
 
@@ -869,12 +869,16 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       const pending = settled ? without(s.pending, frame.session.id) : s.pending;
       // An open plan overlay for a session that has moved on is stale — drop it.
       const planGone = settled && s.plan?.sessionId === frame.session.id;
+      // A compaction that started before this client attached shows up on the
+      // snapshot — see rebaseCompacting (drainQueues holds queued sends on it).
+      const compacting = rebaseCompacting(s.compacting, [frame.session]);
       return {
         ...s,
         sessions,
         selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
         ...settlePendingSelect(s, sessions),
         pending,
+        compacting,
         ...(planGone
           ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
           : {}),
@@ -929,7 +933,8 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
     case "resync":
       // The client refetches and dispatches a fresh `sessions` action. Drop the
       // compacting indicators — the heartbeats that feed them were in the frames
-      // we rolled past; a still-running compaction re-announces within ~10s.
+      // we rolled past; the refetch re-seeds any still-running compaction from
+      // the snapshot's `compacting` overlay (rebaseCompacting).
       return { ...s, compacting: {} };
 
     case "notice":
@@ -1042,6 +1047,35 @@ const trackCompacting = (cur: TuiState["compacting"], ev: HarnessEvent): TuiStat
     return without(cur, ev.sessionId);
   }
   return cur;
+};
+
+/**
+ * Rebase the "compacting…" map onto snapshot-reported state for exactly these
+ * sessions (others untouched). `compact_progress` beats are deliberately not
+ * persisted, so a client that attaches mid-compaction (reopened TUI, second
+ * window) learns about it from the snapshot's `compacting` overlay: seed an
+ * entry when the daemon reports one and no live entry exists yet (beats carry
+ * fresher data once they arrive), drop it when the daemon says the gate has
+ * released. Without the seed the session reads as idle and a queued send would
+ * race the daemon's `busy` gate; without the drop a stale entry would pin
+ * "compacting…" forever.
+ */
+const rebaseCompacting = (
+  cur: TuiState["compacting"],
+  sessions: readonly SessionSnapshot[],
+): TuiState["compacting"] => {
+  let out = cur;
+  for (const s of sessions) {
+    const flag = s.compacting;
+    if (flag) {
+      if (!out[s.id]) {
+        out = { ...out, [s.id]: { startedAt: flag.startedAt, generated: 0, before: flag.before } };
+      }
+    } else if (out[s.id]) {
+      out = without(out, s.id);
+    }
+  }
+  return out;
 };
 
 const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {

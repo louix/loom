@@ -214,6 +214,14 @@ export interface SessionSnapshot {
    * providers support it. Runtime-only, not persisted.
    */
   canRewind: boolean;
+  /**
+   * A compaction is in flight and holds the session's op gate: `startedAt` is
+   * when it began (epoch ms), `before` the context fill it started from.
+   * Runtime-only, not persisted — beats aren't either, so this overlay is how
+   * a freshly attached client (reopened TUI, second window) still shows
+   * "compacting…". Absent otherwise.
+   */
+  compacting?: { startedAt: number; before: number };
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;
