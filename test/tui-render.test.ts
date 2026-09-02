@@ -1228,8 +1228,9 @@ model    = "gpt-5"
     assert.doesNotMatch(stdout.last, /turn 1 · turn one prompt/);
     stdin.feed("\r"); // enter → undo turn 2
     // the compose prompt is back (as if Enter had been pressed on the session),
-    // pre-filled with turn 2's full message, ready to edit and re-send
-    await waitFor(stdout, /send \[manual\]\n ▍ the second prompt we will redo/);
+    // pre-filled with turn 2's full message, ready to edit and re-send — it
+    // draws on the session's EVENTS pane (label row, then the input line)
+    await waitFor(stdout, /send \[manual\][\s\S]*?▍ the second prompt we will redo/);
     assert.match(stdout.last, /↶ rewound to turn 1/); // the rewind landed
 
     // the transcript was truncated to turn 1 (2 messages kept) and turn 2's

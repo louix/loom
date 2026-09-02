@@ -991,6 +991,19 @@ const noticeGlyph = (tone: Tone): string => {
 export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   if (state.mode === "prompt" && state.prompt) {
     const p = state.prompt;
+    if (p.sessionId !== null) {
+      // A reply to a session — the input lives on that session's EVENTS pane
+      // (`PromptPane`, under the log); the footer keeps only the hints row.
+      const mode =
+        p.kind === "send" ? state.sessions.find((x) => x.id === p.sessionId)?.mode : null;
+      return (
+        <Box width={width} paddingX={1}>
+          <Text color={C.faint} wrap="truncate-end">
+            {promptHints(p, p.kind === "send" ? queueFor(state, p.sessionId).length : 0, mode)}
+          </Text>
+        </Box>
+      );
+    }
     const queued = p.kind === "send" ? queueFor(state, p.sessionId).length : 0;
     const placeholder = PROMPT_PLACEHOLDER[p.kind];
     const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
@@ -1075,11 +1088,48 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
  *  alt screen. */
 export const promptRows = (state: TuiState, cols: number): number => {
   if (state.mode !== "prompt" || !state.prompt) return 2 + (state.notice ? 1 : 0);
+  // A reply prompt's input is budgeted on the EVENTS pane (promptPaneRows);
+  // the footer carries just its hints row.
+  if (state.prompt.sessionId !== null) return 1;
   const editor = Math.min(
     MAX_EDITOR_ROWS,
     layoutWrapped(state.prompt.buffer, editorRoom(cols)).rows.length,
   );
   return 1 /* label */ + editor + 1; /* hints */
+};
+
+/** Columns the pane prompt wraps to: the right column minus its padding (2+2)
+ *  and the 2-char caret gutter — mirrors `editorRoom` for the pane. */
+const paneRoom = (width: number): number => Math.max(8, width - 4);
+
+/** Rows a session-targeted prompt's input group occupies on the EVENTS pane:
+ *  the label row plus the word-wrapped editor, capped like the footer editor.
+ *  Keep in sync with {@link PromptPane}'s room. */
+export const promptPaneRows = (state: TuiState, width: number): number => {
+  const p = state.prompt;
+  if (!p || p.sessionId === null) return 0;
+  const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, paneRoom(width)).rows.length);
+  return 1 /* label */ + editor;
+};
+
+/** The input group for a session-targeted prompt — label + the session's mode
+ *  chip, then the editor — drawn under that session's EVENTS log: you're
+ *  replying to this agent, so the input sits with its transcript. */
+export const PromptPane = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
+  const p = state.prompt;
+  if (!p || p.sessionId === null) return null;
+  const sess = p.kind === "send" ? state.sessions.find((x) => x.id === p.sessionId) : null;
+  return (
+    <Box flexDirection="column" width={width} paddingX={2}>
+      <Box gap={1}>
+        <Text color={C.accent} bold wrap="truncate-end">
+          {p.label}
+        </Text>
+        {sess ? modeChip(sess.mode) : null}
+      </Box>
+      <InputLine buf={p.buffer} room={paneRoom(width)} placeholder={PROMPT_PLACEHOLDER[p.kind]} />
+    </Box>
+  );
 };
 
 // ---------------------------------------------------------------------------

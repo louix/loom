@@ -25,7 +25,7 @@ import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
-import { detailRows, promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
+import { detailRows, promptPaneRows, promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
   loadableFailed,
@@ -55,6 +55,7 @@ import {
   parseAskUserQuestions,
   pendingFor,
   pickerCurrent,
+  promptOnPane,
   providerAccountOf,
   providerInfo,
   providerPickItems,
@@ -250,7 +251,10 @@ const deriveView = (
     compacting: sel ? (state.compacting[sel.id] ?? null) : null,
     queued: sel ? queueFor(state, sel.id) : [],
   });
-  const splitLogH = Math.max(4, bodyH - detailH - 1);
+  // A session-targeted prompt draws its input group under the EVENTS log (its
+  // label + editor rows) — budget them against the log's height.
+  const paneH = promptOnPane(state.prompt) ? promptPaneRows(state, rightW) : 0;
+  const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
   const logH = logFull ? bodyH : splitLogH;
   const logPage = Math.max(1, logH - 3);
 
@@ -265,7 +269,8 @@ const deriveView = (
   else if (state.mode === "confirm" && state.confirm) body = "confirm";
   else if (state.mode === "plan" && state.plan) body = "plan";
   else if (state.mode === "picker" && state.picker) body = "picker";
-  else if (logFull) body = "logFull";
+  // logFull yields to a reply prompt — its input draws on the EVENTS pane.
+  else if (logFull && !promptOnPane(state.prompt)) body = "logFull";
 
   return {
     state,

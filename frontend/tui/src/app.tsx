@@ -10,7 +10,7 @@ import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
-import { providerAccountOf, providerColorOf, queueFor } from "./model.ts";
+import { providerAccountOf, providerColorOf, promptOnPane, queueFor } from "./model.ts";
 import { C } from "./theme.ts";
 import {
   Confirm,
@@ -22,6 +22,7 @@ import {
   Header,
   Help,
   Picker,
+  PromptPane,
   PlanReview,
   RequestPanel,
 } from "./components.tsx";
@@ -162,6 +163,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               scroll={view.logScroll}
               full={false}
             />
+            {promptOnPane(state.prompt) ? <PromptPane state={state} width={rightW} /> : null}
           </Box>
         </Box>
       );

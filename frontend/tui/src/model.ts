@@ -200,6 +200,16 @@ export const makePrompt = (init: {
   };
 };
 
+/**
+ * Where a prompt's input renders. Every session-targeted prompt (send, answer,
+ * deny, rename, discuss, compact) draws on that session's EVENTS pane — you're
+ * replying to a specific agent, so the input sits with its transcript. Only the
+ * sessionless `new` prompt stays in the footer.
+ */
+export const promptOnPane = (p: PromptState | null | undefined): boolean => {
+  return p?.sessionId != null;
+};
+
 // ---------------------------------------------------------------------------
 // picker overlay — provider choice, model choice, session find
 // ---------------------------------------------------------------------------

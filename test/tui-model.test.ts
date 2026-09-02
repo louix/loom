@@ -55,7 +55,7 @@ import {
   type LogLine,
   type TuiState,
 } from "@loom/tui/model";
-import { detailRows, promptRows } from "@loom/tui/components";
+import { detailRows, promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   bar,
@@ -2198,7 +2198,7 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
   // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
   const prompted = reduce(noted, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+    prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
   });
   assert.equal(promptRows(prompted, 100), 3);
 });
@@ -2207,7 +2207,7 @@ test("promptRows counts word-wrapped editor rows at the terminal's width", () =>
   const open = (text: string) =>
     reduce(initialState(), {
       t: "openPrompt",
-      prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text }),
+      prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text }),
     });
   // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
   const wide = open("one two three");
@@ -2216,6 +2216,19 @@ test("promptRows counts word-wrapped editor rows at the terminal's width", () =>
   // The budget never exceeds MAX_EDITOR_ROWS, however long the text wraps.
   const flood = open("word ".repeat(40));
   assert.equal(promptRows(flood, 12), 10);
+});
+
+test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => {
+  const open = (text: string) =>
+    reduce(initialState(), {
+      t: "openPrompt",
+      prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text }),
+    });
+  // The footer carries only the hints row…
+  assert.equal(promptRows(open(""), 100), 1);
+  // …and the pane carries label + wrapped editor, capped at MAX_EDITOR_ROWS.
+  assert.equal(promptPaneRows(open("one two three"), 100), 2);
+  assert.equal(promptPaneRows(open("word ".repeat(40)), 12), 9);
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks
