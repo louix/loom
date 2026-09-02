@@ -82,13 +82,18 @@ Consequences:
 
 ### Always
 
-| key        | action                                                                 |
-| ---------- | ---------------------------------------------------------------------- |
-| `n`        | new session — the prompt shows the provider / model; `⌥p` changes them |
-| `/`        | fuzzy-find a session by title or message text                          |
-| `q` / `⌃c` | quit the UI — the daemon keeps running                                 |
+| key        | action                                                                                                                                                   |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `n`        | new session — the prompt shows the provider / model; `⌥p` changes them                                                                                   |
+| `/`        | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
+| `q` / `⌃c` | quit the UI — the daemon keeps running                                                                                                                   |
 
 ## In the prompt
+
+Reply prompts — send, answer, deny, rename, discuss, compact — draw on the
+selected session's EVENTS pane (label, then the input under its transcript), so
+you can see the agent you're typing at; the footer keeps their hints row. The
+sessionless `new` prompt stays in the footer.
 
 `Ctrl` carries the readline motions and nothing else:
 
@@ -124,7 +129,7 @@ for heavier multi-line editing.
 
 Each overlay owns the screen and shows its own fixed key set on the footer:
 
-- **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel.
+- **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel. Session search is not a picker anymore — `/` filters the FLEET list in place (same readline motions; `↑↓` keep moving the selection, `enter` accepts, `esc` clears).
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
 - **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⇧⇥` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥p` retarget `f` for model / thinking-effort / provider (pre-selected to the session's current; a different provider forks a fresh session) · `⌥o`/`o` view. The overlay also shows the session's context meter. A plan review must be answered — `Esc` does nothing.
 

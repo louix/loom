@@ -211,19 +211,19 @@ export const promptOnPane = (p: PromptState | null | undefined): boolean => {
 };
 
 // ---------------------------------------------------------------------------
-// picker overlay — provider choice, model choice, session find
+// picker overlay — provider choice, model choice, undo, the command palette
 // ---------------------------------------------------------------------------
 
 export interface PickItem {
   id: string;
   label: string;
   hint?: string;
-  /** Extra text folded into the fuzzy match (message content for `find`). */
+  /** Extra text folded into the fuzzy match (a turn's user text for `undo`). */
   blob?: string;
 }
 
 export interface PickerState {
-  kind: "provider" | "model" | "effort" | "find" | "undo" | "command";
+  kind: "provider" | "model" | "effort" | "undo" | "command";
   title: string;
   items: PickItem[];
   /** Shown when `items` is empty (e.g. no models detected for a provider). */
@@ -463,8 +463,14 @@ export interface TuiState {
     mode: SessionMode;
     impl?: { provider: string; model?: string; effort?: string };
   } | null;
-  /** An open picker overlay (provider / model / find). */
+  /** An open picker overlay (provider / model / undo, or the command palette). */
   picker: PickerState | null;
+  /**
+   * The fleet filter (`/`) — a single-line query that narrows the FLEET list in
+   * place. ↑/↓ keep moving the session selection while it's up; ⏎ accepts
+   * (keeping enter's fleet-row meaning) and esc clears. null = closed.
+   */
+  find: { buffer: Buffer } | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
   /**
@@ -498,6 +504,7 @@ export const initialState = (): TuiState => {
     confirm: null,
     plan: null,
     picker: null,
+    find: null,
     promptHistory: [],
     lastDraft: "",
   };
@@ -564,6 +571,9 @@ export type Action =
   | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
   | { t: "closePicker" }
+  | { t: "openFind" }
+  | { t: "findSet"; buffer: Buffer }
+  | { t: "closeFind" }
   | { t: "resolvePerm"; sessionId: string; id: string }
   | { t: "help"; value: boolean }
   | { t: "doctor"; value: boolean }
@@ -637,11 +647,18 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, theme: nextThemeMode(s.theme) };
 
     case "move": {
-      if (s.sessions.length === 0) return s;
-      const idx = s.sessions.findIndex((x) => x.id === s.selectedId);
-      const from = idx < 0 ? 0 : idx;
-      const next = Math.max(0, Math.min(s.sessions.length - 1, from + a.delta));
-      const picked = s.sessions[next];
+      // With the fleet filter up, ↑/↓ walk the matching sessions only — the rows
+      // the fleet is actually showing. Off-list (the selection was filtered
+      // out), ↓ lands on the first match and ↑ on the last.
+      const find = s.find;
+      const list = find
+        ? s.sessions.filter((x) => sessionMatches(s, x, find.buffer.text))
+        : s.sessions;
+      if (list.length === 0) return s;
+      let from = list.findIndex((x) => x.id === s.selectedId);
+      if (from < 0) from = a.delta < 0 ? list.length : -1;
+      const next = Math.max(0, Math.min(list.length - 1, from + a.delta));
+      const picked = list[next];
       if (!picked || picked.id === s.selectedId) return s;
       return { ...s, selectedId: picked.id, selectedChild: null };
     }
@@ -847,6 +864,25 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, mode: s.mode === "picker" ? back : s.mode, picker: null };
     }
 
+    case "openFind":
+      return { ...s, find: { buffer: buffer() } };
+
+    case "findSet": {
+      if (!s.find) return s;
+      const next = { ...s, find: { buffer: a.buffer } };
+      // As the query narrows, ride the selection onto the first match
+      // (fzf-style) — the Detail / EVENTS panes then follow the row the filter
+      // is pointing at. An empty query (or no match) leaves the selection be.
+      const q = a.buffer.text;
+      if (q === "") return next;
+      const matches = s.sessions.filter((x) => sessionMatches(s, x, q));
+      if (matches.length === 0 || matches.some((x) => x.id === s.selectedId)) return next;
+      return { ...next, selectedId: matches[0]!.id, selectedChild: null };
+    }
+
+    case "closeFind":
+      return s.find ? { ...s, find: null } : s;
+
     case "resolvePerm": {
       const cur = s.pending[a.sessionId];
       if (!cur?.permissions) return s;
@@ -950,17 +986,6 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       // just removed would loop on submit (RPC error → reopen). Close it.
       const promptGone = s.prompt?.sessionId === frame.sessionId;
       const pickerGone = s.picker?.ctx?.liveSessionId === frame.sessionId;
-      // A `find` picker lists sessions by id — drop the vanished row so `enter`
-      // can't land on a ghost.
-      let picker = s.picker;
-      if (
-        !pickerGone &&
-        picker?.kind === "find" &&
-        picker.items.some((it) => it.id === frame.sessionId)
-      ) {
-        const items = picker.items.filter((it) => it.id !== frame.sessionId);
-        picker = { ...picker, items, index: Math.min(picker.index, Math.max(0, items.length - 1)) };
-      }
       // The pending selection itself was removed before it ever arrived — drop
       // the hold so the clamp falls back to the fleet head.
       const pendingSel = s.pendingSelectId === frame.sessionId ? undefined : s.pendingSelectId;
@@ -980,7 +1005,7 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
           : {}),
         ...(pickerGone
           ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }
-          : { picker }),
+          : { picker: s.picker }),
       };
     }
     case "resync":
@@ -1671,8 +1696,8 @@ export const effortPickItems = (s: TuiState, providerId: string, modelId: string
 /**
  * `Esc` inside a picker: step back one level of the provider → model →
  * (optional) effort → prompt wizard instead of discarding the whole detour
- * (and any draft text typed before it). Kinds with no "back" step — `find`,
- * `undo`, `command`, or a bare live `⌥m` / `⌥t` switch with nothing to
+ * (and any draft text typed before it). Kinds with no "back" step — `undo`,
+ * `command`, or a bare live `⌥m` / `⌥t` switch with nothing to
  * return to — just close.
  *
  * An `effort` step reached by picking a model that takes one (⌥p wizard, or
@@ -1766,20 +1791,16 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
   return { t: "closePicker" };
 };
 
-/** Sessions as find targets — title + this session's log text folded into the match. */
-export const findPickItems = (s: TuiState): PickItem[] => {
-  const logBySession = new Map<string, string[]>();
-  for (const l of s.log) {
-    const arr = logBySession.get(l.sessionId) ?? [];
-    arr.push(l.text);
-    logBySession.set(l.sessionId, arr);
-  }
-  return s.sessions.map((sess) => ({
-    id: sess.id,
-    label: sess.title ?? shortId(sess.id),
-    hint: `${sess.provider}${sess.model ? `/${sess.model}` : ""} · ${sess.status.kind}`,
-    blob: (logBySession.get(sess.id) ?? []).join(" "),
-  }));
+/**
+ * Does a session match the fleet filter (`/`)? The same fuzzy match the old
+ * find picker used — the title with every log line folded into one haystack,
+ * so a half-remembered message finds its session.
+ */
+export const sessionMatches = (s: TuiState, sess: SessionSnapshot, q: string): boolean => {
+  if (q === "") return true;
+  let hay = sess.title ?? shortId(sess.id);
+  for (const l of s.log) if (l.sessionId === sess.id) hay += ` ${l.text}`;
+  return fuzzyMatch(hay, q);
 };
 
 export interface Group {

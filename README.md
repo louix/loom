@@ -151,8 +151,9 @@ tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
   `y` copy the branch, `o` view the log in `$EDITOR`, `v` full / chat,
   `F` hard-fork into a new session + worktree, `X` delete (behind a confirm;
   `b` there also deletes the branch). `n` starts a new session — the prompt
-  shows the provider / model and `⌥p` changes them; `f` fuzzy-finds a session by
-  title or message text.
+  shows the provider / model and `⌥p` changes them; `/` filters the fleet in
+  place — type to narrow the list (titles and message text), `↑↓` keep moving
+  the selection, `enter` accepts, `esc` clears.
   Sending to a session that's still working: `Enter` sends now, `⌥⏎` queues it
   for when the turn ends. On an aisdk session "sends now" splices the message
   into the running turn right after the current tool result (the model sees it

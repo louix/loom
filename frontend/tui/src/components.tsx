@@ -23,6 +23,7 @@ import {
   providerInfo,
   queueFor,
   selectedSession,
+  sessionMatches,
   visibleLog,
   type Connection,
   type ConfirmState,
@@ -187,7 +188,12 @@ export const Fleet = ({
   width: number;
   now?: number;
 }): ReactNode => {
-  const groups = groupsOf(state.sessions);
+  // The fleet filter (`/`) narrows the list in place — the same fuzzy match the
+  // old find picker used, over titles and each session's log text.
+  const query = state.find?.buffer.text ?? "";
+  const matched =
+    query === "" ? state.sessions : state.sessions.filter((x) => sessionMatches(state, x, query));
+  const groups = groupsOf(matched);
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
   const compactingIds = new Set(Object.keys(state.compacting));
@@ -199,11 +205,17 @@ export const Fleet = ({
   const blocks =
     groups.length === 0
       ? [
-          <Text key="empty" color={C.dim}>
-            {"no sessions yet — press "}
-            <Text color={C.accent}>{"n"}</Text>
-            {" to start one"}
-          </Text>,
+          state.find ? (
+            <Text key="empty" color={C.dim} wrap="truncate-end">
+              {"no sessions match — esc clears the filter"}
+            </Text>
+          ) : (
+            <Text key="empty" color={C.dim}>
+              {"no sessions yet — press "}
+              <Text color={C.accent}>{"n"}</Text>
+              {" to start one"}
+            </Text>
+          ),
         ]
       : groups.map((g, i) => (
           <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
@@ -230,6 +242,18 @@ export const Fleet = ({
           </Box>
         ));
 
+  let title = "FLEET";
+  if (focused) {
+    title = `FLEET · ${shortId(state.selectedId ?? "")} ▸ ${childGlyph(focused)} ${truncate(
+      focused.label.replace(/\s+/g, " ").trim(),
+      Math.max(8, iw - 24),
+    )}`;
+  } else if (state.find) {
+    title = `FLEET · ${matched.length}/${state.sessions.length} match${
+      matched.length === 1 ? "" : "es"
+    }`;
+  }
+
   return (
     <Box
       flexDirection="column"
@@ -240,13 +264,18 @@ export const Fleet = ({
       paddingX={1}
     >
       <Text color={C.dim} wrap="truncate-end">
-        {focused
-          ? `FLEET · ${shortId(state.selectedId ?? "")} ▸ ${childGlyph(focused)} ${truncate(
-              focused.label.replace(/\s+/g, " ").trim(),
-              Math.max(8, iw - 24),
-            )}`
-          : "FLEET"}
+        {title}
       </Text>
+      {state.find ? (
+        <Box marginTop={1}>
+          <InputLine
+            buf={state.find.buffer}
+            room={Math.max(8, iw - 2)}
+            placeholder="type to filter"
+            multiline={false}
+          />
+        </Box>
+      ) : null}
       <Box flexDirection="column" marginTop={1}>
         {blocks}
       </Box>

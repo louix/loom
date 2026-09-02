@@ -1110,7 +1110,18 @@ models   = ["gpt-5", "gpt-5-mini"]
   }
 });
 
-test("/ opens the find picker and filters the fleet by text", async () => {
+/** The Detail pane's title line — the selected session's title, a row under
+ *  the DETAIL header. Tells the selection apart from the fleet's own rows. */
+const detailTitle = (frame: string): string => {
+  const lines = frame
+    // oxlint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split("\n");
+  const i = lines.findIndex((l) => l.includes("DETAIL"));
+  return lines.slice(i + 1, i + 3).join(" ");
+};
+
+test("/ filters the fleet in place; ↑↓ keep moving the selection", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   await client.request("session.createStub", {
@@ -1128,22 +1139,32 @@ test("/ opens the find picker and filters the fleet by text", async () => {
     await delay(200);
     stdin.feed("/");
     await delay(120);
-    assert.match(stdout.last, /FIND SESSION/);
-    assert.match(stdout.last, /type to search/); // placeholder while the filter is empty
+    assert.match(stdout.last, /type to filter/); // the inline filter line on FLEET
     assert.match(stdout.last, /refactor the parser/);
     assert.match(stdout.last, /update the docs/);
 
     stdin.feed("parser");
     await delay(120);
     assert.match(stdout.last, /refactor the parser/);
-    assert.doesNotMatch(stdout.last, /update the docs/);
+    assert.doesNotMatch(stdout.last, /update the docs/); // narrowed to the match
 
     stdin.feed("\x15"); // ⌃u — readline kill-to-start clears the filter
     await delay(120);
     assert.match(stdout.last, /update the docs/); // list un-narrows with it
 
-    stdin.feed(ESC);
+    // A query matching both rows, then ↑: the selection moves — the arrows are
+    // NOT swallowed by the filter — and the Detail pane follows it. (The fleet
+    // order puts the docs session first, so ↑ walks onto it.)
+    stdin.feed("the");
+    await delay(120);
+    assert.match(detailTitle(stdout.last), /refactor the parser/);
+    stdin.feed("\x1b[A"); // ↑
+    await delay(120);
+    assert.match(detailTitle(stdout.last), /update the docs/);
+
+    stdin.feed(ESC); // esc clears + closes the filter
     await delay(100);
+    assert.doesNotMatch(stdout.last, /type to filter/);
     assert.match(stdout.last, /▍ loom/);
   } finally {
     app.unmount();

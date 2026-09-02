@@ -43,7 +43,6 @@ import {
   defaultProviderId,
   effortPickItems,
   escapeTarget,
-  findPickItems,
   firstPerm,
   focusedPending,
   initialState,
@@ -604,10 +603,9 @@ export const mkFleetHandle = ({
       return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
     }
     if (name === "find") {
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({ kind: "find", title: "find session", items: findPickItems(state) }),
-      });
+      // The fleet filter — an inline single-line query on the FLEET pane, not a
+      // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
+      return void dispatch({ t: state.find ? "closeFind" : "openFind" });
     }
     if (name === "help") return void dispatch({ t: "help", value: state.mode !== "help" });
     if (name === "quit") return quitTui();
@@ -1058,11 +1056,6 @@ export const mkFleetHandle = ({
           );
         return;
       }
-
-      case "find":
-        dispatch({ t: "select", id: cur.id });
-        dispatch({ t: "closePicker" });
-        return;
 
       case "command":
         // The command palette resolves in handleKey before choosePicked runs.
@@ -1835,7 +1828,7 @@ export const mkFleetHandle = ({
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
       if (key.return) {
         // The command palette runs an action through the shared dispatcher; the
-        // provider / model / find / undo pickers resolve by kind in choosePicked.
+        // provider / model / undo pickers resolve by kind in choosePicked.
         if (p.kind === "command") {
           if (overlayActed === p) return; // batched double-Enter guard
           overlayActed = p;
@@ -1855,6 +1848,19 @@ export const mkFleetHandle = ({
     }
 
     // ---- browse ----
+
+    // The fleet filter is up: typing edits it (a single line, no history); ↑/↓
+    // and PgUp/PgDn fall through — the selection and the log keep working. ⏎
+    // accepts (and keeps ⏎'s fleet-row meaning below); esc clears.
+    if (state.find) {
+      if (key.escape) return void dispatch({ t: "closeFind" });
+      if (key.return) dispatch({ t: "closeFind" });
+      else if (!key.upArrow && !key.downArrow && !key.pageUp && !key.pageDown) {
+        const res = applyKey(state.find.buffer, input, key, { multiline: false });
+        if (res.kind === "buffer") return void dispatch({ t: "findSet", buffer: res.buffer });
+        return; // unbound modified keys — ignore
+      }
+    }
     if (key.pageUp) {
       return scrollUp(Math.max(1, logPage - 1));
     }

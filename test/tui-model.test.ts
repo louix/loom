@@ -24,7 +24,6 @@ import {
   defaultProviderId,
   effortPickItems,
   escapeTarget,
-  findPickItems,
   focusedChildOf,
   focusedPending,
   footerHints,
@@ -2011,11 +2010,14 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
   assert.equal(s.picker, null);
 });
 
-test("find picker items fold message text into the fuzzy blob", () => {
+test("the fleet filter matches title + log text and rides the selection", () => {
   let s = reduce(withProviders(), {
     t: "hello",
     daemon,
-    sessions: [snap({ id: "aaa", status: "running" }), snap({ id: "bbb", status: "idle" })],
+    sessions: [
+      snap({ id: "aaa", status: "running", title: "renovate the deck" }),
+      snap({ id: "bbb", status: "idle", title: "refactor the parser" }),
+    ],
   });
   s = reduce(s, {
     t: "push",
@@ -2031,16 +2033,26 @@ test("find picker items fold message text into the fuzzy blob", () => {
     },
   } as never);
 
-  const items = findPickItems(s);
-  const bbb = items.find((i) => i.id === "bbb")!;
-  assert.match(bbb.blob ?? "", /refactor the parser/);
+  s = reduce(s, { t: "openFind" });
+  assert.equal(s.find?.buffer.text, "");
 
-  const picker = makePicker({ kind: "find", title: "find", items });
-  const filtered = pickerVisible({ ...picker, filter: buffer("parser") });
-  assert.deepEqual(
-    filtered.map((i) => i.id),
-    ["bbb"],
-  );
+  // A query matches the title OR the session's log text; as it narrows, the
+  // selection rides onto the first match.
+  s = reduce(s, { t: "findSet", buffer: buffer("parser") });
+  assert.equal(s.selectedId, "bbb");
+
+  // ↑/↓ walk the matching sessions only, never leaving the filtered set.
+  s = reduce(s, { t: "findSet", buffer: buffer("the") }); // both match again
+  assert.equal(s.selectedId, "bbb"); // still on a match — no jump
+  s = reduce(s, { t: "move", delta: -1 });
+  assert.equal(s.selectedId, "aaa");
+  s = reduce(s, { t: "move", delta: 1 });
+  assert.equal(s.selectedId, "bbb");
+
+  // esc closes the filter; the selection survives.
+  s = reduce(s, { t: "closeFind" });
+  assert.equal(s.find, null);
+  assert.equal(s.selectedId, "bbb");
 });
 
 test("a live model picker closes if its session is removed", () => {
