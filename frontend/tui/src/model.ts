@@ -398,6 +398,14 @@ export interface TuiState {
   sessions: SessionSnapshot[];
   selectedId: string | null;
   /**
+   * A session just picked (create / fork / find) whose row hasn't landed in
+   * `sessions` yet — its `session_updated` push can trail the RPC response.
+   * `clampSelection` keeps `selectedId` on this id even while it's absent, so
+   * an unrelated `session_updated` in that window can't bounce the user to the
+   * fleet head (U4). Cleared once the id appears (or is removed).
+   */
+  pendingSelectId?: string | undefined;
+  /**
    * The focused child of the selected session — a {@link FleetChild} key from
    * `childrenOf`, i.e. background work (async subagent, backgrounded shell) or
    * an in-flight foreground sub-agent. Non-null = "drilled in": ↑/↓ moves
@@ -560,7 +568,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         connection: "live",
         daemon: a.daemon,
         sessions,
-        selectedId: clampSelection(sessions, s.selectedId),
+        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
+        ...settlePendingSelect(s, sessions),
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
@@ -582,7 +591,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return {
         ...s,
         sessions,
-        selectedId: clampSelection(sessions, s.selectedId),
+        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
+        ...settlePendingSelect(s, sessions),
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
         pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
@@ -609,12 +619,20 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, selectedId: picked.id, selectedChild: null };
     }
 
-    case "select":
+    case "select": {
       // Optimistic: a freshly-created / forked session may not be in `sessions`
-      // yet (its `session_updated` push can trail the RPC response). Any later
-      // `clampSelection` keeps this id if it's real, or falls back to the head.
+      // yet (its `session_updated` push can trail the RPC response). Record it
+      // as the pending selection so `clampSelection` holds it until it arrives.
       // A different session invalidates any child focus along with it.
-      return a.id === s.selectedId ? s : { ...s, selectedId: a.id, selectedChild: null };
+      if (a.id === s.selectedId) return s;
+      const known = s.sessions.some((x) => x.id === a.id);
+      return {
+        ...s,
+        selectedId: a.id,
+        selectedChild: null,
+        ...(known ? {} : { pendingSelectId: a.id }),
+      };
+    }
 
     case "childEnter": {
       const sel = selectedSession(s);
@@ -852,7 +870,8 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       return {
         ...s,
         sessions,
-        selectedId: clampSelection(sessions, s.selectedId),
+        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
+        ...settlePendingSelect(s, sessions),
         pending,
         ...(planGone
           ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
@@ -883,10 +902,14 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
         const items = picker.items.filter((it) => it.id !== frame.sessionId);
         picker = { ...picker, items, index: Math.min(picker.index, Math.max(0, items.length - 1)) };
       }
+      // The pending selection itself was removed before it ever arrived — drop
+      // the hold so the clamp falls back to the fleet head.
+      const pendingSel = s.pendingSelectId === frame.sessionId ? undefined : s.pendingSelectId;
       return {
         ...s,
         sessions,
-        selectedId: clampSelection(sessions, s.selectedId),
+        selectedId: clampSelection(sessions, s.selectedId, pendingSel),
+        pendingSelectId: pendingSel,
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
         compacting: without(s.compacting, frame.sessionId),
@@ -1132,9 +1155,22 @@ export const childrenOf = (s: SessionSnapshot): FleetChild[] => {
 const clampSelection = (
   list: readonly SessionSnapshot[],
   current: string | null,
+  pending?: string,
 ): string | null => {
   if (current && list.some((x) => x.id === current)) return current;
+  // A just-picked session whose row hasn't arrived yet — hold the selection on
+  // it rather than snapping to the fleet head (U4).
+  if (current && current === pending) return current;
   return list[0]?.id ?? null;
+};
+
+/** Clear `pendingSelectId` once its session is in `list` (or gone). */
+const settlePendingSelect = (
+  s: TuiState,
+  list: readonly SessionSnapshot[],
+): { pendingSelectId?: string | undefined } => {
+  if (!s.pendingSelectId) return {};
+  return list.some((x) => x.id === s.pendingSelectId) ? { pendingSelectId: undefined } : {};
 };
 
 /**

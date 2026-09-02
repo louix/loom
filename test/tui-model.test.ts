@@ -191,6 +191,39 @@ test("sortSessions: starting never outranks running, even when more recent", () 
   );
 });
 
+test("an optimistic select survives an unrelated session_updated until its row arrives (U4)", () => {
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "running" }), snap({ id: "b", status: "idle" })],
+  });
+  // User creates session "new1"; its row hasn't landed yet.
+  s = reduce(s, { t: "select", id: "new1" });
+  assert.equal(s.selectedId, "new1");
+  assert.equal(s.pendingSelectId, "new1");
+
+  // An unrelated session ticks out a session_updated.
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 1, type: "session_updated", session: snap({ id: "a", status: "idle" }), version: 2 },
+  });
+  assert.equal(s.selectedId, "new1", "not bounced to the fleet head");
+
+  // "new1" finally arrives — the hold is released.
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "new1", status: "starting" }), version: 1 },
+  });
+  assert.equal(s.selectedId, "new1");
+  assert.equal(s.pendingSelectId, undefined);
+
+  // A later unrelated update with "new1" gone from a stale list won't drop it now
+  // that it's real, and if "new1" is removed the hold is not resurrected.
+  s = reduce(s, { t: "push", frame: { kind: "push", seq: 3, type: "session_removed", sessionId: "new1" } });
+  assert.notEqual(s.selectedId, "new1");
+  assert.equal(s.pendingSelectId, undefined);
+});
+
 test("move clamps at both ends of the sorted list", () => {
   const list = [
     snap({ id: "a", status: "awaiting_input" }),
@@ -607,7 +640,7 @@ test("a replayed (backfilled) event never raises a notice — it's transcript, n
 });
 
 test("a sessions/hello snapshot drops pending for a session it says is no longer blocked (U2)", () => {
-  const blocked = snap({ id: "a", status: { kind: "awaiting_input", on: "permission" } });
+  const blocked = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [blocked] });
   s = reduce(s, {
     t: "push",
@@ -617,7 +650,7 @@ test("a sessions/hello snapshot drops pending for a session it says is no longer
   assert.ok(s.pending["a"]?.permissions?.length, "replayed request tracked while still blocked");
 
   // The daemon's snapshot now shows the session idle — the pending is stale.
-  s = reduce(s, { t: "sessions", sessions: [snap({ id: "a", status: { kind: "idle" } })] });
+  s = reduce(s, { t: "sessions", sessions: [snap({ id: "a", status: "idle" })] });
   assert.equal(s.pending["a"], undefined, "settled pending pruned by the snapshot");
 });
 
