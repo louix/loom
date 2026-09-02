@@ -1308,7 +1308,12 @@ export const PlanReview = ({
           </Text>
         </Text>
       ) : null}
-      {row("m", `implement mode: ${modeLabel(plan.mode)} — m cycles manual → acceptEdits → auto`)}
+      <Text wrap="truncate-end">
+        {"implementation mode "}
+        {modeChip(plan.mode)}
+        <Text color={C.faint}>{"  ·  ⇧⇥ cycles"}</Text>
+      </Text>
+      <Box height={1} />
       {row("i", "implement — the agent proceeds in this context")}
       {row("f", "implement fresh — compact to the plan + goal first")}
       {row("e", "edit the plan in $EDITOR, then implement what you saved")}

@@ -881,7 +881,7 @@ export class AisdkSession implements AgentSession {
       const impl = this.#implementAfterTurn;
       this.#implementAfterTurn = null;
       if (impl) {
-        // The approved plan's implement mode (the plan review's `m` cycle);
+        // The approved plan's implement mode (the plan review's `⇧⇥` cycle);
         // `acceptEdits` when the caller left it off — the long-standing default.
         const mode = impl.mode ?? "acceptEdits";
         this.#mode = mode;

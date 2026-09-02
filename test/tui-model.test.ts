@@ -992,7 +992,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   assert.equal(s.plan?.requestId, "pr1");
   assert.equal(s.plan?.mode, "acceptEdits");
 
-  // `m` cycles the implement mode — manual → acceptEdits → auto → manual.
+  // ⇧⇥ cycles the implement mode — manual → acceptEdits → auto → manual.
   s = reduce(s, { t: "cyclePlanMode" });
   assert.equal(s.plan?.mode, "auto");
   s = reduce(s, { t: "cyclePlanMode" });

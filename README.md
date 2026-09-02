@@ -284,7 +284,7 @@ choices: `i` implement (proceed here), `f` implement fresh (compact the context
 to the plan + goal first), `e` edit the plan in `$EDITOR` then implement what
 you saved, `d` discuss (send a note back; the agent keeps planning). The overlay
 shows the session's context meter — full context is the argument for `f` — and
-the permission mode the implementation will run in; `m` cycles it
+the permission mode the implementation will run in; `⇧⇥` cycles it
 (manual → acceptEdits → auto), and `i` / `f` / `e` all implement in the mode
 shown. `esc` does nothing — a plan review must be answered.
 `session.respondPlan` is the RPC (implementing actions carry the chosen

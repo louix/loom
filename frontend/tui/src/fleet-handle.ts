@@ -1632,7 +1632,8 @@ export const mkFleetHandle = ({
     }
 
     if (state.mode === "plan") {
-      if (input === "m") return void dispatch({ t: "cyclePlanMode" });
+      // ⇧⇥ cycles the mode the implementation will run in.
+      if (key.tab && key.shift) return void dispatch({ t: "cyclePlanMode" });
       // i / f / e implement in the overlay's chosen mode; `d` (discuss) only
       // sends a note back, so it carries none.
       const pl = state.plan;

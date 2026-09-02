@@ -796,12 +796,12 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
     assert.match(stdout.last, /wire the RPC/);
     assert.match(stdout.last, /implement fresh/);
     assert.match(stdout.last, /42% context/, "the session's context meter");
-    assert.match(stdout.last, /implement mode: acceptEdits/);
+    assert.match(stdout.last, /implementation mode \[acceptEdits\]/);
 
-    // `m` cycles the mode the implementation will run in.
-    stdin.feed("m");
+    // ⇧⇥ cycles the mode the implementation will run in.
+    stdin.feed("\x1b[Z");
     await delay(120);
-    assert.match(stdout.last, /implement mode: auto/);
+    assert.match(stdout.last, /implementation mode \[auto\]/);
 
     // `d` opens the discuss sub-prompt; esc backs out to the plan overlay,
     // NOT to browse (the daemon is still blocked on the decision).

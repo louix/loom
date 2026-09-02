@@ -126,7 +126,7 @@ Each overlay owns the screen and shows its own fixed key set on the footer:
 
 - **Command palette / pickers** — type to filter, `↑↓` move, `Enter` pick, `Esc` cancel.
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
-- **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `m` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥o`/`o` view. The overlay also shows the session's context meter. A plan review must be answered — `Esc` does nothing.
+- **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⇧⇥` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥o`/`o` view. The overlay also shows the session's context meter. A plan review must be answered — `Esc` does nothing.
 
 ## Notes on terminals
 
