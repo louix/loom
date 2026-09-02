@@ -103,7 +103,7 @@ sessionless `new` prompt stays in the footer.
 | `⌃a` / `⌃e`                      | start / end of line                                                                                                              |
 | `⌃b` / `⌃f`                      | one char back / forward                                                                                                          |
 | `⌃←` / `⌃→`                      | one word back / forward                                                                                                          |
-| `⌃u` / `⌃k`                      | kill to start / end of line                                                                                                      |
+| `⌃u` / `⌃k`                      | kill to start / end of line — a second `⌃u` (nothing left on the line) clears the whole input, pasted wall of text and all       |
 | `⌃w`                             | delete the word before the cursor                                                                                                |
 | `↑` / `↓`                        | walk the prompt history (vertical caret move in multi-line text)                                                                 |
 | `Enter`                          | submit · `Esc` cancel — on a _send_ prompt targeting a still-running session, sends now (lands after the current tool call)      |
@@ -125,6 +125,10 @@ sessionless `new` prompt stays in the footer.
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.
+
+Holding a motion key (`⌃k`, `⌃w`, `⌃u`, `Backspace`, the arrows) repeats it —
+the app replays the run even when the terminal delivers the auto-repeat as one
+batched chunk.
 
 ## Overlays
 

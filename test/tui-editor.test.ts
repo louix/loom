@@ -53,6 +53,24 @@ test("⌃a / ⌃e / ⌃b / ⌃f / ⌃u / ⌃k / ⌃w motions", () => {
   });
 });
 
+test("⌃u kills to line start, then clears the whole buffer from column 0", () => {
+  // First press: kill back to the start of the current line only.
+  assert.deepEqual(press("keep\nwall of pasted text", 12, "u", { ctrl: true }), {
+    kind: "buffer",
+    buffer: { text: "keep\n pasted text", cursor: 5 },
+  });
+  // Caret now at column 0 with nothing left to kill on the line — wipe it all.
+  assert.deepEqual(press("keep\n pasted text", 5, "u", { ctrl: true }), {
+    kind: "buffer",
+    buffer: { text: "", cursor: 0 },
+  });
+  // A single-line buffer still clears in one press (start === 0 already).
+  assert.deepEqual(press("one line", 8, "u", { ctrl: true }), {
+    kind: "buffer",
+    buffer: { text: "", cursor: 0 },
+  });
+});
+
 test("⌃← / ⌃→ move by word, skipping runs of whitespace", () => {
   assert.equal(
     (press("one two three", 7, "", { ctrl: true, leftArrow: true }) as any).buffer.cursor,

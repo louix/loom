@@ -136,6 +136,11 @@ export const applyKey = (
       case "f":
         return edit(text, cursor + 1);
       case "u":
+        // Kill to the start of the line; but with nothing left to kill there
+        // (caret already at column 0) the press wipes the whole buffer — the
+        // quick way to clear a pasted wall of text without submitting it or
+        // leaving a saved draft behind, which is what Esc does instead.
+        if (cursor === start) return edit("", 0);
         return edit(text.slice(0, start) + text.slice(cursor), start);
       case "k":
         return edit(text.slice(0, cursor) + text.slice(end), cursor);

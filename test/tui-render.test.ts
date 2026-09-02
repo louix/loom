@@ -296,6 +296,36 @@ test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send
   }
 });
 
+test("a held readline motion whose repeats Ink batched into one chunk still repeats", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  await client.request("session.createStub", {
+    prompt: "a task",
+    status: "idle",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(180);
+    stdin.feed("\r"); // open the send prompt
+    await delay(100);
+    stdin.feed("alpha beta gamma delta");
+    await delay(80);
+    assert.match(stdout.last, /alpha beta gamma delta/);
+    // Three ⌃w arriving as one coalesced chunk — how Ink hands over a key held
+    // through a render lag. Without the replay, parseKeypress drops the whole
+    // "\x17\x17\x17" run and nothing happens after the first word.
+    stdin.feed("\x17\x17\x17");
+    await delay(80);
+    assert.match(stdout.last, /▍ alpha$/m, "all three ⌃w landed — only the first word is left");
+    assert.doesNotMatch(stdout.last, /beta|gamma|delta/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("R raises a restart confirmation that esc dismisses", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();

@@ -113,6 +113,16 @@ const nextMode = (m: SessionMode): SessionMode =>
 const OVERLAY_MODES = new Set<TuiState["mode"]>(["confirm", "plan", "picker"]);
 
 /**
+ * The C0 control bytes behind the prompt's readline motions: ⌃a ⌃b ⌃e ⌃f ⌃k
+ * ⌃u ⌃w. Ink's input parser splits a held Backspace or arrow into one event
+ * per repeat, but hands a run of these to us as a single coalesced chunk — so
+ * a held ⌃k stalls after the first delete the moment a render lag batches the
+ * bytes. {@link handleKey} expands such a run back into discrete presses.
+ * `\r` / `\n` / `\t` are pointedly absent: they turn up inside pasted text.
+ */
+const REPEATABLE_CTRL = new Set([0x01, 0x02, 0x05, 0x06, 0x0b, 0x15, 0x17]);
+
+/**
  * The acts {@link runAct} hands off to {@link act} — session verbs plus the
  * always-on globals. Everything else in {@link ActName} (view / structural
  * commands) `runAct` handles inline. Splitting the union this way makes both
@@ -1667,6 +1677,26 @@ export const mkFleetHandle = ({
     const { logPage } = store.get();
 
     if (key.ctrl && input === "c") return quitTui();
+
+    // A held readline motion whose repeats Ink coalesced into one chunk (see
+    // REPEATABLE_CTRL): replay it as N discrete ⌃<letter> presses so the motion
+    // repeats the way a held Backspace or arrow already does. Only where an
+    // input line is actually taking the motions — the prompt, a picker filter,
+    // the fleet filter. The replayed presses are length-1, so this never
+    // re-enters.
+    const onInputLine = state.mode === "prompt" || state.mode === "picker" || !!state.find;
+    if (
+      onInputLine &&
+      input.length > 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      [...input].every((c) => REPEATABLE_CTRL.has(c.charCodeAt(0)))
+    ) {
+      for (const c of input) {
+        handleKey(String.fromCharCode(c.charCodeAt(0) + 0x60), { ...key, ctrl: true });
+      }
+      return;
+    }
 
     // Mouse wheel → always scrolls the event log. `run.tsx` turns on SGR mouse
     // reporting so the wheel arrives as its own `[<Cb;Cx;Cy(M|m)` sequence —
