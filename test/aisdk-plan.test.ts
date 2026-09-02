@@ -156,7 +156,8 @@ test("plan mode: the plan decision's mode picks what the implementation runs in"
     const notePath = join(dir, "n.txt");
     const model = stepModel([
       callStep("p1", "exit_plan", JSON.stringify({ plan: "1. write the note\n2. done" })),
-      textStep("Planning complete."),
+      // The approval ends the exploration turn; the write happens in the
+      // chained turn, gated because the decision picked `default`.
       callStep("w1", "write_note", JSON.stringify({ path: notePath, content: "implemented" })),
       textStep("Implemented the plan."),
     ]);
