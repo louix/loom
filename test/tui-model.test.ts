@@ -2138,15 +2138,30 @@ test("detailRows counts the Detail pane's physical rows, conditional lines inclu
 });
 
 test("promptRows budgets the footer notice row in browse, never in a prompt", () => {
-  assert.equal(promptRows(initialState()), 2);
+  assert.equal(promptRows(initialState(), 100), 2);
   const noted = reduce(initialState(), { t: "notice", text: "sent", tone: "good" });
-  assert.equal(promptRows(noted), 3);
+  assert.equal(promptRows(noted, 100), 3);
   // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
   const prompted = reduce(noted, {
     t: "openPrompt",
     prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
   });
-  assert.equal(promptRows(prompted), 3);
+  assert.equal(promptRows(prompted, 100), 3);
+});
+
+test("promptRows counts word-wrapped editor rows at the terminal's width", () => {
+  const open = (text: string) =>
+    reduce(initialState(), {
+      t: "openPrompt",
+      prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text }),
+    });
+  // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
+  const wide = open("one two three");
+  assert.equal(promptRows(wide, 80), 3);
+  assert.equal(promptRows(wide, 12), 4);
+  // The budget never exceeds MAX_EDITOR_ROWS, however long the text wraps.
+  const flood = open("word ".repeat(40));
+  assert.equal(promptRows(flood, 12), 10);
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks

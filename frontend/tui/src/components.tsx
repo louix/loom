@@ -8,7 +8,7 @@ import { useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
-import { layout, type Buffer } from "./editor.ts";
+import { layoutWrapped, type Buffer } from "./editor.ts";
 import {
   cacheHeat,
   cacheStatus,
@@ -825,16 +825,22 @@ const wrapLine = (l: LogLine, room: number): readonly string[] => {
 // ---------------------------------------------------------------------------
 
 /** Max rows the editor draws; `promptRows` reserves the same so the footer
- *  can't overdraw the body when a big paste / $EDITOR return lands. */
+ *  can't overdraw the body when a big paste / $EDITOR return lands. Wrapped
+ *  rows count against it — a wide paste scrolls within the same budget. */
 export const MAX_EDITOR_ROWS = 8;
+
+/** Columns the prompt editor wraps to, given the terminal width: the footer's
+ *  paddingX (1 + 1) and the 2-char caret gutter come off first. Single source
+ *  of truth for both `EditorView`'s wrap and `promptRows`' height budget. */
+const editorRoom = (cols: number): number => Math.max(8, cols - 4);
 
 export const EditorView = ({
   buf,
-  width,
+  room,
   placeholder,
 }: {
   buf: Buffer;
-  width: number;
+  room: number;
   placeholder?: string;
 }): ReactNode => {
   if (buf.text === "") {
@@ -851,21 +857,17 @@ export const EditorView = ({
     );
   }
 
-  const { lines, row, col } = layout(buf);
-  const room = Math.max(8, width - 2);
+  const { rows, row, col } = layoutWrapped(buf, room);
 
   // Window to MAX_EDITOR_ROWS around the caret so the rendered height matches
   // what `promptRows` told the layout to reserve.
   const start =
-    lines.length <= MAX_EDITOR_ROWS
+    rows.length <= MAX_EDITOR_ROWS
       ? 0
-      : Math.min(
-          Math.max(0, row - Math.floor(MAX_EDITOR_ROWS / 2)),
-          lines.length - MAX_EDITOR_ROWS,
-        );
-  const shown = lines.slice(start, start + MAX_EDITOR_ROWS);
+      : Math.min(Math.max(0, row - Math.floor(MAX_EDITOR_ROWS / 2)), rows.length - MAX_EDITOR_ROWS);
+  const shown = rows.slice(start, start + MAX_EDITOR_ROWS);
   const moreAbove = start > 0;
-  const moreBelow = start + MAX_EDITOR_ROWS < lines.length;
+  const moreBelow = start + MAX_EDITOR_ROWS < rows.length;
 
   return (
     <Box flexDirection="column">
@@ -990,7 +992,7 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
           ) : null}
           {p.kind === "new" ? <Text color={C.faint}>{"⌥p change"}</Text> : null}
         </Box>
-        <EditorView buf={p.buffer} width={width - 2} placeholder={placeholder} />
+        <EditorView buf={p.buffer} room={editorRoom(width)} placeholder={placeholder} />
         {/* Truncate, never wrap — this row is budgeted as exactly one line
             (see promptRows); wrapping it grows the frame past the terminal. */}
         <Text color={C.faint} wrap="truncate-end">
@@ -1042,15 +1044,18 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
 };
 
 /** Rows the footer strip occupies, for the parent's height maths — rule +
- *  hints in browse, label + editor + hints in a prompt. A transient notice
- *  adds its own row in browse only (the prompt footer never renders one); it
- *  must be budgeted here so the frame stays exactly `rows` tall while it's
- *  up, or Ink's repaints drift and the top bar slides off the alt screen. */
-export const promptRows = (state: TuiState): number => {
+ *  hints in browse, label + editor + hints in a prompt. The editor's budget
+ *  counts word-wrapped rows at the terminal's width (same wrap the editor
+ *  draws, via `editorRoom`), capped at {@link MAX_EDITOR_ROWS}. A transient
+ *  notice adds its own row in browse only (the prompt footer never renders
+ *  one); it must be budgeted here so the frame stays exactly `rows` tall
+ *  while it's up, or Ink's repaints drift and the top bar slides off the
+ *  alt screen. */
+export const promptRows = (state: TuiState, cols: number): number => {
   if (state.mode !== "prompt" || !state.prompt) return 2 + (state.notice ? 1 : 0);
   const editor = Math.min(
     MAX_EDITOR_ROWS,
-    Math.max(1, state.prompt.buffer.text.split("\n").length),
+    layoutWrapped(state.prompt.buffer, editorRoom(cols)).rows.length,
   );
   return 1 /* label */ + editor + 1; /* hints */
 };

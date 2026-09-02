@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKey, buffer, layout, lineBounds, type KeyLike } from "@loom/tui/editor";
+import {
+  applyKey,
+  buffer,
+  layout,
+  layoutWrapped,
+  lineBounds,
+  type KeyLike,
+} from "@loom/tui/editor";
 
 const K = (over: Partial<KeyLike> = {}): KeyLike => ({ ...over });
 
@@ -121,4 +128,34 @@ test("lineBounds and layout locate the caret", () => {
   assert.deepEqual(lineBounds("ab\ncd\nef", 4), { start: 3, end: 5 });
   const l = layout(buffer("ab\ncde", 5));
   assert.deepEqual([l.row, l.col], [1, 2]);
+});
+
+test("layoutWrapped soft-wraps at spaces, hard-breaking words wider than the room", () => {
+  const w = layoutWrapped(buffer("one two three", 13), 8);
+  assert.deepEqual(w.rows, ["one two", "three"]);
+  assert.deepEqual([w.row, w.col], [1, 5]); // end-of-text caret rides after "three"
+  assert.deepEqual(layoutWrapped(buffer("abcdefgh", 8), 3).rows, ["abc", "def", "gh"]);
+  // A short line — and an empty buffer — stay a single row.
+  const one = layoutWrapped(buffer("hi", 2), 80);
+  assert.deepEqual(one.rows, ["hi"]);
+  assert.deepEqual([one.row, one.col], [0, 2]);
+  assert.deepEqual(layoutWrapped(buffer("", 0), 8), { rows: [""], row: 0, col: 0 });
+});
+
+test("layoutWrapped maps the caret across wrap points and logical lines", () => {
+  // The wrap-point space gets no drawn cell, so the caret there rides the head
+  // of the continuation row; one char later it sits on that row's first letter.
+  const onSpace = layoutWrapped(buffer("one two", 3), 3);
+  assert.deepEqual(onSpace.rows, ["one", "two"]);
+  assert.deepEqual([onSpace.row, onSpace.col], [1, 0]);
+  // Mid-word carets map with their row: col 6 is the 'o' of "two".
+  assert.deepEqual(layoutWrapped(buffer("one two", 6), 3), {
+    rows: ["one", "two"],
+    row: 1,
+    col: 2,
+  });
+  // Each logical line wraps independently; the caret stays with its line.
+  const multi = layoutWrapped(buffer("aaa bbb\ncc", 9), 7);
+  assert.deepEqual(multi.rows, ["aaa bbb", "cc"]);
+  assert.deepEqual([multi.row, multi.col], [1, 1]);
 });

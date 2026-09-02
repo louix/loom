@@ -182,3 +182,73 @@ export const layout = (buf: Buffer): { lines: string[]; row: number; col: number
   const last = lines.length - 1;
   return { lines, row: last, col: (lines[last] ?? "").length };
 };
+/**
+ * Soft-wrap one logical line to `room` columns: greedy break at the last space
+ * that fits, hard-breaking a run with no space wider than the room. The space
+ * at a wrap point stays in the buffer but gets no drawn cell; every other
+ * character is drawn exactly once, in order. Returns the wrapped rows with
+ * each row's start offset into `line`, so the caret can be mapped onto them.
+ */
+const wrapLine = (line: string, room: number): Array<{ text: string; start: number }> => {
+  if (room < 1 || line.length <= room) return [{ text: line, start: 0 }];
+  const rows: Array<{ text: string; start: number }> = [];
+  let start = 0;
+  while (start < line.length) {
+    if (line.length - start <= room) {
+      rows.push({ text: line.slice(start), start });
+      break;
+    }
+    // Last space in the window; never at `start` itself, so every row advances.
+    let br = -1;
+    for (let p = start + room; p > start; p--) {
+      if (line.charAt(p) === " ") {
+        br = p;
+        break;
+      }
+    }
+    if (br === -1) {
+      rows.push({ text: line.slice(start, start + room), start });
+      start += room;
+    } else {
+      rows.push({ text: line.slice(start, br), start });
+      start = br + 1;
+    }
+  }
+  return rows;
+};
+
+/**
+ * Split for rendering with word wrap: the buffer's physical rows (each logical
+ * line soft-wrapped to `room` columns) plus the caret's row / column on them.
+ * A caret sitting on a wrap-point space — which has no drawn cell — rides the
+ * head of the continuation row; at true end of text it lands after the last
+ * drawn character, as in {@link layout}.
+ */
+export const layoutWrapped = (
+  buf: Buffer,
+  room: number,
+): { rows: string[]; row: number; col: number } => {
+  const { lines, row, col } = layout(buf);
+  const rows: string[] = [];
+  let caretRow = 0;
+  let caretCol = 0;
+  lines.forEach((line, r) => {
+    const base = rows.length;
+    const segs = wrapLine(line, room);
+    for (const { text } of segs) rows.push(text);
+    if (r !== row) return;
+    const hit = segs.find((s) => col >= s.start && col < s.start + s.text.length);
+    if (hit) {
+      caretRow = base + segs.indexOf(hit);
+      caretCol = col - hit.start;
+    } else if (col < line.length) {
+      // `col` is a dropped break space: the next row's first cell stands in.
+      caretRow = base + segs.findIndex((s) => s.start > col);
+      caretCol = 0;
+    } else {
+      caretRow = rows.length - 1;
+      caretCol = (rows[rows.length - 1] ?? "").length;
+    }
+  });
+  return { rows, row: caretRow, col: caretCol };
+};

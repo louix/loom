@@ -234,7 +234,7 @@ const deriveView = (
   // off the alt screen. Tiny terminals degrade; they don't corrupt.
   const cols = Math.max(1, dims.cols);
   const rows = Math.max(1, dims.rows);
-  const footerH = promptRows(state);
+  const footerH = promptRows(state, cols);
   const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
   const bodyH = Math.max(1, rows - 1 - footerH - requestH);
   // Fleet column: 32-col floor where the terminal affords it, yielding below
