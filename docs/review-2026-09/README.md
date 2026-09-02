@@ -218,21 +218,23 @@ _Done (`loom/audit-codebase-and-delegate-to`): auto-rebase bails `busy` on an ag
 
 ### Phase 5 — client / TUI replay discipline
 
+_Done (`loom/audit-codebase-and-delegate-to`): client seq-gap → resync (W7), monotonic `#resync` (W2), per-socket `#preHelloQueue` clear + cap (W4), `code:"disconnected"` on in-flight drop (W3), `EventLog.since(0)` reports rolled (W8); registry version seeds from `updatedAt` (S6), `run.ordinal` from `Date.now()` (S11); TUI history backfill is once-per-session + client-side de-duped + side-effect-free on replay (U1/U2), optimistic select survives `clampSelection` (U4), drain gate re-reads fresh turns (U11), answerQuestion step-back keeps the buffer (U15). +7 tests._
+
 | ID  | Sev      | Status | Finding                                                                                                            | Where                                                  |
 | --- | -------- | ------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| U1  | **high** | todo   | Selecting a session re-dispatches its whole history every time → O(n) stalls + N synchronous re-renders            | `frontend/tui/src/fleet-handle.ts:301-314`             |
-| U2  | med-high | todo   | History backfill re-raises stale notices and re-adds resolved permissions (side effects before seq de-dup)         | `frontend/tui/src/model.ts:664-688`                    |
-| W2  | med      | todo   | `#resync` moves `#lastSeq` backwards → duplicate event replay on a later reconnect                                 | `client/src/client.ts:371`                             |
-| W3  | med      | todo   | In-flight requests rejected on any socket blip and never retried, though the op may have completed                 | `client/src/client.ts:320-330`                         |
-| W4  | med      | todo   | Failed handshake leaves `#helloDone=false` and never clears `#preHelloQueue`                                       | `client/src/client.ts:291-318`                         |
-| U4  | med      | todo   | Optimistic `select` after create/fork clobbered by `clampSelection` if any unrelated `session_updated` lands first | `frontend/tui/src/model.ts:516-520`                    |
-| U5  | med      | todo   | No double-submit / stale-mode latch on prompt submit                                                               | `frontend/tui/src/fleet-handle.ts:1484-1485`           |
-| U11 | low-med  | todo   | Queue-drain gate set from a stale `turns` snapshot → next queued message injected mid-turn                         | `frontend/tui/src/fleet-handle.ts:332-352`             |
-| W7  | low-med  | todo   | Silent frame drop on JSON parse failure → undetected seq divergence, no resync                                     | `client/src/client.ts:234-238`                         |
-| W8  | low      | todo   | `replayHistory` (`sinceSeq: 0`) can never yield the documented `resync` fallback                                   | `client/src/client.ts:26-35`, `daemon/event-log.ts:82` |
-| S6  | med      | todo   | Registry version counter resets to 1 on daemon restart → breaks `session_updated` de-dup for reconnecting clients  | `daemon/registry.ts:24-25`                             |
-| S11 | low      | todo   | Event ordinal counter restarts at 0 on resume/restart, colliding with persisted ordinals                           | `daemon/session-manager.ts:124-145`                    |
-| U15 | low      | todo   | `answerQuestion` step-back drops the in-progress (un-submitted) answer                                             | `frontend/tui/src/fleet-handle.ts:1464-1482`           |
+| U1  | **high** | done   | Selecting a session re-dispatches its whole history every time → O(n) stalls + N synchronous re-renders            | `frontend/tui/src/fleet-handle.ts:301-314`             |
+| U2  | med-high | done   | History backfill re-raises stale notices and re-adds resolved permissions (side effects before seq de-dup)         | `frontend/tui/src/model.ts:664-688`                    |
+| W2  | med      | done   | `#resync` moves `#lastSeq` backwards → duplicate event replay on a later reconnect                                 | `client/src/client.ts:371`                             |
+| W3  | med      | done   | In-flight requests rejected on any socket blip and never retried, though the op may have completed                 | `client/src/client.ts:320-330`                         |
+| W4  | med      | done   | Failed handshake leaves `#helloDone=false` and never clears `#preHelloQueue`                                       | `client/src/client.ts:291-318`                         |
+| U4  | med      | done   | Optimistic `select` after create/fork clobbered by `clampSelection` if any unrelated `session_updated` lands first | `frontend/tui/src/model.ts:516-520`                    |
+| U5  | med      | done   | No double-submit / stale-mode latch on prompt submit                                                               | `frontend/tui/src/fleet-handle.ts:1484-1485`           |
+| U11 | low-med  | done   | Queue-drain gate set from a stale `turns` snapshot → next queued message injected mid-turn                         | `frontend/tui/src/fleet-handle.ts:332-352`             |
+| W7  | low-med  | done   | Silent frame drop on JSON parse failure → undetected seq divergence, no resync                                     | `client/src/client.ts:234-238`                         |
+| W8  | low      | done   | `replayHistory` (`sinceSeq: 0`) can never yield the documented `resync` fallback                                   | `client/src/client.ts:26-35`, `daemon/event-log.ts:82` |
+| S6  | med      | done   | Registry version counter resets to 1 on daemon restart → breaks `session_updated` de-dup for reconnecting clients  | `daemon/registry.ts:24-25`                             |
+| S11 | low      | done   | Event ordinal counter restarts at 0 on resume/restart, colliding with persisted ordinals                           | `daemon/session-manager.ts:124-145`                    |
+| U15 | low      | done   | `answerQuestion` step-back drops the in-progress (un-submitted) answer                                             | `frontend/tui/src/fleet-handle.ts:1464-1482`           |
 
 ### Backlog (deferred, tracked)
 

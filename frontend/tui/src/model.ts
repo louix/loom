@@ -630,7 +630,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         ...s,
         selectedId: a.id,
         selectedChild: null,
-        ...(known ? {} : { pendingSelectId: a.id }),
+        // Resolve any prior pending hold: a new pick either targets a known
+        // session (no hold) or becomes the new hold.
+        pendingSelectId: known ? undefined : a.id,
       };
     }
 

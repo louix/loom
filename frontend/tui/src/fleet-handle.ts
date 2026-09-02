@@ -319,6 +319,11 @@ export const mkFleetHandle = ({
   // twice. Holds the overlay object already acted on — a fresh overlay has a
   // new identity and passes.
   let overlayActed: object | null = null;
+  // Ink delivers a batched stdin chunk one byte at a time before the view
+  // updates. A second `\r` right after `submitPrompt` closed the prompt would
+  // otherwise be handled in `browse` mode and fire `runAct("send"|"answer")` on
+  // the selection (U5). Suppress a fleet-row Enter for a beat after a submit.
+  let promptSubmittedAt = 0;
   // Queue-drain bookkeeping: which sessions have an in-flight release, and the
   // `turns` value each last released at (so the next waits for a real turn).
   const draining = new Set<string>();
@@ -1613,6 +1618,7 @@ export const mkFleetHandle = ({
           }
           return void dispatch({ t: "closePrompt", saveDraft: true });
         case "submit":
+          promptSubmittedAt = Date.now();
           return void submitPrompt();
         case "buffer":
           return void dispatch({ t: "promptSet", buffer: res.buffer });
@@ -1749,8 +1755,10 @@ export const mkFleetHandle = ({
       }
       return;
     }
-    // Enter on a fleet row = act on it.
+    // Enter on a fleet row = act on it — unless a prompt submit just fired in
+    // the same input chunk (U5).
     if (key.return) {
+      if (Date.now() - promptSubmittedAt < 100) return;
       if (allowed.has("send")) return runAct("send");
       if (allowed.has("answer")) return runAct("answer");
       if (allowed.has("planreview")) return runAct("planreview");
