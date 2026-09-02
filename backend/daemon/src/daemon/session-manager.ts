@@ -148,14 +148,25 @@ export class SessionManager {
 
   async resume(provider: AgentProvider, ref: SessionRef): Promise<void> {
     const session = await provider.resumeSession(ref);
-    this.#attach(provider.id, ref.sessionId, session);
+    // A resume re-mounts the adapter with the prior transcript but no turn in
+    // flight (both adapters park until the next send), so the tracked state
+    // seeds `idle`, not `starting`. Seeding a live state here made the first
+    // follow-up send read as a mid-turn injection (`injected: true`), which the
+    // TUI renders as "sent mid-turn" and the daemon treats as not-a-turn-start
+    // (no transition to running, no checkpoint user-text seed).
+    this.#attach(provider.id, ref.sessionId, session, stateIdle);
   }
 
-  #attach(providerId: string, id: string, session: AgentSession): void {
+  #attach(
+    providerId: string,
+    id: string,
+    session: AgentSession,
+    state: SessionState = stateStarting,
+  ): void {
     const run: Running = {
       provider: providerId,
       session,
-      state: stateStarting,
+      state,
       // S11: seed from wall-clock, not 0 — a session resumed after a restart
       // would otherwise re-issue ordinals 0,1,2… that collide with the ones
       // already stamped on its persisted events. Still monotonic per session

@@ -27,7 +27,6 @@ import {
   stateDone,
   stateError,
   stateIdle,
-  stateRunning,
 } from "@loom/core/session-state";
 import {
   PROTOCOL_VERSION,
@@ -954,7 +953,9 @@ export class Daemon {
       const message = err instanceof Error ? err.message : String(err);
       throw new RpcError("provider_error", `could not resume session: ${message}`);
     }
-    return this.#registry.setStatus(id, stateRunning, "resumed");
+    // Truthfully idle: a resume re-mounts the adapter with no turn in flight
+    // (the manager seeds its tracked state `idle` too — see SessionManager.resume).
+    return this.#registry.setStatus(id, stateIdle, "resumed");
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {

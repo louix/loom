@@ -53,6 +53,15 @@ const client = async (reconnect = false): Promise<LoomClient> => {
   });
 };
 
+const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 1000): Promise<void> => {
+  const start = Date.now();
+  for (;;) {
+    if (await pred()) return;
+    if (Date.now() - start >= ms) throw new Error("condition not met in time");
+    await delay(5);
+  }
+};
+
 test("hello handshake returns daemon info and an empty session list", async () => {
   const c = await client();
   assert.equal(c.daemonInfo?.repoRoot, h.repoRoot);
@@ -1065,6 +1074,57 @@ test("session.send always broadcasts a user_message; injected reflects whether a
     await delay(60);
     assert.equal(r2.injected, false);
     assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("a send that revives a cold session (daemon restart) starts a fresh turn, not a mid-turn injection", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const frames: PushFrame[] = [];
+    c.onPush((f) => frames.push(f));
+    const umEvents = (): Array<{ text: string; injected: boolean }> =>
+      frames
+        .filter((f) => f.type === "event" && (f.event as { type?: string }).type === "user_message")
+        .map((f) => {
+          const e = (f as { event: { text: string; injected: boolean } }).event;
+          return { text: e.text, injected: e.injected };
+        });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "first",
+      provider: "fake",
+    });
+    const p = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    p.session(snap.id)?.finishTurn(); // → idle, like a turn that completed
+    await waitFor(
+      async () =>
+        (await c.request<SessionSnapshot>("session.get", { id: snap.id })).status.kind === "idle",
+    );
+
+    // Drop the live adapter the way a daemon restart does — the next send must
+    // transparently revive (session-manager re-attach) and start a fresh turn.
+    await hh.daemon.sessions.close(snap.id);
+
+    frames.length = 0;
+    const r = await c.request<{ injected?: boolean }>("session.send", {
+      id: snap.id,
+      text: "follow-up after restart",
+    });
+    await delay(60);
+    assert.equal(r.injected, false);
+    assert.deepEqual(umEvents().at(-1), { text: "follow-up after restart", injected: false });
+    assert.equal(
+      (await c.request<SessionSnapshot>("session.get", { id: snap.id })).status.kind,
+      "running",
+    );
   } finally {
     await c.close();
     await hh.cleanup();
