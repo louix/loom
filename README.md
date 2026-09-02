@@ -425,6 +425,10 @@ Each session gets its own worktree under `.loom/trees/<slug>` on a
 `loom/<slug>` branch, committed under a `Loom (claude)` identity, with pushing
 blocked. Integrate the branch yourself, in your own git — Loom never does.
 
+Repo-specific steering goes in `.loom/LOOM.md` — init commands, how to
+typecheck, house conventions. When present, its content is injected into every
+new session's system prompt.
+
 `--provider fake` swaps in the scriptable no-SDK adapter — the session starts
 and takes turn control, but only emits events a test drives into it.
 
@@ -481,15 +485,17 @@ See [`docs/connectors.md`](docs/connectors.md) for the `createProvider` contract
 
 ### `.loom/` runtime directory
 
-Created in whatever repo the daemon runs against; all of it is gitignored:
+Created in whatever repo the daemon runs against; the runtime state is
+gitignored:
 
-| path             | what                                              |
-| ---------------- | ------------------------------------------------- |
-| `daemon.sock`    | the client↔daemon Unix domain socket              |
-| `daemon.pid`     | single-instance guard                             |
-| `daemon.log`     | rolling daemon log (JSON lines)                   |
-| `loom.db`        | SQLite: sessions, history, usage                  |
-| `trees/<slug>/`  | one git worktree per session                      |
-| `hooks/pre-push` | the push-blocking hook, shared by every worktree  |
-| `config.toml`    | optional; falls back to built-in defaults         |
-| `models.toml`    | optional per-model price table (`pricing.reload`) |
+| path             | what                                                                    |
+| ---------------- | ----------------------------------------------------------------------- |
+| `daemon.sock`    | the client↔daemon Unix domain socket                                    |
+| `daemon.pid`     | single-instance guard                                                   |
+| `daemon.log`     | rolling daemon log (JSON lines)                                         |
+| `loom.db`        | SQLite: sessions, history, usage                                        |
+| `trees/<slug>/`  | one git worktree per session                                            |
+| `hooks/pre-push` | the push-blocking hook, shared by every worktree                        |
+| `config.toml`    | optional; falls back to built-in defaults                               |
+| `models.toml`    | optional per-model price table (`pricing.reload`)                       |
+| `LOOM.md`        | optional repo instructions, injected into every session's system prompt |

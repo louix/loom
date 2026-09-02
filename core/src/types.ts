@@ -54,6 +54,7 @@ export interface CreateSessionOptions {
   effort?: EffortLevel;
   mode: SessionMode;
   parentId?: string;
+  /** Steering text for the provider's system prompt — tool steer plus the repo's `.loom/LOOM.md`. */
   systemPromptAppend?: string;
   mcpServers: McpServerHandle[];
   /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */

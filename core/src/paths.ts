@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 /**
@@ -83,4 +83,19 @@ export const loomPaths = (repoRoot: string): LoomPaths => {
 export const ensureLoomDir = (paths: LoomPaths): void => {
   mkdirSync(paths.dir, { recursive: true });
   mkdirSync(paths.trees, { recursive: true });
+};
+
+/**
+ * The repo's steering file: `<dir>/.loom/LOOM.md`. Operators record
+ * repo-specific instructions there — init commands, how to typecheck, house
+ * conventions — and the daemon injects the content into every session's
+ * system prompt. Returns the framed block, or null when absent or empty.
+ */
+export const loomInstructions = (dir: string): string | null => {
+  try {
+    const md = readFileSync(join(dir, ".loom", "LOOM.md"), "utf8").trim();
+    return md ? `# Repository instructions (.loom/LOOM.md)\n\n${md}` : null;
+  } catch {
+    return null; // no file (or unreadable) — nothing to inject
+  }
 };
