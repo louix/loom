@@ -15,6 +15,7 @@ references/
 .loom/loom.db-wal
 .loom/loom.db-shm
 .loom/trees/
+.loom/tui.json
 
 credentials
 .claude/worktrees/

@@ -24,6 +24,7 @@ import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
+import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import { detailRows, promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
@@ -191,6 +192,9 @@ export interface MkFleetHandleInput {
   readonly term: Term;
   /** Daemon + TUI log paths for the "view logs" command; absent in tests. */
   readonly logs?: { readonly daemon: string; readonly tui: string };
+  /** Path to the TUI preference file — the `t` theme persists there across
+   *  restarts. Absent in tests, where nothing touches disk. */
+  readonly themeState?: string;
   /** Test seam: stands in for the real `$EDITOR` handoff. */
   readonly openEditorOverride?: EditorHandoff;
 }
@@ -289,10 +293,16 @@ export const mkFleetHandle = ({
   client,
   term,
   logs,
+  themeState,
   openEditorOverride,
 }: MkFleetHandleInput): FleetHandle => {
   // File-only (stderr is silenced upstream); absent in tests, where nothing logs.
   const log = logs ? makeLogger("tui") : null;
+  // Restore the persisted theme before building state: `setThemeMode` swaps C
+  // in place and `initialState()` reports the active mode, so state and
+  // palette already agree on the first frame.
+  const savedTheme = themeState ? loadPersistedTheme(themeState) : null;
+  if (savedTheme) setThemeMode(savedTheme);
   let state = initialState();
   let boot: Loadable<string, void> = loadableIdle;
   let tick = 0;
@@ -407,7 +417,11 @@ export const mkFleetHandle = ({
       logScroll = 0;
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
-    if (state.theme !== prev.theme) setThemeMode(state.theme);
+    if (state.theme !== prev.theme) {
+      setThemeMode(state.theme);
+      // Remember the choice for the next launch — best-effort, like the log.
+      if (themeState) persistTheme(themeState, state.theme);
+    }
     publish();
     if (state.selectedId !== prev.selectedId) backfillHistory();
     if (state.sessions !== prev.sessions) forgetDeadSessions();

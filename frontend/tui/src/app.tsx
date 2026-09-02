@@ -29,12 +29,15 @@ import {
 export const App = ({
   client,
   logs,
+  themeState,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
 }: {
   client: LoomClient;
   /** Daemon + TUI log paths for the "view logs" palette command. */
   logs?: { daemon: string; tui: string };
+  /** TUI preference file — the theme persists across restarts there. */
+  themeState?: string;
   openEditor?: EditorHandoff;
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
@@ -55,6 +58,7 @@ export const App = ({
         },
       },
       ...(logs ? { logs } : {}),
+      ...(themeState ? { themeState } : {}),
       ...(openEditorOverride ? { openEditorOverride } : {}),
     }),
   );

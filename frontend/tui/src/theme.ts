@@ -76,6 +76,9 @@ const ARGONEXT: Palette = {
 
 const PALETTES: Record<ThemeMode, Palette> = { dark: DARK, light: LIGHT, argonext: ARGONEXT };
 
+/** Valid modes — the set a theme read back from the persisted state file may name. */
+export const THEME_MODES = Object.keys(PALETTES) as ThemeMode[];
+
 let mode: ThemeMode = "dark";
 
 /** Truecolour palette. Mutated in place on {@link setThemeMode} so every

@@ -20,8 +20,9 @@ import { App } from "./app.tsx";
 
 export const runTui = async (
   client: LoomClient,
-  /** Absolute paths to the daemon + TUI log files, for the "view logs" command. */
-  logs?: { daemon: string; tui: string },
+  /** `logs` — absolute daemon + TUI log paths for the "view logs" command;
+   *  `themeState` — the TUI preference file the `t` theme choice persists to. */
+  opts: { logs?: { daemon: string; tui: string }; themeState?: string } = {},
 ): Promise<void> => {
   // Ask the terminal to bracket pastes so a multi-line paste arrives as one
   // chunk instead of a stream of Enter-looking carriage returns. Also turn on
@@ -30,10 +31,17 @@ export const runTui = async (
   // the alt screen, which App's keymap reads as fleet-selection movement.
   if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
-  const instance = render(<App client={client} {...(logs ? { logs } : {})} />, {
-    exitOnCtrlC: false,
-    alternateScreen: true,
-  });
+  const instance = render(
+    <App
+      client={client}
+      {...(opts.logs ? { logs: opts.logs } : {})}
+      {...(opts.themeState ? { themeState: opts.themeState } : {})}
+    />,
+    {
+      exitOnCtrlC: false,
+      alternateScreen: true,
+    },
+  );
 
   try {
     await instance.waitUntilExit();

@@ -69,7 +69,7 @@ Consequences:
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
 | `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |
-| `t`  | cycle theme: dark → light → argonext                                                                         |
+| `t`  | cycle theme: dark → light → argonext (remembered across restarts)                                            |
 
 ### Structural (`Shift`)
 

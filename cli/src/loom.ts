@@ -182,7 +182,10 @@ const main = async (): Promise<void> => {
     setLogFile(paths.tuiLog);
 
     const { runTui } = await import("@loom/tui/run");
-    await runTui(client, { daemon: paths.log, tui: paths.tuiLog });
+    await runTui(client, {
+      logs: { daemon: paths.log, tui: paths.tuiLog },
+      themeState: paths.tuiState,
+    });
     return;
   }
 

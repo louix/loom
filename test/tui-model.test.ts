@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
 import {
@@ -61,10 +64,12 @@ import {
   setThemeMode,
   spinnerFrame,
   statusLook,
+  themeMode,
   toneColor,
   truncate,
   wrapText,
 } from "@loom/tui/theme";
+import { loadPersistedTheme, persistTheme } from "@loom/tui/theme-store";
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -1641,6 +1646,33 @@ test("setThemeMode swaps the shared palette in place — statusLook/toneColor fo
   // glyph/label are theme-independent
   assert.equal(statusLook("idle").glyph, "○");
   assert.equal(statusLook("idle").label, "idle");
+  setThemeMode("dark"); // restore for any test relying on the default palette
+});
+
+test("the theme persists to a file and loads back; junk falls back to null", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-tui-theme-"));
+  const file = join(dir, "tui.json");
+  try {
+    assert.equal(loadPersistedTheme(file), null); // absent
+    persistTheme(file, "argonext");
+    assert.equal(loadPersistedTheme(file), "argonext");
+    writeFileSync(file, "{not json"); // corrupt JSON
+    assert.equal(loadPersistedTheme(file), null);
+    writeFileSync(file, JSON.stringify({ theme: "hotdog" })); // unknown mode
+    assert.equal(loadPersistedTheme(file), null);
+    // parents are created — the CLI normally makes `.loom/` first anyway
+    const nested = join(dir, "sub", "tui.json");
+    persistTheme(nested, "light");
+    assert.equal(loadPersistedTheme(nested), "light");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("initialState reports the active theme, so a restored one sticks", () => {
+  setThemeMode("argonext");
+  assert.equal(themeMode(), "argonext");
+  assert.equal(initialState().theme, themeMode());
   setThemeMode("dark"); // restore for any test relying on the default palette
 });
 

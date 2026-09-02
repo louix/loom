@@ -11,7 +11,8 @@
     "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",
     "./editor-handoff": "./src/editor-handoff.ts",
-    "./theme": "./src/theme.ts"
+    "./theme": "./src/theme.ts",
+    "./theme-store": "./src/theme-store.ts"
   },
   "dependencies": {
     "@loom/client": "workspace:*",
