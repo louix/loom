@@ -148,6 +148,51 @@ test("plan mode: exit_plan → plan_review → implement chains an acceptEdits t
   }
 });
 
+test("plan mode: the plan decision's mode picks what the implementation runs in", async () => {
+  const { dir, store, cleanup } = env();
+  try {
+    const notePath = join(dir, "n.txt");
+    const model = stepModel([
+      callStep("p1", "exit_plan", JSON.stringify({ plan: "1. write the note\n2. done" })),
+      textStep("Planning complete."),
+      callStep("w1", "write_note", JSON.stringify({ path: notePath, content: "implemented" })),
+      textStep("Implemented the plan."),
+    ]);
+    const s = await provider(() => model, store).createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "plan then build",
+      mode: "plan",
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
+      loomServer: true,
+    });
+
+    const perms: string[] = [];
+    const evs = await pump(s.events(), {
+      onPlan: async (ev) => {
+        // `m` cycled to manual in the review — the implementation must land in
+        // `default`, so the mutator is gated instead of auto-accepted.
+        await s.respondToPlan(ev.id, { action: "implement", mode: "default" });
+      },
+      onPerm: async (ev) => {
+        perms.push(ev.tool);
+        await s.respondToPermission(ev.id, { behavior: "allow" });
+      },
+    });
+    await s.close();
+
+    // unlike the plain-implement test above, the write is gated in default mode
+    assert.deepEqual(perms, ["write_note"]);
+    assert.equal(s.snapshot().mode, "default");
+    assert.equal(readFileSync(notePath, "utf8"), "implemented");
+    assert.equal(evs.at(-1)?.type, "result");
+  } finally {
+    cleanup();
+  }
+});
+
 test("plan mode: discuss keeps the session planning", async () => {
   const { dir, store, cleanup } = env();
   try {

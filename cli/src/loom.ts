@@ -86,7 +86,10 @@ const USAGE: Record<string, string> = {
     implement                  proceed in the current context
     fresh                      compact to the plan + goal, then implement
     revise <plan...>           replace the plan and implement it
-    discuss <msg...>           reply; the agent stays in plan mode`,
+    discuss <msg...>           reply; the agent stays in plan mode
+
+  --mode manual|acceptEdits|auto  the permission mode the implementation runs
+                                  in (implement / fresh / revise only)`,
   gc: `loom gc  — remove worktrees for done sessions (branches kept)
 
   --id ONE                     just this session (may also target an error row)
@@ -372,6 +375,8 @@ const main = async (): Promise<void> => {
         } else {
           need(undefined, "plan <what> must be implement | fresh | revise | discuss");
         }
+        // The permission mode the implementation runs in (ignored by discuss).
+        if (values.mode) params["mode"] = values.mode;
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", params);
         process.stdout.write(
           r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`,

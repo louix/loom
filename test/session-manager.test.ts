@@ -253,14 +253,28 @@ test("session.respondPlan carries the revise plan / discuss message and validate
     c.request("session.respondPlan", { id, requestId: "pr2", action: "bogus" }),
     /implement \| implement_fresh \| revise \| discuss/,
   );
+  // The implement mode is validated too — `plan` would withhold the mutators.
+  await assert.rejects(
+    c.request("session.respondPlan", { id, requestId: "pr2", action: "implement", mode: "plan" }),
+    /mode must be/,
+  );
+  await assert.rejects(
+    c.request("session.respondPlan", { id, requestId: "pr2", action: "implement", mode: "nope" }),
+    /mode must be/,
+  );
 
   await c.request("session.respondPlan", {
     id,
     requestId: "pr2",
     action: "revise",
     plan: "final plan",
+    mode: "default",
   });
-  assert.deepEqual(fs.planResponses.at(-1)?.decision, { action: "revise", plan: "final plan" });
+  assert.deepEqual(fs.planResponses.at(-1)?.decision, {
+    action: "revise",
+    plan: "final plan",
+    mode: "default",
+  });
   await c.close();
 });
 

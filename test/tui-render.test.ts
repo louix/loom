@@ -780,6 +780,8 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(150);
+    // Some context burned before the plan lands — the overlay meters it.
+    fs?.finishTurn({ contextUsed: 42_000 });
     fs?.emit({
       type: "plan_review",
       id: "pr1",
@@ -793,6 +795,13 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
     await delay(150);
     assert.match(stdout.last, /wire the RPC/);
     assert.match(stdout.last, /implement fresh/);
+    assert.match(stdout.last, /42% context/, "the session's context meter");
+    assert.match(stdout.last, /implement mode: acceptEdits/);
+
+    // `m` cycles the mode the implementation will run in.
+    stdin.feed("m");
+    await delay(120);
+    assert.match(stdout.last, /implement mode: auto/);
 
     // `d` opens the discuss sub-prompt; esc backs out to the plan overlay,
     // NOT to browse (the daemon is still blocked on the decision).
@@ -804,10 +813,10 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
     assert.match(stdout.last, /wire the RPC/, "back on the plan overlay");
     assert.equal(fs?.planResponses.length, 0, "nothing was sent");
 
-    stdin.feed("i"); // implement
+    stdin.feed("i"); // implement — in the mode `m` left selected
     await delay(200);
     assert.equal(fs?.planResponses.length, 1);
-    assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement" });
+    assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement", mode: "auto" });
   } finally {
     app.unmount();
     await client.close();

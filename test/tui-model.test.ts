@@ -904,6 +904,23 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
   assert.equal(s.mode, "plan");
   assert.equal(s.plan?.requestId, "pr1");
+  assert.equal(s.plan?.mode, "acceptEdits");
+
+  // `m` cycles the implement mode — manual → acceptEdits → auto → manual.
+  s = reduce(s, { t: "cyclePlanMode" });
+  assert.equal(s.plan?.mode, "auto");
+  s = reduce(s, { t: "cyclePlanMode" });
+  assert.equal(s.plan?.mode, "default");
+  s = reduce(s, { t: "cyclePlanMode" });
+  assert.equal(s.plan?.mode, "acceptEdits");
+
+  // reopening the same review (esc out of the discuss prompt) keeps the cycled
+  // mode; a different review starts fresh at acceptEdits.
+  s = reduce(s, { t: "cyclePlanMode" }); // → auto
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
+  assert.equal(s.plan?.mode, "auto");
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr2", text: "next plan" });
+  assert.equal(s.plan?.mode, "acceptEdits");
 
   // the session moving on closes the overlay and clears pending
   s = reduce(s, {

@@ -424,8 +424,11 @@ export interface TuiState {
   doctor: DoctorReport | null;
   prompt: PromptState | null;
   confirm: ConfirmState | null;
-  /** An open plan-review overlay: the plan text + the ids to resolve it with. */
-  plan: { sessionId: string; requestId: string; text: string } | null;
+  /**
+   * An open plan-review overlay: the plan text + the ids to resolve it with,
+   * plus the permission mode the implementation will run in (`m` cycles it).
+   */
+  plan: { sessionId: string; requestId: string; text: string; mode: SessionMode } | null;
   /** An open picker overlay (provider / model / find). */
   picker: PickerState | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
@@ -518,6 +521,7 @@ export type Action =
   | { t: "clearQueue"; sessionId: string }
   | { t: "openPlan"; sessionId: string; requestId: string; text: string }
   | { t: "closePlan" }
+  | { t: "cyclePlanMode" }
   | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "toggleConfirmBranch" }
   | { t: "closeConfirm" }
@@ -716,12 +720,31 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return {
         ...s,
         mode: "plan",
-        plan: { sessionId: a.sessionId, requestId: a.requestId, text: a.text },
+        plan: {
+          sessionId: a.sessionId,
+          requestId: a.requestId,
+          text: a.text,
+          // Implementations auto-accept edits unless `m` switches the mode. A
+          // reopen of the same review (esc out of the discuss prompt) keeps the
+          // mode already cycled to rather than resetting it.
+          mode:
+            s.plan && s.plan.sessionId === a.sessionId && s.plan.requestId === a.requestId
+              ? s.plan.mode
+              : "acceptEdits",
+        },
         prompt: null,
       };
 
     case "closePlan":
       return { ...s, mode: s.mode === "plan" ? "browse" : s.mode, plan: null };
+
+    case "cyclePlanMode": {
+      if (!s.plan) return s;
+      // The modes an implementation can run in — `plan` itself is excluded.
+      const order: readonly SessionMode[] = ["default", "acceptEdits", "auto"];
+      const mode = order[(order.indexOf(s.plan.mode) + 1) % order.length] ?? "acceptEdits";
+      return { ...s, plan: { ...s.plan, mode } };
+    }
 
     case "openConfirm":
       return { ...s, mode: "confirm", confirm: a.confirm };

@@ -1264,7 +1264,7 @@ export const mkFleetHandle = ({
     const plan = edited?.trim();
     // No save, or quit-without-changes (`:q`) — don't kick off an implement.
     if (!plan || plan === pl.text.trim()) return note("plan unchanged — nothing sent", "dim");
-    respondPlan({ action: "revise", plan }, "implementing your edited plan");
+    respondPlan({ action: "revise", plan, mode: pl.mode }, "implementing your edited plan");
   };
 
   /** `o` / `⌥o` in the plan overlay — view the plan in $EDITOR, read-only. */
@@ -1599,9 +1599,19 @@ export const mkFleetHandle = ({
     }
 
     if (state.mode === "plan") {
-      if (input === "i") return respondPlan({ action: "implement" }, "implementing the plan");
+      if (input === "m") return void dispatch({ t: "cyclePlanMode" });
+      // i / f / e implement in the overlay's chosen mode; `d` (discuss) only
+      // sends a note back, so it carries none.
+      const pl = state.plan;
+      const withMode = (params: Record<string, unknown>): Record<string, unknown> =>
+        pl ? { ...params, mode: pl.mode } : params;
+      if (input === "i")
+        return respondPlan(withMode({ action: "implement" }), "implementing the plan");
       if (input === "f")
-        return respondPlan({ action: "implement_fresh" }, "compacting, then implementing");
+        return respondPlan(
+          withMode({ action: "implement_fresh" }),
+          "compacting, then implementing",
+        );
       if (input === "e") return void editPlan();
       if (input === "o" || (key.meta && input === "o")) return void viewPlan();
       if (input === "d") {

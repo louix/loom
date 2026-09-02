@@ -98,13 +98,23 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
         </Box>
       );
       break;
-    case "plan":
+    case "plan": {
+      const ps = state.plan
+        ? state.sessions.find((s) => s.id === state.plan?.sessionId)
+        : undefined;
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          {state.plan ? <PlanReview text={state.plan.text} width={Math.min(cols - 4, 96)} /> : null}
+          {state.plan ? (
+            <PlanReview
+              plan={state.plan}
+              width={Math.min(cols - 4, 96)}
+              {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
+            />
+          ) : null}
         </Box>
       );
       break;
+    }
     case "picker":
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">

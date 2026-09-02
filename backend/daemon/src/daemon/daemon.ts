@@ -1857,13 +1857,19 @@ export class Daemon {
       const requestId = reqString(params, "requestId");
       const p = isObj(params) ? params : {};
       const action = p["action"];
+      // The implementing actions accept the permission mode the implementation
+      // should run in; `plan` would withhold the mutators, so it's rejected.
+      const mode = p["mode"] === undefined ? undefined : normalizeSessionMode(p["mode"]);
+      if (p["mode"] !== undefined && (mode === null || mode === "plan")) {
+        throw new RpcError("bad_request", "mode must be default | acceptEdits | auto");
+      }
       let decision: PlanDecision;
       if (action === "implement" || action === "implement_fresh") {
-        decision = { action };
+        decision = { action, ...(mode ? { mode } : {}) };
       } else if (action === "revise") {
         const plan = typeof p["plan"] === "string" ? (p["plan"] as string) : "";
         if (plan.trim() === "") throw new RpcError("bad_request", "revise needs a non-empty plan");
-        decision = { action: "revise", plan };
+        decision = { action: "revise", plan, ...(mode ? { mode } : {}) };
       } else if (action === "discuss") {
         const message = typeof p["message"] === "string" ? (p["message"] as string) : "";
         if (message.trim() === "") throw new RpcError("bad_request", "discuss needs a message");

@@ -97,11 +97,15 @@ export type PermissionDecision =
  *   first, so implementation starts lean.
  * - `revise` — the user edited the plan; the agent implements *that* text.
  * - `discuss` — send a message back; the agent iterates, staying in plan mode.
+ *
+ * The implementing actions carry the permission `mode` the implementation
+ * should run in (`default` / `acceptEdits` / `auto` — never `plan`). When
+ * omitted each adapter falls back to what it did before the field existed.
  */
 export type PlanDecision =
-  | { action: "implement" }
-  | { action: "implement_fresh" }
-  | { action: "revise"; plan: string }
+  | { action: "implement"; mode?: SessionMode }
+  | { action: "implement_fresh"; mode?: SessionMode }
+  | { action: "revise"; plan: string; mode?: SessionMode }
   | { action: "discuss"; message: string };
 
 /** What an adapter can report about a live session without the daemon's help. */

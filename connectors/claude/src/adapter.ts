@@ -442,10 +442,11 @@ class ClaudeSession implements AgentSession {
 
     if (decision.action === "implement") {
       // Native exit: the SDK leaves plan mode and the turn implements. Mirror
-      // that into our own mode so `snapshot()` (and the daemon registry that
-      // reads it) stops reporting "plan" once the turn is already executing.
+      // the requested mode into our own snapshot so `snapshot()` (and the
+      // daemon registry that reads it) stops reporting "plan" once the turn is
+      // already executing.
       try {
-        await this.setMode("default");
+        await this.setMode(decision.mode ?? "default");
       } catch (err) {
         this.#log.warn("failed to sync mode after plan exit", {
           err: err instanceof Error ? err.message : String(err),
@@ -468,7 +469,7 @@ class ClaudeSession implements AgentSession {
         "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
       );
     }
-    await this.setMode("acceptEdits");
+    await this.setMode(decision.mode ?? "acceptEdits");
     const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";
     await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
   }

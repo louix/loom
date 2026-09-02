@@ -282,9 +282,14 @@ harness's plan tool; instead of a generic permission prompt, the session goes
 `awaiting_input` / `plan_review` and `a` opens a review overlay with four
 choices: `i` implement (proceed here), `f` implement fresh (compact the context
 to the plan + goal first), `e` edit the plan in `$EDITOR` then implement what
-you saved, `d` discuss (send a note back; the agent keeps planning). `esc` does
-nothing — a plan review must be answered. `session.respondPlan` is the RPC;
-`loom plan <id> <reqId> implement|fresh|revise|discuss` from the CLI.
+you saved, `d` discuss (send a note back; the agent keeps planning). The overlay
+shows the session's context meter — full context is the argument for `f` — and
+the permission mode the implementation will run in; `m` cycles it
+(manual → acceptEdits → auto), and `i` / `f` / `e` all implement in the mode
+shown. `esc` does nothing — a plan review must be answered.
+`session.respondPlan` is the RPC (implementing actions carry the chosen
+`mode`); `loom plan <id> <reqId> implement|fresh|revise|discuss [--mode M]`
+from the CLI.
 
 **Plan usage.** No session is cost-capped — Loom has no way to know what a
 provider or account should be spending, so it doesn't invent a number and

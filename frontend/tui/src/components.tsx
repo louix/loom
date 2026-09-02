@@ -7,6 +7,7 @@
 import { useMemo, type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
+import type { SessionMode } from "@loom/core/types";
 import { layout, type Buffer } from "./editor.ts";
 import {
   cacheHeat,
@@ -1249,16 +1250,29 @@ export const RequestPanel = ({
 // plan-review overlay (the post-planning decision)
 // ---------------------------------------------------------------------------
 
-export const PlanReview = ({ text, width }: { text: string; width: number }): ReactNode => {
+export const PlanReview = ({
+  plan,
+  width,
+  ctx,
+}: {
+  plan: { text: string; mode: SessionMode };
+  width: number;
+  /** The plan's session context meter — the input for the implement-here vs
+   *  implement-fresh call (`i` vs `f`). Absent when the limit is unknown. */
+  ctx?: { used: number; limit: number };
+}): ReactNode => {
   const w = inside(width);
-  const lines = text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
+  const lines = plan.text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
   const body = lines.slice(0, 16);
+  const frac = ctx && ctx.limit > 0 ? Math.min(1, ctx.used / ctx.limit) : null;
   const row = (k: string, v: string): ReactNode => (
     <Box gap={1}>
       <Box width={3}>
         <Text color={C.accent}>{k}</Text>
       </Box>
-      <Text color={C.dim}>{v}</Text>
+      <Text color={C.dim} wrap="truncate-end">
+        {v}
+      </Text>
     </Box>
   );
   return (
@@ -1286,6 +1300,15 @@ export const PlanReview = ({ text, width }: { text: string; width: number }): Re
         </Text>
       ) : null}
       <Box height={1} />
+      {frac !== null && ctx ? (
+        <Text>
+          <Text color={contextHeatColor(frac)}>{bar(frac, 16)}</Text>
+          <Text color={C.dim}>
+            {`  ${Math.round(frac * 100)}% context · ${humanTokens(ctx.used)}/${humanTokens(ctx.limit)}`}
+          </Text>
+        </Text>
+      ) : null}
+      {row("m", `implement mode: ${modeLabel(plan.mode)} — m cycles manual → acceptEdits → auto`)}
       {row("i", "implement — the agent proceeds in this context")}
       {row("f", "implement fresh — compact to the plan + goal first")}
       {row("e", "edit the plan in $EDITOR, then implement what you saved")}
