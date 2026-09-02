@@ -57,17 +57,21 @@ test("create makes a worktree + branch off base, with identity and a push block"
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create("add a json flag", fakeId("aaaaaaaa"));
+    const wt = m.create("add a json flag", fakeId("aaaaaaaa"), { model: "claude-sonnet-5" });
     assert.equal(wt.slug, "add-a-json-flag"); // dir still uses the readable slug
     assert.equal(wt.branch, "loom/aaaaaaaa"); // branch is named after the session id
     assert.equal(wt.baseRef, "main");
     assert.ok(existsSync(wt.path));
 
-    const cfg = (k: string) =>
-      execFileSync("git", ["-C", wt.path, "config", "--worktree", k], { encoding: "utf8" }).trim();
-    assert.equal(cfg("user.name"), "Loom (claude)");
-    assert.equal(cfg("user.email"), "loom+claude@localhost");
-    assert.equal(cfg("core.hooksPath"), join(root, ".loom", "hooks"));
+    const cfg = (path: string, k: string) =>
+      execFileSync("git", ["-C", path, "config", "--worktree", k], { encoding: "utf8" }).trim();
+    assert.equal(cfg(wt.path, "user.name"), "Loom (claude-sonnet-5)");
+    assert.equal(cfg(wt.path, "user.email"), "loom+claude-sonnet-5@localhost");
+    assert.equal(cfg(wt.path, "core.hooksPath"), join(root, ".loom", "hooks"));
+    // no model → the bare fallback identity
+    const bare = m.create("no model named", fakeId("bbbbbbbb"));
+    assert.equal(cfg(bare.path, "user.name"), "Loom");
+    assert.equal(cfg(bare.path, "user.email"), "loom@localhost");
 
     const hook = join(root, ".loom", "hooks", "pre-push");
     assert.ok(existsSync(hook));
@@ -76,6 +80,25 @@ test("create makes a worktree + branch off base, with identity and a push block"
     // the branch exists in the repo
     execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/aaaaaaaa"]);
     cleanup();
+  } finally {
+    if (existsSync(root)) cleanup();
+  }
+});
+
+test("setIdentity re-points the commit identity after a model switch", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create("switch", fakeId("aaaaaaaa"), { model: "claude-sonnet-5" });
+    m.setIdentity(wt.path, "claude-haiku-4-5-20251001");
+    const cfg = (k: string) =>
+      execFileSync("git", ["-C", wt.path, "config", "--worktree", k], { encoding: "utf8" }).trim();
+    assert.equal(cfg("user.name"), "Loom (claude-haiku-4-5-20251001)");
+    assert.equal(cfg("user.email"), "loom+claude-haiku-4-5-20251001@localhost");
+    // The name keeps the model id verbatim; the address is flattened for git.
+    m.setIdentity(wt.path, "openai/gpt-5:free");
+    assert.equal(cfg("user.name"), "Loom (openai/gpt-5:free)");
+    assert.equal(cfg("user.email"), "loom+openai-gpt-5-free@localhost");
   } finally {
     if (existsSync(root)) cleanup();
   }

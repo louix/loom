@@ -12,8 +12,20 @@ import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
 
-const IDENTITY_NAME = "Loom (claude)";
-const IDENTITY_EMAIL = "loom+claude@localhost";
+/**
+ * The worktree-scoped commit identity: `Loom (<model>) <loom+<model>@localhost>`
+ * — commits carry the model that ran the session, not just "claude". No model
+ * (the daemon couldn't resolve one) falls back to the bare `Loom` identity.
+ */
+const identity = (model: string): { name: string; email: string } => {
+  if (!model) return { name: "Loom", email: "loom@localhost" };
+  return {
+    name: `Loom (${model})`,
+    // Not every model id is email-safe (`openai/gpt-5`, `claude:work`) —
+    // flatten the address, keep the name verbatim.
+    email: `loom+${model.replace(/[^a-zA-Z0-9._+-]/g, "-")}@localhost`,
+  };
+};
 const FACTS_TTL_MS = 3000;
 /** `git status --porcelain` / `worktree list --porcelain` in a very large tree
  *  can exceed the 1 MB `spawnSync` default → `ENOBUFS` → `status: null`. */
@@ -160,15 +172,17 @@ export class WorktreeManager {
 
   /**
    * `git worktree add <trees>/<slug> -b loom/<shortId> <base>`, then pin the
-   * commit identity and hooks path for that tree. `baseRefOverride` branches
+   * commit identity and hooks path for that tree. `opts.baseRef` branches
    * off something other than the configured base (a parent session's branch,
-   * for a hard fork). `id` is the session's own id — the branch is named
-   * after it (truncated to match the fleet view's short id) so a session's
-   * branch is always traceable back to it.
+   * for a hard fork). `opts.model` is the session's model — it names the
+   * commit identity (`Loom (<model>)`), so a commit says what ran it. `id` is
+   * the session's own id — the branch is named after it (truncated to match
+   * the fleet view's short id) so a session's branch is traceable back to it.
    */
-  create(hint: string, id: string, baseRefOverride?: string): WorktreeInfo {
+  create(hint: string, id: string, opts: { baseRef?: string; model?: string } = {}): WorktreeInfo {
     this.ensureSetup();
     let baseRef: string;
+    const baseRefOverride = opts.baseRef;
     if (baseRefOverride != null && baseRefOverride !== "") {
       // A fork asks for a specific base (the parent's branch). If that ref no
       // longer resolves, silently branching off the configured base would give
@@ -196,9 +210,10 @@ export class WorktreeManager {
     // A failure here is fatal: a worktree with no `core.hooksPath` has no
     // push-block hook, and one with no `user.email` commits under whatever
     // ambient identity git finds. Tear the tree down rather than run it unsafe.
+    const ident = identity(opts.model ?? "");
     for (const [key, value] of [
-      ["user.name", IDENTITY_NAME],
-      ["user.email", IDENTITY_EMAIL],
+      ["user.name", ident.name],
+      ["user.email", ident.email],
       ["core.hooksPath", this.#hooksDir],
     ] as const) {
       const res = this.#git(["config", "--worktree", key, value], path);
@@ -217,6 +232,28 @@ export class WorktreeManager {
 
     this.#log.info("worktree created", { slug, branch, baseRef, path });
     return { slug, path, branch, baseRef };
+  }
+
+  /**
+   * Re-point an existing worktree's commit identity — after a deliberate
+   * mid-session model switch, so later commits carry the model that actually
+   * runs. Best-effort: a failure keeps the previous identity (warn, don't tear
+   * the session down — {@link create} is fatal instead because a *fresh* tree
+   * must never run unconfigured).
+   */
+  setIdentity(path: string, model: string): void {
+    const ident = identity(model);
+    for (const [key, value] of [
+      ["user.name", ident.name],
+      ["user.email", ident.email],
+    ] as const) {
+      const res = this.#git(["config", "--worktree", key, value], path);
+      if (!res.ok) {
+        this.#log.warn(
+          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
+        );
+      }
+    }
   }
 
   /**

@@ -65,8 +65,8 @@ the Vercel AI SDK.
   isolation, concurrent sessions can collide, and hard fork is unavailable
   (undo still works). The Detail pane shows the repo's own git state.
 - **Distinct commit identity** — `git config --worktree user.name/email` set to
-  `Loom (claude) <loom+claude@localhost>` so tool commits are never confused
-  with yours.
+  `Loom (<model>) <loom+<model>@localhost>` (e.g. `Loom (claude-sonnet-5)`) so
+  tool commits are never confused with yours and say which model ran them.
 - **Pre-push guard** — a worktree-scoped `core.hooksPath` with a `pre-push`
   hook that hard-fails. Loom runs no remote operations itself.
 - **Git facts on every snapshot** — branch, commit count, ahead/behind base,
@@ -89,8 +89,8 @@ the Vercel AI SDK.
   - **`ask_user`** — the agent puts a question to you and blocks. Surfaces as a
     `question` event → the session goes `awaiting_input` / `question`; you reply
     with `loom answer <id> <reqId> <text>` and the turn resumes.
-  - **`commit`** — commits the session's worktree under its pinned
-    `Loom (claude)` identity, no shelling out to git. Returns the short hash,
+  - **`commit`** — commits the session's worktree under its
+    `Loom (<model>)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
 - **Tool steer** — a system-prompt append points code reading + editing at tilth
   (`tilth_write` / `tilth_edit`, tree-sitter-backed) and file finding / text
@@ -422,7 +422,7 @@ loom gc --force                # remove worktrees for done sessions
 ```
 
 Each session gets its own worktree under `.loom/trees/<slug>` on a
-`loom/<slug>` branch, committed under a `Loom (claude)` identity, with pushing
+`loom/<slug>` branch, committed under a `Loom (<model>)` identity, with pushing
 blocked. Integrate the branch yourself, in your own git — Loom never does.
 
 Repo-specific steering goes in `.loom/LOOM.md` — init commands, how to

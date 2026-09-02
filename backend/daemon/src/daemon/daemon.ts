@@ -820,7 +820,7 @@ export class Daemon {
     let wt: { path: string; branch: string; baseRef: string } | null = null;
     if (o.wantWorktree) {
       try {
-        wt = this.#worktrees.create(o.prompt, id);
+        wt = this.#worktrees.create(o.prompt, id, { model: o.model || o.providerId });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create worktree: ${message}`);
@@ -1762,11 +1762,10 @@ export class Daemon {
       const newId = randomUUID();
       let wt;
       try {
-        wt = this.#worktrees.create(
-          `${parent.title ?? id} fork`,
-          newId,
-          parent.branch ?? undefined,
-        );
+        wt = this.#worktrees.create(`${parent.title ?? id} fork`, newId, {
+          baseRef: parent.branch ?? undefined,
+          model: parent.model || parent.provider,
+        });
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
@@ -2015,6 +2014,9 @@ export class Daemon {
       if (!row) throw new RpcError("not_found", `no such session: ${id}`);
       if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
       const snap = this.#registry.setFields(id, { model });
+      // Later commits carry the model that runs them — re-point the worktree
+      // identity after a deliberate switch.
+      if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
       // A deliberate switch is also "the last model used" for this provider.
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
