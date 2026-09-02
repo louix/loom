@@ -8,6 +8,7 @@
     "loom": "oxnode --import ./cli/src/oxc-esm-fixup.mjs cli/src/loom.ts",
     "daemon": "oxnode cli/src/loomd.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:silent": "pnpm exec tsc --noEmit",
     "watch": "tsc --noEmit --watch",
     "test": "node --import @oxc-node/core/register --test \"test/*.test.ts\"",
     "lint": "oxlint .",
