@@ -65,6 +65,7 @@ Consequences:
 | `⌥t` | switch the session's thinking-effort level (models that support one)                                         |
 | `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost)                                   |
 | —    | keep cache warm — daemon re-primes the prompt cache before its TTL lapses (Claude, pinned TTL; palette only) |
+| —    | gc — remove the worktrees of done sessions; branches and session rows are kept (confirm)                    |
 | `e`  | rename the session                                                                                           |
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |

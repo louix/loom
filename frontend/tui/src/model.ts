@@ -305,7 +305,7 @@ export interface ConfirmState {
   title: string;
   body?: string;
   danger: boolean;
-  action: "restart" | "quitAll" | "deleteSession";
+  action: "restart" | "quitAll" | "deleteSession" | "gc";
   /** Target session for `deleteSession`. */
   sessionId?: string;
   /** `deleteSession`: the session's branch, when it has one — `b` toggles
@@ -1848,6 +1848,7 @@ export type ActName =
   | "clearqueue"
   | "restart"
   | "quitall"
+  | "gc"
   | "new"
   | "find"
   | "filter"
@@ -2000,6 +2001,10 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     if (seen.has(id)) continue;
     seen.add(id);
     items.push({ id, label, hint: key });
+  }
+  // gc only when there's something to collect — done sessions with worktrees.
+  if (s.sessions.some((x) => x.status.kind === "done" && x.worktree)) {
+    items.push({ id: "gc", label: "gc — remove worktrees of done sessions", hint: "" });
   }
   if (s.selectedId && (s.queue[s.selectedId]?.length ?? 0) > 0) {
     items.push({ id: "clearqueue", label: "clear the queued messages", hint: "⌥x" });

@@ -1175,6 +1175,7 @@ export const Confirm = ({
   const accent = confirm.danger ? C.bad : C.accent;
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
+  else if (confirm.action === "gc") actionText = "remove the worktrees";
   else if (confirm.action === "deleteSession")
     actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";
   return (

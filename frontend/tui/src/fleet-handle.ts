@@ -1498,6 +1498,20 @@ export const mkFleetHandle = ({
         .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
       return;
     }
+    if (c.action === "gc") {
+      perform(async () => {
+        const r = await client.request<{
+          removed: string[];
+          failed: Array<{ id: string; error: string }>;
+        }>("session.gc", {});
+        const done = `removed ${r.removed.length} worktree${r.removed.length === 1 ? "" : "s"}`;
+        if (r.failed.length === 0) return done;
+        // A dirty worktree (no `force` is sent) or a live one shows up here.
+        note(`${done} — ${r.failed.map((f) => `${shortId(f.id)}: ${f.error}`).join("; ")}`, "bad");
+        return ""; // the failure note above already told the story
+      });
+      return;
+    }
     if (c.action === "restart") {
       restarting = true;
       dispatch({ t: "connection", value: "reconnecting" });
@@ -1547,6 +1561,26 @@ export const mkFleetHandle = ({
         return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
       case "quitall":
         return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
+      case "gc": {
+        // A bulk sweep — every done session's worktree goes (branches and rows
+        // stay). Behind a confirm like `X`, since it deletes directories.
+        const targets = state.sessions.filter((s) => s.status.kind === "done" && s.worktree);
+        if (targets.length === 0)
+          return void dispatch({
+            t: "notice",
+            text: "nothing to gc — no done sessions with worktrees",
+            tone: "dim",
+          });
+        return void dispatch({
+          t: "openConfirm",
+          confirm: {
+            title: "Run gc?",
+            body: `The worktrees of ${targets.length} done session${targets.length === 1 ? "" : "s"} go away — session rows and branches are kept.`,
+            danger: true,
+            action: "gc",
+          },
+        });
+      }
       case "delete":
         return void (sel
           ? dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) })

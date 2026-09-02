@@ -1287,6 +1287,17 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   assert.equal(commandsFor(base).find((c) => c.id === "delete")?.hint, "X");
   assert.equal(commandsFor(base).find((c) => c.id === "fork")?.hint, "F");
 
+  // gc only shows when a done session actually has a worktree to collect
+  assert.ok(!commandsFor(base).some((c) => c.id === "gc"));
+  const withDoneTree: TuiState = {
+    ...base,
+    sessions: [
+      ...base.sessions,
+      snap({ id: "s2", status: "done", provider: "openai", worktree: "/tmp/gc-tree" }),
+    ],
+  };
+  assert.ok(commandsFor(withDoneTree).some((c) => c.id === "gc"));
+
   // clearqueue only shows when the selected session actually has a queue
   assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
   const withQueue: TuiState = { ...base, queue: { s1: ["pending note"] } };
