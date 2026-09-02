@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import type { DoctorReport, HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { loomPaths } from "@loom/core/paths";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
+import { Daemon } from "@loom/daemon/daemon/daemon";
 import { makeHarness, type Harness } from "@loom/harness";
 
 /** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn.
@@ -459,6 +461,7 @@ color    = "red"
         defaultModel: string;
         color: string;
         isDefault: boolean;
+        modelsLoading?: boolean;
       }>
     >("providers.list");
     await c.close();
@@ -469,9 +472,11 @@ color    = "red"
     // no model has run yet → the config pin is the default
     assert.equal(byId.get("openai")?.defaultModel, "gpt-5");
     assert.equal(byId.get("claude")?.defaultModel, "claude-sonnet-5");
-    // standalone/test daemons skip the CLI catalog probe → claude falls back to
-    // the single configured pin so the picker still has a row
-    assert.deepEqual(byId.get("claude")?.models, ["claude-sonnet-5"]);
+    // no fabrication: standalone/test daemons skip the CLI catalog probe, so
+    // the list stays empty (the TUI shows its loading/empty state) — the
+    // config `model` pin still seeds new sessions via defaultModel
+    assert.deepEqual(byId.get("claude")?.models, []);
+    assert.equal(byId.get("claude")?.modelsLoading, undefined); // probe skipped → not "loading"
     assert.equal(byId.get("openai")?.isDefault, true);
     assert.equal(byId.get("claude")?.isDefault, false);
     // first aisdk profile gets the first palette colour; explicit wins
@@ -1381,5 +1386,68 @@ models   = ["pin-a"]
     assert.equal(updates.length, 0, "nothing resolved → nothing to push");
   } finally {
     await hh.cleanup();
+  }
+});
+
+test("a live daemon reports claude's catalog as loading until the probe settles — no pin fallback", async () => {
+  // Non-standalone daemon (standalone skips the probe) with a cli_path that
+  // can't resolve: the probe fails fast, but the settle must still flip
+  // `modelsLoading` off and push — an open picker's loader has to resolve
+  // even when the catalog never arrives.
+  const xdg = mkdtempSync(join(tmpdir(), "loom-probe-xdg-"));
+  const realXdg = process.env["XDG_CONFIG_HOME"];
+  process.env["XDG_CONFIG_HOME"] = xdg; // keep the scaffolded starter out of the shared harness XDG
+  const repoRoot = mkdtempSync(join(tmpdir(), "loom-probe-"));
+  execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
+  execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);
+  execFileSync("git", ["-C", repoRoot, "config", "user.name", "t"]);
+  // Don't inherit a machine-wide commit.gpgsign — gpg has no TTY here.
+  execFileSync("git", ["-C", repoRoot, "config", "commit.gpgsign", "false"]);
+  execFileSync("git", ["-C", repoRoot, "config", "tag.gpgsign", "false"]);
+  execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
+  mkdirSync(join(repoRoot, ".loom"), { recursive: true });
+  writeFileSync(
+    join(repoRoot, ".loom", "config.toml"),
+    `[providers.claude]\ncli_path = "/nonexistent/loom-test-claude"\n`,
+  );
+  let daemon: Daemon | null = null;
+  try {
+    daemon = await Daemon.start({
+      repoRoot,
+      connectors: { "@loom/connector-claude": () => import("@loom/connector-claude") },
+    });
+    const c = await LoomClient.connect({
+      repoRoot,
+      sockPath: loomPaths(repoRoot).sock,
+      autospawn: false,
+    });
+    const list = await c.request<
+      Array<{ id: string; models: string[]; modelsLoading?: boolean }>
+    >("providers.list");
+    const claude = list.find((p) => p.id === "claude");
+    assert.deepEqual(claude?.models, []); // no fabricated single-pin list
+    assert.equal(claude?.modelsLoading, undefined); // the probe settled (failed fast here)
+    await c.close();
+
+    // The settle flip alone is worth a push: clients that fetched the loading
+    // state mid-probe are told the list is final.
+    const updates = daemon.events
+      .since(0)
+      .frames.filter((f) => f.type === "providers_updated");
+    assert.equal(
+      updates.length,
+      1,
+      "the loading→settled flip pushes even though models stayed empty",
+    );
+    const last = updates.at(-1);
+    if (last?.type !== "providers_updated") return assert.fail("unreachable");
+    const pushed = last.providers.find((p) => p.id === "claude");
+    assert.deepEqual(pushed?.models, []);
+    assert.equal(pushed?.modelsLoading, undefined);
+  } finally {
+    await daemon?.stop("test").catch(() => {});
+    process.env["XDG_CONFIG_HOME"] = realXdg;
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(xdg, { recursive: true, force: true });
   }
 });

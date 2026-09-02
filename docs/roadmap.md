@@ -709,9 +709,10 @@ A 7-item brain-dump. 296 → 298 tests.
   catalog. The daemon probes once at start-up (`#resolveClaudeModels`,
   non-standalone, best-effort, 10s cap) unless `[providers.claude] models` is
   pinned; `providers.probeModels` / `loom models claude` use it too.
-  `providers.list` falls back to the single configured `model` so `M` / `⌥p` are
-  never empty. `#defaultModelFor("claude")` = remembered → config `model` →
-  `models[0]`; `session.create` / `setModel` remember Claude's last model too.
+  `providers.list` flags `modelsLoading` until the probe settles — the TUI
+  shows a loader, never a fabricated list (the config `model` pin still seeds
+  new sessions: `#defaultModelFor("claude")` = remembered → config `model` →
+  `models[0]`); `session.create` / `setModel` remember Claude's last model too.
 - **`auto` mode passthrough** (revised in `aed44ab`). The Claude SDK's
   `PermissionMode` has its own `'auto'` (proceeds, still prompts for anything it
   judges unsafe) — _not_ `bypassPermissions` (the flag-gated one Loom never

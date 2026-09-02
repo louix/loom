@@ -1947,8 +1947,8 @@ test("providers action populates state and the derived helpers", () => {
     modelPickItems(s, "deepseek").map((i) => i.label),
     ["deepseek-chat", "deepseek-reasoner"],
   );
-  assert.match(modelPickEmptyText("claude"), /configured model/); // still there if the list is empty
-  assert.match(modelPickEmptyText("oai"), /no models detected.*loom models oai/s);
+  assert.match(modelPickEmptyText(s, "claude"), /configured model/); // still there if the list is empty
+  assert.match(modelPickEmptyText(s, "oai"), /no models detected.*loom models oai/s);
 });
 
 test("modelSupportsEffort / effortPickItems: gated per model, per its own enumerated levels", () => {
@@ -2338,4 +2338,48 @@ test("session_updated seeds the overlay mid-flight and never clobbers live beats
   });
   assert.deepEqual(s.compacting["s2"], { startedAt: 42_000, generated: 0, before: 77_000 });
   assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+});
+
+test("a model picker opened while the catalog loads resolves when the fresh list lands", () => {
+  const loading: ProviderInfo[] = [
+    {
+      id: "claude",
+      models: [],
+      defaultModel: "claude-sonnet-5",
+      defaultEffort: "",
+      defaultMode: "default",
+      tag: "claude",
+      color: "",
+      isDefault: true,
+      modelsLoading: true,
+    },
+    ...PROVIDERS.slice(1),
+  ];
+  const s = reduce(initialState(), { t: "providers", list: loading });
+  assert.match(modelPickEmptyText(s, "claude"), /loading/i);
+  assert.deepEqual(modelPickItems(s, "claude"), []);
+
+  // Open the model step mid-load (as the ⌥p wizard does)…
+  const opened = reduce(s, {
+    t: "openPicker",
+    picker: makePicker({
+      kind: "model",
+      title: "model · claude",
+      items: modelPickItems(s, "claude"),
+      emptyText: modelPickEmptyText(s, "claude"),
+      ctx: { provider: "claude" },
+    }),
+  });
+  assert.equal(opened.picker?.items.length, 0);
+
+  // …then the daemon's settle push lands — the same picker fills in.
+  const settled = reduce(opened, {
+    t: "push",
+    frame: { kind: "push", seq: 1, type: "providers_updated", providers: PROVIDERS },
+  });
+  assert.deepEqual(
+    settled.picker?.items.map((i) => i.id),
+    ["claude-opus-5", "claude-sonnet-5"],
+  );
+  assert.equal(settled.picker?.emptyText, undefined);
 });

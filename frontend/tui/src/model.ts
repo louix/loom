@@ -973,11 +973,15 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
           : {}),
       };
     }
-    case "providers_updated":
-      // The daemon's remembered new-session defaults (last provider / model /
-      // effort / mode) changed — adopt the fresh provider list so the `new`
-      // prompt seeds from what the next create would actually use.
-      return { ...s, providers: frame.providers };
+    case "providers_updated": {
+      // The daemon's remembered new-session defaults changed, or the start-up
+      // model probes settled — adopt the fresh list. A provider/model picker
+      // opened before the probes landed holds a snapshot of the loading
+      // state; re-derive it so it fills in without being closed and reopened.
+      const next = { ...s, providers: frame.providers };
+      const picker = rederiveOpenPicker(next);
+      return picker ? { ...next, picker } : next;
+    }
 
     case "session_removed": {
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
@@ -1663,9 +1667,32 @@ export const modelPickItems = (s: TuiState, providerId: string): PickItem[] => {
 };
 
 /** Message for an empty model picker — why there's nothing to pick. */
-export const modelPickEmptyText = (providerId: string): string => {
+export const modelPickEmptyText = (s: TuiState, providerId: string): string => {
+  if (providerInfo(s, providerId)?.modelsLoading) {
+    return "loading the model catalog — the list fills in when detection completes";
+  }
   if (isClaudeId(providerId)) return "claude uses its configured model — enter to continue";
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
+};
+
+/** A `providers_updated` landed while a provider/model picker is open: rebuild
+ *  its items from the fresh list — one opened while the daemon was still
+ *  detecting models resolves here instead of sitting empty until reopened.
+ *  The highlight follows its id when it survives. Null when the open picker
+ *  doesn't depend on the provider list. */
+export const rederiveOpenPicker = (s: TuiState): PickerState | null => {
+  const p = s.picker;
+  if (!p || (p.kind !== "model" && p.kind !== "provider")) return null;
+  const providerId = p.ctx?.provider ?? "";
+  const items = p.kind === "model" ? modelPickItems(s, providerId) : providerPickItems(s);
+  const cur = pickerCurrent(p)?.id;
+  const at = cur ? items.findIndex((it) => it.id === cur) : -1;
+  const out: PickerState = { ...p, items, index: at >= 0 ? at : 0 };
+  if (p.kind === "model") {
+    if (items.length === 0) out.emptyText = modelPickEmptyText(s, providerId);
+    else delete out.emptyText; // the list loaded — the empty-state note is dead
+  }
+  return out;
 };
 
 /** The default effort levels offered when a model supports effort but doesn't
@@ -1760,7 +1787,7 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
         kind: "model",
         title: `model · ${label}`,
         items: modelPickItems(s, providerId),
-        emptyText: modelPickEmptyText(providerId),
+        emptyText: modelPickEmptyText(s, providerId),
         ctx: { ...p.ctx, provider: providerId },
       }),
     };

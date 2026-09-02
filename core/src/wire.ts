@@ -269,6 +269,12 @@ export interface ProviderInfo {
    *  Claude does. Parallel to `models`; the picker falls back to a bare `id`. */
   modelChoices?: ModelChoice[];
   /**
+   * The start-up model discovery is still running (the Claude CLI catalog
+   * probe). The picker shows a loading state instead of the list; a
+   * `providers_updated` push carries the settled list when it lands.
+   */
+  modelsLoading?: boolean;
+  /**
    * Model a new session gets when none is chosen: the last one run on this
    * provider (remembered across restarts), else a config pin, else the first
    * detected model. "" when nothing is known yet.

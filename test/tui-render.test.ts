@@ -1034,9 +1034,10 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
 
     stdin.feed("\r"); // pick the highlighted provider (claude — first row)
     await delay(120);
-    // claude now carries a curated model list
+    // claude's catalog wasn't probed here (standalone daemon) — the model step
+    // shows its empty state and enter continues with the configured model
     assert.match(stdout.last, /MODEL/);
-    assert.match(stdout.last, /claude-sonnet-5/);
+    assert.match(stdout.last, /claude uses its configured model/);
     stdin.feed("\r"); // pick the highlighted model, back to the prompt
     await delay(120);
     assert.match(stdout.last, /new session/i);

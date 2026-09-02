@@ -155,6 +155,9 @@ export class Daemon {
   #providerDefaults: ProviderDefaultStore;
   /** Claude's CLI-reported model catalog, discovered once at start-up. */
   #claudeChoices: ModelChoice[] | null = null;
+  /** Set once the start-up catalog probe has settled (any outcome) — drives
+   *  `ProviderInfo.modelsLoading`, so the TUI shows a loader, not a stub list. */
+  #claudeProbeDone = false;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   /** Per-session-id gate serialising lifecycle ops (`markDone` / `remove` / `gc`)
@@ -196,6 +199,8 @@ export class Daemon {
   private constructor(opts: DaemonStartOptions) {
     this.repoRoot = opts.repoRoot;
     this.#standalone = opts.standalone ?? false;
+    // Standalone (test / embedded) daemons never probe — nothing is "loading".
+    this.#claudeProbeDone = this.#standalone;
     this.paths = loomPaths(opts.repoRoot);
     ensureLoomDir(this.paths);
     setLogFile(this.paths.log);
@@ -631,9 +636,21 @@ export class Daemon {
    * offer real choices without a hard-coded list. Skipped when the user pinned
    * `[providers.claude] models`, in standalone/test daemons, or when the
    * provider has no `listModels`. Best-effort and bounded — a failure just
-   * leaves the list empty and `#providerList` falls back to the single pin.
+   * leaves the list empty; the TUI shows its loading / empty state and the
+   * config `model` pin still seeds new sessions.
    */
   async #resolveClaudeModels(): Promise<void> {
+    try {
+      await this.#probeClaudeCatalog();
+    } finally {
+      // Settled — success, failure, skip or timeout. `modelsLoading` must not
+      // stick on, and the settle (even with an empty list) is what resolves a
+      // TUI picker that opened while the probe was running.
+      this.#claudeProbeDone = true;
+    }
+  }
+
+  async #probeClaudeCatalog(): Promise<void> {
     if (this.#standalone) return;
     if (this.config.providers.claude.models.length > 0) return;
     try {
@@ -674,14 +691,22 @@ export class Daemon {
     return claudeProfileId(this.config.claudeProfiles[0] ?? { name: "" });
   }
 
+  /** The catalog probe is still running and nothing is pinned — the picker
+   *  list isn't final yet (surfaced as `ProviderInfo.modelsLoading`). */
+  get #claudeCatalogPending(): boolean {
+    return !this.#claudeProbeDone && this.config.providers.claude.models.length === 0;
+  }
+
   /** Configured providers for the TUI's creation flow / model switcher. */
   #providerList(): ProviderInfo[] {
     const def = this.#defaultProviderId();
     const mode = this.#defaultMode();
     const claude = this.config.providers.claude;
-    const claudeModelPin = claude.model ? [claude.model] : [];
     // One shared model catalog (all profiles run the same `claude` binary).
-    const claudeModels = claude.models.length ? claude.models : claudeModelPin;
+    // No fabrication: until the start-up probe lands (or if it fails) the list
+    // is empty and the TUI shows a loader — a one-row list of the config pin
+    // read like a broken catalog. The pin still seeds new sessions below.
+    const claudeModels = claude.models;
 
     // `paletteIx` walks PROVIDER_PALETTE for any provider without an explicit
     // colour — shared across named Claude profiles and aisdk profiles so the
@@ -697,6 +722,7 @@ export class Daemon {
         id,
         models: claudeModels,
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
+        ...(this.#claudeCatalogPending ? { modelsLoading: true } : {}),
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,

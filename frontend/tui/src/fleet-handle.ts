@@ -803,7 +803,7 @@ export const mkFleetHandle = ({
         kind: "model",
         title: `model · ${label}`,
         items: modelPickItems(state, providerId),
-        emptyText: modelPickEmptyText(providerId),
+        emptyText: modelPickEmptyText(state, providerId),
         ctx: { provider: providerId, ...(draft !== undefined ? { draft } : {}) },
       }),
     });
@@ -848,7 +848,7 @@ export const mkFleetHandle = ({
         kind: "model",
         title: `retarget · model · ${provider}`,
         items,
-        emptyText: modelPickEmptyText(provider),
+        emptyText: modelPickEmptyText(state, provider),
         ctx: { planStage: true, provider },
         index: cur ? items.findIndex((i) => i.id === cur) : 0,
       }),
@@ -1105,7 +1105,9 @@ export const mkFleetHandle = ({
     const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
     if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
     const models = modelPickItems(state, s.provider);
-    if (models.length === 0) {
+    // Mid-probe the list is empty but coming — open the picker anyway; the
+    // settle push fills it in (see rederiveOpenPicker).
+    if (models.length === 0 && !providerInfo(state, s.provider)?.modelsLoading) {
       return void dispatch({
         t: "notice",
         text: `${s.provider} has no alternate models`,
