@@ -99,14 +99,18 @@ test("create registers a session, streams its events, and derives running → id
   assert.equal(done.contextUsed, 500);
 
   // the opening prompt lands on the stream as a user_message; the pump's own
-  // events then carry a per-session ordinal starting at 0
+  // events then carry a per-session ordinal that strictly increases (seeded
+  // from wall-clock so a resumed session doesn't reuse persisted ordinals — S11)
   const evs = frames.filter((f) => f.type === "event" && f.event.sessionId === id);
   assert.ok(evs.length >= 3);
   assert.equal((evs[0] as { event: { type: string } }).event.type, "user_message");
-  const firstOrdinal = evs.find(
-    (f) => (f as { event: { ordinal?: number } }).event.ordinal !== undefined,
-  );
-  assert.equal((firstOrdinal as { event: { ordinal?: number } }).event.ordinal, 0);
+  const ordinals = evs
+    .map((f) => (f as { event: { ordinal?: number } }).event.ordinal)
+    .filter((n): n is number => n !== undefined);
+  assert.ok(ordinals.length >= 2);
+  for (let i = 1; i < ordinals.length; i++) {
+    assert.ok(ordinals[i]! > ordinals[i - 1]!, "ordinals strictly increase");
+  }
 
   await c.close();
 });

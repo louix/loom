@@ -140,7 +140,11 @@ export class SessionManager {
       provider: providerId,
       session,
       state: stateStarting,
-      ordinal: 0,
+      // S11: seed from wall-clock, not 0 — a session resumed after a restart
+      // would otherwise re-issue ordinals 0,1,2… that collide with the ones
+      // already stamped on its persisted events. Still monotonic per session
+      // (`ordinal++`), and only ever compared within one session's stream.
+      ordinal: Date.now(),
       pending: new Map(),
       subagents: new Map(),
       backgroundTasks: [],

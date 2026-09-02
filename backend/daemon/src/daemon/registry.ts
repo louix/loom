@@ -34,7 +34,7 @@ export class Registry {
 
   create(s: NewSession): SessionSnapshot {
     this.#store.create(s);
-    this.#versions.set(s.id, 1);
+    this.#seedVersion(s.id); // updatedAt-based, like every other first touch
     return this.mustGet(s.id);
   }
 
@@ -93,11 +93,26 @@ export class Registry {
   }
 
   version(id: string): number {
-    return this.#versions.get(id) ?? 0;
+    return this.#versions.get(id) ?? this.#seedVersion(id);
+  }
+
+  /**
+   * First-touch version for a session the counter doesn't know yet — seeded
+   * from the row's `updatedAt` (monotonic ms) rather than 1. The counter is
+   * in-memory and resets on restart; without this, a client that reconnects
+   * holding a pre-restart version would suppress every fresh `session_updated`
+   * until the from-1 counter climbed back past it (S6). `updatedAt` only ever
+   * increases, so a post-restart bump lands above whatever the client held.
+   */
+  #seedVersion(id: string): number {
+    const seed = Math.floor(this.#store.get(id)?.updatedAt ?? 0);
+    this.#versions.set(id, seed);
+    return seed;
   }
 
   #bump(id: string): SessionSnapshot {
-    this.#versions.set(id, (this.#versions.get(id) ?? 0) + 1);
+    const next = (this.#versions.get(id) ?? this.#seedVersion(id)) + 1;
+    this.#versions.set(id, next);
     return this.mustGet(id);
   }
 }

@@ -318,6 +318,54 @@ test("a reconnect onto a restarted daemon (new epoch) forces a resync", async ()
   }
 });
 
+test("S6: session_updated version does not regress across a daemon restart", async () => {
+  const hh = await makeHarness();
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const stub = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "v",
+      status: "running",
+    });
+    // Bump it a few times pre-restart so its version is well above 1.
+    for (let i = 0; i < 5; i++) {
+      await c.request("session.setStatus", { id: stub.id, status: i % 2 ? "idle" : "running" });
+    }
+    let preVersion = 0;
+    c.onPush((f) => {
+      if (f.type === "session_updated" && f.session.id === stub.id) preVersion = f.version;
+    });
+    await c.request("session.setStatus", { id: stub.id, status: "idle" });
+    await delay(20);
+    assert.ok(preVersion > 1, `expected a climbed version, got ${preVersion}`);
+    await c.close();
+
+    await hh.restart();
+
+    const c2 = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    let postVersion = 0;
+    c2.onPush((f) => {
+      if (f.type === "session_updated" && f.session.id === stub.id) postVersion = f.version;
+    });
+    await c2.request("session.setStatus", { id: stub.id, status: "running" });
+    await delay(20);
+    assert.ok(
+      postVersion > preVersion,
+      `version regressed across restart: pre ${preVersion}, post ${postVersion}`,
+    );
+    await c2.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
 test("daemon.status reflects live counts", async () => {
   const c = await client();
   const s = await c.request<{ sessions: number; clients: number; eventSeq: number }>(
