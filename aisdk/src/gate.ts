@@ -3,10 +3,11 @@
  * this from the SDK's `canUseTool`; here Loom owns it. Every tool's `execute` is
  * wrapped so that, depending on the session mode and the tool's nature, the call
  * is allowed outright, routed through a `permission_request` the user answers,
- * or (M10d, `plan` mode) withheld. A denied call throws — the model sees a
+ * or (in `plan` mode) withheld. A denied call throws — the model sees a
  * tool error and can adjust.
  *
- * Tool nature is inferred from the name: official MCP servers and our own tools
+ * Tool nature comes from the server's own MCP `annotations.readOnlyHint` when
+ * it declares one, else from the name: official MCP servers and our own tools
  * use consistent `read_`/`write_`/`list_`/… verbs.
  */
 import type { ToolCallOptions, ToolSet } from "ai";
@@ -37,7 +38,12 @@ export const isEdit = (name: string): boolean => {
   return EDIT_RE.test(name);
 };
 
-export const isReadonly = (name: string): boolean => {
+export const isReadonly = (name: string, declaredReadonly?: boolean): boolean => {
+  // The server's own MCP `annotations.readOnlyHint` beats the name guess, both
+  // ways: `tilth_deps` / `tilth_diff` carry no read verb but declare themselves
+  // read-only (so they stay available in plan mode), while a read-looking name
+  // declared mutating still gates.
+  if (declaredReadonly !== undefined) return declaredReadonly;
   if (READONLY_EXACT.has(name)) return true;
   // A name that carries *both* a read verb and a mutation verb
   // (`search_and_replace`, `get_or_create_file`, `read_and_write`) is a
@@ -47,12 +53,16 @@ export const isReadonly = (name: string): boolean => {
 };
 
 /** What to do with a tool call *before* any user prompt. */
-export const policy = (mode: SessionMode, name: string): "allow" | "ask" => {
+export const policy = (
+  mode: SessionMode,
+  name: string,
+  declaredReadonly?: boolean,
+): "allow" | "ask" => {
   if (mode === "auto") return "allow";
-  if (isReadonly(name)) return "allow";
+  if (isReadonly(name, declaredReadonly)) return "allow";
   if (mode === "acceptEdits" && isEdit(name)) return "allow";
-  // `plan` mode's withhold-the-mutators behaviour is M10d; until then it gates
-  // like `default`.
+  // In `plan` mode mutators are additionally withheld at mount time
+  // (`#turnToolSet`); anything still reaching this gates like `default`.
   return "ask";
 };
 
@@ -75,6 +85,9 @@ export interface GateOptions {
   /** Read dynamically so a mid-session `setMode` takes effect on the next call. */
   mode: () => SessionMode;
   ask: PermissionAsk;
+  /** Mounted tool name → the MCP server's `annotations.readOnlyHint` for it.
+   *  Present entries override the name heuristics (see `isReadonly`). */
+  readonlyHints?: ReadonlyMap<string, boolean>;
 }
 
 /** Wrap every executable tool in a set with the gate. */
@@ -92,7 +105,7 @@ export const wrapToolSet = (tools: ToolSet, opts: GateOptions): ToolSet => {
     out[name] = {
       ...t,
       execute: async (input: unknown, ctx: ToolCallOptions): Promise<unknown> => {
-        if (policy(opts.mode(), name) === "ask") {
+        if (policy(opts.mode(), name, opts.readonlyHints?.get(name)) === "ask") {
           const decision = await opts.ask(name, input, ctx.toolCallId);
           if (!decision.allow) throw new PermissionDenied(decision.message ?? "denied by the user");
         }

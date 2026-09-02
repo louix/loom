@@ -114,7 +114,7 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
     );
     assert.equal(hub.serverCount, 1);
     const names = Object.keys(hub.tools).sort();
-    assert.deepEqual(names, ["ask_user", "echo_text", "grep", "write_note"]);
+    assert.deepEqual(names, ["ask_user", "echo_text", "grep", "project_deps", "write_note"]);
 
     const echo = hub.tools["echo_text"] as {
       execute: (i: unknown, c: unknown) => Promise<unknown>;
@@ -170,6 +170,23 @@ test("McpHub skips a server that fails to start instead of throwing", async () =
   await hub.close();
 });
 
+test("McpHub surfaces each server's readOnlyHint declarations for the gate", async () => {
+  const hub = await McpHub.connect(
+    [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+    log,
+  );
+  try {
+    // `project_deps` carries no read verb to guess from; `write_note` declares
+    // itself mutating; `grep` declares nothing and falls to the name heuristics.
+    assert.equal(hub.readOnlyHints.get("project_deps"), true);
+    assert.equal(hub.readOnlyHints.get("echo_text"), true);
+    assert.equal(hub.readOnlyHints.get("write_note"), false);
+    assert.equal(hub.readOnlyHints.has("grep"), false);
+  } finally {
+    await hub.close();
+  }
+});
+
 // --- gate ------------------------------------------------------------------
 
 test("gate name heuristics: readonly vs edit", () => {
@@ -204,6 +221,22 @@ test("gate: a name with both a read verb and a mutation verb is a mutator", () =
     assert.equal(policy("default", n), "ask", `${n} must prompt in default mode`);
     assert.equal(policy("plan", n), "ask", `${n} must be gated in plan mode`);
   }
+});
+
+test("gate: a declared MCP readOnlyHint overrides the name heuristics", () => {
+  // tilth's `tilth_deps` / `tilth_diff` — no read verb to guess from, but the
+  // server declares them read-only, so they never prompt and stay in plan mode.
+  assert.equal(isReadonly("project_deps", true), true);
+  assert.equal(policy("default", "project_deps", true), "allow");
+  assert.equal(policy("plan", "project_deps", true), "allow");
+  assert.equal(policy("acceptEdits", "project_deps", true), "allow");
+  // The other direction: a read-looking name the server declares mutating.
+  assert.equal(isReadonly("get_status", false), false);
+  assert.equal(policy("default", "get_status", false), "ask");
+  assert.equal(policy("plan", "get_status", false), "ask");
+  // No declaration → the name heuristics, unchanged.
+  assert.equal(isReadonly("get_status"), true);
+  assert.equal(policy("default", "project_deps"), "ask");
 });
 
 test("policy: auto allows all; default asks for non-readonly; acceptEdits allows edits", () => {
@@ -258,6 +291,30 @@ test("wrapToolSet: readonly runs unprompted; gated asks; denial throws Permissio
   allow = false;
   await assert.rejects(() => deleteThing.execute({}, ctx), PermissionDenied);
   assert.deepEqual(calls, ["read", "delete"]); // the denied call never reached the tool
+});
+
+test("wrapToolSet: a declared-readonly tool with a verb-less name runs unprompted", async () => {
+  const asked: string[] = [];
+  const tools = {
+    project_deps: tool({
+      description: "d",
+      inputSchema: z.object({}),
+      execute: async () => "deps",
+    }),
+  };
+  const wrapped = wrapToolSet(tools, {
+    mode: () => "plan",
+    ask: async (name) => {
+      asked.push(name);
+      return { allow: true };
+    },
+    readonlyHints: new Map([["project_deps", true]]),
+  }) as Record<string, { execute: (i: unknown, c: unknown) => Promise<unknown> }>;
+  const deps = wrapped["project_deps"];
+  assert.ok(deps);
+
+  assert.equal(await deps.execute({}, { toolCallId: "c", messages: [] }), "deps");
+  assert.deepEqual(asked, []); // declared read-only — never asked, even in plan mode
 });
 
 // --- session with tools ----------------------------------------------------

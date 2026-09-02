@@ -176,6 +176,10 @@ export class AisdkSession implements AgentSession {
   #snap: AdapterSnapshot;
 
   #hub: McpHub | null = null;
+  /** MCP `readOnlyHint` declarations for the mounted names, from `#hub` —
+   *  minus names a first-party tool took over, since the hint describes the
+   *  server's tool, not ours. Read by the gate instead of the name heuristics. */
+  #declaredReadonly: ReadonlyMap<string, boolean> = new Map();
   #builtins: BuiltinTools | null = null;
   #baseToolsPromise: Promise<ToolSet> | null = null;
   readonly #pendingPerms = new Map<string, (d: { allow: boolean; message?: string }) => void>();
@@ -485,6 +489,17 @@ export class AisdkSession implements AgentSession {
             if (!(name in base)) base[name] = t;
           }
         }
+        // Annotate the mounted set with the servers' readOnlyHint declarations,
+        // dropping any whose name a first-party tool replaced.
+        if (this.#hub) {
+          const hub = this.#hub;
+          this.#declaredReadonly = new Map(
+            [...hub.readOnlyHints].filter(
+              ([name]) =>
+                (base as Record<string, unknown>)[name] === (hub.tools as Record<string, unknown>)[name],
+            ),
+          );
+        }
         return base;
       })();
     }
@@ -498,7 +513,11 @@ export class AisdkSession implements AgentSession {
     const src = base as Record<string, unknown>;
     for (const name of Object.keys(src)) {
       if (this.#mode === "plan") {
-        if (name === "exit_plan" || name === "ask_user" || isReadonly(name))
+        if (
+          name === "exit_plan" ||
+          name === "ask_user" ||
+          isReadonly(name, this.#declaredReadonly.get(name))
+        )
           picked[name] = src[name];
       } else if (name !== "exit_plan") {
         picked[name] = src[name];
@@ -507,6 +526,7 @@ export class AisdkSession implements AgentSession {
     return wrapToolSet(picked as ToolSet, {
       mode: () => this.#mode,
       ask: (name, input, toolCallId) => this.#requestPermission(name, input, toolCallId),
+      readonlyHints: this.#declaredReadonly,
     });
   }
 

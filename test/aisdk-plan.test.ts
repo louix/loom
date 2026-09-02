@@ -98,6 +98,44 @@ const pump = async (
 
 // --- plan mode -------------------------------------------------------------
 
+test("plan mode: an MCP tool the server declares read-only stays mounted and runs unprompted", async () => {
+  const { dir, store, cleanup } = env();
+  try {
+    // `project_deps` carries no read verb in its name — only the server's
+    // readOnlyHint declaration makes it plan-mode-safe. A verb-less tool
+    // without the declaration is withheld like a mutator.
+    const model = stepModel([
+      callStep("d1", "project_deps", JSON.stringify({})),
+      textStep("Deps listed."),
+    ]);
+    const s = await provider(() => model, store).createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "list the project's dependencies",
+      mode: "plan",
+      mcpServers: [
+        { name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } },
+      ],
+      loomServer: true,
+    });
+
+    const perms: string[] = [];
+    const evs = await pump(s.events(), {
+      onPerm: async (ev) => {
+        perms.push(ev.tool);
+        await s.respondToPermission(ev.id, { behavior: "allow" });
+      },
+    });
+    await s.close();
+
+    assert.deepEqual(perms, []); // declared read-only — no prompt in plan mode
+    assert.equal(evs.some((e) => e.type === "tool_result" && e.ok), true);
+    assert.equal(evs.at(-1)?.type, "result");
+  } finally {
+    cleanup();
+  }
+});
+
 test("plan mode: exit_plan → plan_review → implement chains an acceptEdits turn", async () => {
   const { dir, store, cleanup } = env();
   try {

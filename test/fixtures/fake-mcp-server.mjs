@@ -3,10 +3,14 @@
  * Implements just enough of the protocol for `@ai-sdk/mcp`'s client to
  * initialize, list tools, and call them:
  *
- *   - `echo_text`  — returns its `text` argument (readonly-looking name)
+ *   - `echo_text`  — returns its `text` argument (readonly-looking name,
+ *                    declared `readOnlyHint: true`)
  *   - `write_note` — writes `content` to `path`, returns a confirmation
+ *                    (declared `readOnlyHint: false`)
  *   - `grep`       — returns a fixed line; same name as the first-party
  *                    builtin, so tests can pin that the MCP tool wins
+ *   - `project_deps` — returns a fixed line; no read verb in the name, only
+ *                    its `readOnlyHint: true` makes it plan-mode-safe
  *   - `ask_user`   — returns a fixed line; same name as a session-control
  *                    tool, so tests can pin that the first-party one wins
  *
@@ -25,6 +29,7 @@ const TOOLS = [
   {
     name: "echo_text",
     description: "Echo the given text back.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: { text: { type: "string" } },
@@ -34,6 +39,7 @@ const TOOLS = [
   {
     name: "write_note",
     description: "Write content to a file path.",
+    annotations: { readOnlyHint: false },
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, content: { type: "string" } },
@@ -47,6 +53,15 @@ const TOOLS = [
       type: "object",
       properties: { pattern: { type: "string" } },
       required: ["pattern"],
+    },
+  },
+  {
+    name: "project_deps",
+    description: "List the project's dependencies.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -108,6 +123,14 @@ const handle = (req) => {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: `fake-mcp grep: ${args.pattern ?? ""}` }] },
+        });
+        return;
+      }
+      if (name === "project_deps") {
+        send({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: "fake-mcp deps: tilth, fff" }] },
         });
         return;
       }
