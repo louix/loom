@@ -404,7 +404,11 @@ export const mkFleetHandle = ({
         client
           .request("session.send", { id: s.id, text: head })
           .then(() => {
-            lastDrainTurn.set(s.id, s.turns); // only gate the next one after a success
+            // Re-read `turns` now, not the closure's pre-send snapshot (U11) —
+            // a manual send that interleaved could otherwise leave the gate
+            // below its true value and drain the next queued message mid-turn.
+            const fresh = state.sessions.find((x) => x.id === s.id)?.turns ?? s.turns;
+            lastDrainTurn.set(s.id, fresh); // only gate the next one after a success
             dispatch({ t: "dequeue", sessionId: s.id }); // daemon emits the user_message echo
           })
           .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad")) // no gate update → retries
@@ -1587,7 +1591,12 @@ export const mkFleetHandle = ({
           // previous question (its answer still filled in) rather than
           // abandoning the whole prompt; Esc on the first question cancels.
           if (p.kind === "answerQuestion" && p.qaAll && p.requestId && (p.qaIdx ?? 0) > 0) {
-            const prev = (p.qaIdx ?? 0) - 1;
+            const idx = p.qaIdx ?? 0;
+            const prev = idx - 1;
+            // Keep whatever is typed for the current question — the doc promises
+            // "nothing typed is lost" across stepping back and forth, but only
+            // submitted answers were being saved (U15).
+            const answers = { ...(p.qaAnswers ?? {}), [p.qaAll[idx]!.question]: p.buffer.text };
             return void dispatch({
               t: "openPrompt",
               prompt: makePrompt({
@@ -1595,10 +1604,10 @@ export const mkFleetHandle = ({
                 sessionId: p.sessionId,
                 requestId: p.requestId,
                 label: questionPromptLabel(p.qaAll, prev),
-                text: p.qaAnswers?.[p.qaAll[prev]!.question] ?? "",
+                text: answers[p.qaAll[prev]!.question] ?? "",
                 qaAll: p.qaAll,
                 qaIdx: prev,
-                qaAnswers: p.qaAnswers ?? {},
+                qaAnswers: answers,
               }),
             });
           }
