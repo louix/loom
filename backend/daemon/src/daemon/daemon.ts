@@ -363,8 +363,16 @@ export class Daemon {
     // now caught by the handlers above rather than hitting the default terminate.
     await this.#server.listen();
 
+    // Anything that connects in the window between listen() and the probes
+    // landing (the TUI, the moment the socket appears) fetches `providers.list`
+    // with the config-pin fallback — one model per provider. Snapshot the
+    // pre-probe list; if a probe resolved real catalogs, push them so those
+    // clients re-seed their pickers instead of waiting for an unrelated
+    // session event.
+    const preProbe = JSON.stringify(this.#providerList());
     await this.#resolveAutoModels();
     await this.#resolveClaudeModels();
+    if (JSON.stringify(this.#providerList()) !== preProbe) this.#emitProvidersUpdated();
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
@@ -483,7 +491,9 @@ export class Daemon {
   }
 
   /** The remembered new-session defaults changed — push the fresh provider
-   *  list so every client's `new` prompt seeds from current defaults. */
+   *  list so every client's `new` prompt seeds from current defaults. Also
+   *  fired once the start-up model probes resolve, for clients that fetched
+   *  the pin fallback while they were still running. */
   #emitProvidersUpdated(): void {
     if (this.#stopping) return;
     const frame = this.#events.append({
@@ -1764,7 +1774,7 @@ export class Daemon {
       let wt;
       try {
         wt = this.#worktrees.create(`${parent.title ?? id} fork`, newId, {
-          baseRef: parent.branch ?? undefined,
+          ...(parent.branch ? { baseRef: parent.branch } : {}),
           model: parent.model || parent.provider,
         });
       } catch (err) {

@@ -107,9 +107,10 @@ export interface ResyncPush {
 
 /**
  * The remembered new-session defaults changed — a session was created, or a
- * live session switched its model / thinking-effort / permission mode. Carries
- * a fresh `providers.list` so clients re-seed new-session prompts without a
- * refetch round trip.
+ * live session switched its model / thinking-effort / permission mode — or the
+ * start-up model probes resolved a catalog after clients had already fetched
+ * the pin fallback. Carries a fresh `providers.list` so clients re-seed
+ * new-session prompts without a refetch round trip.
  */
 export interface ProvidersUpdatedPush {
   kind: "push";

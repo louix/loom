@@ -1330,3 +1330,56 @@ test("a provider-set change on disk asks for a restart rather than applying live
     await hh.cleanup();
   }
 });
+
+test("model probes resolving at bring-up append a providers_updated push with the detected list", async () => {
+  const srv = await modelsStub([
+    // one metadata-carrying row so the push's modelChoices is exercised too
+    { id: "det-b", display_name: "Det B", context_tokens: 32_768 },
+    "det-a",
+  ]);
+  const hh = await makeHarness({
+    config: `
+[providers.local]
+adapter  = "aisdk"
+base_url = "${srv.base}"
+`,
+  });
+  try {
+    // Bring-up listens before the probes run, so a client that connects
+    // immediately (the TUI spawning the daemon) fetches providers.list with
+    // the empty pin fallback and no modelChoices. The daemon must not leave
+    // it there: the resolved list is pushed the moment the probes land.
+    const updates = hh.daemon.events
+      .since(0)
+      .frames.filter((f) => f.type === "providers_updated");
+    assert.equal(updates.length, 1, "one bring-up push when the probe resolved models");
+    const last = updates.at(-1);
+    if (last?.type !== "providers_updated") return assert.fail("unreachable");
+    const local = last.providers.find((p) => p.id === "local");
+    assert.deepEqual(local?.models, ["det-a", "det-b"]);
+    assert.ok(local?.modelChoices, "the push carries the picker metadata too");
+  } finally {
+    srv.close();
+    await hh.cleanup();
+  }
+});
+
+test("no providers_updated push at bring-up when the provider list is fully pinned", async () => {
+  const hh = await makeHarness({
+    config: `
+[providers.local]
+adapter  = "aisdk"
+base_url = "http://127.0.0.1:9/v1"
+model    = "pin-a"
+models   = ["pin-a"]
+`,
+  });
+  try {
+    const updates = hh.daemon.events
+      .since(0)
+      .frames.filter((f) => f.type === "providers_updated");
+    assert.equal(updates.length, 0, "nothing resolved → nothing to push");
+  } finally {
+    await hh.cleanup();
+  }
+});
