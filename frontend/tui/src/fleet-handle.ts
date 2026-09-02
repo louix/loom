@@ -1805,7 +1805,7 @@ export const mkFleetHandle = ({
       v: "filter",
       t: "theme",
       n: "new",
-      f: "find",
+      "/": "find",
       "?": "help",
     };
     const chosen = map[input];

@@ -1783,7 +1783,7 @@ export interface KeyHint {
 
 const GLOBAL_HINTS: KeyHint[] = [
   { keys: "n", label: "new", act: "new", footer: true },
-  { keys: "f", label: "find", act: "find", footer: true },
+  { keys: "/", label: "find", act: "find", footer: true },
   { keys: "?", label: "help", act: "help", footer: true },
   { keys: "q", label: "quit", act: "quit", footer: true },
 ];

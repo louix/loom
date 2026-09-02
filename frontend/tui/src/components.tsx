@@ -1365,7 +1365,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ],
   ["t", "cycle theme — dark / light / argonext"],
   [
-    "n  ·  f",
+    "n  ·  /",
     "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session",
   ],
   [

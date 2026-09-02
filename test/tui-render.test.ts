@@ -1060,7 +1060,7 @@ models   = ["gpt-5", "gpt-5-mini"]
   }
 });
 
-test("f opens the find picker and filters the fleet by text", async () => {
+test("/ opens the find picker and filters the fleet by text", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   await client.request("session.createStub", {
@@ -1076,7 +1076,7 @@ test("f opens the find picker and filters the fleet by text", async () => {
   const { stdout, stdin, app } = mount(client);
   try {
     await delay(200);
-    stdin.feed("f");
+    stdin.feed("/");
     await delay(120);
     assert.match(stdout.last, /FIND SESSION/);
     assert.match(stdout.last, /type to search/); // placeholder while the filter is empty

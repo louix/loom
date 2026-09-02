@@ -85,7 +85,7 @@ Consequences:
 | key        | action                                                                 |
 | ---------- | ---------------------------------------------------------------------- |
 | `n`        | new session — the prompt shows the provider / model; `⌥p` changes them |
-| `f`        | fuzzy-find a session by title or message text                          |
+| `/`        | fuzzy-find a session by title or message text                          |
 | `q` / `⌃c` | quit the UI — the daemon keeps running                                 |
 
 ## In the prompt
