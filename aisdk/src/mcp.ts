@@ -28,7 +28,7 @@ export class McpHub {
     this.#tools = tools;
   }
 
-  static async connect(handles: McpServerHandle[], log: Logger): Promise<McpHub> {
+  static async connect(handles: McpServerHandle[], log: Logger, cwd?: string): Promise<McpHub> {
     const clients: experimental_MCPClient[] = [];
     const tools: ToolSet = {};
 
@@ -42,6 +42,11 @@ export class McpHub {
                   command: h.spec.command,
                   ...(h.spec.args ? { args: h.spec.args } : {}),
                   ...(h.spec.env ? { env: cleanEnv(h.spec.env) } : {}),
+                  // Anchor stdio servers to the session's worktree: they resolve
+                  // relative paths (tilth's `--scope` default `.`) against their
+                  // own cwd, which without this is the daemon's cwd — the main
+                  // repo, not the worktree the session edits.
+                  ...(cwd ? { cwd } : {}),
                 })
               : {
                   type: "http",

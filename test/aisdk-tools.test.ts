@@ -128,6 +128,31 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
   }
 });
 
+
+test("McpHub anchors stdio servers to the given cwd (relative writes land there)", async () => {
+  // tilth resolves relative paths against its own cwd; spawned without one it
+  // inherits the daemon's cwd — the main repo instead of the session worktree.
+  const dir = mkdtempSync(join(tmpdir(), "loom-mcphub-cwd-"));
+  let hub: McpHub | null = null;
+  try {
+    hub = await McpHub.connect(
+      [{ name: "fake", spec: { transport: "stdio", command: process.execPath, args: [FAKE_MCP] } }],
+      log,
+      dir,
+    );
+    assert.equal(hub.serverCount, 1);
+    const note = hub.tools["write_note"] as {
+      execute: (i: unknown, c: unknown) => Promise<unknown>;
+    };
+    await note.execute({ path: "note.txt", content: "in the worktree" }, { toolCallId: "x", messages: [] });
+    assert.equal(readFileSync(join(dir, "note.txt"), "utf8"), "in the worktree");
+  } finally {
+    await hub?.close();
+    rmSync(dir, { recursive: true, force: true });
+    // Without the fix the server's cwd is the test runner's cwd — clean the stray.
+    rmSync(join(process.cwd(), "note.txt"), { force: true });
+  }
+});
 test("McpHub skips a server that fails to start instead of throwing", async () => {
   const hub = await McpHub.connect(
     [

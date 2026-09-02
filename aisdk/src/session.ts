@@ -435,7 +435,7 @@ export class AisdkSession implements AgentSession {
         // builtin's name (fff's `grep`) replaces it — the tool steer points
         // the model at those servers, so it must see their tools, not ours.
         if (this.#mcpHandles.length > 0) {
-          this.#hub = await McpHub.connect(this.#mcpHandles, this.#log);
+          this.#hub = await McpHub.connect(this.#mcpHandles, this.#log, this.#cwd);
           Object.assign(base, this.#hub.tools);
         }
         if (this.#loomServer) {
