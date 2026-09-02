@@ -53,13 +53,22 @@ class FakeIn extends EventEmitter {
  * than a fixed `delay` for actions that spawn a worktree — the `@oxc-node/core`
  * register hook adds enough per-import cost to blow a tight fixed wait.
  */
-const waitFor = async (stdout: FakeOut, re: RegExp, timeoutMs = 3000): Promise<void> => {
+const waitFor = async (
+  stdout: FakeOut,
+  cond: RegExp | ((last: string) => boolean),
+  timeoutMs = 3000,
+): Promise<void> => {
+  const ok = typeof cond === "function" ? cond : (s: string) => cond.test(s);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (re.test(stdout.last)) return;
+    if (ok(stdout.last)) return;
     await delay(25);
   }
-  assert.match(stdout.last, re);
+  if (typeof cond === "function") {
+    assert.ok(ok(stdout.last), `waitFor predicate never held; last frame:\n${stdout.last}`);
+  } else {
+    assert.match(stdout.last, cond);
+  }
 };
 
 const mount = (
@@ -1223,35 +1232,29 @@ test("/ filters the fleet in place; ↑↓ keep moving the selection", async () 
   });
   const { stdout, stdin, app } = mount(client);
   try {
-    await delay(200);
+    await waitFor(stdout, /refactor the parser/);
     stdin.feed("/");
-    await delay(120);
-    assert.match(stdout.last, /type to filter/); // the inline filter line on FLEET
+    await waitFor(stdout, /type to filter/); // the inline filter line on FLEET
     assert.match(stdout.last, /refactor the parser/);
     assert.match(stdout.last, /update the docs/);
 
     stdin.feed("parser");
-    await delay(120);
+    await waitFor(stdout, (s) => !/update the docs/.test(s)); // narrowed to the match
     assert.match(stdout.last, /refactor the parser/);
-    assert.doesNotMatch(stdout.last, /update the docs/); // narrowed to the match
 
     stdin.feed("\x15"); // ⌃u — readline kill-to-start clears the filter
-    await delay(120);
-    assert.match(stdout.last, /update the docs/); // list un-narrows with it
+    await waitFor(stdout, /update the docs/); // list un-narrows with it
 
     // A query matching both rows, then ↑: the selection moves — the arrows are
     // NOT swallowed by the filter — and the Detail pane follows it. (The fleet
     // order puts the docs session first, so ↑ walks onto it.)
     stdin.feed("the");
-    await delay(120);
-    assert.match(detailTitle(stdout.last), /refactor the parser/);
+    await waitFor(stdout, (s) => /refactor the parser/.test(detailTitle(s)));
     stdin.feed("\x1b[A"); // ↑
-    await delay(120);
-    assert.match(detailTitle(stdout.last), /update the docs/);
+    await waitFor(stdout, (s) => /update the docs/.test(detailTitle(s)));
 
     stdin.feed(ESC); // esc clears + closes the filter
-    await delay(100);
-    assert.doesNotMatch(stdout.last, /type to filter/);
+    await waitFor(stdout, (s) => !/type to filter/.test(s));
     assert.match(stdout.last, /▍ loom/);
   } finally {
     app.unmount();
