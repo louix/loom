@@ -196,4 +196,13 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN auto_rebase_nudged_sha TEXT NOT NULL DEFAULT '';
   `,
+
+  // 16 — the commit HEAD a session was last nudged about for uncommitted
+  // changes (`[commit_reminder]`). Like migration 15, the "already nudged"
+  // suppression has to outlive a daemon restart, so it's a row column and not a
+  // daemon-instance Map. '' once the agent commits (HEAD moves) or the tree
+  // goes clean.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN commit_nudged_sha TEXT NOT NULL DEFAULT '';
+  `,
 ];

@@ -304,6 +304,22 @@ export class SessionStore {
       .run(sha, Date.now(), id);
   }
 
+  /** The commit HEAD pointed at when this session was last reminded about
+   *  uncommitted changes (`""` = never / committed since). Persisted so a daemon
+   *  restart doesn't re-inject the same reminder. */
+  commitNudgedSha(id: string): string {
+    const row = this.#db.prepare("SELECT commit_nudged_sha FROM sessions WHERE id = ?").get(id) as
+      | { commit_nudged_sha: string }
+      | undefined;
+    return row?.commit_nudged_sha ?? "";
+  }
+
+  setCommitNudgedSha(id: string, sha: string): void {
+    this.#db
+      .prepare("UPDATE sessions SET commit_nudged_sha = ?, updated_at = ? WHERE id = ?")
+      .run(sha, Date.now(), id);
+  }
+
   /** True once a manual rename has pinned the title against the auto-titler. */
   titleLocked(id: string): boolean {
     const row = this.#db.prepare("SELECT title_locked FROM sessions WHERE id = ?").get(id) as

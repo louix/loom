@@ -1014,8 +1014,9 @@ export class Daemon {
 
     // A turn just ended (this hook only fires for event-stream-derived
     // transitions — not rewind / fork, which set idle directly). Good moment to
-    // pull the branch up to its base if the operator asked for that.
-    if (state.kind === "idle") this.#maybeAutoRebase(id);
+    // pull the branch up to its base and, failing that, to flag a worktree the
+    // agent left with uncommitted changes.
+    if (state.kind === "idle" && !this.#maybeAutoRebase(id)) this.#maybeCommitNudge(id);
   }
 
   /**
@@ -1025,19 +1026,22 @@ export class Daemon {
    * bar an operator notice; a conflict or a dirty worktree hands the problem to
    * the agent as a fresh turn, once per base commit.
    */
-  #maybeAutoRebase(id: string): void {
-    if (this.#stopping || !this.config.autoRebase.enabled) return;
+  /** Bring the branch up to its base on idle. Returns true when it messaged the
+   *  agent (asked it to integrate the base itself) — the caller then skips the
+   *  commit reminder so a dirty branch doesn't get two nudges in one breath. */
+  #maybeAutoRebase(id: string): boolean {
+    if (this.#stopping || !this.config.autoRebase.enabled) return false;
     const snap = this.#registry.get(id);
-    if (!snap?.worktree) return; // in-place sessions have no branch to move
+    if (!snap?.worktree) return false; // in-place sessions have no branch to move
 
     const { mode } = this.config.autoRebase;
     const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
-    if (res.outcome === "no-base" || res.outcome === "current") return;
+    if (res.outcome === "no-base" || res.outcome === "current") return false;
     // The agent is mid-rebase/merge in its own worktree — leave it entirely
     // alone (don't nudge, don't clear the nudge record) and try again next idle.
     if (res.outcome === "busy") {
       this.#log.debug("auto-rebase skipped — agent op in progress", { id, op: res.op });
-      return;
+      return false;
     }
 
     if (res.outcome === "updated") {
@@ -1048,13 +1052,13 @@ export class Daemon {
         "info",
       );
       this.#emitSessionUpdated(this.#registry.mustGet(id));
-      return;
+      return false;
     }
 
     // dirty | conflict | error — the agent has to integrate it. Nudge once per
     // base commit so a branch that stays behind doesn't nag every turn (and,
     // now that it's persisted, doesn't nag again after a daemon restart).
-    if (this.#registry.store.autoRebaseNudgedSha(id) === res.baseHead) return;
+    if (this.#registry.store.autoRebaseNudgedSha(id) === res.baseHead) return false;
     this.#registry.store.setAutoRebaseNudgedSha(id, res.baseHead);
 
     const verb = mode === "merge" ? "merge" : "rebase";
@@ -1071,6 +1075,46 @@ export class Daemon {
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
     void this.#sessions.send(id, text).catch((err) => {
       this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
+    });
+    return true;
+  }
+
+  /**
+   * When a turn ends with uncommitted changes in the session's worktree, remind
+   * the agent to commit them (`[commit_reminder]`). The HEAD it was last nudged
+   * at is persisted (`commit_nudged_sha`, so a restart doesn't repeat it); while
+   * HEAD doesn't move the reminder stays quiet, so an agent that left the tree
+   * dirty on purpose isn't nagged. Once it commits, HEAD advances and a later
+   * batch of uncommitted work earns one fresh reminder; a clean tree clears the
+   * record. Never commits anything itself.
+   */
+  #maybeCommitNudge(id: string): void {
+    if (this.#stopping || !this.config.commitReminder.enabled) return;
+    const snap = this.#registry.get(id);
+    if (!snap?.worktree) return; // in-place sessions have no isolated tree
+
+    const store = this.#registry.store;
+    if (!this.#worktrees.isDirty(snap.worktree)) {
+      if (store.commitNudgedSha(id) !== "") store.setCommitNudgedSha(id, "");
+      return;
+    }
+    // A paused rebase / merge / cherry-pick reads as "dirty" too, but "commit
+    // this" is the wrong advice mid-operation — leave it alone.
+    if (this.#worktrees.pendingGitOp(snap.worktree)) return;
+
+    const head = this.#worktrees.headSha(snap.worktree) ?? "";
+    if (head !== "" && store.commitNudgedSha(id) === head) return; // already nudged since the last commit
+    store.setCommitNudgedSha(id, head);
+
+    const text =
+      "[loom] This turn ended with uncommitted changes in your worktree. If that " +
+      "work is done, commit it (the `commit` tool, or `git commit`). If you left it " +
+      "uncommitted on purpose, ignore this — you won't be reminded again until you commit.";
+    // Loom's own message, like the auto-rebase nudge: keep it out of `#lastSend`
+    // so it seeds neither the undo picker nor the auto-title.
+    this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
+    void this.#sessions.send(id, text).catch((err) => {
+      this.#log.warn("commit reminder failed", { id, err: String(err) });
     });
   }
 
@@ -1337,6 +1381,7 @@ export class Daemon {
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     this.config.worktree = next.worktree;
     this.config.autoRebase = next.autoRebase;
+    this.config.commitReminder = next.commitReminder;
     this.config.notify = next.notify;
     this.config.titles = next.titles;
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {

@@ -314,6 +314,12 @@ export class WorktreeManager {
     return this.#gitOut(["status", "--porcelain"], path).length > 0;
   }
 
+  /** The name of a git operation in progress in the worktree at `path`
+   *  (rebase / merge / cherry-pick / revert), or null. Worktree-aware. */
+  pendingGitOp(path: string): string | null {
+    return this.#opInProgress(path);
+  }
+
   /**
    * `git reset --hard <sha>` in the worktree — used by `session.rewind` to put
    * the files back where they were when the kept turn completed. Untracked files

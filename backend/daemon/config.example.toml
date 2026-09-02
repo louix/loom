@@ -27,6 +27,12 @@ enabled = false # true: when a session goes idle and the base branch has
 # base itself. Never fetches; reacts to the local base ref.
 mode = "rebase" # "rebase" (linear history) | "merge" (a merge commit)
 
+[commit_reminder] # nudge the agent about an uncommitted worktree at end of turn
+enabled = false # true: when a session goes idle with uncommitted changes in its
+#                 worktree, send it a one-off message suggesting it commit. One
+#                 per commit boundary — a tree left dirty on purpose stops
+#                 nagging until the next commit. Never commits anything itself.
+
 [daemon]
 idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0 disables
 event_buffer_size = 4096 # push-stream ring buffer, in frames

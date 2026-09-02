@@ -1260,6 +1260,93 @@ test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to inte
   }
 });
 
+test("[commit_reminder]: an uncommitted worktree nudges the agent once per commit boundary", async () => {
+  const hh = await makeHarness({ config: `[commit_reminder]\nenabled = true\n` });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const userMsgs: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "event" && (f.event as { type?: string }).type === "user_message") {
+        userMsgs.push((f.event as { text: string }).text);
+      }
+    });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "leave a mess",
+      provider: "fake",
+    });
+    const wt = snap.worktree as string;
+    const wtGit = (...a: string[]) => execFileSync("git", ["-C", wt, ...a], { stdio: "pipe" });
+    const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    const head = () =>
+      execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const nudgedSha = () =>
+      (
+        hh.daemon.db
+          .prepare("SELECT commit_nudged_sha FROM sessions WHERE id = ?")
+          .get(snap.id) as { commit_nudged_sha: string }
+      ).commit_nudged_sha;
+
+    // turn 1 ends with a clean worktree → no reminder
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(40);
+    userMsgs.length = 0; // drop the opening-prompt echo
+    fs?.finishTurn();
+    await delay(120);
+    assert.deepEqual(userMsgs, [], "a clean worktree is not nudged");
+
+    // turn 2 ends with an untracked file present → exactly one reminder
+    writeFileSync(join(wt, "scratch.txt"), "wip\n");
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(20);
+    fs?.finishTurn();
+    await delay(120);
+    assert.equal(userMsgs.length, 1);
+    assert.match(userMsgs[0] ?? "", /\[loom\].*uncommitted changes/s);
+    assert.equal(hh.daemon.registry.get(snap.id)?.status.kind, "running");
+    // the "already nudged" mark is persisted on the row, keyed to HEAD
+    assert.equal(nudgedSha(), head());
+
+    // turn 3: still dirty, HEAD unchanged → no repeat reminder
+    userMsgs.length = 0;
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(20);
+    fs?.finishTurn();
+    await delay(120);
+    assert.deepEqual(userMsgs, [], "no repeat reminder while HEAD is unchanged");
+
+    // turn 4: the agent commits, then leaves a fresh change → one new reminder
+    wtGit("add", "-A");
+    wtGit("commit", "-q", "-m", "wip");
+    writeFileSync(join(wt, "scratch2.txt"), "more\n");
+    userMsgs.length = 0;
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(20);
+    fs?.finishTurn();
+    await delay(120);
+    assert.equal(userMsgs.length, 1, "a new dirty batch after a commit nudges again");
+    assert.equal(nudgedSha(), head());
+
+    // turn 5: the agent commits everything → the record clears, no reminder
+    wtGit("add", "-A");
+    wtGit("commit", "-q", "-m", "rest");
+    userMsgs.length = 0;
+    fs?.emit({ type: "assistant_text", text: "…" });
+    await delay(20);
+    fs?.finishTurn();
+    await delay(120);
+    assert.deepEqual(userMsgs, [], "a clean worktree is not nudged");
+    assert.equal(nudgedSha(), "", "the record clears once the tree is clean");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("editing config.toml hot-applies [worktree] enabled and pushes a notice", async () => {
   const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
   const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
@@ -1354,9 +1441,7 @@ base_url = "${srv.base}"
     // immediately (the TUI spawning the daemon) fetches providers.list with
     // the empty pin fallback and no modelChoices. The daemon must not leave
     // it there: the resolved list is pushed the moment the probes land.
-    const updates = hh.daemon.events
-      .since(0)
-      .frames.filter((f) => f.type === "providers_updated");
+    const updates = hh.daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
     assert.equal(updates.length, 1, "one bring-up push when the probe resolved models");
     const last = updates.at(-1);
     if (last?.type !== "providers_updated") return assert.fail("unreachable");
@@ -1380,9 +1465,7 @@ models   = ["pin-a"]
 `,
   });
   try {
-    const updates = hh.daemon.events
-      .since(0)
-      .frames.filter((f) => f.type === "providers_updated");
+    const updates = hh.daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
     assert.equal(updates.length, 0, "nothing resolved → nothing to push");
   } finally {
     await hh.cleanup();
@@ -1421,9 +1504,10 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
       sockPath: loomPaths(repoRoot).sock,
       autospawn: false,
     });
-    const list = await c.request<
-      Array<{ id: string; models: string[]; modelsLoading?: boolean }>
-    >("providers.list");
+    const list =
+      await c.request<Array<{ id: string; models: string[]; modelsLoading?: boolean }>>(
+        "providers.list",
+      );
     const claude = list.find((p) => p.id === "claude");
     assert.deepEqual(claude?.models, []); // no fabricated single-pin list
     assert.equal(claude?.modelsLoading, undefined); // the probe settled (failed fast here)
@@ -1431,9 +1515,7 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
 
     // The settle flip alone is worth a push: clients that fetched the loading
     // state mid-probe are told the list is final.
-    const updates = daemon.events
-      .since(0)
-      .frames.filter((f) => f.type === "providers_updated");
+    const updates = daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
     assert.equal(
       updates.length,
       1,

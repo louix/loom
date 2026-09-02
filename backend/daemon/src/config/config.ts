@@ -149,6 +149,14 @@ export interface LoomConfig {
    * Off by default: history is only rewritten when you opt in.
    */
   autoRebase: { enabled: boolean; mode: "rebase" | "merge" };
+  /**
+   * Remind the agent about an uncommitted worktree. When `enabled`, a session
+   * that goes idle with uncommitted changes gets a one-off message suggesting it
+   * commit — one per commit boundary, so a tree left dirty on purpose stops
+   * nagging until the next commit. Never commits anything itself. Off by
+   * default: each reminder costs a turn.
+   */
+  commitReminder: { enabled: boolean };
   db: string;
   runIsolation: "in-process" | "subprocess";
   /** Provider id new sessions use when the client doesn't name one. */
@@ -217,6 +225,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
+  commitReminder: { enabled: false },
   db: ".loom/loom.db",
   runIsolation: "in-process",
   defaultProvider: "claude",
@@ -491,6 +500,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
   const autoRebase = asRecord(r["auto_rebase"]);
+  const commitReminder = asRecord(r["commit_reminder"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
   const aisdk = parseAisdkProfiles(r);
@@ -541,6 +551,12 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       enabled:
         typeof autoRebase["enabled"] === "boolean" ? autoRebase["enabled"] : d.autoRebase.enabled,
       mode: autoRebase["mode"] === "merge" ? "merge" : "rebase",
+    },
+    commitReminder: {
+      enabled:
+        typeof commitReminder["enabled"] === "boolean"
+          ? commitReminder["enabled"]
+          : d.commitReminder.enabled,
     },
     db: str(r["db"], d.db),
     runIsolation,
