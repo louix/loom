@@ -35,8 +35,8 @@ aisdk-only. `aisdk/src/tools/background.ts`:
 - Per-task unread buffer clamped live (head + tail, reusing bash.ts's
   `collapseLive`) with a dropped-character counter — an hour of dev-server logging
   cannot grow memory.
-- `wait_ms` (capped 30 s) resolves early on new output or exit; `filter` is a JS
-  regex applied line-wise with a match-count header.
+- `wait_ms` (default 30 s, no upper cap) resolves early on new output or exit;
+  `filter` is a JS regex applied line-wise with a match-count header.
 - Max 8 concurrently running tasks; `BuiltinTools.close()` kills everything.
 - `background_output` is classified readonly in `aisdk/src/gate.ts` (plan mode
   keeps it); `background` / `background_kill` stay permission-gated.

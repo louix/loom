@@ -3,7 +3,8 @@ import { after, afterEach, test } from "node:test";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BackgroundTasks } from "@loom/aisdk/tools/background";
+import { z } from "zod";
+import { BackgroundTasks, backgroundTools } from "@loom/aisdk/tools/background";
 
 const dir = mkdtempSync(join(tmpdir(), "loom-bg-"));
 const spawned: BackgroundTasks[] = [];
@@ -95,7 +96,7 @@ test("background: invalid filter regex errors", async () => {
   await assert.rejects(() => bg.read(id, { waitMs: 5_000, filter: "(" }), /invalid filter/);
 });
 
-test("background: wait_ms returns after the cap when nothing happens", async () => {
+test("background: an explicit wait_ms is honored when nothing happens", async () => {
   const bg = spawnTasks();
   const id = bg.start("sleep 30", 0);
   const t0 = Date.now();
@@ -104,7 +105,18 @@ test("background: wait_ms returns after the cap when nothing happens", async () 
   assert.equal(r.running, true);
   assert.equal(r.output, "(no new output)");
   assert.ok(elapsed >= 250, `should have waited, took ${elapsed}ms`);
-  assert.ok(elapsed < 5_000, `wait_ms should cap the wait, took ${elapsed}ms`);
+  assert.ok(elapsed < 5_000, `explicit wait_ms should be honored, took ${elapsed}ms`);
+});
+
+test("background: wait_ms accepts waits beyond the old 30 s cap", () => {
+  const bg = spawnTasks();
+  const schema = backgroundTools(bg).background_output!.inputSchema as z.ZodType;
+  // A full day must validate — the schema must not clamp wait_ms (the read
+  // itself ends early on new output or exit regardless of the value).
+  assert.deepEqual(schema.parse({ id: "bg-1", wait_ms: 86_400_000 }), {
+    id: "bg-1",
+    wait_ms: 86_400_000,
+  });
 });
 
 test("background: caps concurrently running tasks", () => {

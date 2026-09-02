@@ -20,7 +20,8 @@ import { MAX_OUTPUT_BYTES, collapseLive } from "./bash.ts";
 /** Default wall-clock limit per task; `timeout_ms: 0` runs without one. */
 export const DEFAULT_BG_TIMEOUT_MS = 600_000;
 const MAX_RUNNING = 8;
-const MAX_WAIT_MS = 30_000;
+/** Default `wait_ms` for `read`/`background_output` when the caller omits it. */
+const DEFAULT_WAIT_MS = 30_000;
 
 interface Task {
   id: string;
@@ -125,14 +126,17 @@ export class BackgroundTasks {
 
   /**
    * Output since the last read (which resets the cursor). `waitMs` waits for
-   * new output or exit before returning; `filter` keeps only matching lines.
+   * new output or exit before returning (default 30 s, no cap); `filter` keeps
+   * only matching lines.
    */
   async read(
     id: string,
     opts: { filter?: string; waitMs?: number } = {},
   ): Promise<BackgroundReadResult> {
     const task = this.#task(id);
-    const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, Math.trunc(opts.waitMs ?? 0)));
+    // `wait_ms` has no upper cap, but Node timers clamp delays above 2^31-1 ms
+    // down to fire (almost) immediately — pin huge waits there instead.
+    const waitMs = Math.min(2_147_483_647, Math.max(0, Math.trunc(opts.waitMs ?? DEFAULT_WAIT_MS)));
     if (waitMs > 0 && task.unread === "" && task.running) {
       await new Promise<void>((resolve) => {
         const t = setTimeout(() => {
@@ -251,9 +255,11 @@ export const backgroundTools = (tasks: BackgroundTasks): ToolSet => {
           .number()
           .int()
           .min(0)
-          .max(MAX_WAIT_MS)
           .optional()
-          .describe("Wait up to this many milliseconds for new output or exit (default 0)."),
+          .describe(
+            `Wait up to this many milliseconds for new output or exit ` +
+              `(default ${DEFAULT_WAIT_MS}); 0 returns immediately.`,
+          ),
         filter: z
           .string()
           .optional()
