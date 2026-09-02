@@ -78,11 +78,11 @@ the Vercel AI SDK.
   leaves the tree untouched and sends the agent a message to integrate the
   base itself, once per base commit. Never fetches: it reacts to the local
   base ref moving. Off by default.
-- **Commit reminder** — `[commit_reminder] enabled = true`: when a session goes
+- **Commit reminder** — `[commit_reminder]` (on by default): when a session goes
   idle with uncommitted changes in its worktree, the daemon sends the agent a
   one-off message suggesting it commit. One reminder per commit boundary — a
   tree left dirty on purpose stops nagging until the next commit. Never commits
-  anything itself. Off by default.
+  anything itself; in-place sessions are exempt.
 - **`gc`** — removes worktrees for sessions you've marked `done`; the session
   row and the branch are kept.
 

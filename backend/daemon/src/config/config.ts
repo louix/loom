@@ -150,11 +150,11 @@ export interface LoomConfig {
    */
   autoRebase: { enabled: boolean; mode: "rebase" | "merge" };
   /**
-   * Remind the agent about an uncommitted worktree. When `enabled`, a session
-   * that goes idle with uncommitted changes gets a one-off message suggesting it
-   * commit — one per commit boundary, so a tree left dirty on purpose stops
-   * nagging until the next commit. Never commits anything itself. Off by
-   * default: each reminder costs a turn.
+   * Remind the agent about an uncommitted worktree. When `enabled` (the
+   * default), a session that goes idle with uncommitted changes gets a one-off
+   * message suggesting it commit — one per commit boundary, so a tree left dirty
+   * on purpose stops nagging until the next commit. Never commits anything
+   * itself; in-place sessions (no isolated worktree) are exempt.
    */
   commitReminder: { enabled: boolean };
   db: string;
@@ -225,7 +225,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
-  commitReminder: { enabled: false },
+  commitReminder: { enabled: true },
   db: ".loom/loom.db",
   runIsolation: "in-process",
   defaultProvider: "claude",

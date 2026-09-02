@@ -1261,7 +1261,8 @@ test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to inte
 });
 
 test("[commit_reminder]: an uncommitted worktree nudges the agent once per commit boundary", async () => {
-  const hh = await makeHarness({ config: `[commit_reminder]\nenabled = true\n` });
+  const hh = await makeHarness(); // on by default
+
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
     sockPath: hh.sockPath,

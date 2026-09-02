@@ -431,6 +431,14 @@ mode    = "merge"
   assert.equal(cfg(`[auto_rebase]\nenabled = "yes"\n`).autoRebase.enabled, false);
 });
 
+// --- [commit_reminder] --------------------------------------------------------
+
+test("[commit_reminder] defaults on; parses enabled, non-bool → default", () => {
+  assert.deepEqual(cfg("").commitReminder, { enabled: true });
+  assert.equal(cfg(`[commit_reminder]\nenabled = false\n`).commitReminder.enabled, false);
+  assert.equal(cfg(`[commit_reminder]\nenabled = "yes"\n`).commitReminder.enabled, true);
+});
+
 // --- claude profiles -----------------------------------------------------
 
 test("slugifyProfile is kebab, trimmed, and collapses '' / 'claude' onto the base id", () => {
