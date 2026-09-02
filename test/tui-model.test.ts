@@ -586,6 +586,41 @@ test("permission / question / fatal-error events raise a notice", () => {
   assert.equal(s.notice?.tone, "bad");
 });
 
+test("a replayed (backfilled) event never raises a notice — it's transcript, not live (U2)", () => {
+  let s = initialState();
+  s = reduce(s, {
+    t: "push",
+    replay: true,
+    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+  });
+  s = reduce(s, {
+    t: "push",
+    replay: true,
+    frame: push(2, ev({ type: "error", message: "old boom", fatal: true })),
+  });
+  assert.equal(s.notice, null, "no notice flashed from replayed history");
+  // …but the frame still lands in the log.
+  assert.ok(
+    s.log.some((l) => l.seq === 1) && s.log.some((l) => l.seq === 2),
+    "replayed frames are still logged",
+  );
+});
+
+test("a sessions/hello snapshot drops pending for a session it says is no longer blocked (U2)", () => {
+  const blocked = snap({ id: "a", status: { kind: "awaiting_input", on: "permission" } });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [blocked] });
+  s = reduce(s, {
+    t: "push",
+    replay: true,
+    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" })),
+  });
+  assert.ok(s.pending["a"]?.permissions?.length, "replayed request tracked while still blocked");
+
+  // The daemon's snapshot now shows the session idle — the pending is stale.
+  s = reduce(s, { t: "sessions", sessions: [snap({ id: "a", status: { kind: "idle" } })] });
+  assert.equal(s.pending["a"], undefined, "settled pending pruned by the snapshot");
+});
+
 test("expireNotice clears the notice only once its ttl has elapsed", () => {
   let s = reduce(initialState(), { t: "notice", text: "hi", tone: "good" });
   const at = s.notice?.at ?? 0;

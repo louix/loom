@@ -344,19 +344,30 @@ export const mkFleetHandle = ({
     publish();
   };
 
+  // Sessions whose durable history has been pulled once this connection. A
+  // resync / reconnect clears it — the epoch (and thus the history) may differ.
+  const backfilledIds = new Set<string>();
+
   const backfillHistory = (): void => {
     const id = state.selectedId;
-    // Re-fetched on every select, not just the first: the daemon's own
-    // durable copy is the source of truth, and frames carry the same global
-    // seq the live log uses, so dispatching them as ordinary pushes de-dupes
-    // for free against whatever's already in memory.
-    if (!id) return;
+    if (!id || backfilledIds.has(id)) return;
+    backfilledIds.add(id);
     client
       .request<EventPush[]>("session.events", { id })
       .then((frames) => {
-        for (const frame of frames) dispatch({ t: "push", frame });
+        // De-dupe client-side against what's already in the log (O(n+m), not an
+        // O(n) `log.some` scan per frame — U1), and mark the survivors `replay`
+        // so `applyPush` treats them as transcript, not live state (U2).
+        const have = new Set<string>();
+        for (const l of state.log) have.add(`${l.epoch}:${l.seq}`);
+        for (const frame of frames) {
+          if (have.has(`${frame.epoch ?? ""}:${frame.seq}`)) continue;
+          dispatch({ t: "push", frame, replay: true });
+        }
       })
-      .catch(() => {}); // an older daemon without this RPC just backfills nothing
+      .catch(() => {
+        backfilledIds.delete(id); // an error / older daemon — allow a retry
+      });
   };
 
   const drainQueues = (): void => {
@@ -1804,6 +1815,7 @@ export const mkFleetHandle = ({
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
         dispatch({ t: "connection", value: "live" });
+        backfilledIds.clear(); // epoch / history may differ — allow a re-pull
         refetch();
         if (restarting) {
           restarting = false;
@@ -1813,6 +1825,7 @@ export const mkFleetHandle = ({
       }),
       client.on("resync", () => {
         log?.info("resync");
+        backfilledIds.clear();
         refetch();
       }),
       client.on("close", () => {
@@ -1841,7 +1854,9 @@ export const mkFleetHandle = ({
 
     // Backfill the log from history the daemon replayed before mount (re-opening
     // the TUI against a live daemon); live frames de-dupe against it by seq.
-    for (const frame of client.bufferedEvents) dispatch({ t: "push", frame });
+    // `replay` so a long-settled permission / error in that history doesn't
+    // flash a stale notice or re-open the request panel (U2).
+    for (const frame of client.bufferedEvents) dispatch({ t: "push", frame, replay: true });
 
     return () => {
       clearInterval(iv);

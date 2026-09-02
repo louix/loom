@@ -498,7 +498,7 @@ export type Action =
   | { t: "hello"; daemon: DaemonInfo; sessions: SessionSnapshot[] }
   | { t: "providers"; list: ProviderInfo[] }
   | { t: "sessions"; sessions: SessionSnapshot[] }
-  | { t: "push"; frame: PushFrame }
+  | { t: "push"; frame: PushFrame; replay?: boolean }
   | { t: "connection"; value: Connection }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
@@ -562,7 +562,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-        pending: pruneByLive(s.pending, sessions),
+        pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
         compacting: pruneByLive(s.compacting, sessions),
       };
@@ -584,14 +584,14 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         sessions,
         selectedId: clampSelection(sessions, s.selectedId),
         selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-        pending: pruneByLive(s.pending, sessions),
+        pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
         queue: pruneByLive(s.queue, sessions),
         compacting: pruneByLive(s.compacting, sessions),
       };
     }
 
     case "push":
-      return applyPush(s, a.frame);
+      return applyPush(s, a.frame, a.replay === true);
 
     case "connection":
       return { ...s, connection: a.value };
@@ -802,23 +802,30 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
   }
 };
 
-const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
+const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
       // A frame may arrive twice around startup (history backfill overlapping
       // the live stream) — (epoch, seq) is authoritative, so drop the repeat
-      // whole. Re-deriving `pending` from a repeated `plan_review` /
-      // `permission_request` would resurrect state a `session_updated` has
-      // already settled: the durable history a backfill replays never carries
-      // `session_updated` frames (and nothing in the event stream marks a
-      // plan resolved), so a repeated plan_review would pin the request
-      // panel on long-decided text.
+      // whole.
       const epoch = frame.epoch ?? "";
-      if (frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch)) return s;
+      // Live path: an O(n) log scan to drop a frame that arrived twice (history
+      // backfill overlapping the live stream). A `replay` frame skips it — the
+      // backfill caller has already filtered against the log by (epoch, seq),
+      // so this would be O(N·log) for nothing (U1).
+      if (!replay && frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch)) {
+        return s;
+      }
       const pending = trackPending(s.pending, ev);
       const compacting = trackCompacting(s.compacting, ev);
-      const notice = noticeForEvent(s, ev) ?? s.notice;
+      // A backfilled frame is *transcript*, not a live event (U2): re-running
+      // `noticeForEvent` would flash a long-settled "Bash needs approval" /
+      // "error: …" on the notice line for 4s. `pending` / `compacting` still
+      // track (a genuinely-outstanding permission must still show on reopen —
+      // a settled one is pruned when the session snapshot lands, see the
+      // `hello` / `sessions` reducers).
+      const notice = replay ? s.notice : (noticeForEvent(s, ev) ?? s.notice);
       // `status_changed` is already shown live in the detail / fleet panes;
       // keep it out of the log so the log reads as a transcript. `compact_progress`
       // is a bare heartbeat — it drives the "compacting…" indicator, nothing more.
@@ -1031,6 +1038,28 @@ const pruneByLive = <T>(
     else changed = true;
   }
   return changed ? out : rec;
+};
+
+/**
+ * Drop `pending` for any session the fresh snapshot says is not blocked. A
+ * backfill / buffered replay can re-add a long-answered `permission_request`
+ * to the map (its own dedup only sees the current map, cleared when the
+ * session settled); the authoritative `status` is the snapshot's (U2).
+ */
+const pruneSettledPending = (
+  pending: Record<string, Pending>,
+  sessions: readonly SessionSnapshot[],
+): Record<string, Pending> => {
+  const blocked = new Set(
+    sessions.filter((x) => x.status.kind === "awaiting_input").map((x) => x.id),
+  );
+  let changed = false;
+  const out: Record<string, Pending> = {};
+  for (const [id, v] of Object.entries(pending)) {
+    if (blocked.has(id)) out[id] = v;
+    else changed = true;
+  }
+  return changed ? out : pending;
 };
 
 // ---------------------------------------------------------------------------
