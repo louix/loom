@@ -320,10 +320,10 @@ export interface DoctorMcpServer {
   name: string;
   /** As written in `config.toml`'s `[[mcp]]`. */
   command: string;
-  /** What actually gets spawned — the `tilth`→`npx` fallback rewrites this. */
+  /** What actually gets spawned — the legacy `tilth mcp` heal rewrites this. */
   resolved: string;
-  /** `ok` on PATH · `fallback` rewritten to a pinned `npx` · `missing` unrunnable. */
-  status: "ok" | "fallback" | "missing";
+  /** `ok` on PATH · `missing` unrunnable. */
+  status: "ok" | "missing";
   /** Set only when the command was rewritten or a binary is missing. */
   note: string;
 }

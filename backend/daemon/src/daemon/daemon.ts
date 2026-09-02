@@ -2330,7 +2330,7 @@ export class Daemon {
         name: m.name,
         command: m.command,
         resolved: [command, ...args].join(" "),
-        status: mcpStatusOf(command, note),
+        status: mcpStatusOf(command),
         note: note ?? "",
       };
     });
@@ -2375,13 +2375,11 @@ export class Daemon {
 // daemon.doctor helpers
 // ---------------------------------------------------------------------------
 
-/** MCP command health for {@link DoctorReport}. `note` is set by
- *  {@link resolveMcpCommand} only when it rewrote the command or found a
- *  binary missing; a `npx` rewrite is the pinned tilth fallback. */
-const mcpStatusOf = (command: string, note: string | undefined): DoctorMcpServer["status"] => {
-  if (note === undefined) return onPath(command) ? "ok" : "missing";
-  return command === "npx" ? "fallback" : "missing";
-};
+/** MCP command health for {@link DoctorReport}: whether the resolved binary
+ *  is on `$PATH`. {@link resolveMcpCommand} sets `note` only when it rewrote
+ *  the legacy `tilth mcp` spelling. */
+const mcpStatusOf = (command: string): DoctorMcpServer["status"] =>
+  onPath(command) ? "ok" : "missing";
 
 const searchNoteOf = (backend: string, resolvedKey: string): string => {
   if (backend === "none") return "no backend configured";

@@ -407,7 +407,7 @@ test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () 
   assert.deepEqual(mcpNames, ["fff", "tilth"]);
   for (const m of rep.mcp) {
     assert.ok(m.resolved.length > 0);
-    assert.ok(["ok", "fallback", "missing"].includes(m.status));
+    assert.ok(["ok", "missing"].includes(m.status));
   }
 
   assert.deepEqual(rep.tools.loom, ["ask_user", "commit"]);

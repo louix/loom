@@ -1596,7 +1596,6 @@ const DocHead = ({ children }: { children: ReactNode }): ReactNode => (
 
 const MCP_MARK: Record<DoctorMcpServer["status"], { glyph: string; color: string }> = {
   ok: { glyph: "✓", color: C.good },
-  fallback: { glyph: "≈", color: C.warn },
   missing: { glyph: "✗", color: C.bad },
 };
 

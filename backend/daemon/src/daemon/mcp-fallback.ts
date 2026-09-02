@@ -7,15 +7,10 @@
  *     parses as a search query, so the "server" prints results and exits
  *     (the MCP client sees `Connection closed` and the tools silently
  *     vanish from every session);
- *   - `tilth` missing from `$PATH` → fall back to a pinned `npx` download
- *     so a fresh checkout still gets the good tools. If `npx` is missing
- *     too, the command is left as-is and the session runs with just the
- *     built-in tools.
+ *   - `tilth` missing from `$PATH` → the command is left as-is with a note
+ *     and the session runs with just the built-in tools.
  */
 import { onPath } from "@loom/core/paths";
-
-/** Pinned tilth version for the no-install fallback. */
-export const TILTH_FALLBACK = "tilth@0.9.0";
 
 export interface ResolvedCommand {
   command: string;
@@ -56,19 +51,10 @@ export const resolveMcpCommand = (
     return notes.length === 0 ? { command, args } : { command, args, note: notes.join("; ") };
   }
 
-  if (has("npx")) {
-    return {
-      command: "npx",
-      args: ["-y", TILTH_FALLBACK, ...args],
-      note: [`tilth not on PATH — falling back to \`npx -y ${TILTH_FALLBACK}\``, ...notes].join(
-        "; ",
-      ),
-    };
-  }
   return {
     command,
     args,
-    note: ["tilth and npx both missing — its tools won't be available this session", ...notes].join(
+    note: ["tilth is not installed — its tools won't be available this session", ...notes].join(
       "; ",
     ),
   };

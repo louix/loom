@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { resolveMcpCommand, TILTH_FALLBACK } from "@loom/daemon/daemon/mcp-fallback";
+import { resolveMcpCommand } from "@loom/daemon/daemon/mcp-fallback";
 import { DEFAULT_CONFIG } from "@loom/daemon/config/config";
 import { onPath } from "@loom/core/paths";
 
@@ -29,18 +29,11 @@ test("resolveMcpCommand: legacy `tilth mcp …` is healed to the `--mcp` flag", 
   assert.match(r.note ?? "", /--mcp/);
 });
 
-test("resolveMcpCommand: tilth missing but npx present → pinned npx fallback", () => {
-  const r = resolveMcpCommand("tilth mcp --edit", (c) => c === "npx");
-  assert.equal(r.command, "npx");
-  assert.deepEqual(r.args, ["-y", TILTH_FALLBACK, "--mcp", "--edit"]);
-  assert.match(r.note ?? "", /npx/);
-});
-
-test("resolveMcpCommand: tilth and npx both missing → left as-is with a note", () => {
+test("resolveMcpCommand: tilth missing → left as-is with a note", () => {
   const r = resolveMcpCommand("tilth mcp --edit", () => false);
   assert.equal(r.command, "tilth");
   assert.deepEqual(r.args, ["--mcp", "--edit"]);
-  assert.match(r.note ?? "", /both missing/);
+  assert.match(r.note ?? "", /not installed/);
 });
 
 // The default `[[mcp]]` command is a contract with tilth's CLI — a syntax
