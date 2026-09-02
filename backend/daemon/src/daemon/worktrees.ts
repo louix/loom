@@ -7,7 +7,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
@@ -127,10 +127,22 @@ export class WorktreeManager {
       if (!p) return "";
       return p.startsWith("/") ? p : join(this.#repoRoot, p);
     };
+    const isDir = (p: string): boolean => {
+      try {
+        return statSync(p).isDirectory();
+      } catch {
+        return false;
+      }
+    };
+    // A `core.hooksPath` that isn't a real directory can't be holding the repo's
+    // hooks: `/dev/null` (the idiom for "disable all hooks", common in sandboxes
+    // and CI), a stale path, or unset. Fall back to the git common dir so the
+    // delegating wrappers still chain to `<repo>/.git/hooks`.
     const custom = abs(this.#gitOut(["config", "--get", "core.hooksPath"]));
+    const customDir = custom && isDir(custom) ? custom : "";
     const commonDir =
       abs(this.#gitOut(["rev-parse", "--git-common-dir"])) || join(this.#repoRoot, ".git");
-    const origHooksDir = custom || join(commonDir, "hooks");
+    const origHooksDir = customDir || join(commonDir, "hooks");
     if (origHooksDir !== this.#hooksDir) {
       const script = chainHookScript(origHooksDir);
       for (const name of CHAINED_HOOKS) {
