@@ -286,10 +286,14 @@ you saved, `d` discuss (send a note back; the agent keeps planning). The overlay
 shows the session's context meter — full context is the argument for `f` — and
 the permission mode the implementation will run in; `⇧⇥` cycles it
 (manual → acceptEdits → auto), and `i` / `f` / `e` all implement in the mode
-shown. `esc` does nothing — a plan review must be answered.
-`session.respondPlan` is the RPC (implementing actions carry the chosen
-`mode`); `loom plan <id> <reqId> implement|fresh|revise|discuss [--mode M]`
-from the CLI.
+shown. `⌥p` retargets `f` (implement fresh) — the provider → model →
+thinking-effort wizard, pre-selected to the session's current settings; a
+model / effort change rides on the decision, a different provider forks a fresh
+session seeded with the plan + goal and parks this one. `esc` does nothing — a
+plan review must be answered. `session.respondPlan` is the RPC (implementing
+actions carry the chosen `mode`, and `implement_fresh` an optional
+`model` / `effort` / `provider`); `loom plan <id> <reqId>
+implement|fresh|revise|discuss [--mode M]` from the CLI.
 
 **Plan usage.** No session is cost-capped — Loom has no way to know what a
 provider or account should be spending, so it doesn't invent a number and

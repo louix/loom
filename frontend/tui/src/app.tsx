@@ -109,6 +109,10 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               plan={state.plan}
               width={Math.min(cols - 4, 96)}
               {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
+              {...(state.plan.impl ? { impl: state.plan.impl } : {})}
+              {...(ps
+                ? { cur: { provider: ps.provider, model: ps.model, effort: ps.effort } }
+                : {})}
             />
           ) : null}
         </Box>

@@ -602,15 +602,30 @@ class ClaudeSession implements AgentSession {
       return;
     }
 
-    // The other three cases end the ExitPlanMode call and re-drive the session
+    // The other cases end the ExitPlanMode call and re-drive the session
     // deterministically, so behaviour doesn't hinge on SDK `updatedInput` support.
     if (decision.action === "discuss") {
       resolve({ behavior: "deny", message: decision.message });
       return; // stays in plan mode; the message arrives as the next user turn
     }
 
+    if (decision.action === "handoff") {
+      // The daemon has spawned a fresh session (an `⌥p` retarget onto a
+      // different provider) to carry the implementation. End the turn here;
+      // no compact, no mode change, no implement send.
+      resolve({
+        behavior: "deny",
+        message: "Plan approved — implementation continues in a separate session.",
+      });
+      return;
+    }
+
     resolve({ behavior: "deny", message: "Plan accepted — implementing now." });
     if (decision.action === "implement_fresh") {
+      // An `⌥p` retarget on the same provider — apply it before the compact so
+      // the summarise and the implement turn both run under the new model.
+      if (decision.model) await this.setModel(decision.model);
+      if (decision.effort) await this.setEffort(decision.effort);
       // Fire-and-forget: the CLI consumes the inbox FIFO, so the `/compact`
       // lands ahead of the implement turn below without parking this RPC (a
       // 30s client timeout) for the multi-minute summarise. The tracked wait

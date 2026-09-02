@@ -166,7 +166,13 @@ export class AisdkSession implements AgentSession {
   #compaction: Promise<void> | null = null;
   /** Aborts the current summariser stream on `interrupt()` / `close()`. */
   #compactAbort: AbortController | null = null;
-  #implementAfterTurn: { plan: string; fresh: boolean; mode?: SessionMode } | null = null;
+  #implementAfterTurn: {
+    plan: string;
+    fresh: boolean;
+    mode?: SessionMode;
+    model?: string;
+    effort?: EffortLevel;
+  } | null = null;
   #snap: AdapterSnapshot;
 
   #hub: McpHub | null = null;
@@ -530,8 +536,16 @@ export class AisdkSession implements AgentSession {
                 plan,
                 fresh: true,
                 ...(decision.mode ? { mode: decision.mode } : {}),
+                ...(decision.model ? { model: decision.model } : {}),
+                ...(decision.effort ? { effort: decision.effort } : {}),
               };
               return "Plan approved. The context will be compacted to the plan and goal, then implementation begins.";
+            case "handoff":
+              // The daemon has already spawned a fresh session (an `⌥p` retarget
+              // onto a different provider) to carry the implementation. Leave
+              // `#implementAfterTurn` null — this turn just ends and the session
+              // goes idle.
+              return "Plan approved. Implementation continues in a separate session.";
             default:
               this.#implementAfterTurn = {
                 plan,
@@ -913,6 +927,10 @@ export class AisdkSession implements AgentSession {
         const mode = impl.mode ?? "acceptEdits";
         this.#mode = mode;
         this.#snap.mode = mode;
+        // An `⌥p` retarget on the plain-fresh path (a different provider forks
+        // instead, and never reaches here). `setEffort` is a no-op for aisdk.
+        if (impl.model) await this.setModel(impl.model);
+        if (impl.effort) await this.setEffort(impl.effort);
         if (impl.fresh) {
           await this.#compactTracked(
             "Keep the approved plan and the original goal verbatim; drop the exploration transcript.",

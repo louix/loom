@@ -94,9 +94,14 @@ export type PermissionDecision =
  *
  * - `implement` — accept; the agent proceeds in the same context.
  * - `implement_fresh` — accept, but compact the context to the plan + goal
- *   first, so implementation starts lean.
+ *   first, so implementation starts lean. May also retarget the `model` /
+ *   `effort` the implementation runs under (the plan review's `⌥p`).
  * - `revise` — the user edited the plan; the agent implements *that* text.
  * - `discuss` — send a message back; the agent iterates, staying in plan mode.
+ * - `handoff` — the plan is approved but implementation moved to a separate
+ *   session (an `⌥p` retarget onto a different provider); end this turn, the
+ *   session goes idle. Never produced by the harness tool — the daemon issues
+ *   it after spawning the fork.
  *
  * The implementing actions carry the permission `mode` the implementation
  * should run in (`default` / `acceptEdits` / `auto` — never `plan`). When
@@ -104,9 +109,10 @@ export type PermissionDecision =
  */
 export type PlanDecision =
   | { action: "implement"; mode?: SessionMode }
-  | { action: "implement_fresh"; mode?: SessionMode }
+  | { action: "implement_fresh"; mode?: SessionMode; model?: string; effort?: EffortLevel }
   | { action: "revise"; plan: string; mode?: SessionMode }
-  | { action: "discuss"; message: string };
+  | { action: "discuss"; message: string }
+  | { action: "handoff" };
 
 /** What an adapter can report about a live session without the daemon's help. */
 export interface AdapterSnapshot {

@@ -237,6 +237,10 @@ export interface PickerState {
     draft?: string;
     reopenSend?: string;
     viaModelStep?: boolean;
+    /** The provider→model→effort wizard was opened from the plan-review overlay
+     *  (`⌥p`); each step resolves by staging onto `state.plan.impl`, not a live
+     *  switch or a `new` prompt, and `Esc` returns to the overlay. */
+    planStage?: true;
   };
 }
 
@@ -246,13 +250,16 @@ export const makePicker = (init: {
   items: PickItem[];
   emptyText?: string;
   ctx?: PickerState["ctx"];
+  /** Initial highlight into `items`; clamped, defaults to 0. Used to pre-select
+   *  the session's current provider / model / effort in the `⌥p` wizard. */
+  index?: number;
 }): PickerState => {
   return {
     kind: init.kind,
     title: init.title,
     items: init.items,
     filter: "",
-    index: 0,
+    index: init.index !== undefined ? Math.max(0, Math.min(init.index, init.items.length - 1)) : 0,
     ...(init.emptyText ? { emptyText: init.emptyText } : {}),
     ...(init.ctx ? { ctx: init.ctx } : {}),
   };
@@ -434,9 +441,17 @@ export interface TuiState {
   confirm: ConfirmState | null;
   /**
    * An open plan-review overlay: the plan text + the ids to resolve it with,
-   * plus the permission mode the implementation will run in (`m` cycles it).
+   * plus the permission mode the implementation will run in (`⇧⇥` cycles it).
+   * `impl` is the `f` (implement fresh) retarget staged by `⌥p` — absent until
+   * the user picks one; a differing `provider` forks a fresh session.
    */
-  plan: { sessionId: string; requestId: string; text: string; mode: SessionMode } | null;
+  plan: {
+    sessionId: string;
+    requestId: string;
+    text: string;
+    mode: SessionMode;
+    impl?: { provider: string; model?: string; effort?: string };
+  } | null;
   /** An open picker overlay (provider / model / find). */
   picker: PickerState | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
@@ -530,6 +545,7 @@ export type Action =
   | { t: "openPlan"; sessionId: string; requestId: string; text: string }
   | { t: "closePlan" }
   | { t: "cyclePlanMode" }
+  | { t: "stagePlanImpl"; provider: string; model?: string; effort?: string }
   | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "toggleConfirmBranch" }
   | { t: "closeConfirm" }
@@ -736,7 +752,14 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "clearQueue":
       return a.sessionId in s.queue ? { ...s, queue: without(s.queue, a.sessionId) } : s;
 
-    case "openPlan":
+    case "openPlan": {
+      // A reopen of the same review (esc out of the discuss prompt) keeps the
+      // permission mode already cycled to and the `⌥p` retarget already staged,
+      // rather than resetting them.
+      const sameReview =
+        s.plan && s.plan.sessionId === a.sessionId && s.plan.requestId === a.requestId
+          ? s.plan
+          : null;
       return {
         ...s,
         mode: "plan",
@@ -744,19 +767,32 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
           sessionId: a.sessionId,
           requestId: a.requestId,
           text: a.text,
-          // Implementations auto-accept edits unless `m` switches the mode. A
-          // reopen of the same review (esc out of the discuss prompt) keeps the
-          // mode already cycled to rather than resetting it.
-          mode:
-            s.plan && s.plan.sessionId === a.sessionId && s.plan.requestId === a.requestId
-              ? s.plan.mode
-              : "acceptEdits",
+          mode: sameReview ? sameReview.mode : "acceptEdits",
+          ...(sameReview?.impl ? { impl: sameReview.impl } : {}),
         },
         prompt: null,
       };
+    }
 
     case "closePlan":
       return { ...s, mode: s.mode === "plan" ? "browse" : s.mode, plan: null };
+
+    case "stagePlanImpl":
+      return s.plan
+        ? {
+            ...s,
+            mode: "plan",
+            picker: null,
+            plan: {
+              ...s.plan,
+              impl: {
+                provider: a.provider,
+                ...(a.model ? { model: a.model } : {}),
+                ...(a.effort ? { effort: a.effort } : {}),
+              },
+            },
+          }
+        : s;
 
     case "cyclePlanMode": {
       if (!s.plan) return s;
@@ -778,7 +814,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, mode: "browse", confirm: null };
 
     case "openPicker":
-      return { ...s, mode: "picker", picker: a.picker, prompt: null, confirm: null, plan: null };
+      // `plan` rides through: the `⌥p` retarget wizard opens over an open plan
+      // review and `closePicker` / `stagePlanImpl` return to it.
+      return { ...s, mode: "picker", picker: a.picker, prompt: null, confirm: null };
 
     case "pickerFilter":
       return s.picker ? { ...s, picker: { ...s.picker, filter: a.value, index: 0 } } : s;
@@ -791,8 +829,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return next === s.picker.index ? s : { ...s, picker: { ...s.picker, index: next } };
     }
 
-    case "closePicker":
-      return { ...s, mode: s.mode === "picker" ? "browse" : s.mode, picker: null };
+    case "closePicker": {
+      // An `⌥p` wizard cancelled with `Esc` drops back to the plan review it
+      // opened over, not to browse.
+      const back: UiMode = s.plan ? "plan" : "browse";
+      return { ...s, mode: s.mode === "picker" ? back : s.mode, picker: null };
+    }
 
     case "resolvePerm": {
       const cur = s.pending[a.sessionId];
@@ -1630,6 +1672,9 @@ export const effortPickItems = (s: TuiState, providerId: string, modelId: string
  * `⌥m`.
  */
 export const escapeTarget = (p: PickerState, s: TuiState): Action => {
+  // The `⌥p` retarget wizard has no "back" — any step just returns to the plan
+  // review, leaving whatever was staged before untouched.
+  if (p.ctx?.planStage) return { t: "closePicker" };
   if (p.kind === "provider") {
     return {
       t: "openPrompt",

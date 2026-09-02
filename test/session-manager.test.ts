@@ -282,6 +282,39 @@ test("session.respondPlan carries the revise plan / discuss message and validate
   await c.close();
 });
 
+test("session.respondPlan forwards an implement_fresh model / effort retarget", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({ type: "plan_review", id: "pr3", plan: "draft" });
+  await waitFor(async () => (await awaitReasonOf(c, id)) === "plan_review");
+
+  await assert.rejects(
+    c.request("session.respondPlan", {
+      id,
+      requestId: "pr3",
+      action: "implement_fresh",
+      effort: "turbo",
+    }),
+    /effort must be one of/,
+  );
+
+  await c.request("session.respondPlan", {
+    id,
+    requestId: "pr3",
+    action: "implement_fresh",
+    mode: "auto",
+    model: "m9",
+    effort: "high",
+  });
+  assert.deepEqual(fs.planResponses.at(-1)?.decision, {
+    action: "implement_fresh",
+    mode: "auto",
+    model: "m9",
+    effort: "high",
+  });
+  await c.close();
+});
+
 test("session.answer on a session that isn't running is not_found", async () => {
   const c = await client();
   await assert.rejects(

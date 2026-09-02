@@ -824,6 +824,56 @@ test("a plan review opens an overlay; `i` sends the implement decision", async (
   }
 });
 
+test("plan review · ⌥p retargets implement-fresh; a new provider forks a session", async () => {
+  const { h, connect, cleanup } = await harness({ config: OAI_CFG });
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "plan this",
+    provider: "fake",
+  });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await delay(150);
+    fs?.finishTurn({ contextUsed: 10_000 });
+    fs?.emit({ type: "plan_review", id: "pr1", plan: "the approved plan body" });
+    await delay(200);
+    stdin.feed("a"); // open the overlay
+    await delay(150);
+    assert.match(stdout.last, /implement fresh →/);
+    assert.match(stdout.last, /⌥p retarget/);
+
+    stdin.feed("\x1bp"); // ⌥p — the retarget wizard
+    await delay(120);
+    assert.match(stdout.last, /retarget · provider/i);
+    stdin.feed("oai");
+    await delay(100);
+    stdin.feed("\r"); // pick oai → model step
+    await delay(120);
+    assert.match(stdout.last, /retarget · model · oai/i);
+    stdin.feed("\r"); // pick m1 → stage (oai advertises no effort levels)
+    await delay(150);
+
+    // back on the overlay: the target and the fork hint
+    assert.match(stdout.last, /implement fresh → oai \/ m1/);
+    assert.match(stdout.last, /fresh forked session/);
+
+    const before = (await client.request<SessionSnapshot[]>("session.list")).length;
+    stdin.feed("f"); // implement fresh → forks a fresh oai session
+    await delay(250);
+    assert.deepEqual(fs?.planResponses.at(-1)?.decision, { action: "handoff" });
+    const after = await client.request<SessionSnapshot[]>("session.list");
+    assert.equal(after.length, before + 1);
+    const fork = after.find((s) => s.provider === "oai");
+    assert.ok(fork, "a fresh oai session was forked from the plan");
+    assert.equal(fork?.parentId, snap.id);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("sub-agents show in the Detail pane and prefix their log rows", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();

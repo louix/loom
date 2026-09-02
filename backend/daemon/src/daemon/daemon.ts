@@ -113,6 +113,8 @@ const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
   "done",
 ];
 
+const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
 /** How often the daemon re-checks keep-warm sessions for a cache about to lapse. */
 const KEEP_WARM_SWEEP_MS = 30_000;
 
@@ -823,6 +825,117 @@ export class Daemon {
   }
 
   /**
+   * Spin up a fresh session from already-resolved inputs — worktree, registry
+   * row, adapter, opening prompt. Shared by `session.create` and the plan
+   * review's `⌥p`-onto-a-different-provider fork. Caller resolves `model` /
+   * `effort` / `providerId` and does any provider-specific validation first.
+   */
+  async #startSession(o: {
+    prompt: string;
+    providerId: string;
+    model: string | null;
+    effort: string | null;
+    mode: SessionMode;
+    parentId: string | null;
+    wantWorktree: boolean;
+    by: string | undefined;
+  }): Promise<SessionSnapshot> {
+    const id = randomUUID();
+    const aisdkProfile = this.config.providers.aisdk[o.providerId];
+
+    let wt: { path: string; branch: string; baseRef: string } | null = null;
+    if (o.wantWorktree) {
+      try {
+        wt = this.#worktrees.create(o.prompt, id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError("worktree_error", `could not create worktree: ${message}`);
+      }
+    }
+    const cwd = wt ? wt.path : this.repoRoot;
+
+    this.#registry.create({
+      id,
+      provider: o.providerId,
+      model: o.model,
+      effort: o.effort,
+      mode: o.mode,
+      parentId: o.parentId,
+      title: o.prompt.slice(0, 200),
+      worktree: wt ? wt.path : null,
+      branch: wt ? wt.branch : null,
+      baseBranch: wt ? wt.baseRef : this.config.baseBranch,
+      ...(wt ? {} : { inPlace: true }),
+    });
+
+    // Remember what this session was created with, so the next `new`
+    // defaults here without any of it being pinned in config.
+    if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
+      this.#providerDefaults.remember(o.providerId, o.model);
+    }
+    if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
+    this.#providerDefaults.rememberProvider(o.providerId);
+    this.#providerDefaults.rememberMode(o.mode);
+    this.#emitProvidersUpdated();
+
+    const isClaude = isClaudeId(o.providerId);
+    const isAisdk = aisdkProfile !== undefined;
+    const mcpHandles = this.#mcpHandles();
+    const aisdkSystem = mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
+    const opts: CreateSessionOptions = {
+      sessionId: id,
+      cwd,
+      prompt: o.prompt,
+      mode: o.mode,
+      mcpServers: mcpHandles,
+      disableTools: this.config.providers.claude.disableBuiltin,
+      settingSources: this.config.providers.claude.settingSources,
+      ...(isClaude ? { loomServer: true, systemPromptAppend: TOOL_STEER } : {}),
+      ...(isAisdk ? { loomServer: true, systemPromptAppend: aisdkSystem } : {}),
+      ...(o.model ? { model: o.model } : {}),
+      ...(o.effort ? { effort: o.effort as EffortLevel } : {}),
+      ...(o.parentId ? { parentId: o.parentId } : {}),
+    };
+
+    this.#lastSend.set(id, o.prompt);
+    try {
+      await this.#sessions.create(await this.#providers.get(o.providerId), opts);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Nothing ran in the worktree — reclaim it now (gc only touches `done`
+      // rows, so an `error` row's tree would leak forever). Keep the row as
+      // a record of the failure, with no worktree. (An in-place session has
+      // no tree to reclaim.)
+      if (wt) {
+        try {
+          this.#worktrees.remove(wt.path, { force: true });
+        } catch {
+          /* best effort */
+        }
+        this.#registry.setFields(id, { worktree: null });
+      }
+      this.#registry.setStatus(id, stateError(message.slice(0, 120)));
+      throw new RpcError("provider_error", `could not start session: ${message}`);
+    }
+
+    // The opening prompt is a user message like any follow-up — put it on the
+    // event stream so it's in the log / transcript and survives a reconnect
+    // (clients no longer local-echo it).
+    this.emitEvent({
+      type: "user_message",
+      sessionId: id,
+      ts: Date.now(),
+      text: o.prompt,
+      injected: false,
+    });
+
+    const snap = this.#registry.mustGet(id);
+    this.#emitSessionUpdated(snap, o.by);
+    this.#onActivityChange("session-created");
+    return snap;
+  }
+
+  /**
    * Re-instantiate the adapter for a session that isn't currently live (a
    * daemon restart left it `interrupted`, or its last turn ended). Caller must
    * have checked `!#sessions.has(id)`. Returns the fresh snapshot; the caller
@@ -1418,8 +1531,6 @@ export class Daemon {
         throw new RpcError("not_found", `no such parent session: ${parentId}`);
       }
 
-      const id = randomUUID();
-
       // By default each session gets its own worktree + branch off the
       // configured base. `[worktree] enabled = false` (or a per-session
       // `worktree: false`) runs it in the repo working dir instead — no branch
@@ -1428,96 +1539,17 @@ export class Daemon {
         typeof p["worktree"] === "boolean"
           ? (p["worktree"] as boolean)
           : this.config.worktree.enabled;
-      let wt: { path: string; branch: string; baseRef: string } | null = null;
-      if (wantWorktree) {
-        try {
-          wt = this.#worktrees.create(prompt, id);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          throw new RpcError("worktree_error", `could not create worktree: ${message}`);
-        }
-      }
-      const cwd = wt ? wt.path : this.repoRoot;
 
-      this.#registry.create({
-        id,
-        provider: providerId,
+      return this.#startSession({
+        prompt,
+        providerId,
         model,
         effort,
         mode,
         parentId,
-        title: prompt.slice(0, 200),
-        worktree: wt ? wt.path : null,
-        branch: wt ? wt.branch : null,
-        baseBranch: wt ? wt.baseRef : this.config.baseBranch,
-        ...(wt ? {} : { inPlace: true }),
+        wantWorktree,
+        by: clientLabel(params),
       });
-
-      // Remember what this session was created with, so the next `new`
-      // defaults here without any of it being pinned in config.
-      if (model && (aisdkProfile || isClaudeId(providerId))) {
-        this.#providerDefaults.remember(providerId, model);
-      }
-      if (effort) this.#providerDefaults.rememberEffort(providerId, effort);
-      this.#providerDefaults.rememberProvider(providerId);
-      this.#providerDefaults.rememberMode(mode);
-      this.#emitProvidersUpdated();
-
-      const isClaude = isClaudeId(providerId);
-      const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
-      const mcpHandles = this.#mcpHandles();
-      const aisdkSystem = mcpHandles.length > 0 ? `${AISDK_SYSTEM}\n\n${TOOL_STEER}` : AISDK_SYSTEM;
-      const opts: CreateSessionOptions = {
-        sessionId: id,
-        cwd,
-        prompt,
-        mode,
-        mcpServers: mcpHandles,
-        disableTools: this.config.providers.claude.disableBuiltin,
-        settingSources: this.config.providers.claude.settingSources,
-        ...(isClaude ? { loomServer: true, systemPromptAppend: TOOL_STEER } : {}),
-        ...(isAisdk ? { loomServer: true, systemPromptAppend: aisdkSystem } : {}),
-        ...(model ? { model } : {}),
-        ...(effort ? { effort: effort as EffortLevel } : {}),
-        ...(parentId ? { parentId } : {}),
-      };
-
-      this.#lastSend.set(id, prompt);
-      try {
-        await this.#sessions.create(await this.#providers.get(providerId), opts);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        // Nothing ran in the worktree — reclaim it now (gc only touches `done`
-        // rows, so an `error` row's tree would leak forever). Keep the row as
-        // a record of the failure, with no worktree. (An in-place session has
-        // no tree to reclaim.)
-        if (wt) {
-          try {
-            this.#worktrees.remove(wt.path, { force: true });
-          } catch {
-            /* best effort */
-          }
-          this.#registry.setFields(id, { worktree: null });
-        }
-        this.#registry.setStatus(id, stateError(message.slice(0, 120)));
-        throw new RpcError("provider_error", `could not start session: ${message}`);
-      }
-
-      // The opening prompt is a user message like any follow-up — put it on the
-      // event stream so it's in the log / transcript and survives a reconnect
-      // (clients no longer local-echo it).
-      this.emitEvent({
-        type: "user_message",
-        sessionId: id,
-        ts: Date.now(),
-        text: prompt,
-        injected: false,
-      });
-
-      const snap = this.#registry.mustGet(id);
-      this.#emitSessionUpdated(snap, clientLabel(params));
-      this.#onActivityChange("session-created");
-      return snap;
     });
 
     d.register("session.resume", async (params) => {
@@ -1901,9 +1933,66 @@ export class Daemon {
       if (p["mode"] !== undefined && (mode === null || mode === "plan")) {
         throw new RpcError("bad_request", "mode must be default | acceptEdits | auto");
       }
+
+      const parent = this.#registry.get(id);
+      if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+
+      // `implement_fresh` may retarget the model / effort / provider the
+      // implementation runs under (the plan review's `⌥p`).
+      const retargetModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
+      const retargetEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
+      if (retargetEffort !== undefined && !EFFORT_LEVELS.includes(retargetEffort as EffortLevel)) {
+        throw new RpcError("bad_request", `effort must be one of ${EFFORT_LEVELS.join(" | ")}`);
+      }
+      const retargetProvider =
+        typeof p["provider"] === "string" ? (p["provider"] as string) : undefined;
+
+      // A different provider can't switch live — fork a fresh session on it,
+      // seeded with the approved plan + the original goal, and end the planning
+      // session's review as a handoff (its turn ends, it goes idle).
+      if (
+        action === "implement_fresh" &&
+        retargetProvider !== undefined &&
+        retargetProvider !== parent.provider
+      ) {
+        if (!this.#providers.has(retargetProvider)) {
+          throw new RpcError("bad_request", `unknown provider: ${retargetProvider}`);
+        }
+        const planText = typeof p["plan"] === "string" ? (p["plan"] as string).trim() : "";
+        if (planText === "") {
+          throw new RpcError("bad_request", "a provider fork needs the approved plan text");
+        }
+        const goal = parent.title ?? "the original goal";
+        const seed = `Implement this approved plan.\n\nOriginal goal: ${goal}\n\n${planText}`;
+        const runMode: SessionMode =
+          mode ??
+          (isSessionMode(parent.mode) && parent.mode !== "plan" ? parent.mode : "acceptEdits");
+        const snap = await this.#startSession({
+          prompt: seed,
+          providerId: retargetProvider,
+          model: retargetModel ?? (this.#defaultModelFor(retargetProvider) || null),
+          effort: retargetEffort ?? (this.#defaultEffortFor(retargetProvider) || null),
+          mode: runMode,
+          parentId: id,
+          wantWorktree: this.config.worktree.enabled,
+          by: clientLabel(params),
+        });
+        await this.#sessions.respondToPlan(id, requestId, { action: "handoff" });
+        this.#onActivityChange("session-forked");
+        return snap;
+      }
+
       let decision: PlanDecision;
-      if (action === "implement" || action === "implement_fresh") {
+      if (action === "implement") {
         decision = { action, ...(mode ? { mode } : {}) };
+      } else if (action === "implement_fresh") {
+        decision = {
+          action,
+          ...(mode ? { mode } : {}),
+          ...(retargetModel ? { model: retargetModel } : {}),
+          ...(retargetEffort ? { effort: retargetEffort as EffortLevel } : {}),
+        };
       } else if (action === "revise") {
         const plan = typeof p["plan"] === "string" ? (p["plan"] as string) : "";
         if (plan.trim() === "") throw new RpcError("bad_request", "revise needs a non-empty plan");
@@ -1918,7 +2007,6 @@ export class Daemon {
           "action must be implement | implement_fresh | revise | discuss",
         );
       }
-      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       return this.#sessions.respondToPlan(id, requestId, decision);
     });
 

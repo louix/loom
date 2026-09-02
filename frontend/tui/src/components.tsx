@@ -1259,17 +1259,41 @@ export const PlanReview = ({
   plan,
   width,
   ctx,
+  impl,
+  cur,
 }: {
   plan: { text: string; mode: SessionMode };
   width: number;
   /** The plan's session context meter — the input for the implement-here vs
    *  implement-fresh call (`i` vs `f`). Absent when the limit is unknown. */
   ctx?: { used: number; limit: number };
+  /** The `f` (implement fresh) retarget staged by `⌥p`, if any. */
+  impl?: { provider: string; model?: string; effort?: string };
+  /** The plan's session's current provider / model / effort, to show what a
+   *  staged `impl` diverges from. */
+  cur?: { provider: string; model?: string | null; effort?: string | null };
 }): ReactNode => {
   const w = inside(width);
   const lines = plan.text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
   const body = lines.slice(0, 16);
   const frac = ctx && ctx.limit > 0 ? Math.min(1, ctx.used / ctx.limit) : null;
+
+  const shown =
+    impl ??
+    (cur
+      ? { provider: cur.provider, model: cur.model ?? undefined, effort: cur.effort ?? undefined }
+      : null);
+  const targetText = shown
+    ? [shown.provider, shown.model].filter(Boolean).join(" / ") +
+      (shown.effort ? ` · ${shown.effort}` : "")
+    : "the session's current model";
+  const providerForks = impl !== undefined && cur !== undefined && impl.provider !== cur.provider;
+  const diverged =
+    impl !== undefined &&
+    cur !== undefined &&
+    (providerForks ||
+      (impl.model !== undefined && impl.model !== (cur.model ?? undefined)) ||
+      (impl.effort !== undefined && impl.effort !== (cur.effort ?? undefined)));
   const row = (k: string, v: string): ReactNode => (
     <Box gap={1}>
       <Box width={3}>
@@ -1318,6 +1342,14 @@ export const PlanReview = ({
         {modeChip(plan.mode)}
         <Text color={C.faint}>{"  ·  ⇧⇥ cycles"}</Text>
       </Text>
+      <Text wrap="truncate-end">
+        {"implement fresh → "}
+        <Text color={diverged ? C.warn : C.faint}>{targetText}</Text>
+        <Text color={C.faint}>{"  ·  ⌥p retarget"}</Text>
+      </Text>
+      {providerForks ? (
+        <Text color={C.faint}>{"  different provider — implements in a fresh forked session"}</Text>
+      ) : null}
       <Box height={1} />
       {row("i", "implement — the agent proceeds in this context")}
       {row("f", "implement fresh — compact to the plan + goal first")}

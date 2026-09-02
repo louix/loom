@@ -814,6 +814,72 @@ export const mkFleetHandle = ({
       }),
     });
 
+  // --- `⌥p` from the plan review: retarget the `f` (implement fresh) run ------
+  // A self-contained provider → model → (effort) wizard that resolves by
+  // staging onto `state.plan.impl` (not a live switch or a `new` prompt). Each
+  // step pre-selects the session's current value; a staged provider that
+  // differs from the session's forks a fresh session when `f` fires.
+
+  const planSession = (): SessionSnapshot | undefined => {
+    const pl = state.plan;
+    return pl ? state.sessions.find((x) => x.id === pl.sessionId) : undefined;
+  };
+
+  const openPlanModelStep = (provider: string): void => {
+    const items = modelPickItems(state, provider);
+    const ps = planSession();
+    const cur = state.plan?.impl?.model ?? (provider === ps?.provider ? ps?.model : undefined);
+    dispatch({
+      t: "openPicker",
+      picker: makePicker({
+        kind: "model",
+        title: `retarget · model · ${provider}`,
+        items,
+        emptyText: modelPickEmptyText(provider),
+        ctx: { planStage: true, provider },
+        index: cur ? items.findIndex((i) => i.id === cur) : 0,
+      }),
+    });
+  };
+
+  const openPlanEffortStep = (provider: string, model: string): void => {
+    const items = effortPickItems(state, provider, model);
+    const ps = planSession();
+    const cur =
+      state.plan?.impl?.effort ??
+      (provider === ps?.provider && model === ps?.model ? ps?.effort : undefined);
+    dispatch({
+      t: "openPicker",
+      picker: makePicker({
+        kind: "effort",
+        title: `retarget · effort · ${provider}`,
+        items,
+        ctx: { planStage: true, provider, model },
+        index: cur ? items.findIndex((i) => i.id === cur) : 0,
+      }),
+    });
+  };
+
+  const openPlanRetarget = (): void => {
+    if (!state.plan) return;
+    const ps = planSession();
+    if (state.providers.length > 1) {
+      const items = providerPickItems(state);
+      const cur = state.plan.impl?.provider ?? ps?.provider;
+      return void dispatch({
+        t: "openPicker",
+        picker: makePicker({
+          kind: "provider",
+          title: "retarget · provider",
+          items,
+          ctx: { planStage: true },
+          index: cur ? items.findIndex((i) => i.id === cur) : 0,
+        }),
+      });
+    }
+    openPlanModelStep(state.providers[0]?.id ?? ps?.provider ?? "claude");
+  };
+
   /** Finalize a model (+ optional effort) chosen through the wizard: either a
    *  live switch on an existing session, or folding the choice into the
    *  `new`-session prompt. */
@@ -886,6 +952,20 @@ export const mkFleetHandle = ({
     // daemon falls back to the provider's default model; a model with no
     // enumerated effort levels never reaches an empty effort step).
     if (!cur) {
+      if (p.ctx?.planStage) {
+        // Stage what's chosen so far; the daemon fills the rest from the target
+        // provider's defaults.
+        const provider = p.ctx.provider ?? planSession()?.provider ?? "claude";
+        if (p.kind === "effort") {
+          return void dispatch({
+            t: "stagePlanImpl",
+            provider,
+            ...(p.ctx.model ? { model: p.ctx.model } : {}),
+          });
+        }
+        if (p.kind === "model") return void dispatch({ t: "stagePlanImpl", provider });
+        return void dispatch({ t: "closePicker" });
+      }
       if (p.kind === "model" && !p.ctx?.liveSessionId) {
         return void dispatch({
           t: "openPrompt",
@@ -902,6 +982,27 @@ export const mkFleetHandle = ({
         return void finalizeModelChoice(p.ctx, p.ctx?.model ?? "");
       }
       return void dispatch({ t: "closePicker" });
+    }
+
+    // The `⌥p` retarget wizard resolves onto `state.plan.impl`, not a live
+    // switch or a `new` prompt.
+    if (p.ctx?.planStage) {
+      if (p.kind === "provider") return void openPlanModelStep(cur.id);
+      if (p.kind === "model") {
+        const provider = p.ctx.provider ?? planSession()?.provider ?? "claude";
+        if (modelSupportsEffort(state, provider, cur.id)) {
+          return void openPlanEffortStep(provider, cur.id);
+        }
+        return void dispatch({ t: "stagePlanImpl", provider, model: cur.id });
+      }
+      if (p.kind === "effort") {
+        return void dispatch({
+          t: "stagePlanImpl",
+          provider: p.ctx.provider ?? planSession()?.provider ?? "claude",
+          ...(p.ctx.model ? { model: p.ctx.model } : {}),
+          effort: cur.id,
+        });
+      }
     }
 
     switch (p.kind) {
@@ -1283,6 +1384,47 @@ export const mkFleetHandle = ({
       });
   };
 
+  /** `f` in the plan overlay — implement fresh, honouring an `⌥p` retarget.
+   *  Same provider (or none staged): the model / effort ride on the decision.
+   *  A different provider: the daemon forks a fresh session on it and hands
+   *  back its snapshot; select that and don't reopen the overlay. */
+  const implementFresh = (): void => {
+    const pl = state.plan;
+    if (!pl || overlayActed === pl) return;
+    const impl = pl.impl;
+    const forking = impl !== undefined && impl.provider !== planSession()?.provider;
+    const params: Record<string, unknown> = {
+      action: "implement_fresh",
+      mode: pl.mode,
+      ...(impl?.model ? { model: impl.model } : {}),
+      ...(impl?.effort ? { effort: impl.effort } : {}),
+      ...(forking ? { provider: impl.provider, plan: pl.text } : {}),
+    };
+    if (!forking) return respondPlan(params, "compacting, then implementing");
+    overlayActed = pl;
+    dispatch({ t: "closePlan" });
+    client
+      .request<SessionSnapshot>("session.respondPlan", {
+        id: pl.sessionId,
+        requestId: pl.requestId,
+        by: client.clientId,
+        ...params,
+      })
+      .then((snap) => {
+        dispatch({ t: "select", id: snap.id });
+        note(`forked to ${snap.provider} — implementing the plan`, "good");
+      })
+      .catch((e: unknown) => {
+        note(`${e instanceof Error ? e.message : String(e)} — reopening the plan`, "bad");
+        dispatch({
+          t: "openPlan",
+          sessionId: pl.sessionId,
+          requestId: pl.requestId,
+          text: pl.text,
+        });
+      });
+  };
+
   /** `e` in the plan overlay — edit the plan in $EDITOR, then implement it. */
   const editPlan = async (): Promise<void> => {
     const pl = state.plan;
@@ -1634,6 +1776,8 @@ export const mkFleetHandle = ({
     if (state.mode === "plan") {
       // ⇧⇥ cycles the mode the implementation will run in.
       if (key.tab && key.shift) return void dispatch({ t: "cyclePlanMode" });
+      // ⌥p retargets model / effort / provider for `f` (implement fresh).
+      if (key.meta && input === "p") return void openPlanRetarget();
       // i / f / e implement in the overlay's chosen mode; `d` (discuss) only
       // sends a note back, so it carries none.
       const pl = state.plan;
@@ -1641,11 +1785,7 @@ export const mkFleetHandle = ({
         pl ? { ...params, mode: pl.mode } : params;
       if (input === "i")
         return respondPlan(withMode({ action: "implement" }), "implementing the plan");
-      if (input === "f")
-        return respondPlan(
-          withMode({ action: "implement_fresh" }),
-          "compacting, then implementing",
-        );
+      if (input === "f") return void implementFresh();
       if (input === "e") return void editPlan();
       if (input === "o" || (key.meta && input === "o")) return void viewPlan();
       if (input === "d") {

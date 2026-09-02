@@ -1024,6 +1024,60 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   assert.equal(pendingFor(s, "a").plan, undefined);
 });
 
+test("⌥p stages an implement-fresh retarget onto the plan overlay", () => {
+  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "the plan" });
+  s = reduce(s, { t: "cyclePlanMode" }); // → auto, must survive the wizard
+
+  // The `⌥p` wizard opens over the review — `plan` rides through, unlike the
+  // `new` / find pickers which clear it.
+  const wiz = makePicker({
+    kind: "model",
+    title: "retarget · model · claude",
+    items: [{ id: "m1", label: "m1" }],
+    ctx: { planStage: true, provider: "claude" },
+  });
+  s = reduce(s, { t: "openPicker", picker: wiz });
+  assert.equal(s.mode, "picker");
+  assert.equal(s.plan?.requestId, "pr1");
+  assert.equal(s.plan?.mode, "auto");
+
+  // Esc out of a plan-stage step returns to the overlay, nothing staged.
+  const openWiz = s.picker ?? wiz;
+  assert.deepEqual(escapeTarget(openWiz, s), { t: "closePicker" });
+  s = reduce(s, { t: "closePicker" });
+  assert.equal(s.mode, "plan");
+  assert.equal(s.plan?.impl, undefined);
+
+  // Picking through the wizard stages provider / model / effort and reopens
+  // the overlay with the cycled mode intact.
+  s = reduce(s, { t: "openPicker", picker: wiz });
+  s = reduce(s, { t: "stagePlanImpl", provider: "openai", model: "gpt-x", effort: "high" });
+  assert.equal(s.mode, "plan");
+  assert.equal(s.picker, null);
+  assert.deepEqual(s.plan?.impl, { provider: "openai", model: "gpt-x", effort: "high" });
+  assert.equal(s.plan?.mode, "auto");
+
+  // Reopening the same review (esc out of discuss) keeps the staged retarget.
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "the plan" });
+  assert.deepEqual(s.plan?.impl, { provider: "openai", model: "gpt-x", effort: "high" });
+  // A different review starts clean.
+  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr2", text: "another" });
+  assert.equal(s.plan?.impl, undefined);
+});
+
+test("makePicker clamps its initial index into range", () => {
+  const items = [
+    { id: "a", label: "a" },
+    { id: "b", label: "b" },
+  ];
+  assert.equal(makePicker({ kind: "model", title: "t", items, index: 1 }).index, 1);
+  assert.equal(makePicker({ kind: "model", title: "t", items, index: 9 }).index, 1);
+  assert.equal(makePicker({ kind: "model", title: "t", items, index: -1 }).index, 0);
+  assert.equal(makePicker({ kind: "model", title: "t", items }).index, 0);
+});
+
 test("a plan is cleared by its matching tool_result once the decision lands", () => {
   // The plan_review is keyed on the ExitPlanMode / exit_plan tool-call id, so
   // its `tool_result` is the only durable mark that the plan was decided —
