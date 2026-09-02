@@ -178,12 +178,16 @@ export const applyKey = (
   // Printable input, including a bracketed paste delivered as one chunk. The
   // regex strips the paste-bracket escapes (ESC [200~ / ESC [201~); the ESC is
   // load-bearing, so the control-character match is deliberate. Line breaks
-  // normalize to newlines — or spaces on a single-line input line.
+  // normalize to newlines — or spaces on a single-line input line. Tabs become
+  // a space too: `isInsertable` rejects any other C0 control character, and a
+  // literal tab in pasted text (a code sample, a TSV row) would otherwise sink
+  // the whole paste instead of just the tab.
   const clean = input
     // oxlint-disable-next-line no-control-regex
     .replace(/\x1b\[20[01]~/g, "")
     // oxlint-disable-next-line no-control-regex
-    .replace(/\r\n?|\n/g, multiline ? "\n" : " ");
+    .replace(/\r\n?|\n/g, multiline ? "\n" : " ")
+    .replace(/\t/g, " ");
   if (clean !== "" && isInsertable(clean)) {
     return edit(text.slice(0, cursor) + clean + text.slice(cursor), cursor + clean.length);
   }

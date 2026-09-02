@@ -112,6 +112,12 @@ test("a multi-line paste inserts verbatim, normalising CRLF, and stripping brack
   assert.equal(r.buffer.cursor, "first\nsecond".length);
 });
 
+test("a pasted tab doesn't sink the whole paste — it becomes a space", () => {
+  const r = press("", 0, "a\tb") as any;
+  assert.equal(r.kind, "buffer");
+  assert.equal(r.buffer.text, "a b");
+});
+
 test("↑ / ↓ move within multi-line text, and ask for history at the edges", () => {
   const b = buffer("alpha\nbravo", 2); // on line 0
   assert.deepEqual(applyKey(b, "", K({ upArrow: true })), { kind: "history", dir: -1 });
