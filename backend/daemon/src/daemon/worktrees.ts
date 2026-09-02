@@ -128,7 +128,8 @@ export class WorktreeManager {
       return p.startsWith("/") ? p : join(this.#repoRoot, p);
     };
     const custom = abs(this.#gitOut(["config", "--get", "core.hooksPath"]));
-    const commonDir = abs(this.#gitOut(["rev-parse", "--git-common-dir"])) || join(this.#repoRoot, ".git");
+    const commonDir =
+      abs(this.#gitOut(["rev-parse", "--git-common-dir"])) || join(this.#repoRoot, ".git");
     const origHooksDir = custom || join(commonDir, "hooks");
     if (origHooksDir !== this.#hooksDir) {
       const script = chainHookScript(origHooksDir);

@@ -257,7 +257,9 @@ test("onQuerySwap keeps cumulative usage/cost monotonic and drops stale carry-ov
     subtype: "success",
     is_error: false,
     num_turns: 1,
-    modelUsage: { x: { inputTokens: 3000, outputTokens: 400, costUSD: 0.05, contextWindow: 200000 } },
+    modelUsage: {
+      x: { inputTokens: 3000, outputTokens: 400, costUSD: 0.05, contextWindow: 200000 },
+    },
   });
   assert.equal(m.state.usage.input, 3000);
   assert.ok(Math.abs(m.state.costUsd - 0.05) < 1e-9);
@@ -274,7 +276,9 @@ test("onQuerySwap keeps cumulative usage/cost monotonic and drops stale carry-ov
     subtype: "success",
     is_error: false,
     num_turns: 1,
-    modelUsage: { x: { inputTokens: 800, outputTokens: 90, costUSD: 0.012, contextWindow: 200000 } },
+    modelUsage: {
+      x: { inputTokens: 800, outputTokens: 90, costUSD: 0.012, contextWindow: 200000 },
+    },
   });
 
   // C2: reported cumulative = carry (pre-undo) + resumed query's total — never regresses.

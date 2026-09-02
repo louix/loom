@@ -361,7 +361,9 @@ export class LoomClient {
     for (const [, waiter] of this.#pending) {
       waiter.reject(
         Object.assign(
-          new Error("connection dropped before the daemon replied — the operation may have completed"),
+          new Error(
+            "connection dropped before the daemon replied — the operation may have completed",
+          ),
           { code: "disconnected" },
         ),
       );

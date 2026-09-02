@@ -205,21 +205,36 @@ test("an optimistic select survives an unrelated session_updated until its row a
   // An unrelated session ticks out a session_updated.
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 1, type: "session_updated", session: snap({ id: "a", status: "idle" }), version: 2 },
+    frame: {
+      kind: "push",
+      seq: 1,
+      type: "session_updated",
+      session: snap({ id: "a", status: "idle" }),
+      version: 2,
+    },
   });
   assert.equal(s.selectedId, "new1", "not bounced to the fleet head");
 
   // "new1" finally arrives — the hold is released.
   s = reduce(s, {
     t: "push",
-    frame: { kind: "push", seq: 2, type: "session_updated", session: snap({ id: "new1", status: "starting" }), version: 1 },
+    frame: {
+      kind: "push",
+      seq: 2,
+      type: "session_updated",
+      session: snap({ id: "new1", status: "starting" }),
+      version: 1,
+    },
   });
   assert.equal(s.selectedId, "new1");
   assert.equal(s.pendingSelectId, undefined);
 
   // A later unrelated update with "new1" gone from a stale list won't drop it now
   // that it's real, and if "new1" is removed the hold is not resurrected.
-  s = reduce(s, { t: "push", frame: { kind: "push", seq: 3, type: "session_removed", sessionId: "new1" } });
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 3, type: "session_removed", sessionId: "new1" },
+  });
   assert.notEqual(s.selectedId, "new1");
   assert.equal(s.pendingSelectId, undefined);
 });
@@ -645,7 +660,10 @@ test("a sessions/hello snapshot drops pending for a session it says is no longer
   s = reduce(s, {
     t: "push",
     replay: true,
-    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" })),
+    frame: push(
+      1,
+      ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" }),
+    ),
   });
   assert.ok(s.pending["a"]?.permissions?.length, "replayed request tracked while still blocked");
 

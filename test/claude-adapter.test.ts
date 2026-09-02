@@ -111,8 +111,18 @@ test("C1: rewind() resumes with the live model / mode, not the frozen start opts
       return fakeQuery(
         queryOpts.length === 1
           ? [
-              { type: "system", subtype: "init", session_id: "claude-src", model: "claude-sonnet-5" },
-              { type: "assistant", parent_tool_use_id: null, uuid: "u-1", message: { content: [] } },
+              {
+                type: "system",
+                subtype: "init",
+                session_id: "claude-src",
+                model: "claude-sonnet-5",
+              },
+              {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: "u-1",
+                message: { content: [] },
+              },
               { type: "result", subtype: "success", is_error: false, num_turns: 1, modelUsage: {} },
             ]
           : [],
@@ -147,11 +157,7 @@ test("C1: rewind() resumes with the live model / mode, not the frozen start opts
     "claude-opus-5",
     "resumed with the model set live, not the creation-time one",
   );
-  assert.equal(
-    queryOpts[1]?.["permissionMode"],
-    "acceptEdits",
-    "resumed with the mode set live",
-  );
+  assert.equal(queryOpts[1]?.["permissionMode"], "acceptEdits", "resumed with the mode set live");
 
   await s.close();
   await reader;

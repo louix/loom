@@ -373,7 +373,12 @@ test("runTurn streams text + usage and captures the response messages", async ()
     mapper,
     hooks: { emit: (e) => events.push(e), appendMessages: (m) => appended.push(...m) },
   });
-  assert.deepEqual(r, { aborted: false, errored: false, hitStepLimit: false, hitContextLimit: false });
+  assert.deepEqual(r, {
+    aborted: false,
+    errored: false,
+    hitStepLimit: false,
+    hitContextLimit: false,
+  });
   assert.equal(events.find((e) => e.type === "assistant_text") !== undefined, true);
   const usage = events.find((e) => e.type === "usage");
   assert.equal((usage as { tokens: { output: number } } | undefined)?.tokens.output, 2);
@@ -445,7 +450,12 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     hooks: { emit: () => {}, appendMessages: (m) => appended.push(...m) },
   });
 
-  assert.deepEqual(r, { aborted: false, errored: false, hitStepLimit: false, hitContextLimit: false });
+  assert.deepEqual(r, {
+    aborted: false,
+    errored: false,
+    hitStepLimit: false,
+    hitContextLimit: false,
+  });
   // the model's second request carried the injected user message
   assert.equal(prompts.length, 2);
   assert.equal(prompts[1]?.includes("ALSO do X"), true);
@@ -493,7 +503,12 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
     mapper: new AisdkEventMapper("s1", "mock"),
     hooks: { emit: () => {}, appendMessages: () => {} },
   });
-  assert.deepEqual(stop, { aborted: false, errored: false, hitStepLimit: true, hitContextLimit: false });
+  assert.deepEqual(stop, {
+    aborted: false,
+    errored: false,
+    hitStepLimit: true,
+    hitContextLimit: false,
+  });
   assert.equal(step, 3);
 
   // A turn that ends on its own text is not flagged.
@@ -586,7 +601,12 @@ test("runTurn breaks on an error part and stops consuming the stream (A4)", asyn
     mapper: new AisdkEventMapper("s1", "mock"),
     hooks: { emit: (e) => events.push(e), appendMessages: () => {} },
   });
-  assert.deepEqual(r, { aborted: false, errored: true, hitStepLimit: false, hitContextLimit: false });
+  assert.deepEqual(r, {
+    aborted: false,
+    errored: true,
+    hitStepLimit: false,
+    hitContextLimit: false,
+  });
   assert.ok(
     events.some((e) => e.type === "error" && (e as { fatal?: boolean }).fatal),
     "the error part surfaced as a fatal error event",

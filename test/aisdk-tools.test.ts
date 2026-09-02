@@ -128,7 +128,6 @@ test("McpHub connects to a stdio server, discovers + calls tools, and tears down
   }
 });
 
-
 test("McpHub anchors stdio servers to the given cwd (relative writes land there)", async () => {
   // tilth resolves relative paths against its own cwd; spawned without one it
   // inherits the daemon's cwd — the main repo instead of the session worktree.
@@ -144,7 +143,10 @@ test("McpHub anchors stdio servers to the given cwd (relative writes land there)
     const note = hub.tools["write_note"] as {
       execute: (i: unknown, c: unknown) => Promise<unknown>;
     };
-    await note.execute({ path: "note.txt", content: "in the worktree" }, { toolCallId: "x", messages: [] });
+    await note.execute(
+      { path: "note.txt", content: "in the worktree" },
+      { toolCallId: "x", messages: [] },
+    );
     assert.equal(readFileSync(join(dir, "note.txt"), "utf8"), "in the worktree");
   } finally {
     await hub?.close();

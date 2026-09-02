@@ -47,15 +47,21 @@ const setupDrift = async (
   const fs = fake.session(s.id) as FakeSession;
 
   fs.finishTurn();
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 1);
-  const shaAtTurn1 = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 1,
+  );
+  const shaAtTurn1 = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
 
   // The agent commits something in its worktree, then turn 2 lands.
   writeFileSync(join(wt, "feature.txt"), "turn-2 work\n");
   execFileSync("git", ["-C", wt, "add", "-A"]);
   execFileSync("git", ["-C", wt, "commit", "-q", "-m", "turn 2 work"]);
   fs.finishTurn();
-  await waitFor(async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 2);
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 2,
+  );
 
   return { id: s.id, wt, fs, shaAtTurn1 };
 };
@@ -214,7 +220,9 @@ test("concurrent markDone + remove on one id don't corrupt each other (G13)", as
 
   // Exactly one outcome: the row is gone, or it's `done` — never a torn state,
   // never an unhandled throw that isn't a clean RpcError.
-  const row = await c.request<SessionSnapshot | null>("session.get", { id: s.id }).catch(() => null);
+  const row = await c
+    .request<SessionSnapshot | null>("session.get", { id: s.id })
+    .catch(() => null);
   if (row) {
     assert.equal(row.status.kind, "done");
   } else {
@@ -232,10 +240,7 @@ test("session.remove refuses a dirty worktree unless force is passed (G8)", asyn
   const wt = s.worktree as string;
   writeFileSync(join(wt, "unsaved.txt"), "work in progress\n");
 
-  await assert.rejects(
-    c.request("session.remove", { id: s.id }),
-    /uncommitted changes/,
-  );
+  await assert.rejects(c.request("session.remove", { id: s.id }), /uncommitted changes/);
   assert.ok(existsSync(wt), "the worktree survives the refused remove");
   assert.ok(await c.request<SessionSnapshot>("session.get", { id: s.id }), "the row survives");
 

@@ -187,7 +187,6 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   }
 
   const hitContextLimit = !aborted && !errored && stoppedForContext;
-  const hitStepLimit =
-    !aborted && !errored && !hitContextLimit && lastStepReason === "tool-calls";
+  const hitStepLimit = !aborted && !errored && !hitContextLimit && lastStepReason === "tool-calls";
   return { aborted, errored, hitStepLimit, hitContextLimit };
 };
