@@ -1601,7 +1601,7 @@ export const mkFleetHandle = ({
             // Keep whatever is typed for the current question — the doc promises
             // "nothing typed is lost" across stepping back and forth, but only
             // submitted answers were being saved (U15).
-            const answers = { ...(p.qaAnswers ?? {}), [p.qaAll[idx]!.question]: p.buffer.text };
+            const answers = { ...p.qaAnswers, [p.qaAll[idx]!.question]: p.buffer.text };
             return void dispatch({
               t: "openPrompt",
               prompt: makePrompt({

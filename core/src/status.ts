@@ -40,7 +40,7 @@ export const statusInWorktree = (cwd: string, opts: StatusOptions = {}): StatusR
   // The `-b` header is `## <branch>` — or `## HEAD (no branch)`; name the commit.
   const header = (entries.shift() ?? "").replace(/^## /, "");
   let branchLine = header;
-  if (/^HEAD/.test(header)) {
+  if (header.startsWith("HEAD")) {
     const sha = git(cwd, ["rev-parse", "--short", "HEAD"]);
     if (sha.ok) branchLine = `HEAD ${sha.out.trim()}`;
   }
