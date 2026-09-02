@@ -43,6 +43,13 @@ export interface TurnArgs {
    * segment of big tool reads 400s on context length mid-turn (A9).
    */
   shouldStopForContext?: () => boolean;
+  /**
+   * Evaluated after each step as a final stop condition. Return true to end
+   * the segment at once — e.g. the session ends the exploration turn the
+   * moment a plan review approves, so the follow-up turn can re-read the mode
+   * and rebuild the tool set (a mid-flight swap is impossible).
+   */
+  shouldStop?: () => boolean;
 }
 
 export interface TurnResult {
@@ -60,6 +67,12 @@ export interface TurnResult {
    * compact, then continue the turn. Always `false` when `aborted` / `errored`.
    */
   hitContextLimit: boolean;
+  /**
+   * The segment was ended by the `shouldStop` hook rather than the model
+   * finishing, the step ceiling, or the context guard. Always `false` when
+   * `aborted` / `errored`.
+   */
+  stoppedEarly: boolean;
 }
 
 export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
@@ -90,6 +103,10 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   // context-driven segment end from the model finishing / the step ceiling.
   let stoppedForContext = false;
   const stopForContext = args.shouldStopForContext;
+  // Set by the `shouldStop` stop condition — a caller-requested early end
+  // (plan approval) that is neither a step-ceiling nor a context stop.
+  let stoppedEarly = false;
+  const stopEarly = args.shouldStop;
 
   try {
     const res = streamText({
@@ -97,15 +114,14 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
       ...(system ? { system } : {}),
       messages: [...messages],
       ...(args.tools ? { tools: args.tools } : {}),
-      stopWhen: stopForContext
-        ? [
-            stepCountIs(args.maxSteps),
-            () => {
-              if (stopForContext()) stoppedForContext = true;
-              return stoppedForContext;
-            },
-          ]
-        : stepCountIs(args.maxSteps),
+      stopWhen: [
+        stepCountIs(args.maxSteps),
+        () => {
+          if (stopForContext?.()) stoppedForContext = true;
+          if (stopEarly?.()) stoppedEarly = true;
+          return stoppedForContext || stoppedEarly;
+        },
+      ],
       abortSignal: args.abortSignal,
       ...(args.drainInjections
         ? {
@@ -163,7 +179,13 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
     }
 
     if (aborted || errored) {
-      return { aborted, errored, hitStepLimit: false, hitContextLimit: false };
+      return {
+        aborted,
+        errored,
+        hitStepLimit: false,
+        hitContextLimit: false,
+        stoppedEarly: false,
+      };
     }
 
     try {
@@ -187,6 +209,7 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   }
 
   const hitContextLimit = !aborted && !errored && stoppedForContext;
-  const hitStepLimit = !aborted && !errored && !hitContextLimit && lastStepReason === "tool-calls";
-  return { aborted, errored, hitStepLimit, hitContextLimit };
+  const hitStepLimit =
+    !aborted && !errored && !hitContextLimit && !stoppedEarly && lastStepReason === "tool-calls";
+  return { aborted, errored, hitStepLimit, hitContextLimit, stoppedEarly };
 };

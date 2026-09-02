@@ -832,6 +832,11 @@ export class AisdkSession implements AgentSession {
           !this.#oneShot &&
           this.#snap.contextLimit > 0 &&
           estimateTokens(this.#messages) > this.#snap.contextLimit * AUTO_COMPACT_FRACTION,
+        // A plan approval must end the turn: the tool set was built while the
+        // session was still in plan mode (mutators withheld) and can't be
+        // swapped mid-flight. The chained turn below re-reads the mode and
+        // rebuilds the tools, so implementation gets edit access.
+        shouldStop: () => this.#implementAfterTurn !== null,
         hooks: {
           emit: (ev) => this.#emit(ev),
           appendMessages: (msgs) => {

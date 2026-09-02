@@ -378,6 +378,7 @@ test("runTurn streams text + usage and captures the response messages", async ()
     errored: false,
     hitStepLimit: false,
     hitContextLimit: false,
+    stoppedEarly: false,
   });
   assert.equal(events.find((e) => e.type === "assistant_text") !== undefined, true);
   const usage = events.find((e) => e.type === "usage");
@@ -455,6 +456,7 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     errored: false,
     hitStepLimit: false,
     hitContextLimit: false,
+    stoppedEarly: false,
   });
   // the model's second request carried the injected user message
   assert.equal(prompts.length, 2);
@@ -508,6 +510,7 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
     errored: false,
     hitStepLimit: true,
     hitContextLimit: false,
+    stoppedEarly: false,
   });
   assert.equal(step, 3);
 
@@ -606,6 +609,7 @@ test("runTurn breaks on an error part and stops consuming the stream (A4)", asyn
     errored: true,
     hitStepLimit: false,
     hitContextLimit: false,
+    stoppedEarly: false,
   });
   assert.ok(
     events.some((e) => e.type === "error" && (e as { fatal?: boolean }).fatal),

@@ -104,7 +104,9 @@ test("plan mode: exit_plan → plan_review → implement chains an acceptEdits t
     const notePath = join(dir, "n.txt");
     const model = stepModel([
       callStep("p1", "exit_plan", JSON.stringify({ plan: "1. write the note\n2. done" })),
-      textStep("Planning complete."),
+      // The approval must END the exploration turn: its tool set was built in
+      // plan mode (mutators withheld), so a write attempted there would be an
+      // unavailable-tool error. The write lands in the chained turn instead.
       callStep("w1", "write_note", JSON.stringify({ path: notePath, content: "implemented" })),
       textStep("Implemented the plan."),
     ]);
