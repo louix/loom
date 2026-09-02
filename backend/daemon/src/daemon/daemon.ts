@@ -57,7 +57,7 @@ import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { SessionManager } from "./session-manager.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
-import { WorktreeManager } from "./worktrees.ts";
+import { WorktreeManager, type RebaseOutcome } from "./worktrees.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest } from "@loom/core/connector";
 import {
@@ -1020,28 +1020,44 @@ export class Daemon {
   }
 
   /**
-   * Keep a session's branch current with its base (`[auto_rebase]`). Runs
-   * synchronously — the `git` shell-out blocks the loop, which is also what
-   * keeps it from racing an incoming `session.send`. A clean replay is silent
-   * bar an operator notice; a conflict or a dirty worktree hands the problem to
-   * the agent as a fresh turn, once per base commit.
+   * Keep a session's branch current with its base (`[auto_rebase]`) when a turn
+   * ends. Returns true when it messaged the agent (asked it to integrate the
+   * base itself) — the caller then skips the commit reminder so a dirty branch
+   * doesn't get two nudges in one breath. Runs synchronously: the `git`
+   * shell-out blocks the loop, which is also what keeps it from racing an
+   * incoming `session.send`.
    */
-  /** Bring the branch up to its base on idle. Returns true when it messaged the
-   *  agent (asked it to integrate the base itself) — the caller then skips the
-   *  commit reminder so a dirty branch doesn't get two nudges in one breath. */
   #maybeAutoRebase(id: string): boolean {
     if (this.#stopping || !this.config.autoRebase.enabled) return false;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return false; // in-place sessions have no branch to move
+    return this.#syncOntoBase(id, true).nudged;
+  }
+
+  /**
+   * One `syncOntoBase` pass for a session that has a worktree. `nudge` — the
+   * auto path — messages the agent once per base commit on a dirty / conflicted
+   * tree; the manual `session.rebase` RPC passes false and reports the outcome
+   * to its caller instead. Returns the raw outcome (null when the session is
+   * gone or has no worktree) plus whether it messaged the agent.
+   */
+  #syncOntoBase(
+    id: string,
+    nudge: boolean,
+  ): { outcome: RebaseOutcome | null; nudged: boolean } {
+    const snap = this.#registry.get(id);
+    if (!snap?.worktree) return { outcome: null, nudged: false };
 
     const { mode } = this.config.autoRebase;
     const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
-    if (res.outcome === "no-base" || res.outcome === "current") return false;
+    if (res.outcome === "no-base" || res.outcome === "current") {
+      return { outcome: res, nudged: false };
+    }
     // The agent is mid-rebase/merge in its own worktree — leave it entirely
     // alone (don't nudge, don't clear the nudge record) and try again next idle.
     if (res.outcome === "busy") {
       this.#log.debug("auto-rebase skipped — agent op in progress", { id, op: res.op });
-      return false;
+      return { outcome: res, nudged: false };
     }
 
     if (res.outcome === "updated") {
@@ -1052,13 +1068,17 @@ export class Daemon {
         "info",
       );
       this.#emitSessionUpdated(this.#registry.mustGet(id));
-      return false;
+      return { outcome: res, nudged: false };
     }
 
     // dirty | conflict | error — the agent has to integrate it. Nudge once per
     // base commit so a branch that stays behind doesn't nag every turn (and,
-    // now that it's persisted, doesn't nag again after a daemon restart).
-    if (this.#registry.store.autoRebaseNudgedSha(id) === res.baseHead) return false;
+    // now that it's persisted, doesn't nag again after a daemon restart). A
+    // manual rebase skips the nudge — its caller surfaces the outcome directly.
+    if (!nudge) return { outcome: res, nudged: false };
+    if (this.#registry.store.autoRebaseNudgedSha(id) === res.baseHead) {
+      return { outcome: res, nudged: false };
+    }
     this.#registry.store.setAutoRebaseNudgedSha(id, res.baseHead);
 
     const verb = mode === "merge" ? "merge" : "rebase";
@@ -1076,7 +1096,7 @@ export class Daemon {
     void this.#sessions.send(id, text).catch((err) => {
       this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
     });
-    return true;
+    return { outcome: res, nudged: true };
   }
 
   /**
@@ -1934,6 +1954,18 @@ export class Daemon {
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       await this.#sessions.compact(id, instructions);
       return this.#registry.mustGet(id);
+    });
+
+    // Manual counterpart to `[auto_rebase]`: replay (or merge) this session's
+    // branch onto its base now, on operator command, regardless of whether the
+    // auto path is enabled. No running provider needed — it's pure git — and no
+    // agent nudge on a dirty / conflicted tree: the caller gets the outcome.
+    d.register("session.rebase", async (params) => {
+      const id = reqString(params, "id");
+      const snap = this.#registry.get(id);
+      if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!snap.worktree) throw new RpcError("bad_request", "session runs in place — no branch to rebase");
+      return this.#syncOntoBase(id, false).outcome ?? { outcome: "no-base" as const };
     });
 
     d.register("session.setKeepWarm", async (params) => {

@@ -1348,6 +1348,106 @@ test("[commit_reminder]: an uncommitted worktree nudges the agent once per commi
   }
 });
 
+test("session.rebase: replays a behind branch on demand with [auto_rebase] off", async () => {
+  const hh = await makeHarness(); // no [auto_rebase] → the auto path is disabled
+  const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const notices: string[] = [];
+    const userMsgs: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "notice") notices.push(f.text);
+      if (f.type === "event" && (f.event as { type?: string }).type === "user_message") {
+        userMsgs.push((f.event as { text: string }).text);
+      }
+    });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "rebase me by hand",
+      provider: "fake",
+    });
+    const wt = snap.worktree as string;
+    assert.ok(wt);
+
+    // base moves on a file the branch never touched → a clean replay
+    writeFileSync(join(hh.repoRoot, "upstream.txt"), "from main");
+    git("add", "-A");
+    git("commit", "-q", "-m", "main: upstream.txt");
+    userMsgs.length = 0; // drop the opening-prompt echo
+
+    const r1 = await c.request<{ outcome: string; base: string; behind: number }>("session.rebase", {
+      id: snap.id,
+    });
+    assert.equal(r1.outcome, "updated");
+    assert.equal(r1.behind, 1);
+    assert.ok(existsSync(join(wt, "upstream.txt")), "branch picked up the base commit");
+    assert.ok(
+      notices.some((t) => /rebased onto main/.test(t)),
+      `expected a rebase notice, got ${JSON.stringify(notices)}`,
+    );
+    assert.deepEqual(userMsgs, [], "a manual rebase never messages the agent");
+
+    // nothing left to do → current
+    const r2 = await c.request<{ outcome: string }>("session.rebase", { id: snap.id });
+    assert.equal(r2.outcome, "current");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("session.rebase: a conflict leaves the branch untouched and does not nudge", async () => {
+  const hh = await makeHarness();
+  const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const userMsgs: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "event" && (f.event as { type?: string }).type === "user_message") {
+        userMsgs.push((f.event as { text: string }).text);
+      }
+    });
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "conflict me by hand",
+      provider: "fake",
+    });
+    const wt = snap.worktree as string;
+    const wtGit = (...a: string[]) => execFileSync("git", ["-C", wt, ...a], { stdio: "pipe" });
+
+    writeFileSync(join(wt, "clash.txt"), "branch side");
+    wtGit("add", "-A");
+    wtGit("commit", "-q", "-m", "branch: clash.txt");
+    const branchHead = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" });
+
+    writeFileSync(join(hh.repoRoot, "clash.txt"), "main side");
+    git("add", "-A");
+    git("commit", "-q", "-m", "main: clash.txt");
+    userMsgs.length = 0;
+
+    const r = await c.request<{ outcome: string }>("session.rebase", { id: snap.id });
+    assert.equal(r.outcome, "conflict");
+    assert.equal(
+      execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }),
+      branchHead,
+    );
+    assert.ok(!existsSync(join(wt, ".git", "rebase-merge")));
+    await delay(60);
+    assert.deepEqual(userMsgs, [], "manual rebase reports the conflict, it doesn't nudge");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("editing config.toml hot-applies [worktree] enabled and pushes a notice", async () => {
   const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
   const cfgPath = join(hh.repoRoot, ".loom", "config.toml");

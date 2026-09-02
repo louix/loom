@@ -1865,6 +1865,7 @@ export type ActName =
   | "effort"
   | "undo"
   | "fork"
+  | "rebase"
   | "title"
   | "delete"
   | "copybranch"
@@ -1988,6 +1989,11 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     local.push({ keys: "e", label: "rename", act: "title" });
     if (session.branch || session.worktree) {
       local.push({ keys: "y", label: "copy branch", act: "copybranch" });
+    }
+    // Offered only while it'd do something — a worktree branch behind its base.
+    // `syncOntoBase` replays it on demand (the manual side of `[auto_rebase]`).
+    if (session.worktree && (session.git?.behindBase ?? 0) > 0) {
+      local.push({ keys: "r", label: "rebase onto base", act: "rebase" });
     }
     // `X` — a destructive, structural op (worktree + transcript go); `d` is
     // deny-only now, never delete.

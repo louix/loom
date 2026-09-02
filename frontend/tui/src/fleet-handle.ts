@@ -137,6 +137,7 @@ type DelegatedAct =
   | "done"
   | "compact"
   | "keepwarm"
+  | "rebase"
   | "planreview"
   | "mode"
   | "undo"
@@ -801,6 +802,37 @@ export const mkFleetHandle = ({
         return perform(async () => {
           await client.request("session.markDone", { id: s.id, by });
           return "marked done";
+        });
+      case "rebase":
+        return perform(async () => {
+          const r = await client.request<{
+            outcome: string;
+            base?: string;
+            behind?: number;
+            head?: string;
+          }>("session.rebase", { id: s.id });
+          switch (r.outcome) {
+            case "updated":
+              return `rebased onto ${r.base} (+${r.behind}) → ${r.head}`;
+            case "current":
+              note(`already current with ${r.base}`, "dim");
+              return "";
+            case "dirty":
+              note("worktree has uncommitted changes — commit or stash, then retry", "bad");
+              return "";
+            case "conflict":
+              note(`rebase hit conflicts — branch left unchanged; integrate ${r.base} by hand`, "bad");
+              return "";
+            case "busy":
+              note("a rebase/merge is already in progress in this worktree", "dim");
+              return "";
+            case "no-base":
+              note("no base branch to rebase onto", "dim");
+              return "";
+            default:
+              note("rebase failed — see the daemon log", "bad");
+              return "";
+          }
         });
       case "mode": {
         const target = nextMode(s.mode as SessionMode);
@@ -1674,6 +1706,7 @@ export const mkFleetHandle = ({
       case "done":
       case "compact":
       case "keepwarm":
+      case "rebase":
       case "planreview":
       case "mode":
       case "undo":
@@ -2048,6 +2081,7 @@ export const mkFleetHandle = ({
       i: "interrupt",
       x: "done",
       c: "compact",
+      r: "rebase", // inert unless the branch is behind its base (see allowedActs)
       u: "undo",
       e: "title",
       y: "copybranch",

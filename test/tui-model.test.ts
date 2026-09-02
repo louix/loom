@@ -1302,6 +1302,31 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
   const withQueue: TuiState = { ...base, queue: { s1: ["pending note"] } };
   assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
+
+  // rebase only shows for a worktree branch that's actually behind its base
+  assert.ok(!commandsFor(base).some((c) => c.id === "rebase"));
+  const behind: TuiState = {
+    ...base,
+    sessions: [
+      snap({
+        id: "s1",
+        status: "idle",
+        provider: "openai",
+        turns: 3,
+        worktree: "/tmp/wt",
+        git: {
+          branch: "loom/s1",
+          commits: 1,
+          aheadOfBase: 0,
+          behindBase: 2,
+          dirty: false,
+          lastCommitSubject: null,
+        },
+      }),
+    ],
+  };
+  assert.ok(commandsFor(behind).some((c) => c.id === "rebase"));
+  assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.hint, "r");
 });
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {
