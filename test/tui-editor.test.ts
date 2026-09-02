@@ -118,6 +118,15 @@ test("a pasted tab doesn't sink the whole paste — it becomes a space", () => {
   assert.equal(r.buffer.text, "a b");
 });
 
+test("other stray control characters in a paste are stripped, not fatal to the whole paste", () => {
+  assert.equal((press("", 0, "a\x1bb") as any).buffer.text, "ab"); // stray ESC (not a paste bracket)
+  assert.equal((press("", 0, "a\x08b") as any).buffer.text, "ab"); // backspace byte
+  assert.equal((press("", 0, "a\x7fb") as any).buffer.text, "ab"); // DEL
+  assert.equal((press("", 0, "a\x00b") as any).buffer.text, "ab"); // NUL
+  // A paste that's nothing but control bytes has nothing left to insert.
+  assert.deepEqual(press("", 0, "\x01\x02"), { kind: "ignore" });
+});
+
 test("↑ / ↓ move within multi-line text, and ask for history at the edges", () => {
   const b = buffer("alpha\nbravo", 2); // on line 0
   assert.deepEqual(applyKey(b, "", K({ upArrow: true })), { kind: "history", dir: -1 });

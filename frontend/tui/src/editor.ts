@@ -99,16 +99,6 @@ const edit = (text: string, cursor: number): EditResult => {
   return { kind: "buffer", buffer: { text, cursor: clamp(cursor, 0, text.length) } };
 };
 
-/** Printable text: everything except C0 controls, but newlines are allowed. */
-const isInsertable = (s: string): boolean => {
-  if (s.length === 0) return false;
-  for (const ch of s) {
-    if (ch === "\n") continue;
-    if (ch < " " || ch === "\x7f") return false;
-  }
-  return true;
-};
-
 export const applyKey = (
   buf: Buffer,
   input: string,
@@ -178,17 +168,21 @@ export const applyKey = (
   // Printable input, including a bracketed paste delivered as one chunk. The
   // regex strips the paste-bracket escapes (ESC [200~ / ESC [201~); the ESC is
   // load-bearing, so the control-character match is deliberate. Line breaks
-  // normalize to newlines — or spaces on a single-line input line. Tabs become
-  // a space too: `isInsertable` rejects any other C0 control character, and a
-  // literal tab in pasted text (a code sample, a TSV row) would otherwise sink
-  // the whole paste instead of just the tab.
+  // normalize to newlines — or spaces on a single-line input line, and tabs
+  // become a space too. Any other C0 control char or DEL that survives —
+  // a stray ESC from copied ANSI-colored text, a backspace from a terminal
+  // transcript — gets stripped rather than sinking the whole paste: this used
+  // to be an all-or-nothing `isInsertable` check, so one bad byte anywhere in
+  // a large paste silently dropped all of it.
   const clean = input
     // oxlint-disable-next-line no-control-regex
     .replace(/\x1b\[20[01]~/g, "")
     // oxlint-disable-next-line no-control-regex
     .replace(/\r\n?|\n/g, multiline ? "\n" : " ")
-    .replace(/\t/g, " ");
-  if (clean !== "" && isInsertable(clean)) {
+    .replace(/\t/g, " ")
+    // oxlint-disable-next-line no-control-regex
+    .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
+  if (clean !== "") {
     return edit(text.slice(0, cursor) + clean + text.slice(cursor), cursor + clean.length);
   }
   return { kind: "ignore" };
