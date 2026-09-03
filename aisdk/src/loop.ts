@@ -13,6 +13,7 @@
 import { type LanguageModel, type ModelMessage, type ToolSet, stepCountIs, streamText } from "ai";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AisdkEventMapper } from "./map.ts";
+import { repairMalformedToolInputs } from "./transcript.ts";
 
 /**
  * Vendor-options bag for a model request — structurally the SDK's
@@ -124,7 +125,10 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
       model,
       ...(args.providerOptions ? { providerOptions: args.providerOptions } : {}),
       ...(system ? { system } : {}),
-      messages: [...messages],
+      // A model can poison its own transcript with unparseable tool-call
+      // arguments (sference/GLM-5.3 400s the prompt from then on); every
+      // request rebuilds from the transcript, so scrub it here.
+      messages: repairMalformedToolInputs([...messages]),
       ...(args.tools ? { tools: args.tools } : {}),
       stopWhen: [
         stepCountIs(args.maxSteps),

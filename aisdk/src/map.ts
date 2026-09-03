@@ -172,7 +172,17 @@ export class AisdkEventMapper {
 }
 
 const errorText = (err: unknown): string => {
-  if (err instanceof Error) return err.message;
+  if (err instanceof Error) {
+    // An `APICallError`'s message is often just the HTTP status text ("Bad
+    // Request"); the status code and the raw response body ride alongside it.
+    // Append both so a provider 400 isn't reported with no further details.
+    const api = err as Error & { statusCode?: unknown; responseBody?: unknown };
+    const parts: string[] = [];
+    if (typeof api.statusCode === "number") parts.push(`HTTP ${api.statusCode}`);
+    const body = typeof api.responseBody === "string" ? api.responseBody.trim() : "";
+    if (body !== "") parts.push(body.length > 512 ? `${body.slice(0, 512)}…` : body);
+    return parts.length > 0 ? `${err.message} (${parts.join(": ")})` : err.message;
+  }
   if (typeof err === "string") return err;
   try {
     return JSON.stringify(err);

@@ -18,7 +18,7 @@ import type {
 import { AisdkSession } from "./session.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
 
-export { dropDanglingToolCalls } from "./transcript.ts";
+export { dropDanglingToolCalls, repairMalformedToolInputs } from "./transcript.ts";
 
 export interface AisdkProviderOptions {
   /** The provider id this instance serves. */

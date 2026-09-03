@@ -38,3 +38,43 @@ export const dropDanglingToolCalls = (messages: ModelMessage[]): ModelMessage[] 
   }
   return callIds.every((id) => answered.has(id)) ? messages : messages.slice(0, lastAssistant);
 };
+
+/**
+ * A model can stream tool-call arguments that are not valid JSON — GLM-5.3
+ * (sference) occasionally leaks its native `arg_value` template placeholder
+ * (an angle-bracket tag) into the delta stream.
+ * The tool harness reports the parse failure back to the model,
+ * but the malformed assistant message is persisted and re-sent with every
+ * later request, and strict endpoints fail to *render* the prompt from then
+ * on — a bare 400 on every subsequent turn, bricking the session. Re-encode
+ * unparseable `tool-call` inputs as a parseable wrapper so every request
+ * stays renderable; the model still sees what went wrong in the tool
+ * result's error text.
+ */
+export const repairMalformedToolInputs = (messages: ModelMessage[]): ModelMessage[] => {
+  const partsOf = (m: ModelMessage): Array<Record<string, unknown>> | null =>
+    m.role === "assistant" && Array.isArray(m.content)
+      ? (m.content as unknown as Array<Record<string, unknown>>)
+      : null;
+
+  let repaired = false;
+  const out = messages.map((m) => {
+    const parts = partsOf(m);
+    if (!parts) return m;
+    let touched = false;
+    const fixed = parts.map((p) => {
+      if (p.type !== "tool-call" || typeof p.input !== "string") return p;
+      try {
+        JSON.parse(p.input);
+        return p;
+      } catch {
+        touched = true;
+        return { ...p, input: JSON.stringify({ malformed_tool_input: p.input }) };
+      }
+    });
+    if (!touched) return m;
+    repaired = true;
+    return { ...m, content: fixed } as unknown as ModelMessage;
+  });
+  return repaired ? out : messages;
+};

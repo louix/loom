@@ -12,7 +12,11 @@ import type { UsageDelta } from "@loom/daemon/store/sessions";
 import { openDb } from "@loom/daemon/store/db";
 import { SessionManager } from "@loom/daemon/daemon/session-manager";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
-import { AisdkProvider, dropDanglingToolCalls } from "@loom/aisdk/provider";
+import {
+  AisdkProvider,
+  dropDanglingToolCalls,
+  repairMalformedToolInputs,
+} from "@loom/aisdk/provider";
 import { resolveModelFactory } from "@loom/connector-generic";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
@@ -355,6 +359,17 @@ test("mapper surfaces a stream error part as a fatal error event", () => {
     message: "network down",
     fatal: true,
   });
+});
+test("mapper error events carry the provider status + response body, not just statusText", () => {
+  const m = new AisdkEventMapper("s1", "glm-5");
+  const err = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody:
+      '{"detail":{"title":"Bad Request","detail":"This request\'s prompt could not be rendered for the selected model."}}',
+  });
+  const ev = m.map({ type: "error", error: err } as never)[0] as { message: string };
+  assert.equal(ev.message.includes("HTTP 400"), true);
+  assert.equal(ev.message.includes("prompt could not be rendered"), true);
 });
 
 // --- runTurn ---------------------------------------------------------------
@@ -985,7 +1000,97 @@ test("dropDanglingToolCalls trims an assistant turn whose tool calls were never 
   const plain = [user, { role: "assistant", content: "hi" }] as never;
   assert.equal(dropDanglingToolCalls(plain), plain);
 });
+test("repairMalformedToolInputs re-encodes unparseable tool-call inputs; healthy ones pass through", () => {
+  const poisoned = '{"path": "a.ts", "sections": \x3carg_value\x3e["300-520"]}';
+  const asst = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "reading" },
+      { type: "tool-call", toolCallId: "t1", toolName: "tilth_read", input: poisoned },
+      { type: "tool-call", toolCallId: "t2", toolName: "bash", input: '{"command":"pwd"}' },
+    ],
+  };
+  const out = repairMalformedToolInputs([{ role: "user", content: "go" }, asst] as never);
+  const parts = ((out[1]?.content ?? []) as Array<{ type: string; input?: string }>).filter(
+    (p) => p.type === "tool-call",
+  );
+  // the malformed call is wrapped into parseable JSON carrying the raw text
+  const wrapped = JSON.parse(parts[0]?.input ?? "") as { malformed_tool_input: string };
+  assert.equal(wrapped.malformed_tool_input, poisoned);
+  // the healthy call is byte-identical
+  assert.equal(parts[1]?.input, '{"command":"pwd"}');
+  // a clean transcript comes back as the same array, untouched
+  const clean = [{ role: "user", content: "go" }] as never;
+  assert.equal(repairMalformedToolInputs(clean), clean);
+});
 
+test("runTurn repairs a poisoned transcript tool-call before the request goes out", async () => {
+  const prompts: Array<Array<{ type: string; input?: string }>> = [];
+  const capturing = new MockLanguageModelV2({
+    doStream: async (opts) => {
+      prompts.push(
+        opts.prompt.flatMap((m) => (typeof m.content === "string" ? [] : m.content)) as never,
+      );
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "response-metadata", id: "r", modelId: "mock", timestamp: new Date(0) },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: "ok" },
+            { type: "text-end", id: "t" },
+            {
+              type: "finish",
+              finishReason: "stop",
+              usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 },
+            },
+          ],
+          initialDelayInMs: 0,
+        }),
+      };
+    },
+  }) as unknown as LanguageModel;
+
+  await runTurn({
+    sessionId: "s1",
+    model: capturing,
+    system: undefined,
+    messages: [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "t1",
+            toolName: "tilth_read",
+            input: '{"sections": \x3carg_value\x3e["300-520"]}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "t1",
+            toolName: "tilth_read",
+            output: { type: "error-text", value: "JSON parsing failed" },
+          },
+        ],
+      },
+    ] as never,
+    maxSteps: 1,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    hooks: { emit: () => {}, appendMessages: () => {} },
+  });
+
+  // the model saw a parseable (re-wrapped) tool-call input, not the raw garbage
+  const calls = prompts[0]?.filter((p) => p.type === "tool-call") ?? [];
+  const seen = JSON.parse(calls[0]?.input ?? "null") as { malformed_tool_input?: string };
+  assert.equal(typeof seen.malformed_tool_input, "string");
+});
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {
   const { db, cleanup } = tmpDb();
   try {
