@@ -426,11 +426,64 @@ test("SessionEventStore: `before` cursor pages strictly older rows, across epoch
     const p3 = events.list("s1", { limit: 10, before: { epoch: "epoch-a", seq: 3 } });
     assert.deepEqual(texts(p3), ["epoch-a#1", "epoch-a#2"]);
 
+    // `before` at the very newest row → every older row, still oldest-first.
+    const fromNewest = events.list("s1", { before: { epoch: "epoch-b", seq: 3 } });
+    assert.deepEqual(texts(fromNewest), [
+      "epoch-a#1",
+      "epoch-a#2",
+      "epoch-a#3",
+      "epoch-b#1",
+      "epoch-b#2",
+    ]);
+
+    // Exact-page-multiple boundary: a full page, then the next cursor yields [].
+    const full = events.list("s1", { limit: 3 });
+    assert.deepEqual(texts(full), ["epoch-b#1", "epoch-b#2", "epoch-b#3"]);
+    assert.equal(full.length, 3); // == limit, so the client keeps paging
+    const past = events.list("s1", { limit: 3, before: { epoch: "epoch-b", seq: 1 } });
+    assert.deepEqual(texts(past), ["epoch-a#1", "epoch-a#2", "epoch-a#3"]);
+    assert.deepEqual(events.list("s1", { limit: 3, before: { epoch: "epoch-a", seq: 1 } }), []);
+
     // Oldest row: nothing is strictly older.
     assert.deepEqual(events.list("s1", { before: { epoch: "epoch-a", seq: 1 } }), []);
 
     // Unknown cursor reports "nothing older" rather than the newest page again.
     assert.deepEqual(events.list("s1", { before: { epoch: "ghost", seq: 9 } }), []);
+
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("SessionEventStore: `before` cursor is scoped to the session, and to the newest dup", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const sessions = new SessionStore(db);
+    sessions.create({ id: "s1", provider: "claude" });
+    sessions.create({ id: "s2", provider: "claude" });
+    const events = new SessionEventStore(db);
+
+    // Both sessions carry a row with the same (epoch, seq).
+    events.append("s1", 1, "e", { type: "assistant_text", sessionId: "s1", ts: 1, text: "s1-a" });
+    events.append("s2", 1, "e", { type: "assistant_text", sessionId: "s2", ts: 2, text: "s2-a" });
+    events.append("s1", 2, "e", { type: "assistant_text", sessionId: "s1", ts: 3, text: "s1-b" });
+
+    // The cursor lookup for s1 must not resolve s2's rowid.
+    assert.deepEqual(texts(events.list("s1", { before: { epoch: "e", seq: 2 } })), ["s1-a"]);
+
+    // Legacy rows all share epoch '': two rows with ('', 1), a later ('', 2).
+    // The cursor picks the newest ('', 1), so paging before it never skips a
+    // genuinely-older row (no gap); it may re-emit the older ('', 1) dup, which
+    // the client dedupes.
+    events.append("s2", 1, "", { type: "assistant_text", sessionId: "s2", ts: 4, text: "old-1a" });
+    events.append("s2", 1, "", { type: "assistant_text", sessionId: "s2", ts: 5, text: "old-1b" });
+    events.append("s2", 2, "", { type: "assistant_text", sessionId: "s2", ts: 6, text: "old-2" });
+    const older = texts(events.list("s2", { before: { epoch: "", seq: 1 } }));
+    assert.ok(older.includes("s2-a"), "keeps rows genuinely older than the cursor");
+    assert.ok(!older.includes("old-1b"), "excludes the cursor row itself");
+    assert.ok(!older.includes("old-2"), "excludes newer rows");
 
     db.close();
   } finally {

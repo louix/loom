@@ -44,6 +44,7 @@ import {
   effortPickItems,
   escapeTarget,
   firstPerm,
+  focusedChildOf,
   focusedPending,
   initialState,
   makePicker,
@@ -367,11 +368,15 @@ export const mkFleetHandle = ({
   const publish = (): void =>
     store.set(deriveView(state, boot, tick, logScroll, planScroll, logFull, dims));
 
+  // Lines in the pane as currently rendered — narrowed to the focused child
+  // while drilled in, so scroll math matches what `EventLog` actually shows.
+  const shownLogLines = (): number => visibleLog(state, focusedChildOf(state)).length;
+
   // Ceiling for `logScroll` so scrolling up past the top of the log doesn't run
   // the counter away (leaving you to scroll back down the same distance before
   // the viewport moves). Wrapped rows ≥ line count; the extra page covers wrap.
   const scrollUp = (by: number): void => {
-    const lines = visibleLog(state).length;
+    const lines = shownLogLines();
     const ceiling = lines + store.get().logPage;
     logScroll = Math.min(ceiling, logScroll + by);
     // Prefetch the next older page as the viewport nears the top, so paging back
@@ -391,9 +396,12 @@ export const mkFleetHandle = ({
 
   // Per-session scroll-back cursor into the daemon's durable history. `oldest`
   // is the (epoch, seq) of the earliest frame we hold; the next page asks for
-  // everything strictly older. `done` latches once the daemon returns a short
-  // page — nothing older exists. A resync / reconnect clears the map: the epoch
-  // (and thus history identity) may differ across the gap.
+  // everything strictly older. `done` latches when the daemon returns a short
+  // page (nothing older) *or* a full page that adds no visible lines — an old
+  // daemon ignoring `before`, or the global `LOG_CAP` trimming the fold-in as
+  // fast as it arrives; either way paging on would just churn. A resync /
+  // reconnect clears the map (the epoch, and thus history identity, may differ
+  // across the gap), which also lets a `LOG_CAP`-capped session try again.
   interface HistoryCursor {
     oldest?: { epoch: string; seq: number };
     done: boolean;
@@ -438,9 +446,7 @@ export const mkFleetHandle = ({
   // Pull the next older page when the log is scrolled near its top. The reducer
   // folds the page in by (epoch, seq) and re-sorts, so this is idempotent —
   // overlapping the ring replay or a double fire both collapse to the same log.
-  // Keep the viewport put by nudging `logScroll` past the lines that land above
-  // it; that count is raw (unwrapped), so wrap on the new lines self-corrects on
-  // the next scroll. No-op once `done` latches or a fetch is already in flight.
+  // No-op once `done` latches or a fetch is already in flight.
   const loadOlderHistory = (): void => {
     const id = state.selectedId;
     if (!id) return;
@@ -451,19 +457,25 @@ export const mkFleetHandle = ({
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
       .then((frames) => {
         const onSame = state.selectedId === id;
-        const before = onSame ? visibleLog(state).length : 0;
+        // Was the viewport pinned at the very top before the fold-in? Only then
+        // does `logScroll` need touching: rows land above the viewport and the
+        // render's `end = rows.length - off` grows by the same amount, so an
+        // un-pinned view stays anchored on its own. A pinned view would other-
+        // wise slip toward newer content by the page's wrapped height.
+        const beforeLines = onSame ? shownLogLines() : 0;
+        const wasPinnedTop = onSame && logScroll >= beforeLines + store.get().logPage;
         dispatch({ t: "backfill", frames });
         cursor.loading = false;
-        if (frames.length < HISTORY_PAGE) cursor.done = true;
-        const oldest = earliestCursor(frames);
-        if (oldest) cursor.oldest = oldest;
-        if (onSame) {
-          const added = visibleLog(state).length - before;
-          if (added > 0) {
-            const ceiling = visibleLog(state).length + store.get().logPage;
-            logScroll = Math.min(ceiling, logScroll + added);
-            publish();
-          }
+        const grew = onSame ? shownLogLines() - beforeLines : 1;
+        if (frames.length < HISTORY_PAGE || grew <= 0) {
+          cursor.done = true;
+        } else {
+          const oldest = earliestCursor(frames);
+          if (oldest) cursor.oldest = oldest;
+        }
+        if (wasPinnedTop && grew > 0) {
+          logScroll = shownLogLines() + store.get().logPage; // re-pin at the new top
+          publish();
         }
       })
       .catch(() => {

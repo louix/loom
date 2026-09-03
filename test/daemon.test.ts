@@ -192,6 +192,46 @@ test("session.events returns a session's durable history, oldest first, excludin
   await c.close();
 });
 
+test("session.events: `before` cursor pages older rows; limit is clamped; malformed cursor rejected", async () => {
+  const c = await client();
+  const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
+  for (let i = 1; i <= 5; i++) {
+    await c.request("dev.emit", {
+      event: { sessionId: stub.id, type: "assistant_text", text: `line ${i}` },
+    });
+  }
+  type Ev = { seq: number; epoch: string; event: { text?: string } };
+
+  const newest = await c.request<Ev[]>("session.events", { id: stub.id, limit: 2 });
+  assert.deepEqual(
+    newest.map((f) => f.event.text),
+    ["line 4", "line 5"],
+  );
+
+  const older = await c.request<Ev[]>("session.events", {
+    id: stub.id,
+    limit: 2,
+    before: { epoch: newest[0]!.epoch, seq: newest[0]!.seq },
+  });
+  assert.deepEqual(
+    older.map((f) => f.event.text),
+    ["line 2", "line 3"],
+  );
+
+  // negative / fractional limit must not reach `LIMIT ?` — clamped to ≥ 1, not
+  // thrown, not "return everything".
+  const clamped = await c.request<Ev[]>("session.events", { id: stub.id, limit: -1 });
+  assert.equal(clamped.length, 1); // clamped to 1, not all 5, no datatype throw
+  await assert.doesNotReject(c.request("session.events", { id: stub.id, limit: 2.5 }));
+
+  // a present-but-malformed cursor is a client bug, not a silent newest-page.
+  await assert.rejects(c.request("session.events", { id: stub.id, before: { epoch: "x" } }));
+  await assert.rejects(
+    c.request("session.events", { id: stub.id, before: { epoch: 1, seq: "2" } }),
+  );
+  await c.close();
+});
+
 test("setStatus broadcasts a session_updated with a bumped version and attribution", async () => {
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", {

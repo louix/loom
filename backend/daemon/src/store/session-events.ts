@@ -41,9 +41,13 @@ export class SessionEventStore {
    *  earliest frame the client holds and this returns the `limit` rows strictly
    *  older than it. `id` (insertion order) is the only key that stays monotonic
    *  across daemon epochs — `seq` restarts per process — so the cursor frame's
-   *  rowid is resolved first. That lookup scans one session's rows (there's no
-   *  index past `session_id`), but it only runs on a manual scroll-back, never
-   *  on the hot path. A short page means there is nothing older. */
+   *  rowid is resolved first. The paging query itself rides the
+   *  `(session_id, id)` index; only the cursor lookup isn't covered past
+   *  `session_id`, and it runs once per manual scroll-back, never on the hot
+   *  path. Legacy rows written before epoch tracking all share `epoch = ''`, so
+   *  that lookup takes the newest `id` among any duplicates — `id < beforeId`
+   *  then excludes every ambiguous row rather than leaving a gap. A short page
+   *  means there is nothing older. */
   list(
     sessionId: string,
     opts: { limit?: number; before?: { epoch: string; seq: number } } = {},
@@ -52,7 +56,9 @@ export class SessionEventStore {
     let beforeId: number | null = null;
     if (opts.before) {
       const row = this.#db
-        .prepare("SELECT id FROM session_events WHERE session_id = ? AND epoch = ? AND seq = ?")
+        .prepare(
+          "SELECT id FROM session_events WHERE session_id = ? AND epoch = ? AND seq = ? ORDER BY id DESC LIMIT 1",
+        )
         .get(sessionId, opts.before.epoch, opts.before.seq) as { id: number } | undefined;
       // Unknown cursor (stale epoch, bad param) — report "nothing older" rather
       // than silently handing back the newest page again.

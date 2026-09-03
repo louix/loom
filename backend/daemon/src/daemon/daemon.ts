@@ -1568,13 +1568,22 @@ export class Daemon {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       const p = isObj(params) ? params : {};
-      const limit = typeof p["limit"] === "number" ? p["limit"] : 500;
+      // Clamp: a client drives this in a paging loop, so a negative / NaN /
+      // fractional `limit` must not reach `LIMIT ?` (negative = the whole
+      // history in one frame; non-integer = a datatype throw).
+      const rawLimit = typeof p["limit"] === "number" ? Math.trunc(p["limit"]) : 500;
+      const limit = Number.isFinite(rawLimit) ? Math.min(5000, Math.max(1, rawLimit)) : 500;
       // Optional scroll-back cursor: page strictly older than this (epoch, seq).
-      const b = isObj(p["before"]) ? (p["before"] as Record<string, unknown>) : null;
-      const before =
-        b && typeof b["epoch"] === "string" && typeof b["seq"] === "number"
-          ? { epoch: b["epoch"], seq: b["seq"] }
-          : undefined;
+      // A present-but-malformed cursor is a client bug — reject it rather than
+      // silently handing back the newest page (which stalls scroll-back).
+      let before: { epoch: string; seq: number } | undefined;
+      if (p["before"] !== undefined) {
+        const b = isObj(p["before"]) ? (p["before"] as Record<string, unknown>) : null;
+        if (!b || typeof b["epoch"] !== "string" || typeof b["seq"] !== "number") {
+          throw new RpcError("bad_request", "before must be { epoch: string, seq: number }");
+        }
+        before = { epoch: b["epoch"], seq: b["seq"] };
+      }
       return this.#sessionEvents.list(id, { limit, ...(before ? { before } : {}) });
     });
 

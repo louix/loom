@@ -661,6 +661,13 @@ test("scrolling to the top of the log pages in older durable history on demand",
 
     stdin.feed("\x1b[5~"); // PgUp again — back to the very first event
     await waitFor(stdout, /history line 1/);
+
+    // One more page request returns [] and latches `done`; further PgUp is a
+    // no-op (no churn, no crash) and the top of the log stays put.
+    stdin.feed("\x1b[5~");
+    stdin.feed("\x1b[5~");
+    await delay(120);
+    assert.match(stdout.last, /history line 1/, "still anchored at the first event");
   } finally {
     app.unmount();
     await second.close();
