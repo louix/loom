@@ -9,6 +9,7 @@ import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
+import type { LayoutView } from "./fleet-handle.ts";
 import {
   cacheHeat,
   cacheStatus,
@@ -174,30 +175,32 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
 };
 
 /**
- * Narrow-terminal pane switcher — one row above the `stack` body naming the two
- * panes it toggles between, the inactive one dimmed, with a hint at which arrow
- * key crosses over. Drawn only under {@link NARROW_COLS}; the wide split shows
- * both panes at once and needs no bar.
+ * Narrow-terminal layout switcher — one row naming the three {@link LayoutView}
+ * zoom stops, the active one lit, with a `⇥` cue. Drawn only under
+ * {@link NARROW_COLS}; a wide terminal shows the whole split and needs no bar.
  */
-export const StackTabs = ({
+export const ViewSwitcher = ({
   active,
   width,
 }: {
-  active: "fleet" | "detail";
+  active: LayoutView;
   width: number;
 }): ReactNode => {
-  const tab = (label: string, on: boolean): ReactNode => (
-    <Text color={on ? C.accent : C.faint} bold={on}>
-      {(on ? "▸ " : "  ") + label}
-    </Text>
-  );
+  const stops: readonly [LayoutView, string][] = [
+    ["overview", "FLEET"],
+    ["session", "DETAIL"],
+    ["log", "LOG"],
+  ];
   return (
     <Box width={width} paddingX={1} gap={2}>
-      {tab("FLEET", active === "fleet")}
-      {tab("DETAIL", active === "detail")}
+      {stops.map(([v, label]) => (
+        <Text key={v} color={v === active ? C.accent : C.faint} bold={v === active}>
+          {(v === active ? "▸ " : "  ") + label}
+        </Text>
+      ))}
       <Box flexGrow={1} justifyContent="flex-end">
         <Text color={C.faint} wrap="truncate-end">
-          {active === "fleet" ? "→ detail" : "← fleet"}
+          {"⇥ next"}
         </Text>
       </Box>
     </Box>
@@ -1556,7 +1559,7 @@ const HELP_ROWS: Array<[string, string]> = [
   ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
   [
     "o  ·  v  ·  ⇥",
-    "view the log in $EDITOR  ·  event log full / chat  ·  fullscreen the event log",
+    "view the log in $EDITOR  ·  event log full / chat  ·  step the layout zoom: overview → session → log (esc resets)",
   ],
   ["t", "cycle theme — dark / light / argonext"],
   [

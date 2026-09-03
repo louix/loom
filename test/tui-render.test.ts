@@ -1081,7 +1081,7 @@ test("→ drills into a session's children; EVENTS follows the focused child", a
   }
 });
 
-test("Tab toggles the fullscreen event log", async () => {
+test("⇥ steps the layout zoom overview → session → log and back; esc resets", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   const s = await client.request<SessionSnapshot>("session.createStub", {
@@ -1095,17 +1095,24 @@ test("Tab toggles the fullscreen event log", async () => {
     await client.request("dev.emit", {
       event: { sessionId: s.id, type: "assistant_text", text: "hello from the agent" },
     });
-    await delay(120);
+    await waitFor(stdout, /FLEET/);
     assert.doesNotMatch(stdout.last, /fullscreen/);
 
-    stdin.feed("\t");
-    await delay(120);
-    assert.match(stdout.last, /EVENTS · fullscreen/);
+    stdin.feed("\t"); // overview → session: detail + events, no fleet column
+    await waitFor(stdout, (t) => /engine fake/.test(t) && !/FLEET/.test(t));
+    assert.doesNotMatch(stdout.last, /fullscreen/);
+
+    stdin.feed("\t"); // session → log: the event log, full height
+    await waitFor(stdout, /EVENTS · fullscreen/);
     assert.doesNotMatch(stdout.last, /FLEET/);
 
-    stdin.feed("\t");
-    await delay(120);
-    assert.match(stdout.last, /FLEET/);
+    stdin.feed("\t"); // log → overview: the split is back
+    await waitFor(stdout, (t) => /FLEET/.test(t) && /engine fake/.test(t));
+
+    stdin.feed("\t"); // into session again…
+    await waitFor(stdout, (t) => /engine fake/.test(t) && !/FLEET/.test(t));
+    stdin.feed("\x1b"); // …and esc snaps straight back to overview
+    await waitFor(stdout, /FLEET/);
   } finally {
     app.unmount();
     await client.close();
@@ -1113,7 +1120,7 @@ test("Tab toggles the fullscreen event log", async () => {
   }
 });
 
-test("a narrow terminal collapses the split to one pane, toggled with → / ←", async () => {
+test("a narrow terminal renders one zoom pane at a time under a switcher bar", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   const s = await client.request<SessionSnapshot>("session.createStub", {
@@ -1126,20 +1133,22 @@ test("a narrow terminal collapses the split to one pane, toggled with → / ←"
     await client.request("dev.emit", {
       event: { sessionId: s.id, type: "assistant_text", text: "one column now" },
     });
-    // Starts on the fleet pane: the switcher bar is up, the detail column
-    // (EVENTS log, engine line) is not drawn.
+    // overview: only the fleet fits, switcher bar names the three stops.
     await waitFor(stdout, /▸ FLEET/);
-    assert.match(stdout.last, /→ detail/);
+    assert.match(stdout.last, /⇥ next/);
     assert.doesNotMatch(stdout.last, /EVENTS/);
     assert.doesNotMatch(stdout.last, /engine fake/);
 
-    stdin.feed("l"); // cross into the detail pane
+    stdin.feed("\t"); // → session
     await waitFor(stdout, /▸ DETAIL/);
-    assert.match(stdout.last, /← fleet/);
     assert.match(stdout.last, /EVENTS/);
     assert.match(stdout.last, /one column now/);
 
-    stdin.feed("h"); // back to the fleet list
+    stdin.feed("\t"); // → log
+    await waitFor(stdout, /▸ LOG/);
+    assert.match(stdout.last, /EVENTS · fullscreen/);
+
+    stdin.feed("\t"); // wraps back to overview
     await waitFor(stdout, /▸ FLEET/);
     assert.doesNotMatch(stdout.last, /EVENTS/);
   } finally {
@@ -1149,7 +1158,40 @@ test("a narrow terminal collapses the split to one pane, toggled with → / ←"
   }
 });
 
-test("a wide terminal keeps both panes and no switcher bar", async () => {
+test("→ still only drills into children — the layout zoom is on ⇥, not the arrows", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "spawn helpers",
+    provider: "fake",
+  });
+  const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+  const { stdout, stdin, app } = mount(client, {}, { columns: 60 });
+  try {
+    await delay(150);
+    fs?.emit({ type: "assistant_text", text: "mainline chatter" });
+    fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
+    fs?.emit({ type: "assistant_text", text: "reviewing the diff", agentId: "t1" });
+    await waitFor(stdout, /⑂ reviewer/);
+
+    // → drills into the child rows and stays on the overview/FLEET pane — it
+    // does not change the layout zoom.
+    stdin.feed("\x1b[C");
+    await waitFor(stdout, /▸ ⑂ reviewer/);
+    assert.match(stdout.last, /▸ FLEET/);
+    assert.doesNotMatch(stdout.last, /▸ DETAIL/);
+
+    // ← backs out of the drill-down, still on FLEET.
+    stdin.feed("\x1b[D");
+    await waitFor(stdout, (t) => /▸ FLEET/.test(t) && !/▸ ⑂ reviewer/.test(t));
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("a wide terminal shows the full split and no switcher bar", async () => {
   const { connect, cleanup } = await harness();
   const client = await connect();
   await client.request("session.createStub", {
@@ -1162,7 +1204,7 @@ test("a wide terminal keeps both panes and no switcher bar", async () => {
     await waitFor(stdout, /engine fake/);
     assert.match(stdout.last, /FLEET/);
     assert.match(stdout.last, /EVENTS/);
-    assert.doesNotMatch(stdout.last, /→ detail/);
+    assert.doesNotMatch(stdout.last, /⇥ next/);
   } finally {
     app.unmount();
     await client.close();

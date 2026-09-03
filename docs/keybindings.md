@@ -40,18 +40,17 @@ Consequences:
 | `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
 | `→` / `←`, `l` / `h` | drill into the selected session's sub-agents & background tasks / back out — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream |
 | `PgUp` / `PgDn`      | scroll the event log                                                                                                                               |
-| `⇥`                  | fullscreen the event log (and back)                                                                                                                |
-| `Esc`                | leave fullscreen / step back out of a drill-down / back out of an overlay — never quits                                                            |
+| `⇥`                  | step the layout zoom: **overview** (fleet + detail + events) → **session** (detail + events) → **log** (events, full height) → overview             |
+| `Esc`                | one step back: any zoom → overview, then out of a drill-down, then out of an overlay — never quits                                                  |
 | `Space`              | open the command palette                                                                                                                           |
 | `?`                  | keys & the grammar                                                                                                                                 |
 
 On a narrow terminal (under 80 columns — a small window or an SSH session from a
-phone) the side-by-side split collapses to one full-width pane at a time, FLEET
-or DETAIL, with a switcher bar across the top. `→` / `l` crosses from the fleet
-list into the selected session's detail pane; `←` / `h` / `Esc` cross back. Once
-you're in the detail pane those same keys resume their drill-down meaning.
-Replying to a session (opening its prompt) takes you to the detail pane so you
-can see what you type.
+phone) there's no room for the three-column split, so each zoom renders as one
+full-width pane and a switcher bar names the three: `⇥` steps `FLEET → DETAIL →
+LOG`, `Esc` snaps back to `FLEET`. `→` / `←` are unchanged — they still only
+drill into a session's children. Replying to a session jumps to the `DETAIL`
+zoom so you can see what you type.
 
 ### Acting on the selected session (footer verbs)
 

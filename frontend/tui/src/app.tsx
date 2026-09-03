@@ -31,7 +31,7 @@ import {
   PromptPane,
   PlanReview,
   RequestPanel,
-  StackTabs,
+  ViewSwitcher,
 } from "./components.tsx";
 
 export const App = ({
@@ -84,6 +84,12 @@ export const App = ({
 
 const Layout = ({ view }: { view: FleetView }): ReactNode => {
   const { state, sel, cols, bodyH, leftW, rightW, splitLogH } = view;
+
+  // Narrow layout only: the one-row bar naming the three zoom stops. Its row is
+  // already subtracted from bodyH by deriveView.
+  const switcher = view.narrow ? (
+    <ViewSwitcher active={view.layoutView} width={cols} />
+  ) : null;
 
   let body: ReactNode;
   switch (view.body) {
@@ -159,8 +165,11 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       break;
     case "logFull":
       body = (
-        <Box height={bodyH}>
-          <EventLog state={state} width={cols} height={bodyH} scroll={view.logScroll} full />
+        <Box flexDirection="column">
+          {switcher}
+          <Box height={bodyH}>
+            <EventLog state={state} width={cols} height={bodyH} scroll={view.logScroll} full />
+          </Box>
         </Box>
       );
       break;
@@ -192,36 +201,42 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
         </Box>
       );
       break;
-    case "stack":
-      // Narrow terminal: one full-width pane at a time. The tab bar costs the
-      // body row `deriveView` reserved via `stackTabsH`; `→`/`←` toggle panes.
+    case "fleetOnly":
+      // Narrow `overview`: only the fleet fits. The switcher row was budgeted
+      // out of bodyH by deriveView.
       body = (
         <Box flexDirection="column">
-          <StackTabs active={view.stackPane} width={cols} />
+          {switcher}
           <Box height={bodyH}>
-            {view.stackPane === "detail" ? (
-              <Box width={cols} flexDirection="column">
-                <Detail
-                  session={sel}
-                  width={cols}
-                  queued={sel ? queueFor(state, sel.id) : []}
-                  now={Date.now()}
-                  engineColor={sel ? providerColorOf(state, sel.provider) : ""}
-                  account={sel ? providerAccountOf(state, sel.provider) : ""}
-                  compacting={sel ? (state.compacting[sel.id] ?? null) : null}
-                />
-                <EventLog
-                  state={state}
-                  width={cols}
-                  height={splitLogH}
-                  scroll={view.logScroll}
-                  full={false}
-                />
-                {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
-              </Box>
-            ) : (
-              <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
-            )}
+            <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
+          </Box>
+        </Box>
+      );
+      break;
+    case "sessionPane":
+      // The `session` view — Detail + events (+ reply pane) with the whole
+      // terminal width. The switcher shows only when it's the narrow layout.
+      body = (
+        <Box flexDirection="column">
+          {switcher}
+          <Box height={bodyH} width={cols} flexDirection="column">
+            <Detail
+              session={sel}
+              width={cols}
+              queued={sel ? queueFor(state, sel.id) : []}
+              now={Date.now()}
+              engineColor={sel ? providerColorOf(state, sel.provider) : ""}
+              account={sel ? providerAccountOf(state, sel.provider) : ""}
+              compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+            />
+            <EventLog
+              state={state}
+              width={cols}
+              height={splitLogH}
+              scroll={view.logScroll}
+              full={false}
+            />
+            {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
           </Box>
         </Box>
       );

@@ -162,12 +162,28 @@ export interface Term {
   readonly onResize: (fn: () => void) => () => void;
 }
 
-/** Below this terminal width the fleet split collapses to one full-width pane
- *  at a time (the `stack` body) — see {@link deriveView}. */
+/** At or above this width the workspace is the three-column split; below it the
+ *  {@link LayoutView}s each render as a single full-width pane — see
+ *  {@link deriveView}. */
 export const NARROW_COLS = 80;
 
+/**
+ * The layout's vertical "zoom", stepped through with `⇥` and reset with `Esc`:
+ *
+ *  - `overview` — the whole workspace: fleet + detail + events (the split). On a
+ *    narrow terminal there's only room for the fleet list here.
+ *  - `session` — one session up close: its detail card + event log.
+ *  - `log` — just the event log, full height.
+ *
+ * On a wide terminal `overview` is usually all you need; on a narrow one the
+ * three are the progressive-disclosure stops FLEET → DETAIL → LOG.
+ */
+export type LayoutView = "overview" | "session" | "log";
+export const LAYOUT_VIEWS: readonly LayoutView[] = ["overview", "session", "log"];
+
 /** Which body the layout draws — the overlay modes each own the screen.
- *  `stack` is the narrow-terminal single-pane fallback for `split`. */
+ *  `fleetOnly` / `sessionPane` are the narrow single-pane renderings of the
+ *  `overview` / `session` {@link LayoutView}s; `split` is the wide `overview`. */
 export type BodyKind =
   | "help"
   | "doctor"
@@ -176,7 +192,8 @@ export type BodyKind =
   | "picker"
   | "logFull"
   | "split"
-  | "stack";
+  | "fleetOnly"
+  | "sessionPane";
 
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
@@ -188,7 +205,8 @@ export interface FleetView {
   readonly logScroll: number;
   /** Top-anchored offset into the plan-review body (PgUp/PgDn/wheel). */
   readonly planScroll: number;
-  readonly logFull: boolean;
+  /** The active layout zoom — `⇥` cycles it, `Esc` resets to `overview`. */
+  readonly layoutView: LayoutView;
   readonly sel: SessionSnapshot | null;
   readonly pend: Pending;
   readonly allowed: ReadonlySet<ActName>;
@@ -197,10 +215,9 @@ export interface FleetView {
    *  the open `answerQuestion` prompt is collecting, else the first. */
   readonly questionIdx: number;
   readonly body: BodyKind;
-  /** Terminal is under {@link NARROW_COLS} — the layout is single-pane. */
+  /** Terminal is under {@link NARROW_COLS} — each layout view is one pane, and
+   *  a switcher bar names the three. */
   readonly narrow: boolean;
-  /** In a `stack` body, which pane is showing. Always `"fleet"` otherwise. */
-  readonly stackPane: "fleet" | "detail";
   readonly cols: number;
   readonly rows: number;
   readonly bodyH: number;
@@ -239,8 +256,7 @@ const deriveView = (
   tick: number,
   logScroll: number,
   planScroll: number,
-  logFull: boolean,
-  narrowPane: "fleet" | "detail",
+  layoutView: LayoutView,
   dims: { cols: number; rows: number },
 ): FleetView => {
   const sel = selectedSession(state);
@@ -255,12 +271,18 @@ const deriveView = (
       )
     : {};
   const allowed = allowedActs(sel);
+
+  // A reply prompt's input renders on the events pane, which the `log` view
+  // can't host — fall back one zoom while one is open.
+  const view: LayoutView =
+    layoutView === "log" && promptOnPane(state.prompt) ? "session" : layoutView;
+
   // The approve / answer / plan panel sits full-width just above the footer in
-  // the two modes whose body is the fleet split; fullscreen log and every
-  // overlay each own the screen.
+  // the `overview` / `session` views; the fullscreen log and every overlay each
+  // own the screen.
   const showRequest =
     (state.mode === "browse" || state.mode === "prompt") &&
-    !logFull &&
+    view !== "log" &&
     sel?.status.kind === "awaiting_input" &&
     (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
 
@@ -273,35 +295,28 @@ const deriveView = (
   const footerH = promptRows(state, cols);
   const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
 
-  // Below this width the side-by-side split starves both columns (each ends up
-  // ~20 cols on a phone-sized SSH window), so the fleet split collapses to one
-  // full-width pane at a time — FLEET or DETAIL — toggled with → / ← (see the
-  // `stack` body). The switcher tab bar above it costs one body row.
+  // Below this width the three-column split starves every column (~20 cols each
+  // on a phone-sized SSH window), so each layout view renders as one full-width
+  // pane and a switcher bar (one body row) names the three.
   const narrow = cols < NARROW_COLS;
 
-  let body: BodyKind = "split";
+  let body: BodyKind = "split"; // wide `overview`
   if (state.mode === "help") body = "help";
   else if (state.mode === "doctor") body = "doctor";
   else if (state.mode === "confirm" && state.confirm) body = "confirm";
   else if (state.mode === "plan" && state.plan) body = "plan";
   else if (state.mode === "picker" && state.picker) body = "picker";
-  // logFull yields to a reply prompt — its input draws on the EVENTS pane.
-  else if (logFull && !promptOnPane(state.prompt)) body = "logFull";
-  else if (narrow) body = "stack";
+  else if (view === "log") body = "logFull";
+  else if (view === "session") body = "sessionPane";
+  else if (narrow) body = "fleetOnly";
 
-  // Which single pane the stack shows: the fleet list by default, the detail
-  // column once you cross into it — and forced there whenever a session-
-  // targeted prompt is open, since its input renders on the EVENTS pane.
-  const stackPane: "fleet" | "detail" =
-    body === "stack" && sel && (narrowPane === "detail" || promptOnPane(state.prompt))
-      ? "detail"
-      : "fleet";
-
-  const stackTabsH = body === "stack" ? 1 : 0;
-  const bodyH = Math.max(1, rows - 1 - footerH - requestH - stackTabsH);
+  const showSwitcher =
+    narrow && (body === "fleetOnly" || body === "sessionPane" || body === "logFull");
+  const switcherH = showSwitcher ? 1 : 0;
+  const bodyH = Math.max(1, rows - 1 - footerH - requestH - switcherH);
   // Fleet column: 32-col floor where the terminal affords it, yielding below
-  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`. In the narrow
-  // stack each pane owns the full width.
+  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`. Narrow views each
+  // own the full width.
   const leftW = narrow
     ? cols
     : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
@@ -315,11 +330,14 @@ const deriveView = (
     compacting: sel ? (state.compacting[sel.id] ?? null) : null,
     queued: sel ? queueFor(state, sel.id) : [],
   });
+  // The `session` view gives Detail + events the whole terminal; the wide
+  // `overview` split confines them to the right column.
+  const eventsW = body === "sessionPane" ? cols : rightW;
   // A session-targeted prompt draws its input group under the EVENTS log (its
   // label + editor rows) — budget them against the log's height.
-  const paneH = promptOnPane(state.prompt) ? promptPaneRows(state, rightW) : 0;
+  const paneH = promptOnPane(state.prompt) ? promptPaneRows(state, eventsW) : 0;
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
-  const logH = logFull ? bodyH : splitLogH;
+  const logH = body === "logFull" ? bodyH : splitLogH;
   const logPage = Math.max(1, logH - 3);
 
   const questionIdx =
@@ -333,7 +351,7 @@ const deriveView = (
     tick,
     logScroll,
     planScroll,
-    logFull,
+    layoutView: view,
     sel,
     pend,
     allowed,
@@ -341,7 +359,6 @@ const deriveView = (
     questionIdx,
     body,
     narrow,
-    stackPane,
     cols,
     rows,
     bodyH,
@@ -372,11 +389,9 @@ export const mkFleetHandle = ({
   let tick = 0;
   let logScroll = 0;
   let planScroll = 0;
-  let logFull = false;
-  // Narrow-terminal single-pane layout: which pane the stack shows. `→` / `l`
-  // crosses from the fleet list into the selected session's detail pane, `←` /
-  // `h` / `esc` back. Ignored while the terminal is wide enough for the split.
-  let narrowPane: "fleet" | "detail" = "fleet";
+  // Layout zoom: `⇥` steps overview → session → log → overview, `Esc` snaps
+  // back to overview. On a narrow terminal each renders as one full-width pane.
+  let layoutView: LayoutView = "overview";
   let dims = term.getSize();
 
   // Was `useRef` in the component — plain closure state here.
@@ -407,10 +422,10 @@ export const mkFleetHandle = ({
   };
 
   const store = mkStore<FleetView>(
-    deriveView(state, boot, tick, logScroll, planScroll, logFull, narrowPane, dims),
+    deriveView(state, boot, tick, logScroll, planScroll, layoutView, dims),
   );
   const publish = (): void =>
-    store.set(deriveView(state, boot, tick, logScroll, planScroll, logFull, narrowPane, dims));
+    store.set(deriveView(state, boot, tick, logScroll, planScroll, layoutView, dims));
 
   // Lines in the pane as currently rendered — narrowed to the focused child
   // while drilled in, so scroll math matches what `EventLog` actually shows.
@@ -590,9 +605,15 @@ export const mkFleetHandle = ({
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
     if (state.plan?.requestId !== prev.plan?.requestId) planScroll = 0;
-    // Narrow layout: opening a reply to a session lands you on its detail pane
-    // (the input renders there) and keeps you there once the prompt closes.
-    if (promptOnPane(state.prompt) && !promptOnPane(prev.prompt)) narrowPane = "detail";
+    // Narrow layout: opening a reply to a session pulls the events pane into
+    // view (its input renders there) — from `overview` there's no room for it.
+    if (
+      promptOnPane(state.prompt) &&
+      !promptOnPane(prev.prompt) &&
+      layoutView === "overview" &&
+      dims.cols < NARROW_COLS
+    )
+      layoutView = "session";
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
     if (state.theme !== prev.theme) {
@@ -1767,7 +1788,7 @@ export const mkFleetHandle = ({
         return void switchEffort();
       case "fullscreen":
         if (sel) {
-          logFull = !logFull;
+          layoutView = layoutView === "log" ? "overview" : "log";
           publish();
         }
         return;
@@ -1881,7 +1902,7 @@ export const mkFleetHandle = ({
   const handleKey = (input: string, key: Key): void => {
     const sel = selectedSession(state);
     const allowed = allowedActs(sel);
-    const { logPage, narrow, stackPane } = store.get();
+    const { logPage } = store.get();
 
     if (key.ctrl && input === "c") return quitTui();
 
@@ -2157,30 +2178,14 @@ export const mkFleetHandle = ({
     // background tasks + sub-agents — the tree already rendered under the row);
     // ↑/↓ then pick among them and the event pane follows the focused child.
     // ← / esc steps back out to the fleet. Other keys keep acting on the
-    // session — children carry no actions of their own.
+    // session — children carry no actions of their own. The layout zoom is on
+    // ⇥ (below), not the arrows, so this is unchanged at every width.
     if (key.rightArrow || input === "l") {
-      // Narrow layout: from the fleet list, → crosses into the detail pane;
-      // once there it resumes its child drill-down meaning.
-      if (narrow && !logFull && stackPane === "fleet") {
-        if (sel) {
-          narrowPane = "detail";
-          publish();
-        }
-        return;
-      }
       if (sel) dispatch({ t: "childEnter" });
       return;
     }
     if (key.leftArrow || input === "h") {
-      if (state.selectedChild != null) {
-        dispatch({ t: "childExit" });
-        return;
-      }
-      // Narrow layout: ← out of the detail pane steps back to the fleet list.
-      if (narrow && stackPane === "detail") {
-        narrowPane = "fleet";
-        publish();
-      }
+      if (state.selectedChild != null) dispatch({ t: "childExit" });
       return;
     }
     if (state.selectedChild != null) {
@@ -2189,24 +2194,24 @@ export const mkFleetHandle = ({
     }
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
-    // ⇧⇥ cycles the permission mode; plain Tab fullscreens the event log.
+    // ⇧⇥ cycles the permission mode; plain ⇥ steps the layout zoom
+    // overview → session → log → overview (see {@link LayoutView}).
     if (key.tab && key.shift) return void (sel ? runAct("mode") : undefined);
     if (key.tab) {
       if (sel) {
-        logFull = !logFull;
+        const i = LAYOUT_VIEWS.indexOf(layoutView);
+        layoutView = LAYOUT_VIEWS[(i + 1) % LAYOUT_VIEWS.length]!;
         publish();
       }
       return;
     }
     if (key.escape) {
-      if (logFull) {
-        logFull = false;
+      // A single step back: any zoom → overview, then out of a drill-down.
+      if (layoutView !== "overview") {
+        layoutView = "overview";
         publish();
       } else if (state.selectedChild != null) {
-        dispatch({ t: "childExit" }); // back out of the drill-down
-      } else if (narrow && stackPane === "detail") {
-        narrowPane = "fleet"; // back to the fleet list
-        publish();
+        dispatch({ t: "childExit" });
       }
       return;
     }
