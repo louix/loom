@@ -1225,6 +1225,10 @@ test("/ filters the fleet in place; ↑↓ keep moving the selection", async () 
     status: "idle",
     provider: "fake",
   });
+  // A beat between the two so their `updatedAt` differs: `sortSessions` puts
+  // the newer "update the docs" first, and its final tie-break is the random
+  // session UUID — a coin flip that otherwise flakes the ↑ assertion below.
+  await delay(5);
   await client.request("session.createStub", {
     prompt: "update the docs",
     status: "idle",
