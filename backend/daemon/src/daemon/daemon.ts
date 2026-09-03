@@ -855,7 +855,7 @@ export class Daemon {
     let wt: { path: string; branch: string; baseRef: string } | null = null;
     if (o.wantWorktree) {
       try {
-        wt = this.#worktrees.create(o.prompt, id, { model: o.model || o.providerId });
+        wt = this.#worktrees.create(id, { model: o.model || o.providerId });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create worktree: ${message}`);
@@ -1864,7 +1864,7 @@ export class Daemon {
       const newId = randomUUID();
       let wt;
       try {
-        wt = this.#worktrees.create(`${parent.title ?? id} fork`, newId, {
+        wt = this.#worktrees.create(newId, {
           ...(parent.branch ? { baseRef: parent.branch } : {}),
           model: parent.model || parent.provider,
         });

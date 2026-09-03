@@ -535,10 +535,15 @@ same `#maybeAutoTitle` step pushes the `session_updated` carrying the new
 as cwd — so `sessions.worktree` is untouched and the facts cache is just
 cleared.
 
-Still open: a pregenerated memorable-wordlist prefix assigned at create time (so
-there's a stable handle before turn 1), and a best-effort `git worktree move` to
-match the dir name (fails if the user is `cd`'d in, or would yank cwd from the
-live agent — needs the adapter to re-root).
+**Directory name shipped**: the worktree dir is `.loom/trees/<shortId>` (the
+session id's 8-char short form, matching the initial `loom/<shortId>` branch and
+the fleet view), not a slug of the opening prompt — a stable handle from create
+time that never goes stale as the session's topic drifts.
+
+Still open: nothing pressing. A best-effort `git worktree move` to track the
+renamed branch was considered and dropped — the dir is a bare id handle, so
+there's nothing to keep in sync (and a move would fail if the user is `cd`'d in,
+or yank cwd from the live agent).
 
 ### 6 · pnpm monorepo + plugin packages — ✓ shipped (2026-08-30)
 

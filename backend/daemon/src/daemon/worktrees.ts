@@ -171,15 +171,16 @@ export class WorktreeManager {
   // --- lifecycle ----------------------------------------------------
 
   /**
-   * `git worktree add <trees>/<slug> -b loom/<shortId> <base>`, then pin the
+   * `git worktree add <trees>/<shortId> -b loom/<shortId> <base>`, then pin the
    * commit identity and hooks path for that tree. `opts.baseRef` branches
    * off something other than the configured base (a parent session's branch,
    * for a hard fork). `opts.model` is the session's model — it names the
    * commit identity (`Loom (<model>)`), so a commit says what ran it. `id` is
-   * the session's own id — the branch is named after it (truncated to match
-   * the fleet view's short id) so a session's branch is traceable back to it.
+   * the session's own id — both the directory and the branch are named after it
+   * (truncated to the fleet view's short id) so a tree is traceable back to the
+   * session.
    */
-  create(hint: string, id: string, opts: { baseRef?: string; model?: string } = {}): WorktreeInfo {
+  create(id: string, opts: { baseRef?: string; model?: string } = {}): WorktreeInfo {
     this.ensureSetup();
     let baseRef: string;
     const baseRefOverride = opts.baseRef;
@@ -194,7 +195,7 @@ export class WorktreeManager {
     } else {
       baseRef = this.#resolveBase();
     }
-    const slug = this.#uniqueSlug(hint);
+    const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
     const branch = this.#uniqueBranch(id);
 
@@ -521,8 +522,10 @@ export class WorktreeManager {
     return "HEAD";
   }
 
-  #uniqueSlug(hint: string): string {
-    const base = slugify(hint);
+  /** The worktree directory basename: the session id truncated to the fleet
+   *  view's short id, with a random suffix on the (astronomically rare) clash. */
+  #uniqueDir(id: string): string {
+    const base = id.slice(0, 8);
     const taken = new Set(this.list().map((w) => w.path));
     for (let attempt = 0; ; attempt++) {
       const slug = attempt === 0 ? base : `${base}-${randomSuffix()}`;

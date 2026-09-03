@@ -56,10 +56,10 @@ the Vercel AI SDK.
 
 **3 · worktree manager**
 
-- **One worktree + branch per session** — `git worktree add .loom/trees/<slug>
--b loom/<slug>` off the configured base (`base_branch`, else `HEAD`). The
-  slug is derived from the prompt; uniqueness is enforced with a short suffix.
-  The session's adapter runs with that worktree as its cwd.
+- **One worktree + branch per session** — `git worktree add .loom/trees/<id>
+-b loom/<id>` off the configured base (`base_branch`, else `HEAD`), where `<id>`
+  is the session id truncated to its 8-char short form; uniqueness is enforced
+  with a short suffix. The session's adapter runs with that worktree as its cwd.
 - **In-place mode** — `[worktree] enabled = false` (or `loom run --in-place`)
   runs the session directly in the repo working dir instead: no branch
   isolation, concurrent sessions can collide, and hard fork is unavailable
@@ -429,8 +429,8 @@ loom done <id>                  # mark complete (worktree kept)
 loom gc --force                # remove worktrees for done sessions
 ```
 
-Each session gets its own worktree under `.loom/trees/<slug>` on a
-`loom/<slug>` branch, committed under a `Loom (<model>)` identity, with pushing
+Each session gets its own worktree under `.loom/trees/<id>` on a
+`loom/<id>` branch, committed under a `Loom (<model>)` identity, with pushing
 blocked. Integrate the branch yourself, in your own git — Loom never does.
 
 Repo-specific steering goes in `.loom/LOOM.md` — init commands, how to
@@ -502,7 +502,7 @@ gitignored:
 | `daemon.pid`     | single-instance guard                                                   |
 | `daemon.log`     | rolling daemon log (JSON lines)                                         |
 | `loom.db`        | SQLite: sessions, history, usage                                        |
-| `trees/<slug>/`  | one git worktree per session                                            |
+| `trees/<id>/`    | one git worktree per session                                            |
 | `hooks/pre-push` | the push-blocking hook, shared by every worktree                        |
 | `config.toml`    | optional; falls back to built-in defaults                               |
 | `models.toml`    | optional per-model price table (`pricing.reload`)                       |

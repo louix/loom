@@ -82,8 +82,8 @@ test("session.create gives the session its own worktree + branch off base", asyn
     prompt: "wire up the metrics endpoint",
     provider: "fake",
   });
-  // Worktree dir keeps the readable prompt slug; the branch is named after the id.
-  assert.ok(s.worktree && s.worktree.includes("/.loom/trees/wire-up-the-metrics-endpoint"));
+  // Both the worktree dir and the branch are named after the session id.
+  assert.ok(s.worktree && s.worktree.includes(`/.loom/trees/${s.id.slice(0, 8)}`));
   assert.equal(s.branch, `loom/${s.id.slice(0, 8)}`);
   assert.equal(s.baseBranch, "main");
   assert.ok(existsSync(s.worktree as string));
@@ -96,7 +96,7 @@ test("session.create gives the session its own worktree + branch off base", asyn
   await c.close();
 });
 
-test("two sessions from similar prompts get distinct worktrees", async () => {
+test("two sessions from identical prompts get distinct worktrees", async () => {
   const c = await client();
   const a = await c.request<SessionSnapshot>("session.create", {
     prompt: "fix the bug",
