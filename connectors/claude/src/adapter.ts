@@ -910,6 +910,19 @@ export class ClaudeProvider implements AgentProvider {
     if (!this.#cliResolved) {
       this.#cli = resolveClaudeCli(this.#cliPathOption);
       this.#cliResolved = true;
+      // Which binary sessions spawn is otherwise invisible — on systems where
+      // the SDK's prebuilt ELF can't run (NixOS, musl, Guix) sessions just die
+      // with a bare loader error and nothing says which path was chosen.
+      if (this.#cli) {
+        log.info("claude cli", {
+          path: this.#cli,
+          source: this.#cliPathOption ? "config" : "path",
+        });
+      } else {
+        log.warn(
+          "no `claude` on the daemon's PATH and no cli_path set — the SDK's bundled binary will be spawned (a plain glibc ELF; does not run everywhere — NixOS, musl, minimal containers). Set [providers.claude] cli_path, or restart the daemon with `claude` on PATH",
+        );
+      }
     }
     return this.#cli;
   }
