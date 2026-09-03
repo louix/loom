@@ -92,6 +92,11 @@ const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh",
 /** How often the daemon re-checks keep-warm sessions for a cache about to lapse. */
 const KEEP_WARM_SWEEP_MS = 30_000;
 
+/** How often the daemon re-derives per-session git facts (branch / ahead /
+ *  behind / dirty) so an idle session's detail line — and the TUI's `r` rebase
+ *  hint — track a base branch that advanced from outside Loom. */
+const GIT_FACTS_SWEEP_MS = 15_000;
+
 /** How long `stop()` waits for session shutdown before proceeding to release
  *  the pidfile and resolve `whenClosed()` regardless. A wedged adapter must not
  *  make the daemon unkillable. */
@@ -185,6 +190,8 @@ export class Daemon {
   #warmSweep: NodeJS.Timeout | null = null;
   /** Re-entrancy guard: a slow ping must not let two sweeps overlap. */
   #sweepingWarm = false;
+  /** Periodic sweep that re-derives git facts for worktree / in-place sessions. */
+  #gitSweep: NodeJS.Timeout | null = null;
   #tilthFallbackLogged = false;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
@@ -402,6 +409,9 @@ export class Daemon {
     }, KEEP_WARM_SWEEP_MS);
     this.#warmSweep.unref();
 
+    this.#gitSweep = setInterval(() => this.#sweepGitFacts(), GIT_FACTS_SWEEP_MS);
+    this.#gitSweep.unref();
+
     this.#log.info("daemon up", {
       pid: process.pid,
       epoch: this.epoch,
@@ -418,6 +428,7 @@ export class Daemon {
 
     this.#idle.stop();
     if (this.#warmSweep) clearInterval(this.#warmSweep);
+    if (this.#gitSweep) clearInterval(this.#gitSweep);
     if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
     for (const w of this.#configWatchers) w.close();
     this.#configWatchers = [];
@@ -1415,6 +1426,36 @@ export class Daemon {
       }
     } finally {
       this.#sweepingWarm = false;
+    }
+  }
+
+  /**
+   * Re-derive git facts for every worktree / in-place session and push a
+   * `session_updated` for the ones that moved. Nothing else recomputes facts
+   * for an idle session, so its branch / ahead / behind / dirty detail line
+   * otherwise goes stale the moment the base branch advances from outside Loom
+   * (a plain `git commit` on `main`), until that session next has activity.
+   * Skipped when no client is attached (no point shelling out `git` for
+   * nobody); diff-only on the wire. `facts()` shells out synchronously — the
+   * sweep can't overlap itself.
+   */
+  #sweepGitFacts(): void {
+    if (this.#stopping || this.#server.clientCount === 0) return;
+    // `facts()` is cached per path; compute once per distinct worktree and fan
+    // the result out to every session sharing it (in-place sessions all share
+    // the repo root).
+    const moved = new Map<string, boolean>();
+    for (const snap of this.#registry.list()) {
+      const gitPath = snap.worktree ?? (snap.inPlace ? this.repoRoot : null);
+      if (!gitPath) continue;
+      let changed = moved.get(gitPath);
+      if (changed === undefined) {
+        const prev = this.#worktrees.cachedFacts(gitPath);
+        const next = this.#worktrees.facts(gitPath, snap.baseBranch);
+        changed = next != null && JSON.stringify(prev) !== JSON.stringify(next);
+        moved.set(gitPath, changed);
+      }
+      if (changed) this.#emitSessionUpdated(this.#registry.mustGet(snap.id));
     }
   }
 

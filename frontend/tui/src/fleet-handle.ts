@@ -2263,7 +2263,7 @@ export const mkFleetHandle = ({
       i: "interrupt",
       x: "done",
       c: "compact",
-      r: "rebase", // inert unless the branch is behind its base (see allowedActs)
+      r: "rebase", // any worktree session; a no-op "already current" when not behind
       u: "undo",
       e: "title",
       y: "copybranch",

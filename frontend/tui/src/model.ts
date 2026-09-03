@@ -2064,10 +2064,19 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     if (session.branch || session.worktree) {
       local.push({ keys: "y", label: "copy branch", act: "copybranch" });
     }
-    // Offered only while it'd do something — a worktree branch behind its base.
-    // `syncOntoBase` replays it on demand (the manual side of `[auto_rebase]`).
-    if (session.worktree && (session.git?.behindBase ?? 0) > 0) {
-      local.push({ keys: "r", label: "rebase onto base", act: "rebase" });
+    // Any worktree session can rebase onto its base — `syncOntoBase` is the
+    // manual side of `[auto_rebase]`. Offered even when `behindBase` reads 0:
+    // that count is a snapshot fact that lags a base branch advanced from
+    // outside Loom, and the RPC is a harmless "already current" no-op when
+    // there's genuinely nothing to replay. The label sharpens when we know
+    // it'd do something.
+    if (session.worktree) {
+      const behind = session.git?.behindBase ?? 0;
+      local.push({
+        keys: "r",
+        label: behind > 0 ? `rebase onto base (-${behind})` : "rebase onto base",
+        act: "rebase",
+      });
     }
     // `X` — a destructive, structural op (worktree + transcript go); `d` is
     // deny-only now, never delete.

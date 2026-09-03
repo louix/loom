@@ -1370,9 +1370,10 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   const withQueue: TuiState = { ...base, queue: { s1: ["pending note"] } };
   assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
 
-  // rebase only shows for a worktree branch that's actually behind its base
+  // rebase needs a worktree, but is offered regardless of the (lag-prone)
+  // behindBase count — the RPC is a harmless no-op when there's nothing to do
   assert.ok(!commandsFor(base).some((c) => c.id === "rebase"));
-  const behind: TuiState = {
+  const mkWt = (behindBase: number): TuiState => ({
     ...base,
     sessions: [
       snap({
@@ -1385,15 +1386,27 @@ test("commandsFor lists every action valid now — session verbs plus the app co
           branch: "loom/s1",
           commits: 1,
           aheadOfBase: 0,
-          behindBase: 2,
+          behindBase,
           dirty: false,
           lastCommitSubject: null,
         },
       }),
     ],
-  };
+  });
+  const behind = mkWt(2);
   assert.ok(commandsFor(behind).some((c) => c.id === "rebase"));
   assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.hint, "r");
+  assert.equal(
+    commandsFor(behind).find((c) => c.id === "rebase")?.label,
+    "rebase onto base (-2)",
+  );
+  // up to date (or a stale 0) — still offered, plain label
+  const current = mkWt(0);
+  assert.ok(commandsFor(current).some((c) => c.id === "rebase"));
+  assert.equal(
+    commandsFor(current).find((c) => c.id === "rebase")?.label,
+    "rebase onto base",
+  );
 });
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {
