@@ -22,7 +22,7 @@ import {
   pickerVisible,
   providerInfo,
   queueFor,
-  sessionMatches,
+  searchSessions,
   visibleLog,
   type Connection,
   type ConfirmState,
@@ -187,11 +187,13 @@ export const Fleet = ({
   width: number;
   now?: number;
 }): ReactNode => {
-  // The fleet filter (`/`) narrows the list in place — the same fuzzy match the
-  // old find picker used, over titles and each session's log text.
+  // The fleet filter (`/`) narrows the list in place and ranks it — title hits
+  // first, then your messages, then the agent's (see `searchSessions`). With a
+  // query up the pane is one flat, relevance-ordered list; without, the
+  // familiar status groups.
   const query = state.find?.buffer.text ?? "";
-  const matched =
-    query === "" ? state.sessions : state.sessions.filter((x) => sessionMatches(state, x, query));
+  const matched = searchSessions(state, query).map((m) => m.session);
+  const active = query.trim() !== "";
   const groups = groupsOf(matched);
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
@@ -201,45 +203,51 @@ export const Fleet = ({
   const childKeyOf = (s: SessionSnapshot): string | null =>
     focused && s.id === state.selectedId ? focused.key : null;
 
-  const blocks =
-    groups.length === 0
-      ? [
-          state.find ? (
-            <Text key="empty" color={C.dim} wrap="truncate-end">
-              {"no sessions match — esc clears the filter"}
-            </Text>
-          ) : (
-            <Text key="empty" color={C.dim}>
-              {"no sessions yet — press "}
-              <Text color={C.accent}>{"n"}</Text>
-              {" to start one"}
-            </Text>
-          ),
-        ]
-      : groups.map((g, i) => (
-          <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
-            <Text bold>
-              <Text color={statusLook(g.status).color}>{statusLook(g.status).glyph + " "}</Text>
-              <Text color={C.dim}>{g.label.toUpperCase()}</Text>
-              <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
-            </Text>
-            {g.sessions.map((s) => (
-              <Box key={s.id} flexDirection="column">
-                {FleetRow({
-                  s,
-                  selected: s.id === state.selectedId,
-                  focused: childKeyOf(s) != null,
-                  tick,
-                  iw,
-                  now,
-                  pcolor,
-                  compacting: compactingIds.has(s.id),
-                })}
-                {FleetChildRows({ s, tick, iw, focusedKey: childKeyOf(s) })}
-              </Box>
-            ))}
-          </Box>
-        ));
+  const row = (s: SessionSnapshot) => (
+    <Box key={s.id} flexDirection="column">
+      {FleetRow({
+        s,
+        selected: s.id === state.selectedId,
+        focused: childKeyOf(s) != null,
+        tick,
+        iw,
+        now,
+        pcolor,
+        compacting: compactingIds.has(s.id),
+      })}
+      {FleetChildRows({ s, tick, iw, focusedKey: childKeyOf(s) })}
+    </Box>
+  );
+
+  let blocks: ReactNode[];
+  if (matched.length === 0) {
+    blocks = [
+      state.find ? (
+        <Text key="empty" color={C.dim} wrap="truncate-end">
+          {"no sessions match — esc clears the filter"}
+        </Text>
+      ) : (
+        <Text key="empty" color={C.dim}>
+          {"no sessions yet — press "}
+          <Text color={C.accent}>{"n"}</Text>
+          {" to start one"}
+        </Text>
+      ),
+    ];
+  } else if (active) {
+    blocks = matched.map(row);
+  } else {
+    blocks = groups.map((g, i) => (
+      <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
+        <Text bold>
+          <Text color={statusLook(g.status).color}>{statusLook(g.status).glyph + " "}</Text>
+          <Text color={C.dim}>{g.label.toUpperCase()}</Text>
+          <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
+        </Text>
+        {g.sessions.map(row)}
+      </Box>
+    ));
+  }
 
   let title = "FLEET";
   if (focused) {

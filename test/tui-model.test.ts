@@ -46,6 +46,7 @@ import {
   firstPerm,
   LOG_CAP,
   reduce,
+  searchSessions,
   selectedSession,
   sessionLog,
   sortSessions,
@@ -2568,4 +2569,162 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
   });
   assert.equal(focusedChildOf(s), null);
   assert.equal(logRowCount(s, 60), full, "un-narrowed pane measures the full log again");
+});
+
+// ---------------------------------------------------------------------------
+// fleet search (`/`) — matching, ranking, exclusions
+// ---------------------------------------------------------------------------
+
+const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): TuiState => ({
+  ...initialState(),
+  sessions,
+  log,
+});
+
+test("fleet search: a 'term is a literal substring, case-insensitive", () => {
+  const s = searchState([
+    snap({ id: "lit", title: "say Hello there" }),
+    snap({ id: "spread", title: "spelling h-e-l-l-o out" }),
+  ]);
+  assert.deepEqual(
+    searchSessions(s, "'hello").map((m) => m.session.id),
+    ["lit"],
+  );
+});
+
+test("fleet search: bare terms match fuzzily; space-separated terms are AND'd", () => {
+  const both = snap({ id: "both", title: "mobile access rollout" });
+  const onlyMobile = snap({ id: "m", title: "mobile layout" });
+  const onlyAccess = snap({ id: "a", title: "database access" });
+  const s = searchState([onlyMobile, onlyAccess, both]);
+  assert.deepEqual(
+    searchSessions(s, "layout").map((m) => m.session.id),
+    ["m"],
+  );
+  assert.deepEqual(
+    searchSessions(s, "mobile access").map((m) => m.session.id),
+    ["both"],
+  );
+});
+
+test("fleet search: title beats your messages beats the agent's", () => {
+  const title = snap({ id: "title", title: "mobile rollout" });
+  const mine = snap({ id: "mine", title: "chat" });
+  const theirs = snap({ id: "theirs", title: "chat" });
+  const s = searchState(
+    [theirs, mine, title],
+    [
+      toLogLine(
+        1,
+        "e1",
+        ev({
+          type: "user_message",
+          text: "start the mobile work",
+          injected: false,
+          sessionId: "mine",
+        }),
+      ),
+      toLogLine(
+        2,
+        "e1",
+        ev({ type: "assistant_text", text: "the mobile plan is ready", sessionId: "theirs" }),
+      ),
+    ],
+  );
+  assert.deepEqual(
+    searchSessions(s, "mobile").map((m) => m.session.id),
+    ["title", "mine", "theirs"],
+  );
+});
+
+test("fleet search: tool traffic and thinking are invisible", () => {
+  const x = snap({ id: "x", title: "unrelated" });
+  const s = searchState(
+    [x],
+    [
+      toLogLine(
+        1,
+        "e1",
+        ev({
+          type: "tool_call",
+          id: "c1",
+          name: "Bash",
+          input: { command: "grep mobile *" },
+          sessionId: "x",
+        }),
+      ),
+      toLogLine(
+        2,
+        "e1",
+        ev({ type: "tool_result", id: "c1", ok: true, output: { text: "mobile" }, sessionId: "x" }),
+      ),
+      toLogLine(3, "e1", ev({ type: "thinking", text: "they said mobile, so…", sessionId: "x" })),
+    ],
+  );
+  assert.deepEqual(searchSessions(s, "mobile"), []);
+});
+
+test("fleet search: message bodies beyond the one-line summary are searched", () => {
+  const long = `${"filler ".repeat(60)}zebra migration`;
+  const a = snap({ id: "a", title: "chat" });
+  const s = searchState(
+    [a],
+    [toLogLine(1, "e1", ev({ type: "user_message", text: long, injected: false, sessionId: "a" }))],
+  );
+  const line = s.log[0]!;
+  assert.ok(
+    (line.full?.length ?? 0) > line.text.length,
+    "fixture: the log line's summary is truncated",
+  );
+  assert.deepEqual(
+    searchSessions(s, "'zebra migration").map((m) => m.session.id),
+    ["a"],
+  );
+});
+
+test("fleet search: equal scores keep the fleet's order (newest first)", () => {
+  const older = snap({ id: "older", title: "zebra run", updatedAt: 10 });
+  const newer = snap({ id: "newer", title: "zebra run", updatedAt: 99 });
+  const s = reduce(initialState(), { t: "hello", daemon, sessions: [older, newer] });
+  assert.deepEqual(
+    searchSessions(s, "'zebra").map((m) => m.session.id),
+    ["newer", "older"],
+  );
+});
+
+test("fleet search: an empty query lists every session, unranked", () => {
+  const a = snap({ id: "a", title: "x" });
+  const b = snap({ id: "b", title: "y" });
+  const s = searchState([a, b]);
+  assert.deepEqual(
+    searchSessions(s, "").map((m) => m.session.id),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    searchSessions(s, "   ").map((m) => m.session.id),
+    ["a", "b"],
+  );
+});
+
+test("fleet search: findSet rides onto the best-ranked match; ↑↓ walk it", () => {
+  // The fleet head ("head", newest) doesn't match at all; of the matches, the
+  // title hit outranks the message-only hit.
+  const weak = snap({ id: "weak", title: "another chat" });
+  const best = snap({ id: "best", title: "mobile access" });
+  const head = snap({ id: "head", title: "unrelated chatter" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [weak, best, head] });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({ type: "user_message", text: "mobile thoughts", injected: false, sessionId: "weak" }),
+    ),
+  });
+  s = reduce(s, { t: "openFind" });
+  s = reduce(s, { t: "findSet", buffer: buffer("mobile") });
+  assert.equal(s.selectedId, "best", "rode onto the title match");
+  s = reduce(s, { t: "move", delta: 1 });
+  assert.equal(s.selectedId, "weak", "↓ walks down the ranked list");
+  s = reduce(s, { t: "move", delta: -1 });
+  assert.equal(s.selectedId, "best");
 });

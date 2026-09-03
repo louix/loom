@@ -281,7 +281,11 @@ export const makePicker = (init: {
   };
 };
 
-/** Case-insensitive subsequence match — every char of `q` appears in order. */
+/**
+ * Case-insensitive subsequence match — every char of `q` appears in order.
+ * The command palette's matcher over short labels; the fleet filter ranks
+ * instead (see `searchSessions`).
+ */
 const fuzzyMatch = (hay: string, q: string): boolean => {
   if (q === "") return true;
   const h = hay.toLowerCase();
@@ -472,8 +476,10 @@ export interface TuiState {
   /** An open picker overlay (provider / model / undo, or the command palette). */
   picker: PickerState | null;
   /**
-   * The fleet filter (`/`) — a single-line query that narrows the FLEET list in
-   * place. ↑/↓ keep moving the session selection while it's up; ⏎ accepts
+   * The fleet filter (`/`) — a single-line query that narrows the FLEET list
+   * in place and ranks it: title hits first, then your messages, then the
+   * agent's; space-separated terms are AND'd and `'term` pins a literal
+   * substring. ↑/↓ keep moving the session selection while it's up; ⏎ accepts
    * (keeping enter's fleet-row meaning) and esc clears. null = closed.
    */
   find: { buffer: Buffer } | null;
@@ -659,13 +665,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, theme: nextThemeMode(s.theme) };
 
     case "move": {
-      // With the fleet filter up, ↑/↓ walk the matching sessions only — the rows
-      // the fleet is actually showing. Off-list (the selection was filtered
-      // out), ↓ lands on the first match and ↑ on the last.
+      // With the fleet filter up, ↑/↓ walk the matching sessions in relevance
+      // order — the rows the fleet is actually showing. Off-list (the
+      // selection was filtered out), ↓ lands on the best match and ↑ on the
+      // last.
       const find = s.find;
-      const list = find
-        ? s.sessions.filter((x) => sessionMatches(s, x, find.buffer.text))
-        : s.sessions;
+      const list = find ? searchSessions(s, find.buffer.text).map((m) => m.session) : s.sessions;
       if (list.length === 0) return s;
       let from = list.findIndex((x) => x.id === s.selectedId);
       if (from < 0) from = a.delta < 0 ? list.length : -1;
@@ -893,14 +898,16 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "findSet": {
       if (!s.find) return s;
       const next = { ...s, find: { buffer: a.buffer } };
-      // As the query narrows, ride the selection onto the first match
-      // (fzf-style) — the Detail / EVENTS panes then follow the row the filter
-      // is pointing at. An empty query (or no match) leaves the selection be.
+      // As the query narrows, ride the selection onto the best-ranked match
+      // (fzf-style) — the Detail / EVENTS panes then follow the row the
+      // filter is pointing at. An empty query (or no match) leaves the
+      // selection be; a selection that still matches stays put, so it doesn't
+      // fight ↑/↓ walking the ranked rows.
       const q = a.buffer.text;
       if (q === "") return next;
-      const matches = s.sessions.filter((x) => sessionMatches(s, x, q));
-      if (matches.length === 0 || matches.some((x) => x.id === s.selectedId)) return next;
-      return { ...next, selectedId: matches[0]!.id, selectedChild: null };
+      const matches = searchSessions(s, q);
+      if (matches.length === 0 || matches.some((m) => m.session.id === s.selectedId)) return next;
+      return { ...next, selectedId: matches[0]!.session.id, selectedChild: null };
     }
 
     case "closeFind":
@@ -1909,16 +1916,185 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
   return { t: "closePicker" };
 };
 
+// ---------------------------------------------------------------------------
+// fleet search — the `/` filter's matcher and ranking
+// ---------------------------------------------------------------------------
+
 /**
- * Does a session match the fleet filter (`/`)? The same fuzzy match the old
- * find picker used — the title with every log line folded into one haystack,
- * so a half-remembered message finds its session.
+ * One parsed query term. `exact` terms (fzf's `'` prefix) match as a literal
+ * substring; the rest match fuzzily (subsequence). Text is lowercased here —
+ * haystacks are folded lowercase at build time.
  */
-export const sessionMatches = (s: TuiState, sess: SessionSnapshot, q: string): boolean => {
-  if (q === "") return true;
-  let hay = sess.title ?? shortId(sess.id);
-  for (const l of s.log) if (l.sessionId === sess.id) hay += ` ${l.text}`;
-  return fuzzyMatch(hay, q);
+interface SearchTerm {
+  text: string;
+  exact: boolean;
+}
+
+/**
+ * fzf-style query: space-separated terms, AND'd. A leading `'` pins a term to
+ * a literal (case-insensitive) substring — `'hello` won't match a spelled-out
+ * "h-e-l-l-o". A bare `'` is dropped.
+ */
+export const parseQuery = (q: string): SearchTerm[] =>
+  q
+    .split(/\s+/)
+    .filter((t) => t !== "")
+    .map((t) => {
+      const exact = t.startsWith("'");
+      return { text: (exact ? t.slice(1) : t).toLowerCase(), exact };
+    })
+    .filter((t) => t.text !== "");
+
+const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[a-z0-9]/.test(ch);
+
+/**
+ * Fuzzy subsequence score of `q` in `hay` (both lowercase): 0 when the
+ * characters aren't there in order; otherwise 1, +1 when the match starts at
+ * a word boundary, +1 per extra consecutive character (capped) — "mobile"
+ * inside "mobile access" outranks an m…o…b…i…l…e scattered across a
+ * paragraph.
+ */
+const fuzzyScore = (hay: string, q: string): number => {
+  let prev = -1;
+  let run = 0;
+  let bestRun = 1;
+  let boundary = false;
+  for (let k = 0; k < q.length; k++) {
+    const at = hay.indexOf(q[k]!, prev + 1);
+    if (at === -1) return 0;
+    if (at === prev + 1) {
+      run += 1;
+      if (run > bestRun) bestRun = run;
+    } else {
+      run = 1;
+    }
+    if (k === 0) boundary = at === 0 || !isWordChar(hay[at - 1]);
+    prev = at;
+  }
+  return 1 + (boundary ? 1 : 0) + Math.min(bestRun - 1, 2);
+};
+
+/**
+ * Literal-substring score of `q` in `hay` (both lowercase): 0 when absent; a
+ * word-boundary hit (either end) outranks one buried inside a word.
+ */
+const exactScore = (hay: string, q: string): number => {
+  const at = hay.indexOf(q);
+  if (at === -1) return 0;
+  const startOk = at === 0 || !isWordChar(hay[at - 1]);
+  const endOk = at + q.length >= hay.length || !isWordChar(hay[at + q.length]);
+  return startOk || endOk ? 4 : 3;
+};
+
+/** A session's searchable fields, folded lowercase. */
+interface SearchDoc {
+  title: string;
+  user: string;
+  agent: string;
+}
+
+/**
+ * Field weights. They dwarf the per-field scores (1–4), so a title hit always
+ * outranks a message-only hit and your words outrank the agent's; within a
+ * field, match quality decides.
+ */
+const FIELD_WEIGHTS: ReadonlyArray<readonly [keyof SearchDoc, number]> = [
+  ["title", 100],
+  ["user", 10],
+  ["agent", 1],
+];
+
+/** Transcript kinds that count as *your* words — `echo` is the optimistic
+ *  local copy of a send, `answer` your reply to an agent question. */
+const USER_KINDS: ReadonlySet<string> = new Set(["user_message", "echo", "answer"]);
+
+/** Transcript kinds that count as the agent's words (its questions included). */
+const AGENT_KINDS: ReadonlySet<string> = new Set(["assistant_text", "question"]);
+
+/** Cap on one message's searchable text — past a couple of KB of a single
+ *  message the recall loss is negligible next to the scan it saves. */
+const SEARCH_TEXT_CAP = 2_048;
+
+const buildDocs = (s: TuiState): Map<string, SearchDoc> => {
+  const docs = new Map<string, SearchDoc>();
+  for (const sess of s.sessions)
+    docs.set(sess.id, {
+      title: (sess.title ?? shortId(sess.id)).toLowerCase(),
+      user: "",
+      agent: "",
+    });
+  for (const l of s.log) {
+    const doc = docs.get(l.sessionId);
+    if (!doc) continue;
+    const text = (l.full ?? l.text).slice(0, SEARCH_TEXT_CAP);
+    if (USER_KINDS.has(l.kind)) doc.user += ` ${text}`;
+    else if (AGENT_KINDS.has(l.kind)) doc.agent += ` ${text}`;
+  }
+  return docs;
+};
+
+/** Sum over AND'd terms of each term's best weighted field score; 0 = no match. */
+const scoreDoc = (doc: SearchDoc, terms: readonly SearchTerm[]): number => {
+  let total = 0;
+  for (const term of terms) {
+    let best = 0;
+    for (const [field, weight] of FIELD_WEIGHTS) {
+      const raw = term.exact
+        ? exactScore(doc[field], term.text)
+        : fuzzyScore(doc[field], term.text);
+      if (raw > 0 && raw * weight > best) best = raw * weight;
+    }
+    if (best === 0) return 0; // AND: one missed term kills the session
+    total += best;
+  }
+  return total;
+};
+
+export interface SessionMatch {
+  session: SessionSnapshot;
+  /** Coarse relevance, higher is better — see the scoring above. */
+  score: number;
+}
+
+let docsLog: readonly LogLine[] | null = null;
+let docsSessions: readonly SessionSnapshot[] | null = null;
+let docCache: Map<string, SearchDoc> = new Map();
+const resultCache = new Map<string, SessionMatch[]>();
+
+/**
+ * The fleet filter's ranked view: every session matching `q`, best first —
+ * title over your messages over the agent's, tight match over scattered, and
+ * equal scores keep the fleet's own order (status groups, then recency). An
+ * empty / all-whitespace query returns every session, unranked. Memoised on
+ * the (log, sessions) refs — both are replaced immutably on change — so a
+ * keystroke costs one pass over the parsed terms, and the reducer's calls and
+ * the render share one computation.
+ */
+export const searchSessions = (s: TuiState, q: string): SessionMatch[] => {
+  if (s.log !== docsLog || s.sessions !== docsSessions) {
+    docsLog = s.log;
+    docsSessions = s.sessions;
+    docCache = buildDocs(s);
+    resultCache.clear();
+  }
+  const hit = resultCache.get(q);
+  if (hit) return hit;
+  const terms = parseQuery(q);
+  const out: SessionMatch[] = [];
+  if (terms.length === 0) {
+    for (const session of s.sessions) out.push({ session, score: 0 });
+  } else {
+    for (const session of s.sessions) {
+      const doc = docCache.get(session.id);
+      const score = doc === undefined ? 0 : scoreDoc(doc, terms);
+      if (score > 0) out.push({ session, score });
+    }
+    // Stable sort: ties keep the order the unfiltered fleet list uses.
+    out.sort((a, b) => b.score - a.score);
+  }
+  if (resultCache.size >= 32) resultCache.clear();
+  resultCache.set(q, out);
+  return out;
 };
 
 export interface Group {

@@ -142,7 +142,7 @@ batched chunk.
 
 Each overlay owns the screen and shows its own fixed key set on the footer:
 
-- **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel. Session search is not a picker anymore — `/` filters the FLEET list in place (same readline motions; `↑↓` keep moving the selection, `enter` accepts, `esc` clears).
+- **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel. Session search is not a picker anymore — `/` filters the FLEET list in place and ranks it: title hits first, then your messages, then the agent's; space-separated terms are AND'd and a leading `'` pins a term to a literal substring (`'hello` won't match a spelled-out "h-e-l-l-o"). While a query is up the list is one flat, relevance-ordered set (same readline motions; `↑↓` keep moving the selection, `enter` accepts, `esc` clears).
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
 - **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⇧⇥` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥p` retarget `f` for model / thinking-effort / provider (pre-selected to the session's current; a different provider forks a fresh session) · `⌥o`/`o` view · `PgUp`/`PgDn` / mouse wheel scroll a long plan. The overlay also shows the session's context meter. `Esc` backs out to the fleet without answering — the review stays pending and `a` re-opens it.
 

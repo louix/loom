@@ -1597,6 +1597,60 @@ test("/ filters the fleet in place; ↑↓ keep moving the selection", async () 
   }
 });
 
+test("with a query up the fleet is one flat, ranked list; 'term pins a literal", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  // Created oldest-first so "unrelated chatter" heads the fleet (newest): the
+  // filtered order must be decided by ranking, not recency.
+  await client.request("session.createStub", {
+    prompt: "mobile layouts",
+    status: "idle",
+    provider: "fake",
+  });
+  await delay(5);
+  await client.request("session.createStub", {
+    prompt: "demobilize the depot",
+    status: "idle",
+    provider: "fake",
+  });
+  await delay(5);
+  await client.request("session.createStub", {
+    prompt: "unrelated chatter",
+    status: "idle",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client);
+  try {
+    await waitFor(stdout, /unrelated chatter/);
+    assert.match(stdout.last, /IDLE/); // closed filter: the grouped view
+
+    stdin.feed("/");
+    await waitFor(stdout, /type to filter/);
+    stdin.feed("mobile");
+    await waitFor(stdout, (s) => !/IDLE/.test(s)); // filtering: one flat list, no headers
+    assert.match(stdout.last, /FLEET · 2\/3 matches/);
+    // "mobile layouts" carries the cursor (the selection rode onto the best
+    // match) and sits above the scattered m…o…b…i…l…e hit inside "demobilize".
+    const lines = stdout.last
+      // oxlint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .split("\n");
+    const cursor = lines.findIndex((l) => l.includes("▍") && l.includes("mobile layouts"));
+    const weak = lines.findIndex((l) => l.includes("demobilize"));
+    assert.notEqual(cursor, -1, "the best match is selected");
+    assert.notEqual(weak, -1, "the weaker match is still listed");
+    assert.ok(cursor < weak, "the best match is listed first");
+
+    stdin.feed("\x15"); // ⌃u — clear, then an exact term: "demobilize" has no "mobile"
+    stdin.feed("'mobile");
+    await waitFor(stdout, (s) => !/demobilize/.test(s));
+    assert.match(stdout.last, /FLEET · 1\/3 match\b/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
 test("u opens the undo picker listing every turn, newest last", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
