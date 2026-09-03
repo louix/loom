@@ -68,13 +68,20 @@ export const repairMalformedToolInputs = (messages: ModelMessage[]): ModelMessag
     let touched = false;
     const fixed = parts.map((p) => {
       if (p.type !== "tool-call" || typeof p.input !== "string") return p;
-      try {
-        JSON.parse(p.input);
-        return p;
-      } catch {
-        touched = true;
-        return { ...p, input: { malformed_tool_input: p.input } };
+      touched = true;
+      // Unwrap repeated JSON encodings (a glitched model can emit its
+      // arguments as a quoted string — the wire would double-encode that);
+      // whatever is still a string — unparseable garbage — is wrapped as an
+      // object carrying the raw text.
+      let v: unknown = p.input;
+      for (let depth = 0; depth < 8 && typeof v === "string"; depth++) {
+        try {
+          v = JSON.parse(v);
+        } catch {
+          break;
+        }
       }
+      return { ...p, input: typeof v === "string" ? { malformed_tool_input: v } : v };
     });
     if (!touched) return m;
     repaired = true;

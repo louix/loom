@@ -139,29 +139,32 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
         },
       ],
       abortSignal: args.abortSignal,
-      ...(args.drainInjections
-        ? {
-            prepareStep: ({ steps, messages: stepMessages }) => {
-              const gen = genCount(steps);
-              if (baseCount < 0) baseCount = stepMessages.length - gen;
+      prepareStep: ({ steps, messages: stepMessages }) => {
+        const gen = genCount(steps);
+        if (baseCount < 0) baseCount = stepMessages.length - gen;
 
-              if (steps.length > 0) {
-                const fresh = args.drainInjections?.() ?? [];
-                for (const msg of fresh) applied.push({ afterGen: gen, msg });
-                if (fresh.length > 0) hooks.appendMessages(fresh);
-              }
+        if (steps.length > 0) {
+          const fresh = args.drainInjections?.() ?? [];
+          for (const msg of fresh) applied.push({ afterGen: gen, msg });
+          if (fresh.length > 0) hooks.appendMessages(fresh);
+        }
 
-              if (applied.length === 0) return undefined;
-              const rebuilt = [...stepMessages];
-              let offset = 0;
-              for (const { afterGen, msg } of applied) {
-                rebuilt.splice(baseCount + afterGen + offset, 0, msg);
-                offset += 1;
-              }
-              return { messages: rebuilt };
-            },
-          }
-        : {}),
+        // A tool call generated MID-TURN with malformed arguments rides
+        // straight onto the next step's request — the entry-level repair only
+        // saw the transcript as the turn started. Sanitize every step.
+        const repaired = repairMalformedToolInputs(stepMessages);
+
+        if (applied.length === 0) {
+          return repaired === stepMessages ? undefined : { messages: repaired };
+        }
+        const rebuilt = [...repaired];
+        let offset = 0;
+        for (const { afterGen, msg } of applied) {
+          rebuilt.splice(baseCount + afterGen + offset, 0, msg);
+          offset += 1;
+        }
+        return { messages: rebuilt };
+      },
       onStepFinish: ({ response }) => {
         const all = response.messages as ModelMessage[];
         if (all.length > persistedGen) {

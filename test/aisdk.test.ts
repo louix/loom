@@ -1000,26 +1000,29 @@ test("dropDanglingToolCalls trims an assistant turn whose tool calls were never 
   const plain = [user, { role: "assistant", content: "hi" }] as never;
   assert.equal(dropDanglingToolCalls(plain), plain);
 });
-test("repairMalformedToolInputs re-encodes unparseable tool-call inputs; healthy ones pass through", () => {
+test("repairMalformedToolInputs normalizes string tool-call inputs; healthy ones pass through", () => {
   const poisoned = '{"path": "a.ts", "sections": \x3carg_value\x3e["300-520"]}';
+  const healthy = { command: "pwd" };
   const asst = {
     role: "assistant",
     content: [
       { type: "text", text: "reading" },
       { type: "tool-call", toolCallId: "t1", toolName: "tilth_read", input: poisoned },
-      { type: "tool-call", toolCallId: "t2", toolName: "bash", input: '{"command":"pwd"}' },
+      { type: "tool-call", toolCallId: "t2", toolName: "bash", input: healthy },
+      { type: "tool-call", toolCallId: "t3", toolName: "bash", input: '"{\\"command\\":\\"ls\\"}"' },
     ],
   };
   const out = repairMalformedToolInputs([{ role: "user", content: "go" }, asst] as never);
-  const parts = ((out[1]?.content ?? []) as Array<{ type: string; input?: string }>).filter(
+  const parts = ((out[1]?.content ?? []) as Array<{ type: string; input?: unknown }>).filter(
     (p) => p.type === "tool-call",
   );
-  // the malformed call is wrapped into an OBJECT carrying the raw text (a
+  // unparseable garbage → wrapped as an OBJECT carrying the raw text (a
   // string input would go out double-encoded and sference still rejects it)
-  const wrapped = parts[0]?.input as unknown as { malformed_tool_input: string };
-  assert.equal(wrapped.malformed_tool_input, poisoned);
-  // the healthy call is byte-identical
-  assert.equal(parts[1]?.input, '{"command":"pwd"}');
+  assert.deepEqual(parts[0]?.input, { malformed_tool_input: poisoned });
+  // already-an-object input is untouched (same reference)
+  assert.equal(parts[1]?.input, healthy);
+  // a double-encoded (quoted-JSON) string unwraps to its parsed value
+  assert.deepEqual(parts[2]?.input, { command: "ls" });
   // a clean transcript comes back as the same array, untouched
   const clean = [{ role: "user", content: "go" }] as never;
   assert.equal(repairMalformedToolInputs(clean), clean);
@@ -1089,6 +1092,70 @@ test("runTurn repairs a poisoned transcript tool-call before the request goes ou
 
   // the model saw a parseable (re-wrapped) tool-call input, not the raw garbage
   const calls = prompts[0]?.filter((p) => p.type === "tool-call") ?? [];
+  const seen = calls[0]?.input as unknown as { malformed_tool_input?: string };
+  assert.equal(typeof seen.malformed_tool_input, "string");
+});
+
+test("runTurn sanitizes a tool call the model generated mid-turn before the next step", async () => {
+  const prompts: Array<Array<{ type: string; input?: unknown }>> = [];
+  let n = 0;
+  const glitchy = new MockLanguageModelV2({
+    doStream: async (opts) => {
+      n += 1;
+      prompts.push(
+        opts.prompt.flatMap((m) => (typeof m.content === "string" ? [] : m.content)) as never,
+      );
+      const chunks: Chunk[] =
+        n === 1
+          ? [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: "r1", modelId: "mock", timestamp: new Date(0) },
+              {
+                type: "tool-call",
+                toolCallId: "tc1",
+                toolName: "ping",
+                input: '{"broken": \x3carg_value\x3e}',
+              },
+              {
+                type: "finish",
+                finishReason: "tool-calls",
+                usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+              },
+            ]
+          : [
+              { type: "stream-start", warnings: [] },
+              { type: "response-metadata", id: "r2", modelId: "mock", timestamp: new Date(0) },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "done" },
+              { type: "text-end", id: "t" },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+              },
+            ];
+      return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
+    },
+  }) as unknown as LanguageModel;
+
+  await runTurn({
+    sessionId: "s1",
+    model: glitchy,
+    system: undefined,
+    messages: [{ role: "user", content: "start" }],
+    tools: {
+      ping: tool({ description: "p", inputSchema: z.object({}), execute: async () => "pong" }),
+    },
+    maxSteps: 3,
+    abortSignal: new AbortController().signal,
+    mapper: new AisdkEventMapper("s1", "mock"),
+    hooks: { emit: () => {}, appendMessages: () => {} },
+  });
+
+  // step 2's prompt must carry the mid-turn tool call re-wrapped, not the raw
+  // garbage the SDK would otherwise put straight on the wire
+  assert.equal(prompts.length >= 2, true);
+  const calls = prompts[1]?.filter((p) => p.type === "tool-call") ?? [];
   const seen = calls[0]?.input as unknown as { malformed_tool_input?: string };
   assert.equal(typeof seen.malformed_tool_input, "string");
 });
