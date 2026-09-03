@@ -811,12 +811,18 @@ const logContext = (state: TuiState, width: number): LogContext => {
   // its subtree's lines (visibleLog hides them here), and drilled in the pane
   // header already names the child.
   const child = focusedChildOf(state);
+  const subagents = selectedSession(state)?.subagents ?? [];
   const iw = inside(width);
+  // The cache key must cover everything the geometry depends on beyond the log
+  // itself: the RESOLVED child (a drained child un-narrows the pane while
+  // `selectedChild` itself stays set) and the sub-agent name map (a name that
+  // arrives after its events, or a rename, changes the ⑂ prefix and re-wraps).
+  const subSig = subagents.map((a) => `${a.id}=${a.name}`).join(",");
   return {
     raw: state.log,
     lines: visibleLog(state, child),
     iw,
-    key: `${iw}|${state.logFilter}|${state.selectedId ?? ""}|${state.selectedChild ?? ""}`,
+    key: `${iw}|${state.logFilter}|${state.selectedId ?? ""}|${child?.key ?? ""}|${subSig}`,
   };
 };
 

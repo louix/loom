@@ -55,7 +55,7 @@ import {
   type LogLine,
   type TuiState,
 } from "@loom/tui/model";
-import { detailRows, promptPaneRows, promptRows } from "@loom/tui/components";
+import { detailRows, logRowCount, promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   bar,
@@ -2487,4 +2487,77 @@ test("a model picker opened while the catalog loads resolves when the fresh list
     ["claude-opus-5", "claude-sonnet-5"],
   );
   assert.equal(settled.picker?.emptyText, undefined);
+});
+
+test("logRowCount's cache key tracks the resolved child and sub-agent names", () => {
+  const seed = (sessions: SessionSnapshot[]): TuiState => {
+    let t = reduce(initialState(), { t: "hello", daemon, sessions });
+    t = reduce(t, {
+      t: "push",
+      frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
+    });
+    t = reduce(t, {
+      t: "push",
+      frame: push(
+        2,
+        ev({
+          sessionId: "fan",
+          type: "assistant_text",
+          text: `from reviewer ${"wrap ".repeat(40)}`,
+          agentId: "t1",
+        }),
+      ),
+    });
+    return t;
+  };
+
+  // Drill into the reviewer sub-agent: the pane narrows to its stream.
+  let s = seed([fanout]);
+  const full = logRowCount(s, 60);
+  s = reduce(s, { t: "childEnter" });
+  s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
+  const narrowed = logRowCount(s, 60);
+  assert.ok(narrowed > 0 && narrowed < full, "the narrowed pane measures its own stream");
+
+  // The child drains: a session_updated retires it WITHOUT clamping
+  // `selectedChild`, so focusedChildOf resolves to null (whole-session view)
+  // while the raw selection is unchanged — the cached total must follow the
+  // resolved child, not the raw selection.
+  s = reduce(s, {
+    t: "push",
+    frame: {
+      kind: "push",
+      seq: 3,
+      type: "session_updated",
+      session: { ...fanout, subagents: [{ id: "t1", name: "reviewer", active: false }] },
+      version: 2,
+    },
+  });
+  assert.equal(focusedChildOf(s), null);
+  assert.equal(logRowCount(s, 60), full, "un-narrowed pane measures the full log again");
+
+  // A rename lengthens the ⑂ prefix and so the wrap — the total must be
+  // re-measured, not served from the cache. session_updated never clamps the
+  // selection, so the pane stays un-narrowed throughout (compare a replay).
+  const renamed: SessionSnapshot = {
+    ...fanout,
+    subagents: [{ id: "t1", name: "reviewer-with-a-much-longer-display-name", active: true }],
+  };
+  const plain = seed([fanout]);
+  const before = logRowCount(plain, 60);
+  const renamedState = reduce(plain, {
+    t: "push",
+    frame: { kind: "push", seq: 3, type: "session_updated", session: renamed, version: 2 },
+  });
+  assert.equal(focusedChildOf(renamedState), null);
+  assert.notEqual(
+    logRowCount(renamedState, 60),
+    before,
+    "the longer prefix really re-wraps the tagged line",
+  );
+  assert.equal(
+    logRowCount(renamedState, 60),
+    logRowCount(seed([renamed]), 60),
+    "renamed total matches a fresh measurement",
+  );
 });
