@@ -39,7 +39,8 @@ Consequences:
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
 | `→` / `←`, `l` / `h` | drill into the selected session's sub-agents & background tasks / back out — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream |
-| `PgUp` / `PgDn`      | scroll the event log                                                                                                                               |
+| `PgUp` / `PgDn`      | scroll the event log — a scrolled-back log stays pinned as new events land (accent border) instead of following the tail                             |
+| `Home` / `End`       | jump the event log to the first line held / back to the live tail                                                                                   |
 | `⇥`                  | toggle the fleet list: **overview** (fleet + detail + events) ↔ **session** (detail + events, full width)                                          |
 | `Esc`                | one step back: the session view → overview, then out of a drill-down, then out of an overlay — never quits                                         |
 | `Space`              | open the command palette                                                                                                                           |

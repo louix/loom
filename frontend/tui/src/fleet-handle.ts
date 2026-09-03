@@ -620,8 +620,26 @@ export const mkFleetHandle = ({
       state.selectedId !== prev.selectedId ||
       state.logFilter !== prev.logFilter ||
       state.selectedChild !== prev.selectedChild
-    )
+    ) {
       logScroll = 0;
+    } else if (a.t === "push" && logScroll > 0 && state.log !== prev.log) {
+      // Scrolled back through history (the pane border shows the accent) and a
+      // live frame just landed at the tail: pin the viewport to the lines
+      // you're reading instead of letting the new rows shove your view older.
+      // `logScroll` counts physical rows up from the live tail, so grow it by
+      // however many rows the log gained — `end = total - logScroll` (see
+      // EventLog) then holds still and the same window renders. Clamp to the
+      // top the way `scrollUp` does; a LOG_CAP trim (net rows <= 0) is a no-op.
+      // Only `push` (tail append): `backfill` rows land *above* the viewport,
+      // where a tail-anchored offset already keeps your place, and
+      // `loadOlderHistory` owns the top-pinned case.
+      const width = logPaneWidth();
+      const grew = logRowCount(state, width) - logRowCount(prev, width);
+      if (grew > 0) {
+        const max = Math.max(0, logRowCount(state, width) - store.get().logPage);
+        logScroll = Math.min(max, logScroll + grew);
+      }
+    }
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
     if (state.plan?.requestId !== prev.plan?.requestId) planScroll = 0;
@@ -2169,13 +2187,20 @@ export const mkFleetHandle = ({
 
     // ---- browse ----
 
-    // The fleet filter is up: typing edits it (a single line, no history); ↑/↓
-    // and PgUp/PgDn fall through — the selection and the log keep working. ⏎
-    // accepts (and keeps ⏎'s fleet-row meaning below); esc clears.
+    // The fleet filter is up: typing edits it (a single line, no history); ↑/↓,
+    // PgUp/PgDn and Home/End fall through — the selection and the log keep
+    // working. ⏎ accepts (and keeps ⏎'s fleet-row meaning below); esc clears.
     if (state.find) {
       if (key.escape) return void dispatch({ t: "closeFind" });
       if (key.return) dispatch({ t: "closeFind" });
-      else if (!key.upArrow && !key.downArrow && !key.pageUp && !key.pageDown) {
+      else if (
+        !key.upArrow &&
+        !key.downArrow &&
+        !key.pageUp &&
+        !key.pageDown &&
+        !key.home &&
+        !key.end
+      ) {
         const res = applyKey(state.find.buffer, input, key, { multiline: false });
         if (res.kind === "buffer") return void dispatch({ t: "findSet", buffer: res.buffer });
         return; // unbound modified keys — ignore
@@ -2186,6 +2211,15 @@ export const mkFleetHandle = ({
     }
     if (key.pageDown) {
       logScroll = Math.max(0, logScroll - Math.max(1, logPage - 1));
+      return publish();
+    }
+    // Home → the oldest line held (scrollUp clamps at the top and prefetches the
+    // next older history page as it lands there); End → back to the live tail.
+    if (key.home) {
+      return scrollUp(shownLogRows());
+    }
+    if (key.end) {
+      logScroll = 0;
       return publish();
     }
     // Fleet drill-down: → enters the selected session's child rows (its live

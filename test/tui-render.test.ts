@@ -798,6 +798,60 @@ test("paging a wrapped log folds in older pages and reaches the first event", as
   }
 });
 
+test("a scrolled-back log stays pinned as new events land; Home/End jump to the ends", async () => {
+  const { connect, cleanup } = await harness();
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "a chatty session",
+    status: "running",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(first, {}, { rows: 22 });
+  try {
+    await waitFor(stdout, /EVENTS/);
+    // Thirty short lines, streamed in after the client subscribed.
+    for (let i = 1; i <= 30; i++) {
+      await first.request("dev.emit", {
+        event: { sessionId: s.id, type: "assistant_text", text: `pinline-${String(i).padStart(2, "0")}` },
+      });
+    }
+    await waitFor(stdout, /pinline-30/);
+
+    // Scroll back a couple of pages: the border turns accent and older lines
+    // are now in view, the live tail is gone.
+    stdin.feed("\x1b[5~");
+    stdin.feed("\x1b[5~");
+    await waitFor(stdout, /pinline-18/);
+    assert.doesNotMatch(stdout.last, /pinline-30/, "scrolled off the live tail");
+    const visible = (frame: string): string[] =>
+      [...frame.matchAll(/pinline-\d\d/g)].map((m) => m[0]);
+    const before = visible(stdout.last);
+
+    // A fresh event lands at the tail — the viewport must not move: the exact
+    // same lines render and the new one stays below the window.
+    await first.request("dev.emit", {
+      event: { sessionId: s.id, type: "assistant_text", text: "brandnew-line" },
+    });
+    await delay(150);
+    assert.deepEqual(visible(stdout.last), before, "the scrolled viewport held still");
+    assert.doesNotMatch(stdout.last, /brandnew-line/, "the new line stayed below the window");
+
+    // End snaps back to the live tail; the new line is there.
+    stdin.feed("\x1b[F");
+    await waitFor(stdout, /brandnew-line/);
+    assert.doesNotMatch(stdout.last, /pinline-01/, "End is at the bottom, not the top");
+
+    // Home jumps to the very first line held.
+    stdin.feed("\x1b[H");
+    await waitFor(stdout, /pinline-01/);
+    assert.doesNotMatch(stdout.last, /brandnew-line/, "Home is at the top, not the bottom");
+  } finally {
+    app.unmount();
+    await first.close();
+    await cleanup();
+  }
+});
+
 test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
