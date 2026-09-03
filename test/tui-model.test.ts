@@ -1671,6 +1671,45 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
   assert.equal(s.prompt?.buffer.text, "live", "returns to the stashed live draft at index 0");
 });
 
+test("editing a recalled history entry detaches it from the walk", () => {
+  let s = initialState();
+  s = reduce(s, { t: "pushHistory", text: "hi" });
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+  });
+  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
+  assert.equal(s.prompt?.buffer.text, "hi");
+  assert.equal(s.prompt?.histIdx, 1);
+
+  // A cursor-only move (same text) does not detach.
+  s = reduce(s, { t: "promptSet", buffer: buffer("hi", 0) });
+  assert.equal(s.prompt?.histIdx, 1);
+
+  // Editing the recalled entry makes it the live buffer: ↓ is a no-op, ↑
+  // restarts the walk from the newest entry.
+  s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
+  assert.equal(s.prompt?.histIdx, 0);
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  assert.equal(s.prompt?.buffer.text, "hello", "↓ at the live buffer keeps the edit");
+  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
+  assert.equal(s.prompt?.buffer.text, "hi", "↑ restarts the walk from the newest entry");
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  assert.equal(s.prompt?.buffer.text, "hello", "↓ returns to the detached edit");
+});
+
+test("↓ at the live buffer never clobbers it with the stashed draft", () => {
+  let s = initialState();
+  s = reduce(s, { t: "pushHistory", text: "old" });
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+  });
+  s = reduce(s, { t: "promptSet", buffer: buffer("typed") });
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  assert.equal(s.prompt?.buffer.text, "typed", "↓ is a no-op at the live buffer");
+});
+
 test("echo appends a local log line and never truncates", () => {
   let s = initialState();
   const echo = (seq: number, text: string, ts: number): LogLine => ({

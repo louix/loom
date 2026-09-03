@@ -730,8 +730,16 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "openPrompt":
       return { ...s, mode: "prompt", prompt: a.prompt, confirm: null };
 
-    case "promptSet":
-      return s.prompt ? { ...s, prompt: { ...s.prompt, buffer: a.buffer } } : s;
+    case "promptSet": {
+      const p = s.prompt;
+      if (!p) return s;
+      // Editing a recalled history entry detaches it from the walk: the text
+      // becomes the live buffer (histIdx 0) — ↓ can't yank it back to the
+      // stashed draft, and ↑ restarts from the newest entry. A cursor-only
+      // move (same text) keeps the walk position.
+      const histIdx = a.buffer.text !== p.buffer.text ? 0 : p.histIdx;
+      return { ...s, prompt: { ...p, buffer: a.buffer, histIdx } };
+    }
 
     case "promptCycleMode": {
       if (!s.prompt || s.prompt.kind !== "new") return s;
@@ -744,7 +752,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "promptHistoryNav": {
       if (!s.prompt || s.promptHistory.length === 0) return s;
       const p = s.prompt;
-      const draft = p.histIdx === 0 && a.dir === -1 ? p.buffer.text : p.draft;
+      // At the live buffer there is nothing newer — ↓ must not clobber it
+      // with the stashed draft.
+      if (p.histIdx === 0 && a.dir === 1) return s;
+      const draft = p.histIdx === 0 ? p.buffer.text : p.draft;
       const idx = Math.max(
         0,
         Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
