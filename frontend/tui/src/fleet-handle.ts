@@ -821,7 +821,10 @@ export const mkFleetHandle = ({
               note("worktree has uncommitted changes — commit or stash, then retry", "bad");
               return "";
             case "conflict":
-              note(`rebase hit conflicts — branch left unchanged; integrate ${r.base} by hand`, "bad");
+              note(
+                `rebase hit conflicts — branch left unchanged; integrate ${r.base} by hand`,
+                "bad",
+              );
               return "";
             case "busy":
               note("a rebase/merge is already in progress in this worktree", "dim");

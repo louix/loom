@@ -1379,9 +1379,12 @@ test("session.rebase: replays a behind branch on demand with [auto_rebase] off",
     git("commit", "-q", "-m", "main: upstream.txt");
     userMsgs.length = 0; // drop the opening-prompt echo
 
-    const r1 = await c.request<{ outcome: string; base: string; behind: number }>("session.rebase", {
-      id: snap.id,
-    });
+    const r1 = await c.request<{ outcome: string; base: string; behind: number }>(
+      "session.rebase",
+      {
+        id: snap.id,
+      },
+    );
     assert.equal(r1.outcome, "updated");
     assert.equal(r1.behind, 1);
     assert.ok(existsSync(join(wt, "upstream.txt")), "branch picked up the base commit");

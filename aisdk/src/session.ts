@@ -496,7 +496,8 @@ export class AisdkSession implements AgentSession {
           this.#declaredReadonly = new Map(
             [...hub.readOnlyHints].filter(
               ([name]) =>
-                (base as Record<string, unknown>)[name] === (hub.tools as Record<string, unknown>)[name],
+                (base as Record<string, unknown>)[name] ===
+                (hub.tools as Record<string, unknown>)[name],
             ),
           );
         }

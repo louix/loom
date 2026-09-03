@@ -129,7 +129,10 @@ test("plan mode: an MCP tool the server declares read-only stays mounted and run
     await s.close();
 
     assert.deepEqual(perms, []); // declared read-only — no prompt in plan mode
-    assert.equal(evs.some((e) => e.type === "tool_result" && e.ok), true);
+    assert.equal(
+      evs.some((e) => e.type === "tool_result" && e.ok),
+      true,
+    );
     assert.equal(evs.at(-1)?.type, "result");
   } finally {
     cleanup();

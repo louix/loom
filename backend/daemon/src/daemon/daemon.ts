@@ -1041,10 +1041,7 @@ export class Daemon {
    * to its caller instead. Returns the raw outcome (null when the session is
    * gone or has no worktree) plus whether it messaged the agent.
    */
-  #syncOntoBase(
-    id: string,
-    nudge: boolean,
-  ): { outcome: RebaseOutcome | null; nudged: boolean } {
+  #syncOntoBase(id: string, nudge: boolean): { outcome: RebaseOutcome | null; nudged: boolean } {
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return { outcome: null, nudged: false };
 
@@ -1964,7 +1961,8 @@ export class Daemon {
       const id = reqString(params, "id");
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!snap.worktree) throw new RpcError("bad_request", "session runs in place — no branch to rebase");
+      if (!snap.worktree)
+        throw new RpcError("bad_request", "session runs in place — no branch to rebase");
       return this.#syncOntoBase(id, false).outcome ?? { outcome: "no-base" as const };
     });
 

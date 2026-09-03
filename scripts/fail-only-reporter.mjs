@@ -39,7 +39,13 @@ export default async function* failuresOnly(source) {
       const uninformative = !text || /^(Error:\s*)?test failed$/.test(text.trim());
       if (uninformative) {
         const captured = stderrByFile.get(abs(d.file));
-        if (captured) lines.push(...captured.trimEnd().split("\n").map((l) => pad + l));
+        if (captured)
+          lines.push(
+            ...captured
+              .trimEnd()
+              .split("\n")
+              .map((l) => pad + l),
+          );
       }
       yield lines.join("\n") + "\n";
     }
