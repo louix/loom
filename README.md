@@ -137,8 +137,8 @@ the Vercel AI SDK.
   (or task's) own events. `v` toggles `full` ↔ `chat` (conversation only: tool
   traffic folds to `⚙ N
 tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it (`Home`/`End`
-jump to the first line / the live tail; a scrolled-back log stays put as new
-events land rather than chasing the tail), `⇥`
+  jump to the first line / the live tail; a scrolled-back log stays put as new
+  events land rather than chasing the tail), `⇥`
   toggles the fleet list — hiding it gives the session's detail + stream the
   whole width — and `o` opens the pending request — or the session transcript
   (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR` read-only,

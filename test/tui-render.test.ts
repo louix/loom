@@ -11,9 +11,16 @@ import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
-import { FooterArea, logRowCount, PromptPane, promptPaneRows, promptRows } from "@loom/tui/components";
+import {
+  FooterArea,
+  logRowCount,
+  PromptPane,
+  promptPaneRows,
+  promptRows,
+} from "@loom/tui/components";
 import { mkFleetHandle } from "@loom/tui/fleet-handle";
-import { initialState, makePrompt, reduce } from "@loom/tui/model";import type { FakeProvider } from "@loom/connector-mock";
+import { initialState, makePrompt, reduce } from "@loom/tui/model";
+import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 const ESC = "\x1b";
@@ -812,7 +819,11 @@ test("a scrolled-back log stays pinned as new events land; Home/End jump to the 
     // Thirty short lines, streamed in after the client subscribed.
     for (let i = 1; i <= 30; i++) {
       await first.request("dev.emit", {
-        event: { sessionId: s.id, type: "assistant_text", text: `pinline-${String(i).padStart(2, "0")}` },
+        event: {
+          sessionId: s.id,
+          type: "assistant_text",
+          text: `pinline-${String(i).padStart(2, "0")}`,
+        },
       });
     }
     await waitFor(stdout, /pinline-30/);

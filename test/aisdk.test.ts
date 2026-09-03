@@ -1009,7 +1009,12 @@ test("repairMalformedToolInputs normalizes string tool-call inputs; healthy ones
       { type: "text", text: "reading" },
       { type: "tool-call", toolCallId: "t1", toolName: "tilth_read", input: poisoned },
       { type: "tool-call", toolCallId: "t2", toolName: "bash", input: healthy },
-      { type: "tool-call", toolCallId: "t3", toolName: "bash", input: '"{\\"command\\":\\"ls\\"}"' },
+      {
+        type: "tool-call",
+        toolCallId: "t3",
+        toolName: "bash",
+        input: '"{\\"command\\":\\"ls\\"}"',
+      },
     ],
   };
   const out = repairMalformedToolInputs([{ role: "user", content: "go" }, asst] as never);

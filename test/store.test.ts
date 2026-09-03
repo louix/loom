@@ -179,9 +179,7 @@ test("markMidRunInterrupted flips starting/running/awaiting to interrupted", () 
     store.create({ id: "d", provider: "stub" });
     store.setStatus("d", stateIdle);
 
-    const flipped = store
-      .markMidRunInterrupted()
-      .sort((a, b) => a.id.localeCompare(b.id));
+    const flipped = store.markMidRunInterrupted().sort((a, b) => a.id.localeCompare(b.id));
     assert.deepEqual(flipped, [
       { id: "a", was: "starting" },
       { id: "b", was: "running" },
