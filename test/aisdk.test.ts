@@ -1103,6 +1103,7 @@ test("runTurn repairs a poisoned transcript tool-call before the request goes ou
 
 test("runTurn sanitizes a tool call the model generated mid-turn before the next step", async () => {
   const prompts: Array<Array<{ type: string; input?: unknown }>> = [];
+  const appended: ModelMessage[] = [];
   let n = 0;
   const glitchy = new MockLanguageModelV2({
     doStream: async (opts) => {
@@ -1154,7 +1155,12 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
     maxSteps: 3,
     abortSignal: new AbortController().signal,
     mapper: new AisdkEventMapper("s1", "mock"),
-    hooks: { emit: () => {}, appendMessages: () => {} },
+    hooks: {
+      emit: () => {},
+      appendMessages: (m) => {
+        appended.push(...m);
+      },
+    },
   });
 
   // step 2's prompt must carry the mid-turn tool call re-wrapped, not the raw
@@ -1163,6 +1169,14 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
   const calls = prompts[1]?.filter((p) => p.type === "tool-call") ?? [];
   const seen = calls[0]?.input as unknown as { malformed_tool_input?: string };
   assert.equal(typeof seen.malformed_tool_input, "string");
+  // and the persisted messages (#messages + store) carry the sanitized form,
+  // so retries / forks / compaction never inherit the raw unrenderable text
+  const persistedCall = appended
+    .flatMap((m) =>
+      Array.isArray(m.content) ? (m.content as Array<{ type: string; input?: unknown }>) : [],
+    )
+    .find((p) => p.type === "tool-call") as { input: { malformed_tool_input?: string } } | undefined;
+  assert.equal(typeof persistedCall?.input.malformed_tool_input, "string");
 });
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {
   const { db, cleanup } = tmpDb();

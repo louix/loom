@@ -168,7 +168,10 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
       onStepFinish: ({ response }) => {
         const all = response.messages as ModelMessage[];
         if (all.length > persistedGen) {
-          hooks.appendMessages(all.slice(persistedGen));
+          // Persist the sanitized form: a mid-turn glitched call lands in
+          // #messages / the store as the wrapped object, so retries, forks
+          // and compaction never inherit the raw unrenderable text.
+          hooks.appendMessages(repairMalformedToolInputs(all.slice(persistedGen)));
           persistedGen = all.length;
         }
       },
