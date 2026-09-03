@@ -392,15 +392,12 @@ export const mkFleetHandle = ({
     client
       .request<EventPush[]>("session.events", { id })
       .then((frames) => {
-        // De-dupe client-side against what's already in the log (O(n+m), not an
-        // O(n) `log.some` scan per frame — U1), and mark the survivors `replay`
-        // so `applyPush` treats them as transcript, not live state (U2).
-        const have = new Set<string>();
-        for (const l of state.log) have.add(`${l.epoch}:${l.seq}`);
-        for (const frame of frames) {
-          if (have.has(`${frame.epoch ?? ""}:${frame.seq}`)) continue;
-          dispatch({ t: "push", frame, replay: true });
-        }
+        // The reducer dedupes by (epoch, seq) against the log and re-sorts by
+        // `ts`, so the durable history (every epoch) interleaves correctly with
+        // whatever the `hello` ring replay already seeded (current epoch only) —
+        // rather than a pre-daemon-restart turn landing below the newer frames.
+        // Transcript, not live state: no notice flashes (U2).
+        dispatch({ t: "backfill", frames });
       })
       .catch(() => {
         backfilledIds.delete(id); // an error / older daemon — allow a retry
@@ -2119,8 +2116,15 @@ export const mkFleetHandle = ({
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
         dispatch({ t: "connection", value: "live" });
-        backfilledIds.clear(); // epoch / history may differ — allow a re-pull
+        // Epoch / history may differ across the gap. Clearing the latch alone
+        // only *permits* a re-pull — `selectedId` doesn't change, so nothing
+        // re-triggers it and the selected session's log keeps a stale tail
+        // (worse: a daemon restart's new epoch never gets stitched in). Re-pull
+        // it now; the reducer folds the durable history back in by (epoch, seq)
+        // and re-sorts, so this is idempotent.
+        backfilledIds.clear();
         refetch();
+        backfillHistory();
         if (restarting) {
           restarting = false;
           dispatch({ t: "notice", text: "daemon restarted", tone: "good" });
@@ -2131,6 +2135,7 @@ export const mkFleetHandle = ({
         log?.info("resync");
         backfilledIds.clear();
         refetch();
+        backfillHistory();
       }),
       client.on("close", () => {
         log?.warn("connection closed");
