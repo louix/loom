@@ -1569,7 +1569,13 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       const p = isObj(params) ? params : {};
       const limit = typeof p["limit"] === "number" ? p["limit"] : 500;
-      return this.#sessionEvents.list(id, { limit });
+      // Optional scroll-back cursor: page strictly older than this (epoch, seq).
+      const b = isObj(p["before"]) ? (p["before"] as Record<string, unknown>) : null;
+      const before =
+        b && typeof b["epoch"] === "string" && typeof b["seq"] === "number"
+          ? { epoch: b["epoch"], seq: b["seq"] }
+          : undefined;
+      return this.#sessionEvents.list(id, { limit, ...(before ? { before } : {}) });
     });
 
     // --- session control (Claude adapter, milestone 2) --------------------

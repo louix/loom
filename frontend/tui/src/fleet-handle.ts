@@ -210,6 +210,9 @@ export interface MkFleetHandleInput {
   readonly themeState?: string;
   /** Test seam: stands in for the real `$EDITOR` handoff. */
   readonly openEditorOverride?: EditorHandoff;
+  /** Test seam: rows per durable-history page (default 500). Lets a test drive
+   *  scroll-back paging without emitting hundreds of events. */
+  readonly historyPageSize?: number;
 }
 
 const deriveView = (
@@ -314,6 +317,7 @@ export const mkFleetHandle = ({
   logs,
   themeState,
   openEditorOverride,
+  historyPageSize,
 }: MkFleetHandleInput): FleetHandle => {
   // File-only (stderr is silenced upstream); absent in tests, where nothing logs.
   const log = logs ? makeLogger("tui") : null;
@@ -367,8 +371,12 @@ export const mkFleetHandle = ({
   // the counter away (leaving you to scroll back down the same distance before
   // the viewport moves). Wrapped rows ≥ line count; the extra page covers wrap.
   const scrollUp = (by: number): void => {
-    const ceiling = visibleLog(state).length + store.get().logPage;
+    const lines = visibleLog(state).length;
+    const ceiling = lines + store.get().logPage;
     logScroll = Math.min(ceiling, logScroll + by);
+    // Prefetch the next older page as the viewport nears the top, so paging back
+    // feels seamless instead of stalling at the current oldest line.
+    if (logScroll > lines - store.get().logPage) loadOlderHistory();
     publish();
   };
 
@@ -381,16 +389,35 @@ export const mkFleetHandle = ({
     publish();
   };
 
-  // Sessions whose durable history has been pulled once this connection. A
-  // resync / reconnect clears it — the epoch (and thus the history) may differ.
-  const backfilledIds = new Set<string>();
+  // Per-session scroll-back cursor into the daemon's durable history. `oldest`
+  // is the (epoch, seq) of the earliest frame we hold; the next page asks for
+  // everything strictly older. `done` latches once the daemon returns a short
+  // page — nothing older exists. A resync / reconnect clears the map: the epoch
+  // (and thus history identity) may differ across the gap.
+  interface HistoryCursor {
+    oldest?: { epoch: string; seq: number };
+    done: boolean;
+    loading: boolean;
+  }
+  const history = new Map<string, HistoryCursor>();
+
+  // Rows per page. The first pull matches the daemon's own default so a session
+  // that fits in one page behaves exactly as before; scroll-back adds more.
+  const HISTORY_PAGE = historyPageSize ?? 500;
+
+  // The RPC returns frames oldest-first, so `frames[0]` is the earliest.
+  const earliestCursor = (frames: readonly EventPush[]): HistoryCursor["oldest"] => {
+    const f = frames[0];
+    return f ? { epoch: f.epoch ?? "", seq: f.seq } : undefined;
+  };
 
   const backfillHistory = (): void => {
     const id = state.selectedId;
-    if (!id || backfilledIds.has(id)) return;
-    backfilledIds.add(id);
+    if (!id || history.has(id)) return;
+    const cursor: HistoryCursor = { done: false, loading: true };
+    history.set(id, cursor);
     client
-      .request<EventPush[]>("session.events", { id })
+      .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE })
       .then((frames) => {
         // The reducer dedupes by (epoch, seq) against the log and re-sorts by
         // `ts`, so the durable history (every epoch) interleaves correctly with
@@ -398,9 +425,49 @@ export const mkFleetHandle = ({
         // rather than a pre-daemon-restart turn landing below the newer frames.
         // Transcript, not live state: no notice flashes (U2).
         dispatch({ t: "backfill", frames });
+        cursor.loading = false;
+        if (frames.length < HISTORY_PAGE) cursor.done = true;
+        const oldest = earliestCursor(frames);
+        if (oldest) cursor.oldest = oldest;
       })
       .catch(() => {
-        backfilledIds.delete(id); // an error / older daemon — allow a retry
+        history.delete(id); // an error / older daemon — allow a retry
+      });
+  };
+
+  // Pull the next older page when the log is scrolled near its top. The reducer
+  // folds the page in by (epoch, seq) and re-sorts, so this is idempotent —
+  // overlapping the ring replay or a double fire both collapse to the same log.
+  // Keep the viewport put by nudging `logScroll` past the lines that land above
+  // it; that count is raw (unwrapped), so wrap on the new lines self-corrects on
+  // the next scroll. No-op once `done` latches or a fetch is already in flight.
+  const loadOlderHistory = (): void => {
+    const id = state.selectedId;
+    if (!id) return;
+    const cursor = history.get(id);
+    if (!cursor || cursor.done || cursor.loading || !cursor.oldest) return;
+    cursor.loading = true;
+    client
+      .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
+      .then((frames) => {
+        const onSame = state.selectedId === id;
+        const before = onSame ? visibleLog(state).length : 0;
+        dispatch({ t: "backfill", frames });
+        cursor.loading = false;
+        if (frames.length < HISTORY_PAGE) cursor.done = true;
+        const oldest = earliestCursor(frames);
+        if (oldest) cursor.oldest = oldest;
+        if (onSame) {
+          const added = visibleLog(state).length - before;
+          if (added > 0) {
+            const ceiling = visibleLog(state).length + store.get().logPage;
+            logScroll = Math.min(ceiling, logScroll + added);
+            publish();
+          }
+        }
+      })
+      .catch(() => {
+        cursor.loading = false; // allow a retry on the next scroll
       });
   };
 
@@ -2148,7 +2215,7 @@ export const mkFleetHandle = ({
         // (worse: a daemon restart's new epoch never gets stitched in). Re-pull
         // it now; the reducer folds the durable history back in by (epoch, seq)
         // and re-sorts, so this is idempotent.
-        backfilledIds.clear();
+        history.clear();
         refetch();
         backfillHistory();
         if (restarting) {
@@ -2159,7 +2226,7 @@ export const mkFleetHandle = ({
       }),
       client.on("resync", () => {
         log?.info("resync");
-        backfilledIds.clear();
+        history.clear();
         refetch();
         backfillHistory();
       }),

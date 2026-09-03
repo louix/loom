@@ -389,3 +389,54 @@ test("SessionEventStore: append/list preserves order, respects limit, cascades o
     cleanup();
   }
 });
+
+test("SessionEventStore: `before` cursor pages strictly older rows, across epochs", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    new SessionStore(db).create({ id: "s1", provider: "claude" });
+    const events = new SessionEventStore(db);
+
+    // Six rows: seq 1-3 under epoch-a, then seq 1-3 again under epoch-b (a
+    // daemon restart resets the counter). Insertion order is the true order.
+    for (const [epoch, seq, ts] of [
+      ["epoch-a", 1, 1],
+      ["epoch-a", 2, 2],
+      ["epoch-a", 3, 3],
+      ["epoch-b", 1, 4],
+      ["epoch-b", 2, 5],
+      ["epoch-b", 3, 6],
+    ] as const) {
+      events.append("s1", seq, epoch, {
+        type: "assistant_text",
+        sessionId: "s1",
+        ts,
+        text: `${epoch}#${seq}`,
+      });
+    }
+
+    // Page back from the newest: last 2, then the 2 before that, then the rest.
+    const p1 = events.list("s1", { limit: 2 });
+    assert.deepEqual(texts(p1), ["epoch-b#2", "epoch-b#3"]);
+
+    const p2 = events.list("s1", { limit: 2, before: { epoch: "epoch-b", seq: 2 } });
+    assert.deepEqual(texts(p2), ["epoch-a#3", "epoch-b#1"]);
+
+    // Cursor straddles the epoch boundary — `seq` alone would be ambiguous here.
+    const p3 = events.list("s1", { limit: 10, before: { epoch: "epoch-a", seq: 3 } });
+    assert.deepEqual(texts(p3), ["epoch-a#1", "epoch-a#2"]);
+
+    // Oldest row: nothing is strictly older.
+    assert.deepEqual(events.list("s1", { before: { epoch: "epoch-a", seq: 1 } }), []);
+
+    // Unknown cursor reports "nothing older" rather than the newest page again.
+    assert.deepEqual(events.list("s1", { before: { epoch: "ghost", seq: 9 } }), []);
+
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+const texts = (frames: { event: unknown }[]): string[] =>
+  frames.map((f) => (f.event as { text: string }).text);

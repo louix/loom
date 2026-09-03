@@ -39,6 +39,7 @@ export const App = ({
   themeState,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
+  historyPageSize,
 }: {
   client: LoomClient;
   /** Daemon + TUI log paths for the "view logs" palette command. */
@@ -46,6 +47,8 @@ export const App = ({
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
   openEditor?: EditorHandoff;
+  /** Test seam: rows per durable-history page (see {@link mkFleetHandle}). */
+  historyPageSize?: number;
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
@@ -67,6 +70,7 @@ export const App = ({
       ...(logs ? { logs } : {}),
       ...(themeState ? { themeState } : {}),
       ...(openEditorOverride ? { openEditorOverride } : {}),
+      ...(historyPageSize !== undefined ? { historyPageSize } : {}),
     }),
   );
 

@@ -35,14 +35,41 @@ export class SessionEventStore {
   }
 
   /** The session's persisted history as push frames, oldest first, capped to
-   *  the most recent `limit` (default 500 — see the daemon's RPC handler). */
-  list(sessionId: string, opts: { limit?: number } = {}): EventPush[] {
+   *  the most recent `limit` (default 500 — see the daemon's RPC handler).
+   *
+   *  `before` pages backwards for scroll-back: pass the (epoch, seq) of the
+   *  earliest frame the client holds and this returns the `limit` rows strictly
+   *  older than it. `id` (insertion order) is the only key that stays monotonic
+   *  across daemon epochs — `seq` restarts per process — so the cursor frame's
+   *  rowid is resolved first. That lookup scans one session's rows (there's no
+   *  index past `session_id`), but it only runs on a manual scroll-back, never
+   *  on the hot path. A short page means there is nothing older. */
+  list(
+    sessionId: string,
+    opts: { limit?: number; before?: { epoch: string; seq: number } } = {},
+  ): EventPush[] {
     const limit = opts.limit ?? 500;
-    const rows = this.#db
-      .prepare(
-        "SELECT seq, epoch, payload FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-      )
-      .all(sessionId, limit) as unknown as Row[];
+    let beforeId: number | null = null;
+    if (opts.before) {
+      const row = this.#db
+        .prepare("SELECT id FROM session_events WHERE session_id = ? AND epoch = ? AND seq = ?")
+        .get(sessionId, opts.before.epoch, opts.before.seq) as { id: number } | undefined;
+      // Unknown cursor (stale epoch, bad param) — report "nothing older" rather
+      // than silently handing back the newest page again.
+      if (!row) return [];
+      beforeId = row.id;
+    }
+    const rows = (beforeId === null
+      ? this.#db
+          .prepare(
+            "SELECT seq, epoch, payload FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+          )
+          .all(sessionId, limit)
+      : this.#db
+          .prepare(
+            "SELECT seq, epoch, payload FROM session_events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+          )
+          .all(sessionId, beforeId, limit)) as unknown as Row[];
     return rows.reverse().map((r) => ({
       kind: "push",
       type: "event",

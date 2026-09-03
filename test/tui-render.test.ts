@@ -628,6 +628,46 @@ test("selecting a session backfills its durable history when the live ring doesn
   }
 });
 
+test("scrolling to the top of the log pages in older durable history on demand", async () => {
+  const { connect, cleanup } = await harness();
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "a session with a long back-history",
+    status: "running",
+    provider: "fake",
+  });
+  // Nine durable events, only ever seen by this now-closed client.
+  for (let i = 1; i <= 9; i++) {
+    await first.request("dev.emit", {
+      event: { sessionId: s.id, type: "assistant_text", text: `history line ${i}` },
+    });
+  }
+  await delay(80);
+  await first.close();
+
+  // Fresh client, empty ring: this history reaches the TUI only through paged
+  // `session.events` fetches. Page size 3 → the newest 3 on select, older ones
+  // only once the viewport nears the top.
+  const second = await connect(false);
+  const { stdout, stdin, app } = mount(second, { historyPageSize: 3 }, { rows: 24 });
+  try {
+    await waitFor(stdout, /history line 9/);
+    assert.match(stdout.last, /history line 7/, "the first page (newest 3) is shown");
+    assert.doesNotMatch(stdout.last, /history line 6/, "older pages are not fetched yet");
+
+    stdin.feed("\x1b[5~"); // PgUp — nears the top, pulls the next older page
+    await waitFor(stdout, /history line 6/);
+    assert.match(stdout.last, /history line 4/, "the second page folded in above");
+
+    stdin.feed("\x1b[5~"); // PgUp again — back to the very first event
+    await waitFor(stdout, /history line 1/);
+  } finally {
+    app.unmount();
+    await second.close();
+    await cleanup();
+  }
+});
+
 test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
