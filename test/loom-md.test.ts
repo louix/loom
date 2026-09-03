@@ -74,3 +74,12 @@ test("with no LOOM.md anywhere the append matches the previous prompts", () => {
   assert.ok(noMcp.startsWith("You are a coding agent"));
   assert.ok(!noMcp.includes("This session runs under Loom"));
 });
+
+test("the steer names the session's checkout root for absolute-path tools", () => {
+  const repoRoot = tmpRepo();
+  const cwd = tmpRepo();
+  const md = systemPromptAppendFor(false, true, cwd, repoRoot);
+  assert.ok(md.includes(cwd));
+  // dropped together with the steer for aisdk sessions without MCP servers
+  assert.ok(!systemPromptAppendFor(true, false, cwd, repoRoot).includes(cwd));
+});

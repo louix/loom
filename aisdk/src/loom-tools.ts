@@ -37,8 +37,9 @@ const COMMIT_DESC =
 
 const STATUS_DESC =
   "Show the current state of this session's git worktree: the branch (with " +
-  "ahead/behind counts vs the base branch when known), the changed files, and " +
-  "a diffstat. Read-only and cheap — prefer it over shelling out to git.";
+  "ahead/behind counts vs the base branch when known), the changed files, a " +
+  "diffstat, and the worktree's absolute path — pass it as `root` to tools " +
+  "that want one. Read-only and cheap — prefer it over shelling out to git.";
 
 export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
   return {

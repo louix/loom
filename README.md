@@ -113,7 +113,9 @@ the Vercel AI SDK.
   the session-control tools (`ask_user`, `commit`, `task`, `exit_plan`) always
   stay first-party. If `tilth` isn't on `$PATH` the daemon
   falls back to `npx -y tilth@0.9.0` (and, if `npx` is missing too, just runs
-  with the built-ins).
+  with the built-ins). The steer also names the session's checkout root —
+  tilth's cwd — so agents pass a real `root` instead of guessing a mount
+  location.
 
 **5 · terminal UI**
 

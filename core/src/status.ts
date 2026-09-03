@@ -5,8 +5,9 @@
  * import so it can be pulled into either provider's graph.
  *
  * The output is composed for a model: the branch line (augmented with
- * ahead/behind counts vs the base branch), the raw porcelain entries (models
- * parse `XY` codes natively — no reformatting), and a compact diffstat.
+ * ahead/behind counts vs the base branch), the session's checkout root on a
+ * `worktree:` line, the raw porcelain entries (models parse `XY` codes
+ * natively — no reformatting), and a compact diffstat.
  */
 import { spawnSync } from "node:child_process";
 
@@ -59,7 +60,7 @@ export const statusInWorktree = (cwd: string, opts: StatusOptions = {}): StatusR
   const changed = stat.ok ? compactStat(stat.out.trim()) : "";
   const clean = entries.length === 0 && changed === "";
 
-  const parts = [`## ${branchLine}`, ...entries];
+  const parts = [`## ${branchLine}`, `worktree: ${cwd}`, ...entries];
   if (clean) parts.push("worktree clean");
   else if (changed) parts.push(changed);
   if (!clean && opts.patch) {

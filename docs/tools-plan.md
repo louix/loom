@@ -47,6 +47,9 @@ aisdk-only. `aisdk/src/tools/background.ts`:
 
 - `git status --porcelain=v1 -b` — branch line + raw porcelain entries (models
   parse `XY` codes natively; no reformatting). Detached HEAD is named by short sha.
+- `worktree: <abs path>` on the line after the branch — the session's checkout
+  root (what the daemon anchors MCP stdio servers' cwd to), so models pass a
+  real `root` to tilth instead of guessing a mount location.
 - `base` → `git rev-list --left-right --count <base>...HEAD` → ` [+2 -1 vs main]`
   on the branch line; silently omitted when the base ref is unknown or 0/0.
 - `git diff HEAD --shortstat` compacted to `2 files changed, +18 -4`; a fully

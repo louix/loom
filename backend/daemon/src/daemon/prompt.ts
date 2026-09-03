@@ -4,20 +4,23 @@ import { loomInstructions } from "@loom/core/paths";
  * Appended to the Claude system prompt for every session (spec §11.4). Steers
  * the agent onto the mounted MCP tools: tilth for reading and editing code,
  * fff for file finding and text search, and the in-process `loom` server for
- * committing and for asking the user when blocked.
+ * committing and for asking the user when blocked. It also names the
+ * session's checkout root, so tools that want an absolute path get a real one.
  */
-const TOOL_STEER = [
-  "This session runs under Loom, which mounts a few MCP tools you should reach for first:",
-  "- Use tilth for working with code — locating a symbol or its references, reading source structurally, and editing (`tilth_write` creates or replaces a file, `tilth_edit` makes in-place changes). It understands code structure via tree-sitter, so prefer it over the built-in Read / Write / Edit for source files.",
-  "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
-  "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
-  "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Avoid a plain chat text question because it will show the session as idle/done instead of waiting on the user.",
-].join("\n");
+const toolSteer = (cwd: string): string =>
+  [
+    "This session runs under Loom, which mounts a few MCP tools you should reach for first:",
+    "- Use tilth for working with code — locating a symbol or its references, reading source structurally, and editing (`tilth_write` creates or replaces a file, `tilth_edit` makes in-place changes). It understands code structure via tree-sitter, so prefer it over the built-in Read / Write / Edit for source files.",
+    "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
+    `- The session's checkout root is ${cwd}. When a tool asks for an absolute path (tilth's \`root\`, for example), pass that instead of guessing a mount location; the \`status\` tool reports it too.`,
+    "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
+    "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Avoid a plain chat text question because it will show the session as idle/done instead of waiting on the user.",
+  ].join("\n");
 
 /**
  * System prompt for aisdk (OpenAI-compatible) sessions. There is no
  * "claude_code" base preset to append to, so this stands alone; it is followed
- * by TOOL_STEER when MCP servers are mounted.
+ * by the tool steer when MCP servers are mounted.
  */
 const AISDK_SYSTEM = [
   "You are a coding agent working in a git worktree under Loom, an agent harness.",
@@ -44,7 +47,7 @@ export const systemPromptAppendFor = (
 ): string =>
   [
     ...(aisdk ? [AISDK_SYSTEM] : []),
-    ...(aisdk && !withMcp ? [] : [TOOL_STEER]),
+    ...(aisdk && !withMcp ? [] : [toolSteer(cwd)]),
     loomInstructions(cwd) ?? loomInstructions(repoRoot),
   ]
     .filter((part): part is string => part !== null && part.length > 0)

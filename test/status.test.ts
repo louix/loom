@@ -23,7 +23,7 @@ test("statusInWorktree reports a clean worktree without counts when in sync", ()
     git("commit", "-q", "--allow-empty", "-m", "base");
     const res = statusInWorktree(root, { base: "main" });
     assert.equal(res.ok, true);
-    assert.equal(res.text, "## main\nworktree clean");
+    assert.equal(res.text, `## main\nworktree: ${root}\nworktree clean`);
   } finally {
     cleanup();
   }
@@ -84,7 +84,7 @@ test("statusInWorktree counts ahead/behind vs the base branch", () => {
     git("checkout", "-q", "feature");
     const res = statusInWorktree(root, { base: "main" });
     assert.equal(res.ok, true);
-    assert.equal(res.text, "## feature [+2 -1 vs main]\nworktree clean");
+    assert.equal(res.text, `## feature [+2 -1 vs main]\nworktree: ${root}\nworktree clean`);
   } finally {
     cleanup();
   }
@@ -97,7 +97,7 @@ test("statusInWorktree skips counts for an unknown base ref", () => {
     const res = statusInWorktree(root, { base: "no-such-branch" });
     assert.equal(res.ok, true);
     assert.doesNotMatch(res.text, /vs /);
-    assert.equal(res.text, "## main\nworktree clean");
+    assert.equal(res.text, `## main\nworktree: ${root}\nworktree clean`);
   } finally {
     cleanup();
   }
@@ -110,7 +110,7 @@ test("statusInWorktree names the commit on a detached HEAD", () => {
     git("checkout", "-q", "--detach");
     const sha = git("rev-parse", "--short", "HEAD");
     const res = statusInWorktree(root);
-    assert.equal(res.text, `## HEAD ${sha}\nworktree clean`);
+    assert.equal(res.text, `## HEAD ${sha}\nworktree: ${root}\nworktree clean`);
   } finally {
     cleanup();
   }
