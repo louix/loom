@@ -44,6 +44,7 @@ import {
   queueFor,
   condenseLog,
   firstPerm,
+  LOG_CAP,
   reduce,
   selectedSession,
   sessionLog,
@@ -465,16 +466,22 @@ test("event pushes append log lines and never truncate", () => {
 });
 
 test("state.log is capped — a marathon session drops the oldest lines, keeps the newest", () => {
-  let s = initialState();
-  for (let i = 0; i < 10_050; i++) {
-    s = reduce(s, {
-      t: "push",
-      frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
-    });
+  // Built directly: driving 100k lines through `reduce` would be O(n²) (each
+  // push copies the log). One extra push over the cap still exercises the trim.
+  const backlog: LogLine[] = [];
+  for (let i = 0; i < LOG_CAP + 50; i++) {
+    backlog.push(
+      toLogLine(i, "e1", ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
+    );
   }
-  assert.equal(s.log.length, 10_000);
-  assert.equal(s.log[0]?.seq, 50, "oldest 50 lines were trimmed");
-  assert.equal(s.log.at(-1)?.seq, 10_049, "newest line retained");
+  let s: TuiState = { ...initialState(), log: backlog };
+  s = reduce(s, {
+    t: "push",
+    frame: push(LOG_CAP + 50, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })),
+  });
+  assert.equal(s.log.length, LOG_CAP);
+  assert.equal(s.log[0]?.seq, 51, "oldest lines were trimmed (50 backlog + the push)");
+  assert.equal(s.log.at(-1)?.seq, LOG_CAP + 50, "newest line retained");
 });
 
 test("a seq that collides across daemon epochs is a new line, not a dropped dupe", () => {

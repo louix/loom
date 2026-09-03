@@ -27,7 +27,7 @@ import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailRows,
-  logRows,
+  logRowCount,
   promptPaneRows,
   promptRows,
   REQUEST_PANEL_ROWS,
@@ -425,7 +425,7 @@ export const mkFleetHandle = ({
   // the focused child while drilled in. This — not the logical line count,
   // which wrapping inflates several-fold — is the unit `logScroll` offsets in
   // and what `EventLog` clamps that offset against.
-  const shownLogRows = (): number => logRows(state, logPaneWidth()).length;
+  const shownLogRows = (): number => logRowCount(state, logPaneWidth());
 
   // Ceiling for `logScroll`: EventLog pins the viewport at `rows - capacity`
   // (the top of the log), so the backing offset must clamp there too — running

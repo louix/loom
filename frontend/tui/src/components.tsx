@@ -4,7 +4,7 @@
  * load its hook), so the only build step is still "none". Every component is a
  * pure projection of {@link TuiState}.
  */
-import { useMemo, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
@@ -687,31 +687,20 @@ export const EventLog = ({
   scroll?: number;
 }): ReactNode => {
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
-  // Only the selected session's sub-agents can show in its log. Keyed by a cheap
-  // signature so a `session_updated` that merely bumped a token counter (a fresh
-  // `sessions` array, same sub-agents) doesn't invalidate the wrap below.
-  const sel = selectedSession(state);
   // Drilled in? The pane narrows to the focused child's own stream.
   const child = focusedChildOf(state);
-  const subSig = (sel?.subagents ?? []).map((a) => `${a.id}=${a.name}`).join(",");
 
-  // Flatten the visible log to physical (wrapped) rows — through the same
-  // `logRows` the scrollback handler measures with, so its scroll math moves
-  // exactly what renders here. `wrapLine` memoises per line, so a new event
-  // re-wraps one line rather than the whole backlog, and only the `shown` slice
-  // is turned into elements below. Deps use the stable `selectedChild` key, not
-  // the derived child object (a fresh object per render).
-  const rows = useMemo(
-    () => logRows(state, width),
-    // logRows reads exactly these; `subSig` stands in for the sub-agent name map
-    // it builds internally.
-    [state.log, state.logFilter, state.selectedId, state.selectedChild, subSig, width],
-  );
-
-  const maxScroll = Math.max(0, rows.length - capacity);
+  // Measure the log (total wrapped rows) and build only the visible window's
+  // rows — through the same helpers the scrollback handler measures with, so
+  // scroll math can't drift from what renders. The full wrapped list is never
+  // materialised, which is what keeps a LOG_CAP-sized log (hundreds of
+  // thousands of wrapped rows) from stalling every render.
+  const ctx = logContext(state, width);
+  const total = totalRows(ctx);
+  const maxScroll = Math.max(0, total - capacity);
   const off = Math.min(scroll, maxScroll);
-  const end = rows.length - off;
-  const shown = rows.slice(Math.max(0, end - capacity), end);
+  const end = total - off;
+  const shown = windowRows(ctx, Math.max(0, end - capacity), end);
   const above = Math.max(0, end - capacity);
 
   // Pane title: the focused child's name while drilled in, else the plain header.
@@ -782,76 +771,131 @@ interface PhysicalRow {
 }
 
 /**
- * The visible log flattened to physical rows, oldest first — pure data, so the
- * caller builds elements only for the slice it shows. Each event's full body is
- * word-wrapped to width and never clipped (the pane scrolls); intentional
- * newlines survive as their own rows.
+ * Per-line render geometry: the gutter strings, indent, and the line's wrapped
+ * segments, memoised per line + wrap width — appending an event then re-wraps
+ * one line, not the backlog. LogLines are immutable and fall out of
+ * `state.log` at its cap, so the `WeakMap` self-bounds.
  */
-const physicalRows = (
-  lines: readonly LogLine[],
+const layoutCache = new WeakMap<
+  LogLine,
+  { iw: number; sub: string; ts: string; indent: number; segs: readonly string[] }
+>();
+const lineLayout = (
+  l: LogLine,
   iw: number,
   /** Sub-agent id → display name; null suppresses the prefix entirely (the
    *  pane is already narrowed to one child, so it would echo the header). */
   subName: ReadonlyMap<string, string> | null,
-): PhysicalRow[] => {
+): { ts: string; sub: string; indent: number; segs: readonly string[] } => {
+  // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
+  const sub = l.agentId && subName ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
+  const hit = layoutCache.get(l);
+  if (hit && hit.iw === iw && hit.sub === sub) return hit;
+  const ts = `${clock(l.ts)} `;
+  const indent = ts.length + sub.length + 2; // + "glyph "
+  // Wrap each source line separately so intentional newlines are kept.
+  const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
+  const segs = source
+    .split("\n")
+    .flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, Math.max(8, iw - indent)));
+  const entry = { iw, sub, ts, indent, segs };
+  layoutCache.set(l, entry);
+  return entry;
+};
+
+/** Everything the log renderers need for one state + pane width: the visible
+ *  (filtered / condensed) lines, the sub-agent name map, the pane's inner
+ *  width, and a cache key covering everything that can change the geometry. */
+interface LogContext {
+  /** `state.log` — the row-total cache key (stable until an event lands). */
+  raw: LogLine[];
+  lines: readonly LogLine[];
+  subName: ReadonlyMap<string, string> | null;
+  iw: number;
+  key: string;
+}
+
+const logContext = (state: TuiState, width: number): LogContext => {
+  const child = focusedChildOf(state);
+  // Every row then belongs to that child — the per-row ⑂name prefix would
+  // just echo the pane header.
+  const subName = child ? null : new Map<string, string>();
+  if (subName) {
+    for (const a of selectedSession(state)?.subagents ?? []) subName.set(a.id, a.name);
+  }
+  const iw = inside(width);
+  return {
+    raw: state.log,
+    lines: visibleLog(state, child),
+    subName,
+    iw,
+    key: `${iw}|${state.logFilter}|${state.selectedId ?? ""}|${state.selectedChild ?? ""}`,
+  };
+};
+
+/** Cached wrapped-row totals, per log version × context key. LogLines are
+ *  shared by reference across log versions (appends, backfill re-sorts), so
+ *  re-measuring a grown log re-wraps only the new lines. */
+const rowTotals = new WeakMap<LogLine[], Map<string, number>>();
+
+const totalRows = (ctx: LogContext): number => {
+  let byKey = rowTotals.get(ctx.raw);
+  if (!byKey) {
+    byKey = new Map();
+    rowTotals.set(ctx.raw, byKey);
+  }
+  const hit = byKey.get(ctx.key);
+  if (hit !== undefined) return hit;
+  let total = 0;
+  for (const l of ctx.lines) total += lineLayout(l, ctx.iw, ctx.subName).segs.length;
+  byKey.set(ctx.key, total);
+  return total;
+};
+
+/** The wrapped rows `[from, to)` of the visible log — builds only the window's
+ *  row objects; the full wrapped list is never materialised. Partial lines at
+ *  the window edges render their inner segments only, exactly like slices of a
+ *  fully-built list did. */
+const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] => {
   const out: PhysicalRow[] = [];
-  for (const l of lines) {
-    const ts = `${clock(l.ts)} `;
-    // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
-    const sub = l.agentId && subName ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
-    const indent = ts.length + sub.length + 2; // + "glyph "
-    const segs = wrapLine(l, Math.max(8, iw - indent));
-    segs.forEach((seg, i) => {
-      out.push({
-        // Epoch-qualified: seqs restart on a daemon restart, so a bare seq can
-        // repeat across epochs within one long-lived TUI's log.
-        key: `${l.epoch}:${l.seq}-${l.ts}-${i}`,
-        first: i === 0,
-        ts,
-        sub,
-        indent,
-        glyph: l.glyph,
-        tone: l.tone,
-        seg,
-      });
-    });
+  if (to <= from) return out;
+  let off = 0;
+  for (const l of ctx.lines) {
+    const { ts, sub, indent, segs } = lineLayout(l, ctx.iw, ctx.subName);
+    const lineEnd = off + segs.length;
+    if (lineEnd > from) {
+      const lo = Math.max(0, from - off);
+      const hi = Math.min(segs.length, to - off);
+      for (let i = lo; i < hi; i++) {
+        out.push({
+          // Epoch-qualified: seqs restart on a daemon restart, so a bare seq can
+          // repeat across epochs within one long-lived TUI's log.
+          key: `${l.epoch}:${l.seq}-${l.ts}-${i}`,
+          first: i === 0,
+          ts,
+          sub,
+          indent,
+          glyph: l.glyph,
+          tone: l.tone,
+          seg: segs[i]!,
+        });
+      }
+      if (lineEnd >= to) break;
+    }
+    off = lineEnd;
   }
   return out;
 };
 
 /**
- * `wrapText` over a log line's body, memoised by line identity + column count —
- * appending an event then re-wraps one line, not the 400-line backlog. LogLines
- * are immutable and fall out of `state.log` at its cap, so the `WeakMap` self-bounds.
- */
-const wrapCache = new WeakMap<LogLine, { room: number; segs: readonly string[] }>();
-const wrapLine = (l: LogLine, room: number): readonly string[] => {
-  const hit = wrapCache.get(l);
-  if (hit && hit.room === room) return hit.segs;
-  // Wrap each source line separately so intentional newlines are kept.
-  const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
-  const segs = source.split("\n").flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, room));
-  wrapCache.set(l, { room, segs });
-  return segs;
-};
-
-/**
- * The event log flattened to the physical (wrapped) rows {@link EventLog} draws
- * at pane `width` — what `logScroll` is a row offset into. Both the component
- * and the scrollback handler in `fleet-handle.ts` measure through this, so the
- * scroll math can't drift from what renders: one logical line wraps to several
+ * The event log's wrapped-row count at pane `width` — what `logScroll` is a
+ * row offset into, and what {@link EventLog} pins the viewport against. The
+ * scrollback handler in `fleet-handle.ts` measures through this so the scroll
+ * math can't drift from what renders: one logical line wraps to several
  * physical rows, and only this count is the truth.
  */
-export const logRows = (state: TuiState, width: number): PhysicalRow[] => {
-  const child = focusedChildOf(state);
-  const subName = new Map<string, string>();
-  // Every row then belongs to that child — the per-row ⑂name prefix would just
-  // echo the pane header.
-  if (!child) {
-    for (const a of selectedSession(state)?.subagents ?? []) subName.set(a.id, a.name);
-  }
-  return physicalRows(visibleLog(state, child), inside(width), child ? null : subName);
-};
+export const logRowCount = (state: TuiState, width: number): number =>
+  totalRows(logContext(state, width));
 
 // ---------------------------------------------------------------------------
 // input line (the prompt's editor, the pickers' filter)

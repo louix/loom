@@ -588,11 +588,13 @@ export type Action =
 
 /**
  * Ceiling on `state.log`. It accumulates every echo / notice / event line for
- * the whole session and is never otherwise pruned — a long-lived TUI would grow
- * it without bound. Generous: the transcript view, find, and `$EDITOR` export
- * all read from it, so this only bites a genuinely marathon session.
+ * the whole session and is never otherwise pruned. The event pane measures and
+ * renders a window of the wrapped rows (never the whole list), so the cap is a
+ * memory bound — roughly 20MB of retained event text per 10k lines in a
+ * tool-heavy session — not a scroll limit: paging back reaches the start of
+ * anything below it.
  */
-export const LOG_CAP = 10_000;
+export const LOG_CAP = 100_000;
 
 /** Append one line to the log, trimming the oldest once past {@link LOG_CAP}. */
 const appendLog = (log: readonly LogLine[], line: LogLine): LogLine[] => {
