@@ -50,6 +50,10 @@ export const dropDanglingToolCalls = (messages: ModelMessage[]): ModelMessage[] 
  * unparseable `tool-call` inputs as a parseable wrapper so every request
  * stays renderable; the model still sees what went wrong in the tool
  * result's error text.
+ *
+ * The wrapper must be an OBJECT, not a JSON string: the openai-compatible
+ * converter emits `arguments: JSON.stringify(part.input)`, so a string input
+ * goes out double-encoded — and sference's prompt renderer rejects that too.
  */
 export const repairMalformedToolInputs = (messages: ModelMessage[]): ModelMessage[] => {
   const partsOf = (m: ModelMessage): Array<Record<string, unknown>> | null =>
@@ -69,7 +73,7 @@ export const repairMalformedToolInputs = (messages: ModelMessage[]): ModelMessag
         return p;
       } catch {
         touched = true;
-        return { ...p, input: JSON.stringify({ malformed_tool_input: p.input }) };
+        return { ...p, input: { malformed_tool_input: p.input } };
       }
     });
     if (!touched) return m;

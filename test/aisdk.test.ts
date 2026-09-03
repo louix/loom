@@ -1014,8 +1014,9 @@ test("repairMalformedToolInputs re-encodes unparseable tool-call inputs; healthy
   const parts = ((out[1]?.content ?? []) as Array<{ type: string; input?: string }>).filter(
     (p) => p.type === "tool-call",
   );
-  // the malformed call is wrapped into parseable JSON carrying the raw text
-  const wrapped = JSON.parse(parts[0]?.input ?? "") as { malformed_tool_input: string };
+  // the malformed call is wrapped into an OBJECT carrying the raw text (a
+  // string input would go out double-encoded and sference still rejects it)
+  const wrapped = parts[0]?.input as unknown as { malformed_tool_input: string };
   assert.equal(wrapped.malformed_tool_input, poisoned);
   // the healthy call is byte-identical
   assert.equal(parts[1]?.input, '{"command":"pwd"}');
@@ -1088,7 +1089,7 @@ test("runTurn repairs a poisoned transcript tool-call before the request goes ou
 
   // the model saw a parseable (re-wrapped) tool-call input, not the raw garbage
   const calls = prompts[0]?.filter((p) => p.type === "tool-call") ?? [];
-  const seen = JSON.parse(calls[0]?.input ?? "null") as { malformed_tool_input?: string };
+  const seen = calls[0]?.input as unknown as { malformed_tool_input?: string };
   assert.equal(typeof seen.malformed_tool_input, "string");
 });
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {
