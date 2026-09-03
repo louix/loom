@@ -31,6 +31,7 @@ import {
   PromptPane,
   PlanReview,
   RequestPanel,
+  StackTabs,
 } from "./components.tsx";
 
 export const App = ({
@@ -187,6 +188,40 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               full={false}
             />
             {promptOnPane(state.prompt) ? <PromptPane state={state} width={rightW} /> : null}
+          </Box>
+        </Box>
+      );
+      break;
+    case "stack":
+      // Narrow terminal: one full-width pane at a time. The tab bar costs the
+      // body row `deriveView` reserved via `stackTabsH`; `→`/`←` toggle panes.
+      body = (
+        <Box flexDirection="column">
+          <StackTabs active={view.stackPane} width={cols} />
+          <Box height={bodyH}>
+            {view.stackPane === "detail" ? (
+              <Box width={cols} flexDirection="column">
+                <Detail
+                  session={sel}
+                  width={cols}
+                  queued={sel ? queueFor(state, sel.id) : []}
+                  now={Date.now()}
+                  engineColor={sel ? providerColorOf(state, sel.provider) : ""}
+                  account={sel ? providerAccountOf(state, sel.provider) : ""}
+                  compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+                />
+                <EventLog
+                  state={state}
+                  width={cols}
+                  height={splitLogH}
+                  scroll={view.logScroll}
+                  full={false}
+                />
+                {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
+              </Box>
+            ) : (
+              <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
+            )}
           </Box>
         </Box>
       );

@@ -162,8 +162,21 @@ export interface Term {
   readonly onResize: (fn: () => void) => () => void;
 }
 
-/** Which body the layout draws — the overlay modes each own the screen. */
-export type BodyKind = "help" | "doctor" | "confirm" | "plan" | "picker" | "logFull" | "split";
+/** Below this terminal width the fleet split collapses to one full-width pane
+ *  at a time (the `stack` body) — see {@link deriveView}. */
+export const NARROW_COLS = 80;
+
+/** Which body the layout draws — the overlay modes each own the screen.
+ *  `stack` is the narrow-terminal single-pane fallback for `split`. */
+export type BodyKind =
+  | "help"
+  | "doctor"
+  | "confirm"
+  | "plan"
+  | "picker"
+  | "logFull"
+  | "split"
+  | "stack";
 
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
@@ -184,6 +197,10 @@ export interface FleetView {
    *  the open `answerQuestion` prompt is collecting, else the first. */
   readonly questionIdx: number;
   readonly body: BodyKind;
+  /** Terminal is under {@link NARROW_COLS} — the layout is single-pane. */
+  readonly narrow: boolean;
+  /** In a `stack` body, which pane is showing. Always `"fleet"` otherwise. */
+  readonly stackPane: "fleet" | "detail";
   readonly cols: number;
   readonly rows: number;
   readonly bodyH: number;
@@ -223,6 +240,7 @@ const deriveView = (
   logScroll: number,
   planScroll: number,
   logFull: boolean,
+  narrowPane: "fleet" | "detail",
   dims: { cols: number; rows: number },
 ): FleetView => {
   const sel = selectedSession(state);
@@ -254,11 +272,40 @@ const deriveView = (
   const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state, cols);
   const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
-  const bodyH = Math.max(1, rows - 1 - footerH - requestH);
+
+  // Below this width the side-by-side split starves both columns (each ends up
+  // ~20 cols on a phone-sized SSH window), so the fleet split collapses to one
+  // full-width pane at a time — FLEET or DETAIL — toggled with → / ← (see the
+  // `stack` body). The switcher tab bar above it costs one body row.
+  const narrow = cols < NARROW_COLS;
+
+  let body: BodyKind = "split";
+  if (state.mode === "help") body = "help";
+  else if (state.mode === "doctor") body = "doctor";
+  else if (state.mode === "confirm" && state.confirm) body = "confirm";
+  else if (state.mode === "plan" && state.plan) body = "plan";
+  else if (state.mode === "picker" && state.picker) body = "picker";
+  // logFull yields to a reply prompt — its input draws on the EVENTS pane.
+  else if (logFull && !promptOnPane(state.prompt)) body = "logFull";
+  else if (narrow) body = "stack";
+
+  // Which single pane the stack shows: the fleet list by default, the detail
+  // column once you cross into it — and forced there whenever a session-
+  // targeted prompt is open, since its input renders on the EVENTS pane.
+  const stackPane: "fleet" | "detail" =
+    body === "stack" && sel && (narrowPane === "detail" || promptOnPane(state.prompt))
+      ? "detail"
+      : "fleet";
+
+  const stackTabsH = body === "stack" ? 1 : 0;
+  const bodyH = Math.max(1, rows - 1 - footerH - requestH - stackTabsH);
   // Fleet column: 32-col floor where the terminal affords it, yielding below
-  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`.
-  const leftW = Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
-  const rightW = Math.max(1, cols - leftW - 1);
+  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`. In the narrow
+  // stack each pane owns the full width.
+  const leftW = narrow
+    ? cols
+    : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
+  const rightW = narrow ? cols : Math.max(1, cols - leftW - 1);
   // The right column is Detail (natural height) + gap 1 + the log, and must
   // sum to exactly bodyH — size the log against Detail's real row count
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
@@ -280,15 +327,6 @@ const deriveView = (
       ? (state.prompt.qaIdx ?? 0)
       : 0;
 
-  let body: BodyKind = "split";
-  if (state.mode === "help") body = "help";
-  else if (state.mode === "doctor") body = "doctor";
-  else if (state.mode === "confirm" && state.confirm) body = "confirm";
-  else if (state.mode === "plan" && state.plan) body = "plan";
-  else if (state.mode === "picker" && state.picker) body = "picker";
-  // logFull yields to a reply prompt — its input draws on the EVENTS pane.
-  else if (logFull && !promptOnPane(state.prompt)) body = "logFull";
-
   return {
     state,
     boot,
@@ -302,6 +340,8 @@ const deriveView = (
     showRequest: showRequest === true,
     questionIdx,
     body,
+    narrow,
+    stackPane,
     cols,
     rows,
     bodyH,
@@ -333,6 +373,10 @@ export const mkFleetHandle = ({
   let logScroll = 0;
   let planScroll = 0;
   let logFull = false;
+  // Narrow-terminal single-pane layout: which pane the stack shows. `→` / `l`
+  // crosses from the fleet list into the selected session's detail pane, `←` /
+  // `h` / `esc` back. Ignored while the terminal is wide enough for the split.
+  let narrowPane: "fleet" | "detail" = "fleet";
   let dims = term.getSize();
 
   // Was `useRef` in the component — plain closure state here.
@@ -363,10 +407,10 @@ export const mkFleetHandle = ({
   };
 
   const store = mkStore<FleetView>(
-    deriveView(state, boot, tick, logScroll, planScroll, logFull, dims),
+    deriveView(state, boot, tick, logScroll, planScroll, logFull, narrowPane, dims),
   );
   const publish = (): void =>
-    store.set(deriveView(state, boot, tick, logScroll, planScroll, logFull, dims));
+    store.set(deriveView(state, boot, tick, logScroll, planScroll, logFull, narrowPane, dims));
 
   // Lines in the pane as currently rendered — narrowed to the focused child
   // while drilled in, so scroll math matches what `EventLog` actually shows.
@@ -546,6 +590,9 @@ export const mkFleetHandle = ({
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
     if (state.plan?.requestId !== prev.plan?.requestId) planScroll = 0;
+    // Narrow layout: opening a reply to a session lands you on its detail pane
+    // (the input renders there) and keeps you there once the prompt closes.
+    if (promptOnPane(state.prompt) && !promptOnPane(prev.prompt)) narrowPane = "detail";
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
     if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
     if (state.theme !== prev.theme) {
@@ -1834,7 +1881,7 @@ export const mkFleetHandle = ({
   const handleKey = (input: string, key: Key): void => {
     const sel = selectedSession(state);
     const allowed = allowedActs(sel);
-    const { logPage } = store.get();
+    const { logPage, narrow, stackPane } = store.get();
 
     if (key.ctrl && input === "c") return quitTui();
 
@@ -2112,11 +2159,28 @@ export const mkFleetHandle = ({
     // ← / esc steps back out to the fleet. Other keys keep acting on the
     // session — children carry no actions of their own.
     if (key.rightArrow || input === "l") {
+      // Narrow layout: from the fleet list, → crosses into the detail pane;
+      // once there it resumes its child drill-down meaning.
+      if (narrow && !logFull && stackPane === "fleet") {
+        if (sel) {
+          narrowPane = "detail";
+          publish();
+        }
+        return;
+      }
       if (sel) dispatch({ t: "childEnter" });
       return;
     }
     if (key.leftArrow || input === "h") {
-      if (state.selectedChild != null) dispatch({ t: "childExit" });
+      if (state.selectedChild != null) {
+        dispatch({ t: "childExit" });
+        return;
+      }
+      // Narrow layout: ← out of the detail pane steps back to the fleet list.
+      if (narrow && stackPane === "detail") {
+        narrowPane = "fleet";
+        publish();
+      }
       return;
     }
     if (state.selectedChild != null) {
@@ -2140,6 +2204,9 @@ export const mkFleetHandle = ({
         publish();
       } else if (state.selectedChild != null) {
         dispatch({ t: "childExit" }); // back out of the drill-down
+      } else if (narrow && stackPane === "detail") {
+        narrowPane = "fleet"; // back to the fleet list
+        publish();
       }
       return;
     }

@@ -45,6 +45,14 @@ Consequences:
 | `Space`              | open the command palette                                                                                                                           |
 | `?`                  | keys & the grammar                                                                                                                                 |
 
+On a narrow terminal (under 80 columns — a small window or an SSH session from a
+phone) the side-by-side split collapses to one full-width pane at a time, FLEET
+or DETAIL, with a switcher bar across the top. `→` / `l` crosses from the fleet
+list into the selected session's detail pane; `←` / `h` / `Esc` cross back. Once
+you're in the detail pane those same keys resume their drill-down meaning.
+Replying to a session (opening its prompt) takes you to the detail pane so you
+can see what you type.
+
 ### Acting on the selected session (footer verbs)
 
 | key | action                                                                                                                                                                                                                   |

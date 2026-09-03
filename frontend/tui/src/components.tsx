@@ -173,6 +173,37 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
   );
 };
 
+/**
+ * Narrow-terminal pane switcher — one row above the `stack` body naming the two
+ * panes it toggles between, the inactive one dimmed, with a hint at which arrow
+ * key crosses over. Drawn only under {@link NARROW_COLS}; the wide split shows
+ * both panes at once and needs no bar.
+ */
+export const StackTabs = ({
+  active,
+  width,
+}: {
+  active: "fleet" | "detail";
+  width: number;
+}): ReactNode => {
+  const tab = (label: string, on: boolean): ReactNode => (
+    <Text color={on ? C.accent : C.faint} bold={on}>
+      {(on ? "▸ " : "  ") + label}
+    </Text>
+  );
+  return (
+    <Box width={width} paddingX={1} gap={2}>
+      {tab("FLEET", active === "fleet")}
+      {tab("DETAIL", active === "detail")}
+      <Box flexGrow={1} justifyContent="flex-end">
+        <Text color={C.faint} wrap="truncate-end">
+          {active === "fleet" ? "→ detail" : "← fleet"}
+        </Text>
+      </Box>
+    </Box>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // fleet list (left column)
 // ---------------------------------------------------------------------------

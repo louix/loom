@@ -1113,6 +1113,63 @@ test("Tab toggles the fullscreen event log", async () => {
   }
 });
 
+test("a narrow terminal collapses the split to one pane, toggled with → / ←", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  const s = await client.request<SessionSnapshot>("session.createStub", {
+    prompt: "narrow layout task",
+    status: "running",
+    provider: "fake",
+  });
+  const { stdout, stdin, app } = mount(client, {}, { columns: 60 });
+  try {
+    await client.request("dev.emit", {
+      event: { sessionId: s.id, type: "assistant_text", text: "one column now" },
+    });
+    // Starts on the fleet pane: the switcher bar is up, the detail column
+    // (EVENTS log, engine line) is not drawn.
+    await waitFor(stdout, /▸ FLEET/);
+    assert.match(stdout.last, /→ detail/);
+    assert.doesNotMatch(stdout.last, /EVENTS/);
+    assert.doesNotMatch(stdout.last, /engine fake/);
+
+    stdin.feed("l"); // cross into the detail pane
+    await waitFor(stdout, /▸ DETAIL/);
+    assert.match(stdout.last, /← fleet/);
+    assert.match(stdout.last, /EVENTS/);
+    assert.match(stdout.last, /one column now/);
+
+    stdin.feed("h"); // back to the fleet list
+    await waitFor(stdout, /▸ FLEET/);
+    assert.doesNotMatch(stdout.last, /EVENTS/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
+test("a wide terminal keeps both panes and no switcher bar", async () => {
+  const { connect, cleanup } = await harness();
+  const client = await connect();
+  await client.request("session.createStub", {
+    prompt: "wide layout task",
+    status: "running",
+    provider: "fake",
+  });
+  const { stdout, app } = mount(client, {}, { columns: 120 });
+  try {
+    await waitFor(stdout, /engine fake/);
+    assert.match(stdout.last, /FLEET/);
+    assert.match(stdout.last, /EVENTS/);
+    assert.doesNotMatch(stdout.last, /→ detail/);
+  } finally {
+    app.unmount();
+    await client.close();
+    await cleanup();
+  }
+});
+
 test("n shows the provider / model; ⌥p opens the chooser and returns to the prompt", async () => {
   const { connect, cleanup } = await harness({
     config: `
