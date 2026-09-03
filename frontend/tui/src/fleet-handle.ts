@@ -25,7 +25,13 @@ import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
-import { detailRows, promptPaneRows, promptRows, REQUEST_PANEL_ROWS } from "./components.tsx";
+import {
+  detailRows,
+  logRows,
+  promptPaneRows,
+  promptRows,
+  REQUEST_PANEL_ROWS,
+} from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
   loadableFailed,
@@ -36,6 +42,7 @@ import {
 } from "./loadable.ts";
 import {
   allowedActs,
+  backfillAdds,
   commandsFor,
   cycleLogFilter,
   defaultModeOf,
@@ -44,9 +51,9 @@ import {
   effortPickItems,
   escapeTarget,
   firstPerm,
-  focusedChildOf,
   focusedPending,
   initialState,
+  LOG_CAP,
   makePicker,
   makePrompt,
   modelPickEmptyText,
@@ -64,7 +71,6 @@ import {
   selectedSession,
   sessionLog,
   transcriptText,
-  visibleLog,
   versionMismatchAction,
   type ActName,
   type Action,
@@ -197,6 +203,8 @@ export interface FleetView {
    *  has failed and not yet succeeded on a reconnect. */
   readonly boot: Loadable<string, void>;
   readonly tick: number;
+  /** Viewport offset into the event log, in physical (wrapped) rows up from the
+   *  live tail — `EventLog` pins the viewport at `rows - capacity`, the top. */
   readonly logScroll: number;
   /** Top-anchored offset into the plan-review body (PgUp/PgDn/wheel). */
   readonly planScroll: number;
@@ -406,20 +414,30 @@ export const mkFleetHandle = ({
   const publish = (): void =>
     store.set(deriveView(state, boot, tick, logScroll, planScroll, layoutView, dims));
 
-  // Lines in the pane as currently rendered — narrowed to the focused child
-  // while drilled in, so scroll math matches what `EventLog` actually shows.
-  const shownLogLines = (): number => visibleLog(state, focusedChildOf(state)).length;
+  // Width the log pane renders at for the current body (see app.tsx): the zoomed
+  // and session views give it the whole terminal, the overview split its right
+  // column.
+  const logPaneWidth = (): number => {
+    const v = store.get();
+    return v.body === "split" ? v.rightW : v.cols;
+  };
+  // Physical (wrapped) rows in the log pane as currently rendered — narrowed to
+  // the focused child while drilled in. This — not the logical line count,
+  // which wrapping inflates several-fold — is the unit `logScroll` offsets in
+  // and what `EventLog` clamps that offset against.
+  const shownLogRows = (): number => logRows(state, logPaneWidth()).length;
 
-  // Ceiling for `logScroll` so scrolling up past the top of the log doesn't run
-  // the counter away (leaving you to scroll back down the same distance before
-  // the viewport moves). Wrapped rows ≥ line count; the extra page covers wrap.
+  // Ceiling for `logScroll`: EventLog pins the viewport at `rows - capacity`
+  // (the top of the log), so the backing offset must clamp there too — running
+  // it past the top would leave you scrolling back down the same distance
+  // before the viewport moves again.
   const scrollUp = (by: number): void => {
-    const lines = shownLogLines();
-    const ceiling = lines + store.get().logPage;
-    logScroll = Math.min(ceiling, logScroll + by);
+    const page = store.get().logPage;
+    const maxScroll = Math.max(0, shownLogRows() - page);
+    logScroll = Math.min(maxScroll, logScroll + by);
     // Prefetch the next older page as the viewport nears the top, so paging back
     // feels seamless instead of stalling at the current oldest line.
-    if (logScroll > lines - store.get().logPage) loadOlderHistory();
+    if (maxScroll - logScroll < page) loadOlderHistory();
     publish();
   };
 
@@ -434,12 +452,12 @@ export const mkFleetHandle = ({
 
   // Per-session scroll-back cursor into the daemon's durable history. `oldest`
   // is the (epoch, seq) of the earliest frame we hold; the next page asks for
-  // everything strictly older. `done` latches when the daemon returns a short
-  // page (nothing older) *or* a full page that adds no visible lines — an old
-  // daemon ignoring `before`, or the global `LOG_CAP` trimming the fold-in as
-  // fast as it arrives; either way paging on would just churn. A resync /
+  // everything strictly older. `done` latches when paging on cannot make
+  // progress: a short page (nothing older), a page that doesn't move the cursor
+  // older (an old daemon ignoring `before`), or a page the LOG_CAP-trimmed log
+  // cannot absorb (it would evict the fold-in as fast as it lands). A resync /
   // reconnect clears the map (the epoch, and thus history identity, may differ
-  // across the gap), which also lets a `LOG_CAP`-capped session try again.
+  // across the gap), which also lets a capped session try again.
   interface HistoryCursor {
     oldest?: { epoch: string; seq: number };
     done: boolean;
@@ -495,24 +513,39 @@ export const mkFleetHandle = ({
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
       .then((frames) => {
         const onSame = state.selectedId === id;
-        // Was the viewport pinned at the very top before the fold-in? Only then
-        // does `logScroll` need touching: rows land above the viewport and the
-        // render's `end = rows.length - off` grows by the same amount, so an
-        // un-pinned view stays anchored on its own. A pinned view would other-
-        // wise slip toward newer content by the page's wrapped height.
-        const beforeLines = onSame ? shownLogLines() : 0;
-        const wasPinnedTop = onSame && logScroll >= beforeLines + store.get().logPage;
+        const page = store.get().logPage;
+        // Was the viewport showing the top of the log before the fold-in? Only
+        // then does `logScroll` need touching: rows land above the viewport and
+        // the render's `end = rows.length - off` grows by the same amount, so
+        // any other view stays anchored on its own rows. A top-pinned view must
+        // follow the new top — otherwise the older page lands above it unseen.
+        const beforeRows = onSame ? shownLogRows() : 0;
+        const wasPinnedTop = onSame && logScroll >= Math.max(0, beforeRows - page);
+        const sent = cursor.oldest;
+        // What the fold-in actually adds (transcript kinds not already held): a
+        // full page of ring-replayed duplicates still moves the cursor toward
+        // older rows, so it must not read as "nothing older" below.
+        const fresh = backfillAdds(state.log, frames).length;
+        const logBefore = state.log.length;
         dispatch({ t: "backfill", frames });
         cursor.loading = false;
-        const grew = onSame ? shownLogLines() - beforeLines : 1;
-        if (frames.length < HISTORY_PAGE || grew <= 0) {
+        const next = earliestCursor(frames);
+        const moved =
+          next !== undefined &&
+          sent !== undefined &&
+          (next.epoch !== sent.epoch || next.seq < sent.seq);
+        if (
+          frames.length < HISTORY_PAGE || // the daemon holds nothing older
+          !moved || // the cursor didn't move — an old daemon ignoring `before`
+          logBefore + fresh > LOG_CAP // the cap trimmed the fold-in as it landed
+        ) {
           cursor.done = true;
-        } else {
-          const oldest = earliestCursor(frames);
-          if (oldest) cursor.oldest = oldest;
+        } else if (next) {
+          cursor.oldest = next;
         }
+        const grew = onSame ? shownLogRows() - beforeRows : 0;
         if (wasPinnedTop && grew > 0) {
-          logScroll = shownLogLines() + store.get().logPage; // re-pin at the new top
+          logScroll = Math.max(0, shownLogRows() - page); // stay pinned at the new top
           publish();
         }
       })

@@ -592,7 +592,7 @@ export type Action =
  * it without bound. Generous: the transcript view, find, and `$EDITOR` export
  * all read from it, so this only bites a genuinely marathon session.
  */
-const LOG_CAP = 10_000;
+export const LOG_CAP = 10_000;
 
 /** Append one line to the log, trimming the oldest once past {@link LOG_CAP}. */
 const appendLog = (log: readonly LogLine[], line: LogLine): LogLine[] => {
@@ -1061,30 +1061,43 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
  * `replay` push, `pending` / `compacting` still track but no notice flashes:
  * this is transcript, not a live event.
  */
+/** The non-transcript event kinds — surfaced via the session snapshot /
+ *  indicators, never the conversation (`applyPush` filters the same list). */
+const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
+  "status_changed",
+  "compact_progress",
+  "background_tasks",
+  "rate_limit",
+]);
+
+/**
+ * Which of `frames` would add a line to `log`: the transcript kinds, deduped by
+ * `(epoch, seq)` — the real frame identity — against what's already held (and
+ * within the batch). {@link applyBackfill} folds exactly these; the scrollback
+ * handler counts them to tell a page that made progress from one the log
+ * couldn't absorb.
+ */
+export const backfillAdds = (log: readonly LogLine[], frames: readonly EventPush[]): LogLine[] => {
+  const have = new Set(log.map((l) => `${l.epoch}:${l.seq}`));
+  const added: LogLine[] = [];
+  for (const frame of frames) {
+    if (NON_TRANSCRIPT.has(frame.event.type)) continue;
+    const key = `${frame.epoch ?? ""}:${frame.seq}`;
+    if (have.has(key)) continue;
+    have.add(key);
+    added.push(toLogLine(frame.seq, frame.epoch ?? "", frame.event));
+  }
+  return added;
+};
+
 const applyBackfill = (s: TuiState, frames: readonly EventPush[]): TuiState => {
   let pending = s.pending;
   let compacting = s.compacting;
-  const have = new Set(s.log.map((l) => `${l.epoch}:${l.seq}`));
-  const added: LogLine[] = [];
   for (const frame of frames) {
-    const ev = frame.event;
-    pending = trackPending(pending, ev);
-    compacting = trackCompacting(compacting, ev);
-    // Same non-transcript kinds `applyPush` keeps out of the log — surfaced via
-    // the session snapshot / indicators, not the conversation.
-    if (
-      ev.type === "status_changed" ||
-      ev.type === "compact_progress" ||
-      ev.type === "background_tasks" ||
-      ev.type === "rate_limit"
-    )
-      continue;
-    const epoch = frame.epoch ?? "";
-    const key = `${epoch}:${frame.seq}`;
-    if (have.has(key)) continue;
-    have.add(key);
-    added.push(toLogLine(frame.seq, epoch, ev));
+    pending = trackPending(pending, frame.event);
+    compacting = trackCompacting(compacting, frame.event);
   }
+  const added = backfillAdds(s.log, frames);
   if (added.length === 0 && pending === s.pending && compacting === s.compacting) return s;
   let log = s.log;
   if (added.length > 0) {

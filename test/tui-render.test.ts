@@ -675,6 +675,47 @@ test("scrolling to the top of the log pages in older durable history on demand",
   }
 });
 
+test("PgUp climbs to the very top of a wrapped log (scroll math is physical rows)", async () => {
+  const { connect, cleanup } = await harness();
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "a session with heavily wrapped output",
+    status: "running",
+    provider: "fake",
+  });
+  // Six messages whose text wraps to dozens of screen rows each: a handful of
+  // logical log lines, hundreds of physical rows. Regression: the scroll
+  // ceiling was computed from the *logical* line count, so PgUp froze partway
+  // up a wrapped log, unable to reach its start.
+  for (let i = 1; i <= 6; i++) {
+    await first.request("dev.emit", {
+      event: {
+        sessionId: s.id,
+        type: "assistant_text",
+        text: `wrapped-${i}-top ${"wrap ".repeat(300)}`,
+      },
+    });
+  }
+  await delay(80);
+  await first.close();
+
+  const second = await connect(false);
+  const { stdout, stdin, app } = mount(second);
+  try {
+    // The tail view shows event 6's wrapped filler; its head row is a page up.
+    await waitFor(stdout, /wrap wrap wrap/);
+    for (let i = 0; i < 40 && !/wrapped-1-top/.test(stdout.last); i++) {
+      stdin.feed("\x1b[5~"); // PgUp
+      await delay(50);
+    }
+    assert.match(stdout.last, /wrapped-1-top/, "PgUp reaches the first event's first row");
+  } finally {
+    app.unmount();
+    await second.close();
+    await cleanup();
+  }
+});
+
 test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();

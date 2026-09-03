@@ -687,34 +687,26 @@ export const EventLog = ({
   scroll?: number;
 }): ReactNode => {
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
-  // Only the selected session's sub-agents can show in its log. Key the map by a
-  // cheap signature so a `session_updated` that merely bumped a token counter (a
-  // fresh `sessions` array, same sub-agents) doesn't invalidate the wrap below.
+  // Only the selected session's sub-agents can show in its log. Keyed by a cheap
+  // signature so a `session_updated` that merely bumped a token counter (a fresh
+  // `sessions` array, same sub-agents) doesn't invalidate the wrap below.
   const sel = selectedSession(state);
   // Drilled in? The pane narrows to the focused child's own stream.
   const child = focusedChildOf(state);
   const subSig = (sel?.subagents ?? []).map((a) => `${a.id}=${a.name}`).join(",");
-  const subName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of sel?.subagents ?? []) m.set(a.id, a.name);
-    return m;
-    // sel is captured; subSig is its identity for this purpose.
-  }, [subSig]);
 
-  // Flatten the visible log to physical (wrapped) rows. `wrapLine` memoises per
-  // line, so a new event re-wraps one line rather than the whole backlog, and
-  // only the `shown` slice is turned into elements below. Deps use the stable
-  // `selectedChild` key, not the derived child object (a fresh object per render).
-  const rows = useMemo(() => {
-    const c = focusedChildOf(state);
-    return physicalRows(
-      visibleLog(state, c),
-      inside(width),
-      // Every row then belongs to that child — the per-row ⑂name prefix would
-      // just echo the pane header.
-      c ? null : subName,
-    );
-  }, [state.log, state.logFilter, state.selectedId, state.selectedChild, subName, width]);
+  // Flatten the visible log to physical (wrapped) rows — through the same
+  // `logRows` the scrollback handler measures with, so its scroll math moves
+  // exactly what renders here. `wrapLine` memoises per line, so a new event
+  // re-wraps one line rather than the whole backlog, and only the `shown` slice
+  // is turned into elements below. Deps use the stable `selectedChild` key, not
+  // the derived child object (a fresh object per render).
+  const rows = useMemo(
+    () => logRows(state, width),
+    // logRows reads exactly these; `subSig` stands in for the sub-agent name map
+    // it builds internally.
+    [state.log, state.logFilter, state.selectedId, state.selectedChild, subSig, width],
+  );
 
   const maxScroll = Math.max(0, rows.length - capacity);
   const off = Math.min(scroll, maxScroll);
@@ -841,6 +833,24 @@ const wrapLine = (l: LogLine, room: number): readonly string[] => {
   const segs = source.split("\n").flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, room));
   wrapCache.set(l, { room, segs });
   return segs;
+};
+
+/**
+ * The event log flattened to the physical (wrapped) rows {@link EventLog} draws
+ * at pane `width` — what `logScroll` is a row offset into. Both the component
+ * and the scrollback handler in `fleet-handle.ts` measure through this, so the
+ * scroll math can't drift from what renders: one logical line wraps to several
+ * physical rows, and only this count is the truth.
+ */
+export const logRows = (state: TuiState, width: number): PhysicalRow[] => {
+  const child = focusedChildOf(state);
+  const subName = new Map<string, string>();
+  // Every row then belongs to that child — the per-row ⑂name prefix would just
+  // echo the pane header.
+  if (!child) {
+    for (const a of selectedSession(state)?.subagents ?? []) subName.set(a.id, a.name);
+  }
+  return physicalRows(visibleLog(state, child), inside(width), child ? null : subName);
 };
 
 // ---------------------------------------------------------------------------
