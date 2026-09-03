@@ -1,5 +1,10 @@
 import type { TokenUsage } from "@loom/core/events";
-import { parseSessionState, type SessionState, sessionStateDetail } from "@loom/core/session-state";
+import {
+  parseSessionState,
+  type SessionState,
+  type SessionStateKind,
+  sessionStateDetail,
+} from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { type Db, withTransaction } from "./db.ts";
 
@@ -80,6 +85,13 @@ export interface UsageDelta {
   lastCacheWrite?: number;
 }
 
+/** A session that was mid-run when the previous daemon instance exited. */
+export interface MidRunSession {
+  id: string;
+  /** The status the row held before hygiene flipped it to `interrupted`. */
+  was: SessionStateKind;
+}
+
 const ZERO_USAGE: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 // ---------------------------------------------------------------------------
@@ -156,14 +168,16 @@ export class SessionStore {
 
   /** Flip every session left mid-run by a crashed daemon to `interrupted`.
    *  `working_background` counts as mid-run: its background tasks died with the
-   *  old CLI process, so the turn will not resume on its own. */
-  markMidRunInterrupted(): string[] {
+   *  old CLI process, so the turn will not resume on its own. Returns each id
+   *  with the status it held, so the daemon can re-drive the actively-working
+   *  ones on boot (`[auto_resume]`); `awaiting_input` stays parked. */
+  markMidRunInterrupted(): MidRunSession[] {
     const now = Date.now();
     const rows = this.#db
       .prepare(
-        "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'awaiting_input', 'working_background')",
+        "SELECT id, status FROM sessions WHERE status IN ('starting', 'running', 'awaiting_input', 'working_background')",
       )
-      .all() as Array<{ id: string }>;
+      .all() as Array<{ id: string; status: SessionStateKind }>;
     const stmt = this.#db.prepare(
       "UPDATE sessions SET status = 'interrupted', status_detail = 'user', updated_at = ? WHERE id = ?",
     );
@@ -173,7 +187,7 @@ export class SessionStore {
         this.#appendHistory(id, "interrupted", "daemon_restart", now);
       }
     });
-    return rows.map((r) => r.id);
+    return rows.map((r) => ({ id: r.id, was: r.status }));
   }
 
   setFields(

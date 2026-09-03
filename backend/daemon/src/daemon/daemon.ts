@@ -44,6 +44,7 @@ import {
   ChildStore,
   CheckpointStore,
   ProviderDefaultStore,
+  type MidRunSession,
   type UsageDelta,
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../store/provider-messages.ts";
@@ -356,7 +357,7 @@ export class Daemon {
       log: this.#log.child("hygiene"),
     });
     // A restart that interrupted sessions must tell any reconnecting client.
-    for (const id of this.#hygiene.interruptedSessions) {
+    for (const { id } of this.#hygiene.interruptedSessions) {
       this.#emitSessionUpdated(this.#registry.mustGet(id));
     }
 
@@ -383,6 +384,16 @@ export class Daemon {
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
 
     if (this.#stopping) return; // a signal landed mid-probe; stop() has the wheel
+
+    // Re-drive agents the restart cut off mid-turn (`[auto_resume]`). Fired,
+    // not awaited: revives mount provider processes and their turns run long,
+    // and bring-up must not wait on them. Failures are logged per session —
+    // one that can't be re-mounted (no provider ref, provider gone) simply
+    // stays interrupted.
+    const interrupted = this.#hygiene?.interruptedSessions ?? [];
+    if (this.config.autoResume.enabled && interrupted.length > 0) {
+      void this.#autoResumeInterrupted(interrupted);
+    }
 
     this.#idle.poke(this.#isBusy());
 
@@ -1009,6 +1020,53 @@ export class Daemon {
     // Truthfully idle: a resume re-mounts the adapter with no turn in flight
     // (the manager seeds its tracked state `idle` too — see SessionManager.resume).
     return this.#registry.setStatus(id, stateIdle, "resumed");
+  }
+
+  /**
+   * Re-drive sessions the previous daemon left mid-run (`[auto_resume]`). Each
+   * one is revived from its persisted provider ref — the transcript comes back
+   * with it — and sent a `[loom]` message to pick the turn back up, mirroring
+   * the auto-rebase nudge (Loom's own message, so it seeds neither the undo
+   * picker nor the auto-title). Sessions that were blocked on a human decision
+   * (`awaiting_input`) stay parked: the pending permission / question died with
+   * the old process, and answering one automatically is never safe.
+   */
+  async #autoResumeInterrupted(entries: MidRunSession[]): Promise<void> {
+    for (const { id, was } of entries) {
+      if (this.#stopping) return;
+      if (was === "awaiting_input") continue;
+      if (this.#sessions.has(id)) continue; // somehow live again; not ours to re-drive
+      try {
+        const snap = await this.#reviveSession(id);
+        this.#emitSessionUpdated(snap);
+        this.#onActivityChange("session-resumed");
+      } catch (err) {
+        this.#log.warn("auto-resume: could not revive session", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      const text =
+        "[loom] The daemon restarted mid-turn and cut your previous turn off. " +
+        (was === "working_background"
+          ? "Its background tasks died with the old process — check them and re-run what's still needed. "
+          : "") +
+        "Re-check any state you need, then continue the work from where you left off; " +
+        "if it was already finished, report the outcome instead of starting over.";
+      // Loom's own message, like the auto-rebase nudge: keep it out of
+      // `#lastSend` so it seeds neither the undo picker nor the auto-title.
+      this.emitEvent({
+        type: "user_message",
+        sessionId: id,
+        ts: Date.now(),
+        text,
+        injected: false,
+      });
+      void this.#sessions.send(id, text).catch((err) => {
+        this.#log.warn("auto-resume send failed", { id, err: String(err) });
+      });
+    }
   }
 
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {

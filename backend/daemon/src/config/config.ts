@@ -150,6 +150,15 @@ export interface LoomConfig {
    */
   autoRebase: { enabled: boolean; mode: "rebase" | "merge" };
   /**
+   * Re-drive agents a daemon restart cut off mid-turn. When `enabled` (the
+   * default), sessions the previous daemon left actively working (`running` /
+   * `starting` / `working_background`) are revived from their persisted
+   * transcript and sent a message to continue. Sessions blocked on a human
+   * decision (`awaiting_input`) are always left interrupted — Loom never
+   * answers a permission prompt or question by itself.
+   */
+  autoResume: { enabled: boolean };
+  /**
    * Remind the agent about an uncommitted worktree. When `enabled` (the
    * default), a session that goes idle with uncommitted changes gets a one-off
    * message suggesting it commit — one per commit boundary, so a tree left dirty
@@ -231,6 +240,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
+  autoResume: { enabled: true },
   commitReminder: { enabled: true },
   db: ".loom/loom.db",
   runIsolation: "in-process",
@@ -506,6 +516,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
   const autoRebase = asRecord(r["auto_rebase"]);
+  const autoResume = asRecord(r["auto_resume"]);
   const commitReminder = asRecord(r["commit_reminder"]);
   const providers = asRecord(r["providers"]);
   const claude = asRecord(providers["claude"]);
@@ -557,6 +568,10 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       enabled:
         typeof autoRebase["enabled"] === "boolean" ? autoRebase["enabled"] : d.autoRebase.enabled,
       mode: autoRebase["mode"] === "merge" ? "merge" : "rebase",
+    },
+    autoResume: {
+      enabled:
+        typeof autoResume["enabled"] === "boolean" ? autoResume["enabled"] : d.autoResume.enabled,
     },
     commitReminder: {
       enabled:

@@ -30,9 +30,12 @@ the Vercel AI SDK.
 - **Session registry** — write-through over the store, per-session version
   counter, fleet-view sort (status group order: awaiting_input → running →
   interrupted → idle → error → done; recency within a group).
-- **Restart hygiene** — on startup: mid-run sessions become `interrupted`
-  (never auto-resumed), child processes from a previous daemon epoch are
-  signalled to exit, stale git index locks are cleared and worktrees pruned.
+- **Restart hygiene** — on startup: mid-run sessions become `interrupted`,
+  then `[auto_resume]` re-drives the ones that were actively working (a
+  `[loom]` message tells the agent to pick its turn back up from the persisted
+  transcript; permission/question-blocked sessions stay interrupted), child
+  processes from a previous daemon epoch are signalled to exit, stale git
+  index locks are cleared and worktrees pruned.
 - **Thin client + `loom` CLI** — connect-or-spawn the daemon, `hello`
   handshake, request/response, automatic reconnect with gap replay.
 

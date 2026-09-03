@@ -3,7 +3,7 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
-import type { ChildStore } from "../store/sessions.ts";
+import type { ChildStore, MidRunSession } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
 
 /** A git `index.lock` younger than this may still belong to a live operation. */
@@ -19,7 +19,8 @@ export interface HygieneInput {
 }
 
 export interface HygieneReport {
-  interruptedSessions: string[];
+  /** Sessions the previous daemon left mid-run, with the status each held. */
+  interruptedSessions: MidRunSession[];
   reapedChildren: number;
   clearedLocks: string[];
   worktreePruned: boolean;
@@ -40,7 +41,8 @@ export const pidAlive = (pid: number): boolean => {
  * Bring a freshly-started daemon into a clean state after a previous instance
  * exited (cleanly or not). Design spec §11, milestone 1:
  *
- *   - sessions left mid-run become `interrupted` (never auto-resumed)
+ *   - sessions left mid-run become `interrupted`; `[auto_resume]` then
+ *     re-drives the actively-working ones (blocked ones stay parked)
  *   - child processes (Claude CLI, MCP servers) from a prior daemon epoch are
  *     signalled to exit and their bookkeeping rows dropped
  *   - stale git index locks under `.loom/trees/` are removed and worktrees pruned
@@ -50,7 +52,9 @@ export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
 
   const interruptedSessions = registry.markMidRunInterrupted();
   if (interruptedSessions.length > 0) {
-    log.warn("marked mid-run sessions interrupted", { ids: interruptedSessions });
+    log.warn("marked mid-run sessions interrupted", {
+      ids: interruptedSessions.map((s) => s.id),
+    });
   }
 
   const reapedChildren = reapChildren(children, epoch, log);

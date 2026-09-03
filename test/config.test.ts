@@ -439,6 +439,14 @@ test("[commit_reminder] defaults on; parses enabled, non-bool → default", () =
   assert.equal(cfg(`[commit_reminder]\nenabled = "yes"\n`).commitReminder.enabled, true);
 });
 
+// --- [auto_resume] ----------------------------------------------------------
+
+test("[auto_resume] defaults on; parses enabled, non-bool → default", () => {
+  assert.deepEqual(cfg("").autoResume, { enabled: true });
+  assert.equal(cfg(`[auto_resume]\nenabled = false\n`).autoResume.enabled, false);
+  assert.equal(cfg(`[auto_resume]\nenabled = "yes"\n`).autoResume.enabled, true);
+});
+
 // --- claude profiles -----------------------------------------------------
 
 test("slugifyProfile is kebab, trimmed, and collapses '' / 'claude' onto the base id", () => {

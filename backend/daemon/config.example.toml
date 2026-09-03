@@ -32,6 +32,13 @@ enabled = true # when a session goes idle with uncommitted changes in its
 #                worktree, send it a one-off message suggesting it commit. One
 #                per commit boundary — a tree left dirty on purpose stops
 #                nagging until the next commit. Never commits anything itself.
+[auto_resume] # re-drive agents a daemon restart cut off mid-turn
+enabled = true # when the daemon starts and finds sessions the previous
+#               instance left actively working (running / working_background),
+#               revive them from their persisted transcript and send a message
+#               telling the agent to continue. Sessions blocked on a permission
+#               or question (awaiting_input) always stay interrupted — Loom
+#               never answers those by itself.
 
 [daemon]
 idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0 disables

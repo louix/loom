@@ -1176,6 +1176,157 @@ test("a send that revives a cold session (daemon restart) starts a fresh turn, n
   }
 });
 
+test("[auto_resume]: a restart re-drives sessions the old daemon left mid-run", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const running = await c.request<SessionSnapshot>("session.create", {
+      prompt: "long task",
+      provider: "fake",
+    });
+    const blocked = await c.request<SessionSnapshot>("session.create", {
+      prompt: "needs approval",
+      provider: "fake",
+    });
+    const p1 = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    p1.session(running.id)?.emit({ type: "assistant_text", text: "working…" }); // → running
+    p1.session(blocked.id)?.emit({
+      type: "permission_request",
+      id: "perm-1",
+      tool: "Bash",
+      input: { command: "rm -rf /" },
+    }); // → awaiting_input
+    await waitFor(async () => {
+      const [a, b] = await Promise.all([
+        c.request<SessionSnapshot>("session.get", { id: running.id }),
+        c.request<SessionSnapshot>("session.get", { id: blocked.id }),
+      ]);
+      return a.status.kind === "running" && b.status.kind === "awaiting_input";
+    });
+
+    await hh.restart();
+
+    // The actively-working session is revived from its persisted transcript
+    // and sent a `[loom]` continue message; the blocked one stays parked —
+    // a permission prompt must never be answered automatically.
+    const c2 = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    await waitFor(async () => {
+      const s = await c2.request<SessionSnapshot>("session.get", { id: running.id });
+      return s.status.kind === "running";
+    }, 2000);
+    const p2 = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const resumed = p2.session(running.id);
+    assert.ok(resumed, "the session should have a fresh (resumed) adapter");
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.sends.length, 1);
+    assert.match(resumed.sends[0] ?? "", /^\[loom\]/);
+
+    const blockedAfter = await c2.request<SessionSnapshot>("session.get", { id: blocked.id });
+    assert.equal(blockedAfter.status.kind, "interrupted");
+    assert.equal(p2.session(blocked.id), undefined, "the blocked session must not be revived");
+    await c2.close();
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("[auto_resume] off: a restart leaves mid-run sessions interrupted", async () => {
+  const hh = await makeHarness({ config: "[auto_resume]\nenabled = false\n" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "long task",
+      provider: "fake",
+    });
+    ((await hh.daemon.providers.get("fake")) as FakeProvider)
+      .session(snap.id)
+      ?.emit({ type: "assistant_text", text: "working…" }); // → running
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+      return s.status.kind === "running";
+    });
+
+    await hh.restart();
+
+    const c2 = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const after = await c2.request<SessionSnapshot>("session.get", { id: snap.id });
+    assert.equal(after.status.kind, "interrupted");
+    const p2 = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    assert.equal(p2.session(snap.id), undefined, "no adapter should be mounted");
+    await c2.close();
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("[auto_resume]: a session interrupted before the restart is left alone", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "long task",
+      provider: "fake",
+    });
+    const p1 = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    p1.session(snap.id)?.emit({ type: "assistant_text", text: "working…" }); // → running
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+      return s.status.kind === "running";
+    });
+
+    // The user stops the turn long before any daemon restart — the row is
+    // already `interrupted`, so the next boot must not re-drive it. Only the
+    // sessions this boot's hygiene flips (was running) are auto-resumed.
+    await c.request("session.interrupt", { id: snap.id });
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+      return s.status.kind === "interrupted";
+    });
+
+    await hh.restart();
+
+    const c2 = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const after = await c2.request<SessionSnapshot>("session.get", { id: snap.id });
+    assert.equal(after.status.kind, "interrupted");
+    const p2 = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    assert.equal(
+      p2.session(snap.id),
+      undefined,
+      "a pre-existing interrupted session must not be revived",
+    );
+    await c2.close();
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("[auto_rebase]: a clean idle replays the branch onto an advanced base, silently", async () => {
   const hh = await makeHarness({ config: `[auto_rebase]\nenabled = true\n` });
   const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });

@@ -55,6 +55,14 @@ test("a daemon restart flips mid-run sessions to interrupted", async () => {
   );
   assert.equal(hist.at(-1)?.status, "interrupted");
   assert.equal(hist.at(-1)?.reason, "daemon_restart");
+  const status = await c2.request<{
+    hygiene: { interruptedSessions: Array<{ id: string; was: string }> };
+  }>("daemon.status");
+  const interrupted = new Map(status.hygiene.interruptedSessions.map((s) => [s.id, s.was]));
+  assert.equal(interrupted.get(running.id), "running");
+  assert.equal(interrupted.get(awaiting.id), "awaiting_input");
+  assert.equal(interrupted.has(idle.id), false);
+
   await c2.close();
 });
 
@@ -83,7 +91,7 @@ test("startup hygiene terminates a live child from a previous daemon epoch", asy
 test("hygiene report is exposed on daemon.status", async () => {
   const c = await client();
   const s = await c.request<{
-    hygiene: { interruptedSessions: string[]; worktreePruned: boolean };
+    hygiene: { interruptedSessions: Array<{ id: string; was: string }>; worktreePruned: boolean };
   }>("daemon.status");
   assert.ok(s.hygiene);
   assert.ok(Array.isArray(s.hygiene.interruptedSessions));

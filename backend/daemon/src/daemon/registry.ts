@@ -1,6 +1,11 @@
 import type { SessionState, SessionStateKind } from "@loom/core/events";
 import type { SessionSnapshot } from "@loom/core/wire";
-import { SessionStore, type NewSession, type UsageDelta } from "../store/sessions.ts";
+import {
+  SessionStore,
+  type MidRunSession,
+  type NewSession,
+  type UsageDelta,
+} from "../store/sessions.ts";
 import type { Db } from "../store/db.ts";
 
 /** Fleet-view group order (design spec §4). Lower rank sorts first. */
@@ -79,10 +84,10 @@ export class Registry {
     return this.#bump(id);
   }
 
-  markMidRunInterrupted(): string[] {
-    const ids = this.#store.markMidRunInterrupted();
-    for (const id of ids) this.#bump(id);
-    return ids;
+  markMidRunInterrupted(): MidRunSession[] {
+    const rows = this.#store.markMidRunInterrupted();
+    for (const { id } of rows) this.#bump(id);
+    return rows;
   }
 
   /** Delete the row for good. Child tables cascade; a child session's
