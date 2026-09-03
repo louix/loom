@@ -24,7 +24,7 @@ import type { HarnessEvent } from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
-import { ClaudeEventMapper } from "./map.ts";
+import { ClaudeEventMapper, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildLoomMcpServer } from "./loom-mcp.ts";
 import type {
@@ -77,6 +77,13 @@ const COMPACT_BEAT_BACKOFF_AFTER_MS = 30_000;
  * `SUMMARISE_TIMEOUT_MS` and the client's `session.compact` RPC timeout.
  */
 const COMPACT_CEILING_MS = 15 * 60_000;
+
+/**
+ * Minimum gap between structured `/usage` polls (see {@link ClaudeSession.#pollPlanUsage}).
+ * The plan windows move slowly; one refresh per turn is plenty, and the poll is
+ * a round-trip to the claude.ai usage endpoint.
+ */
+const PLAN_POLL_MIN_GAP_MS = 60_000;
 
 /** An in-flight `/compact` — see {@link ClaudeSession.#compactWait}. */
 interface CompactWait {
@@ -254,6 +261,9 @@ class ClaudeSession implements AgentSession {
    */
   #compactWait: CompactWait | null = null;
 
+  /** Epoch ms of the last structured `/usage` poll — throttles {@link #pollPlanUsage}. */
+  #lastPlanPollAt = 0;
+
   constructor(opts: CreateSessionOptions) {
     this.id = opts.sessionId;
     this.#mapper = new ClaudeEventMapper(opts.sessionId);
@@ -373,6 +383,40 @@ class ClaudeSession implements AgentSession {
 
     this.#query = sdk.query({ prompt: this.#inbox, options });
     this.#pump = this.#drain();
+
+    // Prime the plan rate-limit windows once the CLI handshake lands — covers
+    // both a fresh session and a resume, so a reattached daemon shows real
+    // `five_hour` / `seven_day` numbers within a second instead of waiting for
+    // the next spontaneous `rate_limit_event`.
+    void this.#query
+      .initializationResult()
+      .then(() => this.#pollPlanUsage())
+      .catch(() => {});
+  }
+
+  /**
+   * Fetch the structured `/usage` data (the `get_usage` control request) and
+   * emit a `rate_limit` event per plan window. This is the on-demand counterpart
+   * to the streamed `rate_limit_event`, which only fires on a change to the
+   * binding window — without this poll `five_hour` / `seven_day` sit blank or
+   * stale until something nears the cap. No-op for API-key sessions
+   * (`rate_limits_available: false`); best-effort, since the SDK method is
+   * flagged experimental — a throw or a missing method just skips this round.
+   */
+  async #pollPlanUsage(): Promise<void> {
+    const q = this.#query;
+    const fn = q?.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+    if (!q || typeof fn !== "function") return;
+    this.#lastPlanPollAt = Date.now();
+    try {
+      const resp = (await fn.call(q)) as SdkGetUsageResponse;
+      if (this.#closing) return;
+      for (const ev of this.#mapper.mapPlanUsage(resp)) this.#outbox.push(ev);
+    } catch (err) {
+      this.#log.debug("plan usage poll failed", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   async #drain(): Promise<void> {
@@ -396,6 +440,13 @@ class ClaudeSession implements AgentSession {
         }
         if (this.#interrupted) continue;
         for (const ev of events) this.#outbox.push(ev);
+        // A completed turn may have moved the plan windows — refresh, throttled.
+        if (
+          events.some((ev) => ev.type === "result") &&
+          Date.now() - this.#lastPlanPollAt > PLAN_POLL_MIN_GAP_MS
+        ) {
+          void this.#pollPlanUsage();
+        }
       }
     } catch (err) {
       if (!this.#closing && !this.#rewindInFlight) {

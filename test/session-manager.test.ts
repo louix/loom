@@ -594,13 +594,15 @@ test("a background task appearing while idle moves the session to working_backgr
 test("rate_limit events surface on the session snapshot, keyed by window", async () => {
   const c = await client();
   const { id, fs } = await createFake(c);
+  const fiveReset = Date.now() + 3_600_000;
+  const weekReset = Date.now() + 6 * 86_400_000;
 
   fs.emit({
     type: "rate_limit",
     status: "allowed",
     window: "five_hour",
     utilization: 42,
-    resetsAt: 1000,
+    resetsAt: fiveReset,
   });
   await waitFor(
     async () =>
@@ -614,7 +616,7 @@ test("rate_limit events surface on the session snapshot, keyed by window", async
     status: "allowed_warning",
     window: "seven_day",
     utilization: 88,
-    resetsAt: 2000,
+    resetsAt: weekReset,
   });
   await waitFor(
     async () =>
@@ -626,13 +628,38 @@ test("rate_limit events surface on the session snapshot, keyed by window", async
   assert.deepEqual(snap.rateLimits.five_hour, {
     status: "allowed",
     utilization: 42,
-    resetsAt: 1000,
+    resetsAt: fiveReset,
   });
   assert.deepEqual(snap.rateLimits.seven_day, {
     status: "allowed_warning",
     utilization: 88,
-    resetsAt: 2000,
+    resetsAt: weekReset,
   });
+  await c.close();
+});
+
+test("a rate_limit window drops off the snapshot once its reset time passes", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+
+  fs.emit({
+    type: "rate_limit",
+    status: "allowed",
+    window: "five_hour",
+    utilization: 42,
+    resetsAt: Date.now() + 40,
+  });
+  await waitFor(
+    async () =>
+      Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length ===
+      1,
+  );
+
+  await waitFor(
+    async () =>
+      Object.keys((await c.request<SessionSnapshot>("session.get", { id })).rateLimits).length ===
+      0,
+  );
   await c.close();
 });
 

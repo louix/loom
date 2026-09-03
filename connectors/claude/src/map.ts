@@ -88,6 +88,42 @@ interface SdkMsgLite {
   };
 }
 
+// --- structured /usage ----------------------------------------------------
+
+/** One plan window in the `get_usage` control-request response. */
+interface SdkUsageWindow {
+  /** Percentage of the window used, 0-100 — `null` when the endpoint omits it. */
+  utilization?: number | null;
+  /** ISO 8601 reset time, or `null`. */
+  resets_at?: string | null;
+}
+
+/**
+ * The subset of the SDK's experimental `get_usage` response we read — the
+ * claude.ai plan rate-limit windows. `rate_limits_available` is false (and
+ * `rate_limits` null) for API-key / Bedrock / Vertex sessions.
+ */
+export interface SdkGetUsageResponse {
+  rate_limits_available?: boolean;
+  rate_limits?: {
+    five_hour?: SdkUsageWindow | null;
+    seven_day?: SdkUsageWindow | null;
+    seven_day_opus?: SdkUsageWindow | null;
+    seven_day_sonnet?: SdkUsageWindow | null;
+  } | null;
+}
+
+/** Plan windows we forward, in display order. */
+const PLAN_WINDOWS = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] as const;
+
+/** Coarse status for a polled window — the streamed event still carries the
+ *  provider's authoritative `rejected` / `allowed_warning` when the cap bites. */
+const planStatus = (utilization: number): "allowed" | "allowed_warning" | "rejected" => {
+  if (utilization >= 100) return "rejected";
+  if (utilization >= 80) return "allowed_warning";
+  return "allowed";
+};
+
 // --- accounting state ------------------------------------------------------
 
 export interface MapperState {
@@ -280,6 +316,36 @@ export class ClaudeEventMapper {
         ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt } : {}),
       },
     ];
+  }
+
+  /**
+   * Map the SDK's structured `/usage` response (the `get_usage` control
+   * request) into one `rate_limit` event per plan window. Unlike the streamed
+   * `rate_limit_event` — a change-notification for whichever window is currently
+   * binding — this is a full on-demand snapshot, so it's what keeps `five_hour`
+   * / `seven_day` populated when nothing is near the cap. The adapter calls it
+   * after init (covering resume too) and, throttled, after each turn. `status`
+   * is derived from utilization; the streamed event still supplies the
+   * authoritative `rejected` / `allowed_warning` the moment the cap bites.
+   */
+  mapPlanUsage(resp: SdkGetUsageResponse | null | undefined): HarnessEvent[] {
+    const rl = resp?.rate_limits;
+    if (!resp?.rate_limits_available || !rl) return [];
+    const out: HarnessEvent[] = [];
+    for (const window of PLAN_WINDOWS) {
+      const w = rl[window];
+      if (!w || typeof w.utilization !== "number") continue;
+      const resetsAt = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+      out.push({
+        type: "rate_limit",
+        ...this.#base(null),
+        status: planStatus(w.utilization),
+        window,
+        utilization: w.utilization,
+        ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+      });
+    }
+    return out;
   }
 
   #compactBoundary(m: SdkMsgLite): HarnessEvent[] {

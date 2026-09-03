@@ -333,7 +333,19 @@ export class SessionManager {
   rateLimitsOf(id: string): Record<string, RateLimitWindow> {
     const run = this.#running.get(id);
     if (!run || run.rateLimits.size === 0) return {};
-    return Object.fromEntries(run.rateLimits);
+    const now = Date.now();
+    const out: Record<string, RateLimitWindow> = {};
+    for (const [window, rl] of run.rateLimits) {
+      // A window past its reset carries last period's utilization and nothing
+      // refreshes an idle, non-binding one — drop it rather than show a stale
+      // percentage with a negative countdown.
+      if (rl.resetsAt != null && rl.resetsAt <= now) {
+        run.rateLimits.delete(window);
+        continue;
+      }
+      out[window] = rl;
+    }
+    return out;
   }
 
   #trackUsage(id: string, ev: HarnessEvent): void {

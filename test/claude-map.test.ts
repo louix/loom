@@ -519,6 +519,46 @@ test("a rate_limit_event with no info maps to nothing", () => {
   assert.deepEqual(m.map({ type: "rate_limit_event" }), []);
 });
 
+test("mapPlanUsage emits one rate_limit event per populated plan window", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.mapPlanUsage({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 6, resets_at: "2026-09-03T12:59:59.968Z" },
+      seven_day: { utilization: 82, resets_at: "2026-09-05T08:59:59Z" },
+      seven_day_opus: null,
+      seven_day_sonnet: { utilization: null, resets_at: null },
+    },
+  });
+  const evs = byType(out, "rate_limit");
+  assert.equal(evs.length, 2);
+  const five = evs.find((e) => e.window === "five_hour");
+  assert.equal(five?.status, "allowed");
+  assert.equal(five?.utilization, 6);
+  assert.equal(five?.resetsAt, Date.parse("2026-09-03T12:59:59.968Z"));
+  const week = evs.find((e) => e.window === "seven_day");
+  assert.equal(week?.status, "allowed_warning");
+  assert.equal(week?.utilization, 82);
+});
+
+test("mapPlanUsage marks a maxed window rejected and tolerates a missing reset", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.mapPlanUsage({
+    rate_limits_available: true,
+    rate_limits: { five_hour: { utilization: 100 } },
+  });
+  const ev = byType(out, "rate_limit")[0];
+  assert.equal(ev?.status, "rejected");
+  assert.equal(ev?.resetsAt, undefined);
+});
+
+test("mapPlanUsage is a no-op when plan limits don't apply", () => {
+  const m = new ClaudeEventMapper(SID);
+  assert.deepEqual(m.mapPlanUsage({ rate_limits_available: false, rate_limits: null }), []);
+  assert.deepEqual(m.mapPlanUsage(undefined), []);
+  assert.deepEqual(m.mapPlanUsage({ rate_limits_available: true }), []);
+});
+
 test("stream_event and unknown messages map to nothing", () => {
   const m = new ClaudeEventMapper(SID);
   assert.deepEqual(m.map({ type: "stream_event", event: {} }), []);
