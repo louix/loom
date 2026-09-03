@@ -22,7 +22,6 @@ import {
   pickerVisible,
   providerInfo,
   queueFor,
-  selectedSession,
   sessionMatches,
   visibleLog,
   type Connection,
@@ -741,7 +740,6 @@ export const EventLog = ({
           r.first ? (
             <Text key={r.key} wrap="truncate-end">
               <Text color={C.faint}>{r.ts}</Text>
-              {r.sub ? <Text color={C.faint}>{r.sub}</Text> : null}
               <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
               <Text color={toneColor(r.tone)}>{r.seg}</Text>
             </Text>
@@ -763,7 +761,6 @@ interface PhysicalRow {
   readonly key: string;
   readonly first: boolean;
   readonly ts: string;
-  readonly sub: string;
   readonly indent: number;
   readonly glyph: string;
   readonly tone: Tone;
@@ -778,56 +775,46 @@ interface PhysicalRow {
  */
 const layoutCache = new WeakMap<
   LogLine,
-  { iw: number; sub: string; ts: string; indent: number; segs: readonly string[] }
+  { iw: number; ts: string; indent: number; segs: readonly string[] }
 >();
 const lineLayout = (
   l: LogLine,
   iw: number,
-  /** Sub-agent id → display name; null suppresses the prefix entirely (the
-   *  pane is already narrowed to one child, so it would echo the header). */
-  subName: ReadonlyMap<string, string> | null,
-): { ts: string; sub: string; indent: number; segs: readonly string[] } => {
-  // A sub-agent's events get a dim "⑂name " prefix and hang one level in.
-  const sub = l.agentId && subName ? `⑂${subName.get(l.agentId) ?? shortId(l.agentId)} ` : "";
+): { ts: string; indent: number; segs: readonly string[] } => {
   const hit = layoutCache.get(l);
-  if (hit && hit.iw === iw && hit.sub === sub) return hit;
+  if (hit && hit.iw === iw) return hit;
   const ts = `${clock(l.ts)} `;
-  const indent = ts.length + sub.length + 2; // + "glyph "
+  const indent = ts.length + 2; // + "glyph "
   // Wrap each source line separately so intentional newlines are kept.
   const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
   const segs = source
     .split("\n")
     .flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, Math.max(8, iw - indent)));
-  const entry = { iw, sub, ts, indent, segs };
+  const entry = { iw, ts, indent, segs };
   layoutCache.set(l, entry);
   return entry;
 };
 
 /** Everything the log renderers need for one state + pane width: the visible
- *  (filtered / condensed) lines, the sub-agent name map, the pane's inner
- *  width, and a cache key covering everything that can change the geometry. */
+ *  (filtered / condensed) lines, the pane's inner width, and a cache key
+ *  covering everything that can change the geometry. */
 interface LogContext {
   /** `state.log` — the row-total cache key (stable until an event lands). */
   raw: LogLine[];
   lines: readonly LogLine[];
-  subName: ReadonlyMap<string, string> | null;
   iw: number;
   key: string;
 }
 
 const logContext = (state: TuiState, width: number): LogContext => {
+  // The main stream keeps no per-row child prefix: a sub-agent's frames are
+  // its subtree's lines (visibleLog hides them here), and drilled in the pane
+  // header already names the child.
   const child = focusedChildOf(state);
-  // Every row then belongs to that child — the per-row ⑂name prefix would
-  // just echo the pane header.
-  const subName = child ? null : new Map<string, string>();
-  if (subName) {
-    for (const a of selectedSession(state)?.subagents ?? []) subName.set(a.id, a.name);
-  }
   const iw = inside(width);
   return {
     raw: state.log,
     lines: visibleLog(state, child),
-    subName,
     iw,
     key: `${iw}|${state.logFilter}|${state.selectedId ?? ""}|${state.selectedChild ?? ""}`,
   };
@@ -847,7 +834,7 @@ const totalRows = (ctx: LogContext): number => {
   const hit = byKey.get(ctx.key);
   if (hit !== undefined) return hit;
   let total = 0;
-  for (const l of ctx.lines) total += lineLayout(l, ctx.iw, ctx.subName).segs.length;
+  for (const l of ctx.lines) total += lineLayout(l, ctx.iw).segs.length;
   byKey.set(ctx.key, total);
   return total;
 };
@@ -861,7 +848,7 @@ const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] =>
   if (to <= from) return out;
   let off = 0;
   for (const l of ctx.lines) {
-    const { ts, sub, indent, segs } = lineLayout(l, ctx.iw, ctx.subName);
+    const { ts, indent, segs } = lineLayout(l, ctx.iw);
     const lineEnd = off + segs.length;
     if (lineEnd > from) {
       const lo = Math.max(0, from - off);
@@ -873,7 +860,6 @@ const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] =>
           key: `${l.epoch}:${l.seq}-${l.ts}-${i}`,
           first: i === 0,
           ts,
-          sub,
           indent,
           glyph: l.glyph,
           tone: l.tone,

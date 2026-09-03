@@ -170,6 +170,19 @@ const cleanTitle = (s: string | undefined): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+/**
+ * Pull the CLI's async-agent task id out of a backgrounded `Agent` tool_result.
+ * The result embeds it as `agentId: <id>` — internal metadata the CLI tells the
+ * model never to quote — and it is the same id `background_tasks_changed`
+ * reports, so it is what the fleet's background-task rows key on.
+ */
+const asyncAgentIdOf = (content: unknown): string | null => {
+  const text = blocks(content)
+    .map((b) => (b.type === "text" && typeof b.text === "string" ? b.text : ""))
+    .join("\n");
+  return /\bagentId:\s*([A-Za-z0-9._-]+)/.exec(text)?.[1] ?? null;
+};
+
 const sumModelUsage = (
   mu: Record<string, ModelUsageEntry> | undefined,
 ): {
@@ -229,6 +242,19 @@ export class ClaudeEventMapper {
 
   /** Ids of the last `background_tasks` set we emitted — to suppress no-op repeats. */
   #lastBgSig: string | null = null; // null until the first set is emitted
+
+  /**
+   * Backgrounded `Agent` calls awaiting their async task id: tool_use id → name.
+   * The CLI runs these out-of-band — the tool_result returns at once carrying an
+   * internal `agentId: <task id>` line, and the agent's own frames then stream
+   * with `parent_tool_use_id` set to the *tool_use* id. The fleet's child rows
+   * key on the *task* id (what `background_tasks_changed` reports), so once the
+   * id is parsed the frames are retagged to match — otherwise drilling into the
+   * row finds nothing.
+   */
+  readonly #bgPending = new Map<string, string>();
+  /** Resolved: tool_use id → the CLI's async task id. */
+  readonly #bgIds = new Map<string, string>();
 
   constructor(sessionId: string) {
     this.#sessionId = sessionId;
@@ -291,13 +317,17 @@ export class ClaudeEventMapper {
     this.state.rewindRef = null;
     this.#lastBgSig = null;
     this.#openSubagents.clear();
+    this.#bgPending.clear();
+    this.#bgIds.clear();
   }
 
   #base(agentId: string | null | undefined): { sessionId: string; ts: number; agentId?: string } {
     return {
       sessionId: this.#sessionId,
       ts: Date.now(),
-      ...(typeof agentId === "string" && agentId.length > 0 ? { agentId } : {}),
+      ...(typeof agentId === "string" && agentId.length > 0
+        ? { agentId: this.#bgIds.get(agentId) ?? agentId }
+        : {}),
     };
   }
 
@@ -420,14 +450,14 @@ export class ClaudeEventMapper {
       } else if (b.type === "tool_use") {
         const id = b.id ?? "";
         out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });
-        // The `Task` tool spawns a sub-agent; its own messages then carry
-        // parent_tool_use_id === this id until the matching tool_result.
-        // A *foreground* Task brackets cleanly (subagent_started here,
-        // subagent_stopped on the tool_result). A *backgrounded* one returns
-        // its tool_result immediately with the agent still running, so pairing
-        // those edges would report it finished at birth — those are surfaced
-        // via `background_tasks_changed` instead.
-        if (b.name === "Task" && id) {
+        // The `Task` / `Agent` tool spawns a sub-agent (the CLI renamed it
+        // `Agent`); its own messages then carry parent_tool_use_id === this id
+        // until the matching tool_result. A *foreground* call brackets cleanly
+        // (subagent_started here, subagent_stopped on the tool_result). A
+        // *backgrounded* one returns its tool_result immediately with the agent
+        // still running, so pairing those edges would report it finished at
+        // birth — those are surfaced via `background_tasks_changed` instead.
+        if ((b.name === "Task" || b.name === "Agent") && id) {
           const i = (b.input ?? {}) as Record<string, unknown>;
           const name =
             (typeof i["subagent_type"] === "string" && i["subagent_type"]) ||
@@ -437,6 +467,8 @@ export class ClaudeEventMapper {
           if (!backgrounded) {
             this.#openSubagents.set(id, name);
             out.push({ type: "subagent_started", ...base, subagentId: id, name });
+          } else {
+            this.#bgPending.set(id, name);
           }
         }
       }
@@ -457,6 +489,13 @@ export class ClaudeEventMapper {
           ok: b.is_error !== true,
           output: b.content ?? null,
         });
+        if (this.#bgPending.has(id)) {
+          // The spawn's tool_result embeds the async task id — resolve the
+          // retag so this agent's frames match its fleet row.
+          this.#bgPending.delete(id);
+          const bgId = asyncAgentIdOf(b.content);
+          if (bgId) this.#bgIds.set(id, bgId);
+        }
         if (this.#openSubagents.has(id)) {
           this.#openSubagents.delete(id);
           out.push({ type: "subagent_stopped", ...base, subagentId: id });

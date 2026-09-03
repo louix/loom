@@ -1459,14 +1459,16 @@ export const sessionLog = (s: TuiState): LogLine[] => {
 
 /**
  * What the event pane shows, per {@link LogFilter}. A focused child (fleet
- * drill-down) narrows the session's log first to the events that child
- * produced — the `agentId` tag the adapter stamps on sub-agent frames — and
- * the condensers then run on that narrowed stream, so thinking-runs collapse
- * within the child rather than across the whole session.
+ * drill-down) narrows the session's log to the events that child produced —
+ * the `agentId` tag the adapter stamps on sub-agent frames — and the
+ * condensers then run on that narrowed stream, so thinking-runs collapse
+ * within the child rather than across the whole session. Unfocused, those
+ * child-tagged frames are hidden: they live in the child's subtree, and the
+ * main stream keeps only the ⤷/⤴ markers that announce a sub-agent.
  */
 export const visibleLog = (s: TuiState, child: FleetChild | null = null): LogLine[] => {
   const rows = sessionLog(s);
-  const base = child ? rows.filter((l) => l.agentId === child.id) : rows;
+  const base = child ? rows.filter((l) => l.agentId === child.id) : rows.filter((l) => !l.agentId);
   switch (s.logFilter) {
     case "chat":
       return condenseLog(base);

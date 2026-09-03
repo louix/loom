@@ -1057,7 +1057,7 @@ test("plan review · a long plan scrolls; esc backs out and `a` re-opens", async
   }
 });
 
-test("sub-agents show in the Detail pane and prefix their log rows", async () => {
+test("sub-agents show in the Detail pane; their frames stay in the subtree", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();
   const snap = await client.request<SessionSnapshot>("session.create", {
@@ -1073,7 +1073,11 @@ test("sub-agents show in the Detail pane and prefix their log rows", async () =>
     fs?.emit({ type: "assistant_text", text: "checking imports", agentId: "t1" });
     await delay(220);
     assert.match(stdout.last, /2\/2 sub-agents · reviewer, tester/);
-    assert.match(stdout.last, /⑂reviewer/);
+    assert.doesNotMatch(
+      stdout.last,
+      /checking imports/,
+      "a sub-agent's frames stay in its subtree, out of the main stream",
+    );
 
     fs?.emit({ type: "subagent_stopped", subagentId: "t1" });
     await delay(180);
@@ -1100,7 +1104,11 @@ test("→ drills into a session's children; EVENTS follows the focused child", a
     fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
     fs?.emit({ type: "assistant_text", text: "reviewing the diff", agentId: "t1" });
     await delay(220);
-    assert.match(stdout.last, /⑂reviewer/, "the sub-agent's rows prefix in at fleet level");
+    assert.doesNotMatch(
+      stdout.last,
+      /reviewing the diff/,
+      "the sub-agent's stream stays in its subtree at fleet level",
+    );
 
     stdin.feed("\x1b[C"); // → — drill into the child rows
     await delay(220);

@@ -345,7 +345,7 @@ test("changing the session selection clears the child focus", () => {
   assert.equal(s.selectedChild, null, "moving between sessions drops the focus too");
 });
 
-test("visibleLog narrows to the focused child's agentId-tagged events", () => {
+test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
   s = reduce(s, {
     t: "push",
@@ -365,7 +365,10 @@ test("visibleLog narrows to the focused child's agentId-tagged events", () => {
       ev({ sessionId: "fan", type: "assistant_text", text: "from task", agentId: "task1" }),
     ),
   });
-  assert.equal(visibleLog(s).length, 3);
+  assert.deepEqual(
+    visibleLog(s).map((l) => l.text),
+    ["mainline"],
+  );
   s = reduce(s, { t: "childEnter" });
   const child = focusedChildOf(s);
   assert.equal(child?.key, "bg:task1");
