@@ -11,8 +11,8 @@ import { render, renderToString } from "ink";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
-import { FooterArea, promptRows } from "@loom/tui/components";
-import { initialState, reduce } from "@loom/tui/model";
+import { FooterArea, PromptPane, promptPaneRows, promptRows } from "@loom/tui/components";
+import { initialState, makePrompt, reduce } from "@loom/tui/model";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -1559,6 +1559,37 @@ test("the footer notice owns a truncating row — hints + notice can never wrap"
   assert.match(lines[1]!, /^─+$/, "the rule separates the notice from the hints");
   for (const line of lines) {
     assert.ok(line.length <= 60, `footer row exceeds the width: ${JSON.stringify(line)}`);
+  }
+});
+
+test("the pane reply input never ellipsizes or overdraws its wrapped rows", () => {
+  // The pane prompt used to wrap to 2 columns more than the pane actually gave
+  // the editor (paneRoom forgot the caret gutter), so every room-filling row
+  // overflowed its Text and Ink mangled it — a `…` with the row's last chars
+  // hidden under it, and (now that the editor never ellipsizes) a hard-wrapped
+  // extra physical line that overdraws the frame budget. At width 40 the room
+  // is 34: this 36-x word hard-breaks into a full row plus "xx tail".
+  const state = reduce(initialState(), {
+    t: "openPrompt",
+    prompt: makePrompt({
+      kind: "send",
+      sessionId: "a",
+      label: "send",
+      text: `${"x".repeat(36)} tail`,
+    }),
+  });
+  const out = stripAnsi(renderToString(createElement(PromptPane, { state, width: 40 })));
+  assert.ok(!out.includes("…"), "the editor must never ellipsize its own text");
+  assert.ok(out.includes("x".repeat(34)), "a room-filling row draws every column");
+  // The pane draws exactly the height the layout budgeted for it, and each
+  // editor row keeps its `▍ ` gutter cell — a too-wide row can neither grow
+  // the frame nor crowd the gutter.
+  const lines = stripAnsi(out).split("\n");
+  assert.equal(lines.length, promptPaneRows(state, 40), "the pane fits its row budget");
+  const editorLines = lines.filter((line) => line.includes("▍") || line.includes("⋮"));
+  assert.equal(editorLines.length, promptPaneRows(state, 40) - 1 /* label row */);
+  for (const line of editorLines) {
+    assert.match(line, /^ *▍ /, `the gutter keeps its cell: ${JSON.stringify(line)}`);
   }
 });
 

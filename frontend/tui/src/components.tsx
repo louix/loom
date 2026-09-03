@@ -862,7 +862,7 @@ const editorRoom = (cols: number): number => Math.max(8, cols - 4);
 const caretCell = (ln: string, col: number, room: number): ReactNode => {
   const off = Math.max(0, col - (room - 1));
   return (
-    <Text wrap="truncate-end">
+    <Text wrap="hard">
       <Text color={C.text}>{ln.slice(off, col)}</Text>
       <Text inverse>{ln.slice(col, col + 1) || " "}</Text>
       <Text color={C.text}>{ln.slice(col + 1, off + room)}</Text>
@@ -875,6 +875,10 @@ const caretCell = (ln: string, col: number, room: number): ReactNode => {
  * a block caret. `multiline` (the default) soft-wraps and scrolls within
  * {@link MAX_EDITOR_ROWS} — the prompt; `multiline={false}` pins the buffer to
  * a single row, windowing the text around the caret — the pickers' filter line.
+ *
+ * Rows are never ellipsized: they are wrapped to the exact drawable width, and
+ * a row that still measures wider than its columns (wide glyphs) hard-breaks
+ * onto the next line rather than being truncated with a `…`.
  */
 export const InputLine = ({
   buf,
@@ -893,7 +897,7 @@ export const InputLine = ({
         <Text color={C.accent}>{"▍ "}</Text>
         <Text inverse> </Text>
         {placeholder ? (
-          <Text color={C.faint} wrap="truncate-end">
+          <Text color={C.faint} wrap="hard">
             {` ${placeholder}`}
           </Text>
         ) : null}
@@ -933,7 +937,7 @@ export const InputLine = ({
           r === row ? (
             caretCell(ln, col, room)
           ) : (
-            <Text color={C.text} wrap="truncate-end">
+            <Text color={C.text} wrap="hard">
               {ln.length ? ln : " "}
             </Text>
           );
@@ -1123,7 +1127,7 @@ export const promptRows = (state: TuiState, cols: number): number => {
 
 /** Columns the pane prompt wraps to: the right column minus its padding (2+2)
  *  and the 2-char caret gutter — mirrors `editorRoom` for the pane. */
-const paneRoom = (width: number): number => Math.max(8, width - 4);
+const paneRoom = (width: number): number => Math.max(8, width - 6);
 
 /** Rows a session-targeted prompt's input group occupies on the EVENTS pane:
  *  the label row plus the word-wrapped editor, capped like the footer editor.
