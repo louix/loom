@@ -450,20 +450,24 @@ export class ClaudeEventMapper {
       } else if (b.type === "tool_use") {
         const id = b.id ?? "";
         out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });
-        // The `Task` / `Agent` tool spawns a sub-agent (the CLI renamed it
-        // `Agent`); its own messages then carry parent_tool_use_id === this id
-        // until the matching tool_result. A *foreground* call brackets cleanly
-        // (subagent_started here, subagent_stopped on the tool_result). A
-        // *backgrounded* one returns its tool_result immediately with the agent
-        // still running, so pairing those edges would report it finished at
-        // birth — those are surfaced via `background_tasks_changed` instead.
+        // The sub-agent spawner: `Task` on older CLIs, renamed `Agent` in
+        // 2.1.x — where it is *always* async: the input carries no
+        // run_in_background, the tool_result returns at once ("Async agent
+        // launched … agentId: <task id>"), and the agent's own frames then
+        // stream with parent_tool_use_id === the tool_use id. So `Agent` is
+        // always correlation-tracked (its fleet row is the background task);
+        // legacy `Task` keeps its old semantics — a *foreground* call brackets
+        // cleanly (subagent_started here, subagent_stopped on the tool_result),
+        // a *backgrounded* one is correlation-tracked instead, since pairing
+        // those edges would report it finished at birth.
         if ((b.name === "Task" || b.name === "Agent") && id) {
           const i = (b.input ?? {}) as Record<string, unknown>;
           const name =
             (typeof i["subagent_type"] === "string" && i["subagent_type"]) ||
             (typeof i["description"] === "string" && i["description"]) ||
             "task";
-          const backgrounded = i["run_in_background"] === true || i["isolation"] === "remote";
+          const backgrounded =
+            b.name === "Agent" || i["run_in_background"] === true || i["isolation"] === "remote";
           if (!backgrounded) {
             this.#openSubagents.set(id, name);
             out.push({ type: "subagent_started", ...base, subagentId: id, name });

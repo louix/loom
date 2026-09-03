@@ -565,8 +565,10 @@ test("stream_event and unknown messages map to nothing", () => {
   assert.deepEqual(m.map({ type: "tool_progress", tool_name: "Bash" }), []);
 });
 
-test("an Agent tool_use — the CLI's renamed Task — brackets like Task", () => {
+test("an Agent call (the renamed Task) never brackets — it is always async in 2.1.x — and retags to its task id", () => {
   const m = new ClaudeEventMapper(SID);
+  // Real 2.1.x shape: no run_in_background in the input, yet the spawn returns
+  // the "Async agent launched" result immediately and streams frames after.
   const started = m.map({
     type: "assistant",
     parent_tool_use_id: null,
@@ -581,27 +583,43 @@ test("an Agent tool_use — the CLI's renamed Task — brackets like Task", () =
       ],
     },
   });
-  const sub = byType(started, "subagent_started")[0];
-  assert.equal(sub?.subagentId, "ag-1");
-  assert.equal(sub?.name, "explore");
+  assert.equal(
+    byType(started, "subagent_started").length,
+    0,
+    "Agent is always async — the background_tasks row is the fleet child, so bracketing would only flash a row that's gone in a second",
+  );
 
-  // Its frames keep the tool-use id — the `sub:` child row keys on the same id.
+  // The spawn's tool_result embeds the internal async id.
+  m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "ag-1",
+          content: [
+            {
+              type: "text",
+              text: "Async agent launched successfully.\nagentId: a87d9408cd587b37e (internal ID)",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  // Frames stream with parent_tool_use_id = the tool-use id; they must reach
+  // the TUI tagged with the task id the fleet's background-task row keys on.
   const frame = m.map({
     type: "assistant",
     parent_tool_use_id: "ag-1",
     message: { content: [{ type: "text", text: "looking" }] },
   });
-  assert.equal(byType(frame, "assistant_text")[0]?.agentId, "ag-1");
-
-  const stopped = m.map({
-    type: "user",
-    parent_tool_use_id: null,
-    message: { content: [{ type: "tool_result", tool_use_id: "ag-1", content: "done" }] },
-  });
-  assert.equal(byType(stopped, "subagent_stopped")[0]?.subagentId, "ag-1");
+  assert.equal(byType(frame, "assistant_text")[0]?.agentId, "a87d9408cd587b37e");
 });
 
-test("a backgrounded Agent's frames are retagged to its async task id", () => {
+test("a run_in_background Agent's frames are retagged to its async task id too", () => {
   const m = new ClaudeEventMapper(SID);
   const started = m.map({
     type: "assistant",
