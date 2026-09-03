@@ -134,9 +134,10 @@ the Vercel AI SDK.
   (or task's) own events. `v` toggles `full` ↔ `chat` (conversation only: tool
   traffic folds to `⚙ N
 tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it, `⇥`
-  blows it up to fullscreen, and `o` opens the pending request — or the session
-  transcript (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR`
-  read-only, so you can read and copy without fighting the split.
+  toggles the fleet list — hiding it gives the session's detail + stream the
+  whole width — and `o` opens the pending request — or the session transcript
+  (`[time] · role · body`, tool args as `key: value`) — in `$EDITOR` read-only,
+  so you can read and copy without fighting the split.
 
 **Keybinding grammar** (full table in [`docs/keybindings.md`](docs/keybindings.md), or press `?`):
 

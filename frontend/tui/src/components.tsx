@@ -9,7 +9,6 @@ import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
-import type { LayoutView } from "./fleet-handle.ts";
 import {
   cacheHeat,
   cacheStatus,
@@ -168,39 +167,6 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
         <Text color={C.faint}>{"·"}</Text>
         <Text color={lamp.color} wrap="truncate-end">
           {lamp.text}
-        </Text>
-      </Box>
-    </Box>
-  );
-};
-
-/**
- * Narrow-terminal layout switcher — one row naming the three {@link LayoutView}
- * zoom stops, the active one lit, with a `⇥` cue. Drawn only under
- * {@link NARROW_COLS}; a wide terminal shows the whole split and needs no bar.
- */
-export const ViewSwitcher = ({
-  active,
-  width,
-}: {
-  active: LayoutView;
-  width: number;
-}): ReactNode => {
-  const stops: readonly [LayoutView, string][] = [
-    ["overview", "FLEET"],
-    ["session", "DETAIL"],
-    ["log", "LOG"],
-  ];
-  return (
-    <Box width={width} paddingX={1} gap={2}>
-      {stops.map(([v, label]) => (
-        <Text key={v} color={v === active ? C.accent : C.faint} bold={v === active}>
-          {(v === active ? "▸ " : "  ") + label}
-        </Text>
-      ))}
-      <Box flexGrow={1} justifyContent="flex-end">
-        <Text color={C.faint} wrap="truncate-end">
-          {"⇥ next"}
         </Text>
       </Box>
     </Box>
@@ -714,13 +680,11 @@ export const EventLog = ({
   width,
   height,
   scroll = 0,
-  full = false,
 }: {
   state: TuiState;
   width: number;
   height: number;
   scroll?: number;
-  full?: boolean;
 }): ReactNode => {
   const capacity = Math.max(1, height - 3); // header line + top/bottom border
   // Only the selected session's sub-agents can show in its log. Key the map by a
@@ -758,17 +722,13 @@ export const EventLog = ({
   const shown = rows.slice(Math.max(0, end - capacity), end);
   const above = Math.max(0, end - capacity);
 
-  // Pane title: the focused child's name while drilled in, else the plain
-  // header (with a fullscreen marker when Tab has blown it up).
+  // Pane title: the focused child's name while drilled in, else the plain header.
   let title = "EVENTS";
   if (child) {
     title = `EVENTS · ${childGlyph(child)} ${truncate(
       child.label.replace(/\s+/g, " ").trim(),
       Math.max(8, inside(width) - 24),
     )}`;
-    if (full) title += " · fullscreen";
-  } else if (full) {
-    title = "EVENTS · fullscreen";
   }
 
   return (
@@ -1557,9 +1517,10 @@ const HELP_ROWS: Array<[string, string]> = [
     "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)",
   ],
   ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
+  ["o  ·  v", "view the log in $EDITOR  ·  event log full / chat"],
   [
-    "o  ·  v  ·  ⇥",
-    "view the log in $EDITOR  ·  event log full / chat  ·  step the layout zoom: overview → session → log (esc resets)",
+    "⇥",
+    "toggle the fleet list — hide it to give the session's detail + events the whole width (esc brings it back)",
   ],
   ["t", "cycle theme — dark / light / argonext"],
   [

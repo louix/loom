@@ -1929,7 +1929,6 @@ export type ActName =
   | "copybranch"
   | "viewlog"
   | "logs"
-  | "fullscreen"
   | "theme"
   | "clearqueue"
   | "restart"
@@ -2083,7 +2082,6 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     ["viewlog", "view the log in $EDITOR", "o"],
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],
-    ["fullscreen", "fullscreen the event log", ""],
     ["theme", `switch to ${nextThemeMode(s.theme)} theme`, "t"],
     ["restart", "restart the daemon", "R"],
     ["quitall", "quit and stop the daemon", "Q"],

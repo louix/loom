@@ -1336,17 +1336,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
     assert.ok(ids.includes(v as any), `missing ${v}`);
   }
   // app / view commands that never earn a footer slot
-  for (const v of [
-    "viewlog",
-    "filter",
-    "fullscreen",
-    "theme",
-    "restart",
-    "quitall",
-    "new",
-    "find",
-    "help",
-  ]) {
+  for (const v of ["viewlog", "filter", "theme", "restart", "quitall", "new", "find", "help"]) {
     assert.ok(ids.includes(v as any), `missing ${v}`);
   }
   // no duplicates, and each carries its key as the hint

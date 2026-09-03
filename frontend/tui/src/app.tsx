@@ -31,7 +31,6 @@ import {
   PromptPane,
   PlanReview,
   RequestPanel,
-  ViewSwitcher,
 } from "./components.tsx";
 
 export const App = ({
@@ -84,12 +83,6 @@ export const App = ({
 
 const Layout = ({ view }: { view: FleetView }): ReactNode => {
   const { state, sel, cols, bodyH, leftW, rightW, splitLogH } = view;
-
-  // Narrow layout only: the one-row bar naming the three zoom stops. Its row is
-  // already subtracted from bodyH by deriveView.
-  const switcher = view.narrow ? (
-    <ViewSwitcher active={view.layoutView} width={cols} />
-  ) : null;
 
   let body: ReactNode;
   switch (view.body) {
@@ -163,16 +156,6 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
         </Box>
       );
       break;
-    case "logFull":
-      body = (
-        <Box flexDirection="column">
-          {switcher}
-          <Box height={bodyH}>
-            <EventLog state={state} width={cols} height={bodyH} scroll={view.logScroll} full />
-          </Box>
-        </Box>
-      );
-      break;
     case "split":
       body = (
         <Box height={bodyH} gap={1}>
@@ -189,55 +172,36 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               account={sel ? providerAccountOf(state, sel.provider) : ""}
               compacting={sel ? (state.compacting[sel.id] ?? null) : null}
             />
-            <EventLog
-              state={state}
-              width={rightW}
-              height={splitLogH}
-              scroll={view.logScroll}
-              full={false}
-            />
+            <EventLog state={state} width={rightW} height={splitLogH} scroll={view.logScroll} />
             {promptOnPane(state.prompt) ? <PromptPane state={state} width={rightW} /> : null}
           </Box>
         </Box>
       );
       break;
     case "fleetOnly":
-      // Narrow `overview`: only the fleet fits. The switcher row was budgeted
-      // out of bodyH by deriveView.
+      // Narrow `overview`: only the fleet fits — detail + events wait for `⇥`.
       body = (
-        <Box flexDirection="column">
-          {switcher}
-          <Box height={bodyH}>
-            <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
-          </Box>
+        <Box height={bodyH}>
+          <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
         </Box>
       );
       break;
     case "sessionPane":
       // The `session` view — Detail + events (+ reply pane) with the whole
-      // terminal width. The switcher shows only when it's the narrow layout.
+      // terminal width, the fleet list toggled away.
       body = (
-        <Box flexDirection="column">
-          {switcher}
-          <Box height={bodyH} width={cols} flexDirection="column">
-            <Detail
-              session={sel}
-              width={cols}
-              queued={sel ? queueFor(state, sel.id) : []}
-              now={Date.now()}
-              engineColor={sel ? providerColorOf(state, sel.provider) : ""}
-              account={sel ? providerAccountOf(state, sel.provider) : ""}
-              compacting={sel ? (state.compacting[sel.id] ?? null) : null}
-            />
-            <EventLog
-              state={state}
-              width={cols}
-              height={splitLogH}
-              scroll={view.logScroll}
-              full={false}
-            />
-            {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
-          </Box>
+        <Box height={bodyH} width={cols} flexDirection="column">
+          <Detail
+            session={sel}
+            width={cols}
+            queued={sel ? queueFor(state, sel.id) : []}
+            now={Date.now()}
+            engineColor={sel ? providerColorOf(state, sel.provider) : ""}
+            account={sel ? providerAccountOf(state, sel.provider) : ""}
+            compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+          />
+          <EventLog state={state} width={cols} height={splitLogH} scroll={view.logScroll} />
+          {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
         </Box>
       );
       break;

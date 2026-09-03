@@ -40,17 +40,17 @@ Consequences:
 | `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
 | `→` / `←`, `l` / `h` | drill into the selected session's sub-agents & background tasks / back out — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream |
 | `PgUp` / `PgDn`      | scroll the event log                                                                                                                               |
-| `⇥`                  | step the layout zoom: **overview** (fleet + detail + events) → **session** (detail + events) → **log** (events, full height) → overview             |
-| `Esc`                | one step back: any zoom → overview, then out of a drill-down, then out of an overlay — never quits                                                  |
+| `⇥`                  | toggle the fleet list: **overview** (fleet + detail + events) ↔ **session** (detail + events, full width)                                          |
+| `Esc`                | one step back: the session view → overview, then out of a drill-down, then out of an overlay — never quits                                         |
 | `Space`              | open the command palette                                                                                                                           |
 | `?`                  | keys & the grammar                                                                                                                                 |
 
 On a narrow terminal (under 80 columns — a small window or an SSH session from a
-phone) there's no room for the three-column split, so each zoom renders as one
-full-width pane and a switcher bar names the three: `⇥` steps `FLEET → DETAIL →
-LOG`, `Esc` snaps back to `FLEET`. `→` / `←` are unchanged — they still only
-drill into a session's children. Replying to a session jumps to the `DETAIL`
-zoom so you can see what you type.
+phone) there's no room for the three-column split, so `overview` is the fleet
+list alone — detail + events are hidden — and `⇥` swaps to the full-width
+session pane; `Esc` snaps back. `→` / `←` are unchanged — they still only drill
+into a session's children. Replying to a session jumps to the session pane so
+you can see what you type.
 
 ### Acting on the selected session (footer verbs)
 
@@ -61,7 +61,7 @@ zoom so you can see what you type.
 | `d` | deny the pending request (**deny-only** — never deletes)                                                                                                                                                                 |
 | `i` | interrupt the current turn                                                                                                                                                                                               |
 | `c` | compact the context window (offered once the meter passes half)                                                                                                                                                          |
-| `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                                |
+| `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                             |
 
 ### Second tier (palette + `?` only)
 
@@ -72,7 +72,7 @@ zoom so you can see what you type.
 | `⌥t` | switch the session's thinking-effort level (models that support one)                                         |
 | `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost)                                   |
 | —    | keep cache warm — daemon re-primes the prompt cache before its TTL lapses (Claude, pinned TTL; palette only) |
-| —    | gc — repair sweep for a done session whose worktree removal failed at archive time; branches and rows kept    |
+| —    | gc — repair sweep for a done session whose worktree removal failed at archive time; branches and rows kept   |
 | `e`  | rename the session                                                                                           |
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
