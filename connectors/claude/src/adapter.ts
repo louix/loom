@@ -132,19 +132,25 @@ const expandTilde = (p: string): string => {
 
 /**
  * The subprocess env for a `query()`: `process.env` plus Loom's overrides. `env`
- * REPLACES the child environment, so the spread is load-bearing. Returns
- * `undefined` when there's nothing to override (SDK then inherits ours).
+ * REPLACES the child environment, so the spread is load-bearing. Always returns
+ * an object: we force `NO_COLOR` (and strip `FORCE_COLOR` / `CLICOLOR_FORCE`) so
+ * the CLI's own tool subprocesses — `node --test`, `git`, linters — don't spew
+ * ANSI escapes into a transcript the model reads as plain text and our own
+ * renderers re-colour. A stray `FORCE_COLOR` in the daemon's env would otherwise
+ * defeat each tool's TTY check; `NO_COLOR` is the cross-tool standard.
  */
 const queryEnv = (opts: {
   promptCacheTtl?: string | undefined;
   configDir?: string | undefined;
-}): NodeJS.ProcessEnv | undefined => {
-  const over: Record<string, string> = {};
+}): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  delete env["FORCE_COLOR"];
+  delete env["CLICOLOR_FORCE"];
   // Pinning the cache TTL makes the TUI's liveness countdown exact.
-  if (opts.promptCacheTtl) over["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
+  if (opts.promptCacheTtl) env["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
   // Points this session's `claude` at a non-default profile dir.
-  if (opts.configDir) over["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
-  return Object.keys(over).length > 0 ? { ...process.env, ...over } : undefined;
+  if (opts.configDir) env["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
+  return env;
 };
 
 /** Pull a context-window size out of a `[1m]` / `[200k]` style tag; 0 if none. */
@@ -328,7 +334,7 @@ class ClaudeSession implements AgentSession {
       includePartialMessages: false,
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
-      ...(env ? { env } : {}),
+      env,
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
@@ -907,7 +913,7 @@ export class ClaudeProvider implements AgentProvider {
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
       options: {
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
-        ...(env ? { env } : {}),
+        env,
         stderr: (data) => log.debug("listModels cli stderr", { data: data.slice(0, 500) }),
       },
     });

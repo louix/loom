@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { tool } from "ai";
 import { z } from "zod";
+import { toolSpawnEnv } from "./spawn-env.ts";
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_OUTPUT_BYTES = 120_000;
@@ -42,7 +43,7 @@ export class BashShell {
     this.#spawnError = null;
     const child = spawn("bash", ["--noprofile", "--norc"], {
       cwd: this.#cwd,
-      env: { ...process.env },
+      env: toolSpawnEnv(),
       stdio: ["pipe", "pipe", "pipe"],
       // Own process group, so a timeout / reset SIGKILLs anything the command
       // backgrounded (dev servers, `foo &`) instead of orphaning it — see #kill.

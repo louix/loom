@@ -17,6 +17,7 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { absurd } from "@loom/core/absurd";
 import { MAX_OUTPUT_BYTES, collapseLive } from "./bash.ts";
+import { toolSpawnEnv } from "./spawn-env.ts";
 
 /** Default wall-clock limit per task; `timeout_ms: 0` runs without one. */
 export const DEFAULT_BG_TIMEOUT_MS = 600_000;
@@ -122,7 +123,7 @@ export class BackgroundTasks {
     const id = `bg-${this.#nextId++}`;
     const child = spawn("bash", ["--noprofile", "--norc", "-c", command], {
       cwd: this.#cwd,
-      env: { ...process.env },
+      env: toolSpawnEnv(),
       // stdin ignored: a background task must never block waiting for input.
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // own process group — see killGroup
