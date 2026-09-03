@@ -451,28 +451,27 @@ export class ClaudeEventMapper {
         const id = b.id ?? "";
         out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });
         // The sub-agent spawner: `Task` on older CLIs, renamed `Agent` in
-        // 2.1.x — where it is *always* async: the input carries no
-        // run_in_background, the tool_result returns at once ("Async agent
-        // launched … agentId: <task id>"), and the agent's own frames then
-        // stream with parent_tool_use_id === the tool_use id. So `Agent` is
-        // always correlation-tracked (its fleet row is the background task);
-        // legacy `Task` keeps its old semantics — a *foreground* call brackets
-        // cleanly (subagent_started here, subagent_stopped on the tool_result),
-        // a *backgrounded* one is correlation-tracked instead, since pairing
-        // those edges would report it finished at birth.
+        // 2.1.x. The CLI runs a spawn either way and doesn't say which up
+        // front: an *async* run returns the tool_result at once ("Async agent
+        // launched … agentId: <task id>") and streams the agent's frames
+        // afterwards with parent_tool_use_id === the tool_use id — its fleet
+        // row is the background task, so the frames must retag to the task id;
+        // a *sync* run streams frames while the call is open and the
+        // tool_result is the report itself. Since sync-vs-async is only
+        // visible at the result, do both: bracket the spawn (the `sub:` row
+        // covers a sync run end-to-end) *and* correlate it — if the result
+        // turns out to be the launch receipt, the bracket closes there and
+        // every later frame retags to the task id.
         if ((b.name === "Task" || b.name === "Agent") && id) {
           const i = (b.input ?? {}) as Record<string, unknown>;
           const name =
             (typeof i["subagent_type"] === "string" && i["subagent_type"]) ||
             (typeof i["description"] === "string" && i["description"]) ||
             "task";
-          const backgrounded =
-            b.name === "Agent" || i["run_in_background"] === true || i["isolation"] === "remote";
-          if (!backgrounded) {
+          this.#bgPending.set(id, name);
+          if (!(i["run_in_background"] === true || i["isolation"] === "remote")) {
             this.#openSubagents.set(id, name);
             out.push({ type: "subagent_started", ...base, subagentId: id, name });
-          } else {
-            this.#bgPending.set(id, name);
           }
         }
       }

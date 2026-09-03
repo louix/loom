@@ -565,7 +565,7 @@ test("stream_event and unknown messages map to nothing", () => {
   assert.deepEqual(m.map({ type: "tool_progress", tool_name: "Bash" }), []);
 });
 
-test("an Agent call (the renamed Task) never brackets — it is always async in 2.1.x — and retags to its task id", () => {
+test("an async Agent run: the bracket closes at the launch receipt and frames retag to the task id", () => {
   const m = new ClaudeEventMapper(SID);
   // Real 2.1.x shape: no run_in_background in the input, yet the spawn returns
   // the "Async agent launched" result immediately and streams frames after.
@@ -578,19 +578,18 @@ test("an Agent call (the renamed Task) never brackets — it is always async in 
           type: "tool_use",
           id: "ag-1",
           name: "Agent",
-          input: { subagent_type: "explore", description: "look around" },
+          input: { subagent_type: "claude", description: "look around" },
         },
       ],
     },
   });
-  assert.equal(
-    byType(started, "subagent_started").length,
-    0,
-    "Agent is always async — the background_tasks row is the fleet child, so bracketing would only flash a row that's gone in a second",
-  );
+  // The spawn brackets — until the receipt says otherwise, a sync run needs
+  // the sub: row for the whole call.
+  const sub = byType(started, "subagent_started")[0];
+  assert.equal(sub?.subagentId, "ag-1");
 
-  // The spawn's tool_result embeds the internal async id.
-  m.map({
+  // The launch receipt closes the bracket — the background task row takes over.
+  const receipt = m.map({
     type: "user",
     parent_tool_use_id: null,
     message: {
@@ -608,6 +607,7 @@ test("an Agent call (the renamed Task) never brackets — it is always async in 
       ],
     },
   });
+  assert.equal(byType(receipt, "subagent_stopped")[0]?.subagentId, "ag-1");
 
   // Frames stream with parent_tool_use_id = the tool-use id; they must reach
   // the TUI tagged with the task id the fleet's background-task row keys on.
@@ -617,6 +617,58 @@ test("an Agent call (the renamed Task) never brackets — it is always async in 
     message: { content: [{ type: "text", text: "looking" }] },
   });
   assert.equal(byType(frame, "assistant_text")[0]?.agentId, "a87d9408cd587b37e");
+});
+
+test("a sync Agent run: the bracket stands and frames keep the tool-use id", () => {
+  const m = new ClaudeEventMapper(SID);
+  // Real shape (session c13db285): frames stream while the call is open, and
+  // the tool_result is the report itself — no agentId line, no
+  // background_tasks_changed.
+  const started = m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id: "ag-2",
+          name: "Agent",
+          input: { subagent_type: "explore", description: "look around" },
+        },
+      ],
+    },
+  });
+  assert.equal(byType(started, "subagent_started")[0]?.subagentId, "ag-2");
+
+  // Frames during the run keep the tool-use id — the sub: row's id.
+  const frame = m.map({
+    type: "assistant",
+    parent_tool_use_id: "ag-2",
+    message: { content: [{ type: "text", text: "reading" }] },
+  });
+  assert.equal(byType(frame, "assistant_text")[0]?.agentId, "ag-2");
+
+  // The report result closes the bracket; no retag happened.
+  const done = m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "ag-2",
+          content: [{ type: "text", text: "# Getting started" }],
+        },
+      ],
+    },
+  });
+  assert.equal(byType(done, "subagent_stopped")[0]?.subagentId, "ag-2");
+  const after = m.map({
+    type: "assistant",
+    parent_tool_use_id: "ag-2",
+    message: { content: [{ type: "text", text: "late frame" }] },
+  });
+  assert.equal(byType(after, "assistant_text")[0]?.agentId, "ag-2");
 });
 
 test("a run_in_background Agent's frames are retagged to its async task id too", () => {
