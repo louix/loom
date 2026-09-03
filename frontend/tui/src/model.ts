@@ -311,8 +311,8 @@ export interface ConfirmState {
   title: string;
   body?: string;
   danger: boolean;
-  action: "restart" | "quitAll" | "deleteSession" | "gc";
-  /** Target session for `deleteSession`. */
+  action: "restart" | "quitAll" | "deleteSession" | "archiveSession" | "gc";
+  /** Target session for `deleteSession` / `archiveSession`. */
   sessionId?: string;
   /** `deleteSession`: the session's branch, when it has one — `b` toggles
    *  whether it's deleted along with the row + worktree. */
@@ -2022,7 +2022,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       });
     }
     if (status.kind === "idle" || status.kind === "error" || status.kind === "interrupted") {
-      local.push({ keys: "x", label: "done", act: "done", footer: true });
+      local.push({ keys: "x", label: "archive", act: "done", footer: true });
     }
     // Second tier — palette / help only (see the grammar note at the top of the
     // file). `⇧⇥` cycles the permission mode, `⌥m` its rarer sibling the model;

@@ -38,7 +38,7 @@ commands:
                          what: implement | fresh | revise <plan…> | discuss <msg…>
   mode <id> <mode>       change a session's permission mode
   resume <id>            resume an interrupted session
-  done <id>              mark a session complete (worktree kept)
+  done <id>              archive a session: stop it, drop its worktree, keep the branch + chat   [--force]
   rm <id>                delete a session for good (worktree + transcript)   [--delete-branch]
   gc                     remove worktrees for done sessions   [--id ONE] [--force]
 
@@ -90,6 +90,13 @@ const USAGE: Record<string, string> = {
 
   --mode manual|acceptEdits|auto  the permission mode the implementation runs
                                   in (implement / fresh / revise only)`,
+  done: `loom done <id>  — archive a session
+
+  stops the run and removes its worktree, so in git the branch just looks like
+  any other branch. The row, the branch, and the stored transcript are kept —
+  \`loom send <id>\` later checks the branch back out into a fresh worktree and
+  resumes. The branch has to be clean unless:
+  --force                      archive even a dirty worktree (discards changes)`,
   gc: `loom gc  — remove worktrees for done sessions (branches kept)
 
   --id ONE                     just this session (may also target an error row)
@@ -408,6 +415,7 @@ const main = async (): Promise<void> => {
         const r = await client.request<SessionSnapshot>("session.markDone", {
           id,
           by: client.clientId,
+          ...(values.force ? { force: true } : {}),
         });
         process.stdout.write(`${r.id} -> ${r.status}\n`);
         break;

@@ -12,7 +12,9 @@ import { makeHarness, type Harness } from "@loom/harness";
 let h: Harness;
 
 before(async () => {
-  h = await makeHarness();
+  // Disable the auto-titler: it renames `loom/<id>` branches out from under the
+  // worktree, which several assertions here (and the archive/revive test) key on.
+  h = await makeHarness({ config: "[titles]\nenabled = false\n" });
 });
 after(async () => {
   await h.cleanup();
@@ -111,29 +113,94 @@ test("two sessions from identical prompts get distinct worktrees", async () => {
   await c.close();
 });
 
-test("markDone then gc removes the worktree but keeps the row and branch", async () => {
+test("markDone archives: the worktree is reclaimed, the row and branch are kept", async () => {
   const c = await client();
   const s = await c.request<SessionSnapshot>("session.create", {
     prompt: "cleanup target",
     provider: "fake",
   });
   const tree = s.worktree as string;
-
-  // gc ignores sessions that aren't done
-  let gc = await c.request<{ removed: string[] }>("session.gc");
-  assert.ok(!gc.removed.includes(s.id));
+  assert.ok(existsSync(tree));
 
   const done = await c.request<SessionSnapshot>("session.markDone", { id: s.id });
   assert.equal(done.status.kind, "done");
+  assert.equal(done.worktree, null);
+  assert.ok(!existsSync(tree), "archiving removes the worktree, no separate gc step");
 
-  gc = await c.request<{ removed: string[]; failed: unknown[] }>("session.gc", { force: true });
-  assert.ok(gc.removed.includes(s.id));
-  assert.ok(!existsSync(tree));
+  // gc now has nothing to collect — markDone already did it.
+  const gc = await c.request<{ removed: string[] }>("session.gc", { force: true });
+  assert.ok(!gc.removed.includes(s.id));
 
   const after = await c.request<SessionSnapshot>("session.get", { id: s.id });
   assert.equal(after.status.kind, "done");
   assert.equal(after.worktree, null);
   assert.equal(after.branch, `loom/${s.id.slice(0, 8)}`); // branch retained
+  await c.close();
+});
+
+test("archiving a dirty worktree needs force", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "dirty archive",
+    provider: "fake",
+  });
+  const tree = s.worktree as string;
+  writeFileSync(join(tree, "scratch.txt"), "uncommitted\n");
+
+  await assert.rejects(c.request("session.markDone", { id: s.id }), /uncommitted changes/);
+  assert.ok(existsSync(tree), "the tree is left intact when the archive is refused");
+  assert.notEqual(
+    (await c.request<SessionSnapshot>("session.get", { id: s.id })).status.kind,
+    "done",
+  );
+
+  const done = await c.request<SessionSnapshot>("session.markDone", { id: s.id, force: true });
+  assert.equal(done.status.kind, "done");
+  assert.ok(!existsSync(tree));
+  await c.close();
+});
+
+test("messaging an archived session re-checks out its branch and resumes on it", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "archive then revive",
+    provider: "fake",
+  });
+  const wt0 = s.worktree as string;
+
+  // Land a commit on the branch and complete a turn — a session with no
+  // finished turn has no provider ref to resume from.
+  writeFileSync(join(wt0, "feature.txt"), "work\n");
+  execFileSync("git", ["-C", wt0, "add", "-A"]);
+  execFileSync("git", ["-C", wt0, "commit", "-q", "-m", "feature work"]);
+  const sha = execFileSync("git", ["-C", wt0, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+  const fake = (await h.daemon.providers.get("fake")) as unknown as FakeProvider;
+  await waitFor(() => fake.session(s.id) !== undefined);
+  (fake.session(s.id) as FakeSession).finishTurn();
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 1,
+  );
+
+  const doneSnap = await c.request<SessionSnapshot>("session.markDone", { id: s.id });
+  assert.equal(doneSnap.status.kind, "done");
+  assert.equal(doneSnap.worktree, null);
+  assert.equal(doneSnap.branch, `loom/${s.id.slice(0, 8)}`);
+  assert.ok(!existsSync(wt0), "archived: worktree gone");
+
+  await c.request("session.send", { id: s.id, text: "keep going" });
+  const revived = await c.request<SessionSnapshot>("session.get", { id: s.id });
+  assert.notEqual(revived.status.kind, "done", "no longer archived");
+  assert.ok(revived.worktree, "resumed with a worktree");
+  assert.ok(existsSync(revived.worktree as string), "the worktree is back on disk");
+  assert.equal(revived.branch, `loom/${s.id.slice(0, 8)}`, "same branch");
+  assert.equal(
+    execFileSync("git", ["-C", revived.worktree as string, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
+    sha,
+    "the fresh tree sits on the archived branch's tip",
+  );
   await c.close();
 });
 

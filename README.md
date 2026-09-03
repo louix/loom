@@ -83,7 +83,12 @@ the Vercel AI SDK.
   one-off message suggesting it commit. One reminder per commit boundary — a
   tree left dirty on purpose stops nagging until the next commit. Never commits
   anything itself; in-place sessions are exempt.
-- **`gc`** — removes worktrees for sessions you've marked `done`; the session
+- **Archive (`done`)** — stops a session and removes its worktree, so in git the
+  branch just looks like any other branch. The row, the branch, and the stored
+  transcript are kept; messaging the session again checks the branch back out
+  into a fresh worktree and resumes on it. A dirty worktree needs `force`.
+- **`gc`** — repair sweep: reclaims the worktree of a `done` (or explicitly
+  targeted `error`) session whose tree removal failed when it was archived. The
   row and the branch are kept.
 
 **4 · loom MCP server**
@@ -425,8 +430,8 @@ loom compact <id> "keep the plan, drop the investigation"
 loom mode <id> acceptEdits
 loom interrupt <id>
 loom get <id>                   # snapshot: status, usage, cost, context, git
-loom done <id>                  # mark complete (worktree kept)
-loom gc --force                # remove worktrees for done sessions
+loom done <id>                  # archive: stop it, drop the worktree, keep the branch + chat
+loom gc --force                # repair sweep for worktrees an archive left behind
 ```
 
 Each session gets its own worktree under `.loom/trees/<id>` on a

@@ -236,6 +236,57 @@ export class WorktreeManager {
   }
 
   /**
+   * `git worktree add <trees>/<shortId> <branch>` — check an *existing* branch
+   * back out into a fresh tree, then re-pin the commit identity and hooks the
+   * same way {@link create} does. Used when an archived (`done`) session is
+   * messaged again: its worktree was removed but the branch was kept, so the
+   * session resumes on a new tree carved from that branch. `id` names the
+   * directory (the session's short id); `model` names the commit identity.
+   * Throws if the branch no longer resolves (deleted in the user's own git).
+   */
+  reattach(id: string, branch: string, opts: { model?: string } = {}): WorktreeInfo {
+    this.ensureSetup();
+    if (!this.#git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).ok) {
+      throw new Error(`branch "${branch}" no longer exists`);
+    }
+    // A stale `worktree list` entry for a dir we already removed would make the
+    // `add` fail with "already checked out" — clear it first.
+    this.#git(["worktree", "prune"]);
+    const slug = this.#uniqueDir(id);
+    const path = join(this.#treesDir, slug);
+
+    const add = this.#git(["worktree", "add", path, branch]);
+    if (!add.ok) {
+      this.#git(["worktree", "prune"]);
+      throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+    }
+
+    // Same "always commit as Loom, never push" guarantee as `create` — and
+    // just as fatal if it can't be established.
+    const ident = identity(opts.model ?? "");
+    for (const [key, value] of [
+      ["user.name", ident.name],
+      ["user.email", ident.email],
+      ["core.hooksPath", this.#hooksDir],
+    ] as const) {
+      const res = this.#git(["config", "--worktree", key, value], path);
+      if (!res.ok) {
+        try {
+          this.remove(path, { force: true });
+        } catch {
+          this.#git(["worktree", "prune"]); // best-effort cleanup
+        }
+        throw new Error(
+          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
+        );
+      }
+    }
+
+    this.#log.info("worktree reattached", { slug, branch, path });
+    return { slug, path, branch, baseRef: this.#baseBranch };
+  }
+
+  /**
    * Re-point an existing worktree's commit identity — after a deliberate
    * mid-session model switch, so later commits carry the model that actually
    * runs. Best-effort: a failure keeps the previous identity (warn, don't tear

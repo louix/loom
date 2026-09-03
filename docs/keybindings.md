@@ -20,7 +20,7 @@ Consequences:
   stolen for "$EDITOR").
 - `Shift` is never a decorative "variant of" — it always means _bigger blast
   radius_: `q`→`Q` (also stops the daemon), `r`→`R` (restarts the daemon), `x`
-  (mark done, reversible) →`X` (delete, permanent). `F` (hard fork) stands with
+  (archive, reversible) →`X` (delete, permanent). `F` (hard fork) stands with
   them as a structural op.
 - Rare actions don't need a memorised key — they're one `Space`, a few letters,
   `Enter` away, and the palette teaches you the key for next time.
@@ -54,7 +54,7 @@ Consequences:
 | `d` | deny the pending request (**deny-only** — never deletes)                                                                                                                                                                 |
 | `i` | interrupt the current turn                                                                                                                                                                                               |
 | `c` | compact the context window (offered once the meter passes half)                                                                                                                                                          |
-| `x` | mark the session done                                                                                                                                                                                                    |
+| `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                                |
 
 ### Second tier (palette + `?` only)
 
@@ -65,7 +65,7 @@ Consequences:
 | `⌥t` | switch the session's thinking-effort level (models that support one)                                         |
 | `u`  | undo — rewind an idle session to an earlier turn (shows the re-prime cost)                                   |
 | —    | keep cache warm — daemon re-primes the prompt cache before its TTL lapses (Claude, pinned TTL; palette only) |
-| —    | gc — remove the worktrees of done sessions; branches and session rows are kept (confirm)                     |
+| —    | gc — repair sweep for a done session whose worktree removal failed at archive time; branches and rows kept    |
 | `e`  | rename the session                                                                                           |
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |

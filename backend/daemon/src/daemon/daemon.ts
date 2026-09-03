@@ -952,7 +952,24 @@ export class Daemon {
   async #reviveSession(id: string): Promise<SessionSnapshot> {
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-    if (row.status.kind === "done") throw new RpcError("bad_request", "session is done");
+    // An archived (`done`) session had its worktree reclaimed but its branch and
+    // transcript kept — check the branch back out into a fresh tree and resume
+    // on it. An in-place archived session has no branch to restore; it just
+    // resumes in the repo root.
+    let worktree = row.worktree;
+    if (row.status.kind === "done" && !worktree && row.branch && !row.inPlace) {
+      try {
+        const wt = this.#worktrees.reattach(id, row.branch, { model: row.model || row.provider });
+        worktree = wt.path;
+        this.#registry.setFields(id, { worktree });
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          "worktree_error",
+          `could not restore the archived session's worktree: ${m}`,
+        );
+      }
+    }
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
@@ -979,7 +996,7 @@ export class Daemon {
       await this.#sessions.resume(await this.#providers.get(row.provider), {
         sessionId: id,
         providerRef,
-        cwd: row.worktree ?? this.repoRoot,
+        cwd: worktree ?? this.repoRoot,
         mode,
         mcpServers: this.#mcpHandles(),
         ...(model ? { model } : {}),
@@ -1640,7 +1657,11 @@ export class Daemon {
       // transparently — `send` is the one verb for "talk to this session", it
       // doesn't need a separate resume step.
       if (!this.#sessions.has(id)) {
-        await this.#reviveSession(id);
+        const revived = await this.#reviveSession(id);
+        // An archived session's revive restores a worktree and flips it off
+        // `done` — push that before the turn's own updates so clients don't
+        // briefly show a running session with no tree.
+        this.#emitSessionUpdated(revived, clientLabel(params));
         this.#onActivityChange("session-resumed");
       }
       // A `compact` / `rewind` holds the session's op gate — a straight send
@@ -2165,13 +2186,37 @@ export class Daemon {
       return this.#enrich(snap);
     });
 
+    // markDone: archive a session. The run is stopped and its worktree is
+    // reclaimed — in git the branch is left looking like any other branch —
+    // but the row, the branch, and the stored transcript are kept. Messaging
+    // the session again checks the branch back out into a fresh tree and
+    // resumes (see `#reviveSession`). A dirty worktree needs `force` to
+    // archive, the way `remove` / `gc` already gate discarding live changes.
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
+      const force = isObj(params) && params["force"] === true;
       return this.#withLifecycleGate(id, async () => {
-        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-        if (this.#sessions.has(id)) await this.#sessions.interrupt(id).catch(() => {});
+        const row = this.#registry.get(id);
+        if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+        if (!force && row.worktree && this.#worktrees.isDirty(row.worktree)) {
+          throw new RpcError(
+            "bad_request",
+            "the worktree has uncommitted changes — commit them, or archive with force to discard",
+          );
+        }
+        if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#lastSend.delete(id);
+        if (row.worktree && !row.inPlace) {
+          try {
+            this.#worktrees.remove(row.worktree, { force: true });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
+          }
+          this.#worktrees.prune();
+          this.#registry.setFields(id, { worktree: null });
+        }
         const snap = this.#registry.setStatus(id, stateDone, "marked_done");
         this.emitEvent({
           type: "status_changed",
@@ -2242,8 +2287,10 @@ export class Daemon {
       });
     });
 
-    // gc: remove worktrees for sessions marked done. Branches are never
-    // auto-deleted; the session row is retained as a record (spec §6).
+    // gc: remove worktrees for sessions marked done. `markDone` already reclaims
+    // the tree as it archives, so this is now a repair sweep — it mops up a
+    // `done` (or explicitly targeted `error`) row whose tree removal failed then.
+    // Branches are never auto-deleted; the row is retained as a record (spec §6).
     d.register("session.gc", async (params) => {
       const p = isObj(params) ? params : {};
       const only = typeof p["id"] === "string" ? (p["id"] as string) : null;

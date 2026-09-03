@@ -795,11 +795,29 @@ export const mkFleetHandle = ({
           return on ? "keep-warm on — re-primes the cache before it lapses" : "keep-warm off";
         });
       }
-      case "done":
+      case "done": {
+        // Archiving reclaims the worktree — a dirty tree would have its
+        // uncommitted changes discarded, so make that an explicit confirm
+        // (mirrors delete). Clean trees archive straight away.
+        if (s.git?.dirty === true) {
+          return void dispatch({
+            t: "openConfirm",
+            confirm: {
+              title: `Archive session ${shortId(s.id)}?`,
+              body:
+                "Its worktree has uncommitted changes — archiving discards them. " +
+                "The branch and chat are kept; message it again to resume on a fresh tree.",
+              danger: true,
+              action: "archiveSession",
+              sessionId: s.id,
+            },
+          });
+        }
         return perform(async () => {
           await client.request("session.markDone", { id: s.id, by });
-          return "marked done";
+          return "archived — branch + chat kept";
         });
+      }
       case "rebase":
         return perform(async () => {
           const r = await client.request<{
@@ -1560,6 +1578,14 @@ export const mkFleetHandle = ({
           ),
         )
         .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+      return;
+    }
+    if (c.action === "archiveSession" && c.sessionId) {
+      const id = c.sessionId;
+      perform(async () => {
+        await client.request("session.markDone", { id, by: client.clientId, force: true });
+        return "archived — branch + chat kept";
+      });
       return;
     }
     if (c.action === "gc") {
