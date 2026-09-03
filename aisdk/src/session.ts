@@ -335,6 +335,23 @@ export class AisdkSession implements AgentSession {
     const resolve = this.#pendingPlans.get(id);
     if (!resolve) return;
     this.#pendingPlans.delete(id);
+    // An implementing decision picks the mode the implementation runs in. Apply
+    // it now, not when the exploration turn unwinds into the chained implement
+    // turn: the session manager reads `snapshot()` straight after this call to
+    // refresh the registry, and a mode still reporting "plan" there is never
+    // revisited — the TUI's mode chip would stay on [plan] for the whole
+    // implementation. Mirrors the Claude adapter, which syncs its mode before
+    // resolving the ExitPlanMode allow. The chain re-applies the same value;
+    // `discuss` / `handoff` deliberately stay in plan mode.
+    if (
+      decision.action === "implement" ||
+      decision.action === "implement_fresh" ||
+      decision.action === "revise"
+    ) {
+      const mode = decision.mode ?? "acceptEdits"; // the chain-time fallback
+      this.#mode = mode;
+      this.#snap.mode = mode;
+    }
     resolve(decision);
   }
 

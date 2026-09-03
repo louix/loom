@@ -1279,6 +1279,103 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   }
 });
 
+test("SessionManager.respondToPlan pushes the decision's mode — no stale plan chip", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    // Step 1 presents a plan; the chained implement turn answers with text.
+    const planChunks: Chunk[] = [
+      { type: "stream-start", warnings: [] },
+      { type: "response-metadata", id: "r1", modelId: "mock", timestamp: new Date(0) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "exit_plan",
+        input: JSON.stringify({ plan: "1. do the thing" }),
+      },
+      {
+        type: "finish",
+        finishReason: "tool-calls",
+        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      },
+    ];
+    const doneChunks: Chunk[] = [
+      { type: "stream-start", warnings: [] },
+      { type: "response-metadata", id: "r2", modelId: "mock", timestamp: new Date(0) },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "Implemented." },
+      { type: "text-end", id: "t" },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      },
+    ];
+    let call = 0;
+    const m = new MockLanguageModelV2({
+      doStream: async () => {
+        call += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: call === 1 ? planChunks : doneChunks,
+            initialDelayInMs: 0,
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => m, store);
+
+    const evs: HarnessEvent[] = [];
+    const modes: string[] = [];
+    let results = 0;
+    const mgr = new SessionManager({
+      emitEvent: (ev) => evs.push(ev),
+      onStatus: () => {},
+      onUsage: () => {},
+      onResult: () => {
+        results += 1;
+      },
+      onSubagents: () => {},
+      onBackgroundTasks: () => {},
+      onRestructuring: () => {},
+      onProviderRef: () => {},
+      onMode: (_id, mode) => modes.push(mode),
+      log: makeLogger("test"),
+    });
+
+    await mgr.create(p, {
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "plan then build",
+      mode: "plan",
+      mcpServers: [],
+      loomServer: true,
+    });
+    let review: Extract<HarnessEvent, { type: "plan_review" }> | undefined;
+    for (let i = 0; i < 200 && !review; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      review = evs.find(
+        (e): e is Extract<HarnessEvent, { type: "plan_review" }> => e.type === "plan_review",
+      );
+    }
+    assert.ok(review, "expected a plan_review");
+
+    const r = await mgr.respondToPlan("s1", review.id, { action: "implement", mode: "auto" });
+    assert.deepEqual(r, { ok: true, alreadyResolved: false });
+    // The mode chip a client reads comes from this registry sync — it must
+    // carry the decision's mode, not the "plan" the adapter still reported
+    // while the exploration turn was parked.
+    assert.equal(modes.at(-1), "auto");
+
+    for (let i = 0; i < 200 && results === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(results, 1);
+    // and the adapter's own snapshot agrees once the implement turn runs
+    assert.equal(mgr.snapshot("s1")?.mode, "auto");
+    await mgr.shutdown();
+  } finally {
+    cleanup();
+  }
+});
 test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", async () => {
   const { db, cleanup } = tmpDb();
   try {

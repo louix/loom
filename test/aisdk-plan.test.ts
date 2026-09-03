@@ -237,6 +237,41 @@ test("plan mode: the plan decision's mode picks what the implementation runs in"
   }
 });
 
+test("plan mode: the decision's mode lands on the snapshot the moment the review is answered", async () => {
+  const { dir, store, cleanup } = env();
+  try {
+    const model = stepModel([
+      callStep("p1", "exit_plan", JSON.stringify({ plan: "1. write the note" })),
+      textStep("Implemented the plan."),
+    ]);
+    const s = await provider(() => model, store).createSession({
+      sessionId: "s1",
+      cwd: dir,
+      prompt: "plan then build",
+      mode: "plan",
+      mcpServers: [],
+      loomServer: true,
+    });
+
+    const evs = await pump(s.events(), {
+      onPlan: async (ev) => {
+        // Planning while the review is open…
+        assert.equal(s.snapshot().mode, "plan");
+        // …and the moment it is answered the snapshot must follow: the session
+        // manager reads it right after respondToPlan to refresh the registry,
+        // and a stale "plan" there is never revisited (the TUI's mode chip).
+        await s.respondToPlan(ev.id, { action: "implement", mode: "auto" });
+        assert.equal(s.snapshot().mode, "auto");
+      },
+    });
+    await s.close();
+
+    assert.equal(s.snapshot().mode, "auto");
+    assert.equal(evs.at(-1)?.type, "result");
+  } finally {
+    cleanup();
+  }
+});
 test("plan mode: discuss keeps the session planning", async () => {
   const { dir, store, cleanup } = env();
   try {
