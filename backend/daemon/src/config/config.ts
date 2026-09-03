@@ -163,7 +163,13 @@ export interface LoomConfig {
   defaultProvider: string;
   daemon: {
     idleShutdownMinutes: number;
-    /** Capacity of the in-memory push-event ring buffer (frames). */
+    /**
+     * Capacity of the in-memory push-event ring buffer, in *frames* (not bytes
+     * — a frame carrying a big tool result costs more). Sized so a client that
+     * reconnects, or a freshly-launched TUI, can replay a long session's whole
+     * history from the ring instead of falling back to the per-session
+     * `session_events` table (which is capped and doesn't re-sort as cleanly).
+     */
     eventBufferSize: number;
   };
   providers: {
@@ -231,7 +237,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   defaultProvider: "claude",
   daemon: {
     idleShutdownMinutes: 30,
-    eventBufferSize: 4096,
+    eventBufferSize: 20480,
   },
   providers: {
     claude: {
