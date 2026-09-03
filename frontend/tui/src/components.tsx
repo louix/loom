@@ -9,6 +9,7 @@ import { Box, Text } from "ink";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
+import { searchSessions } from "./fleet-search.ts";
 import {
   cacheHeat,
   cacheStatus,
@@ -22,7 +23,6 @@ import {
   pickerVisible,
   providerInfo,
   queueFor,
-  searchSessions,
   visibleLog,
   type Connection,
   type ConfirmState,

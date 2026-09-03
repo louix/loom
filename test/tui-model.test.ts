@@ -46,7 +46,6 @@ import {
   firstPerm,
   LOG_CAP,
   reduce,
-  searchSessions,
   selectedSession,
   sessionLog,
   sortSessions,
@@ -58,6 +57,7 @@ import {
 } from "@loom/tui/model";
 import { detailRows, logRowCount, promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
+import { searchSessions } from "@loom/tui/fleet-search";
 import {
   bar,
   humanTokens,
