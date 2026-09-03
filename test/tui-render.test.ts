@@ -154,7 +154,7 @@ test("renders the fleet, tracks selection by key, and shows help", async () => {
     stdin.feed("?");
     await delay(120);
     assert.match(stdout.last, /loom — keys/);
-    assert.match(stdout.last, /mark the session done/);
+    assert.match(stdout.last, /archive the session/);
   } finally {
     app.unmount();
     await client.close();

@@ -1517,7 +1517,7 @@ const HELP_ROWS: Array<[string, string]> = [
     "⏎  ·  i",
     "send a message to the selected session (revives a stopped one)  ·  interrupt its turn",
   ],
-  ["c  ·  x", "compact the context (once the meter passes half)  ·  mark the session done"],
+  ["c  ·  x", "compact the context (once the meter passes half)  ·  archive the session"],
   [
     "u  ·  ⇧⇥  ·  ⌥m",
     "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)",

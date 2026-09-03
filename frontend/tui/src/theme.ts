@@ -151,7 +151,7 @@ const STATUS_TEXT: Record<SessionStateKind, { glyph: string; label: string }> = 
   interrupted: { glyph: "⊘", label: "interrupted" },
   idle: { glyph: "○", label: "idle" },
   error: { glyph: "✕", label: "error" },
-  done: { glyph: "✓", label: "done" },
+  done: { glyph: "✓", label: "archived" },
 };
 
 const statusColor = (s: SessionStateKind): string => {
