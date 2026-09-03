@@ -13,7 +13,13 @@ import type {
 } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { DoctorReport, ProviderInfo, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type {
+  DoctorReport,
+  EventPush,
+  ProviderInfo,
+  PushFrame,
+  SessionSnapshot,
+} from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
@@ -540,6 +546,7 @@ export type Action =
   | { t: "providers"; list: ProviderInfo[] }
   | { t: "sessions"; sessions: SessionSnapshot[] }
   | { t: "push"; frame: PushFrame; replay?: boolean }
+  | { t: "backfill"; frames: readonly EventPush[] }
   | { t: "connection"; value: Connection }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
@@ -639,6 +646,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "push":
       return applyPush(s, a.frame, a.replay === true);
+
+    case "backfill":
+      return applyBackfill(s, a.frames);
 
     case "connection":
       return { ...s, connection: a.value };
@@ -1034,6 +1044,54 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
     default:
       return absurd(frame);
   }
+};
+
+/**
+ * Fold a session's durable history (the `session.events` fetch) into the log.
+ *
+ * On startup the TUI stitches two history sources together: the daemon's
+ * in-memory push ring (replayed via `hello`, but only the *current* daemon
+ * epoch) and this durable table (every epoch a session ever ran under). They
+ * cover different spans, so dispatching the durable frames as plain appends
+ * drops a pre-daemon-restart turn *below* the newer frames the ring already
+ * seeded — the transcript stops reading chronologically at the restart
+ * boundary (see the `2c991027` report). Instead: dedupe by `(epoch, seq)` —
+ * the real frame identity — against what's already logged, then re-sort the
+ * whole log by `ts` (stable, so exact ties keep insertion order). Like a
+ * `replay` push, `pending` / `compacting` still track but no notice flashes:
+ * this is transcript, not a live event.
+ */
+const applyBackfill = (s: TuiState, frames: readonly EventPush[]): TuiState => {
+  let pending = s.pending;
+  let compacting = s.compacting;
+  const have = new Set(s.log.map((l) => `${l.epoch}:${l.seq}`));
+  const added: LogLine[] = [];
+  for (const frame of frames) {
+    const ev = frame.event;
+    pending = trackPending(pending, ev);
+    compacting = trackCompacting(compacting, ev);
+    // Same non-transcript kinds `applyPush` keeps out of the log — surfaced via
+    // the session snapshot / indicators, not the conversation.
+    if (
+      ev.type === "status_changed" ||
+      ev.type === "compact_progress" ||
+      ev.type === "background_tasks" ||
+      ev.type === "rate_limit"
+    )
+      continue;
+    const epoch = frame.epoch ?? "";
+    const key = `${epoch}:${frame.seq}`;
+    if (have.has(key)) continue;
+    have.add(key);
+    added.push(toLogLine(frame.seq, epoch, ev));
+  }
+  if (added.length === 0 && pending === s.pending && compacting === s.compacting) return s;
+  let log = s.log;
+  if (added.length > 0) {
+    const merged = [...s.log, ...added].sort((a, b) => a.ts - b.ts);
+    log = merged.length > LOG_CAP ? merged.slice(merged.length - LOG_CAP) : merged;
+  }
+  return { ...s, log, pending, compacting };
 };
 
 const trackPending = (

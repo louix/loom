@@ -653,6 +653,73 @@ test("a replayed (backfilled) event never raises a notice — it's transcript, n
   );
 });
 
+test("backfill stitches durable history in by (epoch, seq) and re-sorts by ts (cross-restart order)", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "select", id: "a" });
+
+  // The `hello` ring replay only carries the current epoch ("e2") — the turn
+  // taken after a daemon restart. These land as ordinary appends.
+  const seed = (seq: number, e: Parameters<typeof ev>[0], ts: number) =>
+    (s = reduce(s, {
+      t: "push",
+      replay: true,
+      frame: push(seq, { ...ev(e), sessionId: "a", ts }, "e2"),
+    }));
+  seed(2, { type: "user_message", text: "follow up", injected: false }, 2_000);
+  seed(3, { type: "assistant_text", text: "on it" }, 2_100);
+
+  // `session.events` returns the whole history: the pre-restart turn ("e1")
+  // ahead of what the ring already held ("e2").
+  s = reduce(s, {
+    t: "backfill",
+    frames: [
+      push(
+        18,
+        {
+          ...ev({ type: "user_message", text: "original task", injected: false }),
+          sessionId: "a",
+          ts: 1_000,
+        },
+        "e1",
+      ),
+      push(
+        19,
+        { ...ev({ type: "assistant_text", text: "first answer" }), sessionId: "a", ts: 1_100 },
+        "e1",
+      ),
+      push(
+        2,
+        {
+          ...ev({ type: "user_message", text: "follow up", injected: false }),
+          sessionId: "a",
+          ts: 2_000,
+        },
+        "e2",
+      ),
+      push(
+        3,
+        { ...ev({ type: "assistant_text", text: "on it" }), sessionId: "a", ts: 2_100 },
+        "e2",
+      ),
+    ],
+  });
+
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["original task", "first answer", "follow up", "on it"],
+    "the pre-restart turn is ordered ahead of the newer frames, not appended below them",
+  );
+  assert.equal(
+    sessionLog(s).filter((l) => l.text === "follow up").length,
+    1,
+    "frames already logged by (epoch, seq) aren't duplicated",
+  );
+
+  // A second backfill with nothing new is a no-op (same state ref → no re-render).
+  assert.equal(reduce(s, { t: "backfill", frames: [] }), s);
+});
+
 test("a sessions/hello snapshot drops pending for a session it says is no longer blocked (U2)", () => {
   const blocked = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [blocked] });
