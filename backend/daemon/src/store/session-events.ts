@@ -45,9 +45,11 @@ export class SessionEventStore {
    *  `(session_id, id)` index; only the cursor lookup isn't covered past
    *  `session_id`, and it runs once per manual scroll-back, never on the hot
    *  path. Legacy rows written before epoch tracking all share `epoch = ''`, so
-   *  that lookup takes the newest `id` among any duplicates — `id < beforeId`
-   *  then excludes every ambiguous row rather than leaving a gap. A short page
-   *  means there is nothing older. */
+   *  that lookup takes the newest `id` among any duplicates; `id < beforeId`
+   *  can then hand back older duplicates sharing the cursor's (epoch, seq) —
+   *  the client reads a page that doesn't move the cursor as "nothing older"
+   *  and stops, trading a premature stop at a legacy process boundary for
+   *  guaranteed termination. A short page means there is nothing older. */
   list(
     sessionId: string,
     opts: { limit?: number; before?: { epoch: string; seq: number } } = {},

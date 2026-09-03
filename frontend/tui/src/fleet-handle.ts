@@ -483,6 +483,7 @@ export const mkFleetHandle = ({
     client
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE })
       .then((frames) => {
+        console.error("THEN-enter", Date.now(), frames.length);
         // The reducer dedupes by (epoch, seq) against the log and re-sorts by
         // `ts`, so the durable history (every epoch) interleaves correctly with
         // whatever the `hello` ring replay already seeded (current epoch only) —
@@ -512,6 +513,7 @@ export const mkFleetHandle = ({
     client
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
       .then((frames) => {
+        console.error("FOLD-THEN", Date.now(), "frames", JSON.stringify(frames.map((f) => f.seq)));
         const onSame = state.selectedId === id;
         const page = store.get().logPage;
         // Was the viewport showing the top of the log before the fold-in? Only
@@ -544,8 +546,14 @@ export const mkFleetHandle = ({
           cursor.oldest = next;
         }
         const grew = onSame ? shownLogRows() - beforeRows : 0;
-        if (wasPinnedTop && grew > 0) {
-          logScroll = Math.max(0, shownLogRows() - page); // stay pinned at the new top
+        if (grew > 0) {
+          if (wasPinnedTop) {
+            logScroll = Math.max(0, shownLogRows() - page); // stay pinned at the new top
+          }
+          // Publish even when the view wasn't pinned: the fold changed the log
+          // (the "↑N more" indicator included), and an anchored view renders the
+          // same rows either way — the re-render is free. Without this the fold
+          // sits invisible until the next keypress republishes.
           publish();
         }
       })
@@ -2338,7 +2346,7 @@ export const mkFleetHandle = ({
         Object.keys(state.compacting).length > 0 ||
         state.sessions.some((s) => s.status.kind === "running" || s.status.kind === "starting");
       if (!animating) return;
-      tick = (tick + 1) % 100000;
+      if (state.log.length > 3) tick = (tick + 1) % 100000;
       dispatch({ t: "expireNotice", now: Date.now() });
       publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
     }, 120);

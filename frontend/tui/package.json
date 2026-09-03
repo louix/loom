@@ -11,6 +11,7 @@
     "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",
     "./editor-handoff": "./src/editor-handoff.ts",
+    "./fleet-handle": "./src/fleet-handle.ts",
     "./theme": "./src/theme.ts",
     "./theme-store": "./src/theme-store.ts"
   },

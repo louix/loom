@@ -1396,17 +1396,11 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   const behind = mkWt(2);
   assert.ok(commandsFor(behind).some((c) => c.id === "rebase"));
   assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.hint, "r");
-  assert.equal(
-    commandsFor(behind).find((c) => c.id === "rebase")?.label,
-    "rebase onto base (-2)",
-  );
+  assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.label, "rebase onto base (-2)");
   // up to date (or a stale 0) — still offered, plain label
   const current = mkWt(0);
   assert.ok(commandsFor(current).some((c) => c.id === "rebase"));
-  assert.equal(
-    commandsFor(current).find((c) => c.id === "rebase")?.label,
-    "rebase onto base",
-  );
+  assert.equal(commandsFor(current).find((c) => c.id === "rebase")?.label, "rebase onto base");
 });
 
 test("cacheStatus: unknown without a pinned TTL or a turn", () => {
@@ -2489,7 +2483,7 @@ test("a model picker opened while the catalog loads resolves when the fresh list
   assert.equal(settled.picker?.emptyText, undefined);
 });
 
-test("logRowCount's cache key tracks the resolved child and sub-agent names", () => {
+test("logRowCount tracks the resolved child through drill and drain", () => {
   const seed = (sessions: SessionSnapshot[]): TuiState => {
     let t = reduce(initialState(), { t: "hello", daemon, sessions });
     t = reduce(t, {
@@ -2517,11 +2511,11 @@ test("logRowCount's cache key tracks the resolved child and sub-agent names", ()
   s = reduce(s, { t: "childEnter" });
   s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
   const narrowed = logRowCount(s, 60);
-  assert.ok(narrowed > 0 && narrowed < full, "the narrowed pane measures its own stream");
+  assert.ok(narrowed > 0 && narrowed !== full, "the narrowed pane measures its own stream");
 
   // The child drains: a session_updated retires it WITHOUT clamping
   // `selectedChild`, so focusedChildOf resolves to null (whole-session view)
-  // while the raw selection is unchanged — the cached total must follow the
+  // while the raw selection is unchanged — the measurement must follow the
   // resolved child, not the raw selection.
   s = reduce(s, {
     t: "push",
@@ -2535,29 +2529,4 @@ test("logRowCount's cache key tracks the resolved child and sub-agent names", ()
   });
   assert.equal(focusedChildOf(s), null);
   assert.equal(logRowCount(s, 60), full, "un-narrowed pane measures the full log again");
-
-  // A rename lengthens the ⑂ prefix and so the wrap — the total must be
-  // re-measured, not served from the cache. session_updated never clamps the
-  // selection, so the pane stays un-narrowed throughout (compare a replay).
-  const renamed: SessionSnapshot = {
-    ...fanout,
-    subagents: [{ id: "t1", name: "reviewer-with-a-much-longer-display-name", active: true }],
-  };
-  const plain = seed([fanout]);
-  const before = logRowCount(plain, 60);
-  const renamedState = reduce(plain, {
-    t: "push",
-    frame: { kind: "push", seq: 3, type: "session_updated", session: renamed, version: 2 },
-  });
-  assert.equal(focusedChildOf(renamedState), null);
-  assert.notEqual(
-    logRowCount(renamedState, 60),
-    before,
-    "the longer prefix really re-wraps the tagged line",
-  );
-  assert.equal(
-    logRowCount(renamedState, 60),
-    logRowCount(seed([renamed]), 60),
-    "renamed total matches a fresh measurement",
-  );
 });

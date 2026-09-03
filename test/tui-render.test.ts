@@ -7,13 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
-import { render, renderToString } from "ink";
+import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
-import { FooterArea, PromptPane, promptPaneRows, promptRows } from "@loom/tui/components";
-import { initialState, makePrompt, reduce } from "@loom/tui/model";
-import type { FakeProvider } from "@loom/connector-mock";
+import { FooterArea, logRowCount, PromptPane, promptPaneRows, promptRows } from "@loom/tui/components";
+import { mkFleetHandle } from "@loom/tui/fleet-handle";
+import { initialState, makePrompt, reduce } from "@loom/tui/model";import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 const ESC = "\x1b";
@@ -711,6 +711,88 @@ test("PgUp climbs to the very top of a wrapped log (scroll math is physical rows
     assert.match(stdout.last, /wrapped-1-top/, "PgUp reaches the first event's first row");
   } finally {
     app.unmount();
+    await second.close();
+    await cleanup();
+  }
+});
+
+test("paging a wrapped log folds in older pages and reaches the first event", async () => {
+  const { connect, cleanup } = await harness();
+  const first = await connect();
+  const s = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "a paged session with wrapped output",
+    status: "running",
+    provider: "fake",
+  });
+  // Nine heavily wrapped events (~16 screen rows each) paged 3 at a time: every
+  // fold-in lands a few dozen wrapped rows ABOVE the viewport while it is
+  // pinned at the top, so paging to the first event exercises the fold + re-pin
+  // path at real wrap factors.
+  for (let i = 1; i <= 9; i++) {
+    await first.request("dev.emit", {
+      event: {
+        sessionId: s.id,
+        type: "assistant_text",
+        text: `page${i}-head ${"filler ".repeat(120)}`,
+      },
+    });
+  }
+  await delay(80);
+  await first.close();
+
+  // Drive the real fleet handle — the App minus ink. The view updates
+  // synchronously on every dispatch, so assertions read state instead of
+  // racing ink's render delivery, which has no latency bound on a fake stdout.
+  const second = await connect(false);
+  const handle = mkFleetHandle({
+    client: second,
+    term: {
+      exit: () => {},
+      suspendTerminal: async () => {},
+      write: () => {},
+      isTTY: true,
+      getSize: () => ({ cols: 120, rows: 40 }),
+      onResize: () => () => {},
+    },
+    historyPageSize: 3,
+  });
+  const teardown = handle.effectStart();
+  try {
+    const pressPgUp = (): void => handle.handleKey("", { pageUp: true } as Key);
+    const oldest = (): string => handle.getView().state.log[0]?.text ?? "";
+    // Gate on the log COUNT: the fold dispatches land in the view's state
+    // synchronously, while rendered-output checks race ink's delivery.
+    const climbTo = async (): Promise<void> => {
+      const deadline = Date.now() + 30_000;
+      while (handle.getView().state.log.length < 9 && Date.now() < deadline) {
+        pressPgUp(); // pins the top and pulls the next-older page
+        await delay(100);
+      }
+    };
+
+    await climbTo();
+    assert.equal(handle.getView().state.log.length, 9, "every page folded in");
+    assert.match(oldest(), /^page1-head/, "the climb reaches the very first event");
+    // Keep climbing: the viewport must be able to reach the log's top. (The
+    // original bug clamped `logScroll` against the *logical* line count, which
+    // strands it partway up a wrapped log no matter how many times you press.)
+    // A fixed generous burst — no early exits — so the endpoint is deterministic.
+    for (let i = 0; i < 15; i++) {
+      pressPgUp();
+      await delay(30);
+    }
+    const view = handle.getView();
+    const paneWidth = view.body === "split" ? view.rightW : view.cols;
+    const top = Math.max(0, logRowCount(view.state, paneWidth) - view.logPage);
+    assert.equal(view.logScroll, top, "the viewport reaches the log's top");
+
+    // Past the start the done latch fires: further PgUp neither moves nor churns.
+    pressPgUp();
+    pressPgUp();
+    assert.equal(handle.getView().state.log.length, 9, "no churn past the start");
+    assert.equal(handle.getView().logScroll, top, "still pinned at the log's top");
+  } finally {
+    teardown();
     await second.close();
     await cleanup();
   }

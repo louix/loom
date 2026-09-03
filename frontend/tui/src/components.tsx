@@ -796,14 +796,10 @@ const lineLayout = (
 };
 
 /** Everything the log renderers need for one state + pane width: the visible
- *  (filtered / condensed) lines, the pane's inner width, and a cache key
- *  covering everything that can change the geometry. */
+ *  (filtered / condensed) lines, and the pane's inner width. */
 interface LogContext {
-  /** `state.log` — the row-total cache key (stable until an event lands). */
-  raw: LogLine[];
   lines: readonly LogLine[];
   iw: number;
-  key: string;
 }
 
 const logContext = (state: TuiState, width: number): LogContext => {
@@ -811,40 +807,23 @@ const logContext = (state: TuiState, width: number): LogContext => {
   // its subtree's lines (visibleLog hides them here), and drilled in the pane
   // header already names the child.
   const child = focusedChildOf(state);
-  const subagents = selectedSession(state)?.subagents ?? [];
-  const iw = inside(width);
-  // The cache key must cover everything the geometry depends on beyond the log
-  // itself: the RESOLVED child (a drained child un-narrows the pane while
-  // `selectedChild` itself stays set) and the sub-agent name map (a name that
-  // arrives after its events, or a rename, changes the ⑂ prefix and re-wraps).
-  const subSig = subagents.map((a) => `${a.id}=${a.name}`).join(",");
   return {
-    raw: state.log,
     lines: visibleLog(state, child),
-    iw,
-    key: `${iw}|${state.logFilter}|${state.selectedId ?? ""}|${child?.key ?? ""}|${subSig}`,
+    iw: inside(width),
   };
 };
 
-/** Cached wrapped-row totals, per log version × context key. LogLines are
- *  shared by reference across log versions (appends, backfill re-sorts), so
- *  re-measuring a grown log re-wraps only the new lines. */
-const rowTotals = new WeakMap<LogLine[], Map<string, number>>();
-
+/** Wrapped-row total for the visible log — O(lines) per call, with per-line
+ *  geometry memoised in `layoutCache`, so re-measuring a grown log re-wraps
+ *  only the new lines. Deliberately NOT cached per log version: a stale total
+ *  here desyncs the scroll math from the rendered window (the exact bug class
+ *  this replaced a full materialisation to avoid), and the walk is cheap — a
+ *  WeakMap hit + an add per line. */
 const totalRows = (ctx: LogContext): number => {
-  let byKey = rowTotals.get(ctx.raw);
-  if (!byKey) {
-    byKey = new Map();
-    rowTotals.set(ctx.raw, byKey);
-  }
-  const hit = byKey.get(ctx.key);
-  if (hit !== undefined) return hit;
   let total = 0;
   for (const l of ctx.lines) total += lineLayout(l, ctx.iw).segs.length;
-  byKey.set(ctx.key, total);
   return total;
 };
-
 /** The wrapped rows `[from, to)` of the visible log — builds only the window's
  *  row objects; the full wrapped list is never materialised. Partial lines at
  *  the window edges render their inner segments only, exactly like slices of a

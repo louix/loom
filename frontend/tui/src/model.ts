@@ -1103,7 +1103,12 @@ const applyBackfill = (s: TuiState, frames: readonly EventPush[]): TuiState => {
   if (added.length === 0 && pending === s.pending && compacting === s.compacting) return s;
   let log = s.log;
   if (added.length > 0) {
-    const merged = [...s.log, ...added].sort((a, b) => a.ts - b.ts);
+    // Tie-break equal-millisecond timestamps by seq: the fold's frames are
+    // strictly older than everything held (the daemon's `before` cursor), but
+    // a burst of events can share one millisecond — a stable ts-only sort then
+    // keeps the existing (newer) lines ahead of the just-folded older ones and
+    // the transcript stitches out of order.
+    const merged = [...s.log, ...added].sort((a, b) => a.ts - b.ts || a.seq - b.seq);
     log = merged.length > LOG_CAP ? merged.slice(merged.length - LOG_CAP) : merged;
   }
   return { ...s, log, pending, compacting };
