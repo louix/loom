@@ -558,6 +558,7 @@ export type Action =
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
+  | { t: "selectChild"; sessionId: string; key: string }
   | { t: "childEnter" }
   | { t: "childExit" }
   | { t: "childMove"; delta: number }
@@ -695,6 +696,21 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         // Resolve any prior pending hold: a new pick either targets a known
         // session (no hold) or becomes the new hold.
         pendingSelectId: known ? undefined : a.id,
+      };
+    }
+
+    case "selectChild": {
+      // A click on a child row: select its session and focus that child. Guard
+      // the key against a stale hit map — fall back to the first live sibling
+      // (childEnter's semantics) if it's gone.
+      const sess = s.sessions.find((x) => x.id === a.sessionId) ?? null;
+      const kids = sess ? childrenOf(sess) : [];
+      const child = kids.some((k) => k.key === a.key) ? a.key : (kids[0]?.key ?? null);
+      return {
+        ...s,
+        selectedId: a.sessionId,
+        selectedChild: child,
+        pendingSelectId: sess ? undefined : a.sessionId,
       };
     }
 
@@ -1929,6 +1945,78 @@ export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
     const inGroup = sessions.filter((x) => x.status.kind === status);
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
+  }
+  return out;
+};
+
+/** A clickable region in the current frame: one terminal row, columns `x0..x1`
+ *  inclusive, in 1-based screen coordinates (the same space SGR mouse reports
+ *  use). Built by {@link fleetHits} / `modeChipHit`, carried on the `FleetView`
+ *  so the keymap can hit-test a click without any Ink measurement API. */
+export type FleetHit =
+  | { kind: "session"; y: number; x0: number; x1: number; id: string }
+  | { kind: "child"; y: number; x0: number; x1: number; sessionId: string; key: string }
+  | { kind: "childMore"; y: number; x0: number; x1: number; sessionId: string }
+  | { kind: "mode"; y: number; x0: number; x1: number };
+
+/**
+ * The screen row of every FLEET entry for the current state — a plain running
+ * row counter that mirrors `Fleet` / `FleetRow` / `FleetChildRows` in
+ * `components.tsx`: every entry is exactly one line and the leading chrome
+ * (border, title, optional filter box, the blocks box's `marginTop`) is fixed.
+ * An active filter renders one flat ranked list; otherwise the status groups.
+ * `originY` is the fleet pane's top screen row, `maxY` the last visible row
+ * (Ink clips past it). Kept in lockstep with the JSX — `test/tui-model.test.ts`
+ * pins it against the render.
+ */
+export const fleetHits = (
+  state: TuiState,
+  geom: { originX: number; listW: number; originY: number; maxY: number },
+): FleetHit[] => {
+  const { originX, originY, maxY } = geom;
+  const x0 = originX;
+  const x1 = originX + geom.listW - 1;
+  const query = state.find?.buffer.text ?? "";
+  const matched = searchSessions(state, query).map((m) => m.session);
+  const active = query.trim() !== "";
+  const focused = focusedChildOf(state);
+
+  const out: FleetHit[] = [];
+  let y = originY;
+  y += 1; // round-border top
+  y += 1; // pane title
+  if (state.find) y += 2; // the filter box's marginTop + its InputLine
+  y += 1; // the blocks box's marginTop
+  if (matched.length === 0) return out;
+
+  const emitSession = (s: SessionSnapshot): void => {
+    if (y <= maxY) out.push({ kind: "session", y, x0, x1, id: s.id });
+    y += 1;
+    const kids = childrenOf(s);
+    if (kids.length === 0) return;
+    // Mirrors FleetChildRows: 4 children shown, cap lifted while drilled in.
+    const drilled = focused != null && s.id === state.selectedId;
+    const shown = drilled ? kids : kids.slice(0, 4);
+    const extra = drilled ? 0 : kids.length - shown.length;
+    for (const c of shown) {
+      if (y <= maxY) out.push({ kind: "child", y, x0, x1, sessionId: s.id, key: c.key });
+      y += 1;
+    }
+    if (extra > 0) {
+      if (y <= maxY) out.push({ kind: "childMore", y, x0, x1, sessionId: s.id });
+      y += 1;
+    }
+  };
+
+  if (active) {
+    for (const s of matched) emitSession(s);
+  } else {
+    const groups = groupsOf(matched);
+    for (let i = 0; i < groups.length; i += 1) {
+      if (i > 0) y += 1; // inter-group marginTop
+      y += 1; // group header
+      for (const s of groups[i]!.sessions) emitSession(s);
+    }
   }
   return out;
 };

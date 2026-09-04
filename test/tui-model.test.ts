@@ -24,6 +24,7 @@ import {
   defaultProviderId,
   effortPickItems,
   escapeTarget,
+  fleetHits,
   focusedChildOf,
   focusedPending,
   footerHints,
@@ -55,7 +56,13 @@ import {
   type LogLine,
   type TuiState,
 } from "@loom/tui/model";
-import { detailRows, logRowCount, promptPaneRows, promptRows } from "@loom/tui/components";
+import {
+  detailRows,
+  logRowCount,
+  modeChipHit,
+  promptPaneRows,
+  promptRows,
+} from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import { searchSessions } from "@loom/tui/fleet-search";
 import {
@@ -344,6 +351,107 @@ test("changing the session selection clears the child focus", () => {
   s = reduce(s, { t: "move", delta: 1 });
   assert.equal(s.selectedId, "other");
   assert.equal(s.selectedChild, null, "moving between sessions drops the focus too");
+});
+
+test("selectChild selects the session and focuses the child; stale/unknown fall back", () => {
+  let s = reduce(initialState(), {
+    t: "hello",
+    daemon,
+    sessions: [snap({ id: "a", status: "idle" }), fanout],
+  });
+  s = reduce(s, { t: "selectChild", sessionId: "fan", key: "sub:t1" });
+  assert.equal(s.selectedId, "fan");
+  assert.equal(s.selectedChild, "sub:t1");
+
+  // a key the fleet no longer renders → snap to the first live child.
+  s = reduce(s, { t: "selectChild", sessionId: "fan", key: "sub:gone" });
+  assert.equal(s.selectedChild, "bg:task1");
+
+  // an unknown session → optimistic hold, no child.
+  s = reduce(s, { t: "selectChild", sessionId: "ghost", key: "bg:x" });
+  assert.equal(s.selectedId, "ghost");
+  assert.equal(s.selectedChild, null);
+  assert.equal(s.pendingSelectId, "ghost");
+});
+
+test("fleetHits maps every FLEET entry to its screen row", () => {
+  const a = snap({ id: "a", status: "idle" });
+  const b = snap({ id: "b", status: "idle" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b, fanout] });
+  const geom = { originX: 1, listW: 40, originY: 2, maxY: 100 };
+
+  const flat = fleetHits(s, geom);
+  // Two status groups (working_background then idle, or vice-versa) — every
+  // session is present, rows strictly increase, and the row span stays inside
+  // the fleet column.
+  const sessions = flat.filter((h) => h.kind === "session");
+  assert.deepEqual(
+    new Set(sessions.map((h) => (h.kind === "session" ? h.id : ""))),
+    new Set(["a", "b", "fan"]),
+  );
+  for (const h of flat) {
+    assert.equal(h.x0, 1);
+    assert.equal(h.x1, 40);
+  }
+  const ys = flat.map((h) => h.y);
+  assert.deepEqual(
+    [...ys].sort((x, y) => x - y),
+    ys,
+    "rows are top-to-bottom",
+  );
+  assert.equal(new Set(ys).size, ys.length, "one entry per row");
+
+  // Sessions in the same group sit on consecutive rows.
+  const [ay, by] = [
+    sessions.find((h) => h.kind === "session" && h.id === "a")!.y,
+    sessions.find((h) => h.kind === "session" && h.id === "b")!.y,
+  ];
+  assert.equal(Math.abs(ay - by), 1);
+
+  // `fan` is not drilled in: its 3 live children each get a `child` row, capped
+  // rows would get a `childMore` (only 3 kids here, so none).
+  const kids = flat.filter((h) => h.kind === "child");
+  assert.deepEqual(
+    kids.map((h) => (h.kind === "child" ? h.key : "")),
+    ["bg:task1", "bg:task2", "sub:t1"],
+  );
+  const fanY = sessions.find((h) => h.kind === "session" && h.id === "fan")!.y;
+  assert.deepEqual(
+    kids.map((h) => h.y),
+    [fanY + 1, fanY + 2, fanY + 3],
+    "child rows follow their session row",
+  );
+
+  // maxY clips: nothing below the last visible row survives.
+  assert.ok(fleetHits(s, { ...geom, maxY: fanY }).every((h) => h.y <= fanY));
+});
+
+test("fleetHits shifts every row down when the filter box is open", () => {
+  const a = snap({ id: "a", status: "idle", title: "alpha" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  const geom = { originX: 1, listW: 40, originY: 2, maxY: 100 };
+  const before = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
+  s = reduce(s, { t: "openFind" });
+  const after = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
+  assert.equal(after - before, 2, "the marginTop + the InputLine push the list down");
+});
+
+test("modeChipHit points at the Detail status row's chip cell", () => {
+  const plain = snap({ id: "p", status: "idle", mode: "default" });
+  const hit = modeChipHit(plain, { originX: 1, originY: 2, paneW: 80 });
+  assert.ok(hit);
+  // border + DETAIL header + title + the status row's marginTop.
+  assert.equal(hit!.y, 6);
+  assert.ok(hit!.x0 > 1 && hit!.x1 >= hit!.x0);
+
+  // account + fork lines each push the status row down one.
+  const forked = snap({ id: "f", status: "idle", parentId: "p", forkTurn: 3 });
+  const fh = modeChipHit(forked, { originX: 1, originY: 2, paneW: 80, account: "x (y)" });
+  assert.equal(fh!.y, 8);
+
+  assert.equal(modeChipHit(null, { originX: 1, originY: 2, paneW: 80 }), null);
+  // a pane too narrow to fit the chip drops the region.
+  assert.equal(modeChipHit(plain, { originX: 1, originY: 2, paneW: 8 }), null);
 });
 
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {

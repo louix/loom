@@ -28,6 +28,7 @@ import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailRows,
   logRowCount,
+  modeChipHit,
   promptPaneRows,
   promptRows,
   REQUEST_PANEL_ROWS,
@@ -51,6 +52,7 @@ import {
   effortPickItems,
   escapeTarget,
   firstPerm,
+  fleetHits,
   focusedPending,
   initialState,
   LOG_CAP,
@@ -76,6 +78,7 @@ import {
   type Action,
   type AskUserQuestionItem,
   type ConfirmState,
+  type FleetHit,
   type LogLine,
   type Pending,
   type PickerState,
@@ -225,6 +228,9 @@ export interface FleetView {
   readonly rightW: number;
   readonly splitLogH: number;
   readonly logPage: number;
+  /** Clickable regions for this frame — FLEET rows + the Detail `[mode]` chip.
+   *  The keymap's mouse branch hit-tests a left click against these. */
+  readonly hits: readonly FleetHit[];
 }
 
 export interface FleetHandle {
@@ -314,8 +320,9 @@ const deriveView = (
   // sum to exactly bodyH — size the log against Detail's real row count
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
+  const detailAccount = sel ? providerAccountOf(state, sel.provider) : "";
   const detailH = detailRows(sel, {
-    account: sel ? providerAccountOf(state, sel.provider) : "",
+    account: detailAccount,
     compacting: sel ? (state.compacting[sel.id] ?? null) : null,
     queued: sel ? queueFor(state, sel.id) : [],
   });
@@ -332,6 +339,32 @@ const deriveView = (
     state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
       ? (state.prompt.qaIdx ?? 0)
       : 0;
+
+  // Clickable regions — screen coordinates the keymap's mouse branch hit-tests
+  // against. The body starts at screen row 2 (Header is one row); Ink clips the
+  // fleet list past `bodyH + 1`.
+  const hits: FleetHit[] = [];
+  const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
+  if (body === "split") {
+    hits.push(...fleetHits(state, { ...fleetGeom, listW: leftW }));
+    const chip = modeChipHit(sel, {
+      originX: leftW + 2,
+      originY: 2,
+      paneW: rightW,
+      account: detailAccount,
+    });
+    if (chip) hits.push({ kind: "mode", ...chip });
+  } else if (body === "fleetOnly") {
+    hits.push(...fleetHits(state, { ...fleetGeom, listW: cols }));
+  } else if (body === "sessionPane") {
+    const chip = modeChipHit(sel, {
+      originX: 1,
+      originY: 2,
+      paneW: cols,
+      account: detailAccount,
+    });
+    if (chip) hits.push({ kind: "mode", ...chip });
+  }
 
   return {
     state,
@@ -353,6 +386,7 @@ const deriveView = (
     rightW,
     splitLogH,
     logPage,
+    hits,
   };
 };
 
@@ -1956,13 +1990,17 @@ export const mkFleetHandle = ({
       return;
     }
 
-    // Mouse wheel → scrolls the plan-review body while that overlay owns the
-    // screen, otherwise the event log. `run.tsx` turns on SGR mouse reporting so
-    // the wheel arrives as its own `[<Cb;Cx;Cy(M|m)` sequence — Ink passes it
-    // through as raw `input` with every `key.*` flag false.
-    const wheel = /^\[<(\d+);\d+;\d+[Mm]/.exec(input);
-    if (wheel) {
-      const base = Number(wheel[1]) & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
+    // SGR mouse reports arrive as raw `input` (`[<Cb;Cx;Cy(M|m)`, `run.tsx` turns
+    // the reporting on) with every `key.*` flag false. The wheel scrolls the
+    // plan-review body while that overlay owns the screen, otherwise the event
+    // log; a left click hit-tests against the frame's `hits` map — FLEET rows and
+    // the Detail `[mode]` chip (built in `deriveView`).
+    const mouse = /^\[<(\d+);(\d+);(\d+)([Mm])/.exec(input);
+    if (mouse) {
+      const rawBtn = Number(mouse[1]);
+      const col = Number(mouse[2]);
+      const row = Number(mouse[3]);
+      const base = rawBtn & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
       if (state.mode === "plan") {
         if (base === 64) return planScrollBy(-3); // wheel up → toward the top
         if (base === 65) return planScrollBy(3); // wheel down → toward the end
@@ -1975,7 +2013,22 @@ export const mkFleetHandle = ({
         logScroll = Math.max(0, logScroll - 3); // wheel down → toward live tail
         return publish();
       }
-      return; // horizontal wheel / click / drag — ignore
+      // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
+      // or the mode chip. Only in browse — overlays own the screen.
+      if (base === 0 && mouse[4] === "M" && (rawBtn & 32) === 0 && state.mode === "browse") {
+        const hit = store.get().hits.find((h) => row === h.y && col >= h.x0 && col <= h.x1);
+        if (!hit) return;
+        if (hit.kind === "session") return void dispatch({ t: "select", id: hit.id });
+        if (hit.kind === "child")
+          return void dispatch({ t: "selectChild", sessionId: hit.sessionId, key: hit.key });
+        if (hit.kind === "childMore") {
+          dispatch({ t: "select", id: hit.sessionId });
+          return void dispatch({ t: "childEnter" });
+        }
+        if (hit.kind === "mode") return void runAct("mode");
+        return;
+      }
+      return; // release / middle / right / drag / horizontal wheel — ignore
     }
 
     if (state.mode === "prompt" && state.prompt) {

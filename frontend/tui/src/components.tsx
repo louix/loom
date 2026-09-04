@@ -678,6 +678,33 @@ export const detailRows = (
   return rows;
 };
 
+/**
+ * The clickable cell span of Detail's gold `[mode]` chip, in 1-based screen
+ * coordinates — `null` when no session is shown or the chip is truncated off a
+ * narrow pane. `originX`/`originY` are the Detail box's top-left; `paneW` its
+ * outer width. Mirrors {@link Detail}'s chrome up to the status row the same way
+ * {@link detailRows} mirrors the whole card; `test/tui-model.test.ts` pins it.
+ */
+export const modeChipHit = (
+  session: SessionSnapshot | null,
+  geom: { originX: number; originY: number; paneW: number; account?: string },
+): { y: number; x0: number; x1: number } | null => {
+  if (!session) return null;
+  const s = session;
+  const forked = s.parentId != null && s.forkTurn != null;
+  // border + DETAIL header + title + the status row's marginTop, plus the
+  // optional account / fork lines between header and status.
+  const y = geom.originY + 4 + (geom.account ? 1 : 0) + (forked ? 1 : 0);
+  const look = statusLook(s.status.kind);
+  const left = `${look.glyph} ${look.label}${statusDetailSuffix(s)}`;
+  const contentX = geom.originX + 2; // round border + paddingX:1
+  const x0 = contentX + [...left].length + 2; // the status row's gap={2}
+  const chip = `mode [${modeLabel(s.mode)}]`;
+  const rightEdge = geom.originX + geom.paneW - 3; // inside the far border + pad
+  if (x0 > rightEdge) return null;
+  return { y, x0, x1: Math.min(x0 + [...chip].length - 1, rightEdge) };
+};
+
 // ---------------------------------------------------------------------------
 // event log (right column, bottom)
 // ---------------------------------------------------------------------------

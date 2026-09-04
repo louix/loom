@@ -272,6 +272,69 @@ models   = ["m1", "m2"]
     }
   });
 
+  test("a left click selects a FLEET row and cycles the DETAIL [mode] chip", async () => {
+    /* oxlint-disable no-control-regex -- stripping terminal escape sequences */
+    const strip = (s: string): string =>
+      s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+    /* oxlint-enable no-control-regex */
+
+    const { connect, cleanup } = await harness();
+    const client = await connect();
+    await client.request<SessionSnapshot>("session.createStub", {
+      prompt: "the other task",
+      status: "running",
+      provider: "fake",
+    });
+    const target = await client.request<SessionSnapshot>("session.createStub", {
+      prompt: "click target task",
+      status: "idle",
+      provider: "fake",
+    });
+    const { stdout, stdin, app } = mount(client);
+
+    // The one non-header line carrying the fleet cursor glyph.
+    const cursorRow = (): string =>
+      strip(stdout.last)
+        .split("\n")
+        .find((l) => l.includes("▍") && !l.includes("loom")) ?? "";
+    // 1-based screen row / column of a substring in the current frame.
+    const at = (needle: string): { col: number; row: number } => {
+      const lines = strip(stdout.last).split("\n");
+      const row = lines.findIndex((l) => l.includes(needle));
+      return { row: row + 1, col: lines[row]!.indexOf(needle) + 1 };
+    };
+    const click = (p: { col: number; row: number }): void =>
+      stdin.feed(`\x1b[<0;${p.col};${p.row}M`);
+
+    try {
+      await waitFor(stdout, (t) => /the other task/.test(t) && /click target task/.test(t));
+      assert.match(cursorRow(), /the other task/, "the running session is selected first");
+
+      click(at("click target task"));
+      await waitFor(stdout, () => /click target task/.test(cursorRow()));
+
+      await waitFor(stdout, /\[manual\]/);
+      click(at("[manual]"));
+      await waitFor(stdout, /\[plan\]/);
+      const after = await client.request<SessionSnapshot[]>("session.list");
+      assert.equal(
+        after.find((x) => x.id === target.id)?.mode,
+        "plan",
+        "the click cycled the mode",
+      );
+
+      // A click on empty space in the events pane is inert.
+      const before = cursorRow();
+      click({ col: 118, row: 30 });
+      await delay(80);
+      assert.equal(cursorRow(), before, "a click that hits no region changes nothing");
+    } finally {
+      app.unmount();
+      await client.close();
+      await cleanup();
+    }
+  });
+
   test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send prompt", async () => {
     const { connect, cleanup } = await harness({ config: OAI_CFG });
     const client = await connect();
