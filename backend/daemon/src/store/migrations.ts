@@ -205,4 +205,13 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN commit_nudged_sha TEXT NOT NULL DEFAULT '';
   `,
+
+  // 17 — the prompt-cache TTL the provider was last observed actually writing
+  // at, in minutes. Before this the cache countdown ran purely on the
+  // configured `prompt_cache_ttl` pin, which the provider is free to decline
+  // (an API key, a plan outside its usage limits, Bedrock) — so the gauge could
+  // count down an hour on a cache that had lapsed after five. 0 = never seen.
+  /* sql */ `
+  ALTER TABLE usage ADD COLUMN last_cache_ttl_minutes INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

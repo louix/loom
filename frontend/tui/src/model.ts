@@ -1458,17 +1458,24 @@ export interface CacheStatus {
   fraction: number;
   /** What the last turn's read/write split says actually happened. */
   lastHit: "hit" | "rewrote" | null;
+  /**
+   * Where the TTL behind the countdown came from — `observed` was read back off
+   * a response, `config` is the `prompt_cache_ttl` pin standing in until the
+   * session has written cache once (and the provider may not be honouring it).
+   */
+  source: "observed" | "config" | "none";
 }
 
 /**
  * Prompt-cache liveness for a session, given the current time. `unknown` when
- * the TTL isn't pinned or the session hasn't taken a turn. The countdown is an
- * estimate — it can't see mid-turn refreshes or server-side eviction — hence
- * `lastHit`, the ground truth from the last turn's cache read/write split.
+ * no TTL is known or the session hasn't taken a turn. The countdown is an
+ * estimate — it can't see mid-turn refreshes or server-side eviction, and on a
+ * `config` source not even the TTL is confirmed — hence `lastHit`, the ground
+ * truth from the last turn's cache read/write split.
  */
 export const cacheStatus = (s: SessionSnapshot | null, now: number): CacheStatus => {
   if (!s || s.cache.ttlMinutes <= 0 || s.cache.lastTurnAt <= 0) {
-    return { state: "unknown", remainingMs: 0, fraction: 0, lastHit: null };
+    return { state: "unknown", remainingMs: 0, fraction: 0, lastHit: null, source: "none" };
   }
   const { lastTurnAt, ttlMinutes, lastRead, lastWrite } = s.cache;
   let lastHit: CacheStatus["lastHit"] = null;
@@ -1476,9 +1483,10 @@ export const cacheStatus = (s: SessionSnapshot | null, now: number): CacheStatus
   else if (lastWrite > 0) lastHit = "rewrote";
   const ttlMs = ttlMinutes * 60_000;
   const remainingMs = lastTurnAt + ttlMs - now;
+  const source = s.cache.ttlSource;
   return remainingMs > 0
-    ? { state: "warm", remainingMs, fraction: Math.min(1, remainingMs / ttlMs), lastHit }
-    : { state: "cold", remainingMs: 0, fraction: 0, lastHit };
+    ? { state: "warm", remainingMs, fraction: Math.min(1, remainingMs / ttlMs), lastHit, source }
+    : { state: "cold", remainingMs: 0, fraction: 0, lastHit, source };
 };
 
 /** Fraction of TTL left above which the cache dot reads as fresh / still-usable. */

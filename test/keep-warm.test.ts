@@ -12,6 +12,7 @@ const at = (fracLeft: number, status: SessionState = stateIdle) => ({
   status,
   cache: {
     ttlMinutes: TTL_MIN,
+    ttlSource: "observed" as const,
     lastTurnAt: NOW - Math.round(TTL_MS * (1 - fracLeft)),
     lastRead: 1,
     lastWrite: 0,
@@ -23,10 +24,19 @@ test("skips unless the session is idle", () => {
   assert.equal(keepWarmMove(at(0.02, stateIdle), NOW, 0), "ping");
 });
 
-test("skips without a pinned TTL", () => {
+test("skips without a known TTL", () => {
   assert.equal(
     keepWarmMove(
-      { status: stateIdle, cache: { ttlMinutes: 0, lastTurnAt: NOW, lastRead: 0, lastWrite: 0 } },
+      {
+        status: stateIdle,
+        cache: {
+          ttlMinutes: 0,
+          ttlSource: "none" as const,
+          lastTurnAt: NOW,
+          lastRead: 0,
+          lastWrite: 0,
+        },
+      },
       NOW,
       0,
     ),
@@ -34,7 +44,16 @@ test("skips without a pinned TTL", () => {
   );
   assert.equal(
     keepWarmMove(
-      { status: stateIdle, cache: { ttlMinutes: 60, lastTurnAt: 0, lastRead: 0, lastWrite: 0 } },
+      {
+        status: stateIdle,
+        cache: {
+          ttlMinutes: 60,
+          ttlSource: "observed" as const,
+          lastTurnAt: 0,
+          lastRead: 0,
+          lastWrite: 0,
+        },
+      },
       NOW,
       0,
     ),

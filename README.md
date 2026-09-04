@@ -340,15 +340,25 @@ the title and the auto-titler leaves it alone.
 **Prompt-cache liveness.** The Detail pane shows `cache ⟢ warm ~47:12 · last
 turn hit` (green) or `cache ⟢ cold` once the window lapses, and each fleet row
 carries a `⟢` dot graded green (>⅓ of the TTL left) → amber → red (<8%). The
-countdown runs from the last turn against the configured
-`[providers.claude] prompt_cache_ttl`
-(`1h` by default — Loom pins it via `CLAUDE_CODE_PROMPT_CACHE_TTL` so the timer
-is exact rather than a guess); `last turn hit` / `rewrote` is the ground truth
-from that turn's cache read/write split. It's still an estimate — a context
-edit, a tool-list change, or server-side eviction drops the cache regardless of
-the clock.
+countdown runs from the last turn against the TTL the provider was last seen
+_actually_ writing at — Loom reads the ephemeral bucket back off the response's
+`usage.cache_creation`, so the timer is measured, not assumed. Until the session
+has written cache once it falls back to the configured
+`[providers.claude] prompt_cache_ttl` (`1h` by default, pinned via
+`CLAUDE_CODE_PROMPT_CACHE_TTL`) and the cache line says `· ttl assumed`. A pin
+is only a request — an API key, Bedrock/Vertex, or a plan outside its usage
+limits can serve a 5m cache anyway — so when the measured TTL disagrees with the
+configured one, the daemon says so once. `last turn hit` / `rewrote` is the
+ground truth from that turn's cache read/write split. It's still an estimate — a
+context edit, a tool-list change, or server-side eviction drops the cache
+regardless of the clock.
 
-**Keep-warm.** For a Claude session with a pinned TTL, the `Space` palette's
+Note the pin covers the _main conversation_ only. Subagents, workflows and
+background helpers run on the CLI's separate `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`
+knob (5m unless `ENABLE_PROMPT_CACHING_1H=1`); Loom does not set it, and the
+countdown does not model it.
+
+**Keep-warm.** For a Claude session with a known TTL, the `Space` palette's
 _keep cache warm_ toggle has the daemon babysit the cache: while the session
 sits idle and its `⟢` dot goes red (<8% of the TTL left), the daemon sends a
 one-line "no-op" turn to re-read the cached prefix and restart the clock, so the

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ClaudeEventMapper } from "@loom/connector-claude/map";
+import { ClaudeEventMapper, writtenTtlMinutes } from "@loom/connector-claude/map";
 import type { HarnessEvent } from "@loom/core/events";
 
 const SID = "loom-1";
@@ -721,4 +721,89 @@ test("a run_in_background Agent's frames are retagged to its async task id too",
     message: { content: [{ type: "text", text: "digging" }] },
   });
   assert.equal(byType(frame, "assistant_text")[0]?.agentId, "a87d9408cd587b37e");
+});
+
+// --- observed prompt-cache TTL --------------------------------------------
+
+/** A main-loop assistant frame that wrote `n` tokens into the given TTL bucket. */
+const wrote = (bucket: "ephemeral_5m_input_tokens" | "ephemeral_1h_input_tokens", n: number) => ({
+  type: "assistant",
+  parent_tool_use_id: null,
+  message: {
+    content: [],
+    usage: { input_tokens: 10, cache_creation_input_tokens: n, cache_creation: { [bucket]: n } },
+  },
+});
+
+const RESULT = { type: "result", subtype: "success", is_error: false, num_turns: 1 };
+
+test("writtenTtlMinutes reads the bucket the request actually wrote into", () => {
+  assert.equal(writtenTtlMinutes(undefined), 0);
+  assert.equal(writtenTtlMinutes({ input_tokens: 5 }), 0);
+  assert.equal(writtenTtlMinutes({ cache_creation: {} }), 0);
+  assert.equal(
+    writtenTtlMinutes({
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+    }),
+    0,
+  );
+  assert.equal(writtenTtlMinutes({ cache_creation: { ephemeral_5m_input_tokens: 900 } }), 5);
+  assert.equal(writtenTtlMinutes({ cache_creation: { ephemeral_1h_input_tokens: 900 } }), 60);
+  // A mixed write is scored by the bucket holding most of the cache.
+  assert.equal(
+    writtenTtlMinutes({
+      cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 9000 },
+    }),
+    60,
+  );
+  assert.equal(
+    writtenTtlMinutes({
+      cache_creation: { ephemeral_5m_input_tokens: 9000, ephemeral_1h_input_tokens: 100 },
+    }),
+    5,
+  );
+});
+
+test("the usage event reports the TTL the main loop actually wrote at", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map(wrote("ephemeral_5m_input_tokens", 4000));
+  const usage = byType(m.map(RESULT), "usage")[0];
+  assert.equal(usage?.cacheTtlMinutes, 5);
+});
+
+test("no observation yet ⇒ no cacheTtlMinutes, so the daemon keeps its config pin", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 10, cache_read_input_tokens: 9000 } },
+  });
+  const usage = byType(m.map(RESULT), "usage")[0];
+  assert.equal(usage?.cacheTtlMinutes, undefined);
+});
+
+test("a subagent's TTL is not the main conversation's", () => {
+  // Subagents run on their own knob (CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL,
+  // 5m by default), so their frames must not move the session's countdown.
+  const m = new ClaudeEventMapper(SID);
+  m.map(wrote("ephemeral_1h_input_tokens", 9000));
+  m.map({ ...wrote("ephemeral_5m_input_tokens", 4000), parent_tool_use_id: "task-1" });
+  const usage = byType(m.map(RESULT), "usage")[0];
+  assert.equal(usage?.cacheTtlMinutes, 60);
+});
+
+test("the observed TTL is sticky across read-only turns and across a rewind", () => {
+  const m = new ClaudeEventMapper(SID);
+  m.map(wrote("ephemeral_5m_input_tokens", 4000));
+  m.map(RESULT);
+  // A turn that only reads cache says nothing new about the TTL.
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [], usage: { input_tokens: 10, cache_read_input_tokens: 4000 } },
+  });
+  assert.equal(byType(m.map(RESULT), "usage")[0]?.cacheTtlMinutes, 5);
+  // Nor does an undo — the TTL describes how the session is configured.
+  m.onQuerySwap();
+  assert.equal(byType(m.map(RESULT), "usage")[0]?.cacheTtlMinutes, 5);
 });

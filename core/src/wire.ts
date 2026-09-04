@@ -197,11 +197,20 @@ export interface SessionSnapshot {
     { status: "allowed" | "allowed_warning" | "rejected"; utilization?: number; resetsAt?: number }
   >;
   /**
-   * Prompt-cache liveness inputs. `ttlMinutes` is the configured TTL (5, 60, or
-   * 0 = unknown/CLI-decides); `lastTurnAt` (epoch ms) arms a countdown; the
+   * Prompt-cache liveness inputs. `ttlMinutes` is the TTL the countdown runs
+   * on (5, 60, or 0 = unknown) and `ttlSource` says where it came from:
+   * `observed` is ground truth read back off a response, `config` is the
+   * `prompt_cache_ttl` pin standing in until the session writes cache once,
+   * `none` is neither. `lastTurnAt` (epoch ms) arms the countdown; the
    * read/write split of the last turn says whether that turn actually hit cache.
    */
-  cache: { ttlMinutes: number; lastTurnAt: number; lastRead: number; lastWrite: number };
+  cache: {
+    ttlMinutes: number;
+    ttlSource: "observed" | "config" | "none";
+    lastTurnAt: number;
+    lastRead: number;
+    lastWrite: number;
+  };
   /**
    * Keep-warm is on for this session: while it sits idle the daemon re-primes
    * the prompt cache with a tiny turn just before the TTL lapses, so the next

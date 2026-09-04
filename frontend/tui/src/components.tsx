@@ -555,15 +555,19 @@ export const Detail = ({
           ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
           : "";
         const warm = s.keepWarm ? "  ·  keep-warm" : "";
+        // The countdown length is only confirmed once a turn has written cache
+        // and reported which bucket; until then it is the configured pin, which
+        // the provider is free to ignore. Say so rather than imply precision.
+        const assumed = cs.source === "config" ? "  ·  ttl assumed" : "";
         return (
           <Field label="cache">
             {cs.state === "warm" ? (
               <Text
                 color={C.good}
                 wrap="truncate-end"
-              >{`⟢ warm ~${mmss(cs.remainingMs)}${hit}${warm}`}</Text>
+              >{`⟢ warm ~${mmss(cs.remainingMs)}${hit}${warm}${assumed}`}</Text>
             ) : (
-              <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}${warm}`}</Text>
+              <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}${warm}${assumed}`}</Text>
             )}
           </Field>
         );

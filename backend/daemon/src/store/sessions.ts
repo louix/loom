@@ -47,6 +47,7 @@ interface UsageRow {
   last_turn_at: number;
   last_cache_read: number;
   last_cache_write: number;
+  last_cache_ttl_minutes: number;
   updated_at: number;
 }
 
@@ -83,6 +84,8 @@ export interface UsageDelta {
   /** This turn's cache read / write token split (absolute, not accumulated). */
   lastCacheRead?: number;
   lastCacheWrite?: number;
+  /** The TTL the provider was observed writing at this turn, in minutes (absolute). */
+  lastCacheTtlMinutes?: number;
 }
 
 /** A session that was mid-run when the previous daemon instance exited. */
@@ -264,6 +267,7 @@ export class SessionStore {
            last_turn_at = COALESCE(?, last_turn_at),
            last_cache_read = COALESCE(?, last_cache_read),
            last_cache_write = COALESCE(?, last_cache_write),
+           last_cache_ttl_minutes = COALESCE(?, last_cache_ttl_minutes),
            updated_at = ?
          WHERE session_id = ?`,
       )
@@ -280,6 +284,7 @@ export class SessionStore {
         abs(d.lastTurnAt),
         abs(d.lastCacheRead),
         abs(d.lastCacheWrite),
+        abs(d.lastCacheTtlMinutes),
         now,
         id,
       );
@@ -611,7 +616,10 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     backgroundTasks: [], // runtime overlay filled in by the daemon
     rateLimits: {}, // runtime overlay filled in by the daemon
     cache: {
-      ttlMinutes: 0, // overlaid from config by the daemon
+      // What the provider was last seen doing. 0 here means "never observed",
+      // and the daemon falls back to the configured pin in `#enrich`.
+      ttlMinutes: usage?.last_cache_ttl_minutes ?? 0,
+      ttlSource: (usage?.last_cache_ttl_minutes ?? 0) > 0 ? "observed" : "none",
       lastTurnAt: usage?.last_turn_at ?? 0,
       lastRead: usage?.last_cache_read ?? 0,
       lastWrite: usage?.last_cache_write ?? 0,

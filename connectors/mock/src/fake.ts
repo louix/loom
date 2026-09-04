@@ -101,6 +101,8 @@ export class FakeSession implements AgentSession {
       usage?: Partial<TokenUsage>;
       costUsd?: number;
       contextUsed?: number;
+      /** The prompt-cache TTL the "provider" wrote at, in minutes. */
+      cacheTtlMinutes?: number;
     } = {},
   ): void {
     const u = opts.usage ?? {};
@@ -128,6 +130,7 @@ export class FakeSession implements AgentSession {
       contextUsed: this.#snap.contextUsed,
       contextLimit: this.#snap.contextLimit,
       ...(opts.costUsd ? { costDeltaUsd: opts.costUsd } : { costDeltaUsd: 0.001 }),
+      ...(opts.cacheTtlMinutes ? { cacheTtlMinutes: opts.cacheTtlMinutes } : {}),
     });
     this.emit({ type: "result", kind: "ok", ...(opts.summary ? { summary: opts.summary } : {}) });
     this.#snap.status = stateIdle;

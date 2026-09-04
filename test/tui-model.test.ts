@@ -133,7 +133,7 @@ const snap = (
     subagents: [],
     backgroundTasks: [],
     rateLimits: {},
-    cache: { ttlMinutes: 0, lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
+    cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     keepWarm: false,
     canRewind: true,
     git: null,
@@ -1512,25 +1512,37 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   assert.equal(commandsFor(current).find((c) => c.id === "rebase")?.label, "rebase onto base");
 });
 
-test("cacheStatus: unknown without a pinned TTL or a turn", () => {
+test("cacheStatus: unknown without a known TTL or a turn", () => {
   assert.equal(cacheStatus(null, 1000).state, "unknown");
   assert.equal(
     cacheStatus(
-      snap({ cache: { ttlMinutes: 0, lastTurnAt: 5000, lastRead: 9, lastWrite: 0 } }),
+      snap({
+        cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 5000, lastRead: 9, lastWrite: 0 },
+      }),
       6000,
     ).state,
     "unknown",
   );
   assert.equal(
-    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 0, lastRead: 0, lastWrite: 0 } }), 6000)
-      .state,
+    cacheStatus(
+      snap({
+        cache: { ttlMinutes: 60, ttlSource: "observed", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
+      }),
+      6000,
+    ).state,
     "unknown",
   );
 });
 
 test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () => {
   const c = snap({
-    cache: { ttlMinutes: 5, lastTurnAt: 1_000_000, lastRead: 8000, lastWrite: 300 },
+    cache: {
+      ttlMinutes: 5,
+      ttlSource: "observed",
+      lastTurnAt: 1_000_000,
+      lastRead: 8000,
+      lastWrite: 300,
+    },
   });
   const warm = cacheStatus(c, 1_000_000 + 2 * 60_000);
   assert.equal(warm.state, "warm");
@@ -1544,8 +1556,12 @@ test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () =
 
 test("cacheStatus: lastHit reads the read/write split", () => {
   const mk = (lastRead: number, lastWrite: number) =>
-    cacheStatus(snap({ cache: { ttlMinutes: 60, lastTurnAt: 1000, lastRead, lastWrite } }), 2000)
-      .lastHit;
+    cacheStatus(
+      snap({
+        cache: { ttlMinutes: 60, ttlSource: "observed", lastTurnAt: 1000, lastRead, lastWrite },
+      }),
+      2000,
+    ).lastHit;
   assert.equal(mk(9000, 200), "hit"); // big read → continuation
   assert.equal(mk(0, 9000), "rewrote"); // all write → prefix was cold
   assert.equal(mk(0, 0), null);
@@ -1557,7 +1573,15 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   const at = (min: number) =>
     cacheHeat(
       cacheStatus(
-        snap({ cache: { ttlMinutes: 60, lastTurnAt: T0, lastRead: 9, lastWrite: 1 } }),
+        snap({
+          cache: {
+            ttlMinutes: 60,
+            ttlSource: "observed",
+            lastTurnAt: T0,
+            lastRead: 9,
+            lastWrite: 1,
+          },
+        }),
         T0 + min * 60_000,
       ),
     );
@@ -1569,11 +1593,13 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   assert.equal(
     cacheHeat(
       cacheStatus(
-        snap({ cache: { ttlMinutes: 0, lastTurnAt: T0, lastRead: 0, lastWrite: 0 } }),
+        snap({
+          cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: T0, lastRead: 0, lastWrite: 0 },
+        }),
         T0,
       ),
     ),
-    null, // unknown (no pinned TTL)
+    null, // unknown (no TTL known)
   );
 });
 
@@ -2521,7 +2547,13 @@ test("detailRows counts the Detail pane's physical rows, conditional lines inclu
       lastCommitSubject: "add flag",
     },
     rateLimits: { five_hour: { status: "allowed", utilization: 0.4 } },
-    cache: { ttlMinutes: 5, lastTurnAt: Date.now(), lastRead: 2, lastWrite: 1 },
+    cache: {
+      ttlMinutes: 5,
+      ttlSource: "observed",
+      lastTurnAt: Date.now(),
+      lastRead: 2,
+      lastWrite: 1,
+    },
     subagents: [{ id: "sa", name: "scout", active: true }],
     backgroundTasks: [{ id: "bt", kind: "shell", title: "tail log" }],
   });

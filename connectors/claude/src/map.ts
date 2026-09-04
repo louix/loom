@@ -32,11 +32,21 @@ interface ContentBlock {
   is_error?: boolean;
 }
 
-interface RawUsage {
+export interface RawUsage {
   input_tokens?: number;
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /**
+   * Per-TTL breakdown of `cache_creation_input_tokens` — which ephemeral bucket
+   * this request actually wrote into. The API reports it; the Agent SDK passes
+   * the Messages-API `usage` through untouched, so it rides along on assistant
+   * frames. Absent on older CLIs and on requests that wrote no cache.
+   */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
 }
 
 interface ModelUsageEntry {
@@ -205,6 +215,24 @@ const sumModelUsage = (
   return acc;
 };
 
+/**
+ * Which prompt-cache TTL this request wrote at, in minutes — 60, 5, or 0 when
+ * it wrote no cache (or the CLI is old enough not to report the split).
+ *
+ * A request may write both buckets at once (Claude Code can hold a long-lived
+ * breakpoint on the stable prefix and a short one on the tail). The countdown
+ * wants the TTL that governs most of what is cached, so the larger bucket
+ * wins; a tie goes to the longer TTL, which is the half that outlives it.
+ */
+export const writtenTtlMinutes = (u: RawUsage | undefined): number => {
+  const cc = u?.cache_creation;
+  if (!cc) return 0;
+  const short = cc.ephemeral_5m_input_tokens ?? 0;
+  const long = cc.ephemeral_1h_input_tokens ?? 0;
+  if (long <= 0 && short <= 0) return 0;
+  return long >= short ? 60 : 5;
+};
+
 // --- the mapper ----------------------------------------------------------
 
 export class ClaudeEventMapper {
@@ -223,6 +251,14 @@ export class ClaudeEventMapper {
   /** Most recent main-loop chain-entry UUID seen this turn; snapshotted into
    *  `state.rewindRef` at each completed turn boundary. */
   #lastChainUuid: string | null = null;
+
+  /**
+   * The prompt-cache TTL the main loop last actually wrote at, in minutes; 0
+   * until a main-loop request writes cache. Sticky across turns — it describes
+   * how the session is configured, not what one turn did, so a turn that only
+   * read cache leaves the last observation standing, and a rewind keeps it.
+   */
+  #cacheTtlMinutes = 0;
 
   /**
    * Usage / cost totalled by `query()` calls that ran *before* an undo swapped
@@ -440,6 +476,12 @@ export class ClaudeEventMapper {
         (u.input_tokens ?? 0) +
         (u.cache_read_input_tokens ?? 0) +
         (u.cache_creation_input_tokens ?? 0);
+      // Only the main loop, and only when it wrote: a subagent runs on its own
+      // TTL knob (CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL, 5m by default), so
+      // folding its frames in here would report the wrong lifetime for the
+      // conversation the countdown is about.
+      const ttl = writtenTtlMinutes(u);
+      if (ttl > 0) this.#cacheTtlMinutes = ttl;
     }
     for (const b of blocks(m.message?.content)) {
       if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
@@ -584,6 +626,7 @@ export class ClaudeEventMapper {
       contextUsed,
       contextLimit,
       ...(costDeltaUsd > 0 ? { costDeltaUsd } : {}),
+      ...(this.#cacheTtlMinutes > 0 ? { cacheTtlMinutes: this.#cacheTtlMinutes } : {}),
     });
 
     const ok = m.subtype === "success" && m.is_error !== true;

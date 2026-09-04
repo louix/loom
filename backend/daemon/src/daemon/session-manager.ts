@@ -367,6 +367,7 @@ export class SessionManager {
         lastTurnAt: ev.ts,
         lastCacheRead: ev.tokens.cacheRead,
         lastCacheWrite: ev.tokens.cacheWrite,
+        ...(ev.cacheTtlMinutes ? { lastCacheTtlMinutes: ev.cacheTtlMinutes } : {}),
       });
     } else if (ev.type === "result") {
       this.#hooks.onUsage(id, { turns: 1 });

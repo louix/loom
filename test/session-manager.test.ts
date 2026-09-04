@@ -415,8 +415,35 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(snap.cache.lastRead, 9000);
     assert.equal(snap.cache.lastWrite, 250);
     assert.ok(snap.cache.lastTurnAt >= before);
-    // a fake session isn't Claude, so the daemon doesn't overlay a cache TTL
+    // a fake session isn't Claude, so the daemon doesn't overlay a cache TTL,
+    // and nothing in the turn reported one either
     assert.equal(snap.cache.ttlMinutes, 0);
+    assert.equal(snap.cache.ttlSource, "none");
+    await c.close();
+  });
+
+  test("an observed cache TTL overrides the configured pin and is persisted", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    // The pin says nothing here (a fake session isn't Claude), but a reported
+    // TTL is ground truth from the response and stands on its own.
+    fs.finishTurn({ usage: { cacheWrite: 4000 }, cacheTtlMinutes: 5 });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1,
+    );
+
+    let snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.cache.ttlMinutes, 5);
+    assert.equal(snap.cache.ttlSource, "observed");
+
+    // A later turn that reports no TTL must not walk the observation back.
+    fs.finishTurn({ usage: { cacheRead: 4000 } });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2,
+    );
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.cache.ttlMinutes, 5);
+    assert.equal(snap.cache.ttlSource, "observed");
     await c.close();
   });
 

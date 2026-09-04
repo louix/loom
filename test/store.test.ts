@@ -166,6 +166,33 @@ test("addUsage accumulates deltas but sets context as absolute", () => {
   }
 });
 
+test("the observed cache TTL is absolute and survives deltas that omit it", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    store.create({ id: "s1", provider: "stub" });
+
+    assert.equal(store.get("s1")?.cache.ttlMinutes, 0);
+    assert.equal(store.get("s1")?.cache.ttlSource, "none");
+
+    store.addUsage("s1", { cacheWrite: 4000, lastCacheTtlMinutes: 60 });
+    assert.equal(store.get("s1")?.cache.ttlMinutes, 60);
+    assert.equal(store.get("s1")?.cache.ttlSource, "observed");
+
+    // A bare turn tick carries no TTL — it must not clear the observation.
+    store.addUsage("s1", { turns: 1 });
+    assert.equal(store.get("s1")?.cache.ttlMinutes, 60);
+
+    // A provider that changes its mind is followed, not averaged.
+    store.addUsage("s1", { cacheWrite: 4000, lastCacheTtlMinutes: 5 });
+    assert.equal(store.get("s1")?.cache.ttlMinutes, 5);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
 test("markMidRunInterrupted flips starting/running/awaiting to interrupted", () => {
   const { path, cleanup } = tmpDb();
   try {

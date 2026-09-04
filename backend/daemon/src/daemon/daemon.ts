@@ -113,6 +113,11 @@ const KEEP_WARM_PROMPT =
   "expire; this message re-primes it so your next real instruction still hits cache. " +
   'Reply with just "ok" and take no other action.';
 
+/** Render a TTL in minutes the way the config spells it — 60 → "1h", 5 → "5m". */
+const ttlLabel = (minutes: number): string => {
+  return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+};
+
 type KeepWarmMove = "skip" | "ping" | "giveup";
 
 /**
@@ -167,6 +172,9 @@ export class Daemon {
   #claudeProbeDone = false;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
+  /** Prompt-cache TTL last *observed* per session, in minutes — the dedupe key
+   *  for the drift notice, so it fires on a change rather than every turn. */
+  readonly #cacheTtlSeen = new Map<string, number>();
   /** Per-session-id gate serialising lifecycle ops (`markDone` / `remove` / `gc`)
    *  so two of them can't interleave their awaits and act on a half-torn-down
    *  or already-deleted row. */
@@ -261,6 +269,7 @@ export class Daemon {
       onUsage: (id, delta) => {
         if (this.#stopping) return;
         const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
+        this.#noteCacheTtlDrift(snap, delta.lastCacheTtlMinutes);
         this.#emitSessionUpdated(snap, undefined, { git: false }); // no git shell-out per usage tick
       },
       onResult: (id, ok) => {
@@ -560,12 +569,21 @@ export class Daemon {
     if (compacting) {
       out = { ...out, compacting: { startedAt: compacting.startedAt, before: s.contextUsed } };
     }
-    const ttlMinutes = isClaudeId(s.provider) ? this.#cacheTtlMinutes : 0;
-    if (ttlMinutes !== out.cache.ttlMinutes) {
-      out = { ...out, cache: { ...out.cache, ttlMinutes } };
+    // Ground truth wins: once a turn has told us which ephemeral bucket the
+    // provider actually wrote into, run the countdown on that. The configured
+    // pin only stands in until then — it is what Loom *asked* for, and the
+    // provider may quietly serve 5m instead (API key, a plan outside its usage
+    // limits, Bedrock). Non-Claude providers have neither, hence 0/"none".
+    if (out.cache.ttlSource !== "observed") {
+      const ttlMinutes = isClaudeId(s.provider) ? this.#cacheTtlMinutes : 0;
+      const ttlSource = ttlMinutes > 0 ? "config" : "none";
+      if (ttlMinutes !== out.cache.ttlMinutes || ttlSource !== out.cache.ttlSource) {
+        out = { ...out, cache: { ...out.cache, ttlMinutes, ttlSource } };
+      }
     }
-    // Keep-warm only bites when there's a pinned TTL to race — mirror that in
-    // the snapshot so the TUI never shows it "on" where it can't act.
+    const ttlMinutes = out.cache.ttlMinutes;
+    // Keep-warm only bites when there is a TTL to race — mirror that in the
+    // snapshot so the TUI never shows it "on" where it can't act.
     const keepWarm = ttlMinutes > 0 && this.#sessions.keepWarm(s.id);
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
     const canRewind = this.#canRewind(s.provider);
@@ -595,6 +613,28 @@ export class Daemon {
       default:
         return absurd(ttl);
     }
+  }
+
+  /**
+   * Warn when the provider is demonstrably not honouring the configured
+   * `prompt_cache_ttl`. Loom pins the TTL through the CLI env var, but a pin is
+   * only a request — an API key, Bedrock/Vertex, or a subscription outside its
+   * usage limits can serve a shorter cache anyway, and until we read the bucket
+   * back off the response that was invisible. Fires on each *change* in the
+   * observed TTL rather than per turn, so a steady mismatch is said once.
+   */
+  #noteCacheTtlDrift(s: SessionSnapshot, observed: number | undefined): void {
+    if (!observed || observed <= 0 || !isClaudeId(s.provider)) return;
+    if (this.#cacheTtlSeen.get(s.id) === observed) return;
+    this.#cacheTtlSeen.set(s.id, observed);
+    const pinned = this.#cacheTtlMinutes;
+    if (pinned <= 0 || pinned === observed) return;
+    this.#emitNotice(
+      `${s.id.slice(0, 8)}: prompt cache is writing at ${ttlLabel(observed)}, not the configured ` +
+        `${ttlLabel(pinned)} — [providers.claude] prompt_cache_ttl is not being honoured ` +
+        `(API key, Bedrock/Vertex, or a plan outside its usage limits)`,
+      "warn",
+    );
   }
 
   /**
@@ -2449,6 +2489,7 @@ export class Daemon {
         if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#lastSend.delete(id);
+        this.#cacheTtlSeen.delete(id);
         if (row.worktree && !row.inPlace) {
           try {
             this.#worktrees.remove(row.worktree, { force: true });
@@ -2498,6 +2539,7 @@ export class Daemon {
         }
         if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
         this.#lastSend.delete(id);
+        this.#cacheTtlSeen.delete(id);
         if (s.worktree) {
           try {
             this.#worktrees.remove(s.worktree, { force: true });

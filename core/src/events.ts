@@ -101,6 +101,14 @@ export interface UsageEvent extends HarnessEventBase {
   contextLimit: number;
   /** Incremental dollar cost attributed to this event, if computed. */
   costDeltaUsd?: number;
+  /**
+   * The prompt-cache TTL the provider actually wrote at on this turn, in
+   * minutes (5 or 60). Ground truth read back off the response — not the TTL
+   * Loom asked for — so a pin the provider silently declined (an API key, a
+   * plan outside its usage limits, Bedrock) shows up instead of being assumed.
+   * Absent when the turn wrote no cache, or the provider reports no split.
+   */
+  cacheTtlMinutes?: number;
 }
 
 /**
