@@ -83,3 +83,11 @@ test("the steer names the session's checkout root for absolute-path tools", () =
   // dropped together with the steer for aisdk sessions without MCP servers
   assert.ok(!systemPromptAppendFor(true, false, cwd, repoRoot).includes(cwd));
 });
+
+test("the steer warns that a path outside the worktree is a different tree", () => {
+  const repoRoot = tmpRepo();
+  const cwd = tmpRepo();
+  const md = systemPromptAppendFor(false, true, cwd, repoRoot);
+  assert.match(md, /stays inside the worktree/);
+  assert.match(md, /writes never reach your branch/);
+});

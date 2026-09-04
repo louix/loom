@@ -355,16 +355,37 @@ test("outOfTreeWriteReason: flags a write rooted at the wrong checkout", () => {
   // `..` climbing out.
   assert.ok(outOfTreeWriteReason(ROOT, ROOT, "MultiEdit", { file_path: "../xyz/f.ts" }));
   assert.ok(outOfTreeWriteReason(ROOT, ROOT, "NotebookEdit", { notebook_path: "/etc/nb.ipynb" }));
+  // tilth MCP write tools: the drift vector is a `root` off the wrong checkout.
+  assert.ok(
+    outOfTreeWriteReason(ROOT, ROOT, "mcp__tilth__tilth_write", {
+      root: "/home/user/dev/loom",
+      path: "frontend/tui/src/components.tsx",
+    }),
+  );
+  assert.ok(
+    outOfTreeWriteReason(ROOT, ROOT, "mcp__tilth__tilth_edit", {
+      path: "/home/user/dev/loom/x.ts",
+    }),
+  );
 });
 
 test("outOfTreeWriteReason: leaves in-tree writes and non-write tools alone", () => {
   assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Edit", { file_path: `${ROOT}/a/b.ts` }), null);
   assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "src/b.ts" }), null);
   assert.equal(outOfTreeWriteReason(ROOT, `${ROOT}/src`, "Edit", { file_path: "b.ts" }), null);
+  // tilth with an in-tree root + relative path.
+  assert.equal(
+    outOfTreeWriteReason(ROOT, ROOT, "mcp__tilth__tilth_write", { root: ROOT, path: "a/b.ts" }),
+    null,
+  );
   // A sibling dir that shares the root as a string prefix is still outside.
   assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Edit", { file_path: `${ROOT}-scratch/b.ts` }));
-  // Not a file-mutating tool, or no checkable path.
+  // Not a file-mutating tool (tilth reads included), or no checkable path.
   assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Bash", { command: "rm -rf /" }), null);
+  assert.equal(
+    outOfTreeWriteReason(ROOT, ROOT, "mcp__tilth__tilth_view", { root: "/elsewhere" }),
+    null,
+  );
   assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Edit", {}), null);
 });
 

@@ -100,18 +100,30 @@ interface CompactWait {
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
 
-/** Built-in tools that mutate a file at a caller-supplied path. */
-const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+/** Built-in file-mutating tools — the target path rides in `file_path` /
+ *  `notebook_path`. */
+const BUILTIN_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/** tilth's MCP write tools, surfaced as `mcp__tilth__tilth_write` / `…_edit`
+ *  (a renamed server keeps the `tilth_write` / `tilth_edit` suffix). Loom's own
+ *  prompt steers the agent onto these ahead of the built-ins. */
+const isTilthWriteTool = (name: string): boolean =>
+  name.endsWith("tilth_write") || name.endsWith("tilth_edit");
+
+/** Arg keys that can carry a filesystem target on a guarded tool — `root` is
+ *  tilth's base dir, the rest are per-tool path fields. */
+const PATH_KEYS = ["file_path", "notebook_path", "path", "root"] as const;
 
 /**
  * Reason string when a file-mutating tool call points outside `root` — the
- * session's pinned worktree — or `null` when it stays in-tree or carries no
- * checkable path. `hookCwd` is the tool call's live working directory, so a
- * relative `file_path` resolves the way the tool would resolve it.
+ * session's pinned worktree — or `null` when every checkable path stays in-tree.
+ * `hookCwd` is the tool call's live working directory, so a relative path
+ * resolves the way the tool would resolve it.
  *
- * Lexical containment only: the target is catching an agent that built an
- * absolute path off the wrong repo root (e.g. `/repo/foo` instead of
- * `/repo/.loom/trees/xxx/foo`), not a symlink escaping the tree.
+ * Lexical containment only: the target is catching an agent that built a path
+ * off the wrong repo root (e.g. `/repo/foo` or tilth `root: /repo` instead of
+ * `/repo/.loom/trees/xxx`), not a symlink escaping the tree. Only ever asks —
+ * a false positive costs one prompt.
  */
 export const outOfTreeWriteReason = (
   root: string,
@@ -119,14 +131,17 @@ export const outOfTreeWriteReason = (
   toolName: string,
   toolInput: unknown,
 ): string | null => {
-  if (!WRITE_TOOLS.has(toolName)) return null;
-  const raw = toolInput as { file_path?: unknown; notebook_path?: unknown } | null;
-  const target = raw?.file_path ?? raw?.notebook_path;
-  if (typeof target !== "string" || target === "") return null;
-  const abs = isAbsolute(target) ? target : resolvePath(hookCwd || root, target);
-  const rel = relative(root, abs);
-  const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-  return inside ? null : `writes ${abs}, outside this session's worktree (${root})`;
+  if (!BUILTIN_WRITE_TOOLS.has(toolName) && !isTilthWriteTool(toolName)) return null;
+  const raw = (toolInput ?? {}) as Record<string, unknown>;
+  for (const key of PATH_KEYS) {
+    const v = raw[key];
+    if (typeof v !== "string" || v === "") continue;
+    const abs = isAbsolute(v) ? v : resolvePath(hookCwd || root, v);
+    const rel = relative(root, abs);
+    const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+    if (!inside) return `writes ${abs}, outside this session's worktree (${root})`;
+  }
+  return null;
 };
 
 /**
