@@ -99,7 +99,11 @@ export class AisdkEventMapper {
         ];
       case "finish-step":
         // A step boundary closes any block the provider left open.
-        return [...this.#flushOpenBlocks(ts), this.#usage(part.usage, part.providerMetadata)];
+        return [
+          ...this.#flushOpenBlocks(ts),
+          ...chatgptRateLimits(part.providerMetadata, this.#sessionId, ts),
+          this.#usage(part.usage, part.providerMetadata),
+        ];
       case "abort":
       case "finish":
         // Flush any block still open (an abort / a stream that ended without a
@@ -214,6 +218,34 @@ const anthropicCache = (
         })
       : 0,
   };
+};
+
+/** Subscription-window readings sent by the vendored ChatGPT provider. */
+const chatgptRateLimits = (
+  meta: ProviderMetadata | undefined,
+  sessionId: string,
+  ts: number,
+): HarnessEvent[] => {
+  const chatgpt = meta?.["chatgpt"];
+  if (!isObj(chatgpt) || !isObj(chatgpt["rateLimits"])) return [];
+  const out: HarnessEvent[] = [];
+  for (const [window, value] of Object.entries(chatgpt["rateLimits"])) {
+    if (!isObj(value)) continue;
+    const utilization = numOf(value["utilization"]);
+    const status = value["status"];
+    if (status !== "allowed" && status !== "allowed_warning" && status !== "rejected") continue;
+    const resetsAt = numOf(value["resetsAt"]);
+    out.push({
+      type: "rate_limit",
+      sessionId,
+      ts,
+      window,
+      status,
+      utilization,
+      ...(resetsAt > 0 ? { resetsAt } : {}),
+    });
+  }
+  return out;
 };
 const errorText = (err: unknown): string => {
   if (err instanceof Error) {

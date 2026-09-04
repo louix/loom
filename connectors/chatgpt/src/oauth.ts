@@ -17,6 +17,7 @@ import type {
   LanguageModelV2FinishReason,
   LanguageModelV2StreamPart,
   LanguageModelV2Usage,
+  SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
@@ -303,6 +304,31 @@ const usageFor = (raw: unknown): LanguageModelV2Usage => {
   };
 };
 
+/** Codex exposes subscription-window use in response headers, not its SSE body. */
+const rateLimitMetadataFor = (headers: Headers): SharedV2ProviderMetadata | undefined => {
+  const prefixes = new Set<string>();
+  for (const [name] of headers) {
+    const match = /^x-(.+)-(?:primary|secondary)-used-percent$/i.exec(name);
+    if (match?.[1]) prefixes.add(match[1].toLowerCase());
+  }
+  const rateLimits: Record<string, Record<string, string | number>> = {};
+  for (const prefix of prefixes) {
+    for (const window of ["primary", "secondary"] as const) {
+      const utilization = Number(headers.get(`x-${prefix}-${window}-used-percent`));
+      if (!Number.isFinite(utilization)) continue;
+      const resetSeconds = Number(headers.get(`x-${prefix}-${window}-reset-at`));
+      rateLimits[`${prefix}-${window}`] = {
+        status: utilization >= 100 ? "rejected" : utilization >= 80 ? "allowed_warning" : "allowed",
+        utilization,
+        ...(Number.isFinite(resetSeconds) && resetSeconds > 0
+          ? { resetsAt: resetSeconds * 1000 }
+          : {}),
+      };
+    }
+  }
+  return Object.keys(rateLimits).length > 0 ? { chatgpt: { rateLimits } } : undefined;
+};
+
 const configuredEffort = (options: LanguageModelV2CallOptions): string | undefined => {
   const providers = options.providerOptions as Record<string, unknown> | undefined;
   const settings = providers?.["chatgpt"];
@@ -354,6 +380,7 @@ export class ChatGPTModel implements LanguageModelV2 {
     stream: ReadableStream<LanguageModelV2StreamPart>;
     usage: Promise<LanguageModelV2Usage>;
     warnings: LanguageModelV2CallWarning[];
+    response: { headers: Record<string, string> };
   }> {
     const prepared = await this.#prepare(options);
     const response = await fetch(`${this.catalog.baseUrl.replace(/\/$/, "")}/codex/responses`, {
@@ -371,6 +398,7 @@ export class ChatGPTModel implements LanguageModelV2 {
       throw new Error(`ChatGPT Codex request failed: ${response.status} ${await response.text()}`);
     if (!response.body) throw new Error("ChatGPT Codex response has no body");
 
+    const providerMetadata = rateLimitMetadataFor(response.headers);
     let finalUsage: LanguageModelV2Usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
     const reader = response.body.getReader();
     const stream = new ReadableStream<LanguageModelV2StreamPart>({
@@ -451,6 +479,7 @@ export class ChatGPTModel implements LanguageModelV2 {
                   type: "finish",
                   finishReason: mapFinish(result?.["status"] ?? event["status"]),
                   usage: finalUsage,
+                  ...(providerMetadata ? { providerMetadata } : {}),
                 });
               } else if (event.type === "response.failed") {
                 const result = event["response"] as Record<string, unknown> | undefined;
@@ -471,7 +500,12 @@ export class ChatGPTModel implements LanguageModelV2 {
         }
       },
     });
-    return { stream, usage: Promise.resolve(finalUsage), warnings: prepared.warnings };
+    return {
+      stream,
+      usage: Promise.resolve(finalUsage),
+      warnings: prepared.warnings,
+      response: { headers: Object.fromEntries(response.headers) },
+    };
   }
 
   async #prepare(options: LanguageModelV2CallOptions): Promise<PreparedRequest> {
