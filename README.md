@@ -368,6 +368,15 @@ in the transcript; it gives up after six pings with no reply from you, and any
 message you send resets that count. The Detail pane's cache line shows
 `· keep-warm` while it's on.
 
+**Cache effectiveness.** The Detail pane's `tokens` row ends with
+`· 87% cached` — the share of prompt tokens the session served from cache over
+its life (cache reads over reads + writes + uncached input). `loom cache`
+(`loom cache <id>` for one session) breaks the same spend out per
+provider+model, with the read/write split and the prompt-cache TTL each pair was
+last observed writing at; a session that switched models blends into one row in
+the pane but stays separate here. A long session sitting at a low hit rate means
+something is invalidating the prefix between turns.
+
 **Context compaction.** `c` on a running or idle session opens a one-line prompt
 — blank gives a best-effort summary of everything; text is the advanced path,
 steering what the summary keeps (e.g. `keep the plan, drop the investigation`) —

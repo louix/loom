@@ -214,4 +214,29 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE usage ADD COLUMN last_cache_ttl_minutes INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 18 — token usage split by the provider+model that actually spent it. The
+  // `usage` table is per session and a session can switch models mid-life
+  // (`session.setModel`), so its totals are a mixture — no use for "does this
+  // model cache at all?". Keyed per session too, so a single busy session
+  // can't be mistaken for a trend. `ttl_minutes` is the last prompt-cache TTL
+  // observed for the pair (0 = never observed).
+  /* sql */ `
+  CREATE TABLE model_usage (
+    session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    provider    TEXT    NOT NULL,
+    model       TEXT    NOT NULL,
+    input       INTEGER NOT NULL DEFAULT 0,
+    output      INTEGER NOT NULL DEFAULT 0,
+    cache_read  INTEGER NOT NULL DEFAULT 0,
+    cache_write INTEGER NOT NULL DEFAULT 0,
+    cost_usd    REAL    NOT NULL DEFAULT 0,
+    turns       INTEGER NOT NULL DEFAULT 0,
+    ttl_minutes INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, provider, model)
+  );
+
+  CREATE INDEX model_usage_model_idx ON model_usage(provider, model);
+  `,
 ];

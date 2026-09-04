@@ -6,6 +6,7 @@
  */
 import { type ReactNode } from "react";
 import { Box, Text } from "ink";
+import { cacheHitRate } from "@loom/core/wire";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
@@ -483,6 +484,7 @@ export const Detail = ({
   const ctxPct = Math.round(ctxFrac * 100);
   const g = s.git;
   const gitLine = gitLineText(s);
+  const hitRate = cacheHitRate(s.usage);
 
   return (
     <Box
@@ -576,7 +578,12 @@ export const Detail = ({
         <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
         <Box flexGrow={1}>
           <Text color={C.faint} wrap="truncate-end">
-            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw`}
+            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+              // Share of prompt tokens served from cache over the session's
+              // life. The other figures on this row are lifetime totals too, so
+              // a session that switched models blends them — `loom cache` is
+              // the per-model breakdown.
+              (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
           </Text>
         </Box>
         <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">

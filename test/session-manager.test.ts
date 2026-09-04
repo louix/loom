@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { describe, test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
-import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/wire";
+import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -444,6 +445,27 @@ describe("session-manager", { concurrency: 4 }, () => {
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.equal(snap.cache.ttlMinutes, 5);
     assert.equal(snap.cache.ttlSource, "observed");
+    await c.close();
+  });
+
+  test("stats.models breaks a session's spend out by the model that made it", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.finishTurn({ usage: { input: 100, cacheRead: 900 }, cacheTtlMinutes: 60 });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1,
+    );
+
+    const r = await c.request<{ models: ModelUsage[] }>("stats.models", { id });
+    assert.equal(r.models.length, 1);
+    const row = r.models[0]!;
+    assert.equal(row.provider, "fake");
+    assert.equal(row.cacheRead, 900);
+    assert.equal(row.ttlMinutes, 60);
+    assert.equal(row.sessions, 1);
+    assert.ok(Math.abs((cacheHitRate(row) ?? 0) - 0.9) < 1e-9);
+
+    await assert.rejects(() => c.request("stats.models", { id: "nope" }));
     await c.close();
   });
 

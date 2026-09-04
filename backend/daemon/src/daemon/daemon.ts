@@ -268,7 +268,11 @@ export class Daemon {
       onStatus: (id, state, note) => this.#onDerivedStatus(id, state, note),
       onUsage: (id, delta) => {
         if (this.#stopping) return;
-        const snap = this.#registry.addUsage(id, this.#priceUsage(id, delta));
+        const priced = this.#priceUsage(id, delta);
+        const snap = this.#registry.addUsage(id, priced);
+        // The same spend, sliced by the model that made it — `usage` is per
+        // session and a session can switch models, so its totals blend them.
+        this.#registry.store.addModelUsage(id, snap.provider, snap.model ?? "", priced);
         this.#noteCacheTtlDrift(snap, delta.lastCacheTtlMinutes);
         this.#emitSessionUpdated(snap, undefined, { git: false }); // no git shell-out per usage tick
       },
@@ -1718,6 +1722,16 @@ export class Daemon {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       return this.#registry.store.statusHistory(id);
+    });
+
+    // Token spend broken out by the provider+model that made it — the view
+    // that answers "is this model caching, and for how long". Optional `id`
+    // narrows it to one session's breakdown.
+    d.register("stats.models", (params) => {
+      const p = isObj(params) ? params : {};
+      const id = typeof p["id"] === "string" && p["id"] !== "" ? p["id"] : undefined;
+      if (id && !this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      return { models: this.#registry.store.modelUsage(id) };
     });
 
     // The durable counterpart to the cross-session `EventLog` ring — lets a

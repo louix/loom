@@ -5,7 +5,8 @@ import { writeFileSync } from "node:fs";
 import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
 import { setLogFile, setLogStderr } from "@loom/core/logger";
 import { LoomClient } from "@loom/client";
-import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/wire";
+import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
@@ -22,6 +23,7 @@ commands:
   history <id>           status history for a session
   providers              list configured providers
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
+  cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -73,6 +75,14 @@ const USAGE: Record<string, string> = {
   \`claude\` asks the Claude CLI for its catalog; openai-compatible providers
   ([custom-provider.*] and the built-in openai profile) are probed at
   {base_url}/models. Prints one model id per line.  --json for an array.`,
+  cache: `loom cache [id]  — prompt-cache effectiveness per provider/model
+
+  one row per provider+model that has spent tokens: the share of prompt tokens
+  served from cache, the read/write split behind it, and the prompt-cache TTL
+  the provider was last observed writing at ("-" if it never reported one).
+  With an id, only that session's models. Low hit rate on a long session means
+  something is invalidating the prefix between turns.
+  --json                       machine-readable`,
   config: `loom config  — lint the loaded config
 
   reports unset api_key_env vars, providers with no key, keyless search
@@ -257,6 +267,32 @@ const main = async (): Promise<void> => {
         const r = await client.request<{ models: string[] }>("providers.probeModels", { id });
         if (values.json) process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
         else process.stdout.write(r.models.join("\n") + "\n");
+        break;
+      }
+      case "cache": {
+        const id = positionals[1];
+        const r = await client.request<{ models: ModelUsage[] }>("stats.models", id ? { id } : {});
+        if (values.json) {
+          process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
+          break;
+        }
+        if (r.models.length === 0) {
+          process.stdout.write("no token spend recorded yet\n");
+          break;
+        }
+        const pad = Math.max(...r.models.map((m) => `${m.provider}/${m.model}`.length));
+        for (const m of r.models) {
+          const rate = cacheHitRate(m);
+          // "-" and "n/a" are different answers: no TTL was ever reported, vs
+          // nothing has been spent here so there is no rate to quote.
+          const ttl = m.ttlMinutes > 0 ? `${m.ttlMinutes}m ttl` : "- ttl";
+          process.stdout.write(
+            `${`${m.provider}/${m.model}`.padEnd(pad)}  ` +
+              `${(rate == null ? "n/a" : `${Math.round(rate * 100)}%`).padStart(4)} cached  ` +
+              `${String(m.cacheRead).padStart(9)} cr  ${String(m.cacheWrite).padStart(9)} cw  ` +
+              `${String(m.input).padStart(9)} in  ${ttl}\n`,
+          );
+        }
         break;
       }
       case "config": {

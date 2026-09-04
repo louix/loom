@@ -17,6 +17,7 @@ import {
   SessionStore,
 } from "@loom/daemon/store/sessions";
 import { SessionEventStore } from "@loom/daemon/store/session-events";
+import { cacheHitRate } from "@loom/core/wire";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -524,3 +525,68 @@ test("SessionEventStore: `before` cursor is scoped to the session, and to the ne
 
 const texts = (frames: { event: unknown }[]): string[] =>
   frames.map((f) => (f.event as { text: string }).text);
+
+test("addModelUsage splits spend by model and reports a cache hit rate", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    store.create({ id: "s1", provider: "claude" });
+    store.create({ id: "s2", provider: "claude" });
+
+    assert.deepEqual(store.modelUsage(), []);
+
+    store.addModelUsage("s1", "claude", "opus", {
+      input: 100,
+      cacheRead: 800,
+      cacheWrite: 100,
+      costUsd: 0.5,
+      turns: 1,
+      lastCacheTtlMinutes: 60,
+    });
+    // Same session, after a `session.setModel` — a separate row, not a blend.
+    store.addModelUsage("s1", "claude", "haiku", { input: 1000, turns: 1 });
+    store.addModelUsage("s2", "claude", "opus", { input: 100, cacheRead: 900, turns: 1 });
+
+    const all = store.modelUsage();
+    assert.deepEqual(
+      all.map((m) => m.model),
+      ["opus", "haiku"], // busiest first
+    );
+    const opus = all[0]!;
+    assert.equal(opus.sessions, 2);
+    assert.equal(opus.input, 200);
+    assert.equal(opus.cacheRead, 1700);
+    assert.equal(opus.turns, 2);
+    assert.equal(opus.ttlMinutes, 60);
+    assert.ok(Math.abs((cacheHitRate(opus) ?? 0) - 1700 / 2000) < 1e-9);
+
+    // haiku never cached: a real 0%, not "unknown".
+    const haiku = all[1]!;
+    assert.equal(cacheHitRate(haiku), 0);
+    assert.equal(haiku.ttlMinutes, 0);
+
+    // Narrowed to one session.
+    const s2 = store.modelUsage("s2");
+    assert.equal(s2.length, 1);
+    assert.equal(s2[0]?.sessions, 1);
+    assert.equal(s2[0]?.input, 100);
+
+    // A later delta with no TTL must not clear the observation; a new one wins.
+    store.addModelUsage("s1", "claude", "opus", { input: 10, turns: 1 });
+    assert.equal(store.modelUsage("s1")[0]?.ttlMinutes, 60);
+    store.addModelUsage("s1", "claude", "opus", { cacheWrite: 50, lastCacheTtlMinutes: 5 });
+    assert.equal(store.modelUsage("s1")[0]?.ttlMinutes, 5);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("cacheHitRate distinguishes 'nothing spent' from 'never cached'", () => {
+  assert.equal(cacheHitRate({ input: 0, cacheRead: 0, cacheWrite: 0 }), null);
+  assert.equal(cacheHitRate({ input: 100, cacheRead: 0, cacheWrite: 0 }), 0);
+  assert.equal(cacheHitRate({ input: 0, cacheRead: 100, cacheWrite: 0 }), 1);
+  // A cache *write* is a miss for the tokens it covers — it was not served.
+  assert.equal(cacheHitRate({ input: 0, cacheRead: 50, cacheWrite: 50 }), 0.5);
+});

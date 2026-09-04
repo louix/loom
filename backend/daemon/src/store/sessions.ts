@@ -5,7 +5,7 @@ import {
   type SessionStateKind,
   sessionStateDetail,
 } from "@loom/core/session-state";
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { ModelUsage, SessionSnapshot } from "@loom/core/wire";
 import { type Db, withTransaction } from "./db.ts";
 
 // ---------------------------------------------------------------------------
@@ -294,6 +294,94 @@ export class SessionStore {
     this.#db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, id);
   }
 
+  /**
+   * Fold a usage delta into the running total for the provider+model that
+   * spent it. Called alongside {@link addUsage}, which keeps the same numbers
+   * per session; this is the same spend sliced by model instead.
+   *
+   * Attribution is "whichever model is in force when the delta lands", so a
+   * `session.setModel` that races a turn's own usage event can bill a few
+   * tokens to the new model. Not worth a per-turn model stamp on the wire.
+   */
+  addModelUsage(sessionId: string, provider: string, model: string, d: UsageDelta): void {
+    const now = Date.now();
+    const acc = (v: number | undefined): number =>
+      typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+    const accFloat = (v: number | undefined): number =>
+      typeof v === "number" && Number.isFinite(v) ? v : 0;
+    const ttl = acc(d.lastCacheTtlMinutes);
+    this.#db
+      .prepare(
+        `INSERT INTO model_usage
+           (session_id, provider, model, input, output, cache_read, cache_write,
+            cost_usd, turns, ttl_minutes, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, provider, model) DO UPDATE SET
+           input       = input + excluded.input,
+           output      = output + excluded.output,
+           cache_read  = cache_read + excluded.cache_read,
+           cache_write = cache_write + excluded.cache_write,
+           cost_usd    = cost_usd + excluded.cost_usd,
+           turns       = turns + excluded.turns,
+           -- absolute, and a delta that carries no TTL must not clear it
+           ttl_minutes = CASE WHEN excluded.ttl_minutes > 0
+                              THEN excluded.ttl_minutes ELSE ttl_minutes END,
+           updated_at  = excluded.updated_at`,
+      )
+      .run(
+        sessionId,
+        provider,
+        model,
+        acc(d.input),
+        acc(d.output),
+        acc(d.cacheRead),
+        acc(d.cacheWrite),
+        accFloat(d.costUsd),
+        acc(d.turns),
+        ttl,
+        now,
+      );
+  }
+
+  /**
+   * Per-provider+model usage. With `sessionId` it's that session's breakdown
+   * (`sessions` is always 1); without, it's every session summed, which is the
+   * view that says whether a model caches at all. Busiest first.
+   */
+  modelUsage(sessionId?: string): ModelUsage[] {
+    const where = sessionId ? "WHERE session_id = ?" : "";
+    const rows = this.#db
+      .prepare(
+        `SELECT provider, model,
+                SUM(input) AS input, SUM(output) AS output,
+                SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write,
+                SUM(cost_usd) AS cost_usd, SUM(turns) AS turns,
+                -- the freshest observation across the grouped sessions
+                (SELECT m2.ttl_minutes FROM model_usage m2
+                  WHERE m2.provider = m.provider AND m2.model = m.model
+                    AND m2.ttl_minutes > 0
+                  ORDER BY m2.updated_at DESC LIMIT 1) AS ttl_minutes,
+                COUNT(*) AS sessions, MAX(updated_at) AS updated_at
+           FROM model_usage m
+           ${where}
+          GROUP BY provider, model
+          ORDER BY (SUM(input) + SUM(cache_read) + SUM(cache_write) + SUM(output)) DESC`,
+      )
+      .all(...(sessionId ? [sessionId] : [])) as Array<Record<string, number | string | null>>;
+    return rows.map((r) => ({
+      provider: String(r["provider"] ?? ""),
+      model: String(r["model"] ?? ""),
+      input: Number(r["input"] ?? 0),
+      output: Number(r["output"] ?? 0),
+      cacheRead: Number(r["cache_read"] ?? 0),
+      cacheWrite: Number(r["cache_write"] ?? 0),
+      costUsd: Number(r["cost_usd"] ?? 0),
+      turns: Number(r["turns"] ?? 0),
+      ttlMinutes: Number(r["ttl_minutes"] ?? 0),
+      sessions: Number(r["sessions"] ?? 0),
+      updatedAt: Number(r["updated_at"] ?? 0),
+    }));
+  }
   /** Set the turn counter directly — used by `undo` after truncating the transcript. */
   setTurns(id: string, turns: number): void {
     this.#db

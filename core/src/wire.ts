@@ -238,6 +238,50 @@ export interface SessionSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// cache / usage stats (`stats.models`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Token usage attributed to one provider+model. `SessionSnapshot.usage` is per
+ * session and a session can change model mid-life, so its totals are a mixture;
+ * these rows are the breakdown, and answer "is this model caching at all, and
+ * for how long".
+ */
+export interface ModelUsage {
+  provider: string;
+  /** "" when the provider never reported one. */
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+  turns: number;
+  /**
+   * Last prompt-cache TTL observed for this pair, in minutes; 0 = never
+   * observed (the provider reports no TTL, or has never written cache here).
+   */
+  ttlMinutes: number;
+  /** Sessions that contributed — 1 for a per-session row. */
+  sessions: number;
+  updatedAt: number;
+}
+
+/**
+ * The share of prompt tokens this row served from cache, 0..1 — cache reads
+ * over every prompt token the model was billed for. `null` when nothing has
+ * been spent yet, which is not the same as a 0% hit rate.
+ */
+export const cacheHitRate = (u: {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+}): number | null => {
+  const prompt = u.input + u.cacheRead + u.cacheWrite;
+  return prompt > 0 ? u.cacheRead / prompt : null;
+};
+
+// ---------------------------------------------------------------------------
 // hello handshake
 // ---------------------------------------------------------------------------
 
