@@ -261,6 +261,22 @@ export class FakeProvider implements AgentProvider {
 
   #sessions = new Map<string, FakeSession>();
 
+  /** Park the next `createSession()` until the returned fn is called — a test
+   *  holds creation open to drive RPCs against the not-yet-attached session
+   *  (the registry row exists from the moment the daemon starts the create).
+   *  Null (the default) keeps create synchronous. */
+  #createGate: Promise<void> | null = null;
+  blockCreate(): () => void {
+    let release!: () => void;
+    this.#createGate = new Promise<void>((r) => {
+      release = r;
+    });
+    return () => {
+      this.#createGate = null;
+      release();
+    };
+  }
+
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const s = new FakeSession(opts.sessionId, {
       mode: opts.mode,
@@ -277,6 +293,7 @@ export class FakeProvider implements AgentProvider {
       return s;
     }
     this.#sessions.set(s.id, s);
+    if (this.#createGate) await this.#createGate;
     return s;
   }
 

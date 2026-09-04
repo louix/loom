@@ -948,6 +948,25 @@ export class Daemon {
       throw new RpcError("provider_error", `could not start session: ${message}`);
     }
 
+    // A `session.setMode` that landed while the adapter was still being built
+    // (lazy connector load, MCP connect) found no attached run and updated
+    // only the registry — the session would otherwise run in its create-time
+    // mode no matter what the chip said. The row is the user's latest word:
+    // push it into the now-attached adapter when it drifted during the mount.
+    const rowMode = this.#registry.get(id)?.mode;
+    if (isSessionMode(rowMode) && rowMode !== o.mode) {
+      try {
+        await this.#sessions.setMode(id, rowMode);
+      } catch (err) {
+        // The run died between attach and here — its own teardown settles the
+        // state, and the row already carries the clicked mode.
+        this.#log.warn("could not apply a mode clicked during creation", {
+          id,
+          mode: rowMode,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     // The opening prompt is a user message like any follow-up — put it on the
     // event stream so it's in the log / transcript and survives a reconnect
     // (clients no longer local-echo it).
@@ -2008,11 +2027,17 @@ export class Daemon {
       // Everything past the worktree is torn down together on any failure so a
       // failed fork doesn't leave an orphan worktree / branch / row / rows.
       try {
+        // The fork runs in the parent's permission mode; record it on the row
+        // so the chip and a restart's revive (which reads the row) agree with
+        // the adapter — an omitted mode stored `default` while the adapter
+        // actually resumed in the parent's mode.
+        const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
         this.#registry.create({
           id: newId,
           provider: parent.provider,
           model: parent.model,
           effort: parent.effort,
+          mode,
           parentId: id,
           title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
           worktree: wt.path,
@@ -2022,7 +2047,6 @@ export class Daemon {
         this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
         this.#pmsgs.copyTo(id, newId);
 
-        const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
         await this.#sessions.resume(await this.#providers.get(parent.provider), {
           sessionId: newId,
           providerRef: newId,

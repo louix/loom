@@ -1828,3 +1828,43 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
     rmSync(xdg, { recursive: true, force: true });
   }
 });
+
+test("a mode clicked while the adapter is still mounting reaches the session", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const release = provider.blockCreate();
+    const creating = c.request<SessionSnapshot>("session.create", {
+      prompt: "race-the-attach",
+      provider: "fake",
+      mode: "plan",
+    });
+    // The registry row exists (status `starting`) from the moment the daemon
+    // begins the create — before the adapter attaches — so the row id is
+    // discoverable and a `session.setMode` can land in the mount window.
+    let id = "";
+    await waitFor(async () => {
+      const rows = await c.request<Array<SessionSnapshot>>("session.list", {});
+      id = rows.find((r) => r.title === "race-the-attach")?.id ?? "";
+      return id !== "";
+    }, 5000);
+    await c.request("session.setMode", { id, mode: "auto", by: "t" });
+    release();
+    const s = await creating;
+    assert.equal(s.mode, "auto");
+    // The click must reach the adapter, not just the row — before the
+    // attach-time reconcile the RPC skipped the un-attached run silently and
+    // the session ran in its create-time mode.
+    const fake = provider.session(s.id);
+    assert.ok(fake, "the fake session should be attached once create resolves");
+    assert.deepEqual(fake.modeChanges, ["auto"]);
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
