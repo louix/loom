@@ -222,6 +222,26 @@ export interface RewindEvent extends HarnessEventBase {
 }
 
 /**
+ * The session's provider was switched live (`⌥p`) — the conversation continues
+ * on `provider` / `model` / `effort`. Daemon-emitted, not from an adapter.
+ * Status is left at `idle`.
+ *
+ * `lossy` is true when the transcript could not be handed to the new provider
+ * verbatim (a switch touching Claude, whose history lives server-side) and the
+ * target was seeded from a rendered digest of the prior turns instead.
+ */
+export interface ProviderChangedEvent extends HarnessEventBase {
+  type: "provider_changed";
+  /** New provider id. */
+  provider: string;
+  model: string | null;
+  effort: string | null;
+  /** Provider id the session ran on before the switch. */
+  from: string;
+  lossy: boolean;
+}
+
+/**
  * A user message the daemon delivered while a turn was already in flight.
  * `injected: true` means it reached the model mid-turn (aisdk: after the
  * current tool result, before the next step); on Claude it is queued by the
@@ -271,6 +291,7 @@ export type HarnessEvent =
   | ErrorEvent
   | ResultEvent
   | RewindEvent
+  | ProviderChangedEvent
   | UserMessageEvent
   | RateLimitEvent;
 

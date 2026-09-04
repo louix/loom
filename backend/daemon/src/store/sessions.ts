@@ -193,6 +193,7 @@ export class SessionStore {
   setFields(
     id: string,
     fields: Partial<{
+      provider: string;
       model: string | null;
       effort: string | null;
       mode: string;
@@ -208,6 +209,7 @@ export class SessionStore {
     const cols: string[] = [];
     const vals: Array<string | number | null> = [];
     const map: Record<string, string> = {
+      provider: "provider",
       model: "model",
       effort: "effort",
       mode: "mode",

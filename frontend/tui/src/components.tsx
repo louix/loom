@@ -1045,10 +1045,11 @@ const promptHints = (p: PromptState, queued: number, sessionMode?: string | null
     bits.push(`⇧⇥ mode:${modeLabel(p.mode)}`);
     bits.push("⌥p provider/model");
   } else if (p.kind === "send") {
-    // ⇧⇥ re-modes the live session, ⌥m swaps its model — both without leaving
-    // the half-typed message.
+    // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
+    // without leaving the half-typed message.
     bits.push(`⇧⇥ mode:${modeLabel(sessionMode)}`);
     bits.push("⌥m model");
+    bits.push("⌥p provider");
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
@@ -1554,7 +1555,7 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
   ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
   [
     "Alt + key",
-    "run an action without leaving the prompt — ⌥e ⌥o ⌥p ⌥x; ⌥m switches the model (also from the fleet view)",
+    "run an action without leaving the prompt — ⌥e ⌥o ⌥x; ⌥m / ⌥p switch the model / provider (also from the fleet view)",
   ],
   ["⇧⇥", "cycle the permission mode — on the selection, or inside a prompt (mid-message)"],
   ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
@@ -1577,8 +1578,8 @@ const HELP_ROWS: Array<[string, string]> = [
   ],
   ["c  ·  x", "compact the context (once the meter passes half)  ·  archive the session"],
   [
-    "u  ·  ⇧⇥  ·  ⌥m",
-    "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model (applies next turn)",
+    "u  ·  ⇧⇥  ·  ⌥m / ⌥p",
+    "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model, or the provider + model (applies next turn)",
   ],
   ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
   ["o  ·  v", "view the log in $EDITOR  ·  event log full / chat"],
@@ -1613,10 +1614,9 @@ const EDIT_ROWS: Array<[string, string]> = [
     "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only",
   ],
   [
-    "⇧⇥  ·  ⌥m",
-    "cycle the permission mode  ·  switch the model — the new session's, or the one you're messaging",
+    "⇧⇥  ·  ⌥m  ·  ⌥p",
+    "cycle the permission mode  ·  switch the model  ·  switch the provider + model — the new session's, or the one you're messaging (aisdk↔aisdk carries the transcript; Claude isn't supported yet)",
   ],
-  ["⌥p", "provider / model picker   (new-session prompt only)"],
   ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
 ];
 

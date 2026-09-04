@@ -1081,9 +1081,11 @@ export const mkFleetHandle = ({
     }
   };
 
-  /** Provider chosen → always show a model step. `draft` carries a half-typed
-   *  `new` prompt through the detour. */
-  const openModelStep = (providerId: string, label: string, draft?: string): void =>
+  /** Provider chosen → always show a model step. `carry` threads the wizard's
+   *  context — a half-typed `new`-prompt `draft`, or a live switch's
+   *  `liveSessionId` / `reopenSend` / `draft` / `viaProviderStep` — through the
+   *  detour unchanged. (`model` is never set this early, so it isn't carried.) */
+  const openModelStep = (providerId: string, label: string, carry: PickerState["ctx"] = {}): void =>
     dispatch({
       t: "openPicker",
       picker: makePicker({
@@ -1091,7 +1093,7 @@ export const mkFleetHandle = ({
         title: `model · ${label}`,
         items: modelPickItems(state, providerId),
         emptyText: modelPickEmptyText(state, providerId),
-        ctx: { provider: providerId, ...(draft !== undefined ? { draft } : {}) },
+        ctx: { ...carry, provider: providerId },
       }),
     });
 
@@ -1202,9 +1204,30 @@ export const mkFleetHandle = ({
           }),
         });
       }
-      client
-        .request("session.setModel", { id, model, by: client.clientId })
+      const sess = state.sessions.find((x) => x.id === id);
+      const toProvider =
+        ctx.provider !== undefined && sess !== undefined && ctx.provider !== sess.provider
+          ? ctx.provider
+          : null;
+      const req = toProvider
+        ? client.request("session.setProvider", {
+            id,
+            provider: toProvider,
+            model,
+            ...(effort ? { effort } : {}),
+            by: client.clientId,
+          })
+        : client.request("session.setModel", { id, model, by: client.clientId });
+      req
         .then(() => {
+          if (toProvider) {
+            dispatch({
+              t: "notice",
+              text: `provider → ${toProvider} · ${model}${effort ? ` · ${effort}` : ""}`,
+              tone: "good",
+            });
+            return undefined;
+          }
           if (!effort) {
             dispatch({ t: "notice", text: `model → ${model} · next turn`, tone: "good" });
             return undefined;
@@ -1221,7 +1244,9 @@ export const mkFleetHandle = ({
         .catch((e: unknown) =>
           dispatch({
             t: "notice",
-            text: `model switch failed: ${e instanceof Error ? e.message : String(e)}`,
+            text: `${toProvider ? "provider" : "model"} switch failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
             tone: "bad",
           }),
         );
@@ -1307,7 +1332,11 @@ export const mkFleetHandle = ({
 
     switch (p.kind) {
       case "provider":
-        return void openModelStep(cur.id, cur.label, p.ctx?.draft);
+        return void openModelStep(
+          cur.id,
+          cur.label,
+          p.ctx?.liveSessionId ? { ...p.ctx, viaProviderStep: true } : p.ctx,
+        );
 
       case "model": {
         const providerId = p.ctx?.provider ?? "claude";
@@ -1379,7 +1408,7 @@ export const mkFleetHandle = ({
       });
     }
     const only = provs[0]?.id ?? "claude";
-    openModelStep(only, provs[0]?.tag || only, draft);
+    openModelStep(only, provs[0]?.tag || only, { draft });
   };
 
   /** `Esc` inside a picker — the step-back logic is pure (see
@@ -1412,6 +1441,46 @@ export const mkFleetHandle = ({
           liveSessionId: s.id,
           ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
         },
+      }),
+    });
+  };
+
+  /** Open the provider → model → effort wizard for a *live* session (`⌥p`
+   *  mid-chat): pre-select its current provider, thread `liveSessionId`
+   *  (+ `reopenSend` / `draft` from a send prompt) so the choice finalizes as a
+   *  `session.setProvider`. Falls back to the model switcher when there's only
+   *  one provider to pick from. */
+  const pickProviderModelForSession = (sessionId?: string, draft?: string): void => {
+    const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+    if (
+      s.status.kind === "running" ||
+      s.status.kind === "starting" ||
+      s.status.kind === "working_background" ||
+      s.status.kind === "awaiting_input"
+    ) {
+      return void dispatch({
+        t: "notice",
+        text: "interrupt the turn before switching provider",
+        tone: "dim",
+      });
+    }
+    if (state.providers.length <= 1) return void switchModel(s.id, draft);
+    const items = providerPickItems(state);
+    dispatch({
+      t: "openPicker",
+      picker: makePicker({
+        kind: "provider",
+        title: "provider",
+        items,
+        ctx: {
+          liveSessionId: s.id,
+          ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
+        },
+        index: Math.max(
+          0,
+          items.findIndex((x) => x.id === s.provider),
+        ),
       }),
     });
   };
@@ -1856,6 +1925,8 @@ export const mkFleetHandle = ({
         return void switchModel();
       case "effort":
         return void switchEffort();
+      case "provider":
+        return void pickProviderModelForSession();
       case "theme":
         return void dispatch({ t: "toggleTheme" });
       case "restart":
@@ -2057,7 +2128,7 @@ export const mkFleetHandle = ({
         if (p.kind === "new") {
           const pid = p.provider ?? defaultProviderId(state);
           const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
-          return void openModelStep(pid, tag, p.buffer.text);
+          return void openModelStep(pid, tag, { draft: p.buffer.text });
         }
         if (p.kind === "send" && p.sessionId) return void switchModel(p.sessionId, p.buffer.text);
         return;
@@ -2080,8 +2151,11 @@ export const mkFleetHandle = ({
         if (p.kind === "send" && p.sessionId) return void switchEffort(p.sessionId, p.buffer.text);
         return;
       }
-      if (key.meta && input === "p" && p.kind === "new") {
-        return void pickProviderModel(p.buffer.text);
+      if (key.meta && input === "p") {
+        if (p.kind === "new") return void pickProviderModel(p.buffer.text);
+        if (p.kind === "send" && p.sessionId)
+          return void pickProviderModelForSession(p.sessionId, p.buffer.text);
+        return;
       }
       if (key.meta && input === "x" && p.kind === "send" && p.sessionId) {
         return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
@@ -2327,6 +2401,8 @@ export const mkFleetHandle = ({
     // the same for the mode).
     if (key.meta && input === "m") return void (sel ? runAct("model") : undefined);
     if (key.meta && input === "t") return void (sel ? runAct("effort") : undefined);
+    if (key.meta && input === "p")
+      return void (sel ? pickProviderModelForSession(sel.id) : undefined);
     if (key.ctrl || key.meta) return; // Ctrl / Alt otherwise do nothing outside the prompt
 
     // Space → the command palette.

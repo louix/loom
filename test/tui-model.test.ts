@@ -1358,8 +1358,8 @@ test("focusedPending keeps only the surface the daemon says the session is parke
 test("actionsFor offers the right verbs per session state, plus the globals", () => {
   const acts = (o: Parameters<typeof snap>[0]) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
-  // a settled selected session also gets mode + model + effort + title + delete
-  const S = ["mode", "model", "effort", "fork", "title", "delete", ...G];
+  // a settled selected session also gets mode + model + effort + provider + title + delete
+  const S = ["mode", "model", "effort", "provider", "fork", "title", "delete", ...G];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
   // plus interrupt and the globals. No mode / model / rename / fork.
@@ -1661,6 +1661,29 @@ test("formatEvent renders each event kind to a glyph + one-liner + tone", () => 
     formatEvent(ev({ type: "compact", trigger: "auto", before: 120000, after: 0 })).text,
     /→/,
   );
+  const pc = formatEvent(
+    ev({
+      type: "provider_changed",
+      from: "claude",
+      provider: "openai",
+      model: "gpt-5",
+      effort: "high",
+      lossy: false,
+    }),
+  );
+  assert.equal(pc.glyph, "⇄");
+  assert.match(pc.text, /claude → openai\/gpt-5 · high/);
+  const lossy = formatEvent(
+    ev({
+      type: "provider_changed",
+      from: "openai",
+      provider: "claude",
+      model: null,
+      effort: null,
+      lossy: true,
+    }),
+  );
+  assert.match(lossy.text, /context summarized/);
 });
 
 test("formatEvent keeps the full body for long / multi-line events", () => {
@@ -2392,6 +2415,58 @@ test("escapeTarget: an effort step reached via the model wizard steps back to it
   assert.equal(restored.t === "openPrompt" && restored.prompt.kind, "new");
   assert.equal(restored.t === "openPrompt" && restored.prompt.provider, "claude");
   assert.equal(restored.t === "openPrompt" && restored.prompt.buffer.text, "hi");
+});
+
+test("escapeTarget: the live ⌥p provider wizard steps back through its own trail", () => {
+  const s = withProviders();
+
+  // Provider step of a live switch opened from a send prompt — Esc restores that
+  // prompt with the draft (there is no `new` prompt to fall into).
+  const fromSend = makePicker({
+    kind: "provider",
+    title: "provider",
+    items: providerPickItems(s),
+    ctx: { liveSessionId: "s1", reopenSend: "s1", draft: "wip" },
+  });
+  const back1 = escapeTarget(fromSend, s);
+  assert.equal(back1.t, "openPrompt");
+  assert.equal(back1.t === "openPrompt" && back1.prompt.kind, "send");
+  assert.equal(back1.t === "openPrompt" && back1.prompt.buffer.text, "wip");
+
+  // Provider step of a live switch from the fleet view (nothing behind it) —
+  // Esc just closes.
+  const fromFleet = makePicker({
+    kind: "provider",
+    title: "provider",
+    items: providerPickItems(s),
+    ctx: { liveSessionId: "s1" },
+  });
+  assert.deepEqual(escapeTarget(fromFleet, s), { t: "closePicker" });
+
+  // Model step reached from that live provider step — Esc steps back to the
+  // provider list rather than closing.
+  const modelStep = makePicker({
+    kind: "model",
+    title: "model · openai",
+    items: modelPickItems(s, "openai"),
+    ctx: { provider: "openai", liveSessionId: "s1", viaProviderStep: true },
+  });
+  const back3 = escapeTarget(modelStep, s);
+  assert.equal(back3.t, "openPicker");
+  assert.equal(back3.t === "openPicker" && back3.picker.kind, "provider");
+
+  // Regression: the non-live ⌥p new-session wizard still falls back to a `new`
+  // prompt, not a live send.
+  const newWizard = makePicker({
+    kind: "provider",
+    title: "provider",
+    items: providerPickItems(s),
+    ctx: { draft: "idea" },
+  });
+  const back4 = escapeTarget(newWizard, s);
+  assert.equal(back4.t, "openPrompt");
+  assert.equal(back4.t === "openPrompt" && back4.prompt.kind, "new");
+  assert.equal(back4.t === "openPrompt" && back4.prompt.buffer.text, "idea");
 });
 
 test("makePrompt carries provider + model for the ⌃P chooser flow", () => {

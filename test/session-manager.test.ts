@@ -339,6 +339,45 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("session.setProvider validates; same provider is a model / effort change; a Claude cross-switch is refused", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.finishTurn();
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+    await assert.rejects(
+      c.request("session.setProvider", { id: "nope", provider: "fake" }),
+      /no such session/,
+    );
+    await assert.rejects(
+      c.request("session.setProvider", { id, provider: "ghost" }),
+      /unknown provider/,
+    );
+    await assert.rejects(
+      c.request("session.setProvider", { id, provider: "fake", effort: "turbo" }),
+      /effort must be one of/,
+    );
+
+    // Phase 1: a cross-provider switch that touches Claude is refused up front.
+    await assert.rejects(
+      c.request("session.setProvider", { id, provider: "claude" }),
+      /isn't supported yet/,
+    );
+
+    // Same provider → delegates to the model / effort moves; the provider stays put.
+    const snap = await c.request<SessionSnapshot>("session.setProvider", {
+      id,
+      provider: "fake",
+      model: "fake-b",
+      effort: "high",
+    });
+    assert.equal(snap.provider, "fake");
+    assert.equal(snap.model, "fake-b");
+    assert.equal(snap.effort, "high");
+
+    await c.close();
+  });
+
   test("session.answer on a session that isn't running is not_found", async () => {
     const c = await client();
     await assert.rejects(

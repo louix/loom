@@ -70,6 +70,7 @@ import {
   type PermissionDecision,
   type PlanDecision,
   type SessionMode,
+  type SessionRef,
 } from "@loom/core/types";
 import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./lifecycle.ts";
 import { systemPromptAppendFor } from "./prompt.ts";
@@ -1803,9 +1804,10 @@ export class Daemon {
       // queue (which drains when the compaction boundary lands).
       const restructuring = this.#sessions.isRestructuring(id);
       if (restructuring) {
+        const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
         throw new RpcError(
           "busy",
-          `session is ${restructuring}ing — the message was not sent, retry in a moment`,
+          `session is ${doing} — the message was not sent, retry in a moment`,
         );
       }
       const { injected } = await this.#sessions.send(id, text);
@@ -2310,6 +2312,108 @@ export class Daemon {
       }
       this.#emitProvidersUpdated();
       this.#emitSessionUpdated(snap, clientLabel(params));
+      return snap;
+    });
+
+    // Switch a live session onto a different provider (the mid-chat `⌥p`).
+    // Same provider → a plain model / effort change (so the TUI can always call
+    // this and never branch). Different provider → tear the adapter down and
+    // rebuild on the new one, keeping the session id / transcript / worktree.
+    // Phase 1: cross-provider is aisdk↔aisdk only — those share a
+    // provider-agnostic transcript store, so the new adapter resumes with full
+    // history. A switch touching Claude needs history reconstruction (Phase 2).
+    d.register("session.setProvider", async (params) => {
+      const id = reqString(params, "id");
+      const provider = reqString(params, "provider");
+      const p = isObj(params) ? params : {};
+      const wantModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
+      const wantEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
+      if (wantEffort !== undefined && !EFFORT_LEVELS.includes(wantEffort as EffortLevel)) {
+        throw new RpcError("bad_request", `effort must be one of ${EFFORT_LEVELS.join(" | ")}`);
+      }
+      const row = this.#registry.get(id);
+      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+      if (!this.#providers.has(provider)) {
+        throw new RpcError("bad_request", `unknown provider: ${provider}`);
+      }
+
+      const model = wantModel ?? (this.#defaultModelFor(provider) || null);
+      const effort = wantEffort ?? (this.#defaultEffortFor(provider, model ?? undefined) || null);
+
+      // Same provider: this is a model / effort change, nothing more.
+      if (provider === row.provider) {
+        if (this.#sessions.has(id)) {
+          if (model) await this.#sessions.setModel(id, model);
+          if (effort) await this.#sessions.setEffort(id, effort as EffortLevel);
+        }
+        const snap = this.#registry.setFields(id, {
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        });
+        if (row.worktree && model) this.#worktrees.setIdentity(row.worktree, model);
+        if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
+          if (model) this.#providerDefaults.remember(row.provider, model);
+          if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
+        }
+        this.#emitProvidersUpdated();
+        this.#emitSessionUpdated(snap, clientLabel(params));
+        return snap;
+      }
+
+      if (!this.#isAisdk(provider) || !this.#isAisdk(row.provider)) {
+        throw new RpcError(
+          "bad_request",
+          "switching to or from Claude mid-chat isn't supported yet — start a fresh session on it instead",
+        );
+      }
+      if (!model) {
+        throw new RpcError("bad_request", `no model available for ${provider}`);
+      }
+      if (!this.#sessions.has(id)) {
+        throw new RpcError(
+          "bad_request",
+          "send the session a message to revive it before switching its provider",
+        );
+      }
+
+      const ref: SessionRef = {
+        sessionId: id,
+        providerRef: this.#registry.store.providerRef(id) ?? id,
+        cwd: row.worktree ?? this.repoRoot,
+        mode: isSessionMode(row.mode) ? row.mode : "default",
+        mcpServers: this.#mcpHandles(),
+        model,
+        ...(effort ? { effort: effort as EffortLevel } : {}),
+      };
+
+      try {
+        await this.#sessions.setProvider(id, await this.#providers.get(provider), ref);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/interrupt the session/.test(message)) {
+          throw new RpcError("bad_request", message);
+        }
+        throw new RpcError("provider_error", `could not switch provider: ${message}`);
+      }
+
+      const snap = this.#registry.setFields(id, { provider, model, effort });
+      if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
+      this.#providerDefaults.remember(provider, model);
+      if (effort) this.#providerDefaults.rememberEffort(provider, effort);
+      this.#providerDefaults.rememberProvider(provider);
+      this.emitEvent({
+        type: "provider_changed",
+        sessionId: id,
+        ts: Date.now(),
+        from: row.provider,
+        provider,
+        model,
+        effort,
+        lossy: false,
+      });
+      this.#emitProvidersUpdated();
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#onActivityChange("provider-switched");
       return snap;
     });
 

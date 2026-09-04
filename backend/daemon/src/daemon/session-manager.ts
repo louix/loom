@@ -85,8 +85,8 @@ interface Running {
   pump: Promise<void>;
   /** Per-session op chain — `send` / `compact` / `rewind` run one at a time through {@link SessionManager.#enqueue}. */
   gate: Promise<unknown>;
-  /** Set for the duration of a gated `compact` / `rewind`; a straight `send` is fast-failed while non-null. */
-  restructuring: "compact" | "rewind" | null;
+  /** Set for the duration of a gated `compact` / `rewind` / provider swap; a straight `send` is fast-failed while non-null. */
+  restructuring: "compact" | "rewind" | "provider" | null;
   /** Epoch ms the gate opened — seeds the snapshot's `compacting` overlay. */
   restructuringSince: number | null;
   /** Set around a gated `rewind` — `interrupt` no-ops rather than clobber a fork in progress. */
@@ -121,9 +121,10 @@ export class SessionManager {
     return this.#running.get(id)?.session.snapshot() ?? null;
   }
 
-  /** Non-null while a `compact` / `rewind` holds the session's op gate — the
-   *  daemon `session.send` handler fast-fails with `code: "busy"` on it. */
-  isRestructuring(id: string): "compact" | "rewind" | null {
+  /** Non-null while a `compact` / `rewind` / provider swap holds the session's
+   *  op gate — the daemon `session.send` handler fast-fails with `code: "busy"`
+   *  on it. */
+  isRestructuring(id: string): "compact" | "rewind" | "provider" | null {
     return this.#running.get(id)?.restructuring ?? null;
   }
 
@@ -625,6 +626,56 @@ export class SessionManager {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
     await run.session.setEffort(effort);
+  }
+
+  /**
+   * Swap a settled session onto `newProvider` in place — the session id, the
+   * transcript store and the worktree are unchanged; only the adapter (and the
+   * vendor SDK behind it) is rebuilt. `ref` carries the resolved model / effort
+   * / mode / cwd. The caller has already checked the provider is known and, for
+   * now, that both sides are aisdk (a shared, provider-agnostic transcript — the
+   * new adapter resumes with full history).
+   *
+   * On any failure the run is dropped from the live set; the caller leaves the
+   * DB row untouched, so the next `send` revives the session on the *old*
+   * provider.
+   */
+  async setProvider(id: string, newProvider: AgentProvider, ref: SessionRef): Promise<void> {
+    const run = this.#require(id);
+    if (run.ended) throw new Error("session has ended");
+    // Mirror `rewind`: only a settled, non-terminal session may be reprovisioned
+    // — a live turn would be dropped, and `done` would be silently un-ended.
+    if (isLiveState(run.state) || run.state.kind === "done") {
+      throw new Error("interrupt the session before switching its provider");
+    }
+    return this.#enqueue(run, async () => {
+      run.restructuring = "provider";
+      run.restructuringSince = Date.now();
+      this.#hooks.onRestructuring(id);
+      // Stop the old adapter and let its drain unwind before the swap, so its
+      // stream-ended transition can't land on the freshly attached run.
+      run.ended = true;
+      run.pending.clear();
+      try {
+        await run.session.close();
+      } catch {
+        // best effort — it's being replaced regardless
+      }
+      await run.pump.catch(() => {});
+      try {
+        const session = await newProvider.resumeSession(ref);
+        // #attach replaces #running[id] with a fresh Running (new gate,
+        // refReported=false) and starts its own drain.
+        this.#attach(newProvider.id, id, session, stateIdle);
+      } catch (err) {
+        this.#running.delete(id);
+        throw err;
+      } finally {
+        run.restructuring = null;
+        run.restructuringSince = null;
+        this.#hooks.onRestructuring(id);
+      }
+    });
   }
 
   /**

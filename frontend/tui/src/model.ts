@@ -258,6 +258,9 @@ export interface PickerState {
      *  (`⌥p`); each step resolves by staging onto `state.plan.impl`, not a live
      *  switch or a `new` prompt, and `Esc` returns to the overlay. */
     planStage?: true;
+    /** The `model` step was reached from a live provider step (`⌥p` mid-chat)
+     *  — `Esc` there steps back to the provider list rather than closing. */
+    viaProviderStep?: boolean;
   };
 }
 
@@ -1681,6 +1684,8 @@ const transcriptHeader = (l: LogLine): string | null => {
       return "sub-agent finished";
     case "rewind":
       return "rewound";
+    case "provider_changed":
+      return "provider switched";
     // metadata, not conversation
     case "usage":
     case "result":
@@ -1854,6 +1859,21 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
   // review, leaving whatever was staged before untouched.
   if (p.ctx?.planStage) return { t: "closePicker" };
   if (p.kind === "provider") {
+    // A live provider switch (⌥p mid-chat) has no `new` prompt to fall into:
+    // step back to the send prompt we came from, else just close.
+    if (p.ctx?.liveSessionId) {
+      return p.ctx.reopenSend !== undefined
+        ? {
+            t: "openPrompt",
+            prompt: makePrompt({
+              kind: "send",
+              sessionId: p.ctx.reopenSend,
+              label: "send",
+              ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
+            }),
+          }
+        : { t: "closePicker" };
+    }
     return {
       t: "openPrompt",
       prompt: makePrompt({
@@ -1861,6 +1881,27 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
         sessionId: null,
         label: "new session",
         text: p.ctx?.draft ?? "",
+      }),
+    };
+  }
+  // Live ⌥p wizard: Esc from the model list steps back to the provider list.
+  if (p.kind === "model" && p.ctx?.viaProviderStep && p.ctx.liveSessionId) {
+    const back: PickerState["ctx"] = {
+      liveSessionId: p.ctx.liveSessionId,
+      ...(p.ctx.reopenSend !== undefined ? { reopenSend: p.ctx.reopenSend } : {}),
+      ...(p.ctx.draft !== undefined ? { draft: p.ctx.draft } : {}),
+    };
+    return {
+      t: "openPicker",
+      picker: makePicker({
+        kind: "provider",
+        title: "provider",
+        items: providerPickItems(s),
+        ctx: back,
+        index: Math.max(
+          0,
+          providerPickItems(s).findIndex((it) => it.id === p.ctx?.provider),
+        ),
       }),
     };
   }
@@ -2038,6 +2079,7 @@ export type ActName =
   | "mode"
   | "model"
   | "effort"
+  | "provider"
   | "undo"
   | "fork"
   | "rebase"
@@ -2146,6 +2188,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
     local.push({ keys: "⌥m", label: "model", act: "model" });
     local.push({ keys: "⌥t", label: "effort", act: "effort" });
+    local.push({ keys: "⌥p", label: "provider", act: "provider" });
     // Undo needs a rewind-capable provider (the daemon reports `canRewind`);
     // it's conversation-only, so an in-place session can still do it. Hard fork
     // is aisdk-only for now (fork-tree F3) and additionally needs an isolated
@@ -2427,6 +2470,14 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
       };
     case "rewind":
       return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
+    case "provider_changed":
+      return {
+        glyph: "⇄",
+        text: `provider · ${ev.from} → ${ev.provider}${ev.model ? `/${ev.model}` : ""}${
+          ev.effort ? ` · ${ev.effort}` : ""
+        }${ev.lossy ? " · context summarized" : ""}`,
+        tone: "accent",
+      };
     case "user_message":
       return {
         glyph: ev.injected ? "»" : "›",
@@ -2511,6 +2562,12 @@ const noticeForEvent = (s: TuiState, ev: HarnessEvent): Notice | null => {
     return {
       text: `turn paused at the step ceiling${tag} — send to continue`,
       tone: "accent",
+      at: Date.now(),
+    };
+  if (ev.type === "provider_changed")
+    return {
+      text: `provider → ${ev.provider}${ev.model ? `/${ev.model}` : ""}${tag}`,
+      tone: "good",
       at: Date.now(),
     };
   return null;
