@@ -58,12 +58,20 @@ interface CatalogResponse {
 interface ChatGPTMessage {
   role: "user" | "assistant" | "tool";
   content: string | null;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
+}
+
+/** Responses input items, rather than Chat Completions' `tool_calls` shape. */
+interface ChatGPTFunctionCall {
+  type: "function_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+}
+
+interface ChatGPTFunctionCallOutput {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
 }
 
 interface PreparedRequest {
@@ -246,8 +254,10 @@ const asText = (part: { type: string; text?: string; filename?: string }): strin
   return "";
 };
 
-const messagesFor = (prompt: LanguageModelV2CallOptions["prompt"]): ChatGPTMessage[] => {
-  const messages: ChatGPTMessage[] = [];
+const messagesFor = (
+  prompt: LanguageModelV2CallOptions["prompt"],
+): Array<ChatGPTMessage | ChatGPTFunctionCall | ChatGPTFunctionCallOutput> => {
+  const messages: Array<ChatGPTMessage | ChatGPTFunctionCall | ChatGPTFunctionCallOutput> = [];
   for (const message of prompt) {
     if (message.role === "system") messages.push({ role: "user", content: message.content });
     else if (message.role === "user")
@@ -256,18 +266,17 @@ const messagesFor = (prompt: LanguageModelV2CallOptions["prompt"]): ChatGPTMessa
         content: message.content.map(asText).filter(Boolean).join("\n"),
       });
     else if (message.role === "assistant") {
-      const calls = message.content
-        .filter((part) => part.type === "tool-call")
-        .map((part) => ({
-          id: part.toolCallId,
-          type: "function" as const,
-          function: { name: part.toolName, arguments: JSON.stringify(part.input) },
-        }));
-      messages.push({
-        role: "assistant",
-        content: message.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
-        ...(calls.length > 0 ? { tool_calls: calls } : {}),
-      });
+      const text = message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      if (text) messages.push({ role: "assistant", content: text });
+      for (const part of message.content) {
+        if (part.type !== "tool-call") continue;
+        messages.push({
+          type: "function_call",
+          call_id: part.toolCallId,
+          name: part.toolName,
+          arguments: JSON.stringify(part.input),
+        });
+      }
     } else {
       for (const part of message.content) {
         const output = part.output;
@@ -275,7 +284,7 @@ const messagesFor = (prompt: LanguageModelV2CallOptions["prompt"]): ChatGPTMessa
           output.type === "text" || output.type === "error-text"
             ? output.value
             : JSON.stringify(output.value);
-        messages.push({ role: "tool", content, tool_call_id: part.toolCallId });
+        messages.push({ type: "function_call_output", call_id: part.toolCallId, output: content });
       }
     }
   }

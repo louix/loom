@@ -18,6 +18,69 @@ test("ChatGPT OAuth connector constructs a v5 model without reading credentials 
   assert.equal(model.modelId, "gpt-5.6-terra");
 });
 
+test("ChatGPT serializes tool history as Responses input items", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-tools-test-"));
+  const authPath = join(dir, "auth.json");
+  await writeFile(
+    authPath,
+    JSON.stringify({ tokens: { access_token: "test-token", account_id: "test-account" } }),
+  );
+  const originalFetch = globalThis.fetch;
+  let request: Record<string, unknown> | undefined;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/codex/models"))
+      return Response.json({ models: [{ slug: "gpt-5.5", base_instructions: "test" }] });
+    if (url.includes("/codex/responses")) {
+      const body = init?.body;
+      if (typeof body !== "string") throw new Error("expected a JSON request body");
+      request = JSON.parse(body) as Record<string, unknown>;
+      return new Response(
+        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      );
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const { makeModel } = createChatGPTModels({ authPath });
+    await makeModel("gpt-5.5").doStream({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "Run pwd" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-1",
+              toolName: "shell",
+              input: { command: "pwd" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "shell",
+              output: { type: "text", value: "/workspace" },
+            },
+          ],
+        },
+      ],
+    } as never);
+    assert.deepEqual(request?.["input"], [
+      { role: "user", content: "Run pwd" },
+      { type: "function_call", call_id: "call-1", name: "shell", arguments: '{"command":"pwd"}' },
+      { type: "function_call_output", call_id: "call-1", output: "/workspace" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ChatGPT cached-input usage feeds Loom's provider/model cache observation", async () => {
   const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-test-"));
   const authPath = join(dir, "auth.json");
