@@ -26,6 +26,7 @@ import {
   queueFor,
   selectedSession,
   visibleLog,
+  type AskUserQuestionItem,
   type Connection,
   type ConfirmState,
   type FleetChild,
@@ -1061,7 +1062,10 @@ const modeChip = (mode: string | null | undefined): ReactNode => {
 
 const promptHints = (p: PromptState, queued: number, sessionMode?: string | null): string => {
   const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥⏎ newline", "⌥e editor"];
-  if (p.kind !== "new") bits.push("⌥o log"); // a new-session prompt has no session / log yet
+  // a new-session prompt has no session / log yet; an AskUserQuestion answer
+  // opens the formatted question sheet rather than the event log
+  if (p.kind === "answerQuestion") bits.push("⌥o view");
+  else if (p.kind !== "new") bits.push("⌥o log");
   if (p.kind === "new") {
     // ⇧⇥ cycles the mode the session starts in; ⌥m / ⌥p pick its model.
     bits.push(`⇧⇥ mode:${modeLabel(p.mode)}`);
@@ -1075,9 +1079,10 @@ const promptHints = (p: PromptState, queued: number, sessionMode?: string | null
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
-  // A multi-question AskUserQuestion steps back through its questions on Esc
-  // until the first, which cancels the whole prompt.
-  bits.push(p.kind === "answerQuestion" && (p.qaIdx ?? 0) > 0 ? "esc back" : "esc cancel");
+  // A multi-question AskUserQuestion: ⇥ / ⇧⇥ (and ⌥← / ⌥→) walk its questions
+  // in any order; Enter submits once every one has an answer.
+  if (p.kind === "answerQuestion" && (p.qaAll?.length ?? 0) > 1) bits.push("⇥ / ⇧⇥ question");
+  bits.push("esc cancel");
   return bits.join("  ·  ");
 };
 
@@ -1299,26 +1304,65 @@ export const Confirm = ({
 // pending request panel (what you're approving / being asked)
 // ---------------------------------------------------------------------------
 
-/** Height reserved for {@link RequestPanel} in the layout. */
-export const REQUEST_PANEL_ROWS = 8;
+/** Chrome around {@link RequestPanel}'s body: the round border (top + bottom),
+ *  the title row and the hint row. */
+const REQUEST_PANEL_CHROME = 4;
+/** Body rows for a non-question request (command / diff / path dump) — the
+ *  historic fixed size, kept for those. */
+const REQUEST_PANEL_MIN_BODY = 4;
+/** Ceiling on the request panel's body. An `AskUserQuestion` grows the panel to
+ *  fit the active question's options rather than clipping them, but never past
+ *  this — the fleet list would otherwise scroll off screen. `⌥o` shows the
+ *  whole call, and ⇥ / ⇧⇥ cycle the other questions into view one at a time. */
+const REQUEST_PANEL_MAX_BODY = 14;
 
-/** `AskUserQuestion` rendered as lettered choices — a) b) c) … — for one
- *  question at a time (`active`, 0-based), since the answer prompt walks them
- *  singly. Progress (N/M) lives in the panel title, not here. Falls back to
- *  the generic raw-JSON dump if the call didn't match the expected shape. */
-const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[] => {
-  const qs = parseAskUserQuestions(input);
-  if (qs.length === 0) return describeRequest(input, w);
-  const idx = Math.max(0, Math.min(qs.length - 1, active));
-  const q = qs[idx]!;
-  const lines: string[] = [];
-  lines.push(...wrapText(q.question, w));
+/** Height reserved for {@link RequestPanel} in the layout for a non-question
+ *  request. Question requests size dynamically — see {@link requestPanelRows}. */
+export const REQUEST_PANEL_ROWS = REQUEST_PANEL_CHROME + REQUEST_PANEL_MIN_BODY;
+
+/** One `AskUserQuestion` question as lettered choices — the prompt text, then
+ *  `a) label — description` per option, each wrapped to `w`. `active` (0-based,
+ *  clamped) picks which question; progress (N/M) lives in the panel title.
+ *  Unclamped — callers size the panel to fit (see {@link requestPanelRows}). */
+export const askQuestionLines = (
+  qs: AskUserQuestionItem[],
+  active: number,
+  w: number,
+): string[] => {
+  const q = qs[Math.max(0, Math.min(qs.length - 1, active))];
+  if (!q) return [];
+  const lines: string[] = [...wrapText(q.question, w)];
   q.options.forEach((opt, oi) => {
     const letter = String.fromCharCode(97 + oi);
     const desc = opt.description ? ` — ${opt.description}` : "";
     lines.push(...wrapText(`  ${letter}) ${opt.label}${desc}`, w));
   });
-  return lines.slice(0, 5);
+  return lines;
+};
+
+/** `AskUserQuestion` rendered as lettered choices for one question at a time.
+ *  Falls back to the generic raw-JSON dump if the call didn't match the
+ *  expected shape. */
+const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[] => {
+  const qs = parseAskUserQuestions(input);
+  if (qs.length === 0) return describeRequest(input, w);
+  return askQuestionLines(qs, active, w).slice(0, REQUEST_PANEL_MAX_BODY);
+};
+
+/** Rows {@link RequestPanel} needs to show `pending` at `width` without
+ *  clipping the active question. Non-question requests keep the fixed
+ *  {@link REQUEST_PANEL_ROWS}; an `AskUserQuestion` grows to fit question
+ *  `questionIdx`'s options, capped at {@link REQUEST_PANEL_MAX_BODY}. */
+export const requestPanelRows = (pending: Pending, width: number, questionIdx = 0): number => {
+  const p0 = (pending.permissions ?? [])[0];
+  if (!p0 || p0.tool !== "AskUserQuestion") return REQUEST_PANEL_ROWS;
+  const qs = parseAskUserQuestions(p0.input);
+  if (qs.length === 0) return REQUEST_PANEL_ROWS;
+  const body = Math.max(
+    REQUEST_PANEL_MIN_BODY,
+    Math.min(REQUEST_PANEL_MAX_BODY, askQuestionLines(qs, questionIdx, inside(width)).length),
+  );
+  return REQUEST_PANEL_CHROME + body;
 };
 
 const describeRequest = (input: unknown, w: number): string[] => {

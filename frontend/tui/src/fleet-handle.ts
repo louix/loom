@@ -31,7 +31,7 @@ import {
   modeChipHit,
   promptPaneRows,
   promptRows,
-  REQUEST_PANEL_ROWS,
+  requestPanelRows,
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
@@ -92,6 +92,23 @@ const questionPromptLabel = (all: AskUserQuestionItem[], idx: number): string =>
   const tag = all[idx]?.header || "answer";
   return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
 };
+
+/** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
+ *  editor view — each question numbered when there's more than one, its options
+ *  lettered `a) … b) …` with descriptions, mirroring the request panel. Beats
+ *  dumping the raw tool JSON. */
+const formatQuestionsForEditor = (qs: AskUserQuestionItem[]): string =>
+  qs
+    .map((q, qi) => {
+      const head = qs.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
+      const opts = q.options.map((o, oi) => {
+        const letter = String.fromCharCode(97 + oi);
+        return `   ${letter}) ${o.label}${o.description ? ` — ${o.description}` : ""}`;
+      });
+      return [head, ...opts].join("\n");
+    })
+    .join("\n\n")
+    .concat("\n");
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -292,7 +309,14 @@ const deriveView = (
   const cols = Math.max(1, dims.cols);
   const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state, cols);
-  const requestH = showRequest ? REQUEST_PANEL_ROWS : 0;
+  // Which question the request panel previews: the one the answer prompt is
+  // collecting, else the first. The panel sizes itself to fit it (see
+  // `requestPanelRows`), so this has to be settled before the row budget.
+  const questionIdx =
+    state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
+      ? (state.prompt.qaIdx ?? 0)
+      : 0;
+  const requestH = showRequest ? requestPanelRows(pend, cols, questionIdx) : 0;
 
   // Below this width the three-column split starves every column (~20 cols each
   // on a phone-sized SSH window), so `overview` is the fleet list alone — the
@@ -334,11 +358,6 @@ const deriveView = (
   const paneH = promptOnPane(state.prompt) ? promptPaneRows(state, eventsW) : 0;
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
   const logPage = Math.max(1, splitLogH - 3);
-
-  const questionIdx =
-    state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
-      ? (state.prompt.qaIdx ?? 0)
-      : 0;
 
   // Clickable regions — screen coordinates the keymap's mouse branch hit-tests
   // against. The body starts at screen row 2 (Header is one row); Ink clips the
@@ -771,9 +790,12 @@ export const mkFleetHandle = ({
     if (pend.plan !== undefined) {
       await openEditor(pend.planText ?? "", { ext: "md" });
     } else if (fp) {
-      await openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), {
-        ext: "json",
-      });
+      const qs = fp.tool === "AskUserQuestion" ? parseAskUserQuestions(fp.input) : [];
+      await (qs.length > 0
+        ? openEditor(formatQuestionsForEditor(qs), { ext: "md" })
+        : openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), {
+            ext: "json",
+          }));
     } else if (pend.question !== undefined) {
       await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), {
         ext: "md",
@@ -1621,20 +1643,30 @@ export const mkFleetHandle = ({
           if (!p.sessionId || !p.requestId || !p.qaAll || p.qaAll.length === 0) return "";
           const idx = Math.min(p.qaIdx ?? 0, p.qaAll.length - 1);
           const answers = { ...p.qaAnswers, [p.qaAll[idx]!.question]: text };
-          if (idx + 1 < p.qaAll.length) {
-            const next = p.qaAll[idx + 1]!;
+          // Every question needs a non-blank answer before the permission
+          // resolves. Jump to the next one still missing (wrapping past the
+          // end); if the only gap is the current question, say so and wait.
+          let missing = -1;
+          for (let k = 1; k <= p.qaAll.length; k++) {
+            const j = (idx + k) % p.qaAll.length;
+            if ((answers[p.qaAll[j]!.question] ?? "").trim() === "") {
+              missing = j;
+              break;
+            }
+          }
+          if (missing === idx) return "answer this question before submitting";
+          if (missing !== -1) {
+            const next = p.qaAll[missing]!;
             dispatch({
               t: "openPrompt",
               prompt: makePrompt({
                 kind: "answerQuestion",
                 sessionId: p.sessionId,
                 requestId: p.requestId,
-                label: questionPromptLabel(p.qaAll, idx + 1),
-                // pre-fill any answer already given for the next question, so
-                // walking forward after a step-back doesn't lose it
+                label: questionPromptLabel(p.qaAll, missing),
                 text: answers[next.question] ?? "",
                 qaAll: p.qaAll,
-                qaIdx: idx + 1,
+                qaIdx: missing,
                 qaAnswers: answers,
               }),
             });
@@ -2117,6 +2149,37 @@ export const mkFleetHandle = ({
             })
           : viewInEditor());
       }
+      // A multi-question AskUserQuestion: ⇥ / ⇧⇥ (also ⌥→ / ⌥←) walk between its
+      // questions in any order, keeping whatever is typed for the one you leave.
+      // Nothing is sent until every question has an answer — see the
+      // `answerQuestion` submit branch — so out-of-order navigation is safe.
+      if (
+        p.kind === "answerQuestion" &&
+        p.qaAll &&
+        p.qaAll.length > 1 &&
+        p.requestId &&
+        p.sessionId &&
+        (key.tab || (key.meta && (key.leftArrow || key.rightArrow)))
+      ) {
+        const n = p.qaAll.length;
+        const cur = Math.min(p.qaIdx ?? 0, n - 1);
+        const back = key.shift || (key.meta && key.leftArrow);
+        const next = (cur + (back ? n - 1 : 1)) % n;
+        const answers = { ...p.qaAnswers, [p.qaAll[cur]!.question]: p.buffer.text };
+        return void dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "answerQuestion",
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+            label: questionPromptLabel(p.qaAll, next),
+            text: answers[p.qaAll[next]!.question] ?? "",
+            qaAll: p.qaAll,
+            qaIdx: next,
+            qaAnswers: answers,
+          }),
+        });
+      }
       // ⇧⇥ cycles the permission mode without leaving the prompt.
       if (key.tab && key.shift) {
         if (p.kind === "new") return void dispatch({ t: "promptCycleMode" });
@@ -2187,30 +2250,9 @@ export const mkFleetHandle = ({
               text: state.plan.text,
             });
           }
-          // Esc within a multi-question AskUserQuestion steps back to the
-          // previous question (its answer still filled in) rather than
-          // abandoning the whole prompt; Esc on the first question cancels.
-          if (p.kind === "answerQuestion" && p.qaAll && p.requestId && (p.qaIdx ?? 0) > 0) {
-            const idx = p.qaIdx ?? 0;
-            const prev = idx - 1;
-            // Keep whatever is typed for the current question — the doc promises
-            // "nothing typed is lost" across stepping back and forth, but only
-            // submitted answers were being saved (U15).
-            const answers = { ...p.qaAnswers, [p.qaAll[idx]!.question]: p.buffer.text };
-            return void dispatch({
-              t: "openPrompt",
-              prompt: makePrompt({
-                kind: "answerQuestion",
-                sessionId: p.sessionId,
-                requestId: p.requestId,
-                label: questionPromptLabel(p.qaAll, prev),
-                text: answers[p.qaAll[prev]!.question] ?? "",
-                qaAll: p.qaAll,
-                qaIdx: prev,
-                qaAnswers: answers,
-              }),
-            });
-          }
+          // A multi-question AskUserQuestion walks its questions with ⇥ / ⇧⇥
+          // now, so Esc abandons the whole prompt like every other one (any
+          // answers typed so far are dropped, the daemon stays blocked).
           return void dispatch({ t: "closePrompt", saveDraft: true });
         case "submit":
           promptSubmittedAt = Date.now();

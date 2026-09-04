@@ -12,11 +12,14 @@ import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
 import {
+  askQuestionLines,
   FooterArea,
   logRowCount,
   PromptPane,
   promptPaneRows,
   promptRows,
+  RequestPanel,
+  requestPanelRows,
 } from "@loom/tui/components";
 import { mkFleetHandle } from "@loom/tui/fleet-handle";
 import { initialState, makePrompt, reduce } from "@loom/tui/model";
@@ -1916,6 +1919,175 @@ model    = "gpt-5"
     assert.equal(editorLines.length, promptPaneRows(state, 40) - 1 /* label row */);
     for (const line of editorLines) {
       assert.match(line, /^ *▍ /, `the gutter keeps its cell: ${JSON.stringify(line)}`);
+    }
+  });
+
+  const QUESTIONS = [
+    {
+      question: "Which auth method should we use for the API?",
+      header: "Auth",
+      options: [
+        { label: "OAuth 2.0", description: "delegated, needs an IdP" },
+        { label: "API keys", description: "simplest, rotate manually" },
+        { label: "mTLS", description: "certs on both ends" },
+        { label: "JWT bearer", description: "stateless, short-lived" },
+      ],
+    },
+    {
+      question: "Where should sessions live?",
+      header: "Sessions",
+      options: [{ label: "Redis" }, { label: "Postgres" }],
+    },
+  ];
+
+  const askPending = (input: unknown = { questions: QUESTIONS }) => ({
+    permissions: [{ id: "p1", tool: "AskUserQuestion", input }],
+  });
+
+  test("the request panel expands to show every option of the active question", () => {
+    const pend = askPending();
+    // every option letter is present — not clipped at a) b) like the old fixed
+    // 5-row body did
+    const out = stripAnsi(
+      renderToString(createElement(RequestPanel, { pending: pend, width: 80 })),
+    );
+    for (const letter of ["a)", "b)", "c)", "d)"]) {
+      assert.ok(out.includes(letter), `option ${letter} is rendered: ${JSON.stringify(out)}`);
+    }
+    assert.match(out, /OAuth 2\.0/);
+    assert.match(out, /JWT bearer/);
+    // the reserved height matches what actually renders, so the frame can't
+    // overflow or leave a gap
+    assert.equal(
+      out.split("\n").length,
+      requestPanelRows(pend, 80, 0),
+      "panel height equals its reservation",
+    );
+  });
+
+  test("requestPanelRows tracks the previewed question and caps its growth", () => {
+    const pend = askPending();
+    const q0 = requestPanelRows(pend, 80, 0);
+    const q1 = requestPanelRows(pend, 80, 1);
+    assert.ok(q0 > q1, "the 4-option question reserves more rows than the 2-option one");
+    // a pathological question can't grow the panel without bound
+    const huge = {
+      questions: [
+        {
+          question: "pick one",
+          header: "x",
+          options: Array.from({ length: 40 }, (_, i) => ({ label: `option ${i}` })),
+        },
+      ],
+    };
+    assert.ok(requestPanelRows({ ...askPending(huge) }, 80, 0) <= 18, "body is capped");
+  });
+
+  test("a non-question permission keeps the fixed panel height", () => {
+    const pend = { permissions: [{ id: "p1", tool: "Bash", input: { command: "npm publish" } }] };
+    assert.equal(requestPanelRows(pend, 80, 0), 8);
+  });
+
+  test("askQuestionLines letters every option and returns them all", () => {
+    const lines = askQuestionLines(QUESTIONS, 0, 76);
+    assert.ok(lines.some((l) => /a\) OAuth 2\.0 — delegated/.test(l)));
+    assert.ok(lines.some((l) => /d\) JWT bearer/.test(l)));
+    // clamps out-of-range indices rather than throwing
+    assert.deepEqual(askQuestionLines(QUESTIONS, 99, 76), askQuestionLines(QUESTIONS, 1, 76));
+  });
+
+  test("the answer footer advertises question cycling only when there's more than one", () => {
+    const multi = reduce(initialState(), {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "answerQuestion",
+        sessionId: "a",
+        requestId: "p1",
+        label: "answer 1/2: Auth",
+        qaAll: QUESTIONS,
+        qaIdx: 0,
+        qaAnswers: {},
+      }),
+    });
+    const multiOut = stripAnsi(
+      renderToString(createElement(FooterArea, { state: multi, width: 120 })),
+    );
+    assert.match(multiOut, /⇥ \/ ⇧⇥ question/);
+    assert.match(multiOut, /esc cancel/);
+    assert.doesNotMatch(multiOut, /esc back/);
+
+    const single = reduce(initialState(), {
+      t: "openPrompt",
+      prompt: makePrompt({
+        kind: "answerQuestion",
+        sessionId: "a",
+        requestId: "p1",
+        label: "answer: Auth",
+        qaAll: [QUESTIONS[0]!],
+        qaIdx: 0,
+        qaAnswers: {},
+      }),
+    });
+    const singleOut = stripAnsi(
+      renderToString(createElement(FooterArea, { state: single, width: 120 })),
+    );
+    assert.doesNotMatch(singleOut, /⇥ \/ ⇧⇥ question/);
+    assert.match(singleOut, /⌥o view/);
+  });
+
+  test("AskUserQuestion · ⇥ cycles the questions; answers land in any order", async () => {
+    const { h, connect, cleanup } = await harness();
+    const client = await connect();
+    const snap = await client.request<SessionSnapshot>("session.create", {
+      prompt: "ask me things",
+      provider: "fake",
+    });
+    const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    const { stdout, stdin, app } = mount(client);
+    try {
+      await delay(150);
+      fs?.emit({
+        type: "permission_request",
+        id: "q1",
+        tool: "AskUserQuestion",
+        input: { questions: QUESTIONS },
+      });
+      // the panel spells out every option of question 1, not just a) b)
+      await waitFor(stdout, /QUESTION \(1\/2\)/);
+      assert.match(stdout.last, /a\) OAuth 2\.0/);
+      assert.match(stdout.last, /d\) JWT bearer/);
+
+      stdin.feed("a"); // open the answer prompt
+      await waitFor(stdout, /answer 1\/2/);
+
+      stdin.feed("\t"); // ⇥ → jump to question 2 without answering question 1
+      await waitFor(stdout, (t) => /answer 2\/2/.test(t) && /QUESTION \(2\/2\)/.test(t));
+
+      stdin.feed("Postgres");
+      stdin.feed("\r"); // question 1 is still blank → Enter walks back to it
+      await waitFor(stdout, /answer 1\/2/);
+
+      stdin.feed("API keys");
+      stdin.feed("\r"); // every question answered now → the permission resolves
+      await waitFor(stdout, () => (fs?.permissionResponses.length ?? 0) > 0);
+      assert.equal(fs?.permissionResponses.length, 1, "resolved exactly once");
+      const resolved = fs!.permissionResponses[0]!;
+      assert.equal(resolved.id, "q1");
+      // the daemon carries the collected answers through to the provider, keyed
+      // by question text, regardless of the order they were typed in
+      const decision = resolved.decision as {
+        behavior: string;
+        updatedInput: { answers: Record<string, string> };
+      };
+      assert.equal(decision.behavior, "allow");
+      assert.deepEqual(decision.updatedInput.answers, {
+        "Which auth method should we use for the API?": "API keys",
+        "Where should sessions live?": "Postgres",
+      });
+    } finally {
+      app.unmount();
+      await client.close();
+      await cleanup();
     }
   });
 

@@ -163,14 +163,15 @@ export interface PromptState {
   /** Live buffer text, stashed while browsing history. */
   draft: string;
   /** `answerQuestion` only: every question from this `AskUserQuestion` call, in
-   *  order — the prompt walks them one at a time rather than all at once. */
+   *  order — the prompt shows them one at a time rather than all at once. */
   qaAll?: AskUserQuestionItem[];
   /** `answerQuestion` only: index into {@link qaAll} of the question this prompt
-   *  is currently collecting. `Enter` advances to the next; `Esc` on anything
-   *  past the first steps back to the previous one (its answer still filled in). */
+   *  is currently collecting. `⇥` / `⇧⇥` (also `⌥→` / `⌥←`) move between them in
+   *  any order; `Enter` jumps to the next one still unanswered and resolves the
+   *  permission once none are left. */
   qaIdx?: number;
   /** `answerQuestion` only: answers collected so far, keyed by question text —
-   *  kept across stepping back and forth so nothing typed is lost. */
+   *  carried as you move between questions so nothing typed is lost. */
   qaAnswers?: Record<string, string>;
 }
 
