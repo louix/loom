@@ -104,6 +104,20 @@ const GIT_FACTS_SWEEP_MS = 15_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 /** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
 const KEEP_WARM_RED_FRACTION = 0.08;
+/**
+ * Floor on the width of that band, so the sweep cannot step over it. 8% of the
+ * 1h TTL Loom used to pin is ~5 minutes — many sweeps wide. 8% of a measured 5m
+ * TTL is 24s, narrower than {@link KEEP_WARM_SWEEP_MS}, and the sweep then
+ * misses the band outright in about a quarter of its possible phases: it sees
+ * "still warm", then "already cold", and never pings. Two sweeps' width
+ * guarantees at least one lands inside.
+ *
+ * Capped at half the TTL by the caller, so below ~4 sweeps of TTL (2 minutes)
+ * the two constraints collide and the sampling rate wins. No provider offers a
+ * TTL that short — Anthropic has 5m and 1h — so that is a documented limit,
+ * not a case to engineer around.
+ */
+const KEEP_WARM_MIN_BAND_MS = KEEP_WARM_SWEEP_MS * 2;
 /** Give up keeping a session warm after this many pings with no reply from the user. */
 const KEEP_WARM_MAX_PINGS = 6;
 /** The turn a keep-warm ping sends: trivial by design — it exists only to re-read
@@ -137,8 +151,14 @@ export const keepWarmMove = (
   if (ttlMinutes <= 0 || lastTurnAt <= 0) return "skip";
   const ttlMs = ttlMinutes * 60_000;
   const remainingMs = lastTurnAt + ttlMs - now;
+  // Never wider than half the TTL — on a pathologically short one the floor
+  // would otherwise cover the whole window and ping straight after every turn.
+  const bandMs = Math.min(
+    Math.max(ttlMs * KEEP_WARM_RED_FRACTION, KEEP_WARM_MIN_BAND_MS),
+    ttlMs / 2,
+  );
   // Already cold (a full re-prime isn't what was asked for), or still comfortably warm.
-  if (remainingMs <= 0 || remainingMs / ttlMs >= KEEP_WARM_RED_FRACTION) return "skip";
+  if (remainingMs <= 0 || remainingMs >= bandMs) return "skip";
   return pings >= KEEP_WARM_MAX_PINGS ? "giveup" : "ping";
 };
 

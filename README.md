@@ -379,11 +379,12 @@ knob (5m unless `ENABLE_PROMPT_CACHING_1H=1`); Loom does not set it, and the
 countdown does not model it.
 
 **Keep-warm.** For any session with a known TTL — Claude, or `[anthropic]` once
-it has written cache once — the `Space` palette's
-_keep cache warm_ toggle has the daemon babysit the cache: while the session
-sits idle and its `⟢` dot goes red (<8% of the TTL left), the daemon sends a
-one-line "no-op" turn to re-read the cached prefix and restart the clock, so the
-next real message still hits cache. Each ping is a real (cheap) turn and lands
+it has written cache once — the `Space` palette's _keep cache warm_ toggle has
+the daemon babysit the cache: while the session sits idle and its cache is about
+to lapse (the `⟢` dot's red band, <8% of the TTL left, widened to a minute on a
+short TTL so the 30s sweep cannot step over it), the daemon sends a one-line
+"no-op" turn to re-read the cached prefix and restart the clock, so the next real
+message still hits cache. Each ping is a real (cheap) turn and lands
 in the transcript; it gives up after six pings with no reply from you, and any
 message you send resets that count. The Detail pane's cache line shows
 `· keep-warm` while it's on.
