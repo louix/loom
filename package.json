@@ -12,6 +12,7 @@
     "watch": "tsc --noEmit --watch",
     "test": "node --import @oxc-node/core/register --test \"test/*.test.ts\"",
     "test:silent": "node --import @oxc-node/core/register --test --test-reporter ./scripts/fail-only-reporter.mjs \"test/*.test.ts\"",
+    "test:timing": "node --import @oxc-node/core/register --test --test-reporter ./scripts/timing-reporter.mjs \"test/*.test.ts\"",
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."

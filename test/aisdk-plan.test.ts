@@ -96,6 +96,16 @@ const pump = async (
   return out;
 };
 
+/** Poll `cond` every 5ms until true; throws after `timeoutMs`. Replaces fixed
+ *  sleeps: the wait ends the instant the condition holds, not N ms later. */
+const waitFor = async (cond: () => boolean, timeoutMs = 5_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
+
 // --- plan mode -------------------------------------------------------------
 
 test("plan mode: an MCP tool the server declares read-only stays mounted and runs unprompted", async () => {
@@ -463,7 +473,8 @@ test("interrupt() during a compaction abandons it and leaves the transcript inta
     })();
 
     const compacting = s.compact();
-    await new Promise((r) => setTimeout(r, 60)); // let the summariser start streaming
+    // #doCompact beats a `compact_progress` the moment the summariser starts.
+    await waitFor(() => seen.some((e) => e.type === "compact_progress"));
     await s.interrupt();
     await compacting;
 
@@ -501,7 +512,7 @@ test("close() during a compaction returns promptly and commits nothing (A2)", as
     })();
 
     const compacting = s.compact();
-    await new Promise((r) => setTimeout(r, 60));
+    await waitFor(() => seen.some((e) => e.type === "compact_progress"));
     const t0 = Date.now();
     await s.close();
     assert.ok(Date.now() - t0 < 2000, "close() did not wait out the summariser");

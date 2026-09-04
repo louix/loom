@@ -472,8 +472,9 @@ loomd --repo . --log-level debug
 ## Development
 
 ```sh
-pnpm run typecheck   # tsc --noEmit across the workspace
-pnpm test            # node:test — 305 cases
+pnpm run typecheck    # tsc --noEmit across the workspace
+pnpm test             # node:test — 562 cases; test:silent prints only failures
+pnpm run test:timing  # per-file duration table + wall vs Σ(files) overlap ratio
 ```
 
 ### Layout — a pnpm workspace

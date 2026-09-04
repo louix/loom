@@ -140,6 +140,16 @@ const drain = async (
   return out;
 };
 
+/** Poll `cond` every 5ms until true; throws after `timeoutMs`. Replaces fixed
+ *  sleeps: the wait ends the instant the condition holds, not N ms later. */
+const waitFor = async (cond: () => boolean, timeoutMs = 5_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
+
 // --- tokens --------------------------------------------------------------
 
 test("contextLimitFor matches on model-id prefix, falls back to 128k", () => {
@@ -731,14 +741,18 @@ test("a chosen reasoning effort rides into providerOptions on every model call",
     const reader = (async () => {
       for await (const e of s.events()) if (e.type === "result") results.push(e);
     })();
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for turn 1 to *complete* (its result), so the live effort switch
+    // and the follow-up send below land between turns, not mid-turn.
+    await waitFor(() => results.length >= 1);
     assert.deepEqual(seen[0], { mygw: { reasoningEffort: "high" } });
 
     // a live switch takes effect from the next turn on
     await s.setEffort("low");
     assert.equal(s.snapshot().effort, "low");
     await s.send("again");
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait out the whole second turn (its result), not just its first model
+    // call — close() below must not race a still-streaming turn.
+    await waitFor(() => results.length >= 2);
     assert.equal(roundTrips, 2);
     assert.deepEqual(seen.at(-1), { mygw: { reasoningEffort: "low" } });
     await s.close();
@@ -779,7 +793,7 @@ test("interrupt aborts the running turn — no result, status not idle", async (
     const reader = (async () => {
       for await (const ev of s.events()) seen.push(ev);
     })();
-    await new Promise((r) => setTimeout(r, 15));
+    await waitFor(() => s.snapshot().status.kind === "running");
     await s.interrupt();
     await s.close();
     await reader;
@@ -843,7 +857,7 @@ test("a message sent mid-turn with no step to catch it folds into the same turn"
       for await (const e of s.events()) if (e.type === "result") results.push(e);
     })();
     await s.send("second");
-    await new Promise((r) => setTimeout(r, 400));
+    await waitFor(() => results.length >= 1);
     await s.close();
     await reader;
 
@@ -952,7 +966,7 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
       mcpServers: [],
     });
     await drain(s.events(), (e) => e.type === "error");
-    await new Promise((r) => setTimeout(r, 20)); // let #runTurn reach its terminal branch
+    await waitFor(() => s.snapshot().status.kind !== "running");
     assert.notEqual(s.snapshot().status.kind, "running");
 
     // The session is not wedged — a fresh send starts a new turn. If the busy
@@ -1175,7 +1189,9 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
     .flatMap((m) =>
       Array.isArray(m.content) ? (m.content as Array<{ type: string; input?: unknown }>) : [],
     )
-    .find((p) => p.type === "tool-call") as { input: { malformed_tool_input?: string } } | undefined;
+    .find((p) => p.type === "tool-call") as
+    | { input: { malformed_tool_input?: string } }
+    | undefined;
   assert.equal(typeof persistedCall?.input.malformed_tool_input, "string");
 });
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {

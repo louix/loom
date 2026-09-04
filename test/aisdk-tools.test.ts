@@ -103,6 +103,16 @@ const collect = async (
   return out;
 };
 
+/** Poll `cond` every 5ms until true; throws after `timeoutMs`. Replaces fixed
+ *  sleeps: the wait ends the instant the condition holds, not N ms later. */
+const waitFor = async (cond: () => boolean, timeoutMs = 5_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
+
 // --- MCP hub -----------------------------------------------------------------
 
 test("McpHub connects to a stdio server, discovers + calls tools, and tears down", async () => {
@@ -480,7 +490,9 @@ test("interrupting a turn parked in the gate stops it and heals the transcript f
       }
     })();
 
-    await new Promise((r) => setTimeout(r, 200));
+    // The reader interrupts the moment the gate raises, so "interrupted" is
+    // the deterministic signal that the request arrived and was aborted.
+    await waitFor(() => s.snapshot().status.kind === "interrupted");
     assert.equal(
       seen.some((e) => e.type === "permission_request"),
       true,
@@ -501,7 +513,9 @@ test("interrupting a turn parked in the gate stops it and heals the transcript f
 
     // A plain `send` now resumes from valid history and runs to completion.
     await s.send("continue");
-    await new Promise((r) => setTimeout(r, 200));
+    await waitFor(
+      () => seen.some((e) => e.type === "result") && s.snapshot().status.kind === "idle",
+    );
     assert.equal(
       seen.some((e) => e.type === "result"),
       true,
