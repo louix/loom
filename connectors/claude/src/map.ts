@@ -11,6 +11,7 @@
  * can drive many internal model calls, and `result.usage` sums all of them,
  * so it isn't the current window fill.
  */
+import { ephemeralTtlMinutes } from "@loom/core/cache";
 import type {
   BackgroundTaskInfo,
   BackgroundTaskKind,
@@ -215,22 +216,9 @@ const sumModelUsage = (
   return acc;
 };
 
-/**
- * Which prompt-cache TTL this request wrote at, in minutes — 60, 5, or 0 when
- * it wrote no cache (or the CLI is old enough not to report the split).
- *
- * A request may write both buckets at once (Claude Code can hold a long-lived
- * breakpoint on the stable prefix and a short one on the tail). The countdown
- * wants the TTL that governs most of what is cached, so the larger bucket
- * wins; a tie goes to the longer TTL, which is the half that outlives it.
- */
+/** Which prompt-cache TTL this request wrote at, in minutes; 0 if it wrote none. */
 export const writtenTtlMinutes = (u: RawUsage | undefined): number => {
-  const cc = u?.cache_creation;
-  if (!cc) return 0;
-  const short = cc.ephemeral_5m_input_tokens ?? 0;
-  const long = cc.ephemeral_1h_input_tokens ?? 0;
-  if (long <= 0 && short <= 0) return 0;
-  return long >= short ? 60 : 5;
+  return ephemeralTtlMinutes(u?.cache_creation);
 };
 
 // --- the mapper ----------------------------------------------------------

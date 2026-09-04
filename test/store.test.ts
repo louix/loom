@@ -17,7 +17,7 @@ import {
   SessionStore,
 } from "@loom/daemon/store/sessions";
 import { SessionEventStore } from "@loom/daemon/store/session-events";
-import { cacheHitRate } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/cache";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");

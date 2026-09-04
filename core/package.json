@@ -8,6 +8,7 @@
     "./events": "./src/events.ts",
     "./session-state": "./src/session-state.ts",
     "./wire": "./src/wire.ts",
+    "./cache": "./src/cache.ts",
     "./types": "./src/types.ts",
     "./channel": "./src/channel.ts",
     "./logger": "./src/logger.ts",

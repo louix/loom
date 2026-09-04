@@ -315,6 +315,81 @@ test("mapper splits cached tokens out of input on finish-step", () => {
   assert.equal((ev as { contextLimit: number }).contextLimit, 400_000);
 });
 
+test("mapper reads Anthropic's convention: input is already the uncached remainder", () => {
+  // `@ai-sdk/anthropic` passes `input_tokens` through untouched, and that field
+  // excludes both cache reads and cache writes — the opposite of OpenAI's
+  // `prompt_tokens`. Subtracting the reads again would clamp input to 0 and
+  // report a near-empty context window on a well-cached conversation.
+  const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50, cachedInputTokens: 9000 },
+    response: {},
+    providerMetadata: {
+      anthropic: {
+        cacheCreationInputTokens: 1200,
+        usage: {
+          input_tokens: 30,
+          cache_read_input_tokens: 9000,
+          cache_creation_input_tokens: 1200,
+          cache_creation: { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 },
+        },
+      },
+    },
+  } as never)[0];
+  assert.equal(ev?.type, "usage");
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 30,
+    output: 20,
+    cacheRead: 9000,
+    cacheWrite: 1200,
+  });
+  // The whole prompt, not just the part that was billed at full rate.
+  assert.equal((ev as { contextUsed: number }).contextUsed, 10_230);
+  assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, 5);
+});
+
+test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
+  const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
+  const at = (cc: Record<string, number>) =>
+    (
+      m.map({
+        type: "finish-step",
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+        response: {},
+        providerMetadata: {
+          anthropic: { cacheCreationInputTokens: 900, usage: { cache_creation: cc } },
+        },
+      } as never)[0] as { cacheTtlMinutes?: number }
+    ).cacheTtlMinutes;
+  assert.equal(at({ ephemeral_1h_input_tokens: 900 }), 60);
+  assert.equal(at({ ephemeral_5m_input_tokens: 900 }), 5);
+  // No split reported ⇒ no claim about the TTL.
+  assert.equal(at({}), undefined);
+});
+
+test("a non-Anthropic provider keeps the OpenAI convention untouched", () => {
+  // Provider metadata from someone else must not be read as an Anthropic
+  // usage block — the subtraction and the zero cache write both still apply.
+  const m = new AisdkEventMapper("s1", "gpt-5");
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40 },
+    response: {},
+    providerMetadata: { openai: { someField: 1 } },
+  } as never)[0];
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 60,
+    output: 20,
+    cacheRead: 40,
+    cacheWrite: 0,
+  });
+  assert.equal((ev as { contextUsed: number }).contextUsed, 100);
+  assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, undefined);
+});
 test("mapper takes a context-limit resolver (endpoint-reported sizes)", () => {
   const m = new AisdkEventMapper("s1", "zai-org/GLM-5.3-Flash", () => 1_048_576);
   const ev = m.map({

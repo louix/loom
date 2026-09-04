@@ -4,9 +4,10 @@
  * flushed as one event when the block ends, matching the block granularity the
  * Claude adapter emits (rather than one event per token).
  */
-import type { LanguageModelUsage, TextStreamPart, ToolSet } from "ai";
+import type { LanguageModelUsage, ProviderMetadata, TextStreamPart, ToolSet } from "ai";
 import type { HarnessEvent } from "@loom/core/events";
 import { contextLimitFor } from "@loom/core/tokens";
+import { ephemeralTtlMinutes } from "@loom/core/cache";
 
 type Part = TextStreamPart<ToolSet>;
 
@@ -98,7 +99,7 @@ export class AisdkEventMapper {
         ];
       case "finish-step":
         // A step boundary closes any block the provider left open.
-        return [...this.#flushOpenBlocks(ts), this.#usage(part.usage)];
+        return [...this.#flushOpenBlocks(ts), this.#usage(part.usage, part.providerMetadata)];
       case "abort":
       case "finish":
         // Flush any block still open (an abort / a stream that ended without a
@@ -123,8 +124,8 @@ export class AisdkEventMapper {
 
   /** Public shim so callers outside the main turn (e.g. the summariser) can
    *  meter a step's usage the same way. */
-  mapUsage(u: LanguageModelUsage): HarnessEvent[] {
-    return [this.#usage(u)];
+  mapUsage(u: LanguageModelUsage, meta?: ProviderMetadata): HarnessEvent[] {
+    return [this.#usage(u, meta)];
   }
 
   #flushOpenBlocks(ts: number): HarnessEvent[] {
@@ -145,32 +146,69 @@ export class AisdkEventMapper {
     return out;
   }
 
-  #usage(u: LanguageModelUsage): HarnessEvent {
-    const promptTokens = u.inputTokens ?? 0;
-    const cached = u.cachedInputTokens ?? 0;
+  #usage(u: LanguageModelUsage, meta?: ProviderMetadata): HarnessEvent {
+    const reported = u.inputTokens ?? 0;
+    const cacheRead = u.cachedInputTokens ?? 0;
     const output = u.outputTokens ?? 0;
+    const anth = anthropicCache(meta);
+    // Two conventions, and mixing them up is silent. OpenAI's `prompt_tokens`
+    // is the whole prompt with cached reads counted inside it; Anthropic's
+    // `input_tokens` is the *uncached remainder*, with reads and writes
+    // reported alongside it. `@ai-sdk/anthropic` passes its own convention
+    // straight through, so the presence of anthropic provider metadata is what
+    // says which number we're holding.
+    const input = anth ? reported : Math.max(0, reported - cacheRead);
+    const cacheWrite = anth?.writeTokens ?? 0;
+    const prompt = input + cacheRead + cacheWrite;
     // Several OpenAI-compatible endpoints omit usage on streamed responses.
     // Report the last real prompt-token count for `contextUsed` rather than 0,
     // so the meter holds steady instead of flapping after each such step.
-    const hasData = promptTokens > 0 || cached > 0 || output > 0;
-    if (hasData) this.#lastContextUsed = promptTokens;
+    const hasData = prompt > 0 || output > 0;
+    if (hasData) this.#lastContextUsed = prompt;
     return {
       type: "usage",
       sessionId: this.#sessionId,
       ts: Date.now(),
-      tokens: {
-        // Loom keeps cached reads out of `input`, like the Claude adapter.
-        input: Math.max(0, promptTokens - cached),
-        output,
-        cacheRead: cached,
-        cacheWrite: 0,
-      },
-      contextUsed: hasData ? promptTokens : this.#lastContextUsed,
+      // Loom keeps cached reads and writes out of `input`; they are billed at
+      // their own rates and `costOf` prices the three separately.
+      tokens: { input, output, cacheRead, cacheWrite },
+      contextUsed: hasData ? prompt : this.#lastContextUsed,
       contextLimit: this.#limitFor(this.#model),
+      ...(anth && anth.ttlMinutes > 0 ? { cacheTtlMinutes: anth.ttlMinutes } : {}),
     };
   }
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+};
+
+const numOf = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/**
+ * Cache writes and the TTL they went into, dug out of a step's provider
+ * metadata. `LanguageModelUsage` carries no field for either — `cachedInputTokens`
+ * is reads only — so vendors report writes out of band. Anthropic gives both:
+ * `cacheCreationInputTokens`, and the raw `usage.cache_creation` split that
+ * says which ephemeral bucket the write went into. `null` for every other
+ * vendor, which also marks the usage numbers as OpenAI-convention.
+ */
+const anthropicCache = (
+  meta: ProviderMetadata | undefined,
+): { writeTokens: number; ttlMinutes: number } | null => {
+  const a = meta?.["anthropic"];
+  if (!a) return null;
+  const cc = isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;
+  return {
+    writeTokens: Math.max(0, Math.trunc(numOf(a["cacheCreationInputTokens"]))),
+    ttlMinutes: isObj(cc)
+      ? ephemeralTtlMinutes({
+          ephemeral_5m_input_tokens: numOf(cc["ephemeral_5m_input_tokens"]),
+          ephemeral_1h_input_tokens: numOf(cc["ephemeral_1h_input_tokens"]),
+        })
+      : 0,
+  };
+};
 const errorText = (err: unknown): string => {
   if (err instanceof Error) {
     // An `APICallError`'s message is often just the HTTP status text ("Bad

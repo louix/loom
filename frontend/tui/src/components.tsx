@@ -6,7 +6,7 @@
  */
 import { type ReactNode } from "react";
 import { Box, Text } from "ink";
-import { cacheHitRate } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";

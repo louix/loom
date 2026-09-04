@@ -848,7 +848,7 @@ export class AisdkSession implements AgentSession {
         } else if (part.type === "finish-step") {
           // Meter the summariser call — otherwise a frequently-compacting long
           // session under-reports cost / tokens (and budget enforcement drifts).
-          for (const ev of this.#mapper.mapUsage(part.usage)) this.#emit(ev);
+          for (const ev of this.#mapper.mapUsage(part.usage, part.providerMetadata)) this.#emit(ev);
         } else if (part.type === "error" || part.type === "abort") {
           // A partial summary replaces the *entire* transcript — a mid-stream
           // provider error or an abort must abandon the compaction, not commit

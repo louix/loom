@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
-import { cacheHitRate } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/cache";
 import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";

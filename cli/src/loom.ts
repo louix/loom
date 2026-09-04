@@ -5,7 +5,7 @@ import { writeFileSync } from "node:fs";
 import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
 import { setLogFile, setLogStderr } from "@loom/core/logger";
 import { LoomClient } from "@loom/client";
-import { cacheHitRate } from "@loom/core/wire";
+import { cacheHitRate } from "@loom/core/cache";
 import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
