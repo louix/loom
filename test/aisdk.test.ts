@@ -370,6 +370,49 @@ test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
   assert.equal(at({}), undefined);
 });
 
+test("an OpenAI-compatible provider named 'anthropic' keeps OpenAI token semantics", () => {
+  // `[providers.anthropic] adapter = "aisdk"` with no `sdk` installs an
+  // OpenAI-compatible profile whose id — and so whose providerMetadata key — is
+  // "anthropic". Detecting the vendor by that name would stop subtracting
+  // cached reads from `input` on a provider that counts them inside it,
+  // double-counting them into the context meter and into full-price input.
+  const m = new AisdkEventMapper("s1", "some-model", () => 200_000);
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40 },
+    response: {},
+    // openai-compatible metadata: no `cacheCreationInputTokens` anywhere.
+    providerMetadata: { anthropic: { usage: { prompt_tokens: 100 } } },
+  } as never)[0];
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 60,
+    output: 20,
+    cacheRead: 40,
+    cacheWrite: 0,
+  });
+  assert.equal((ev as { contextUsed: number }).contextUsed, 100);
+});
+
+test("a null cacheCreationInputTokens still identifies the Anthropic provider", () => {
+  // It is always present on `@ai-sdk/anthropic`, and null on a turn that wrote
+  // no cache — which must still select the Anthropic token convention.
+  const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50, cachedInputTokens: 9000 },
+    response: {},
+    providerMetadata: { anthropic: { cacheCreationInputTokens: null, usage: {} } },
+  } as never)[0];
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 30,
+    output: 20,
+    cacheRead: 9000,
+    cacheWrite: 0,
+  });
+  assert.equal((ev as { contextUsed: number }).contextUsed, 9030);
+});
 test("a non-Anthropic provider keeps the OpenAI convention untouched", () => {
   // Provider metadata from someone else must not be read as an Anthropic
   // usage block — the subtraction and the zero cache write both still apply.

@@ -197,7 +197,13 @@ const anthropicCache = (
   meta: ProviderMetadata | undefined,
 ): { writeTokens: number; ttlMinutes: number } | null => {
   const a = meta?.["anthropic"];
-  if (!a) return null;
+  // Structural, not by name: the key is the provider id, and an
+  // OpenAI-compatible profile can legitimately be called "anthropic"
+  // (`[providers.anthropic] adapter = "aisdk"` with no `sdk`). Reading that as
+  // Anthropic would stop subtracting cached reads from `input` on a provider
+  // that counts them inside it. `@ai-sdk/anthropic` always emits
+  // `cacheCreationInputTokens` (null when it wrote nothing); nobody else does.
+  if (!isObj(a) || !("cacheCreationInputTokens" in a)) return null;
   const cc = isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;
   return {
     writeTokens: Math.max(0, Math.trunc(numOf(a["cacheCreationInputTokens"]))),
