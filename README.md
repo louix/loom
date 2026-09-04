@@ -282,8 +282,18 @@ responses (`stream_options.include_usage`) — without it, endpoints like
 sference stream no usage at all and the context meter and cost stay at zero.
 Set `include_usage = false` on a provider whose endpoint rejects the field.
 
-Cache-liveness in the UI stays Claude-only (OpenAI-compatible endpoints cache
-server-side with no TTL to show).
+**Prompt caching on `[anthropic]`.** `@ai-sdk/anthropic` sets no cache
+breakpoint of its own, so Loom asks for one on every request — the API places
+it on the last cacheable block, which caches the conversation so far for the
+next turn to read back. `prompt_cache_ttl` on the profile picks the lifetime
+(`5m` / `1h`; unset = the API's own default of five minutes, `off` = don't ask,
+and pay full input price for the whole history every turn). A 1h write costs 2×
+base input against 1.25× for 5m, so it only pays off across gaps longer than
+five minutes. The cache gauge, hit rate and `loom cache` work here exactly as
+they do for Claude — the TTL comes from the same measured `cache_creation`
+split. Ignored by the other backends: OpenAI-compatible endpoints cache
+implicitly server-side with no request field to set and no TTL to show, and
+Gemini has its own scheme.
 
 Provider SDKs load lazily — `ProviderRegistry` pulls each adapter's vendor
 package (`ai` / `@ai-sdk/*`, or `@anthropic-ai/claude-agent-sdk`) with a dynamic
@@ -359,7 +369,8 @@ background helpers run on the CLI's separate `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_
 knob (5m unless `ENABLE_PROMPT_CACHING_1H=1`); Loom does not set it, and the
 countdown does not model it.
 
-**Keep-warm.** For a Claude session with a known TTL, the `Space` palette's
+**Keep-warm.** For any session with a known TTL — Claude, or `[anthropic]` once
+it has written cache once — the `Space` palette's
 _keep cache warm_ toggle has the daemon babysit the cache: while the session
 sits idle and its `⟢` dot goes red (<8% of the TTL left), the daemon sends a
 one-line "no-op" turn to re-read the cached prefix and restart the clock, so the

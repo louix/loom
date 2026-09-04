@@ -37,11 +37,28 @@ export const resolveModelFactory = async (
   return (id) => p(id);
 };
 
+/**
+ * The `cacheControl` provider option for a native Anthropic session, or
+ * undefined to send none. `@ai-sdk/anthropic` adds no breakpoint of its own, so
+ * without this an Anthropic session re-reads its whole history at full input
+ * price every turn. Sent at the top level, where the API places the breakpoint
+ * on the last cacheable block — exactly the multi-turn pattern: each turn
+ * caches the conversation so far, the next turn reads it back.
+ */
+const anthropicCacheControl = (
+  ttl: string | undefined,
+): { type: "ephemeral"; ttl?: "5m" | "1h" } | undefined => {
+  if (ttl === "off") return undefined;
+  // "" is the API's own default lifetime (5 minutes), sent as a bare breakpoint.
+  return ttl === "5m" || ttl === "1h" ? { type: "ephemeral", ttl } : { type: "ephemeral" };
+};
+
 export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvider> => {
   if (!ctx.transcript)
     throw new Error(`connector "${ctx.id}": an aisdk connector needs a transcript store`);
   const { config } = ctx;
   const sdk = config.sdk === "anthropic" ? "anthropic" : "openai";
+  const cacheControl = anthropicCacheControl(config.promptCacheTtl);
   const makeModel = await resolveModelFactory(sdk, {
     id: ctx.id,
     baseUrl: config.baseUrl ?? "",
@@ -58,6 +75,7 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
       // request as `reasoning_effort`. The native SDKs have their own thinking
       // options and take none today.
       ...(sdk === "openai" ? { providerOptionsName: ctx.id } : {}),
+      ...(sdk === "anthropic" && cacheControl ? { cacheControl } : {}),
       ...(config.modelContext ? { modelContext: config.modelContext } : {}),
       ...(config.maxSteps !== undefined ? { maxSteps: config.maxSteps } : {}),
       makeModel,

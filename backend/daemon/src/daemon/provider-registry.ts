@@ -186,6 +186,7 @@ export class ProviderRegistry {
       sdk: p.sdk,
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       includeUsage: p.includeUsage,
+      promptCacheTtl: p.promptCacheTtl,
       ...(p.maxSteps !== undefined ? { maxSteps: p.maxSteps } : {}),
     };
     return {

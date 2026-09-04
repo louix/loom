@@ -11,6 +11,7 @@
  * re-applied on each later step from `appliedInjections`.
  */
 import { type LanguageModel, type ModelMessage, type ToolSet, stepCountIs, streamText } from "ai";
+import type { JSONValue } from "@ai-sdk/provider";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AisdkEventMapper } from "./map.ts";
 import { repairMalformedToolInputs } from "./transcript.ts";
@@ -19,9 +20,11 @@ import { repairMalformedToolInputs } from "./transcript.ts";
  * Vendor-options bag for a model request — structurally the SDK's
  * `ProviderOptions` (`ai` declares but doesn't re-export it): provider name →
  * options, e.g. `{ [name]: { reasoningEffort } }` on openai-compatible, which
- * becomes the `reasoning_effort` request-body field.
+ * becomes the `reasoning_effort` request-body field, or
+ * `{ anthropic: { cacheControl } }`, which becomes `cache_control`. Values are
+ * JSON, not just strings — `cacheControl` is an object.
  */
-export type VendorOptions = Record<string, Record<string, string>>;
+export type VendorOptions = Record<string, Record<string, JSONValue>>;
 
 export interface TurnHooks {
   emit(ev: HarnessEvent): void;

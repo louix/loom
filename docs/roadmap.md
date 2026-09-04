@@ -470,7 +470,9 @@ read-only turns and rewinds, persisted by migration 17
 `none`. `Daemon.#noteCacheTtlDrift` warns once per change when the two disagree.
 With the countdown no longer depending on the pin, the default became `""`.
 
-Keep-warm (shipped): a `Space`-palette toggle per Claude session with a known TTL.
+Keep-warm (shipped): a `Space`-palette toggle per session with a known TTL
+(Claude, or an aisdk Anthropic session once it has written cache once — the
+gate is `cache.ttlMinutes > 0`, not the provider).
 `session.setKeepWarm` RPC → `SessionManager.#keepWarm`; a 30 s daemon sweep
 (`Daemon.#sweepKeepWarm` / pure `keepWarmMove`) sends a one-line no-op turn
 (`opts.keepWarm`) once an idle session's cache drops below the red fraction

@@ -97,6 +97,20 @@ export interface AisdkProfile {
    * from a palette in config order.
    */
   color: string;
+  /**
+   * Prompt-cache TTL for `sdk = "anthropic"`: "5m", "1h", or "off". Default ""
+   * — cache with the API's own default lifetime (5 minutes).
+   *
+   * Loom asks for one cache breakpoint per turn, so each turn caches the
+   * conversation so far and the next one reads it back; "off" stops asking,
+   * which means paying full input price for the whole history every turn. A 1h
+   * write costs 2x base input against 1.25x for 5m, and only pays for itself
+   * across gaps longer than five minutes.
+   *
+   * Ignored by the other SDKs: OpenAI-compatible endpoints cache implicitly
+   * server-side with no request field to set, and Gemini has its own scheme.
+   */
+  promptCacheTtl: "5m" | "1h" | "off" | "";
   /** Cheap model for one-shot auto-titling; "" → falls back to `titles.model`. */
   titleModel: string;
   /**
@@ -366,6 +380,11 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
  *  `src/provider/aisdk/session.ts`. */
 const DEFAULT_AISDK_MAX_STEPS = 50;
 
+/** `prompt_cache_ttl` on an aisdk profile; anything unrecognised reads as unset. */
+const aisdkCacheTtl = (v: unknown): AisdkProfile["promptCacheTtl"] => {
+  return v === "5m" || v === "1h" || v === "off" ? v : "";
+};
+
 /** `model_context` table → per-model token sizes; junk rows are skipped. */
 const modelContextOf = (v: unknown): Record<string, number> => {
   const out: Record<string, number> = {};
@@ -409,6 +428,7 @@ const buildAisdkProfile = (
     maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),
     color: str(t["color"], ""),
+    promptCacheTtl: aisdkCacheTtl(t["prompt_cache_ttl"]),
     titleModel: str(t["title_model"], ""),
     connector: str(t["connector"], ""),
   };

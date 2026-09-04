@@ -134,6 +134,26 @@ test("include_usage defaults to true and can be turned off per provider", () => 
   assert.equal(cfg(base + `include_usage = "no"\n`).providers.aisdk["p"]?.includeUsage, true);
 });
 
+test("prompt_cache_ttl on an aisdk profile takes 5m / 1h / off, else unset", () => {
+  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\n`;
+  const ttl = (extra = "") => cfg(base + extra).providers.aisdk["p"]?.promptCacheTtl;
+  // unset = cache at the API's own default lifetime, not "no caching"
+  assert.equal(ttl(), "");
+  assert.equal(ttl(`prompt_cache_ttl = "5m"\n`), "5m");
+  assert.equal(ttl(`prompt_cache_ttl = "1h"\n`), "1h");
+  assert.equal(ttl(`prompt_cache_ttl = "off"\n`), "off");
+  // junk reads as unset rather than silently disabling the cache
+  assert.equal(ttl(`prompt_cache_ttl = "60m"\n`), "");
+  assert.equal(ttl(`prompt_cache_ttl = true\n`), "");
+});
+
+test("[providers.claude] prompt_cache_ttl is unset by default — the CLI decides", () => {
+  assert.equal(cfg("").providers.claude.promptCacheTtl, "");
+  assert.equal(
+    cfg(`[providers.claude]\nprompt_cache_ttl = "1h"\n`).providers.claude.promptCacheTtl,
+    "1h",
+  );
+});
 test("max_steps defaults to 50 and is clamped to 1–500", () => {
   const base = `[custom-provider.p]\nbase_url = "http://p/v1"\nmodel = "m"\n`;
   assert.equal(cfg(base).providers.aisdk["p"]?.maxSteps, 50);

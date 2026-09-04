@@ -51,7 +51,11 @@ export interface ConnectorConfig {
   includeUsage?: boolean;
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
   cliPath?: string;
-  /** Claude: prompt-cache TTL — "5m" | "1h" | "". */
+  /**
+   * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
+   * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache
+   * breakpoint at all. Ignored by the other aisdk backends.
+   */
   promptCacheTtl?: string;
   /**
    * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's

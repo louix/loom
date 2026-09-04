@@ -92,6 +92,12 @@ export interface AisdkSessionOptions {
   /** The `providerOptions` key the model's SDK reads under — the connector
    *  sets it for openai-compatible; native SDKs take no effort today. */
   providerOptionsName?: string;
+  /**
+   * Prompt-cache breakpoint to send with every request
+   * (`providerOptions.anthropic.cacheControl`); omitted → none. Set by the
+   * connector for native-Anthropic sessions.
+   */
+  cacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
   system: string | undefined;
   messages: ModelMessage[];
   mode: SessionMode;
@@ -128,6 +134,7 @@ export class AisdkSession implements AgentSession {
   /** Reasoning effort sent with every request, when the connector supports one. */
   #effort: EffortLevel | null = null;
   readonly #providerOptionsName: string | undefined;
+  readonly #cacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } | undefined;
   readonly #system: string | undefined;
   #mode: SessionMode;
   readonly #cwd: string;
@@ -191,6 +198,7 @@ export class AisdkSession implements AgentSession {
     this.#modelId = opts.modelId;
     this.#modelContext = opts.modelContext ?? {};
     this.#providerOptionsName = opts.providerOptionsName;
+    this.#cacheControl = opts.cacheControl;
     this.#effort = opts.effort ?? null;
     this.#makeModel = opts.makeModel;
     this.#model = opts.makeModel(opts.modelId);
@@ -420,11 +428,25 @@ export class AisdkSession implements AgentSession {
 
   // --- internals -----------------------------------------------------------
 
-  /** `streamText` providerOptions carrying the chosen reasoning effort, or
-   *  undefined when no effort is set / the connector gave no options key. */
+  /**
+   * `streamText` providerOptions: the chosen reasoning effort under the
+   * connector's options key, and/or a prompt-cache breakpoint for Anthropic.
+   * Undefined when there is nothing to send.
+   */
   #providerOptions(): VendorOptions | undefined {
-    if (this.#effort == null || !this.#providerOptionsName) return undefined;
-    return { [this.#providerOptionsName]: { reasoningEffort: this.#effort } };
+    const out: VendorOptions = {};
+    // One breakpoint per request, auto-placed by the API on the last cacheable
+    // block: this turn caches the conversation so far, the next turn reads it
+    // back. Sent on every request, not just the first — the prefix grows each
+    // turn, so a single breakpoint written once would go stale immediately.
+    if (this.#cacheControl) out["anthropic"] = { cacheControl: this.#cacheControl };
+    if (this.#effort != null && this.#providerOptionsName) {
+      out[this.#providerOptionsName] = {
+        ...out[this.#providerOptionsName],
+        reasoningEffort: this.#effort,
+      };
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   /** Context limit for a model id: endpoint-reported / pinned sizes first,

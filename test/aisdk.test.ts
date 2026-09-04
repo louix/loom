@@ -849,6 +849,127 @@ test("a chosen reasoning effort rides into providerOptions on every model call",
   }
 });
 
+test("an Anthropic session asks for a cache breakpoint on every request", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    let roundTrips = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async (opts) => {
+        roundTrips += 1;
+        seen.push(opts.providerOptions as Record<string, unknown> | undefined);
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              {
+                type: "response-metadata",
+                id: `r${roundTrips}`,
+                modelId: "mock",
+                timestamp: new Date(0),
+              },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "ok" },
+              { type: "text-end", id: "t" },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+              },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = new AisdkProvider(
+      {
+        id: "anthropic",
+        model: "claude-sonnet-5",
+        models: ["claude-sonnet-5"],
+        makeModel: () => model,
+        cacheControl: { type: "ephemeral", ttl: "1h" },
+      },
+      store,
+    );
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
+    const results: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) if (e.type === "result") results.push(e);
+    })();
+    await waitFor(() => results.length >= 1);
+    assert.deepEqual(seen[0], { anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } } });
+
+    // Every turn, not just the first: the cacheable prefix grows each turn, so
+    // a breakpoint written once would go stale immediately.
+    await s.send("again");
+    await waitFor(() => results.length >= 2);
+    assert.deepEqual(seen.at(-1), {
+      anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
+    });
+    await s.close();
+    await reader;
+  } finally {
+    cleanup();
+  }
+});
+
+test("a provider given no cacheControl sends no providerOptions at all", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const model = new MockLanguageModelV2({
+      doStream: async (opts) => {
+        seen.push(opts.providerOptions as Record<string, unknown> | undefined);
+        return {
+          stream: simulateReadableStream({
+            initialDelayInMs: 0,
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: "ok" },
+              { type: "text-end", id: "t" },
+              {
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+              },
+            ],
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = new AisdkProvider(
+      { id: "anthropic", model: "m", models: ["m"], makeModel: () => model },
+      store,
+    );
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "hi",
+      mode: "default",
+      mcpServers: [],
+    });
+    const results: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) if (e.type === "result") results.push(e);
+    })();
+    await waitFor(() => results.length >= 1);
+    assert.equal(seen[0], undefined);
+    await s.close();
+    await reader;
+  } finally {
+    cleanup();
+  }
+});
 test("interrupt aborts the running turn — no result, status not idle", async () => {
   const { db, cleanup } = tmpDb();
   try {

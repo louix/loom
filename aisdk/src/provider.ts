@@ -42,6 +42,13 @@ export interface AisdkProviderOptions {
    * `reasoning_effort` under it. Omitted → effort is accepted but never sent.
    */
   providerOptionsName?: string;
+  /**
+   * Ask for a prompt-cache breakpoint on every request, as
+   * `providerOptions.anthropic.cacheControl`. Native-Anthropic sessions only:
+   * `@ai-sdk/anthropic` sets none by default, so without it the whole history
+   * is re-read at full input price every turn. Omitted → no breakpoint.
+   */
+  cacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
   makeModel: (id: string) => LanguageModel;
   /** Resolved `web_search` config, when a backend + key are set. */
@@ -62,6 +69,7 @@ export class AisdkProvider implements AgentProvider {
   readonly #maxSteps: number | undefined;
   readonly #modelContext: Record<string, number> | undefined;
   readonly #providerOptionsName: string | undefined;
+  readonly #cacheControl: AisdkProviderOptions["cacheControl"];
 
   constructor(opts: AisdkProviderOptions, store: TranscriptStore) {
     this.id = opts.id;
@@ -73,6 +81,7 @@ export class AisdkProvider implements AgentProvider {
     this.#maxSteps = opts.maxSteps;
     this.#modelContext = opts.modelContext;
     this.#providerOptionsName = opts.providerOptionsName;
+    this.#cacheControl = opts.cacheControl;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
@@ -96,6 +105,7 @@ export class AisdkProvider implements AgentProvider {
         modelId,
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
+        ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
         ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
         makeModel: this.#makeModel,
         system: opts.systemPromptAppend,
@@ -117,6 +127,7 @@ export class AisdkProvider implements AgentProvider {
       modelId,
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
+      ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: opts.systemPromptAppend,
@@ -148,6 +159,7 @@ export class AisdkProvider implements AgentProvider {
       modelId: ref.model || this.#defaultModel,
       ...(ref.effort ? { effort: ref.effort } : {}),
       ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
+      ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
       system: undefined,
