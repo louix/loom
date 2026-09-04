@@ -856,6 +856,37 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("a turn's cache writes are priced at the TTL the turn wrote at", async () => {
+    // The table prices input but no cache write — the normal case, since no
+    // endpoint catalogue advertises one. The turn reports the ephemeral bucket
+    // it wrote into, and that is what sets the multiple.
+    writeFileSync(
+      join(harness().repoRoot, ".loom", "models.toml"),
+      `["fake-1"]\ninput = 3.0\noutput = 15.0\n`,
+    );
+    const c = await client();
+    await c.request("pricing.reload");
+
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "cached work",
+      provider: "fake",
+      model: "fake-1",
+    });
+    await waitFor(() => fake().session(snap.id) !== undefined);
+    const fs = fake().session(snap.id) as FakeSession;
+
+    fs.finishTurn({ usage: { input: 0, output: 0, cacheWrite: 1_000_000 }, cacheTtlMinutes: 60 });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id: snap.id })).turns === 1,
+    );
+
+    const got = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+    // 1M write at a 1h TTL = 2 x the 3.00 input rate. Was 0 before.
+    assert.ok(Math.abs(got.costUsd - 6.0) < 1e-9, `got ${got.costUsd}`);
+    assert.equal(got.costSource, "table");
+    await c.close();
+  });
+
   test("daemon.status reports running session and provider counts", async () => {
     const c = await client();
     await createFake(c);

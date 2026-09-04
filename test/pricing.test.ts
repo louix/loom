@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { costOf, loadPriceTable, parsePriceTable } from "@loom/daemon/config/pricing";
+import {
+  costOf,
+  derivedCacheWrite,
+  loadPriceTable,
+  parsePriceTable,
+} from "@loom/daemon/config/pricing";
 
 const TABLE = `
 ["claude-sonnet-5"]
@@ -72,4 +77,37 @@ test("costOf matches past a vendor prefix and case, so hand-written rows price e
   assert.equal(costOf(t, "zai-org/glm-5.3-flash", delta), costOf(t, "GLM-5.3-Flash", delta));
   // a different family stays unpriced
   assert.equal(costOf(t, "zai-org/GLM-5.2", delta), null);
+});
+
+test("an unpriced cache write is charged at the ephemeral multiple of input", () => {
+  // Anthropic bills a write as 1.25x base input at 5m and 2x at 1h. Endpoint
+  // catalogues advertise no write price at all, so before this a session's
+  // cache writes — the bulk of a caching agent's prompt spend — cost nothing.
+  const t = parsePriceTable({ m: { input: 3, output: 15, cache_read: 0.3 } });
+  const write = (ttl: number) =>
+    costOf(t, "m", { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000 }, ttl);
+
+  assert.ok(Math.abs((write(5) ?? 0) - 3.75) < 1e-9); // 1.25 x 3.00
+  assert.ok(Math.abs((write(60) ?? 0) - 6.0) < 1e-9); // 2.00 x 3.00
+  // No measured TTL ⇒ no ephemeral cache ⇒ no premium. OpenAI-compatible
+  // endpoints report no TTL and genuinely have no write premium, so they stay
+  // priced at zero rather than being charged an Anthropic rate by accident.
+  assert.equal(write(0), 0);
+});
+
+test("an explicit cache_write in the table always wins over the derived rate", () => {
+  const t = parsePriceTable({ m: { input: 3, output: 15, cache_write: 1.0 } });
+  const cost = costOf(t, "m", { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000 }, 60);
+  // 1.00 as configured, not the 6.00 a 1h write would otherwise derive.
+  assert.ok(Math.abs((cost ?? 0) - 1.0) < 1e-9);
+});
+
+test("derivedCacheWrite is inert without both an input price and a TTL", () => {
+  assert.equal(derivedCacheWrite(3, 0), 0);
+  assert.equal(derivedCacheWrite(0, 60), 0);
+  assert.equal(derivedCacheWrite(3, 5), 3.75);
+  assert.equal(derivedCacheWrite(3, 60), 6);
+  // Anything between the two buckets prices as the short one; only the hour
+  // carries the 2x premium.
+  assert.equal(derivedCacheWrite(3, 59), 3.75);
 });

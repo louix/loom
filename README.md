@@ -347,6 +347,13 @@ each usage delta from it instead of trusting the provider's figure; the snapshot
 carries `costSource` (`table` / `provider` / `none`) and the UI shows a `~` in
 front of a table estimate. `pricing.reload` re-reads the file without a restart.
 
+A row that prices no `cache_write` gets one derived from the TTL the turn was
+measured writing at — Anthropic bills an ephemeral write at 1.25x base input for
+5m and 2x for 1h — because no endpoint catalogue advertises a write price, and
+leaving it at zero made the bulk of a caching agent's prompt spend free. An
+explicit `cache_write` always wins, and a provider that reports no TTL (the
+OpenAI-compatible ones, which have no write premium) stays at zero.
+
 **Session titles.** A session's title starts as its first message clipped to 200
 chars; after the first successful turn the daemon replaces it with a 4–6 word
 summary from a cheap one-shot through the same provider (`[titles]` config, off

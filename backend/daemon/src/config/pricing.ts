@@ -75,20 +75,44 @@ const lookupRow = (table: PriceTable, model: string): PriceRow | undefined => {
   return slash >= 0 ? table.get(lower.slice(slash + 1)) : undefined;
 };
 
-/** Dollar cost of a token delta at the given model's prices, or `null` when unpriced. */
+/**
+ * What a cache write costs per million when the price table doesn't say.
+ *
+ * Anthropic bills an ephemeral write as a multiple of base input — 1.25x for
+ * the 5-minute TTL, 2x for the hour. A measured TTL is itself the signal that
+ * this is an Anthropic-style ephemeral cache: nobody else reports one, and
+ * OpenAI-compatible endpoints have no write premium at all, so they keep the
+ * 0 the catalogue gives them and are priced correctly by doing nothing.
+ *
+ * An explicit `cache_write` in the table always wins. A row that sets it to 0
+ * cannot opt out of this — 0 and absent are indistinguishable after parsing,
+ * and a free ephemeral write does not exist.
+ */
+export const derivedCacheWrite = (inputPerMillion: number, ttlMinutes = 0): number => {
+  if (ttlMinutes <= 0 || inputPerMillion <= 0) return 0;
+  return inputPerMillion * (ttlMinutes >= 60 ? 2 : 1.25);
+};
+
+/**
+ * Dollar cost of a token delta at the given model's prices, or `null` when
+ * unpriced. `cacheTtlMinutes` is the TTL the turn's cache writes went into, and
+ * only matters when the table prices no cache write of its own.
+ */
 export const costOf = (
   table: PriceTable,
   model: string | null | undefined,
   delta: TokenUsage,
+  cacheTtlMinutes = 0,
 ): number | null => {
   if (!model) return null;
   const row = lookupRow(table, model);
   if (!row) return null;
+  const cacheWrite = row.cacheWrite || derivedCacheWrite(row.input, cacheTtlMinutes);
   return (
     (delta.input * row.input +
       delta.output * row.output +
       delta.cacheRead * row.cacheRead +
-      delta.cacheWrite * row.cacheWrite) /
+      delta.cacheWrite * cacheWrite) /
     1_000_000
   );
 };

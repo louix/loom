@@ -1382,12 +1382,19 @@ export class Daemon {
       (delta.input ?? 0) + (delta.output ?? 0) + (delta.cacheRead ?? 0) + (delta.cacheWrite ?? 0);
     if (tokens <= 0) return delta; // a bare { turns: 1 } — nothing to price
     const model = this.#registry.get(id)?.model ?? null;
-    const tableCost = costOf(this.#pricing, model, {
-      input: delta.input ?? 0,
-      output: delta.output ?? 0,
-      cacheRead: delta.cacheRead ?? 0,
-      cacheWrite: delta.cacheWrite ?? 0,
-    });
+    // The TTL this turn wrote at, so a table that prices no cache write can
+    // still charge the right ephemeral multiple for it rather than nothing.
+    const tableCost = costOf(
+      this.#pricing,
+      model,
+      {
+        input: delta.input ?? 0,
+        output: delta.output ?? 0,
+        cacheRead: delta.cacheRead ?? 0,
+        cacheWrite: delta.cacheWrite ?? 0,
+      },
+      delta.lastCacheTtlMinutes ?? 0,
+    );
     if (tableCost != null) return { ...delta, costUsd: tableCost, costSource: "table" };
     if ((delta.costUsd ?? 0) > 0) return { ...delta, costSource: "provider" };
     return delta;
@@ -1462,8 +1469,16 @@ export class Daemon {
     const keep = Math.min(Math.max(0, keepMessages), this.#pmsgs.count(id));
     if (keep <= 0) return 0;
     const tokens = estimateTokens(this.#pmsgs.load(id).slice(0, keep));
+    // Priced at the TTL this session was last seen writing at — a re-prime is a
+    // cache write, and quoting it at zero is what made undo look free.
+    const ttl = this.#registry.get(id)?.cache.ttlMinutes ?? 0;
     return (
-      costOf(this.#pricing, model, { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens }) ?? 0
+      costOf(
+        this.#pricing,
+        model,
+        { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens },
+        ttl,
+      ) ?? 0
     );
   }
 
