@@ -172,7 +172,13 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               account={sel ? providerAccountOf(state, sel.provider) : ""}
               compacting={sel ? (state.compacting[sel.id] ?? null) : null}
             />
-            <EventLog state={state} width={rightW} height={splitLogH} scroll={view.logScroll} />
+            <EventLog
+              state={state}
+              width={rightW}
+              height={splitLogH}
+              scroll={view.logScroll}
+              tick={view.tick}
+            />
             {promptOnPane(state.prompt) ? <PromptPane state={state} width={rightW} /> : null}
           </Box>
         </Box>
@@ -200,7 +206,13 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
             account={sel ? providerAccountOf(state, sel.provider) : ""}
             compacting={sel ? (state.compacting[sel.id] ?? null) : null}
           />
-          <EventLog state={state} width={cols} height={splitLogH} scroll={view.logScroll} />
+          <EventLog
+            state={state}
+            width={cols}
+            height={splitLogH}
+            scroll={view.logScroll}
+            tick={view.tick}
+          />
           {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
         </Box>
       );

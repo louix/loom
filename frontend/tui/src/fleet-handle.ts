@@ -2505,7 +2505,12 @@ export const mkFleetHandle = ({
       const animating =
         state.notice !== null ||
         Object.keys(state.compacting).length > 0 ||
-        state.sessions.some((s) => s.status.kind === "running" || s.status.kind === "starting");
+        state.sessions.some(
+          (s) =>
+            s.status.kind === "running" ||
+            s.status.kind === "starting" ||
+            s.status.kind === "working_background",
+        );
       if (!animating) return;
       if (state.log.length > 3) tick = (tick + 1) % 100000;
       dispatch({ t: "expireNotice", now: Date.now() });

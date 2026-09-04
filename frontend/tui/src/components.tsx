@@ -24,6 +24,7 @@ import {
   pickerVisible,
   providerInfo,
   queueFor,
+  selectedSession,
   visibleLog,
   type Connection,
   type ConfirmState,
@@ -726,15 +727,23 @@ export const EventLog = ({
   width,
   height,
   scroll = 0,
+  tick = 0,
 }: {
   state: TuiState;
   width: number;
   height: number;
   scroll?: number;
+  tick?: number;
 }): ReactNode => {
-  const capacity = Math.max(1, height - 3); // header line + top/bottom border
   // Drilled in? The pane narrows to the focused child's own stream.
   const child = focusedChildOf(state);
+  const session = selectedSession(state);
+  const active =
+    child != null ||
+    session?.status.kind === "running" ||
+    session?.status.kind === "starting" ||
+    session?.status.kind === "working_background";
+  const capacity = Math.max(1, height - 3);
 
   // Measure the log (total wrapped rows) and build only the visible window's
   // rows — through the same helpers the scrollback handler measures with, so
@@ -798,6 +807,7 @@ export const EventLog = ({
           ),
         )
       )}
+      {active ? <Text color={C.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text> : null}
     </Box>
   );
 };
