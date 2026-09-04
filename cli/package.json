@@ -15,6 +15,7 @@
     "@loom/tui": "workspace:*"
   },
   "optionalDependencies": {
+    "@loom/connector-chatgpt": "workspace:*",
     "@loom/connector-claude": "workspace:*",
     "@loom/connector-gemini": "workspace:*",
     "@loom/connector-generic": "workspace:*",

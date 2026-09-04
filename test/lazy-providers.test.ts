@@ -25,6 +25,7 @@ const isVendor = (s: string): boolean =>
   // the connector packages that carry a vendor SDK — a fake run must load none
   s === "@loom/connector-generic" ||
   s === "@loom/connector-gemini" ||
+  s === "@loom/connector-chatgpt" ||
   s === "@loom/connector-claude" ||
   s === "@loom/aisdk" ||
   s.startsWith("@loom/aisdk/");

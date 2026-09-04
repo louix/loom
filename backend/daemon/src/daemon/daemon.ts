@@ -654,7 +654,16 @@ export class Daemon {
     await Promise.all(
       pending.map(async ([id, p]) => {
         try {
-          const models = await probeOpenAiModels(p.baseUrl, resolveApiKey(p));
+          const models: Awaited<ReturnType<typeof probeOpenAiModels>> =
+            p.sdk === "chatgpt"
+              ? ((await (await this.#providers.get(id)).listModels?.()) ?? []).map((m) => ({
+                  id: m.id,
+                  ...(m.context !== undefined ? { context: m.context } : {}),
+                  ...(m.label !== undefined ? { label: m.label } : {}),
+                  ...(m.effortLevels !== undefined ? { efforts: m.effortLevels } : {}),
+                  ...(m.defaultEffort !== undefined ? { defaultEffort: m.defaultEffort } : {}),
+                }))
+              : await probeOpenAiModels(p.baseUrl, resolveApiKey(p));
           if (models.length === 0) throw new Error("endpoint returned no models");
           p.models = models.map((m) => m.id);
           p.model = p.models[0] ?? "";
@@ -1691,8 +1700,20 @@ export class Daemon {
       }
       const profile = this.config.providers.aisdk[id];
       if (!profile) throw new RpcError("not_found", `no aisdk provider: ${id}`);
-      // Only OpenAI-compatible endpoints have a uniform `/models`; for the
-      // native SDKs just hand back the configured list.
+      if (profile.sdk === "chatgpt") {
+        try {
+          return {
+            models: ((await (await this.#providers.get(id)).listModels?.()) ?? []).map((m) => m.id),
+          };
+        } catch (err) {
+          throw new RpcError(
+            "provider_error",
+            `could not list models: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      // Only OpenAI-compatible endpoints have a uniform `/models`; other
+      // native SDKs just hand back their configured list.
       if (profile.sdk !== "openai") return { models: profile.models };
       try {
         const probed = await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile));

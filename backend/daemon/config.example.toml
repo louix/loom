@@ -127,9 +127,17 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # model       = "gemini-2.5-pro"
 # models      = ["gemini-2.5-pro", "gemini-2.5-flash"]
 #
+# [chatgpt] — ChatGPT/Codex subscription, not an OpenAI API key. Run
+# `codex login` once; the connector reads ~/.codex/auth.json and refreshes its
+# OAuth token when needed. Loom auto-detects this account-specific catalogue.
+# [chatgpt]
+# model     = "gpt-5.6-terra"       # optional pin / default
+# models    = ["gpt-5.6-terra"]     # optional curated picker list
+# auth_path = "~/.codex/auth.json" # optional; this is already the default
+#
 # Low-level escape hatch, if you need several native profiles or an unusual
 # combination: [providers.<id>] with adapter = "aisdk" and sdk =
-# "openai" | "google" | "anthropic". Same fields as above plus `sdk`, and an
+# "openai" | "google" | "anthropic" | "chatgpt". Same fields as above plus `sdk`, and an
 # optional `connector = "@scope/pkg"` to route the profile at a connector
 # package other than the built-in generic / gemini ones (see docs/connectors.md).
 

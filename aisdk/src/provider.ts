@@ -12,6 +12,7 @@ import type {
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
+  DiscoveredModel,
   ProviderCapabilities,
   SessionRef,
 } from "@loom/core/types";
@@ -55,6 +56,15 @@ export interface AisdkProviderOptions {
   search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
   base?: string;
+  /**
+   * Tool surface the backend accepts. Codex's subscription endpoint only
+   * accepts its predefined shell tool, unlike normal AI SDK backends.
+   */
+  toolMode?: "full" | "codex-shell" | ((model: string) => Promise<"full" | "codex-shell">);
+  /** Whether Loom should advertise its `task` sub-agent capability. */
+  subagents?: boolean;
+  /** Optional authenticated catalog, e.g. Codex's subscription `/models` endpoint. */
+  listModels?: () => Promise<DiscoveredModel[]>;
 }
 
 export class AisdkProvider implements AgentProvider {
@@ -70,6 +80,8 @@ export class AisdkProvider implements AgentProvider {
   readonly #modelContext: Record<string, number> | undefined;
   readonly #providerOptionsName: string | undefined;
   readonly #cacheControl: AisdkProviderOptions["cacheControl"];
+  readonly #toolMode: (model: string) => Promise<"full" | "codex-shell">;
+  readonly #listModels: (() => Promise<DiscoveredModel[]>) | undefined;
 
   constructor(opts: AisdkProviderOptions, store: TranscriptStore) {
     this.id = opts.id;
@@ -82,11 +94,17 @@ export class AisdkProvider implements AgentProvider {
     this.#modelContext = opts.modelContext;
     this.#providerOptionsName = opts.providerOptionsName;
     this.#cacheControl = opts.cacheControl;
+    const configuredToolMode = opts.toolMode;
+    this.#toolMode =
+      typeof configuredToolMode === "function"
+        ? configuredToolMode
+        : async () => configuredToolMode ?? "full";
+    this.#listModels = opts.listModels;
     this.capabilities = {
       liveModeSwitch: false, // a model / mode change takes effect on the next turn
       forking: false,
       rewind: true, // Loom owns the ModelMessage[] — slicing it is exact
-      subagents: true, // the `task` tool spawns a depth-1 sub-agent
+      subagents: opts.subagents ?? true, // the `task` tool spawns a depth-1 sub-agent
       compaction: false, // Loom summarises + rebuilds history; not the provider's own /compact
       oneShot: true,
       partialTokens: true,
@@ -114,6 +132,7 @@ export class AisdkProvider implements AgentProvider {
         cwd: opts.cwd,
         mcpHandles: [],
         loomServer: false,
+        toolMode: await this.#toolMode(modelId),
         store: null,
         oneShot: true,
       });
@@ -136,6 +155,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: opts.cwd,
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
+      toolMode: await this.#toolMode(modelId),
       ...(this.#base ? { base: this.#base } : {}),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
@@ -168,6 +188,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: ref.cwd,
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
+      toolMode: await this.#toolMode(ref.model || this.#defaultModel),
       ...(this.#base ? { base: this.#base } : {}),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
@@ -180,6 +201,10 @@ export class AisdkProvider implements AgentProvider {
 
   async listPersistedSessions(): Promise<SessionRef[]> {
     return [];
+  }
+
+  async listModels(): Promise<DiscoveredModel[]> {
+    return (await this.#listModels?.()) ?? [];
   }
 }
 

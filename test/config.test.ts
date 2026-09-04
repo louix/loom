@@ -182,6 +182,34 @@ model   = "claude-opus-5"
   assert.deepEqual(cfg(`[google]\napi_key = "k"\n`).providers.aisdk, {});
 });
 
+test("[chatgpt] uses Codex OAuth instead of requiring an API key", () => {
+  const c = cfg(`
+[chatgpt]
+model     = "gpt-5-codex"
+models    = ["gpt-5-codex", "gpt-5"]
+auth_path = "~/custom-codex/auth.json"
+`);
+  const p = c.providers.aisdk["chatgpt"];
+  assert.ok(p);
+  assert.equal(p.sdk, "chatgpt");
+  assert.equal(p.apiKey, "");
+  assert.equal(p.apiKeyEnv, "");
+  assert.equal(p.authPath, join(homedir(), "custom-codex/auth.json"));
+  assert.deepEqual(p.models, ["gpt-5-codex", "gpt-5"]);
+  assert.deepEqual(lintConfig(c), []);
+});
+
+test("a low-level sdk = chatgpt profile routes without an API key", () => {
+  const p = cfg(`
+[providers.work]
+adapter = "aisdk"
+sdk     = "chatgpt"
+model   = "gpt-5-codex"
+`).providers.aisdk["work"];
+  assert.equal(p?.sdk, "chatgpt");
+  assert.equal(p?.model, "gpt-5-codex");
+});
+
 test("legacy [providers.<id>] adapter='aisdk' still works and wins a duplicate id", () => {
   const c = cfg(`
 [custom-provider.dup]
@@ -197,7 +225,7 @@ model    = "legacy-model"
   assert.equal(c.providers.aisdk["dup"]?.model, "legacy-model");
 });
 
-test("an openai profile with no model/models is kept for auto-detection; google/anthropic dropped", () => {
+test("openai and chatgpt profiles with no model/models are kept for auto-detection; google/anthropic dropped", () => {
   const c = cfg(`
 [providers.auto]
 adapter  = "aisdk"
@@ -207,12 +235,15 @@ base_url = "http://x/v1"
 adapter = "aisdk"
 sdk     = "google"
 
+[chatgpt]
+
 [providers.ok]
 adapter  = "aisdk"
 base_url = "http://y/v1"
 models   = ["m1", "m2"]
 `);
   assert.equal(c.providers.aisdk["auto"]?.autoModels, true);
+  assert.equal(c.providers.aisdk["chatgpt"]?.autoModels, true);
   assert.equal(c.providers.aisdk["auto"]?.model, "");
   assert.deepEqual(c.providers.aisdk["auto"]?.models, []);
   assert.equal(c.providers.aisdk["gem"], undefined); // can't probe → dropped

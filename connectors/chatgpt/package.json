@@ -1,0 +1,15 @@
+{
+  "name": "@loom/connector-chatgpt",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./oauth": "./src/oauth.ts"
+  },
+  "dependencies": {
+    "@loom/aisdk": "workspace:*",
+    "@loom/core": "workspace:*",
+    "ai": "5.0.249"
+  }
+}

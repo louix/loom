@@ -211,6 +211,8 @@ export interface DiscoveredModel {
    *  Endpoint-advertised lists pass through verbatim — they may name levels
    *  outside Loom's own {@link EffortLevel} set (OpenAI's `minimal`, …). */
   effortLevels?: string[];
+  /** Backend-selected effort when the user has not chosen one. */
+  defaultEffort?: string;
 }
 
 /** Map a Loom session mode to the closest provider permission mode label. */

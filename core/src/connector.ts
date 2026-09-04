@@ -32,8 +32,10 @@ export interface ConnectorConfig {
   baseUrl?: string;
   /** Resolved API key (inline `api_key` wins over `api_key_env`), "" if keyless. */
   apiKey?: string;
-  /** Which `@ai-sdk/*` backend the aisdk connectors dial. */
-  sdk?: "openai" | "google" | "anthropic";
+  /** Which model backend the aisdk connectors dial. */
+  sdk?: "openai" | "google" | "anthropic" | "chatgpt";
+  /** Optional Codex OAuth auth.json path; omitted uses `~/.codex/auth.json`. */
+  authPath?: string;
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;
   /**

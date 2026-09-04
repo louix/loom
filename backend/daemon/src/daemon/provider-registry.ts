@@ -30,6 +30,7 @@ const MOCK = "@loom/connector-mock";
 const CLAUDE = "@loom/connector-claude";
 const GEMINI = "@loom/connector-gemini";
 const GENERIC = "@loom/connector-generic";
+const CHATGPT = "@loom/connector-chatgpt";
 
 export class ProviderRegistry {
   readonly #config: LoomConfig;
@@ -107,7 +108,9 @@ export class ProviderRegistry {
     const profile = this.#config.providers.aisdk[id];
     if (!profile) throw new Error(`unknown provider: ${id}`);
     if (profile.connector) return profile.connector;
-    return profile.sdk === "google" ? GEMINI : GENERIC;
+    if (profile.sdk === "google") return GEMINI;
+    if (profile.sdk === "chatgpt") return CHATGPT;
+    return GENERIC;
   }
 
   async #build(id: string): Promise<AgentProvider> {
@@ -119,7 +122,7 @@ export class ProviderRegistry {
       );
     }
     const profile = this.#config.providers.aisdk[id];
-    if (profile && !profile.model) {
+    if (profile && !profile.model && !(profile.sdk === "chatgpt" && profile.autoModels)) {
       throw new Error(
         `provider "${id}" has no model — auto-detection from ${profile.baseUrl}/models ` +
           `failed or hasn't run; set \`model\` or \`models\` in the config`,
@@ -184,6 +187,7 @@ export class ProviderRegistry {
       baseUrl: p.baseUrl,
       apiKey: resolveApiKey(p),
       sdk: p.sdk,
+      ...(p.authPath ? { authPath: p.authPath } : {}),
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       includeUsage: p.includeUsage,
       promptCacheTtl: p.promptCacheTtl,

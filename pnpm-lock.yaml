@@ -17,6 +17,9 @@ importers:
       '@loom/client':
         specifier: workspace:*
         version: link:client
+      '@loom/connector-chatgpt':
+        specifier: workspace:*
+        version: link:connectors/chatgpt
       '@loom/connector-claude':
         specifier: workspace:*
         version: link:connectors/claude
@@ -123,6 +126,9 @@ importers:
         specifier: workspace:*
         version: link:../frontend/tui
     optionalDependencies:
+      '@loom/connector-chatgpt':
+        specifier: workspace:*
+        version: link:../connectors/chatgpt
       '@loom/connector-claude':
         specifier: workspace:*
         version: link:../connectors/claude
@@ -141,6 +147,18 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+
+  connectors/chatgpt:
+    dependencies:
+      '@loom/aisdk':
+        specifier: workspace:*
+        version: link:../../aisdk
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../core
+      ai:
+        specifier: 5.0.249
+        version: 5.0.249(zod@4.4.3)
 
   connectors/claude:
     dependencies:

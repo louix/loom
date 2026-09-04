@@ -21,6 +21,7 @@
     "@ai-sdk/provider": "2.0.3",
     "@loom/aisdk": "workspace:*",
     "@loom/client": "workspace:*",
+    "@loom/connector-chatgpt": "workspace:*",
     "@loom/connector-claude": "workspace:*",
     "@loom/connector-gemini": "workspace:*",
     "@loom/connector-generic": "workspace:*",

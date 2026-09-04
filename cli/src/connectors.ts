@@ -15,4 +15,5 @@ export const CONNECTORS: ConnectorManifest = {
   "@loom/connector-claude": () => import("@loom/connector-claude"),
   "@loom/connector-generic": () => import("@loom/connector-generic"),
   "@loom/connector-gemini": () => import("@loom/connector-gemini"),
+  "@loom/connector-chatgpt": () => import("@loom/connector-chatgpt"),
 };

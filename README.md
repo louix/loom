@@ -207,8 +207,13 @@ inline with `api_key`.
   provider id. This is the form that becomes a plugin.
 - `[google]` / `[anthropic]` — one native profile each (`@ai-sdk/google`,
   `@ai-sdk/anthropic`); the provider id is the vendor name.
+- `[chatgpt]` — uses the ChatGPT/Codex subscription authenticated by `codex
+login` in `~/.codex/auth.json`; no OpenAI API key. Its authenticated Codex
+  catalogue is discovered automatically. Direct-tool models get Loom's normal
+  tool, MCP, and sub-agent surface; `code_mode_only` models currently use the
+  Codex shell bridge.
 - `[providers.<id>]` with `adapter = "aisdk"` and `sdk =
-"openai" | "google" | "anthropic"` — the low-level escape hatch, kept for
+"openai" | "google" | "anthropic" | "chatgpt"` — the low-level escape hatch, kept for
   several native profiles or unusual setups.
 
 `default_provider` picks which one new sessions use until a session is
@@ -256,8 +261,9 @@ OpenAI-compatible profiles need no `model`: the picker list comes from
 `{base_url}/models`, and a new session defaults to the last model that provider
 ran (remembered in the db, shown by `loom providers`). A model that has since
 dropped out of the endpoint's list is skipped, with a notice. Pin `model` /
-`models` only for an endpoint whose `/models` is missing or wrong; the native
-SDKs (`[google]` / `[anthropic]`) still need a `model` (no probe).
+`models` only for an endpoint whose `/models` is missing or wrong; `[chatgpt]`
+uses Codex's authenticated catalogue (including each model's maximum context), while the native Google and Anthropic
+SDKs still need a `model` (no probe).
 `loom config` (also logged at launch) lints the
 loaded config — unset key vars, providers whose model auto-detection found
 nothing, a
@@ -448,6 +454,7 @@ connector and no model SDK — add what you use:
 
 ```sh
 pnpm add @loom/connector-claude    # Claude, via @anthropic-ai/claude-agent-sdk
+pnpm add @loom/connector-chatgpt   # ChatGPT/Codex subscription via ~/.codex/auth.json
 pnpm add @loom/connector-generic   # any OpenAI-compatible endpoint + native Anthropic
 pnpm add @loom/connector-gemini    # Google Gemini
 ```
@@ -537,6 +544,7 @@ frontend/tui/        @loom/tui      Ink fleet UI: model/reducer, editor, theme, 
 connectors/
   mock/              @loom/connector-mock      the scriptable SDK-free provider (tests)
   claude/            @loom/connector-claude     @anthropic-ai/claude-agent-sdk
+  chatgpt/           @loom/connector-chatgpt    ChatGPT/Codex OAuth subscription
   generic/           @loom/connector-generic    OpenAI-compatible + native Anthropic
   gemini/            @loom/connector-gemini     Google Gemini (@ai-sdk/google)
 cli/                 loom           the `loom` + `loomd` bins; builds the connector manifest

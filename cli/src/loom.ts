@@ -72,7 +72,8 @@ const USAGE: Record<string, string> = {
   --json                       machine-readable`,
   models: `loom models <provider>  — list a provider's available models
 
-  \`claude\` asks the Claude CLI for its catalog; openai-compatible providers
+  \`claude\` asks the Claude CLI for its catalog; \`chatgpt\` asks Codex's
+  authenticated subscription catalog; openai-compatible providers
   ([custom-provider.*] and the built-in openai profile) are probed at
   {base_url}/models. Prints one model id per line.  --json for an array.`,
   cache: `loom cache [id]  — prompt-cache effectiveness per provider/model

@@ -10,17 +10,19 @@ import type { PriceRow } from "./pricing.ts";
  * Milestone 1 only reads a handful of these; the rest are carried so the shape
  * is stable for later milestones.
  */
-export type AisdkKind = "openai" | "google" | "anthropic";
+export type AisdkKind = "openai" | "google" | "anthropic" | "chatgpt";
 
 /**
  * One Vercel-AI-SDK provider profile. Configured as `[custom-provider.<id>]`
- * (OpenAI-compatible), `[google]` / `[anthropic]` (one per vendor), or the
- * low-level `[providers.<id>]` with `adapter = "aisdk"`.
+ * (OpenAI-compatible), `[google]` / `[anthropic]` / `[chatgpt]` (one native
+ * profile per vendor), or the low-level `[providers.<id>]` with
+ * `adapter = "aisdk"`.
  */
 export interface AisdkProfile {
   /**
-   * Which `@ai-sdk/*` backend: `openai` (OpenAI-compatible — the default),
-   * `google` (native Gemini), or `anthropic` (native Anthropic).
+   * Which backend: `openai` (OpenAI-compatible — the default), `google`
+   * (native Gemini), `anthropic` (native Anthropic), or `chatgpt` (the Codex
+   * OAuth subscription endpoint).
    */
   sdk: AisdkKind;
   /**
@@ -119,6 +121,12 @@ export interface AisdkProfile {
    * Set it to point at an out-of-tree connector.
    */
   connector: string;
+  /**
+   * Codex OAuth credentials for `sdk = "chatgpt"`. Empty uses Codex's own
+   * `~/.codex/auth.json`; this is deliberately a path rather than a token so
+   * Loom never copies a ChatGPT subscription credential into its config or DB.
+   */
+  authPath: string;
 }
 
 /**
@@ -374,7 +382,9 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
  * `base_url` is dropped (nothing to dial). No `model` / `models` is kept for
  * `openai` (the daemon probes `{base_url}/models` at start-up, `autoModels`)
  * but dropped for `google` / `anthropic`, which have no uniform model-list
- * endpoint. Returns `null` when the table can't yield a usable profile.
+ * endpoint. ChatGPT subscription profiles use Codex's authenticated catalog.
+ * Returns `null` when the table can't yield a usable
+ * profile.
  */
 /** Default per-segment step ceiling; kept in step with `DEFAULT_MAX_STEPS` in
  *  `src/provider/aisdk/session.ts`. */
@@ -407,7 +417,7 @@ const buildAisdkProfile = (
   const model = str(t["model"], "");
   const models = strArray(t["models"], model ? [model] : []);
   const autoModels = model === "" && models.length === 0;
-  if (autoModels && sdk !== "openai") return null; // can't auto-detect; nothing to dial
+  if (autoModels && sdk !== "openai" && sdk !== "chatgpt") return null;
   const effectiveModel = model || (models[0] ?? "");
   const rawSteps = num(t["max_steps"], DEFAULT_AISDK_MAX_STEPS);
   const effectiveModelList = effectiveModel ? [effectiveModel] : [];
@@ -431,6 +441,7 @@ const buildAisdkProfile = (
     promptCacheTtl: aisdkCacheTtl(t["prompt_cache_ttl"]),
     titleModel: str(t["title_model"], ""),
     connector: str(t["connector"], ""),
+    authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
   };
 };
 
@@ -438,7 +449,7 @@ const buildAisdkProfile = (
  * Every aisdk provider profile, from all the namespaces, keyed by id:
  *  - `[custom-provider.<id>]`   — an OpenAI-compatible endpoint (implicit sdk);
  *    the form that will become a plugin. `base_url` + `api_key` / `api_key_env`.
- *  - `[google]` / `[anthropic]` — one native profile each, id = the vendor.
+ *  - `[google]` / `[anthropic]` / `[chatgpt]` — one native profile each, id = the vendor.
  *  - `[providers.<id>]` with `adapter = "aisdk"` — the low-level escape hatch;
  *    its `sdk` key still selects the backend. Wins a duplicate id.
  * `claude` is reserved for the native CLI provider and is never an aisdk id.
@@ -449,8 +460,9 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
     if (p && !isClaudeId(id) && !(id in out)) out[id] = p;
   };
 
-  // [google] / [anthropic] — one profile per vendor, id = the vendor name.
-  for (const sdk of ["google", "anthropic"] as const) {
+  // Native providers — one profile per vendor, id = the vendor name. ChatGPT
+  // uses the locally authenticated Codex OAuth session, not an API key.
+  for (const sdk of ["google", "anthropic", "chatgpt"] as const) {
     if (raw[sdk] && typeof raw[sdk] === "object")
       put(sdk, buildAisdkProfile(sdk, asRecord(raw[sdk]), sdk));
   }
@@ -465,7 +477,10 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
     if (isClaudeId(id)) continue;
     const t = asRecord(t0);
     if (t["adapter"] !== "aisdk") continue;
-    const sdk: AisdkKind = t["sdk"] === "google" || t["sdk"] === "anthropic" ? t["sdk"] : "openai";
+    const sdk: AisdkKind =
+      t["sdk"] === "google" || t["sdk"] === "anthropic" || t["sdk"] === "chatgpt"
+        ? t["sdk"]
+        : "openai";
     delete out[id]; // legacy form overrides the same id from the sugar namespaces
     put(id, buildAisdkProfile(id, t, sdk));
   }
@@ -508,7 +523,7 @@ export const lintConfig = (cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env
     if (!p.apiKey && p.apiKeyEnv && !env[p.apiKeyEnv]) {
       w.push(`provider "${id}": $${p.apiKeyEnv} is not set`);
     }
-    if (!p.apiKey && !p.apiKeyEnv && p.sdk !== "openai") {
+    if (!p.apiKey && !p.apiKeyEnv && p.sdk !== "openai" && p.sdk !== "chatgpt") {
       w.push(`provider "${id}": sdk = "${p.sdk}" needs an api_key / api_key_env`);
     }
     if (p.autoModels && p.model === "" && p.models.length === 0) {

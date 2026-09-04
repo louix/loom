@@ -5,6 +5,7 @@ backend. Loom ships none — you install what you use:
 
 ```sh
 pnpm add @loom/connector-claude     # Claude, via @anthropic-ai/claude-agent-sdk
+pnpm add @loom/connector-chatgpt    # ChatGPT/Codex subscription, via ~/.codex/auth.json
 pnpm add @loom/connector-generic    # any OpenAI-compatible endpoint + native Anthropic
 pnpm add @loom/connector-gemini     # Google Gemini
 ```
@@ -26,6 +27,7 @@ test suite and `loom run --provider fake` use.
    │
 @loom/connector-generic / -gemini    each owns the one `@ai-sdk/*` model factory
                   its backend needs and calls makeAisdkProvider.
+@loom/connector-chatgpt             vendors a v5-compatible Codex OAuth adapter.
 @loom/connector-claude               wraps @anthropic-ai/claude-agent-sdk directly.
 ```
 
@@ -93,6 +95,7 @@ No build step — source is `.ts`; add a `tsconfig.build.json` only if you publi
 | ---------------------------------------------------------------------- | ------------------------- |
 | `claude`                                                               | `@loom/connector-claude`  |
 | `fake` / `mock`                                                        | `@loom/connector-mock`    |
+| `[chatgpt]` or `sdk = "chatgpt"`                                       | `@loom/connector-chatgpt` |
 | `[google]` or `sdk = "google"`                                         | `@loom/connector-gemini`  |
 | `[custom-provider.*]`, `[anthropic]`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
 
@@ -108,6 +111,36 @@ base_url  = "https://…"
 The connector must be resolvable from the `loom` package (`pnpm add` it) and
 listed in the CLI's manifest, or `session.create` fails with _"provider … needs
 connector … , which is not installed"_.
+
+## ChatGPT subscription
+
+`[chatgpt]` uses the OAuth session created by `codex login`; it does not read an
+OpenAI API key or put a subscription token in Loom's configuration. At daemon
+start it queries Codex's authenticated `GET /backend-api/codex/models` catalogue
+and uses its account-specific model list, maximum context limits, display names, and
+reasoning levels. A model pin remains optional:
+
+```toml
+[chatgpt]
+# model = "gpt-5.6-terra"           # optional pin / default
+# models = ["gpt-5.6-terra"]         # optional curated picker list
+# auth_path = "~/.codex/auth.json"  # optional; this is the default
+```
+
+Run it with `loom run --provider chatgpt "…"`, or set
+`default_provider = "chatgpt"` in the same configuration file.
+
+The connector follows each model's `tool_mode` metadata. Models without
+`code_mode_only` accept Loom's normal functions, so they can use MCP, web
+search, plan tools, and sub-agents (all still governed by Loom's permission
+gate). Codex's newer `code_mode_only` models require Codex's separate code-mode
+host protocol; Loom currently exposes only their compatible shell bridge.
+Choose a direct-tool model when you need the full Loom surface.
+
+This is a vendored compatibility connector over the private Codex backend,
+rather than the public OpenAI API. That backend and its accepted model IDs can
+change independently of Loom; model discovery avoids stale IDs, but the
+code-mode protocol remains a future integration point.
 
 ## Worktrees
 
