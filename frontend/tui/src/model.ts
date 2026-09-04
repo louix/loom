@@ -2168,14 +2168,23 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     if (status.kind !== "starting") {
       local.push({ keys: "⏎", label: "send", act: "send", footer: true });
     }
+    // `compact` is legal on any live session — the half-full meter is when it's
+    // worth *suggesting*, not when it becomes possible (you may well want to
+    // compact a 40%-full context before handing over a big task). Below the
+    // mark it's palette-and-help only, so the footer doesn't carry a verb you
+    // rarely reach for; `c` works either way.
     if (
-      (status.kind === "running" ||
-        status.kind === "idle" ||
-        status.kind === "working_background") &&
-      session.contextLimit > 0 &&
-      session.contextUsed / session.contextLimit > 0.5
+      status.kind === "running" ||
+      status.kind === "idle" ||
+      status.kind === "working_background"
     ) {
-      local.push({ keys: "c", label: "compact", act: "compact", footer: true });
+      const half = session.contextLimit > 0 && session.contextUsed / session.contextLimit > 0.5;
+      local.push({
+        keys: "c",
+        label: "compact",
+        act: "compact",
+        ...(half ? { footer: true } : {}),
+      });
     }
     // Keep-warm — palette only (a rarely-flipped toggle). Offered on Claude
     // sessions with a pinned cache TTL, running or idle; the label reflects the

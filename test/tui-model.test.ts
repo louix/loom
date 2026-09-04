@@ -1381,8 +1381,13 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
     [...acts({ status: "awaiting_input", awaitReason: "user_question" })].sort(),
     ["answer", "deny", "interrupt", ...G].sort(),
   );
-  assert.deepEqual([...acts({ status: "running" })].sort(), ["interrupt", "send", ...S].sort());
-  assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", ...S].sort());
+  // compact rides along on any live session (running / idle / working_background),
+  // whatever the context meter reads — see the footer-vs-palette split below.
+  assert.deepEqual(
+    [...acts({ status: "running" })].sort(),
+    ["interrupt", "send", "compact", ...S].sort(),
+  );
+  assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", "compact", ...S].sort());
   // a stopped session: `send` (the daemon revives it) — no separate "resume"
   assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["send", "done", ...S].sort());
   assert.deepEqual([...acts({ status: "error" })].sort(), ["send", "done", ...S].sort());
@@ -1603,16 +1608,29 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   );
 });
 
-test("compact only appears once the context meter passes half", () => {
-  assert.ok(
-    !allowedActs(snap({ status: "idle", contextUsed: 40, contextLimit: 100 })).has("compact"),
+test("compact is offered on any live session; the footer slot waits for half", () => {
+  const compactHint = (s: Parameters<typeof allowedActs>[0]) =>
+    actionsFor(s).find((h) => h.act === "compact");
+
+  // Below half: still reachable by `c` / the palette, just not in the footer.
+  const low = compactHint(snap({ status: "idle", contextUsed: 40, contextLimit: 100 }));
+  assert.ok(low);
+  assert.ok(!low.footer);
+  // An unknown context limit is no reason to withhold it either.
+  const unknown = compactHint(snap({ status: "idle", contextUsed: 0, contextLimit: 0 }));
+  assert.ok(unknown);
+  assert.ok(!unknown.footer);
+
+  // Past half it earns the footer.
+  assert.equal(
+    compactHint(snap({ status: "idle", contextUsed: 60, contextLimit: 100 }))?.footer,
+    true,
   );
-  assert.ok(
-    allowedActs(snap({ status: "idle", contextUsed: 60, contextLimit: 100 })).has("compact"),
+  assert.equal(
+    compactHint(snap({ status: "running", contextUsed: 90, contextLimit: 100 }))?.footer,
+    true,
   );
-  assert.ok(
-    allowedActs(snap({ status: "running", contextUsed: 90, contextLimit: 100 })).has("compact"),
-  );
+
   // not offered for a session with no live adapter
   assert.ok(
     !allowedActs(snap({ status: "interrupted", contextUsed: 90, contextLimit: 100 })).has(
