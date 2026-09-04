@@ -31,6 +31,7 @@ import {
   formatEvent,
   groupsOf,
   initialState,
+  liveQNav,
   makePicker,
   makePrompt,
   modelPickEmptyText,
@@ -1088,6 +1089,23 @@ test("parallel permission requests queue; each resolvePerm advances; session_upd
     },
   });
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
+});
+
+test("qnav: liveQNav gates on session + request id, and resolvePerm clears a match", () => {
+  const nav = { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } };
+  assert.equal(liveQNav(nav, "a", "q1"), nav);
+  assert.equal(liveQNav(nav, "b", "q1"), null, "wrong session → stale");
+  assert.equal(liveQNav(nav, "a", "q2"), null, "wrong request → stale");
+  assert.equal(liveQNav(null, "a", "q1"), null);
+
+  let s = reduce(initialState(), { t: "qnavSet", nav });
+  assert.deepEqual(s.qnav, nav);
+  // resolving an unrelated request leaves it alone
+  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "other" });
+  assert.deepEqual(s.qnav, nav);
+  // resolving the one it tracks clears it
+  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "q1" });
+  assert.equal(s.qnav, null);
 });
 
 test("a permission's matching tool_result clears it, even mid-replay with the session still awaiting_input", () => {

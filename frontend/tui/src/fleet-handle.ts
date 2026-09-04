@@ -55,6 +55,7 @@ import {
   fleetHits,
   focusedPending,
   initialState,
+  liveQNav,
   LOG_CAP,
   makePicker,
   makePrompt,
@@ -82,6 +83,8 @@ import {
   type LogLine,
   type Pending,
   type PickerState,
+  type PromptState,
+  type QNav,
   type TuiState,
 } from "./model.ts";
 
@@ -91,6 +94,44 @@ import {
 const questionPromptLabel = (all: AskUserQuestionItem[], idx: number): string => {
   const tag = all[idx]?.header || "answer";
   return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
+};
+
+/** The answer prompt for question `idx` of an `AskUserQuestion`, prefilled from
+ *  whatever's been gathered so far (`answers`, keyed by question text). `idx` is
+ *  clamped to the question count. */
+const answerQuestionPrompt = (
+  sessionId: string,
+  requestId: string,
+  qs: AskUserQuestionItem[],
+  answers: Record<string, string>,
+  idx: number,
+): PromptState => {
+  const at = Math.max(0, Math.min(qs.length - 1, idx));
+  return makePrompt({
+    kind: "answerQuestion",
+    sessionId,
+    requestId,
+    label: questionPromptLabel(qs, at),
+    text: answers[qs[at]!.question] ?? "",
+    qaAll: qs,
+    qaIdx: at,
+    qaAnswers: answers,
+  });
+};
+
+/** The `AskUserQuestion` a session is parked on, if any — its request id and
+ *  parsed questions, plus the live {@link QNav} for it (answers gathered so
+ *  far, which question is in view). */
+const questionState = (
+  state: TuiState,
+  sessionId: string | null | undefined,
+): { requestId: string; qs: AskUserQuestionItem[]; nav: QNav | null } | null => {
+  if (!sessionId) return null;
+  const fp = firstPerm(pendingFor(state, sessionId));
+  if (fp?.tool !== "AskUserQuestion") return null;
+  const qs = parseAskUserQuestions(fp.input);
+  if (qs.length === 0) return null;
+  return { requestId: fp.id, qs, nav: liveQNav(state.qnav, sessionId, fp.id) };
 };
 
 /** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
@@ -310,12 +351,13 @@ const deriveView = (
   const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state, cols);
   // Which question the request panel previews: the one the answer prompt is
-  // collecting, else the first. The panel sizes itself to fit it (see
-  // `requestPanelRows`), so this has to be settled before the row budget.
+  // collecting, else the one `qnav` last left the browse-mode selection on. The
+  // panel sizes itself to fit it (see `requestPanelRows`), so this has to be
+  // settled before the row budget.
   const questionIdx =
     state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
       ? (state.prompt.qaIdx ?? 0)
-      : 0;
+      : (liveQNav(state.qnav, sel?.id, firstPerm(pend)?.id)?.idx ?? 0);
   const requestH = showRequest ? requestPanelRows(pend, cols, questionIdx) : 0;
 
   // Below this width the three-column split starves every column (~20 cols each
@@ -963,22 +1005,18 @@ export const mkFleetHandle = ({
             }),
           });
         }
-        const fp = firstPerm(pend);
-        if (fp?.tool === "AskUserQuestion") {
-          const qs = parseAskUserQuestions(fp.input);
-          if (qs.length === 0)
-            return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
+        if (firstPerm(pend)?.tool === "AskUserQuestion") {
+          const q = questionState(state, s.id);
+          if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({
-              kind: "answerQuestion",
-              sessionId: s.id,
-              requestId: fp.id,
-              label: questionPromptLabel(qs, 0),
-              qaAll: qs,
-              qaIdx: 0,
-              qaAnswers: {},
-            }),
+            prompt: answerQuestionPrompt(
+              s.id,
+              q.requestId,
+              q.qs,
+              q.nav?.answers ?? {},
+              q.nav?.idx ?? 0,
+            ),
           });
         }
         return note("no question pending", "dim");
@@ -1654,21 +1692,22 @@ export const mkFleetHandle = ({
               break;
             }
           }
-          if (missing === idx) return "answer this question before submitting";
+          // Keep the running answers in `qnav` so an Esc from here (or the next
+          // question) still has them.
+          const stash = (at: number): void =>
+            void dispatch({
+              t: "qnavSet",
+              nav: { sessionId: p.sessionId!, requestId: p.requestId!, idx: at, answers },
+            });
+          if (missing === idx) {
+            stash(idx);
+            return "answer this question before submitting";
+          }
           if (missing !== -1) {
-            const next = p.qaAll[missing]!;
+            stash(missing);
             dispatch({
               t: "openPrompt",
-              prompt: makePrompt({
-                kind: "answerQuestion",
-                sessionId: p.sessionId,
-                requestId: p.requestId,
-                label: questionPromptLabel(p.qaAll, missing),
-                text: answers[next.question] ?? "",
-                qaAll: p.qaAll,
-                qaIdx: missing,
-                qaAnswers: answers,
-              }),
+              prompt: answerQuestionPrompt(p.sessionId, p.requestId, p.qaAll, answers, missing),
             });
             return "";
           }
@@ -2149,37 +2188,6 @@ export const mkFleetHandle = ({
             })
           : viewInEditor());
       }
-      // A multi-question AskUserQuestion: ⇥ / ⇧⇥ (also ⌥→ / ⌥←) walk between its
-      // questions in any order, keeping whatever is typed for the one you leave.
-      // Nothing is sent until every question has an answer — see the
-      // `answerQuestion` submit branch — so out-of-order navigation is safe.
-      if (
-        p.kind === "answerQuestion" &&
-        p.qaAll &&
-        p.qaAll.length > 1 &&
-        p.requestId &&
-        p.sessionId &&
-        (key.tab || (key.meta && (key.leftArrow || key.rightArrow)))
-      ) {
-        const n = p.qaAll.length;
-        const cur = Math.min(p.qaIdx ?? 0, n - 1);
-        const back = key.shift || (key.meta && key.leftArrow);
-        const next = (cur + (back ? n - 1 : 1)) % n;
-        const answers = { ...p.qaAnswers, [p.qaAll[cur]!.question]: p.buffer.text };
-        return void dispatch({
-          t: "openPrompt",
-          prompt: makePrompt({
-            kind: "answerQuestion",
-            sessionId: p.sessionId,
-            requestId: p.requestId,
-            label: questionPromptLabel(p.qaAll, next),
-            text: answers[p.qaAll[next]!.question] ?? "",
-            qaAll: p.qaAll,
-            qaIdx: next,
-            qaAnswers: answers,
-          }),
-        });
-      }
       // ⇧⇥ cycles the permission mode without leaving the prompt.
       if (key.tab && key.shift) {
         if (p.kind === "new") return void dispatch({ t: "promptCycleMode" });
@@ -2250,9 +2258,21 @@ export const mkFleetHandle = ({
               text: state.plan.text,
             });
           }
-          // A multi-question AskUserQuestion walks its questions with ⇥ / ⇧⇥
-          // now, so Esc abandons the whole prompt like every other one (any
-          // answers typed so far are dropped, the daemon stays blocked).
+          // Esc on an AskUserQuestion answer drops back to the request panel
+          // (the daemon stays blocked) rather than abandoning the whole call:
+          // answers gathered so far — including whatever is typed now — are
+          // stashed in `qnav`, so ← / → can move to another question and `a`
+          // resumes where you left off.
+          if (p.kind === "answerQuestion" && p.qaAll && p.sessionId && p.requestId) {
+            const idx = Math.min(p.qaIdx ?? 0, p.qaAll.length - 1);
+            const answers = { ...p.qaAnswers };
+            if (p.buffer.text.trim() !== "") answers[p.qaAll[idx]!.question] = p.buffer.text;
+            dispatch({
+              t: "qnavSet",
+              nav: { sessionId: p.sessionId, requestId: p.requestId, idx, answers },
+            });
+            return void dispatch({ t: "closePrompt", saveDraft: false });
+          }
           return void dispatch({ t: "closePrompt", saveDraft: true });
         case "submit":
           promptSubmittedAt = Date.now();
@@ -2388,6 +2408,20 @@ export const mkFleetHandle = ({
     if (key.end) {
       logScroll = 0;
       return publish();
+    }
+    // ← / → move between the questions of a pending AskUserQuestion (the panel
+    // previews whichever is selected; `a` answers it). Only while parked on a
+    // multi-question call — otherwise the arrows drill into children, below.
+    if (key.leftArrow || key.rightArrow) {
+      const q = questionState(state, sel?.id);
+      if (q && q.qs.length > 1) {
+        const cur = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
+        const idx = (cur + (key.leftArrow ? q.qs.length - 1 : 1)) % q.qs.length;
+        return void dispatch({
+          t: "qnavSet",
+          nav: { sessionId: sel!.id, requestId: q.requestId, idx, answers: q.nav?.answers ?? {} },
+        });
+      }
     }
     // Fleet drill-down: → enters the selected session's child rows (its live
     // background tasks + sub-agents — the tree already rendered under the row);

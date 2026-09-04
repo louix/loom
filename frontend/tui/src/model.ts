@@ -422,6 +422,31 @@ export const parseAskUserQuestions = (input: unknown): AskUserQuestionItem[] => 
   return out;
 };
 
+/**
+ * In-progress answering of a multi-question `AskUserQuestion`. Lives outside the
+ * answer prompt so it survives the prompt closing: `Esc` drops back to the
+ * request panel, where `←` / `→` move between questions, and `a` re-opens the
+ * prompt on whichever one is shown. Answers gathered so far are kept keyed by
+ * question text; the permission resolves once every question has one.
+ */
+export interface QNav {
+  sessionId: string;
+  requestId: string;
+  /** Which question the panel previews and the next `a` opens. */
+  idx: number;
+  /** Answers gathered so far, keyed by question text. */
+  answers: Record<string, string>;
+}
+
+/** `nav`, but only if it still describes the request `sid` / `rid` is parked
+ *  on — a stale nav (resolved request, or a different session) reads as none. */
+export const liveQNav = (
+  nav: QNav | null | undefined,
+  sid: string | null | undefined,
+  rid: string | null | undefined,
+): QNav | null =>
+  nav && sid && rid && nav.sessionId === sid && nav.requestId === rid ? nav : null;
+
 export interface TuiState {
   connection: Connection;
   theme: ThemeMode;
@@ -488,6 +513,9 @@ export interface TuiState {
    * (keeping enter's fleet-row meaning) and esc clears. null = closed.
    */
   find: { buffer: Buffer } | null;
+  /** In-progress answers for a multi-question `AskUserQuestion` — see
+   *  {@link QNav}. Persists across the answer prompt opening and closing. */
+  qnav: QNav | null;
   /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
   promptHistory: string[];
   /**
@@ -522,6 +550,7 @@ export const initialState = (): TuiState => {
     plan: null,
     picker: null,
     find: null,
+    qnav: null,
     promptHistory: [],
     lastDraft: "",
   };
@@ -594,6 +623,7 @@ export type Action =
   | { t: "findSet"; buffer: Buffer }
   | { t: "closeFind" }
   | { t: "resolvePerm"; sessionId: string; id: string }
+  | { t: "qnavSet"; nav: QNav | null }
   | { t: "help"; value: boolean }
   | { t: "doctor"; value: boolean }
   | { t: "doctorLoaded"; report: DoctorReport };
@@ -935,18 +965,23 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return s.find ? { ...s, find: null } : s;
 
     case "resolvePerm": {
+      const qnav = liveQNav(s.qnav, a.sessionId, a.id) ? null : s.qnav;
       const cur = s.pending[a.sessionId];
-      if (!cur?.permissions) return s;
+      if (!cur?.permissions) return qnav === s.qnav ? s : { ...s, qnav };
       const rest = cur.permissions.filter((p) => p.id !== a.id);
       const { permissions: _drop, ...others } = cur;
       return {
         ...s,
+        qnav,
         pending: {
           ...s.pending,
           [a.sessionId]: rest.length ? { ...others, permissions: rest } : others,
         },
       };
     }
+
+    case "qnavSet":
+      return { ...s, qnav: a.nav };
 
     case "help":
       return { ...s, mode: a.value ? "help" : "browse" };

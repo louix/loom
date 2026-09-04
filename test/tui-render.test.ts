@@ -1996,8 +1996,8 @@ model    = "gpt-5"
     assert.deepEqual(askQuestionLines(QUESTIONS, 99, 76), askQuestionLines(QUESTIONS, 1, 76));
   });
 
-  test("the answer footer advertises question cycling only when there's more than one", () => {
-    const multi = reduce(initialState(), {
+  test("the answer footer says esc steps back to the panel, not cancel", () => {
+    const state = reduce(initialState(), {
       t: "openPrompt",
       prompt: makePrompt({
         kind: "answerQuestion",
@@ -2009,33 +2009,34 @@ model    = "gpt-5"
         qaAnswers: {},
       }),
     });
-    const multiOut = stripAnsi(
-      renderToString(createElement(FooterArea, { state: multi, width: 120 })),
-    );
-    assert.match(multiOut, /⇥ \/ ⇧⇥ question/);
-    assert.match(multiOut, /esc cancel/);
-    assert.doesNotMatch(multiOut, /esc back/);
-
-    const single = reduce(initialState(), {
-      t: "openPrompt",
-      prompt: makePrompt({
-        kind: "answerQuestion",
-        sessionId: "a",
-        requestId: "p1",
-        label: "answer: Auth",
-        qaAll: [QUESTIONS[0]!],
-        qaIdx: 0,
-        qaAnswers: {},
-      }),
-    });
-    const singleOut = stripAnsi(
-      renderToString(createElement(FooterArea, { state: single, width: 120 })),
-    );
-    assert.doesNotMatch(singleOut, /⇥ \/ ⇧⇥ question/);
-    assert.match(singleOut, /⌥o view/);
+    const out = stripAnsi(renderToString(createElement(FooterArea, { state, width: 120 })));
+    assert.match(out, /esc back/);
+    assert.doesNotMatch(out, /esc cancel/);
+    assert.doesNotMatch(out, /⇥/, "no tab binding is advertised");
+    assert.match(out, /⌥o view/);
   });
 
-  test("AskUserQuestion · ⇥ cycles the questions; answers land in any order", async () => {
+  test("the request-panel hint offers ←/→ only for a multi-question call", () => {
+    const multi = stripAnsi(
+      renderToString(createElement(RequestPanel, { pending: askPending(), width: 90 })),
+    );
+    assert.match(multi, /←\/→ question/);
+    const one = stripAnsi(
+      renderToString(
+        createElement(RequestPanel, {
+          pending: {
+            permissions: [
+              { id: "p1", tool: "AskUserQuestion", input: { questions: [QUESTIONS[0]!] } },
+            ],
+          },
+          width: 90,
+        }),
+      ),
+    );
+    assert.doesNotMatch(one, /←\/→ question/);
+  });
+
+  test("AskUserQuestion · esc drops to the panel, ←/→ pick a question, answers land in any order", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -2057,18 +2058,20 @@ model    = "gpt-5"
       assert.match(stdout.last, /a\) OAuth 2\.0/);
       assert.match(stdout.last, /d\) JWT bearer/);
 
-      stdin.feed("a"); // open the answer prompt
+      stdin.feed("a"); // open the answer prompt for question 1
       await waitFor(stdout, /answer 1\/2/);
-
-      stdin.feed("\t"); // ⇥ → jump to question 2 without answering question 1
-      await waitFor(stdout, (t) => /answer 2\/2/.test(t) && /QUESTION \(2\/2\)/.test(t));
-
-      stdin.feed("Postgres");
-      stdin.feed("\r"); // question 1 is still blank → Enter walks back to it
-      await waitFor(stdout, /answer 1\/2/);
-
       stdin.feed("API keys");
-      stdin.feed("\r"); // every question answered now → the permission resolves
+      stdin.feed(ESC); // esc → back to the panel, keeping the typed answer
+      await waitFor(stdout, (t) => /QUESTION \(1\/2\)/.test(t) && !/answer 1\/2/.test(t));
+
+      stdin.feed("\x1b[C"); // → move the panel to question 2
+      await waitFor(stdout, /QUESTION \(2\/2\)/);
+      assert.match(stdout.last, /Where should sessions live\?/);
+
+      stdin.feed("a"); // answer question 2
+      await waitFor(stdout, /answer 2\/2/);
+      stdin.feed("Postgres");
+      stdin.feed("\r"); // question 1 already answered → this resolves the call
       await waitFor(stdout, () => (fs?.permissionResponses.length ?? 0) > 0);
       assert.equal(fs?.permissionResponses.length, 1, "resolved exactly once");
       const resolved = fs!.permissionResponses[0]!;

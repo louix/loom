@@ -1079,10 +1079,10 @@ const promptHints = (p: PromptState, queued: number, sessionMode?: string | null
   }
   if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
   if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
-  // A multi-question AskUserQuestion: ⇥ / ⇧⇥ (and ⌥← / ⌥→) walk its questions
-  // in any order; Enter submits once every one has an answer.
-  if (p.kind === "answerQuestion" && (p.qaAll?.length ?? 0) > 1) bits.push("⇥ / ⇧⇥ question");
-  bits.push("esc cancel");
+  // Esc on an AskUserQuestion answer drops back to the request panel (where
+  // ← / → move between questions), keeping what's been answered — it doesn't
+  // abandon the whole call the way cancelling any other prompt does.
+  bits.push(p.kind === "answerQuestion" ? "esc back" : "esc cancel");
   return bits.join("  ·  ");
 };
 
@@ -1409,7 +1409,9 @@ export const RequestPanel = ({
         {title}
       </Text>
       {body}
-      <Text color={C.faint}>{hint}</Text>
+      <Text color={C.faint} wrap="truncate-end">
+        {hint}
+      </Text>
     </Box>
   );
 
@@ -1470,9 +1472,9 @@ export const RequestPanel = ({
           {l}
         </Text>
       )),
-      `${isQuestion ? "a answer" : "a approve"}  ·  d deny  ·  ⌥o / o view  ·  i interrupt${
-        perms.length > 1 ? "  ·  more queued" : ""
-      }`,
+      `${isQuestion ? "a answer" : "a approve"}  ·  d deny${
+        isQuestion && qs.length > 1 ? "  ·  ←/→ question" : ""
+      }  ·  ⌥o / o view  ·  i interrupt${perms.length > 1 ? "  ·  more queued" : ""}`,
     );
   }
   return null;
