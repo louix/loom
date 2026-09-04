@@ -469,6 +469,27 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("keep-warm turns on once a TTL is known, whatever the provider", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    // No turn yet ⇒ no TTL is known ⇒ nothing to race, so it's refused.
+    await assert.rejects(() => c.request("session.setKeepWarm", { id, on: true }));
+
+    // A turn that reports the TTL it wrote at arms the countdown; keep-warm is
+    // gated on that being known, not on the provider or on a config pin.
+    fs.finishTurn({ usage: { cacheWrite: 4000 }, cacheTtlMinutes: 5 });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1,
+    );
+    const snap = await c.request<SessionSnapshot>("session.setKeepWarm", { id, on: true });
+    assert.equal(snap.keepWarm, true);
+    assert.equal(snap.cache.ttlMinutes, 5);
+
+    const off = await c.request<SessionSnapshot>("session.setKeepWarm", { id, on: false });
+    assert.equal(off.keepWarm, false);
+    await c.close();
+  });
+
   test("session.compact forwards to the adapter and streams a compact event", async () => {
     const c = await client();
     const frames: PushFrame[] = [];

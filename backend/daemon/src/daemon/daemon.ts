@@ -2207,15 +2207,21 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const on = p["on"] === true;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
-      const snap = this.#registry.mustGet(id);
-      if (on && !(isClaudeId(snap.provider) && this.#cacheTtlMinutes > 0)) {
+      const snap = this.#enrich(this.#registry.mustGet(id), false);
+      // Gate on the TTL the countdown will actually run on — the measured one,
+      // or the config pin standing in for it — not on the provider or on the
+      // pin alone. `prompt_cache_ttl` defaults to unset now that the TTL is
+      // measured, so a provider+pin test rejects every session; and an aisdk
+      // Anthropic session has a real measured TTL to race, same as Claude.
+      if (on && snap.cache.ttlMinutes <= 0) {
         throw new RpcError(
           "bad_request",
-          "keep-warm needs a Claude session with a pinned prompt-cache TTL",
+          "keep-warm needs a known prompt-cache TTL — take a turn on a caching " +
+            "provider first, or pin one with prompt_cache_ttl",
         );
       }
       this.#sessions.setKeepWarm(id, on);
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#emitSessionUpdated(this.#registry.mustGet(id), clientLabel(params));
       return this.#enrich(this.#registry.mustGet(id));
     });
 

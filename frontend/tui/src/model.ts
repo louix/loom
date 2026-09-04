@@ -2186,9 +2186,9 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
         ...(half ? { footer: true } : {}),
       });
     }
-    // Keep-warm — palette only (a rarely-flipped toggle). Offered on Claude
-    // sessions with a pinned cache TTL, running or idle; the label reflects the
-    // current state.
+    // Keep-warm — palette only (a rarely-flipped toggle). Offered once the
+    // session has a known cache TTL to race (measured, or a config pin),
+    // running or idle; the label reflects the current state.
     if ((status.kind === "running" || status.kind === "idle") && session.cache.ttlMinutes > 0) {
       local.push({
         keys: "",
