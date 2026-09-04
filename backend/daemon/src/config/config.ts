@@ -194,9 +194,15 @@ export interface LoomConfig {
       /** Override the Claude Code executable. Empty = discover `claude` on PATH, else the SDK's bundled binary. */
       cliPath: string;
       /**
-       * Prompt-cache TTL for the main conversation: "5m", "1h", or "" (let the
-       * CLI decide — 1h on a subscription, 5m on an API key). Pinning it makes
-       * the TUI's cache-liveness countdown exact.
+       * Prompt-cache TTL for the main conversation: "5m", "1h", or "" (the
+       * default — let the CLI decide, which is 1h on a subscription within its
+       * usage limits and 5m on an API key, Bedrock, Vertex or Foundry).
+       *
+       * Loom used to pin "1h" so the cache countdown had a number to run on;
+       * it now measures the TTL off each response instead, so the pin is no
+       * longer load-bearing and the CLI — which knows the account type — is
+       * the better judge. Set it only to override that judgement, remembering
+       * a 1h cache write costs 2x base input against 1.25x for 5m.
        */
       promptCacheTtl: "5m" | "1h" | "";
     };
@@ -257,7 +263,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       settingSources: ["project"],
       disableBuiltin: ["Grep", "Glob"],
       cliPath: "",
-      promptCacheTtl: "1h",
+      promptCacheTtl: "",
     },
     aisdk: {},
   },

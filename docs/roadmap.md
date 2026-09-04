@@ -449,17 +449,28 @@ args instead of raw log lines / JSON. 264 tests.
 ## Prompt-cache liveness gauge ✓ shipped (post-M9, pre-M10)
 
 User-requested. `[providers.claude] prompt_cache_ttl` (`5m` / `1h` / `""`,
-default `1h`); the adapter injects `CLAUDE_CODE_PROMPT_CACHE_TTL` into the CLI
-env (which "wins" over settings) so the TTL is known exactly. migration 5 adds
+default `""`); when set, the adapter injects `CLAUDE_CODE_PROMPT_CACHE_TTL` into
+the CLI env (which "wins" over settings). migration 5 adds
 `usage.last_turn_at` / `last_cache_read` / `last_cache_write`, filled from the
 per-turn `usage` event in the rollup. `SessionSnapshot.cache = { ttlMinutes,
-lastTurnAt, lastRead, lastWrite }` — `ttlMinutes` overlaid by `Daemon.#enrich`
-(claude sessions only). Fleet rows carry a `⟢` dot graded by TTL fraction (`cacheHeat`: fresh >0.33, fading, expiring <0.08). `cacheStatus(snapshot, now)` selector →
+ttlSource, lastTurnAt, lastRead, lastWrite }`. Fleet rows carry a `⟢` dot graded by TTL fraction (`cacheHeat`: fresh >0.33, fading, expiring <0.08). `cacheStatus(snapshot, now)` selector →
 warm/cold/unknown + a `hit`/`rewrote` read of the last turn's split. Detail
 line `cache ⟢ warm ~M:SS · last turn hit`. Estimate only — blind to mid-turn
 refreshes, prefix invalidation, server-side eviction.
 
-Keep-warm (shipped): a `Space`-palette toggle per Claude+pinned-TTL session.
+TTL measurement (shipped, follow-up): the pin was only ever a _request_ — an API
+key, Bedrock/Vertex or a plan outside its usage limits serves 5m regardless, and
+the gauge would happily count down an hour on a cache that lapsed in five. The
+mapper now reads the bucket the request actually wrote into
+(`usage.cache_creation.ephemeral_{5m,1h}_input_tokens`, main-loop frames only —
+subagents run on `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`), sticky across
+read-only turns and rewinds, persisted by migration 17
+(`usage.last_cache_ttl_minutes`). `cache.ttlSource` says `observed` (measured) /
+`config` (the pin, still unconfirmed — detail line adds `· ttl assumed`) /
+`none`. `Daemon.#noteCacheTtlDrift` warns once per change when the two disagree.
+With the countdown no longer depending on the pin, the default became `""`.
+
+Keep-warm (shipped): a `Space`-palette toggle per Claude session with a known TTL.
 `session.setKeepWarm` RPC → `SessionManager.#keepWarm`; a 30 s daemon sweep
 (`Daemon.#sweepKeepWarm` / pure `keepWarmMove`) sends a one-line no-op turn
 (`opts.keepWarm`) once an idle session's cache drops below the red fraction

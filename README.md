@@ -344,16 +344,17 @@ countdown runs from the last turn against the TTL the provider was last seen
 _actually_ writing at — Loom reads the ephemeral bucket back off the response's
 `usage.cache_creation`, so the timer is measured, not assumed. Until the session
 has written cache once it falls back to the configured
-`[providers.claude] prompt_cache_ttl` (`1h` by default, pinned via
-`CLAUDE_CODE_PROMPT_CACHE_TTL`) and the cache line says `· ttl assumed`. A pin
-is only a request — an API key, Bedrock/Vertex, or a plan outside its usage
-limits can serve a 5m cache anyway — so when the measured TTL disagrees with the
-configured one, the daemon says so once. `last turn hit` / `rewrote` is the
-ground truth from that turn's cache read/write split. It's still an estimate — a
-context edit, a tool-list change, or server-side eviction drops the cache
-regardless of the clock.
+`[providers.claude] prompt_cache_ttl` (unset by default — the CLI decides, 1h on
+a subscription within its usage limits and 5m on an API key, Bedrock, Vertex or
+Foundry) and the cache line says `· ttl assumed`; unset and unmeasured, the row
+is hidden entirely. Setting the knob pins `CLAUDE_CODE_PROMPT_CACHE_TTL`, but a
+pin is only a request — the same platforms can serve a 5m cache anyway — so when
+the measured TTL disagrees with the configured one, the daemon says so once.
+`last turn hit` / `rewrote` is the ground truth from that turn's cache
+read/write split. It's still an estimate — a context edit, a tool-list change,
+or server-side eviction drops the cache regardless of the clock.
 
-Note the pin covers the _main conversation_ only. Subagents, workflows and
+Note the knob covers the _main conversation_ only. Subagents, workflows and
 background helpers run on the CLI's separate `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`
 knob (5m unless `ENABLE_PROMPT_CACHING_1H=1`); Loom does not set it, and the
 countdown does not model it.
