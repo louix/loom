@@ -483,7 +483,6 @@ export const mkFleetHandle = ({
     client
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE })
       .then((frames) => {
-        console.error("THEN-enter", Date.now(), frames.length);
         // The reducer dedupes by (epoch, seq) against the log and re-sorts by
         // `ts`, so the durable history (every epoch) interleaves correctly with
         // whatever the `hello` ring replay already seeded (current epoch only) —
@@ -513,7 +512,6 @@ export const mkFleetHandle = ({
     client
       .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
       .then((frames) => {
-        console.error("FOLD-THEN", Date.now(), "frames", JSON.stringify(frames.map((f) => f.seq)));
         const onSame = state.selectedId === id;
         const page = store.get().logPage;
         // Was the viewport showing the top of the log before the fold-in? Only

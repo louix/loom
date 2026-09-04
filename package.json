@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit",
     "typecheck:silent": "pnpm exec tsc --noEmit",
     "watch": "tsc --noEmit --watch",
-    "test": "node --import @oxc-node/core/register --test \"test/*.test.ts\"",
-    "test:silent": "node --import @oxc-node/core/register --test --test-reporter ./scripts/fail-only-reporter.mjs \"test/*.test.ts\"",
-    "test:timing": "node --import @oxc-node/core/register --test --test-reporter ./scripts/timing-reporter.mjs \"test/*.test.ts\"",
+    "test": "node --import ./scripts/test-env.mjs --import @oxc-node/core/register --test \"test/*.test.ts\"",
+    "test:silent": "node --import ./scripts/test-env.mjs --import @oxc-node/core/register --test --test-reporter ./scripts/fail-only-reporter.mjs \"test/*.test.ts\"",
+    "test:timing": "node --import ./scripts/test-env.mjs --import @oxc-node/core/register --test --test-reporter ./scripts/timing-reporter.mjs \"test/*.test.ts\"",
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."
