@@ -649,3 +649,55 @@ test("the hit-gap bound is per provider+model, from that model's own last turn",
     cleanup();
   }
 });
+
+test("switching provider or model forgets the cache observation", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    store.create({ id: "s1", provider: "gw", model: "a" });
+    const cache = () => store.get("s1")?.cache;
+
+    store.addUsage("s1", {
+      cacheRead: 9000,
+      cacheWrite: 500,
+      lastTurnAt: 1_700_000_000_000,
+      lastCacheRead: 9000,
+      lastCacheWrite: 500,
+      lastCacheTtlMinutes: 60,
+    });
+    assert.equal(cache()?.ttlMinutes, 60);
+    assert.equal(cache()?.ttlSource, "observed");
+
+    // A no-op re-assert must not reset a live countdown.
+    store.setFields("s1", { model: "a" });
+    assert.equal(cache()?.ttlMinutes, 60);
+    assert.equal(cache()?.lastTurnAt, 1_700_000_000_000);
+    // Nor must an unrelated field.
+    store.setFields("s1", { title: "hi" });
+    assert.equal(cache()?.ttlMinutes, 60);
+
+    // A real model change strands the entry: caches are model-scoped, so the
+    // new model starts cold and nothing measured about the old one applies.
+    store.setFields("s1", { model: "b" });
+    assert.deepEqual(cache(), {
+      ttlMinutes: 0,
+      ttlSource: "none",
+      lastTurnAt: 0,
+      lastRead: 0,
+      lastWrite: 0,
+    });
+    // Cumulative totals are untouched — only the liveness observation is.
+    assert.equal(store.get("s1")?.usage.cacheRead, 9000);
+
+    // Same for a provider switch (`session.setProvider` mid-chat).
+    store.addUsage("s1", { lastTurnAt: 1_700_000_100_000, lastCacheTtlMinutes: 5 });
+    assert.equal(cache()?.ttlMinutes, 5);
+    store.setFields("s1", { provider: "other", model: "b" });
+    assert.equal(cache()?.ttlMinutes, 0);
+    assert.equal(cache()?.lastTurnAt, 0);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});

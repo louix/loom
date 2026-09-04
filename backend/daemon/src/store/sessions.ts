@@ -232,10 +232,42 @@ export class SessionStore {
       }
     }
     if (cols.length === 0) return;
+    // Caches are scoped to a provider+model pair, so a switch strands whatever
+    // we had measured: the next turn cannot hit the old pair's entry. Detect a
+    // real change (not a no-op re-assert, which must not reset a live
+    // countdown) and forget the observation along with it.
+    const cur = this.#db.prepare("SELECT provider, model FROM sessions WHERE id = ?").get(id) as
+      | { provider: string; model: string | null }
+      | undefined;
+    const switching =
+      cur !== undefined &&
+      (("provider" in fields && fields.provider !== cur.provider) ||
+        ("model" in fields && (fields.model ?? null) !== cur.model));
     vals.push(Date.now());
+    withTransaction(this.#db, () => {
+      this.#db
+        .prepare(`UPDATE sessions SET ${cols.join(", ")}, updated_at = ? WHERE id = ?`)
+        .run(...vals, id);
+      if (switching) this.#clearCacheObservation(id);
+    });
+  }
+
+  /**
+   * Forget what this session's prompt cache was doing. Called when it changes
+   * provider or model: cache entries are scoped to a provider+model pair, so
+   * the new pair starts cold and unmeasured, and the old pair's TTL, countdown
+   * and read/write split all describe an entry the next turn cannot hit.
+   * `model_usage` needs no equivalent — it is already keyed by the pair.
+   */
+  #clearCacheObservation(id: string): void {
     this.#db
-      .prepare(`UPDATE sessions SET ${cols.join(", ")}, updated_at = ? WHERE id = ?`)
-      .run(...vals, id);
+      .prepare(
+        `UPDATE usage
+            SET last_turn_at = 0, last_cache_read = 0, last_cache_write = 0,
+                last_cache_ttl_minutes = 0, updated_at = ?
+          WHERE session_id = ?`,
+      )
+      .run(Date.now(), id);
   }
 
   addUsage(id: string, d: UsageDelta): void {

@@ -362,7 +362,10 @@ pin is only a request — the same platforms can serve a 5m cache anyway — so 
 the measured TTL disagrees with the configured one, the daemon says so once.
 `last turn hit` / `rewrote` is the ground truth from that turn's cache
 read/write split. It's still an estimate — a context edit, a tool-list change,
-or server-side eviction drops the cache regardless of the clock.
+or server-side eviction drops the cache regardless of the clock. Switching a
+session's model or provider (`⌥p`) forgets the measurement: cache entries are
+scoped to a provider+model pair, so the new one starts cold and unmeasured
+rather than inheriting a countdown it cannot hit.
 
 Note the knob covers the _main conversation_ only. Subagents, workflows and
 background helpers run on the CLI's separate `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`
