@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HarnessEvent } from "@loom/core/events";
-import { ClaudeProvider, __setClaudeSdk } from "@loom/connector-claude/adapter";
+import {
+  ClaudeProvider,
+  __setClaudeSdk,
+  outOfTreeWriteReason,
+} from "@loom/connector-claude/adapter";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -330,4 +334,104 @@ test("interrupt() abandons an in-flight compaction and releases the wait", async
 
   await s.close();
   await reader;
+});
+
+// ---------------------------------------------------------------------------
+// out-of-worktree write guard (auto mode)
+// ---------------------------------------------------------------------------
+
+const ROOT = "/home/user/dev/loom/.loom/trees/abc123";
+
+test("outOfTreeWriteReason: flags a write rooted at the wrong checkout", () => {
+  // Absolute path into the main checkout — the classic drift.
+  assert.match(
+    outOfTreeWriteReason(ROOT, ROOT, "Edit", {
+      file_path: "/home/user/dev/loom/frontend/tui/src/components.tsx",
+    }) ?? "",
+    /outside this session's worktree/,
+  );
+  // A relative path resolves against the tool's live cwd, not the root.
+  assert.ok(outOfTreeWriteReason(ROOT, "/home/user/dev/loom", "Write", { file_path: "README.md" }));
+  // `..` climbing out.
+  assert.ok(outOfTreeWriteReason(ROOT, ROOT, "MultiEdit", { file_path: "../xyz/f.ts" }));
+  assert.ok(outOfTreeWriteReason(ROOT, ROOT, "NotebookEdit", { notebook_path: "/etc/nb.ipynb" }));
+});
+
+test("outOfTreeWriteReason: leaves in-tree writes and non-write tools alone", () => {
+  assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Edit", { file_path: `${ROOT}/a/b.ts` }), null);
+  assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "src/b.ts" }), null);
+  assert.equal(outOfTreeWriteReason(ROOT, `${ROOT}/src`, "Edit", { file_path: "b.ts" }), null);
+  // A sibling dir that shares the root as a string prefix is still outside.
+  assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Edit", { file_path: `${ROOT}-scratch/b.ts` }));
+  // Not a file-mutating tool, or no checkable path.
+  assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Bash", { command: "rm -rf /" }), null);
+  assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Edit", {}), null);
+});
+
+type FakeHook = (input: unknown) => Promise<{
+  hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+}>;
+
+const captureHook = async (mode: "auto" | "default") => {
+  let options!: { hooks?: { PreToolUse?: Array<{ hooks: FakeHook[] }> } };
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      options = (args as { options: typeof options }).options;
+      return fakeQuery() as never;
+    },
+  });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "c1",
+    cwd: ROOT,
+    prompt: "go",
+    mode,
+    mcpServers: [],
+    loomServer: false,
+  });
+  const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+  assert.ok(hook, "a PreToolUse hook is registered");
+  return { s, hook };
+};
+
+const preToolUse = (tool: string, input: Record<string, unknown>) => ({
+  hook_event_name: "PreToolUse" as const,
+  tool_name: tool,
+  tool_input: input,
+  cwd: ROOT,
+});
+
+test("auto mode: the PreToolUse hook forces an ask for an out-of-worktree edit", async () => {
+  const { s, hook } = await captureHook("auto");
+  const out = await hook(
+    preToolUse("Edit", { file_path: "/home/user/dev/loom/frontend/tui/src/components.tsx" }),
+  );
+  assert.equal(out.hookSpecificOutput?.permissionDecision, "ask");
+  assert.match(
+    out.hookSpecificOutput?.permissionDecisionReason ?? "",
+    /outside this session's worktree/,
+  );
+
+  // In-tree edits and non-write tools are untouched.
+  assert.deepEqual(await hook(preToolUse("Edit", { file_path: `${ROOT}/a.ts` })), {});
+  assert.deepEqual(await hook(preToolUse("Read", { file_path: "/etc/hosts" })), {});
+  await s.close();
+});
+
+test("non-auto modes: the hook defers (every other mode already prompts)", async () => {
+  const { s, hook } = await captureHook("default");
+  assert.deepEqual(await hook(preToolUse("Edit", { file_path: "/home/user/dev/loom/x.ts" })), {});
+  await s.close();
+});
+
+test("the guard tracks a live setMode into auto", async () => {
+  const { s, hook } = await captureHook("default");
+  const outside = preToolUse("Write", { file_path: "/home/user/dev/loom/x.ts" });
+  assert.deepEqual(await hook(outside), {}, "default: deferred");
+  await s.setMode("auto");
+  assert.equal(
+    (await hook(outside)).hookSpecificOutput?.permissionDecision,
+    "ask",
+    "auto: now guarded",
+  );
+  await s.close();
 });

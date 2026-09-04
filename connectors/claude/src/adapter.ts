@@ -9,10 +9,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { forkSession as sdkForkSession, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
+  HookCallback,
   McpServerConfig,
   Options,
   PermissionMode,
@@ -98,6 +99,35 @@ interface CompactWait {
 }
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
+
+/** Built-in tools that mutate a file at a caller-supplied path. */
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/**
+ * Reason string when a file-mutating tool call points outside `root` — the
+ * session's pinned worktree — or `null` when it stays in-tree or carries no
+ * checkable path. `hookCwd` is the tool call's live working directory, so a
+ * relative `file_path` resolves the way the tool would resolve it.
+ *
+ * Lexical containment only: the target is catching an agent that built an
+ * absolute path off the wrong repo root (e.g. `/repo/foo` instead of
+ * `/repo/.loom/trees/xxx/foo`), not a symlink escaping the tree.
+ */
+export const outOfTreeWriteReason = (
+  root: string,
+  hookCwd: string,
+  toolName: string,
+  toolInput: unknown,
+): string | null => {
+  if (!WRITE_TOOLS.has(toolName)) return null;
+  const raw = toolInput as { file_path?: unknown; notebook_path?: unknown } | null;
+  const target = raw?.file_path ?? raw?.notebook_path;
+  if (typeof target !== "string" || target === "") return null;
+  const abs = isAbsolute(target) ? target : resolvePath(hookCwd || root, target);
+  const rel = relative(root, abs);
+  const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return inside ? null : `writes ${abs}, outside this session's worktree (${root})`;
+};
 
 /**
  * The two SDK entry points behind a mutable indirection so tests can swap in
@@ -327,6 +357,35 @@ class ClaudeSession implements AgentSession {
       });
     };
 
+    // `auto` mode lets the CLI auto-approve edits without ever calling
+    // `canUseTool`, so an agent that builds an absolute path off the wrong repo
+    // root (the main checkout instead of `.loom/trees/<id>`) writes there
+    // silently. This PreToolUse hook runs ahead of that classifier: for a
+    // file-mutating tool whose target escapes the session's worktree it forces
+    // an `ask`, which flows back through `canUseTool` as a normal
+    // `permission_request`. Self-gates on the *live* mode — every other mode
+    // already prompts, so the guard would only double up.
+    const worktreeRoot = opts.cwd;
+    const guardOutOfTreeWrites: HookCallback = (input) => {
+      if (input.hook_event_name !== "PreToolUse") return Promise.resolve({});
+      if (this.#mode !== "auto") return Promise.resolve({});
+      const reason = outOfTreeWriteReason(
+        worktreeRoot,
+        input.cwd,
+        input.tool_name,
+        input.tool_input,
+      );
+      if (reason === null) return Promise.resolve({});
+      this.#log.info("out-of-worktree write → prompting", { tool: input.tool_name, reason });
+      return Promise.resolve({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: `Claude ${reason}`,
+        },
+      });
+    };
+
     const mcpServers = mcpConfig(opts.mcpServers);
     if (opts.loomServer) {
       mcpServers["loom"] = buildLoomMcpServer({
@@ -341,6 +400,7 @@ class ClaudeSession implements AgentSession {
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,
+      hooks: { PreToolUse: [{ hooks: [guardOutOfTreeWrites] }] },
       includePartialMessages: false,
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
