@@ -480,6 +480,29 @@ gate is `cache.ttlMinutes > 0`, not the provider).
 any real `send`, gives up after `KEEP_WARM_MAX_PINGS` (6). Runtime-only —
 `SessionSnapshot.keepWarm` overlaid by `#enrich`, cleared on daemon restart.
 
+## Cache stats + lifetime evidence ✓ shipped (post-M10)
+
+Migration 18 `model_usage` (session, provider, model) — the same spend the
+`usage` rollup keeps per session, sliced by the model that made it, since a
+session can `setModel` mid-life and blend them. Carries the observed
+`ttl_minutes` for the pair. `cacheHitRate()` in `@loom/core/cache`; Detail pane
+`tokens` row shows the session's lifetime rate; `stats.models` RPC →
+`loom cache [id]`.
+
+Migration 19 adds `last_turn_at` + `max_hit_gap_sec`: the longest idle gap after
+which a pair was still seen _hitting_. Sound lower bound on the TTL — a hit
+proves the entry survived, a miss may be expiry or may be prefix invalidation,
+so misses are not recorded and the bound never shrinks. The only lifetime
+signal for endpoints that report no TTL. Deliberately not wired to the
+countdown: a lower bound is not a lifetime.
+
+aisdk: `AisdkEventMapper` reads `providerMetadata.anthropic` for cache writes
+and the `cache_creation` split, and uses its presence to pick the right token
+convention (Anthropic's `input_tokens` is the uncached remainder; OpenAI's
+`prompt_tokens` includes reads). `[anthropic]` profiles send
+`providerOptions.anthropic.cacheControl` every turn — `@ai-sdk/anthropic` sets
+no breakpoint of its own — with `prompt_cache_ttl` ("5m" / "1h" / "off").
+
 ## Rough sequencing notes
 
 - **6** first: self-contained, small SDK spike, and everything after it benefits

@@ -239,4 +239,17 @@ export const MIGRATIONS: string[] = [
 
   CREATE INDEX model_usage_model_idx ON model_usage(provider, model);
   `,
+
+  // 19 — evidence about cache lifetime for providers that report none. A cache
+  // *hit* after an idle gap of N seconds proves the entry survived N seconds,
+  // so `max_hit_gap_sec` is a sound lower bound on the TTL. The converse is not
+  // true: a miss may be expiry, or may be prefix invalidation (a tool-list
+  // change, an edited system prompt, server-side eviction), so misses are not
+  // recorded — hits are proof, misses are hearsay. `last_turn_at` is per
+  // provider+model so the gap is measured from when *this* model last ran,
+  // which is what its own model-scoped cache would have been written by.
+  /* sql */ `
+  ALTER TABLE model_usage ADD COLUMN last_turn_at     INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE model_usage ADD COLUMN max_hit_gap_sec  INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

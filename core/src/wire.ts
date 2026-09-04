@@ -262,6 +262,16 @@ export interface ModelUsage {
    * observed (the provider reports no TTL, or has never written cache here).
    */
   ttlMinutes: number;
+  /**
+   * The longest idle gap after which this pair was still observed *hitting*
+   * cache, in seconds; 0 = never seen. A sound lower bound on the real TTL —
+   * a hit proves the entry survived that long — and the only lifetime signal
+   * available from providers that report no TTL at all (OpenAI-compatible
+   * endpoints, which cache implicitly server-side). Deliberately one-sided:
+   * a *miss* may be expiry or may be prefix invalidation, so misses are not
+   * counted and this never shrinks.
+   */
+  maxHitGapSec: number;
   /** Sessions that contributed — 1 for a per-session row. */
   sessions: number;
   updatedAt: number;

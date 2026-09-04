@@ -388,6 +388,16 @@ last observed writing at; a session that switched models blends into one row in
 the pane but stays separate here. A long session sitting at a low hit rate means
 something is invalidating the prefix between turns.
 
+Each row also carries `≥Nm warm`: the longest idle gap after which that pair was
+still seen _hitting_ cache. That's a lower bound, not a TTL — a hit proves the
+entry survived the gap, whereas a miss might be expiry or might be prefix
+invalidation, so misses are never counted and the bound only grows. It's the
+only lifetime signal available from endpoints that report no TTL (the
+OpenAI-compatible ones, which cache implicitly server-side), and a sanity check
+against the measured TTL where there is one. It deliberately does not feed the
+cache countdown: a lower bound isn't a lifetime, and a gauge implies precision
+this doesn't have.
+
 **Context compaction.** `c` on a running or idle session opens a one-line prompt
 — blank gives a best-effort summary of everything; text is the advanced path,
 steering what the summary keeps (e.g. `keep the plan, drop the investigation`) —

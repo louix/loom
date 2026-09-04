@@ -310,12 +310,24 @@ export class SessionStore {
     const accFloat = (v: number | undefined): number =>
       typeof v === "number" && Number.isFinite(v) ? v : 0;
     const ttl = acc(d.lastCacheTtlMinutes);
+    // A read means the prefix written before the gap was still alive. Only a
+    // hit is evidence: a miss could equally be prefix invalidation, so it says
+    // nothing about the lifetime and is not recorded. `last_turn_at` on the
+    // right-hand side is the pre-update value (SQLite evaluates SET against the
+    // old row), so the gap is measured before it is overwritten.
+    const hit = acc(d.cacheRead) > 0 ? 1 : 0;
+    // The turn's own wall-clock, matching what `usage.last_turn_at` records —
+    // not "now", which drifts by however long the rollup took to arrive.
+    const at =
+      typeof d.lastTurnAt === "number" && Number.isFinite(d.lastTurnAt)
+        ? Math.trunc(d.lastTurnAt)
+        : now;
     this.#db
       .prepare(
         `INSERT INTO model_usage
            (session_id, provider, model, input, output, cache_read, cache_write,
-            cost_usd, turns, ttl_minutes, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_usd, turns, ttl_minutes, last_turn_at, max_hit_gap_sec, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
          ON CONFLICT(session_id, provider, model) DO UPDATE SET
            input       = input + excluded.input,
            output      = output + excluded.output,
@@ -326,7 +338,13 @@ export class SessionStore {
            -- absolute, and a delta that carries no TTL must not clear it
            ttl_minutes = CASE WHEN excluded.ttl_minutes > 0
                               THEN excluded.ttl_minutes ELSE ttl_minutes END,
-           updated_at  = excluded.updated_at`,
+           max_hit_gap_sec = CASE
+             WHEN ? = 1 AND last_turn_at > 0
+                  AND (excluded.last_turn_at - last_turn_at) / 1000 > max_hit_gap_sec
+             THEN (excluded.last_turn_at - last_turn_at) / 1000
+             ELSE max_hit_gap_sec END,
+           last_turn_at = excluded.last_turn_at,
+           updated_at   = excluded.updated_at`,
       )
       .run(
         sessionId,
@@ -339,7 +357,9 @@ export class SessionStore {
         accFloat(d.costUsd),
         acc(d.turns),
         ttl,
+        at,
         now,
+        hit,
       );
   }
 
@@ -361,6 +381,7 @@ export class SessionStore {
                   WHERE m2.provider = m.provider AND m2.model = m.model
                     AND m2.ttl_minutes > 0
                   ORDER BY m2.updated_at DESC LIMIT 1) AS ttl_minutes,
+                MAX(max_hit_gap_sec) AS max_hit_gap_sec,
                 COUNT(*) AS sessions, MAX(updated_at) AS updated_at
            FROM model_usage m
            ${where}
@@ -378,6 +399,7 @@ export class SessionStore {
       costUsd: Number(r["cost_usd"] ?? 0),
       turns: Number(r["turns"] ?? 0),
       ttlMinutes: Number(r["ttl_minutes"] ?? 0),
+      maxHitGapSec: Number(r["max_hit_gap_sec"] ?? 0),
       sessions: Number(r["sessions"] ?? 0),
       updatedAt: Number(r["updated_at"] ?? 0),
     }));

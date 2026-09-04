@@ -78,8 +78,12 @@ const USAGE: Record<string, string> = {
   cache: `loom cache [id]  — prompt-cache effectiveness per provider/model
 
   one row per provider+model that has spent tokens: the share of prompt tokens
-  served from cache, the read/write split behind it, and the prompt-cache TTL
-  the provider was last observed writing at ("-" if it never reported one).
+  served from cache, the read/write split behind it, the prompt-cache TTL the
+  provider was last observed writing at ("-" if it never reported one), and the
+  longest idle gap it has still been seen hitting after ("≥Nm warm").
+  That gap is a lower bound, not a TTL: a hit proves the entry survived it,
+  while a miss may be expiry or may be prefix invalidation, so misses are not
+  counted. For endpoints that report no TTL it is the only lifetime signal.
   With an id, only that session's models. Low hit rate on a long session means
   something is invalidating the prefix between turns.
   --json                       machine-readable`,
@@ -283,14 +287,17 @@ const main = async (): Promise<void> => {
         const pad = Math.max(...r.models.map((m) => `${m.provider}/${m.model}`.length));
         for (const m of r.models) {
           const rate = cacheHitRate(m);
-          // "-" and "n/a" are different answers: no TTL was ever reported, vs
-          // nothing has been spent here so there is no rate to quote.
+          // Two different lifetimes, and they mean different things: `ttl` is
+          // what the provider said it wrote (exact, Anthropic only), `≥` is the
+          // longest idle gap we've seen it still hit after (a lower bound, and
+          // the only signal for endpoints that report no TTL).
           const ttl = m.ttlMinutes > 0 ? `${m.ttlMinutes}m ttl` : "- ttl";
+          const seen = m.maxHitGapSec > 0 ? `  ≥${Math.round(m.maxHitGapSec / 60)}m warm` : "";
           process.stdout.write(
             `${`${m.provider}/${m.model}`.padEnd(pad)}  ` +
               `${(rate == null ? "n/a" : `${Math.round(rate * 100)}%`).padStart(4)} cached  ` +
               `${String(m.cacheRead).padStart(9)} cr  ${String(m.cacheWrite).padStart(9)} cw  ` +
-              `${String(m.input).padStart(9)} in  ${ttl}\n`,
+              `${String(m.input).padStart(9)} in  ${ttl}${seen}\n`,
           );
         }
         break;

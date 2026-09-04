@@ -590,3 +590,62 @@ test("cacheHitRate distinguishes 'nothing spent' from 'never cached'", () => {
   // A cache *write* is a miss for the tokens it covers — it was not served.
   assert.equal(cacheHitRate({ input: 0, cacheRead: 50, cacheWrite: 50 }), 0.5);
 });
+
+test("a cache hit after an idle gap records a lower bound on the TTL", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    store.create({ id: "s1", provider: "gw" });
+    const row = () => store.modelUsage("s1")[0];
+    const T0 = 1_700_000_000_000;
+    const min = (n: number) => T0 + n * 60_000;
+
+    // First turn: nothing to measure a gap from.
+    store.addModelUsage("s1", "gw", "m", { input: 100, cacheWrite: 900, lastTurnAt: min(0) });
+    assert.equal(row()?.maxHitGapSec, 0);
+
+    // A hit 10 minutes later proves the entry survived 10 minutes.
+    store.addModelUsage("s1", "gw", "m", { cacheRead: 900, lastTurnAt: min(10) });
+    assert.equal(row()?.maxHitGapSec, 600);
+
+    // A shorter hit doesn't lower the bound — it only ever grows.
+    store.addModelUsage("s1", "gw", "m", { cacheRead: 900, lastTurnAt: min(11) });
+    assert.equal(row()?.maxHitGapSec, 600);
+
+    // A longer one does.
+    store.addModelUsage("s1", "gw", "m", { cacheRead: 900, lastTurnAt: min(36) });
+    assert.equal(row()?.maxHitGapSec, 1500);
+
+    // A *miss* after a long gap proves nothing — it could be expiry, or the
+    // prefix could have been invalidated. Not recorded.
+    store.addModelUsage("s1", "gw", "m", { input: 100, cacheWrite: 900, lastTurnAt: min(200) });
+    assert.equal(row()?.maxHitGapSec, 1500);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("the hit-gap bound is per provider+model, from that model's own last turn", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = openDb(path);
+    const store = new SessionStore(db);
+    store.create({ id: "s1", provider: "gw" });
+    const T0 = 1_700_000_000_000;
+    const min = (n: number) => T0 + n * 60_000;
+    // Caches are model-scoped, so a gap measured across a `setModel` would
+    // describe the wrong cache. Each pair keeps its own last-turn clock.
+    store.addModelUsage("s1", "gw", "a", { input: 10, cacheWrite: 900, lastTurnAt: min(0) });
+    store.addModelUsage("s1", "gw", "b", { input: 10, cacheWrite: 900, lastTurnAt: min(30) });
+    store.addModelUsage("s1", "gw", "b", { cacheRead: 900, lastTurnAt: min(35) });
+    const rows = store.modelUsage("s1");
+    // `b`'s gap is measured from `b`'s own last turn (5m), not from `a`'s (35m).
+    assert.equal(rows.find((r) => r.model === "b")?.maxHitGapSec, 300);
+    assert.equal(rows.find((r) => r.model === "a")?.maxHitGapSec, 0);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
