@@ -205,7 +205,7 @@ export const Fleet = ({
     focused && s.id === state.selectedId ? focused.key : null;
 
   const row = (s: SessionSnapshot) => (
-    <Box key={s.id} flexDirection="column">
+    <Box key={s.id} flexDirection="column" flexShrink={0}>
       {FleetRow({
         s,
         selected: s.id === state.selectedId,
@@ -239,7 +239,7 @@ export const Fleet = ({
     blocks = matched.map(row);
   } else {
     blocks = groups.map((g, i) => (
-      <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0}>
+      <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0} flexShrink={0}>
         <Text bold>
           <Text color={statusLook(g.status).color}>{statusLook(g.status).glyph + " "}</Text>
           <Text color={C.dim}>{g.label.toUpperCase()}</Text>
@@ -265,6 +265,7 @@ export const Fleet = ({
   return (
     <Box
       flexDirection="column"
+      flexShrink={0}
       width={width}
       borderStyle="round"
       borderColor={C.faint}
@@ -275,7 +276,7 @@ export const Fleet = ({
         {title}
       </Text>
       {state.find ? (
-        <Box marginTop={1}>
+        <Box marginTop={1} flexShrink={0}>
           <InputLine
             buf={state.find.buffer}
             room={Math.max(8, iw - 2)}
@@ -284,7 +285,7 @@ export const Fleet = ({
           />
         </Box>
       ) : null}
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={1} flexShrink={0}>
         {blocks}
       </Box>
     </Box>
@@ -399,7 +400,7 @@ const FleetChildRows = ({
   const room = Math.max(6, iw - 8);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       {shown.map((c, i) => {
         // The cursor keeps the parent row's 2-col gutter; the tree connector
         // follows it, so focused and idle rows stay column-aligned.
