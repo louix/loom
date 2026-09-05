@@ -9,15 +9,6 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # nixpkgs' own `pnpm` is 11.22 — one patch short of this repo's
-      # `engines.pnpm >= 11.23.0` / `virtualStoreType: global` requirement.
-      # `generic.nix` is parameterised by version + tarball hash, so a plain
-      # `.override` tracks a newer pnpm without patching anything.
-      pnpmFor = pkgs: pkgs.pnpm_11.override {
-        version = "11.24.0";
-        hash = "sha256-0eqyQzFyZhzDahjshfzpP3cdsZYnFzKcwB7JwoJMok8=";
-      };
-
       # Short commit for `loom --version` when built from a checkout; a tag
       # would surface as the full ref. The flake sandbox has no `.git`, so the
       # daemon/CLI can't `git describe` at runtime — we stamp it here instead
@@ -46,90 +37,72 @@
 
       packages = forAll (
         pkgs:
-        let
-          pnpm' = pnpmFor pkgs;
-          # The offline `pnpm install` in pnpmConfigHook must run the *same*
-          # pnpm as fetchPnpmDeps; mirror nixpkgs' own `pnpm.configHook`.
-          pnpmConfigHook' = pkgs.pnpmConfigHook.overrideAttrs (prev: {
-            propagatedBuildInputs = (prev.propagatedBuildInputs or [ ]) ++ [ pnpm' ];
-          });
-        in
         rec {
           default = loom;
+
+          # A fixed-output derivation holding a populated `DENO_DIR`: every
+          # npm tarball + esm module `deno.lock` pins, fetched once under a
+          # hash of the lockfile's own content. `deno install --frozen`
+          # refuses to touch the lockfile, so this is reproducible the same
+          # way `fetchPnpmDeps` is — only the network-fetch step is allowed
+          # to vary, not what it's allowed to produce.
+          denoDeps = pkgs.stdenvNoCC.mkDerivation {
+            pname = "loom-deno-deps";
+            version = revFor;
+            src = ./.;
+
+            nativeBuildInputs = [ pkgs.deno pkgs.cacert ];
+            dontConfigure = true;
+            dontFixup = true;
+
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR"
+              export DENO_DIR="$out"
+              export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+              deno install --frozen
+              runHook postBuild
+            '';
+
+            # DENO_DIR *is* $out; nothing else to place there.
+            installPhase = "true";
+
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
+            outputHash = "sha256-+WMUoSbTd/Q+AVujXSXtmd2lIs08nEEMfgQ3eX/+oeE=";
+          };
 
           loom = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
             pname = "loom";
             version = revFor;
             src = ./.;
 
-            pnpmDeps =
-              (pkgs.fetchPnpmDeps {
-                inherit (finalAttrs) pname version src;
-                pnpm = pnpm';
-                # pnpm_11 requires the v4 fetcher (v3 was dropped for pnpm 11).
-                fetcherVersion = 4;
-                hash = "sha256-M7mRof5jV0QA4BB6rG0C31q9YBXs2Ib6uiiD/gasmdg=";
-              }).overrideAttrs
-                (o: {
-                  # The fetcher's fixupPhase runs `jq` over *every* *.json in the
-                  # fetched store to strip `checkedAt` timestamps. Lots of deps
-                  # (`@ljharb/*`, `@anthropic-ai/sdk`, …) publish JSONC
-                  # `tsconfig.json` payload files with comments / trailing commas
-                  # that jq can't parse, aborting the phase. Those files carry no
-                  # `checkedAt` and aren't store metadata, so fall back to
-                  # copying them through untouched.
-                  fixupPhase = builtins.replaceStrings
-                    [ ''jq --sort-keys "del(.. | .checkedAt?)" $f | sponge $f'' ]
-                    [ ''{ jq --sort-keys "del(.. | .checkedAt?)" $f 2>/dev/null || cat $f; } | sponge $f'' ]
-                    o.fixupPhase;
-                });
-
-            nativeBuildInputs = [
-              pkgs.nodejs_24
-              pnpm'
-              pnpmConfigHook'
-              pkgs.makeWrapper
-            ];
-
-            # fetchPnpmDeps' tarball round-trip strips the exec bit from pnpm's
-            # content-addressed store blobs. pnpm v11 records executability in a
-            # `-exec` suffix on the blob *name* rather than the file mode, and
-            # `pnpm install` clones/copies blobs into node_modules without
-            # consulting it — so every binary a dependency ships lands
-            # un-executable. The one that matters is
-            # @anthropic-ai/claude-agent-sdk-linux-x64's bundled `claude`: the
-            # SDK spawns it for model discovery (and for sessions when no
-            # `claude` is on PATH), and a non-executable copy fails with
-            # "exists but failed to launch", silently pinning the TUI's model
-            # picker to the single configured model. This hook runs inside
-            # pnpmConfigHook after the store is unpacked and configured, before
-            # the install materialises node_modules from it.
-            prePnpmInstall = ''
-              find "$STORE_PATH" -type f -name '*-exec' -exec chmod +x {} +
-            '';
-
-            postPatch = ''
-              # `virtualStoreType: global` (pnpm-workspace.yaml) makes pnpm
-              # symlink node_modules into a CAS shared across the repo's many git
-              # worktrees — deliberately outside the project tree, which a
-              # self-contained Nix build can't relocate. Drop it so the offline
-              # install materialises a normal, in-tree node_modules/.pnpm.
-              sed -i '/^virtualStoreType:/d' pnpm-workspace.yaml
-            '';
-
-            # No compile step — .ts/.tsx run through @oxc-node at load time,
-            # exactly as the repo's own `pnpm loom` script does. The extra
-            # `--import` fixes @oxc-node's ESM hook deciding module format
-            # from the *invoking directory's* package.json rather than the
-            # imported file's: without it, `loom` run from any directory
-            # outside a `"type": "module"` package (i.e. every user project)
-            # crashes importing the TUI with ERR_REQUIRE_CYCLE_MODULE. See
-            # cli/src/oxc-esm-fixup.mjs.
-            dontBuild = true;
+            nativeBuildInputs = [ pkgs.deno pkgs.makeWrapper ];
+            dontConfigure = true;
 
             # Some deps ship intentionally-dangling symlinks (test fixtures);
             # the wrappers below don't touch them.
             dontCheckForBrokenSymlinks = true;
+
+            # These files are never executed via their shebang (makeWrapper
+            # below calls `deno run` on them directly) — patchShebangs mangles
+            # the `-S deno run -A` multi-arg form, dropping the interpreter
+            # name entirely.
+            dontPatchShebangs = true;
+
+            # `nodeModulesDir: "auto"` (root deno.json) materialises a real
+            # node_modules/ from DENO_DIR's cache — same shape `pnpm install
+            # --offline` gave the old build, just sourced from `denoDeps`
+            # instead of `pnpmDeps`. `--cached-only` keeps this build (unlike
+            # `denoDeps` above) off the network entirely; it's not a fixed
+            # output, so Nix's sandbox wouldn't allow it anyway.
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR"
+              export DENO_DIR="${denoDeps}"
+              deno install --frozen --cached-only
+              runHook postBuild
+            '';
 
             installPhase = ''
               runHook preInstall
@@ -137,14 +110,13 @@
               mkdir -p $out/libexec/loom
               cp -R . $out/libexec/loom
 
-              # oxnode's shebang -> a concrete node; make node discoverable too.
-              patchShebangs $out/libexec/loom/node_modules/.bin
-
               for bin in loom loomd; do
-                makeWrapper $out/libexec/loom/node_modules/.bin/oxnode $out/bin/$bin \
-                  --add-flags "--import file://$out/libexec/loom/cli/src/oxc-esm-fixup.mjs" \
-                  --add-flags $out/libexec/loom/cli/src/$bin.ts \
-                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nodejs_24 pkgs.git ]} \
+                makeWrapper ${pkgs.deno}/bin/deno $out/bin/$bin \
+                  --add-flags "run -A --cached-only --node-modules-dir=manual" \
+                  --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
+                  --set DENO_DIR ${denoDeps} \
+                  --set DENO_NO_UPDATE_CHECK 1 \
+                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version}
               done
 
