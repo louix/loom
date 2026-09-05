@@ -524,6 +524,11 @@ export interface TuiState {
    * once the text is actually sent.
    */
   lastDraft: string;
+  /** Tool name for every in-flight `tool_call`, keyed by its id — looked up
+   *  when the matching `tool_result` lands so tool-aware formatting (Read's
+   *  result staying terse, an Edit rendering as a diff) doesn't need the
+   *  event itself to carry the name. */
+  toolNames: Record<string, string>;
 }
 
 export const initialState = (): TuiState => {
@@ -553,6 +558,7 @@ export const initialState = (): TuiState => {
     qnav: null,
     promptHistory: [],
     lastDraft: "",
+    toolNames: {},
   };
 };
 
@@ -1043,8 +1049,19 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       // Account-plan usage — surfaced live via the session snapshot's
       // `rateLimits`, not the transcript; it isn't a conversational entry.
       if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
-      const log = appendLog(s.log, toLogLine(frame.seq, epoch, ev));
-      return { ...s, log, pending, compacting, notice };
+      // Remember each tool_call's name by id so its later tool_result can be
+      // formatted tool-aware (an Edit's diff needs no lookup — its own event
+      // already carries the name — but a Read's terse result does).
+      let toolNames = s.toolNames;
+      let toolName: string | undefined;
+      if (ev.type === "tool_call") {
+        toolNames = { ...toolNames, [ev.id]: ev.name };
+      } else if (ev.type === "tool_result") {
+        toolName = toolNames[ev.id];
+        if (toolName !== undefined) toolNames = without(toolNames, ev.id);
+      }
+      const log = appendLog(s.log, toLogLine(frame.seq, epoch, ev, toolName));
+      return { ...s, log, pending, compacting, notice, toolNames };
     }
     case "session_updated": {
       const rest = s.sessions.filter((x) => x.id !== frame.session.id);
@@ -1172,13 +1189,20 @@ const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
  */
 export const backfillAdds = (log: readonly LogLine[], frames: readonly EventPush[]): LogLine[] => {
   const have = new Set(log.map((l) => `${l.epoch}:${l.seq}`));
+  // Per-batch only (see the TuiState `toolNames` map for the live-push path) —
+  // a call/result pair split across two backfill pages falls back to generic
+  // formatting, which is a fine default for history this old.
+  const toolNames: Record<string, string> = {};
   const added: LogLine[] = [];
   for (const frame of frames) {
-    if (NON_TRANSCRIPT.has(frame.event.type)) continue;
+    const event = frame.event;
+    if (NON_TRANSCRIPT.has(event.type)) continue;
     const key = `${frame.epoch ?? ""}:${frame.seq}`;
     if (have.has(key)) continue;
     have.add(key);
-    added.push(toLogLine(frame.seq, frame.epoch ?? "", frame.event));
+    if (event.type === "tool_call") toolNames[event.id] = event.name;
+    const toolName = event.type === "tool_result" ? toolNames[event.id] : undefined;
+    added.push(toLogLine(frame.seq, frame.epoch ?? "", event, toolName));
   }
   return added;
 };
@@ -2480,8 +2504,13 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
 // event → log line
 // ---------------------------------------------------------------------------
 
-export const toLogLine = (seq: number, epoch: string, ev: HarnessEvent): LogLine => {
-  const f = formatEvent(ev);
+export const toLogLine = (
+  seq: number,
+  epoch: string,
+  ev: HarnessEvent,
+  toolName?: string,
+): LogLine => {
+  const f = formatEvent(ev, toolName);
   return {
     seq,
     epoch,
@@ -2524,7 +2553,7 @@ const body = (s: string): string =>
     .replace(/[ \t]+$/gm, "")
     .trimEnd();
 
-export const formatEvent = (ev: HarnessEvent): EventFormat => {
+export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat => {
   switch (ev.type) {
     case "assistant_text":
       return { glyph: "▪", text: oneLine(ev.text), full: body(ev.text), tone: "plain" };
@@ -2534,7 +2563,7 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
       const desc = toolDescriptionOf(ev.input);
       return {
         glyph: "⚙",
-        text: `${ev.name}${summarizeInput(ev.input)}`,
+        text: `${ev.name}${summarizeInput(ev.name, ev.input)}`,
         full: toolCallFull(ev.name, ev.input),
         ...(desc !== undefined ? { toolDescription: desc } : {}),
         tone: "warn",
@@ -2543,10 +2572,14 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
     case "tool_result": {
       const raw = valueOf(ev.output);
       const out = typeof raw === "string" ? body(raw) : "";
+      // A read-only whole-file tool's result is just the file the user can
+      // already see — the call line (path + range) says enough; don't dump
+      // the content into the log a second time.
+      const terse = ev.ok && toolName !== undefined && isReadTool(toolName);
       return {
         glyph: "↳",
         text: ev.ok ? "ok" : `error ${oneLine(out || String(raw), 120)}`,
-        ...(out ? { full: ev.ok ? out : `error\n${out}` } : {}),
+        ...(out && !terse ? { full: ev.ok ? out : `error\n${out}` } : {}),
         tone: ev.ok ? "good" : "bad",
       };
     }
@@ -2642,9 +2675,45 @@ export const formatEvent = (ev: HarnessEvent): EventFormat => {
   }
 };
 
-const summarizeInput = (input: unknown): string => {
+/** Claude's built-in whole-file reader, and tilth's structural equivalent — a
+ *  tool_result here is just the file, already visible to the user; showing it
+ *  again in the log is pure noise (see `formatEvent`'s `tool_result` case). */
+const isReadTool = (name: string): boolean => name === "Read" || name.endsWith("tilth_read");
+
+/** String-replacement editors, across every connector's naming for one. */
+const isEditTool = (name: string): boolean =>
+  name === "Edit" || name === "MultiEdit" || name === "edit" || name.endsWith("tilth_edit");
+
+/** tilth's batch multi-file write — its `files` array gets one block per file
+ *  instead of rendering as a single JSON blob (see `tilthWriteBody`). */
+const isTilthWriteTool = (name: string): boolean => name.endsWith("tilth_write");
+
+const pathOf = (o: Record<string, unknown>): string | undefined =>
+  typeof o.file_path === "string" ? o.file_path : typeof o.path === "string" ? o.path : undefined;
+
+const summarizeInput = (name: string, input: unknown): string => {
   if (input && typeof input === "object") {
     const o = input as Record<string, unknown>;
+    if (isTilthWriteTool(name) && Array.isArray(o.files)) {
+      const paths = o.files.map((f) =>
+        f && typeof f === "object" && typeof (f as Record<string, unknown>).path === "string"
+          ? ((f as Record<string, unknown>).path as string)
+          : "?",
+      );
+      return `  ${paths.length} file${paths.length === 1 ? "" : "s"}: ${oneLine(paths.join(", "), 80)}`;
+    }
+    if (isReadTool(name)) {
+      const path = pathOf(o);
+      if (path !== undefined) {
+        const offset = typeof o.offset === "number" ? o.offset : undefined;
+        const limit = typeof o.limit === "number" ? o.limit : undefined;
+        const range =
+          offset !== undefined || limit !== undefined
+            ? ` [${offset ?? 0}${limit !== undefined ? `+${limit}` : "+"}]`
+            : "";
+        return `  ${oneLine(path, 80)}${range}`;
+      }
+    }
     for (const k of ["command", "file_path", "path", "pattern", "query", "url"]) {
       if (typeof o[k] === "string") return `  ${oneLine(o[k] as string, 80)}`;
     }
@@ -2662,13 +2731,23 @@ const toolDescriptionOf = (input: unknown): string | undefined => {
 };
 
 /**
- * Full tool-call rendering for the editor / wrapped view: the name, then one
+ * Full tool-call rendering for the editor / wrapped view. Edit-shaped tools
+ * (`old_string` / `new_string`) render as a removed/added block; tilth_write's
+ * batch `files` gets one block per file; everything else falls back to one
  * `key: value` line per argument — strings verbatim (multi-line ones indented
  * under their key), anything else as compact JSON. Readable, not a raw dump.
  */
 const toolCallFull = (name: string, input: unknown): string => {
   if (input == null || typeof input !== "object") return name;
-  const entries = Object.entries(input as Record<string, unknown>);
+  const o = input as Record<string, unknown>;
+  if (isEditTool(name)) {
+    const diff = editDiffBody(name, o);
+    if (diff !== undefined) return diff;
+  }
+  if (isTilthWriteTool(name) && Array.isArray(o.files)) {
+    return tilthWriteBody(name, o.files);
+  }
+  const entries = Object.entries(o);
   if (entries.length === 0) return name;
   const lines = [name];
   for (const [k, v] of entries) {
@@ -2691,6 +2770,49 @@ const toolCallFull = (name: string, input: unknown): string => {
     }
   }
   return lines.join("\n");
+};
+
+/** `old_string` / `new_string` (any connector's naming for them) as a
+ *  removed/added block — a full diff library is overkill for a single
+ *  anchored replacement, and this is what the call already tells you changed. */
+const editDiffBody = (name: string, o: Record<string, unknown>): string | undefined => {
+  const oldS = typeof o.old_string === "string" ? o.old_string : undefined;
+  const newS = typeof o.new_string === "string" ? o.new_string : undefined;
+  if (oldS === undefined || newS === undefined) return undefined;
+  const path = pathOf(o);
+  const lines = [path ? `${name}  ${path}` : name];
+  for (const ln of body(oldS).split("\n")) lines.push(`- ${ln}`);
+  for (const ln of body(newS).split("\n")) lines.push(`+ ${ln}`);
+  return lines.join("\n");
+};
+
+/** One block per file for tilth_write's batch `files` array, instead of the
+ *  whole call rendering as a single JSON blob. */
+const tilthWriteBody = (name: string, files: unknown[]): string => {
+  const blocks = files.map((f) => {
+    const rec = (f && typeof f === "object" ? f : {}) as Record<string, unknown>;
+    const path = typeof rec.path === "string" ? rec.path : "?";
+    const mode = typeof rec.mode === "string" ? rec.mode : "hash";
+    if (typeof rec.content === "string") {
+      const lines = [`${path}  (${mode})`];
+      for (const ln of body(rec.content).split("\n")) lines.push(`+ ${ln}`);
+      return lines.join("\n");
+    }
+    if (Array.isArray(rec.edits)) {
+      const lines = [`${path}  (${mode})`];
+      for (const e of rec.edits) {
+        const edit = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
+        const start = typeof edit.start === "string" ? edit.start : "?";
+        const end = typeof edit.end === "string" ? edit.end : undefined;
+        lines.push(`@ ${start}${end ? `-${end}` : ""}`);
+        const content = typeof edit.content === "string" ? edit.content : "";
+        for (const ln of body(content).split("\n")) lines.push(`+ ${ln}`);
+      }
+      return lines.join("\n");
+    }
+    return path;
+  });
+  return [name, ...blocks].join("\n\n");
 };
 
 const valueOf = (x: unknown): unknown => {

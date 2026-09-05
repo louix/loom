@@ -801,12 +801,12 @@ export const EventLog = ({
             <Text key={r.key} wrap="truncate-end">
               <Text color={C.faint}>{r.ts}</Text>
               <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
-              <Text color={toneColor(r.tone)}>{r.seg}</Text>
+              <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
             </Text>
           ) : (
             <Text key={r.key} wrap="truncate-end">
               <Text>{" ".repeat(r.indent)}</Text>
-              <Text color={toneColor(r.tone)}>{r.seg}</Text>
+              <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
             </Text>
           ),
         )
@@ -825,8 +825,22 @@ interface PhysicalRow {
   readonly indent: number;
   readonly glyph: string;
   readonly tone: Tone;
+  /** The source line's event kind — gates {@link diffSegColor}, so a bulleted
+   *  list in assistant prose can't misread as a removed diff line. */
+  readonly kind: LogLine["kind"];
   readonly seg: string;
 }
+
+/** A `+ `/`- `-prefixed line inside a `tool_call` / `tool_result` body reads as
+ *  an added/removed diff line (an Edit's old/new block, tilth_write's own
+ *  `diff: true` output, or even a `git diff` a Bash call happened to print) —
+ *  colour it accordingly. Any other row keeps its plain tone colour. */
+const diffSegColor = (kind: LogLine["kind"], seg: string, fallback: string): string => {
+  if (kind !== "tool_call" && kind !== "tool_result") return fallback;
+  if (seg.startsWith("+ ")) return C.good;
+  if (seg.startsWith("- ")) return C.bad;
+  return fallback;
+};
 
 /**
  * Per-line render geometry: the gutter strings, indent, and the line's wrapped
@@ -909,6 +923,7 @@ const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] =>
           indent,
           glyph: l.glyph,
           tone: l.tone,
+          kind: l.kind,
           seg: segs[i]!,
         });
       }

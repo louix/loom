@@ -1804,6 +1804,137 @@ test("formatEvent keeps the full body for long / multi-line events", () => {
   assert.equal(toLogLine(2, "e1", ev({ type: "assistant_text", text: long })).full, long);
 });
 
+test("Read tool calls show path + range; their tool_result drops the raw file dump", () => {
+  const tc = formatEvent(
+    ev({
+      type: "tool_call",
+      id: "1",
+      name: "Read",
+      input: { file_path: "src/a.ts", offset: 10, limit: 50 },
+    }),
+  );
+  assert.equal(tc.text, "Read  src/a.ts [10+50]");
+
+  // tilth's structural reader collapses the same way, matched by name suffix
+  const tilth = formatEvent(
+    ev({ type: "tool_call", id: "2", name: "mcp__tilth__tilth_read", input: { path: "b.ts" } }),
+  );
+  assert.equal(tilth.text, "mcp__tilth__tilth_read  b.ts");
+
+  // once the reducer has seen the matching tool_call, the tool_result's `full`
+  // — the whole file — is dropped: the call line already says enough, and the
+  // user can see the file themselves.
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  s = reduce(s, { t: "select", id: "a" });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      1,
+      ev({ type: "tool_call", id: "r1", name: "Read", input: { file_path: "a.ts" }, sessionId: "a" }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      2,
+      ev({
+        type: "tool_result",
+        id: "r1",
+        ok: true,
+        output: { text: "line one\nline two" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  const result = sessionLog(s).at(-1);
+  assert.equal(result?.text, "ok");
+  assert.equal(result?.full, undefined, "the file content isn't duplicated into the log");
+
+  // an error result from a Read is still shown in full — it's short and useful
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      3,
+      ev({
+        type: "tool_call",
+        id: "r2",
+        name: "Read",
+        input: { file_path: "missing.ts" },
+        sessionId: "a",
+      }),
+    ),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(
+      4,
+      ev({ type: "tool_result", id: "r2", ok: false, output: { text: "ENOENT" }, sessionId: "a" }),
+    ),
+  });
+  const failed = sessionLog(s).at(-1);
+  assert.equal(failed?.full, "error\nENOENT");
+});
+
+test("an Edit-shaped tool call renders old_string/new_string as a removed/added block", () => {
+  const tc = formatEvent(
+    ev({
+      type: "tool_call",
+      id: "1",
+      name: "Edit",
+      input: { file_path: "a.ts", old_string: "const x = 1;", new_string: "const x = 2;" },
+    }),
+  );
+  assert.equal(tc.full, "Edit  a.ts\n- const x = 1;\n+ const x = 2;");
+
+  // tilth_edit renders the same way, matched by name suffix
+  const tilthEdit = formatEvent(
+    ev({
+      type: "tool_call",
+      id: "2",
+      name: "mcp__tilth__tilth_edit",
+      input: { path: "b.ts", old_string: "foo", new_string: "bar" },
+    }),
+  );
+  assert.equal(tilthEdit.full, "mcp__tilth__tilth_edit  b.ts\n- foo\n+ bar");
+
+  // a multi-line replacement diffs line by line, not as one blob
+  const multi = formatEvent(
+    ev({
+      type: "tool_call",
+      id: "3",
+      name: "Edit",
+      input: { file_path: "a.ts", old_string: "one\ntwo", new_string: "one\nTWO" },
+    }),
+  );
+  assert.equal(multi.full, "Edit  a.ts\n- one\n- two\n+ one\n+ TWO");
+});
+
+test("tilth_write's batch `files` renders one block per file, and the one-liner names them", () => {
+  const tc = formatEvent(
+    ev({
+      type: "tool_call",
+      id: "1",
+      name: "mcp__tilth__tilth_write",
+      input: {
+        files: [
+          { path: "a.ts", mode: "overwrite", content: "const a = 1;" },
+          { path: "b.ts", mode: "hash", edits: [{ start: "2:891", content: "const b = 2;" }] },
+        ],
+      },
+    }),
+  );
+  assert.equal(tc.text, "mcp__tilth__tilth_write  2 files: a.ts, b.ts");
+  assert.equal(
+    tc.full,
+    [
+      "mcp__tilth__tilth_write",
+      "a.ts  (overwrite)\n+ const a = 1;",
+      "b.ts  (hash)\n@ 2:891\n+ const b = 2;",
+    ].join("\n\n"),
+  );
+});
+
 test("prompt open / edit / close transitions", () => {
   let s = reduce(initialState(), {
     t: "openPrompt",
