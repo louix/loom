@@ -184,7 +184,7 @@ export class AisdkProvider implements AgentProvider {
       ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
-      system: undefined,
+      system: ref.systemPromptAppend,
       messages,
       mode: ref.mode ?? "default",
       cwd: ref.cwd,

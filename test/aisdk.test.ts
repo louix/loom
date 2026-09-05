@@ -1492,6 +1492,50 @@ test("resumeSession reloads the transcript; the next turn sees the history", asy
   }
 });
 
+test("resumeSession sends the ref's systemPromptAppend, not a dropped system prompt", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    let seenSystem: unknown;
+    const make = (): LanguageModel =>
+      new MockLanguageModelV2({
+        doStream: async (opts) => {
+          seenSystem = opts.prompt[0];
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start", warnings: [] },
+                { type: "text-start", id: "t" },
+                { type: "text-end", id: "t" },
+                {
+                  type: "finish",
+                  finishReason: "stop",
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                },
+              ],
+            }),
+          };
+        },
+      }) as unknown as LanguageModel;
+
+    const p = provider(make, store);
+    const s = await p.resumeSession({
+      sessionId: "s1",
+      providerRef: "s1",
+      cwd: "/tmp",
+      model: "gpt-5",
+      systemPromptAppend: "resumed-instructions-marker",
+    });
+    await s.send("go");
+    await drain(s.events(), (e) => e.type === "result");
+    await s.close();
+
+    assert.deepEqual(seenSystem, { role: "system", content: "resumed-instructions-marker" });
+  } finally {
+    cleanup();
+  }
+});
+
 // --- through the SessionManager ----------------------------------------------
 
 test("SessionManager drains an aisdk session: usage rollup + result + idle", async () => {

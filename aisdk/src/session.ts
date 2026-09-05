@@ -42,6 +42,7 @@ import type { SearchConfig } from "@loom/core/connector";
 import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { TranscriptStore } from "@loom/core/transcript";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
+import { PendingInteractions } from "@loom/runtime/pending";
 
 /**
  * Default per-*segment* ceiling on tool round-trips. It is not a hard turn
@@ -192,9 +193,7 @@ export class AisdkSession implements AgentSession {
   #declaredReadonly: ReadonlyMap<string, boolean> = new Map();
   #builtins: BuiltinTools | null = null;
   #baseToolsPromise: Promise<ToolSet> | null = null;
-  readonly #pendingPerms = new Map<string, (d: { allow: boolean; message?: string }) => void>();
-  readonly #pendingQuestions = new Map<string, (answer: string) => void>();
-  readonly #pendingPlans = new Map<string, (d: PlanDecision) => void>();
+  readonly #pending = new PendingInteractions<{ allow: boolean; message?: string }, PlanDecision>();
 
   constructor(opts: AisdkSessionOptions) {
     this.id = opts.sessionId;
@@ -325,10 +324,8 @@ export class AisdkSession implements AgentSession {
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
-    const resolve = this.#pendingPerms.get(id);
-    if (!resolve) return; // already resolved / unknown — first writer won
-    this.#pendingPerms.delete(id);
-    resolve(
+    this.#pending.resolvePermission(
+      id,
       decision.behavior === "allow"
         ? { allow: true }
         : { allow: false, ...(decision.message ? { message: decision.message } : {}) },
@@ -336,17 +333,11 @@ export class AisdkSession implements AgentSession {
   }
 
   async answerQuestion(id: string, text: string): Promise<void> {
-    const resolve = this.#pendingQuestions.get(id);
-    if (!resolve) return;
-    this.#pendingQuestions.delete(id);
+    if (!this.#pending.resolveQuestion(id, text)) return;
     this.#emit({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
-    resolve(text);
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
-    const resolve = this.#pendingPlans.get(id);
-    if (!resolve) return;
-    this.#pendingPlans.delete(id);
     // An implementing decision picks the mode the implementation runs in. Apply
     // it now, not when the exploration turn unwinds into the chained implement
     // turn: the session manager reads `snapshot()` straight after this call to
@@ -355,6 +346,7 @@ export class AisdkSession implements AgentSession {
     // implementation. Mirrors the Claude adapter, which syncs its mode before
     // resolving the ExitPlanMode allow. The chain re-applies the same value;
     // `discuss` / `handoff` deliberately stay in plan mode.
+    if (!this.#pending.resolvePlan(id, decision)) return;
     if (
       decision.action === "implement" ||
       decision.action === "implement_fresh" ||
@@ -364,7 +356,6 @@ export class AisdkSession implements AgentSession {
       this.#mode = mode;
       this.#snap.mode = mode;
     }
-    resolve(decision);
   }
 
   async interrupt(): Promise<void> {
@@ -468,12 +459,7 @@ export class AisdkSession implements AgentSession {
    * stops awaiting and the turn can unwind. Used by `interrupt()` and `close()`.
    */
   #failPendingGates(why: string): void {
-    for (const [, r] of this.#pendingPerms) r({ allow: false, message: why });
-    this.#pendingPerms.clear();
-    for (const [, r] of this.#pendingQuestions) r(`(${why})`);
-    this.#pendingQuestions.clear();
-    for (const [, r] of this.#pendingPlans) r({ action: "discuss", message: why });
-    this.#pendingPlans.clear();
+    this.#pending.failAll({ allow: false, message: why }, `(${why})`, { action: "discuss", message: why });
   }
 
   /**
@@ -647,17 +633,16 @@ export class AisdkSession implements AgentSession {
 
   #askUser(question: string, context: string | undefined): Promise<string> {
     const id = randomUUID();
-    return new Promise<string>((resolve) => {
-      this.#pendingQuestions.set(id, resolve);
-      this.#emit({
-        type: "question",
-        sessionId: this.id,
-        ts: Date.now(),
-        id,
-        question,
-        ...(context ? { context } : {}),
-      });
+    const answer = this.#pending.requestQuestion(id);
+    this.#emit({
+      type: "question",
+      sessionId: this.id,
+      ts: Date.now(),
+      id,
+      question,
+      ...(context ? { context } : {}),
     });
+    return answer;
   }
 
   #requestPlan(plan: string, toolCallId?: string): Promise<PlanDecision> {
@@ -665,10 +650,9 @@ export class AisdkSession implements AgentSession {
     // `tool_result` matches the `plan_review` — the only durable mark, in the
     // event log a client backfills from, that the plan was decided.
     const id = toolCallId || randomUUID();
-    return new Promise<PlanDecision>((resolve) => {
-      this.#pendingPlans.set(id, resolve);
-      this.#emit({ type: "plan_review", sessionId: this.id, ts: Date.now(), id, plan });
-    });
+    const decision = this.#pending.requestPlan(id);
+    this.#emit({ type: "plan_review", sessionId: this.id, ts: Date.now(), id, plan });
+    return decision;
   }
 
   #requestPermission(
@@ -678,19 +662,18 @@ export class AisdkSession implements AgentSession {
   ): Promise<{ allow: boolean; message?: string }> {
     // A5: key the gate on a fresh id, never the provider's `toolCallId` — under
     // concurrent `task` sub-agents two calls can share one id, and the second
-    // would overwrite the first's resolver in `#pendingPerms` → orphaned await.
+    // would overwrite the first's resolver in `#pending` → orphaned await.
     const id = randomUUID();
-    return new Promise((resolve) => {
-      this.#pendingPerms.set(id, resolve);
-      this.#emit({
-        type: "permission_request",
-        sessionId: this.id,
-        ts: Date.now(),
-        id,
-        tool: toolName,
-        input,
-      });
+    const decision = this.#pending.requestPermission(id);
+    this.#emit({
+      type: "permission_request",
+      sessionId: this.id,
+      ts: Date.now(),
+      id,
+      tool: toolName,
+      input,
     });
+    return decision;
   }
 
   async #runSubagent(name: string, prompt: string): Promise<string> {

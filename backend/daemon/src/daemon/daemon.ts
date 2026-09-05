@@ -1129,15 +1129,21 @@ export class Daemon {
         model = swap;
       }
     }
+    const cwd = worktree ?? this.repoRoot;
+    const mcpHandles = this.#mcpHandles();
+    const isClaude = isClaudeId(row.provider);
+    const isAisdk = prof !== undefined;
+    const promptAppend = systemPromptAppendFor(isAisdk, mcpHandles.length > 0, cwd, this.repoRoot);
     try {
       await this.#sessions.resume(await this.#providers.get(row.provider), {
         sessionId: id,
         providerRef,
-        cwd: worktree ?? this.repoRoot,
+        cwd,
         mode,
-        mcpServers: this.#mcpHandles(),
+        mcpServers: mcpHandles,
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort as EffortLevel } : {}),
+        ...(isClaude || isAisdk || row.provider === "chatgpt" ? { systemPromptAppend: promptAppend } : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

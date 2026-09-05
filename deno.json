@@ -4,6 +4,7 @@
     "core",
     "client",
     "aisdk",
+    "runtime",
     "harness",
     "backend/daemon",
     "frontend/tui",

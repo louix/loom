@@ -1,0 +1,9 @@
+{
+  "name": "@loom/runtime",
+  "exports": {
+    "./pending": "./src/pending.ts",
+    "./loom-tools": "./src/loom-tools.ts",
+    "./policy": "./src/policy.ts",
+    "./instructions": "./src/instructions.ts"
+  }
+}

@@ -502,3 +502,28 @@ test("the guard tracks a live setMode into auto", async () => {
   );
   await s.close();
 });
+
+test("resumeSession forwards the ref's systemPromptAppend into the CLI's systemPrompt option", async () => {
+  const queryOpts: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      queryOpts.push((args as { options: Record<string, unknown> }).options);
+      return fakeQuery() as never;
+    },
+  });
+
+  const provider = new ClaudeProvider();
+  const s = await provider.resumeSession({
+    sessionId: "c1",
+    providerRef: "claude-src",
+    cwd: "/tmp",
+    systemPromptAppend: "resumed-instructions-marker",
+  });
+
+  assert.deepEqual(queryOpts[0]?.["systemPrompt"], {
+    type: "preset",
+    preset: "claude_code",
+    append: "resumed-instructions-marker",
+  });
+  await s.close();
+});

@@ -93,6 +93,9 @@ export interface SessionRef {
   mode?: SessionMode;
   /** MCP servers to re-mount on resume (the daemon's current `[[mcp]]` list). */
   mcpServers?: McpServerHandle[];
+  /** Steering text for the provider's system prompt — recomputed by the daemon
+   *  at resume time the same way as at creation (see `CreateSessionOptions`). */
+  systemPromptAppend?: string;
 }
 
 export type UserInput = string;

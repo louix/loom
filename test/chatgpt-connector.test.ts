@@ -15,7 +15,11 @@ import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
 import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
-import { approvalsReviewerFor, mcpConfig } from "@loom/connector-chatgpt/app-server";
+import {
+  approvalsReviewerFor,
+  CodexAppServerSession,
+  mcpConfig,
+} from "@loom/connector-chatgpt/app-server";
 
 const noopTranscript = {
   load: () => [],
@@ -323,6 +327,26 @@ test("discovery and session startup spawn the app-server with the same resolved 
   } finally {
     rpc.close();
   }
+});
+
+test("resume() forwards the ref's systemPromptAppend as developerInstructions on thread/resume", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-resume-test", authJsonPath: "/tmp/loom-codex-resume-test/auth.json" };
+
+  const withInstructions = await CodexAppServerSession.resume(
+    { sessionId: "s1", providerRef: "fake-thread-1", cwd: "/tmp", systemPromptAppend: "resumed-instructions-marker" },
+    codexHome,
+    FAKE_CODEX,
+  );
+  assert.equal(withInstructions.providerRef, "fake-thread-1-with-instructions");
+  await withInstructions.close();
+
+  const withoutInstructions = await CodexAppServerSession.resume(
+    { sessionId: "s2", providerRef: "fake-thread-1", cwd: "/tmp" },
+    codexHome,
+    FAKE_CODEX,
+  );
+  assert.equal(withoutInstructions.providerRef, "fake-thread-1");
+  await withoutInstructions.close();
 });
 
 /** A minimal stand-in for `ChildProcessWithoutNullStreams`: real stdout/stderr

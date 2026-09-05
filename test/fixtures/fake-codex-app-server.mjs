@@ -40,7 +40,12 @@ const handle = (req) => {
     return;
   }
   if (method === "thread/resume") {
-    send({ jsonrpc: "2.0", id, result: fixture("thread-resume") });
+    const base = fixture("thread-resume");
+    // Echo whether developerInstructions arrived, in the thread id, so tests
+    // can assert on it through `CodexAppServerSession.resume()`'s public
+    // `providerRef` without a new test-only hook into production code.
+    const id_ = params?.developerInstructions ? `${base.thread.id}-with-instructions` : base.thread.id;
+    send({ jsonrpc: "2.0", id, result: { thread: { id: id_ } } });
     return;
   }
   if (method === "turn/start") {

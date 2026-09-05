@@ -28,6 +28,7 @@ import { AsyncChannel } from "@loom/core/channel";
 import { ClaudeEventMapper, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildLoomMcpServer } from "./loom-mcp.ts";
+import { PendingInteractions } from "@loom/runtime/pending";
 import type {
   AdapterSnapshot,
   AgentProvider,
@@ -278,11 +279,7 @@ class ClaudeSession implements AgentSession {
   #inbox = new AsyncChannel<SDKUserMessage>();
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
-  #pendingPerms = new Map<string, (r: PermissionResult | null) => void>();
-  /** Outstanding `ask_user` calls, keyed by the id on the emitted `question` event. */
-  #pendingQuestions = new Map<string, (answer: string) => void>();
-  /** Outstanding `ExitPlanMode` calls, keyed by the id on the emitted `plan_review` event. */
-  #pendingPlans = new Map<string, (r: PermissionResult | null) => void>();
+  #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
   #pump: Promise<void> | null = null;
   #closing = false;
   /**
@@ -347,31 +344,29 @@ class ClaudeSession implements AgentSession {
         const raw = (input as { plan?: unknown } | null)?.plan;
         const plan =
           typeof raw === "string" && raw.trim() !== "" ? raw : JSON.stringify(input ?? {});
-        return new Promise<PermissionResult | null>((resolve) => {
-          this.#pendingPlans.set(reqId, resolve);
-          this.#outbox.push({
-            type: "plan_review",
-            sessionId: this.id,
-            ts: Date.now(),
-            id: reqId,
-            plan,
-            ...(ctx.agentID ? { agentId: ctx.agentID } : {}),
-          });
-        });
-      }
-      return new Promise<PermissionResult | null>((resolve) => {
-        this.#pendingPerms.set(reqId, resolve);
+        const decision = this.#pending.requestPlan(reqId);
         this.#outbox.push({
-          type: "permission_request",
+          type: "plan_review",
           sessionId: this.id,
           ts: Date.now(),
           id: reqId,
-          tool: toolName,
-          input,
-          ...(ctx.suggestions ? { suggestions: ctx.suggestions } : {}),
+          plan,
           ...(ctx.agentID ? { agentId: ctx.agentID } : {}),
         });
+        return decision;
+      }
+      const decision = this.#pending.requestPermission(reqId);
+      this.#outbox.push({
+        type: "permission_request",
+        sessionId: this.id,
+        ts: Date.now(),
+        id: reqId,
+        tool: toolName,
+        input,
+        ...(ctx.suggestions ? { suggestions: ctx.suggestions } : {}),
+        ...(ctx.agentID ? { agentId: ctx.agentID } : {}),
       });
+      return decision;
     };
 
     // `auto` mode lets the CLI auto-approve edits without ever calling
@@ -553,12 +548,11 @@ class ClaudeSession implements AgentSession {
 
   /** Resolve every outstanding permission / question / plan promise. */
   #rejectPending(reason: string): void {
-    for (const [, resolve] of this.#pendingPerms) resolve({ behavior: "deny", message: reason });
-    this.#pendingPerms.clear();
-    for (const [, resolve] of this.#pendingQuestions) resolve(`(${reason})`);
-    this.#pendingQuestions.clear();
-    for (const [, resolve] of this.#pendingPlans) resolve({ behavior: "deny", message: reason });
-    this.#pendingPlans.clear();
+    this.#pending.failAll(
+      { behavior: "deny", message: reason },
+      `(${reason})`,
+      { behavior: "deny", message: reason },
+    );
     // An in-flight compaction is pending on the same process: interrupt /
     // stream-end / close all abandon it. The error event is what clients use
     // to clear the "compacting…" indicator (trackCompacting in the TUI model).
@@ -678,47 +672,38 @@ class ClaudeSession implements AgentSession {
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
-    const resolve = this.#pendingPerms.get(id);
-    if (!resolve) return; // already resolved / unknown — first writer won
-    this.#pendingPerms.delete(id);
     if (decision.behavior === "allow") {
-      resolve({
+      this.#pending.resolvePermission(id, {
         behavior: "allow",
         ...(decision.updatedInput ? { updatedInput: decision.updatedInput } : {}),
       });
     } else {
-      resolve({ behavior: "deny", message: decision.message ?? "denied by user" });
+      this.#pending.resolvePermission(id, { behavior: "deny", message: decision.message ?? "denied by user" });
     }
   }
 
   /** loom `ask_user` handler: emit a `question` event, block until answered. */
   #askUser(question: string, context: string | undefined): Promise<string> {
     const id = randomUUID();
-    return new Promise<string>((resolve) => {
-      this.#pendingQuestions.set(id, resolve);
-      this.#outbox.push({
-        type: "question",
-        sessionId: this.id,
-        ts: Date.now(),
-        id,
-        question,
-        ...(context ? { context } : {}),
-      });
+    const answer = this.#pending.requestQuestion(id);
+    this.#outbox.push({
+      type: "question",
+      sessionId: this.id,
+      ts: Date.now(),
+      id,
+      question,
+      ...(context ? { context } : {}),
     });
+    return answer;
   }
 
   async answerQuestion(id: string, text: string): Promise<void> {
-    const resolve = this.#pendingQuestions.get(id);
-    if (!resolve) return; // already answered / unknown — first writer won
-    this.#pendingQuestions.delete(id);
+    if (!this.#pending.resolveQuestion(id, text)) return;
     this.#outbox.push({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
-    resolve(text);
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
-    const resolve = this.#pendingPlans.get(id);
-    if (!resolve) return; // already resolved / unknown — first writer won
-    this.#pendingPlans.delete(id);
+    if (!this.#pending.hasPlan(id)) return; // already resolved / unknown — first writer won
 
     if (decision.action === "implement") {
       // Native exit: the SDK leaves plan mode and the turn implements. Mirror
@@ -732,14 +717,14 @@ class ClaudeSession implements AgentSession {
           err: err instanceof Error ? err.message : String(err),
         });
       }
-      resolve({ behavior: "allow" });
+      this.#pending.resolvePlan(id, { behavior: "allow" });
       return;
     }
 
     // The other cases end the ExitPlanMode call and re-drive the session
     // deterministically, so behaviour doesn't hinge on SDK `updatedInput` support.
     if (decision.action === "discuss") {
-      resolve({ behavior: "deny", message: decision.message });
+      this.#pending.resolvePlan(id, { behavior: "deny", message: decision.message });
       return; // stays in plan mode; the message arrives as the next user turn
     }
 
@@ -747,14 +732,14 @@ class ClaudeSession implements AgentSession {
       // The daemon has spawned a fresh session (an `⌥p` retarget onto a
       // different provider) to carry the implementation. End the turn here;
       // no compact, no mode change, no implement send.
-      resolve({
+      this.#pending.resolvePlan(id, {
         behavior: "deny",
         message: "Plan approved — implementation continues in a separate session.",
       });
       return;
     }
 
-    resolve({ behavior: "deny", message: "Plan accepted — implementing now." });
+    this.#pending.resolvePlan(id, { behavior: "deny", message: "Plan accepted — implementing now." });
     if (decision.action === "implement_fresh") {
       void this.#implementFresh(decision);
       return;
@@ -1040,6 +1025,7 @@ export class ClaudeProvider implements AgentProvider {
       loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
+      ...(ref.systemPromptAppend ? { systemPromptAppend: ref.systemPromptAppend } : {}),
     };
     const s = new ClaudeSession(opts);
     s.start(opts, { resume: ref.providerRef, ...this.#extra(cli) });

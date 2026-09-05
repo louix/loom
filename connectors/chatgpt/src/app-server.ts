@@ -225,6 +225,7 @@ export class CodexAppServerSession implements AgentSession {
       approvalsReviewer: approvalsReviewerFor(opts.mode),
       sandbox: sandboxFor(opts.mode),
       excludeTurns: true,
+      ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
     });
     s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
     s.#idle();
