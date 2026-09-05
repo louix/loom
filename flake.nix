@@ -61,6 +61,18 @@
               export DENO_DIR="$out"
               export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
               deno install --frozen
+
+              # `deno install`'s dep/node analysis-cache SQLite databases
+              # record real content, but their on-disk page layout varies
+              # with fetch/task scheduling order between otherwise-identical
+              # runs (verified: diffing two builds from the same deno.lock
+              # showed only these two DBs — main file, -journal, -wal, -shm
+              # sidecars alike — differing). They're a pure perf cache Deno
+              # regenerates on demand, so drop them rather than chase
+              # deterministic ordering out of Deno's own fetch pipeline. Same
+              # category of fix as fetchPnpmDeps' own checkedAt-stripping
+              # fixupPhase below.
+              rm -f "$DENO_DIR"/dep_analysis_cache_v2* "$DENO_DIR"/node_analysis_cache_v2*
               runHook postBuild
             '';
 
@@ -69,7 +81,7 @@
 
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-350Ok3JsffrtQOF8ElmyiZwMwkL0Wzy8eb3/GIkMHaM=";
+            outputHash = "sha256-mjvKDG7d1xgLPTT3vV0F+uDkPC/xlH+BpA8UYPjABvg=";
           };
 
           loom = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {

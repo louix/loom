@@ -1,4 +1,3 @@
-import { connect, createServer, type Server } from "node:net";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { makeLogger } from "@loom/core/logger";
 import type { Frame, PushFrame } from "@loom/core/wire";
@@ -21,7 +20,8 @@ export interface SocketServerOptions {
  */
 export class SocketServer {
   #opts: SocketServerOptions;
-  #server: Server | null = null;
+  #listener: Deno.UnixListener | null = null;
+  #acceptLoop: Promise<void> | null = null;
   #conns = new Set<Connection>();
 
   constructor(opts: SocketServerOptions) {
@@ -31,38 +31,13 @@ export class SocketServer {
   async listen(): Promise<void> {
     const { sockPath } = this.#opts;
 
-    const server = createServer((socket) => {
-      const conn = new Connection(
-        socket,
-        (frame, c) => this.#onFrame(frame, c),
-        (c) => this.#onClose(c),
-      );
-      this.#conns.add(conn);
-      log.debug("client connected", { conn: conn.id, total: this.#conns.size });
-    });
-    this.#server = server;
-
-    const bind = (): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const onErr = (err: unknown): void => {
-          server.removeListener("listening", onOk);
-          reject(err);
-        };
-        const onOk = (): void => {
-          server.removeListener("error", onErr);
-          resolve();
-        };
-        server.once("error", onErr);
-        server.once("listening", onOk);
-        server.listen(sockPath);
-      });
-
-    // Bind first, then react to `EADDRINUSE` — no `exists` → `probe` → `unlink`
+    // Bind first, then react to `AddrInUse` — no `exists` → `probe` → `unlink`
     // → `bind` window where a second daemon can unlink/rebind over the first.
+    let listener: Deno.UnixListener;
     try {
-      await bind();
+      listener = Deno.listen({ transport: "unix", path: sockPath });
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+      if (!(err instanceof Deno.errors.AddrInUse)) throw err;
       // Something holds the path. A live daemon → bail; a stale socket file from
       // an unclean exit → clear it and try once more.
       if (existsSync(sockPath) && (await isSocketLive(sockPath))) {
@@ -75,13 +50,30 @@ export class SocketServer {
       } catch {
         // fall through — the retry will report the real problem
       }
-      await bind();
+      listener = Deno.listen({ transport: "unix", path: sockPath });
     }
+    this.#listener = listener;
 
-    // `net.Server` keeps emitting `error` for the rest of its life on accept-time
-    // failures (EMFILE/ENFILE/ENOBUFS under fd pressure). With no listener that's
-    // an uncaught exception and the whole daemon dies — log and keep serving.
-    server.on("error", (err) => log.error("socket server error", { err: String(err) }));
+    this.#acceptLoop = (async () => {
+      try {
+        for await (const conn of listener) {
+          const c = new Connection(
+            conn,
+            (frame, cc) => this.#onFrame(frame, cc),
+            (cc) => this.#onClose(cc),
+          );
+          this.#conns.add(c);
+          log.debug("client connected", { conn: c.id, total: this.#conns.size });
+        }
+      } catch (err) {
+        // The loop only throws on a genuine accept-time failure (EMFILE/ENFILE
+        // under fd pressure, say); `listener.close()` ends it cleanly instead.
+        // A crashed accept loop is a dead daemon, so log loudly but don't throw
+        // into an unhandled rejection.
+        log.error("accept loop failed", { err: String(err) });
+      }
+    })();
+
     try {
       chmodSync(sockPath, 0o600);
     } catch {
@@ -131,10 +123,11 @@ export class SocketServer {
   async close(): Promise<void> {
     for (const conn of this.#conns) conn.close();
     this.#conns.clear();
-    const server = this.#server;
-    if (!server) return;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    this.#server = null;
+    const listener = this.#listener;
+    if (!listener) return;
+    listener.close();
+    await this.#acceptLoop;
+    this.#listener = null;
     const { sockPath } = this.#opts;
     if (existsSync(sockPath)) {
       try {
@@ -149,14 +142,19 @@ export class SocketServer {
 /** Does something actually accept connections on this socket path right now? */
 const isSocketLive = (sockPath: string): Promise<boolean> => {
   return new Promise((resolve) => {
-    const probe = connect(sockPath);
-    const done = (live: boolean) => {
-      probe.removeAllListeners();
-      probe.destroy();
+    let settled = false;
+    const done = (live: boolean): void => {
+      if (settled) return;
+      settled = true;
       resolve(live);
     };
-    probe.once("connect", () => done(true));
-    probe.once("error", () => done(false));
+    Deno.connect({ transport: "unix", path: sockPath }).then(
+      (conn) => {
+        conn.close();
+        done(true);
+      },
+      () => done(false),
+    );
     setTimeout(() => done(false), 500).unref();
   });
 };

@@ -1,39 +1,56 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Socket } from "node:net";
 import type { Frame, PushFrame } from "@loom/core/wire";
 import { setLogLevel } from "@loom/core/logger";
-import { Connection } from "@loom/daemon/daemon/connection";
+import { Connection, type FramedConn } from "@loom/daemon/daemon/connection";
 
 setLogLevel("error");
 
-/** A `net.Socket` stand-in: records writes, lets a test drive `writableLength`
- *  and fire lifecycle events. */
-const fakeSocket = () => {
-  const handlers = new Map<string, Array<(...a: unknown[]) => void>>();
+/** Resolve on the next microtask — enough hops for a `Connection#push`'s
+ *  fire-and-forget `write()` chain (encode → write → backlog decrement) to
+ *  settle before a test asserts on it. */
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+};
+
+/** A `FramedConn` stand-in: records writes, lets a test hold a write's
+ *  promise open to simulate a client that isn't draining, and fires the
+ *  read loop's EOF (`read()` resolving `null`) to simulate a close. */
+const fakeConn = () => {
+  let resolveRead: (n: number | null) => void = () => {};
+  const readGate = new Promise<number | null>((r) => {
+    resolveRead = r;
+  });
+  let writeGate: { resolve: (n: number) => void } | null = null;
+  const decoder = new TextDecoder();
   return {
-    writableLength: 0,
     writes: [] as string[],
-    ended: false,
     destroyed: false,
-    setNoDelay() {},
-    setEncoding() {},
-    on(ev: string, fn: (...a: unknown[]) => void) {
-      const list = handlers.get(ev) ?? [];
-      list.push(fn);
-      handlers.set(ev, list);
-      return this;
+    /** Never resolves on its own — this stand-in only exercises writes. */
+    read: (_p: Uint8Array): Promise<number | null> => readGate,
+    write(p: Uint8Array): Promise<number> {
+      if (writeGate) {
+        // A write is being held open (simulating backpressure) — this call
+        // shouldn't happen until the held one resolves.
+        throw new Error("fakeConn: overlapping write while one is held open");
+      }
+      return new Promise((resolve) => {
+        writeGate = {
+          resolve: (n) => {
+            this.writes.push(decoder.decode(p));
+            resolve(n);
+          },
+        };
+      });
     },
-    write(s: string) {
-      this.writes.push(s);
-      return true;
+    /** Resolve the currently in-flight `write()`, letting its backlog clear. */
+    releaseWrite(): void {
+      writeGate?.resolve(0); // length unused by the harness below
+      writeGate = null;
     },
-    end() {
-      this.ended = true;
-    },
-    destroy() {
+    close(): void {
       this.destroyed = true;
-      for (const fn of handlers.get("close") ?? []) fn();
+      resolveRead(null);
     },
   };
 };
@@ -46,56 +63,80 @@ const pushFrame: PushFrame = {
   event: { type: "assistant_text", sessionId: "s1", ts: 0, text: "hi" },
 };
 
-test("push drops a connection whose write backlog crosses the ceiling", () => {
-  const sock = fakeSocket();
+test("push drops a connection whose write backlog crosses the ceiling", async () => {
+  const conn = fakeConn();
   let closedCount = 0;
-  const conn = new Connection(
-    sock as unknown as Socket,
+  const c = new Connection(
+    conn as unknown as FramedConn,
     () => {},
     () => {
       closedCount += 1;
     },
   );
-  conn.subscribed = true;
+  c.subscribed = true;
 
-  // Healthy: frames go straight out.
-  conn.push(pushFrame);
-  conn.push(pushFrame);
-  assert.equal(sock.writes.length, 2);
+  // Hold the first write open — nothing has drained it yet, so the backlog
+  // this frame contributes never clears.
+  const bigFrame: PushFrame = {
+    kind: "push",
+    seq: 1,
+    epoch: "e1",
+    type: "event",
+    event: {
+      type: "assistant_text",
+      sessionId: "s1",
+      ts: 0,
+      text: "x".repeat(9 * 1024 * 1024),
+    },
+  };
+  c.push(bigFrame);
+  await flush();
+  assert.equal(conn.writes.length, 0, "the write is held open, not yet flushed");
 
-  // The client stopped reading — Node's write buffer piles up past 8 MB.
-  sock.writableLength = 9 * 1024 * 1024;
-  conn.push(pushFrame);
+  // The client stopped reading — the held write's bytes count as backlog past
+  // the ceiling, so the *next* push drops the connection outright.
+  c.push(pushFrame);
+  await flush();
 
-  assert.equal(sock.destroyed, true, "the slow connection was dropped");
+  assert.equal(conn.destroyed, true, "the slow connection was dropped");
   assert.equal(closedCount, 1, "onClose fired exactly once");
-  assert.equal(sock.writes.length, 2, "the frame that tripped the limit was not written");
+  assert.equal(conn.writes.length, 0, "neither frame has reached the wire yet");
+
+  // Releasing the stuck write lets it complete — that's fine, it was already
+  // in flight — but it's the *only* one that ever does.
+  conn.releaseWrite();
+  await flush();
+  assert.equal(conn.writes.length, 1, "only the first, already-in-flight write completes");
 
   // Further pushes on the dead connection are silent no-ops.
-  conn.push(pushFrame);
-  assert.equal(sock.writes.length, 2);
+  c.push(pushFrame);
+  await flush();
+  assert.equal(conn.writes.length, 1, "the closed connection took no new writes");
 });
 
-test("an unsubscribed connection is never written to", () => {
-  const sock = fakeSocket();
-  const conn = new Connection(
-    sock as unknown as Socket,
+test("an unsubscribed connection is never written to", async () => {
+  const conn = fakeConn();
+  const c = new Connection(
+    conn as unknown as FramedConn,
     () => {},
     () => {},
   );
-  conn.push(pushFrame); // subscribed defaults to false
-  assert.equal(sock.writes.length, 0);
+  c.push(pushFrame); // subscribed defaults to false
+  await flush();
+  assert.equal(conn.writes.length, 0);
 });
 
-test("frames the dispatcher hands back still reach a healthy socket", () => {
-  const sock = fakeSocket();
-  const conn = new Connection(
-    sock as unknown as Socket,
+test("frames the dispatcher hands back still reach a healthy socket", async () => {
+  const conn = fakeConn();
+  const c = new Connection(
+    conn as unknown as FramedConn,
     () => {},
     () => {},
   );
   const res: Frame = { kind: "res", id: 1, ok: true, result: null };
-  conn.respond(res);
-  assert.equal(sock.writes.length, 1);
-  assert.match(sock.writes[0]!, /"id":1/);
+  c.respond(res);
+  conn.releaseWrite();
+  await flush();
+  assert.equal(conn.writes.length, 1);
+  assert.match(conn.writes[0]!, /"id":1/);
 });

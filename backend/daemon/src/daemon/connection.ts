@@ -1,16 +1,37 @@
-import type { Socket } from "node:net";
 import { makeLogger } from "@loom/core/logger";
 import { MAX_FRAME_BYTES, type Frame, type PushFrame, type ResponseFrame } from "@loom/core/wire";
 
 const log = makeLogger("conn");
 
 /**
- * Ceiling on a connection's unflushed write buffer. A client that stops reading
+ * The minimal `Deno.Conn` surface `Connection` needs — narrow on purpose so
+ * tests can fake it without a real unix socket. `Deno.Conn` satisfies this
+ * structurally.
+ */
+export interface FramedConn {
+  read(p: Uint8Array): Promise<number | null>;
+  write(p: Uint8Array): Promise<number>;
+  close(): void;
+}
+
+/**
+ * Ceiling on a connection's unwritten backlog. A client that stops reading
  * its socket (suspended laptop, SIGSTOP'd TUI, a frontend wedged in a render
- * loop) lets Node queue push frames in memory without bound. Past this we drop
- * the connection — it can reconnect and gap-replay from the ring buffer.
+ * loop) leaves `write()` calls unresolved without bound — each one waits on
+ * kernel socket-buffer space that never frees. Past this we drop the
+ * connection — it can reconnect and gap-replay from the ring buffer.
  */
 const PUSH_BACKLOG_LIMIT_BYTES = 8 * 1024 * 1024;
+
+/** Write every byte of `data`, looping on the partial writes `Deno.Conn`'s
+ *  `write()` may return (its contract, like any `Deno.Writer`, is "at least
+ *  one byte or an error," not "all of it"). */
+const writeAll = async (conn: FramedConn, data: Uint8Array): Promise<void> => {
+  let off = 0;
+  while (off < data.length) {
+    off += await conn.write(off === 0 ? data : data.subarray(off));
+  }
+};
 
 let nextConnId = 1;
 
@@ -20,7 +41,7 @@ let nextConnId = 1;
  */
 export class Connection {
   readonly id: number = nextConnId++;
-  readonly socket: Socket;
+  readonly conn: FramedConn;
 
   /** Set once the client completes the `hello` handshake. */
   clientId: string | null = null;
@@ -28,24 +49,39 @@ export class Connection {
   subscribed = false;
 
   #buf = "";
+  #decoder = new TextDecoder();
+  #encoder = new TextEncoder();
   #onFrame: (frame: Frame, conn: Connection) => void;
   #onClose: (conn: Connection) => void;
   #closed = false;
+  /** Bytes handed to `write()` whose promise hasn't resolved yet — the
+   *  Deno-side analogue of Node's `socket.writableLength`. */
+  #backlogBytes = 0;
 
   constructor(
-    socket: Socket,
+    conn: FramedConn,
     onFrame: (frame: Frame, conn: Connection) => void,
     onClose: (conn: Connection) => void,
   ) {
-    this.socket = socket;
+    this.conn = conn;
     this.#onFrame = onFrame;
     this.#onClose = onClose;
+    void this.#readLoop();
+  }
 
-    socket.setNoDelay(true);
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => this.#ingest(chunk));
-    socket.on("error", (err) => log.debug("socket error", { conn: this.id, err: String(err) }));
-    socket.on("close", () => this.#handleClose());
+  async #readLoop(): Promise<void> {
+    const buf = new Uint8Array(64 * 1024);
+    try {
+      for (;;) {
+        const n = await this.conn.read(buf);
+        if (n === null) break; // remote closed cleanly (EOF)
+        this.#ingest(this.#decoder.decode(buf.subarray(0, n), { stream: true }));
+      }
+    } catch (err) {
+      log.debug("socket error", { conn: this.id, err: String(err) });
+    } finally {
+      this.#handleClose();
+    }
   }
 
   #ingest(chunk: string): void {
@@ -77,11 +113,15 @@ export class Connection {
 
   #write(obj: Frame): void {
     if (this.#closed) return;
-    try {
-      this.socket.write(JSON.stringify(obj) + "\n");
-    } catch (err) {
-      log.debug("write failed", { conn: this.id, err: String(err) });
-    }
+    const bytes = this.#encoder.encode(JSON.stringify(obj) + "\n");
+    this.#backlogBytes += bytes.length;
+    writeAll(this.conn, bytes)
+      .catch((err: unknown) => {
+        log.debug("write failed", { conn: this.id, err: String(err) });
+      })
+      .finally(() => {
+        this.#backlogBytes -= bytes.length;
+      });
   }
 
   respond(frame: ResponseFrame): void {
@@ -90,13 +130,10 @@ export class Connection {
 
   push(frame: PushFrame): void {
     if (!this.subscribed || this.#closed) return;
-    // A client that isn't draining its socket backs frames up in Node's write
-    // buffer with no cap. Drop it once that crosses the ceiling — reconnect +
-    // `sinceSeq` replay recovers whatever it missed.
-    if (this.socket.writableLength > PUSH_BACKLOG_LIMIT_BYTES) {
+    if (this.#backlogBytes > PUSH_BACKLOG_LIMIT_BYTES) {
       log.warn("client not draining its socket — dropping connection", {
         conn: this.id,
-        backlog: this.socket.writableLength,
+        backlog: this.#backlogBytes,
       });
       this.close();
       return;
@@ -107,8 +144,11 @@ export class Connection {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.socket.end();
-    this.socket.destroy();
+    try {
+      this.conn.close();
+    } catch {
+      // already gone
+    }
   }
 
   #handleClose(): void {

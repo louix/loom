@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { connect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
@@ -38,6 +37,18 @@ export interface ConnectOptions {
 type PushListener = (frame: PushFrame) => void;
 type StateListener = (info?: unknown) => void;
 
+const encoder = new TextEncoder();
+
+/** Write every byte of `data`, looping on the partial writes `Deno.Conn`'s
+ *  `write()` may return (its contract, like any `Deno.Writer`, is "at least
+ *  one byte or an error," not "all of it"). */
+const writeAll = async (conn: Deno.Conn, data: Uint8Array): Promise<void> => {
+  let off = 0;
+  while (off < data.length) {
+    off += await conn.write(off === 0 ? data : data.subarray(off));
+  }
+};
+
 /**
  * Thin client for the Loom daemon. Handles connect-or-spawn, the `hello`
  * handshake, request/response correlation, and — for long-lived uses like
@@ -46,8 +57,10 @@ type StateListener = (info?: unknown) => void;
 export class LoomClient {
   readonly clientId: string;
   #opts: Required<ConnectOptions>;
-  #sock: Socket | null = null;
+  #sock: Deno.Conn | null = null;
+  #readLoop: Promise<void> | null = null;
   #buf = "";
+  #decoder = new TextDecoder();
   #nextId = 1;
   #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   #pushListeners = new Set<PushListener>();
@@ -128,7 +141,11 @@ export class LoomClient {
         },
       });
     });
-    this.#sock.write(JSON.stringify(frame) + "\n");
+    const bytes = encoder.encode(JSON.stringify(frame) + "\n");
+    // Fire-and-forget, same as the old `socket.write()`: a failure here just
+    // means the connection is dying, which the read loop is already about to
+    // discover and route through `#onSocketClose`.
+    writeAll(this.#sock, bytes).catch(() => {});
     return p as Promise<T>;
   }
 
@@ -166,10 +183,12 @@ export class LoomClient {
     const sock = this.#sock;
     this.#sock = null;
     if (!sock) return;
-    await new Promise<void>((resolve) => {
-      sock.once("close", () => resolve());
-      sock.destroy();
-    });
+    try {
+      sock.close();
+    } catch {
+      // already gone
+    }
+    await this.#readLoop;
   }
 
   /**
@@ -177,7 +196,11 @@ export class LoomClient {
    * reconnect path (with `sinceSeq` gap replay) runs. Not for production use.
    */
   dropForTest(): void {
-    this.#sock?.destroy();
+    try {
+      this.#sock?.close();
+    } catch {
+      // already gone
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -188,8 +211,7 @@ export class LoomClient {
     try {
       this.#sock = await tryConnect(this.#opts.sockPath);
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (!autospawn || (code !== "ENOENT" && code !== "ECONNREFUSED")) throw err;
+      if (!autospawn || !isRetryableConnectError(err)) throw err;
       await this.#spawnDaemon();
       this.#sock = await this.#connectWithRetry();
     }
@@ -201,15 +223,14 @@ export class LoomClient {
     if (!entry) throw new Error("LoomClient: autospawn needs `daemonEntry` (path to loomd)");
     // Re-invoking the running interpreter needs an explicit `run -A`: unlike
     // `node <file>`, bare `deno <file>` runs with no permissions by default.
-    const child = spawn(
-      Deno.execPath(),
-      ["run", "-A", entry, "--repo", this.#opts.repoRoot],
-      { detached: true, stdio: "ignore" },
-    );
+    const child = spawn(Deno.execPath(), ["run", "-A", entry, "--repo", this.#opts.repoRoot], {
+      detached: true,
+      stdio: "ignore",
+    });
     child.unref();
   }
 
-  async #connectWithRetry(): Promise<Socket> {
+  async #connectWithRetry(): Promise<Deno.Conn> {
     let waitMs = 25;
     for (let i = 0; i < 40; i++) {
       try {
@@ -222,18 +243,29 @@ export class LoomClient {
     throw new Error(`daemon did not come up on ${this.#opts.sockPath}`);
   }
 
-  #attach(sock: Socket): void {
+  #attach(sock: Deno.Conn): void {
     // Fresh socket ⇒ fresh pre-hello buffer. A previous handshake that failed
     // (timeout, socket dropped again) would otherwise leave frames from the
     // dead connection here for the next successful `#handshake` to drain.
     this.#preHelloQueue = [];
     this.#buf = "";
-    sock.setEncoding("utf8");
-    sock.on("data", (chunk: string) => this.#ingest(chunk));
-    sock.on("close", () => this.#onSocketClose());
-    sock.on("error", () => {
-      /* surfaced via close */
-    });
+    this.#decoder = new TextDecoder();
+    this.#readLoop = this.#runReadLoop(sock);
+  }
+
+  async #runReadLoop(sock: Deno.Conn): Promise<void> {
+    const buf = new Uint8Array(64 * 1024);
+    try {
+      for (;;) {
+        const n = await sock.read(buf);
+        if (n === null) break; // remote closed cleanly (EOF)
+        this.#ingest(this.#decoder.decode(buf.subarray(0, n), { stream: true }));
+      }
+    } catch {
+      // surfaced via close, same as the old socket 'error' no-op handler
+    } finally {
+      this.#onSocketClose();
+    }
   }
 
   #ingest(chunk: string): void {
@@ -244,7 +276,11 @@ export class LoomClient {
     // the buffer without bound.
     if (this.#buf.length > MAX_FRAME_BYTES) {
       this.#buf = "";
-      this.#sock?.destroy();
+      try {
+        this.#sock?.close();
+      } catch {
+        // already gone
+      }
       return;
     }
     let nl: number;
@@ -387,15 +423,16 @@ export class LoomClient {
         // Try to connect first; only fork a daemon when nothing is listening
         // (mirrors #dial) — otherwise a briefly-unreachable daemon makes us
         // spawn a doomed loomd per iteration.
+        let sock: Deno.Conn;
         try {
-          this.#sock = await tryConnect(this.#opts.sockPath);
+          sock = await tryConnect(this.#opts.sockPath);
         } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code;
-          if (!this.#opts.autospawn || (code !== "ENOENT" && code !== "ECONNREFUSED")) throw err;
+          if (!this.#opts.autospawn || !isRetryableConnectError(err)) throw err;
           await this.#spawnDaemon();
-          this.#sock = await this.#connectWithRetry();
+          sock = await this.#connectWithRetry();
         }
-        this.#attach(this.#sock);
+        this.#sock = sock;
+        this.#attach(sock);
         await this.#handshake(this.#lastSeq);
         this.#fire("reconnect", { lastSeq: this.#lastSeq });
         return;
@@ -449,13 +486,11 @@ export class LoomClient {
   }
 }
 
-const tryConnect = (sockPath: string): Promise<Socket> => {
-  return new Promise((resolve, reject) => {
-    const sock = connect(sockPath);
-    sock.once("connect", () => {
-      sock.removeListener("error", reject);
-      resolve(sock);
-    });
-    sock.once("error", reject);
-  });
-};
+/** `ENOENT` (nothing at the path) or `ECONNREFUSED` (a stale socket file, no
+ *  one listening) — both mean "worth trying autospawn," unlike a permission
+ *  error or anything else. */
+const isRetryableConnectError = (err: unknown): boolean =>
+  err instanceof Deno.errors.NotFound || err instanceof Deno.errors.ConnectionRefused;
+
+const tryConnect = (sockPath: string): Promise<Deno.Conn> =>
+  Deno.connect({ transport: "unix", path: sockPath });
