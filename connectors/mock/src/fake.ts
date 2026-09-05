@@ -27,10 +27,12 @@ import type {
 
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
+  liveModelSwitch: true,
   forking: false,
   rewind: true,
   subagents: false,
   compaction: true,
+  ownsTranscript: false,
   oneShot: true,
   partialTokens: false,
   permissionModes: ["default", "plan", "acceptEdits", "auto"],

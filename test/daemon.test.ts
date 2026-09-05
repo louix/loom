@@ -990,6 +990,21 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     assert.equal(choices.get("oaic/gpt-5")?.defaultEffort, "medium");
     // …models the endpoint says nothing about get no effort offer
     assert.equal(choices.get("a-model")?.supportsEffort, undefined);
+    // an effort outside Loom's fixed union, but advertised for this model, is
+    // accepted rather than rejected as a bad_request
+    const oaiSession = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "test",
+      status: "idle",
+      provider: "oai",
+      model: "oaic/gpt-5",
+    });
+    const switched = await c.request<SessionSnapshot>("session.setProvider", {
+      id: oaiSession.id,
+      provider: "oai",
+      model: "oaic/gpt-5",
+      effort: "minimal",
+    });
+    assert.equal(switched.effort, "minimal");
     // a provider with no context knowledge emits no modelChoices at all
     const needkey = provs.find((p) => p.id === "needkey");
     assert.equal(needkey?.modelChoices, undefined);

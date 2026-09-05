@@ -320,7 +320,7 @@ describe("session-manager", { concurrency: 4 }, () => {
         action: "implement_fresh",
         effort: "turbo",
       }),
-      /effort must be one of/,
+      /effort must be a level this model supports/,
     );
 
     await c.request("session.respondPlan", {
@@ -356,7 +356,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     );
     await assert.rejects(
       c.request("session.setProvider", { id, provider: "fake", effort: "turbo" }),
-      /effort must be one of/,
+      /effort must be a level this model supports/,
     );
 
     // Phase 1: a cross-provider switch that touches Claude is refused up front.

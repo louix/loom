@@ -6,7 +6,37 @@ import { test } from "node:test";
 import { streamText } from "ai";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { createChatGPTModels } from "@loom/connector-chatgpt/oauth";
+import { createProvider } from "@loom/connector-chatgpt";
+import { makeLogger } from "@loom/core/logger";
 import { approvalsReviewerFor, mcpConfig } from "@loom/connector-chatgpt/app-server";
+
+const noopTranscript = {
+  load: () => [],
+  count: () => 0,
+  append: () => {},
+  replaceFrom: () => {},
+  clear: () => {},
+  copyTo: () => {},
+};
+
+test("ChatGPT's provider-level capabilities stay conservative across its two backends", async () => {
+  // One provider id multiplexes a transcript-owning aisdk backend (ordinary
+  // models) and a thread-owning Code Mode backend (`code_mode_only` models).
+  // Until a per-session signal exists (Phase 4's persisted backend
+  // discriminator), the daemon must treat the whole provider conservatively so
+  // its transcript-based checkpoint / rewind / fork / cross-provider-switch
+  // machinery never runs against a Codex thread it doesn't own.
+  const provider = await createProvider({
+    id: "chatgpt",
+    config: { authPath: "/definitely/not/a/credential.json" },
+    transcript: noopTranscript,
+    logger: makeLogger("test"),
+  });
+  assert.equal(provider.capabilities.forking, false);
+  assert.equal(provider.capabilities.rewind, false);
+  assert.equal(provider.capabilities.ownsTranscript, false);
+  assert.equal(provider.capabilities.liveModelSwitch, false);
+});
 
 test("ChatGPT OAuth connector constructs a v5 model without reading credentials eagerly", () => {
   // Constructing the provider must not touch ~/.codex/auth.json: a user should

@@ -11,14 +11,26 @@ export type SessionMode = "default" | "plan" | "acceptEdits" | "auto";
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ProviderCapabilities {
-  /** Mode / model changes take effect immediately (Claude) vs. next turn (ADK). */
+  /** Mode changes take effect immediately (Claude) vs. next turn (ADK). See
+   *  {@link liveModelSwitch} for model-change timing, which can differ. */
   liveModeSwitch: boolean;
+  /** Model changes take effect immediately vs. next turn — kept separate from
+   *  {@link liveModeSwitch} because a provider's timing for the two can differ
+   *  (Codex app-server applies a mode change live but a model change only on
+   *  the next turn). */
+  liveModelSwitch: boolean;
   forking: boolean;
   /** `rewind(keep)` can truncate the transcript to an earlier turn (undo). */
   rewind: boolean;
   subagents: boolean;
   /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
   compaction: boolean;
+  /** The session's message history lives in Loom's own transcript store
+   *  (aisdk's `provider_messages`) rather than in a thread the provider owns
+   *  (Claude's session, a Codex app-server thread). Gates whether the daemon's
+   *  transcript-based checkpoint / rewind / fork / cross-provider-switch
+   *  machinery is safe to use. */
+  ownsTranscript: boolean;
   /** Can run a cheap, tool-free single-turn call (used for auto-titling). */
   oneShot: boolean;
   /** Emits token counts before the final result (partial usage). */

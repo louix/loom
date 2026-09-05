@@ -1436,14 +1436,38 @@ export class Daemon {
     return this.#isAisdk(providerId) || providerId === "fake" || isClaudeId(providerId);
   }
 
+  /** Whether `providerId`'s adapter owns its transcript in Loom's own store
+   *  (`provider_messages`) rather than a thread the provider owns — its real
+   *  `capabilities.ownsTranscript` once built, else a guess from the provider
+   *  type (matches every aisdk profile Loom ships) before its first
+   *  construction. */
+  #ownsTranscript(providerId: string): boolean {
+    const caps = this.#providers.capsOf(providerId);
+    if (caps) return caps.ownsTranscript;
+    return this.#isAisdk(providerId);
+  }
+
+  /** Effort strings `providerId`/`model` actually advertises, beyond Loom's own
+   *  five-value union — the same discovery data `#providerList` already
+   *  exposes to the picker (Claude's shared catalog, or an aisdk profile's
+   *  probed `modelEfforts`). */
+  #advertisedEfforts(providerId: string, model?: string | null): readonly string[] {
+    if (isClaudeId(providerId)) {
+      return this.#claudeChoices?.find((c) => c.id === model)?.effortLevels ?? [];
+    }
+    const p = this.config.providers.aisdk[providerId];
+    return (model && p?.modelEfforts[model]) || [];
+  }
+
   /** Snapshot a completed turn so it can be rewound / forked from later. */
   #recordCheckpoint(id: string): void {
     const snap = this.#registry.get(id);
     if (!snap || snap.turns <= 0) return;
-    // aisdk owns the transcript array → the fork point is a message count;
-    // Claude rewinds through its harness → it's the turn's last chain-entry UUID
-    // (from the adapter's mapper). Both live in `fork_point`.
-    const forkPoint = this.#isAisdk(snap.provider)
+    // A provider that owns its transcript (aisdk) → the fork point is a
+    // message count; one that rewinds through its own harness (Claude) → it's
+    // the turn's last chain-entry UUID (from the adapter's mapper). Both live
+    // in `fork_point`.
+    const forkPoint = this.#ownsTranscript(snap.provider)
       ? String(this.#pmsgs.count(id))
       : (this.#sessions.snapshot(id)?.rewindRef ?? "");
     // The full text that started this turn — the undo picker prefills a fresh
@@ -1973,7 +1997,7 @@ export class Daemon {
         turn: cp.turn,
         userText: cp.userText,
         createdAt: cp.createdAt,
-        rewindCostUsd: this.#isAisdk(snap.provider)
+        rewindCostUsd: this.#ownsTranscript(snap.provider)
           ? this.#rewindCostUsd(model, Number(cp.forkPoint) || 0, id)
           : 0,
       }));
@@ -2002,12 +2026,12 @@ export class Daemon {
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
       }
 
-      // aisdk owns the transcript array and can truncate it (or wipe it, for
-      // toTurn 0) while cold. A harness-driven adapter (Claude) rewinds by
-      // forking + resuming its live query, so it needs the session loaded and
-      // can't fork "to empty".
-      const aisdk = this.#isAisdk(snap.provider);
-      if (!aisdk) {
+      // A transcript-owning provider (aisdk) can truncate its own array (or
+      // wipe it, for toTurn 0) while cold. A harness-driven adapter (Claude)
+      // rewinds by forking + resuming its live query, so it needs the session
+      // loaded and can't fork "to empty".
+      const ownsTranscript = provider.capabilities.ownsTranscript;
+      if (!ownsTranscript) {
         if (toTurn === 0) {
           throw new RpcError(
             "bad_request",
@@ -2030,7 +2054,7 @@ export class Daemon {
         const cp = this.#checkpoints.at(id, toTurn);
         if (!cp) throw new RpcError("not_found", `no checkpoint at turn ${toTurn}`);
         checkpointSha = cp.headSha;
-        if (aisdk) {
+        if (ownsTranscript) {
           keep = Number(cp.forkPoint) || 0;
         } else {
           at = cp.forkPoint || undefined;
@@ -2136,10 +2160,10 @@ export class Daemon {
       const id = reqString(params, "id");
       const parent = this.#registry.get(id);
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!this.#isAisdk(parent.provider)) {
+      if (!this.#ownsTranscript(parent.provider)) {
         throw new RpcError(
           "bad_request",
-          "hard fork is aisdk-only for now (Claude support is fork-tree F3)",
+          "hard fork needs a provider whose transcript Loom owns (aisdk-only for now — Claude support is fork-tree F3)",
         );
       }
       if (parent.inPlace) {
@@ -2336,11 +2360,18 @@ export class Daemon {
       // implementation runs under (the plan review's `⌥p`).
       const retargetModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
       const retargetEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
-      if (retargetEffort !== undefined && !EFFORT_LEVELS.includes(retargetEffort as EffortLevel)) {
-        throw new RpcError("bad_request", `effort must be one of ${EFFORT_LEVELS.join(" | ")}`);
-      }
       const retargetProvider =
         typeof p["provider"] === "string" ? (p["provider"] as string) : undefined;
+      if (
+        retargetEffort !== undefined &&
+        !EFFORT_LEVELS.includes(retargetEffort as EffortLevel) &&
+        !this.#advertisedEfforts(
+          retargetProvider ?? parent.provider,
+          retargetModel ?? parent.model,
+        ).includes(retargetEffort)
+      ) {
+        throw new RpcError("bad_request", "effort must be a level this model supports");
+      }
 
       // A different provider can't switch live — fork a fresh session on it,
       // seeded with the approved plan + the original goal, and end the planning
@@ -2485,9 +2516,6 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const wantModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
       const wantEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
-      if (wantEffort !== undefined && !EFFORT_LEVELS.includes(wantEffort as EffortLevel)) {
-        throw new RpcError("bad_request", `effort must be one of ${EFFORT_LEVELS.join(" | ")}`);
-      }
       const row = this.#registry.get(id);
       if (!row) throw new RpcError("not_found", `no such session: ${id}`);
       if (!this.#providers.has(provider)) {
@@ -2495,6 +2523,13 @@ export class Daemon {
       }
 
       const model = wantModel ?? (this.#defaultModelFor(provider) || null);
+      if (
+        wantEffort !== undefined &&
+        !EFFORT_LEVELS.includes(wantEffort as EffortLevel) &&
+        !this.#advertisedEfforts(provider, model ?? undefined).includes(wantEffort)
+      ) {
+        throw new RpcError("bad_request", "effort must be a level this model supports");
+      }
       const effort = wantEffort ?? (this.#defaultEffortFor(provider, model ?? undefined) || null);
 
       // Same provider: this is a model / effort change, nothing more.
@@ -2517,10 +2552,10 @@ export class Daemon {
         return snap;
       }
 
-      if (!this.#isAisdk(provider) || !this.#isAisdk(row.provider)) {
+      if (!this.#ownsTranscript(provider) || !this.#ownsTranscript(row.provider)) {
         throw new RpcError(
           "bad_request",
-          "switching to or from Claude mid-chat isn't supported yet — start a fresh session on it instead",
+          "switching to or from a provider that doesn't own its transcript isn't supported yet — start a fresh session on it instead",
         );
       }
       if (!model) {

@@ -46,10 +46,12 @@ import type {
 
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
+  liveModelSwitch: true,
   forking: true,
   rewind: true, // fork the transcript truncated, then resume it — ClaudeSession.rewind
   subagents: true,
   compaction: true,
+  ownsTranscript: false, // history lives in the Claude Agent SDK's own session
   oneShot: true,
   // `includePartialMessages` is off and the mapper drops `stream_event`, so
   // usage is only emitted from the final `result` — no interim token counts.

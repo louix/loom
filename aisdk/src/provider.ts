@@ -101,11 +101,13 @@ export class AisdkProvider implements AgentProvider {
         : async () => configuredToolMode ?? "full";
     this.#listModels = opts.listModels;
     this.capabilities = {
-      liveModeSwitch: false, // a model / mode change takes effect on the next turn
+      liveModeSwitch: false, // a mode change takes effect on the next turn
+      liveModelSwitch: false, // a model change takes effect on the next turn
       forking: false,
       rewind: true, // Loom owns the ModelMessage[] — slicing it is exact
       subagents: opts.subagents ?? true, // the `task` tool spawns a depth-1 sub-agent
       compaction: false, // Loom summarises + rebuilds history; not the provider's own /compact
+      ownsTranscript: true, // Loom owns the ModelMessage[] in `provider_messages`
       oneShot: true,
       partialTokens: true,
       permissionModes: ["default", "plan", "acceptEdits", "auto"],

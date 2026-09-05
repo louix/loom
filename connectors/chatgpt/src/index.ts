@@ -39,12 +39,19 @@ class ChatGPTProvider implements AgentProvider {
     this.#codexCliPath = codexCliPath || "codex";
     this.#search = search;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
+    // Conservative provider-level defaults: this one provider id spans a
+    // transcript-owning aisdk backend and a thread-owning Code Mode backend
+    // (see `#isCodeMode`), and there's no per-session signal yet to report
+    // these more precisely for whichever one a given session actually runs on
+    // (Phase 4 adds a persisted backend discriminator for that).
     this.capabilities = {
       ...direct.capabilities,
       liveModeSwitch: true,
+      liveModelSwitch: false,
       forking: false,
       rewind: false,
       compaction: true,
+      ownsTranscript: false,
     };
   }
 
