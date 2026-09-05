@@ -1,0 +1,54 @@
+{
+  "nodeModulesDir": "auto",
+  "workspace": [
+    "core",
+    "client",
+    "aisdk",
+    "harness",
+    "backend/daemon",
+    "frontend/tui",
+    "connectors/generic",
+    "connectors/claude",
+    "connectors/gemini",
+    "connectors/mock",
+    "connectors/chatgpt",
+    "cli"
+  ],
+  "imports": {
+    "zod": "npm:zod@4.4.3",
+    "ai": "npm:ai@5.0.249",
+    "ink": "npm:ink@7.1.1",
+    "react": "npm:react@19.2.8",
+    "@ai-sdk/mcp": "npm:@ai-sdk/mcp@0.0.31",
+    "@ai-sdk/provider": "npm:@ai-sdk/provider@2.0.3",
+    "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@2.0.99",
+    "@ai-sdk/openai-compatible": "npm:@ai-sdk/openai-compatible@1.0.52",
+    "@ai-sdk/google": "npm:@ai-sdk/google@2.0.94",
+    "@anthropic-ai/claude-agent-sdk": "npm:@anthropic-ai/claude-agent-sdk@0.3.251",
+    "smol-toml": "npm:smol-toml@1.8.0"
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true
+  },
+  "tasks": {
+    "loom": "deno run -A cli/src/loom.ts",
+    "daemon": "deno run -A cli/src/loomd.ts",
+    "typecheck": "deno check .",
+    "typecheck:silent": "deno check .",
+    "watch": "deno check . --watch",
+    "test": "NO_COLOR=1 deno test -A test/",
+    "test:silent": "NO_COLOR=1 deno test -A --reporter=dot test/",
+    "test:timing": "NO_COLOR=1 deno test -A --reporter=pretty test/",
+    "lint": "deno run -A npm:oxlint@1.79.0 .",
+    "format": "deno run -A npm:oxfmt@0.64.0 .",
+    "format:check": "deno run -A npm:oxfmt@0.64.0 --check ."
+  }
+}

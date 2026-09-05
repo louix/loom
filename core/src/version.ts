@@ -20,7 +20,7 @@ const git = (cwd: string, args: string[]): string | null => {
 };
 
 const fromGit = (): string | null => {
-  const root = git(import.meta.dirname, ["rev-parse", "--show-toplevel"]);
+  const root = git(import.meta.dirname!, ["rev-parse", "--show-toplevel"]);
   if (root === null) return null;
   return git(root, ["describe", "--tags", "--always", "--dirty"]);
 };

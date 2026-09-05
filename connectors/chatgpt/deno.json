@@ -1,0 +1,8 @@
+{
+  "name": "@loom/connector-chatgpt",
+  "exports": {
+    ".": "./src/index.ts",
+    "./oauth": "./src/oauth.ts",
+    "./app-server": "./src/app-server.ts"
+  }
+}

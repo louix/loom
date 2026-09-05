@@ -1,0 +1,6 @@
+{
+  "name": "@loom/client",
+  "exports": {
+    ".": "./src/client.ts"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "@loom/connector-gemini",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

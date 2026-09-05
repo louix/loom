@@ -1,0 +1,6 @@
+{
+  "name": "loom",
+  "exports": {
+    ".": "./src/loom.ts"
+  }
+}

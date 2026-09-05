@@ -1,0 +1,6 @@
+{
+  "name": "@loom/harness",
+  "exports": {
+    ".": "./src/harness.ts"
+  }
+}

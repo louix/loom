@@ -1,0 +1,30 @@
+{
+  "name": "@loom/daemon",
+  "exports": {
+    "./scaffold": "./src/scaffold.ts",
+    "./config/claude-profile": "./src/config/claude-profile.ts",
+    "./config/config": "./src/config/config.ts",
+    "./config/pricing": "./src/config/pricing.ts",
+    "./daemon/connection": "./src/daemon/connection.ts",
+    "./daemon/daemon": "./src/daemon/daemon.ts",
+    "./daemon/event-log": "./src/daemon/event-log.ts",
+    "./daemon/hygiene": "./src/daemon/hygiene.ts",
+    "./daemon/lifecycle": "./src/daemon/lifecycle.ts",
+    "./daemon/mcp-fallback": "./src/daemon/mcp-fallback.ts",
+    "./daemon/model-catalog": "./src/daemon/model-catalog.ts",
+    "./daemon/prompt": "./src/daemon/prompt.ts",
+    "./daemon/provider-registry": "./src/daemon/provider-registry.ts",
+    "./daemon/registry": "./src/daemon/registry.ts",
+    "./daemon/rpc": "./src/daemon/rpc.ts",
+    "./daemon/server": "./src/daemon/server.ts",
+    "./daemon/session-manager": "./src/daemon/session-manager.ts",
+    "./daemon/status-machine": "./src/daemon/status-machine.ts",
+    "./daemon/titler": "./src/daemon/titler.ts",
+    "./daemon/worktrees": "./src/daemon/worktrees.ts",
+    "./store/db": "./src/store/db.ts",
+    "./store/migrations": "./src/store/migrations.ts",
+    "./store/provider-messages": "./src/store/provider-messages.ts",
+    "./store/session-events": "./src/store/session-events.ts",
+    "./store/sessions": "./src/store/sessions.ts"
+  }
+}

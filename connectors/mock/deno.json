@@ -1,0 +1,6 @@
+{
+  "name": "@loom/connector-mock",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

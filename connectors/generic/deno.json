@@ -1,0 +1,6 @@
+{
+  "name": "@loom/connector-generic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

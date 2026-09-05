@@ -1,0 +1,10 @@
+{
+  "name": "@loom/connector-claude",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapter": "./src/adapter.ts",
+    "./map": "./src/map.ts",
+    "./cli": "./src/cli.ts",
+    "./loom-mcp": "./src/loom-mcp.ts"
+  }
+}

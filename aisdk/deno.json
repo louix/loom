@@ -1,0 +1,19 @@
+{
+  "name": "@loom/aisdk",
+  "exports": {
+    "./provider": "./src/provider.ts",
+    "./session": "./src/session.ts",
+    "./loop": "./src/loop.ts",
+    "./map": "./src/map.ts",
+    "./mcp": "./src/mcp.ts",
+    "./gate": "./src/gate.ts",
+    "./loom-tools": "./src/loom-tools.ts",
+    "./tools/bash": "./src/tools/bash.ts",
+    "./tools/edit": "./src/tools/edit.ts",
+    "./tools/grep": "./src/tools/grep.ts",
+    "./tools/search": "./src/tools/search.ts",
+    "./tools/kagi": "./src/tools/kagi.ts",
+    "./tools/background": "./src/tools/background.ts",
+    "./tools/builtins": "./src/tools/builtins.ts"
+  }
+}

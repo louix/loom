@@ -15,7 +15,7 @@ export const userConfigPath = (): string => {
 
 /** The `config.example.toml` shipped at the root of `@loom/daemon`. */
 export const exampleConfigPath = (): string => {
-  return join(import.meta.dirname, "..", "config.example.toml");
+  return join(import.meta.dirname!, "..", "config.example.toml");
 };
 
 /**
