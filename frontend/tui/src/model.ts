@@ -623,6 +623,7 @@ export type Action =
   | { t: "findSet"; buffer: Buffer }
   | { t: "closeFind" }
   | { t: "resolvePerm"; sessionId: string; id: string }
+  | { t: "modeOptimistic"; sessionId: string; mode: SessionMode }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "help"; value: boolean }
   | { t: "doctor"; value: boolean }
@@ -978,6 +979,15 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
           [a.sessionId]: rest.length ? { ...others, permissions: rest } : others,
         },
       };
+    }
+
+    // Local-only, ahead of the round trip: `session.setMode` is debounced in
+    // fleet-handle, so the chip must update on its own for cycling to feel
+    // responsive. The authoritative `session_updated` push that eventually
+    // lands (settled mode, from the debounced RPC) simply overwrites this.
+    case "modeOptimistic": {
+      const sessions = s.sessions.map((x) => (x.id === a.sessionId ? { ...x, mode: a.mode } : x));
+      return { ...s, sessions };
     }
 
     case "qnavSet":

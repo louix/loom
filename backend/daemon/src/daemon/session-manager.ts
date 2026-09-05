@@ -614,6 +614,21 @@ export class SessionManager {
   async setMode(id: string, mode: SessionMode): Promise<void> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
+    // A pending `ExitPlanMode` review blocks the live turn on a human decision
+    // (`respondToPlan`); switching the mode chip away from `plan` out from
+    // under it — rather than through the plan-review UI — would otherwise
+    // leave that tool call hanging until the session closes (`#pendingPlans`
+    // in the adapter is only ever swept on teardown). Treat it the same as
+    // clicking "implement" in the review: resolve it into the mode being
+    // switched to, exactly the field `PlanDecision`'s `implement` carries for
+    // this purpose.
+    if (mode !== "plan") {
+      const pendingPlanId = [...run.pending].find(([, kind]) => kind === "plan_review")?.[0];
+      if (pendingPlanId !== undefined) {
+        await this.respondToPlan(id, pendingPlanId, { action: "implement", mode });
+        return;
+      }
+    }
     await run.session.setMode(mode);
   }
 

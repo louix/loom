@@ -495,6 +495,10 @@ export const mkFleetHandle = ({
   const draining = new Set<string>();
   const lastDrainTurn = new Map<string, number>();
 
+  // `⇧⇥` mode cycling: the debounce window before `session.setMode` actually
+  // reaches the daemon for a session (see `cycleSessionMode` below).
+  const modeDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+
   // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
   const forgetDeadSessions = (): void => {
@@ -1129,13 +1133,8 @@ export const mkFleetHandle = ({
               return "";
           }
         });
-      case "mode": {
-        const target = nextMode(s.mode as SessionMode);
-        return perform(async () => {
-          await client.request("session.setMode", { id: s.id, mode: target, by });
-          return `mode → ${target}`;
-        });
-      }
+      case "mode":
+        return void cycleSessionMode(s.id);
       default:
         return absurd(name);
     }
@@ -1563,22 +1562,40 @@ export const mkFleetHandle = ({
     });
   };
 
-  /** `⇧⇥` inside a `send` prompt: cycle the target session's permission mode on
-   *  the daemon, leaving the half-typed message untouched. */
-  const cyclePromptSessionMode = (sessionId: string): void => {
+  /**
+   * `⇧⇥` cycles a live session's permission mode — from the fleet row or from
+   * inside a `send` prompt. The chip updates immediately on every press
+   * (optimistic, local-only) so cycling feels responsive regardless of
+   * round-trip time; the `session.setMode` RPC is debounced behind it, so only
+   * the mode presses settle on once they stop for a beat actually reaches the
+   * connector. Without that, a fast cycle through to `auto` would still
+   * briefly apply `plan` as an intermediate stop — and unlike the other three
+   * modes, `plan` has real side effects once it's actually live (it flips the
+   * SDK session into plan mode, tools and all), not just a permission level.
+   */
+  const cycleSessionMode = (sessionId: string): void => {
     const s = state.sessions.find((x) => x.id === sessionId);
     if (!s) return void dispatch({ t: "notice", text: "session is gone", tone: "dim" });
     const target = nextMode(s.mode as SessionMode);
-    client
-      .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
-      .then(() => dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" }))
-      .catch((e: unknown) =>
-        dispatch({
-          t: "notice",
-          text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
-          tone: "bad",
-        }),
-      );
+    dispatch({ t: "modeOptimistic", sessionId, mode: target });
+    dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" });
+    const prevTimer = modeDebounce.get(sessionId);
+    if (prevTimer) clearTimeout(prevTimer);
+    const timer = setTimeout(() => {
+      modeDebounce.delete(sessionId);
+      // The session was removed while the debounce sat idle — nothing to apply.
+      if (!state.sessions.some((x) => x.id === sessionId)) return;
+      client
+        .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
+        .catch((e: unknown) =>
+          dispatch({
+            t: "notice",
+            text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: "bad",
+          }),
+        );
+    }, 300);
+    modeDebounce.set(sessionId, timer);
   };
 
   const submitPrompt = (): void => {
@@ -2191,7 +2208,7 @@ export const mkFleetHandle = ({
       // ⇧⇥ cycles the permission mode without leaving the prompt.
       if (key.tab && key.shift) {
         if (p.kind === "new") return void dispatch({ t: "promptCycleMode" });
-        if (p.kind === "send" && p.sessionId) return void cyclePromptSessionMode(p.sessionId);
+        if (p.kind === "send" && p.sessionId) return void cycleSessionMode(p.sessionId);
         return;
       }
       // ⌥m swaps the model without leaving the prompt.

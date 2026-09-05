@@ -1650,6 +1650,99 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
     cleanup();
   }
 });
+
+test("setMode away from plan while a review is pending resolves it, instead of hanging (fleet mode chip bypassing the plan-review UI)", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const planChunks: Chunk[] = [
+      { type: "stream-start", warnings: [] },
+      { type: "response-metadata", id: "r1", modelId: "mock", timestamp: new Date(0) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "exit_plan",
+        input: JSON.stringify({ plan: "1. do the thing" }),
+      },
+      {
+        type: "finish",
+        finishReason: "tool-calls",
+        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      },
+    ];
+    const doneChunks: Chunk[] = [
+      { type: "stream-start", warnings: [] },
+      { type: "response-metadata", id: "r2", modelId: "mock", timestamp: new Date(0) },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "Implemented." },
+      { type: "text-end", id: "t" },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      },
+    ];
+    let call = 0;
+    const m = new MockLanguageModelV2({
+      doStream: async () => {
+        call += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: call === 1 ? planChunks : doneChunks,
+            initialDelayInMs: 0,
+          }),
+        };
+      },
+    }) as unknown as LanguageModel;
+    const p = provider(() => m, store);
+
+    const evs: HarnessEvent[] = [];
+    const modes: string[] = [];
+    let results = 0;
+    const mgr = new SessionManager({
+      emitEvent: (ev) => evs.push(ev),
+      onStatus: () => {},
+      onUsage: () => {},
+      onResult: () => {
+        results += 1;
+      },
+      onSubagents: () => {},
+      onBackgroundTasks: () => {},
+      onRestructuring: () => {},
+      onProviderRef: () => {},
+      onMode: (_id, mode) => modes.push(mode),
+      log: makeLogger("test"),
+    });
+
+    await mgr.create(p, {
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "plan then build",
+      mode: "plan",
+      mcpServers: [],
+      loomServer: true,
+    });
+    for (let i = 0; i < 200 && !evs.some((e) => e.type === "plan_review"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.ok(evs.some((e) => e.type === "plan_review"), "expected a plan_review");
+
+    // The fleet's mode chip, not the plan-review UI: cycling straight to
+    // `auto` while the `exit_plan` tool call is still parked on a decision.
+    // Before the fix this called the adapter's bare `setMode` and left the
+    // pending review (and the turn behind it) hanging forever.
+    await mgr.setMode("s1", "auto");
+    assert.equal(modes.at(-1), "auto");
+
+    for (let i = 0; i < 200 && results === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(results, 1, "the chained implement turn must actually run");
+    assert.equal(mgr.snapshot("s1")?.mode, "auto");
+    await mgr.shutdown();
+  } finally {
+    cleanup();
+  }
+});
+
 test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", async () => {
   const { db, cleanup } = tmpDb();
   try {
