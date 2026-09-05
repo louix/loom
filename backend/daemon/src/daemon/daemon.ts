@@ -6,6 +6,7 @@ import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveMcpCommand } from "./mcp-fallback.ts";
+import { findClaudeOwner } from "./provider-recovery.ts";
 import {
   claudeProfileId,
   lintConfig,
@@ -423,6 +424,7 @@ export class Daemon {
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+    for (const warning of this.#orphanedProviderWarnings()) this.#log.warn("config", { warning });
 
     if (this.#stopping) return; // a signal landed mid-probe; stop() has the wheel
 
@@ -1091,7 +1093,22 @@ export class Daemon {
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
     if (!this.#providers.has(row.provider)) {
-      throw new RpcError("bad_request", `unknown provider: ${row.provider}`);
+      const owners = isClaudeId(row.provider) ? findClaudeOwner(this.config.claudeProfiles, providerRef) : [];
+      if (owners.length === 1) {
+        const newId = claudeProfileId(owners[0]!);
+        this.#registry.setFields(id, { provider: newId });
+        this.#emitNotice(
+          `session ${id.slice(0, 8)}: provider "${row.provider}" no longer exists — relinked to "${newId}" (found its transcript there)`,
+          "warn",
+        );
+        row.provider = newId;
+      } else {
+        throw new RpcError(
+          "bad_request",
+          `unknown provider: ${row.provider}` +
+            (owners.length > 1 ? ` (ambiguous — matches ${owners.length} profiles)` : ""),
+        );
+      }
     }
     const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
     // If the model this session ran on has since dropped out of the endpoint's
@@ -1637,6 +1654,7 @@ export class Daemon {
     }
 
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+    for (const warning of this.#orphanedProviderWarnings()) this.#log.warn("config", { warning });
 
     const needsRestart =
       JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
@@ -1763,7 +1781,17 @@ export class Daemon {
       }
     });
 
-    d.register("config.check", () => ({ warnings: lintConfig(this.config) }));
+    d.register("config.check", () => ({
+      warnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],
+    }));
+
+    d.register("daemon.relinkProvider", (params: unknown) => {
+      const from = reqString(params, "from");
+      const to = reqString(params, "to");
+      if (!this.#providers.has(to)) throw new RpcError("bad_request", `unknown provider: ${to}`);
+      const relinked = this.#registry.relinkProvider(from, to);
+      return { relinked };
+    });
 
     d.register("daemon.doctor", () => this.#doctorReport());
 
@@ -2836,6 +2864,29 @@ export class Daemon {
   }
 
   /**
+   * Sessions whose stored `provider` id no longer resolves in the current
+   * config — typically a `[[claude_profiles]]` `name` (hence id) or a
+   * `[providers.*]` table was renamed out from under it. A Claude-family id
+   * with a live transcript match self-heals in {@link #reviveSession}; this
+   * only reports what's left — aisdk ids (no on-disk ownership evidence) and
+   * Claude ids with zero/ambiguous matches — so it stays visible instead of
+   * `#autoResumeInterrupted` silently skipping the session.
+   */
+  #orphanedProviderWarnings(): string[] {
+    const ids = new Set(this.#registry.list().map((s) => s.provider));
+    const w: string[] = [];
+    for (const id of ids) {
+      if (this.#providers.has(id)) continue;
+      w.push(
+        `sessions reference provider "${id}", which no longer exists in config — ` +
+          "did you rename a [[claude_profiles]] or [providers.*] entry? " +
+          `fix with \`loom relink-provider ${id} <current-id>\``,
+      );
+    }
+    return w;
+  }
+
+  /**
    * `daemon.doctor` — what a new session's tool / connector / MCP environment
    * looks like right now, plus daemon vitals. The provider-native built-in
    * lists (`tools.claude` / `tools.aisdk`) mirror the connector packages
@@ -2886,7 +2937,7 @@ export class Daemon {
         enabled: s.backend !== "none" && searchKey !== "",
         note: searchNoteOf(s.backend, searchKey),
       },
-      configWarnings: lintConfig(this.config),
+      configWarnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],
     };
   }
 }

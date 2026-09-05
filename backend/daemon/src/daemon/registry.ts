@@ -77,6 +77,10 @@ export class Registry {
     return this.#bump(id);
   }
 
+  relinkProvider(from: string, to: string): number {
+    return this.#store.relinkProvider(from, to);
+  }
+
   /** Set the turn counter directly (undo) and bump the version so a
    *  version-tracking client doesn't keep a stale count. */
   setTurns(id: string, turns: number): SessionSnapshot {

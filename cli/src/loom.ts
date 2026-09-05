@@ -25,6 +25,7 @@ commands:
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
+  relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
@@ -329,6 +330,13 @@ const main = async (): Promise<void> => {
           for (const line of r.warnings) writeOut(`  ! ${line}\n`);
           Deno.exitCode = 1;
         }
+        break;
+      }
+      case "relink-provider": {
+        const from = need(positionals[1], "relink-provider <old-id> <new-id>");
+        const to = need(positionals[2], "relink-provider <old-id> <new-id>");
+        const r = await client.request<{ relinked: number }>("daemon.relinkProvider", { from, to });
+        process.stdout.write(`relinked ${r.relinked} session(s) from "${from}" to "${to}"\n`);
         break;
       }
       case "history": {

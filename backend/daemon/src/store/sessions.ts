@@ -253,6 +253,37 @@ export class SessionStore {
   }
 
   /**
+   * Repoint every session on provider `from` to `to` — recovery for a renamed
+   * / re-keyed provider (e.g. a `[[claude_profiles]]` `name` change, which
+   * recomputes its id). Reuses {@link setFields} per row so cache-observation
+   * clearing and `updated_at` stay consistent with any other provider switch.
+   * Also carries over the "last used" caches (`ProviderDefaultStore` below)
+   * keyed by the old id, without clobbering a value `to` already has. Returns
+   * the number of sessions relinked.
+   */
+  relinkProvider(from: string, to: string): number {
+    const ids = this.#db.prepare("SELECT id FROM sessions WHERE provider = ?").all(from) as Array<{
+      id: string;
+    }>;
+    for (const { id } of ids) this.setFields(id, { provider: to });
+    for (const prefix of ["default_model:", "default_effort:"]) {
+      const row = this.#db.prepare("SELECT value FROM meta WHERE key = ?").get(`${prefix}${from}`) as
+        | { value: string }
+        | undefined;
+      if (row) {
+        this.#db
+          .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
+          .run(`${prefix}${to}`, row.value);
+        this.#db.prepare("DELETE FROM meta WHERE key = ?").run(`${prefix}${from}`);
+      }
+    }
+    this.#db
+      .prepare("UPDATE meta SET value = ? WHERE key = 'last_provider' AND value = ?")
+      .run(to, from);
+    return ids.length;
+  }
+
+  /**
    * Forget what this session's prompt cache was doing. Called when it changes
    * provider or model: cache entries are scoped to a provider+model pair, so
    * the new pair starts cold and unmeasured, and the old pair's TTL, countdown
