@@ -127,6 +127,8 @@ export interface AisdkProfile {
    * Loom never copies a ChatGPT subscription credential into its config or DB.
    */
   authPath: string;
+  /** Explicit `codex` executable for Code Mode models. Empty resolves `codex` on PATH. */
+  codexCliPath: string;
 }
 
 /**
@@ -442,6 +444,7 @@ const buildAisdkProfile = (
     titleModel: str(t["title_model"], ""),
     connector: str(t["connector"], ""),
     authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
+    codexCliPath: t["codex_cli_path"] ? expandTilde(str(t["codex_cli_path"], "")) : "",
   };
 };
 

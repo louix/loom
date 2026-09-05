@@ -21,11 +21,18 @@ class ChatGPTProvider implements AgentProvider {
   readonly capabilities;
   readonly #direct: AgentProvider;
   readonly #isCodeMode: (model: string) => Promise<boolean>;
+  readonly #codexCliPath: string;
 
-  constructor(id: string, direct: AgentProvider, isCodeMode: (model: string) => Promise<boolean>) {
+  constructor(
+    id: string,
+    direct: AgentProvider,
+    isCodeMode: (model: string) => Promise<boolean>,
+    codexCliPath?: string,
+  ) {
     this.id = id;
     this.#direct = direct;
     this.#isCodeMode = isCodeMode;
+    this.#codexCliPath = codexCliPath || "codex";
     this.capabilities = {
       ...direct.capabilities,
       liveModeSwitch: true,
@@ -38,11 +45,11 @@ class ChatGPTProvider implements AgentProvider {
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     if (opts.oneShot || !(await this.#isCodeMode(opts.model ?? "")))
       return this.#direct.createSession(opts);
-    return CodexAppServerSession.start(opts);
+    return CodexAppServerSession.start(opts, this.#codexCliPath);
   }
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
     if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
-    return CodexAppServerSession.resume(ref);
+    return CodexAppServerSession.resume(ref, this.#codexCliPath);
   }
   listPersistedSessions(): Promise<SessionRef[]> {
     return this.#direct.listPersistedSessions();
@@ -109,5 +116,6 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
     ctx.id,
     direct,
     async (model) => (await catalog.get(model)).tool_mode === "code_mode_only",
+    ctx.config.codexCliPath,
   );
 };

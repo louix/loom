@@ -188,6 +188,7 @@ test("[chatgpt] uses Codex OAuth instead of requiring an API key", () => {
 model     = "gpt-5-codex"
 models    = ["gpt-5-codex", "gpt-5"]
 auth_path = "~/custom-codex/auth.json"
+codex_cli_path = "~/bin/codex"
 `);
   const p = c.providers.aisdk["chatgpt"];
   assert.ok(p);
@@ -195,6 +196,7 @@ auth_path = "~/custom-codex/auth.json"
   assert.equal(p.apiKey, "");
   assert.equal(p.apiKeyEnv, "");
   assert.equal(p.authPath, join(homedir(), "custom-codex/auth.json"));
+  assert.equal(p.codexCliPath, join(homedir(), "bin/codex"));
   assert.deepEqual(p.models, ["gpt-5-codex", "gpt-5"]);
   assert.deepEqual(lintConfig(c), []);
 });

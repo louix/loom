@@ -138,6 +138,14 @@ in turn starts Codex's Code Mode host and provides its native patching,
 approvals, steering, and sub-agent tools. Install `codex` and run `codex login`
 before using one.
 
+Set `codex_cli_path` in `[chatgpt]` (or an `sdk = "chatgpt"` provider profile)
+when `codex` is not on `PATH`:
+
+```toml
+[chatgpt]
+codex_cli_path = "/absolute/path/to/codex"
+```
+
 Loom replaces the app-server's `mcp_servers` table for every Code Mode session
 with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed

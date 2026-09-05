@@ -36,6 +36,8 @@ export interface ConnectorConfig {
   sdk?: "openai" | "google" | "anthropic" | "chatgpt";
   /** Optional Codex OAuth auth.json path; omitted uses `~/.codex/auth.json`. */
   authPath?: string;
+  /** ChatGPT Code Mode: explicit `codex` executable. Empty / omitted uses PATH. */
+  codexCliPath?: string;
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;
   /**

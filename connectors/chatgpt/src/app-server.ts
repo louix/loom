@@ -120,10 +120,13 @@ export class CodexAppServerSession implements AgentSession {
     });
   }
 
-  static async start(opts: CreateSessionOptions): Promise<CodexAppServerSession> {
+  static async start(
+    opts: CreateSessionOptions,
+    cliPath = "codex",
+  ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const proc = spawn("codex", ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
+    const proc = spawn(cliPath, ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
     });
@@ -145,7 +148,7 @@ export class CodexAppServerSession implements AgentSession {
     return s;
   }
 
-  static async resume(ref: SessionRef): Promise<CodexAppServerSession> {
+  static async resume(ref: SessionRef, cliPath = "codex"): Promise<CodexAppServerSession> {
     if (!ref.providerRef) throw new Error("Codex session has no app-server thread id to resume");
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
@@ -156,7 +159,7 @@ export class CodexAppServerSession implements AgentSession {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const proc = spawn("codex", ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
+    const proc = spawn(cliPath, ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
     });
