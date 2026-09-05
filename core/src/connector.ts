@@ -67,6 +67,10 @@ export interface ConnectorConfig {
    * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
    * config directory, already tilde-expanded and absolute. "" = the SDK's
    * default (`~/.claude`).
+   *
+   * ChatGPT (`sdk = "chatgpt"`): explicit Codex home directory (`auth.json`,
+   * `config.toml`). "" falls through to legacy `auth_path`'s parent, then
+   * `CODEX_HOME`, then `~/.codex`.
    */
   configDir?: string;
 }

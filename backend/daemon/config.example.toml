@@ -136,6 +136,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # model     = "gpt-5.6-terra"       # optional pin / default
 # models    = ["gpt-5.6-terra"]     # optional curated picker list
 # auth_path = "~/.codex/auth.json" # optional; this is already the default
+# config_dir = "~/.codex-work"     # optional explicit Codex home; overrides auth_path/CODEX_HOME
 # codex_cli_path = "/usr/local/bin/codex" # optional; empty uses `codex` on PATH
 # codex_builtin_web_search = false # optional; default keeps Codex web search alongside Kagi
 #

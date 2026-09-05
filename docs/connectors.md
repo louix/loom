@@ -123,16 +123,26 @@ this build's manifest"_.
 
 `[chatgpt]` uses the OAuth session created by `codex login`; it does not read an
 OpenAI API key or put a subscription token in Loom's configuration. At daemon
-start it queries Codex's authenticated `GET /backend-api/codex/models` catalogue
-and uses its account-specific model list, maximum context limits, display names, and
-reasoning levels. A model pin remains optional:
+start it lists your account's models and their reasoning efforts through a
+short-lived `codex app-server` process (`model/list`), and context limits from
+Codex's authenticated `GET /backend-api/codex/models` catalogue. A model pin
+remains optional:
 
 ```toml
 [chatgpt]
 # model = "gpt-5.6-terra"           # optional pin / default
 # models = ["gpt-5.6-terra"]         # optional curated picker list
 # auth_path = "~/.codex/auth.json"  # optional; this is the default
+# config_dir = "~/.codex-work"      # optional explicit Codex home (overrides auth_path/CODEX_HOME)
 ```
+
+Codex's directory is resolved once, in this order: explicit `config_dir` →
+legacy `auth_path`'s parent directory → the `CODEX_HOME` environment variable
+→ `~/.codex`. Setting both `config_dir` and `auth_path` is only valid when they
+name the same directory — Loom rejects the config otherwise. The resolved
+directory is used consistently for discovery and for every spawned
+`codex app-server` session (as that subprocess's own `CODEX_HOME`), so both
+always authenticate against the same `auth.json`.
 
 Run it with `loom run --provider chatgpt "…"`, or set
 `default_provider = "chatgpt"` in the same configuration file.

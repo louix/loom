@@ -2,11 +2,11 @@
  * Thin JSONL client for `codex app-server`.
  *
  * The app server deliberately owns the Code Mode host; Loom owns the process,
- * its per-session MCP configuration, and the human approval surface.
+ * its per-session MCP configuration, and the human approval surface. The wire
+ * protocol itself (deadlines, diagnostics, cleanup) lives in `./rpc.ts`.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createInterface } from "node:readline";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 import type { SearchConfig } from "@loom/core/connector";
@@ -22,14 +22,8 @@ import type {
   SessionMode,
   SessionRef,
 } from "@loom/core/types";
-
-type Rpc = {
-  id?: number | string;
-  method?: string;
-  params?: Record<string, unknown>;
-  result?: unknown;
-  error?: { message?: string };
-};
+import { CodexRpcClient } from "./rpc.ts";
+import type { CodexHome } from "./codex-home.ts";
 
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
@@ -72,11 +66,16 @@ export const mcpConfig = (servers: McpServerHandle[], search?: SearchConfig): st
   return `{ ${[...entries.entries()].map(([name, config]) => `${value(name)} = ${config}`).join(", ")} }`;
 };
 
+/** Every spawn always gets an explicit, full environment — the current process
+ *  env plus `CODEX_HOME` (so it reads the exact directory Loom resolved) and,
+ *  when configured, Kagi's bearer token. Never partial: a merge starting from
+ *  `undefined` would silently drop inherited `PATH` et al. */
 const launchOptions = (
   servers: McpServerHandle[],
   search: SearchConfig | undefined,
   builtinWebSearch: boolean,
-): { args: string[]; env?: NodeJS.ProcessEnv } => ({
+  codexHome: CodexHome,
+): { args: string[]; env: NodeJS.ProcessEnv } => ({
   args: [
     "app-server",
     "-c",
@@ -84,9 +83,11 @@ const launchOptions = (
     // Loom's Kagi server is the configured search source for Code Mode too.
     ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
   ],
-  ...(search?.backend === "kagi"
-    ? { env: { ...Deno.env.toObject(), [KAGI_TOKEN_ENV]: search.apiKey } }
-    : {}),
+  env: {
+    ...Deno.env.toObject(),
+    CODEX_HOME: codexHome.dir,
+    ...(search?.backend === "kagi" ? { [KAGI_TOKEN_ENV]: search.apiKey } : {}),
+  },
 });
 
 const loomMcpServer = (cwd: string): McpServerHandle => ({
@@ -110,11 +111,9 @@ export const approvalsReviewerFor = (mode: SessionMode): "user" | "auto_review" 
 
 export class CodexAppServerSession implements AgentSession {
   readonly id: string;
-  #proc: ChildProcessWithoutNullStreams;
+  readonly #rpc: CodexRpcClient;
   #events = new AsyncChannel<HarnessEvent>();
-  #requests = new Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void }>();
   #permissions = new Map<string, { rpcId: number | string; kind: "command" | "file" | "legacy" }>();
-  #next = 1;
   #threadId: string | null = null;
   #turnId: string | null = null;
   #model: string;
@@ -127,50 +126,32 @@ export class CodexAppServerSession implements AgentSession {
   #contextUsed = 0;
   #contextLimit = 0;
   #turns = 0;
-  #stderr = "";
 
   private constructor(opts: CreateSessionOptions, proc: ChildProcessWithoutNullStreams) {
     this.id = opts.sessionId;
-    this.#proc = proc;
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
-    createInterface({ input: proc.stdout }).on("line", (line) => this.#onLine(line));
-    proc.once("exit", (code, signal) => {
+    this.#rpc = new CodexRpcClient(proc);
+    this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
+    this.#rpc.onNotification((method, params) => this.#notification(method, params));
+    this.#rpc.onClose((err) => {
       if (!this.#closing)
         this.#events.push({
           type: "error",
           sessionId: this.id,
           ts: now(),
-          message: `codex app-server exited (${signal ?? code ?? "unknown"}): ${this.#stderr.slice(-500)}`,
+          message: err.message,
           fatal: true,
         });
       this.#events.close();
-      for (const { reject } of this.#requests.values())
-        reject(new Error(`codex app-server exited: ${this.#stderr.slice(-500)}`));
-      this.#requests.clear();
-    });
-    proc.once("error", (err) => {
-      this.#stderr += err.message;
-      for (const { reject } of this.#requests.values()) reject(err);
-      this.#requests.clear();
-      this.#events.push({
-        type: "error",
-        sessionId: this.id,
-        ts: now(),
-        message: `could not start codex app-server: ${err.message}`,
-        fatal: true,
-      });
-      this.#events.close();
-    });
-    proc.stderr.on("data", (data: Buffer) => {
-      this.#stderr += data.toString();
     });
   }
 
   static async start(
     opts: CreateSessionOptions,
+    codexHome: CodexHome,
     cliPath = "codex",
     search?: SearchConfig,
     builtinWebSearch = true,
@@ -181,6 +162,7 @@ export class CodexAppServerSession implements AgentSession {
       opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
       search,
       builtinWebSearch,
+      codexHome,
     );
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -189,7 +171,7 @@ export class CodexAppServerSession implements AgentSession {
     });
     const s = new CodexAppServerSession(opts, proc);
     await s.#initialize();
-    const started = await s.#request("thread/start", {
+    const started = await s.#rpc.requestStartup("thread/start", {
       ...(opts.model ? { model: opts.model } : {}),
       cwd: opts.cwd,
       approvalPolicy: policyFor(opts.mode),
@@ -207,6 +189,7 @@ export class CodexAppServerSession implements AgentSession {
 
   static async resume(
     ref: SessionRef,
+    codexHome: CodexHome,
     cliPath = "codex",
     search?: SearchConfig,
     builtinWebSearch = true,
@@ -226,6 +209,7 @@ export class CodexAppServerSession implements AgentSession {
       opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
       search,
       builtinWebSearch,
+      codexHome,
     );
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -234,7 +218,7 @@ export class CodexAppServerSession implements AgentSession {
     });
     const s = new CodexAppServerSession(opts, proc);
     await s.#initialize();
-    const resumed = await s.#request("thread/resume", {
+    const resumed = await s.#rpc.requestStartup("thread/resume", {
       threadId: ref.providerRef,
       cwd: ref.cwd,
       approvalPolicy: policyFor(opts.mode),
@@ -248,11 +232,11 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   async #initialize(): Promise<void> {
-    await this.#request("initialize", {
+    await this.#rpc.requestStartup("initialize", {
       clientInfo: { name: "loom", title: "Loom", version: "0.0.1" },
       capabilities: { experimentalApi: true },
     });
-    this.#notify("initialized", {});
+    this.#rpc.notify("initialized", {});
   }
 
   get providerRef(): string | null {
@@ -265,7 +249,7 @@ export class CodexAppServerSession implements AgentSession {
   async send(input: string): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
     if (this.#turnId) {
-      await this.#request("turn/steer", {
+      await this.#rpc.request("turn/steer", {
         threadId: this.#threadId,
         expectedTurnId: this.#turnId,
         input: [textInput(input)],
@@ -280,7 +264,7 @@ export class CodexAppServerSession implements AgentSession {
     // app-server's compact endpoint currently accepts no instruction payload.
     // Preserve the interface argument for parity with other adapters.
     void instructions;
-    await this.#request("thread/compact/start", { threadId: this.#threadId });
+    await this.#rpc.request("thread/compact/start", { threadId: this.#threadId });
   }
 
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
@@ -292,7 +276,7 @@ export class CodexAppServerSession implements AgentSession {
       pending.kind === "command" || pending.kind === "file"
         ? { decision: allow ? "accept" : "decline" }
         : { decision: allow ? "approved" : "denied" };
-    this.#write({ id: pending.rpcId, result });
+    this.#rpc.respond(pending.rpcId, result);
   }
   async answerQuestion(_id: string, _text: string): Promise<void> {
     throw new Error("Codex user-input tools are not yet supported by Loom");
@@ -303,7 +287,7 @@ export class CodexAppServerSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     if (this.#threadId && this.#turnId)
-      await this.#request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
+      await this.#rpc.request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
     this.#turnId = null;
     this.#idle();
   }
@@ -312,14 +296,14 @@ export class CodexAppServerSession implements AgentSession {
   }
   async setMode(mode: SessionMode): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
-    await this.#request("thread/settings/update", {
+    await this.#rpc.request("thread/settings/update", {
       threadId: this.#threadId,
       approvalPolicy: policyFor(mode),
       approvalsReviewer: approvalsReviewerFor(mode),
       sandboxPolicy: this.#sandboxPolicyFor(mode),
     });
     if (this.#turnId) {
-      await this.#request("turn/settings/update", {
+      await this.#rpc.request("turn/settings/update", {
         threadId: this.#threadId,
         turnId: this.#turnId,
         approvalsReviewer: approvalsReviewerFor(mode),
@@ -350,12 +334,12 @@ export class CodexAppServerSession implements AgentSession {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
-    this.#proc.kill();
+    this.#rpc.close();
     this.#events.close();
   }
 
   async #startTurn(input: string): Promise<void> {
-    const result = await this.#request("turn/start", {
+    const result = await this.#rpc.request("turn/start", {
       threadId: this.#threadId,
       input: [textInput(input)],
       model: this.#model || undefined,
@@ -395,80 +379,40 @@ export class CodexAppServerSession implements AgentSession {
       excludeSlashTmp: false,
     };
   }
-  #request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const id = this.#next++;
-    // Register before writing: a local test host (and occasionally a warmed
-    // app-server) can answer in the same event-loop turn as stdin accepts it.
-    const reply = new Promise<unknown>((resolve, reject) =>
-      this.#requests.set(id, { resolve, reject }),
-    );
-    this.#write({ method, id, params });
-    return reply;
-  }
-  #notify(method: string, params: Record<string, unknown>): void {
-    this.#write({ method, params });
-  }
-  #write(value: unknown): void {
-    this.#proc.stdin.write(`${JSON.stringify(value)}\n`);
-  }
-  #onLine(line: string): void {
-    let msg: Rpc;
-    try {
-      msg = JSON.parse(line) as Rpc;
-    } catch {
-      return;
-    }
-    if (msg.id !== undefined && !msg.method) {
-      const request = this.#requests.get(Number(msg.id));
-      if (!request) return;
-      this.#requests.delete(Number(msg.id));
-      if (msg.error)
-        request.reject(new Error(msg.error.message ?? "Codex app-server request failed"));
-      else request.resolve(msg.result);
-      return;
-    }
-    if (!msg.method) return;
-    if (msg.id !== undefined) {
-      this.#serverRequest(msg);
-      return;
-    }
-    this.#notification(msg.method, msg.params ?? {});
-  }
-  #serverRequest(msg: Rpc): void {
-    const p = msg.params ?? {};
-    const id = String(p["approvalId"] ?? p["itemId"] ?? p["callId"] ?? msg.id);
-    if (msg.method === "item/commandExecution/requestApproval") {
-      this.#permissions.set(id, { rpcId: msg.id!, kind: "command" });
+  #serverRequest(method: string, p: Record<string, unknown>, id: number | string): void {
+    const pid = String(p["approvalId"] ?? p["itemId"] ?? p["callId"] ?? id);
+    if (method === "item/commandExecution/requestApproval") {
+      this.#permissions.set(pid, { rpcId: id, kind: "command" });
       this.#events.push({
         type: "permission_request",
         sessionId: this.id,
         ts: now(),
-        id,
+        id: pid,
         tool: "Bash",
         input: { command: p["command"], cwd: p["cwd"], reason: p["reason"] },
       });
-    } else if (msg.method === "item/fileChange/requestApproval") {
-      this.#permissions.set(id, { rpcId: msg.id!, kind: "file" });
+    } else if (method === "item/fileChange/requestApproval") {
+      this.#permissions.set(pid, { rpcId: id, kind: "file" });
       this.#events.push({
         type: "permission_request",
         sessionId: this.id,
         ts: now(),
-        id,
+        id: pid,
         tool: "apply_patch",
         input: { reason: p["reason"] },
       });
-    } else if (msg.method === "execCommandApproval" || msg.method === "applyPatchApproval") {
-      this.#permissions.set(id, { rpcId: msg.id!, kind: "legacy" });
+    } else if (method === "execCommandApproval" || method === "applyPatchApproval") {
+      this.#permissions.set(pid, { rpcId: id, kind: "legacy" });
       this.#events.push({
         type: "permission_request",
         sessionId: this.id,
         ts: now(),
-        id,
-        tool: msg.method === "execCommandApproval" ? "Bash" : "apply_patch",
+        id: pid,
+        tool: method === "execCommandApproval" ? "Bash" : "apply_patch",
         input: p,
       });
     } else {
-      this.#write({ id: msg.id, result: {} });
+      this.#rpc.respondError(id, `unsupported request: ${method}`);
     }
   }
   #notification(method: string, p: Record<string, unknown>): void {

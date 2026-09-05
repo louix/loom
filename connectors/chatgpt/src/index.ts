@@ -10,6 +10,8 @@ import type { ConnectorContext } from "@loom/core/connector";
 import { makeAisdkProvider } from "@loom/aisdk/provider";
 import { createChatGPTModels } from "./oauth.ts";
 import { CodexAppServerSession } from "./app-server.ts";
+import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
+import { discoverCodexModels } from "./discovery.ts";
 
 /**
  * ChatGPT's catalog has two tool protocols. Keep the AI SDK adapter for
@@ -21,6 +23,7 @@ class ChatGPTProvider implements AgentProvider {
   readonly capabilities;
   readonly #direct: AgentProvider;
   readonly #isCodeMode: (model: string) => Promise<boolean>;
+  readonly #codexHome: CodexHome;
   readonly #codexCliPath: string;
   readonly #search: ConnectorContext["search"];
   readonly #codexBuiltinWebSearch: boolean;
@@ -29,14 +32,16 @@ class ChatGPTProvider implements AgentProvider {
     id: string,
     direct: AgentProvider,
     isCodeMode: (model: string) => Promise<boolean>,
-    codexCliPath?: string,
+    codexHome: CodexHome,
+    codexCliPath: string,
     search?: ConnectorContext["search"],
     codexBuiltinWebSearch = true,
   ) {
     this.id = id;
     this.#direct = direct;
     this.#isCodeMode = isCodeMode;
-    this.#codexCliPath = codexCliPath || "codex";
+    this.#codexHome = codexHome;
+    this.#codexCliPath = codexCliPath;
     this.#search = search;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
     // Conservative provider-level defaults: this one provider id spans a
@@ -60,6 +65,7 @@ class ChatGPTProvider implements AgentProvider {
       return this.#direct.createSession(opts);
     return CodexAppServerSession.start(
       opts,
+      this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
@@ -69,6 +75,7 @@ class ChatGPTProvider implements AgentProvider {
     if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
     return CodexAppServerSession.resume(
       ref,
+      this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
@@ -85,40 +92,37 @@ class ChatGPTProvider implements AgentProvider {
 export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvider> => {
   if (!ctx.transcript)
     throw new Error(`connector ${JSON.stringify(ctx.id)} needs a transcript store`);
-  const { catalog, makeModel } = createChatGPTModels({
+  const codexHome = resolveCodexHome({
+    ...(ctx.config.configDir ? { configDir: ctx.config.configDir } : {}),
     ...(ctx.config.authPath ? { authPath: ctx.config.authPath } : {}),
+  });
+  const codexCliPath = ctx.config.codexCliPath || "codex";
+  const { catalog, makeModel } = createChatGPTModels({
+    codexHome,
     ...(ctx.config.baseUrl ? { baseUrl: ctx.config.baseUrl } : {}),
   });
-  const listModels = async (): Promise<DiscoveredModel[]> =>
-    // Match Codex's picker: it has the full account catalog available for an
-    // explicit model id, but offers only `visibility: list` models, ordered by
-    // backend priority, as automatic choices.
-    (await catalog.list())
-      .filter((model) => model.visibility === "list")
-      .sort(
-        (a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER),
-      )
-      .map((model) => ({
-        id: model.slug,
-        ...(model.display_name ? { label: model.display_name } : {}),
-        // The Codex catalog's `context_window` is its conservative operating
-        // default (272k today); `max_context_window` is the account/model cap.
-        // Loom needs the latter for its context meter and compaction guard.
-        ...((model.max_context_window ?? model.context_window)
-          ? { context: model.max_context_window ?? model.context_window }
-          : {}),
-        ...(model.supported_reasoning_levels?.length
-          ? {
-              supportsEffort: true,
-              effortLevels: model.supported_reasoning_levels
-                .map((level) => level.effort)
-                .filter((level): level is string => typeof level === "string"),
-              ...(model.default_reasoning_level
-                ? { defaultEffort: model.default_reasoning_level }
-                : {}),
-            }
-          : {}),
-      }));
+  // A curated `models` list restricts the picker to exactly those ids
+  // (available even if the account marks them hidden); otherwise the picker
+  // gets the account's own visible/default set.
+  const restrictTo = ctx.config.models?.length ? new Set(ctx.config.models) : undefined;
+  const listModels = async (): Promise<DiscoveredModel[]> => {
+    // Reasoning-effort discovery goes through app-server (Phase 2); context
+    // window sizes still come from the REST catalog, which is the only one of
+    // the two that reports them — a config `model_context` pin wins over both.
+    const [discovered, restCatalog] = await Promise.all([
+      discoverCodexModels({ cliPath: codexCliPath, codexHome }),
+      catalog.list(),
+    ]);
+    const contextById = new Map(
+      restCatalog.map((m) => [m.slug, m.max_context_window ?? m.context_window] as const),
+    );
+    return discovered
+      .filter((m) => (restrictTo ? restrictTo.has(m.id) : !m.hidden))
+      .map(({ hidden: _hidden, ...model }) => {
+        const context = ctx.config.modelContext?.[model.id] ?? contextById.get(model.id);
+        return { ...model, ...(context ? { context } : {}) };
+      });
+  };
   const direct = makeAisdkProvider(
     {
       id: ctx.id,
@@ -139,7 +143,8 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
     ctx.id,
     direct,
     async (model) => (await catalog.get(model)).tool_mode === "code_mode_only",
-    ctx.config.codexCliPath,
+    codexHome,
+    codexCliPath,
     ctx.search,
     ctx.config.codexBuiltinWebSearch,
   );

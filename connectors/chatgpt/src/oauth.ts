@@ -7,8 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import type { CodexHome } from "./codex-home.ts";
 import type {
   LanguageModelV2,
   LanguageModelV2CallOptions,
@@ -111,10 +110,10 @@ const expiryFromToken = (token: string): number | undefined => {
 class CodexAuth {
   #credentials: Credentials | undefined;
   #refreshing: Promise<Credentials> | undefined;
-  readonly authPath: string | undefined;
+  readonly home: CodexHome;
 
-  constructor(authPath?: string) {
-    this.authPath = authPath;
+  constructor(home: CodexHome) {
+    this.home = home;
   }
 
   async credentials(): Promise<Credentials> {
@@ -131,12 +130,15 @@ class CodexAuth {
   }
 
   async #load(): Promise<Credentials> {
-    const path = this.authPath || join(homedir(), ".codex", "auth.json");
+    const path = this.home.authJsonPath;
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(path, "utf8"));
     } catch (err) {
-      throw new Error(`could not read Codex OAuth credentials at ${path}`, { cause: err });
+      throw new Error(
+        `Codex is not authenticated — no credentials at ${path}. Run \`codex login\` (or check config_dir / CODEX_HOME if you use a custom Codex home), then retry.`,
+        { cause: err },
+      );
     }
     const tokens =
       parsed && typeof parsed === "object" && (parsed as Record<string, unknown>)["tokens"]
@@ -148,7 +150,9 @@ class CodexAuth {
       (typeof tokens?.["account_id"] === "string" ? tokens.account_id : "") ||
       accountIdFromToken(idToken || accessToken);
     if (!accessToken || !accountId)
-      throw new Error("Codex auth.json does not contain usable ChatGPT OAuth credentials");
+      throw new Error(
+        `Codex is not authenticated — ${path} does not contain usable ChatGPT OAuth credentials. Run \`codex login\`, then retry.`,
+      );
     const expiry = expiryFromToken(accessToken) ?? expiryFromToken(idToken);
     return {
       accessToken,
@@ -162,7 +166,7 @@ class CodexAuth {
 
   async #refresh(credentials: Credentials): Promise<Credentials> {
     if (!credentials.refreshToken)
-      throw new Error("Codex OAuth token expired and has no refresh token");
+      throw new Error("Codex OAuth token expired and has no refresh token — run `codex login` to re-authenticate");
     const res = await fetch(REFRESH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -583,11 +587,8 @@ export class ChatGPTModel implements LanguageModelV2 {
   }
 }
 
-export const createChatGPTModels = (opts: { authPath?: string; baseUrl?: string } = {}) => {
-  const catalog = new ChatGPTCatalog(
-    new CodexAuth(opts.authPath),
-    opts.baseUrl || DEFAULT_BASE_URL,
-  );
+export const createChatGPTModels = (opts: { codexHome: CodexHome; baseUrl?: string }) => {
+  const catalog = new ChatGPTCatalog(new CodexAuth(opts.codexHome), opts.baseUrl || DEFAULT_BASE_URL);
   return {
     catalog,
     makeModel: (model: string): LanguageModelV2 => new ChatGPTModel(model, catalog),

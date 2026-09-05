@@ -188,6 +188,7 @@ export class ProviderRegistry {
       apiKey: resolveApiKey(p),
       sdk: p.sdk,
       ...(p.authPath ? { authPath: p.authPath } : {}),
+      ...(p.configDir ? { configDir: p.configDir } : {}),
       ...(p.codexCliPath ? { codexCliPath: p.codexCliPath } : {}),
       ...(p.codexBuiltinWebSearch ? { codexBuiltinWebSearch: true } : {}),
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),

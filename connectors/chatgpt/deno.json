@@ -3,6 +3,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./oauth": "./src/oauth.ts",
-    "./app-server": "./src/app-server.ts"
+    "./app-server": "./src/app-server.ts",
+    "./codex-home": "./src/codex-home.ts",
+    "./discovery": "./src/discovery.ts",
+    "./rpc": "./src/rpc.ts"
   }
 }
