@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
  * the per-repo file overrides model defaults, base branch, `[[mcp]]`, etc.
  */
 export const userConfigPath = (): string => {
-  const base = process.env["XDG_CONFIG_HOME"]?.trim() || join(homedir(), ".config");
+  const base = Deno.env.get("XDG_CONFIG_HOME")?.trim() || join(homedir(), ".config");
   return join(base, "loom", "config.toml");
 };
 

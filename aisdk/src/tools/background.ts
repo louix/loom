@@ -293,7 +293,7 @@ const killGroup = (task: Task): void => {
   // descendants the command started go too — same as BashShell.#kill.
   if (typeof c.pid === "number") {
     try {
-      process.kill(-c.pid, "SIGKILL");
+      Deno.kill(-c.pid, "SIGKILL");
       return;
     } catch {
       // group already gone / never formed — fall through to the direct kill

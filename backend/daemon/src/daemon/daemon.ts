@@ -231,7 +231,7 @@ export class Daemon {
   #stopping = false;
   #closed: Promise<void>;
   #resolveClosed!: () => void;
-  #signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
+  #signalHandlers: Array<[Deno.Signal, () => void]> = [];
 
   private constructor(opts: DaemonStartOptions) {
     this.repoRoot = opts.repoRoot;
@@ -447,7 +447,7 @@ export class Daemon {
     this.#gitSweep.unref();
 
     this.#log.info("daemon up", {
-      pid: process.pid,
+      pid: Deno.pid,
       epoch: this.epoch,
       repo: this.repoRoot,
       sock: this.paths.sock,
@@ -466,7 +466,7 @@ export class Daemon {
     if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
     for (const w of this.#configWatchers) w.close();
     this.#configWatchers = [];
-    for (const [sig, fn] of this.#signalHandlers) process.removeListener(sig, fn);
+    for (const [sig, fn] of this.#signalHandlers) Deno.removeSignalListener(sig, fn);
     this.#signalHandlers = [];
 
     try {
@@ -505,11 +505,11 @@ export class Daemon {
         if (this.#stopping) {
           // Operator is hammering Ctrl-C because shutdown is wedged — oblige.
           this.#log.warn("second signal during shutdown; forcing exit", { sig });
-          process.exit(1);
+          Deno.exit(1);
         }
         void this.stop(sig);
       };
-      process.on(sig, fn);
+      Deno.addSignalListener(sig, fn);
       this.#signalHandlers.push([sig, fn]);
     }
   }
@@ -1670,14 +1670,14 @@ export class Daemon {
       const nonce = isObj(params) ? params["nonce"] : undefined;
       return {
         nonce: nonce ?? null,
-        pid: process.pid,
+        pid: Deno.pid,
         startedAt: this.startedAt,
         uptimeMs: Date.now() - this.startedAt,
       };
     });
 
     d.register("daemon.status", () => ({
-      pid: process.pid,
+      pid: Deno.pid,
       epoch: this.epoch,
       version: LOOM_VERSION,
       startedAt: this.startedAt,
@@ -2807,7 +2807,7 @@ export class Daemon {
     return {
       protocolVersion: PROTOCOL_VERSION,
       daemon: {
-        pid: process.pid,
+        pid: Deno.pid,
         version: LOOM_VERSION,
         startedAt: this.startedAt,
         repoRoot: this.repoRoot,
@@ -2860,7 +2860,7 @@ export class Daemon {
 
     return {
       daemon: {
-        pid: process.pid,
+        pid: Deno.pid,
         version: LOOM_VERSION,
         startedAt: this.startedAt,
         uptimeMs: Date.now() - this.startedAt,

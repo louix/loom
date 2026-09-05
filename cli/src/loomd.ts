@@ -7,6 +7,10 @@ import { DaemonAlreadyRunning } from "@loom/daemon/daemon/lifecycle";
 import { LOOM_VERSION } from "@loom/core/version";
 import { CONNECTORS } from "./connectors.ts";
 
+const encoder = new TextEncoder();
+const writeOut = (s: string): void => void Deno.stdout.writeSync(encoder.encode(s));
+const writeErr = (s: string): void => void Deno.stderr.writeSync(encoder.encode(s));
+
 const main = async (): Promise<void> => {
   const { values } = parseArgs({
     options: {
@@ -18,11 +22,11 @@ const main = async (): Promise<void> => {
   });
 
   if (values.version) {
-    process.stdout.write(`loomd ${LOOM_VERSION}\n`);
+    writeOut(`loomd ${LOOM_VERSION}\n`);
     return;
   }
   if (values.help) {
-    process.stdout.write(
+    writeOut(
       "usage: loomd [--repo <path>] [--log-level debug|info|warn|error]\n\n" +
         "Starts the Loom daemon in the foreground. Normally launched automatically\n" +
         "by the `loom` client; run directly for development or under a supervisor.\n",
@@ -38,19 +42,17 @@ const main = async (): Promise<void> => {
     daemon = await Daemon.start({ repoRoot, connectors: CONNECTORS });
   } catch (err) {
     if (err instanceof DaemonAlreadyRunning) {
-      process.stderr.write(`${err.message}\n`);
-      process.exit(3);
+      writeErr(`${err.message}\n`);
+      Deno.exit(3);
     }
     throw err;
   }
 
   await daemon.whenClosed();
-  process.exit(0);
+  Deno.exit(0);
 };
 
 main().catch((err) => {
-  process.stderr.write(
-    `loomd: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
-  );
-  process.exit(1);
+  writeErr(`loomd: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  Deno.exit(1);
 });

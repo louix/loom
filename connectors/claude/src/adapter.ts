@@ -163,7 +163,7 @@ export const __setClaudeSdk = (partial: Partial<typeof sdk>): void => {
 /**
  * Serialises `forkSession` across every session in this process. It reads the
  * transcript from `CLAUDE_CONFIG_DIR`, which `#forkTruncated` mutates on
- * `process.env` for the duration of the call — two concurrent multi-profile
+ * Deno's process-wide env for the duration of the call — two concurrent multi-profile
  * undos would otherwise fork from the wrong profile.
  */
 let forkLock: Promise<unknown> = Promise.resolve();
@@ -183,7 +183,7 @@ const expandTilde = (p: string): string => {
 };
 
 /**
- * The subprocess env for a `query()`: `process.env` plus Loom's overrides. `env`
+ * The subprocess env for a `query()`: Deno's env plus Loom's overrides. `env`
  * REPLACES the child environment, so the spread is load-bearing. Always returns
  * an object: we force `NO_COLOR` (and strip `FORCE_COLOR` / `CLICOLOR_FORCE`) so
  * the CLI's own tool subprocesses — `node --test`, `git`, linters — don't spew
@@ -194,8 +194,8 @@ const expandTilde = (p: string): string => {
 const queryEnv = (opts: {
   promptCacheTtl?: string | undefined;
   configDir?: string | undefined;
-}): NodeJS.ProcessEnv => {
-  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+}): Record<string, string> => {
+  const env: Record<string, string> = { ...Deno.env.toObject(), NO_COLOR: "1" };
   delete env["FORCE_COLOR"];
   delete env["CLICOLOR_FORCE"];
   // Pinning the cache TTL makes the TUI's liveness countdown exact.
@@ -864,7 +864,7 @@ class ClaudeSession implements AgentSession {
 
   /**
    * `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
-   * a subprocess), so `#forkTruncatedUnlocked` points `process.env` at this
+   * a subprocess), so `#forkTruncatedUnlocked` points Deno's process-wide env at this
    * session's profile dir for the call. That global mutation is held across an
    * `await`, so every fork in the process is serialised through `forkLock` —
    * two concurrent multi-profile undos would otherwise interleave and fork from
@@ -879,15 +879,15 @@ class ClaudeSession implements AgentSession {
   async #forkTruncatedUnlocked(sourceId: string, upToMessageId: string): Promise<string> {
     const dir = this.#startExtra.configDir;
     const key = "CLAUDE_CONFIG_DIR";
-    const prev = process.env[key];
-    if (dir) process.env[key] = expandTilde(dir);
+    const prev = Deno.env.get(key);
+    if (dir) Deno.env.set(key, expandTilde(dir));
     try {
       const { sessionId } = await sdk.forkSession(sourceId, { upToMessageId });
       return sessionId;
     } finally {
       if (dir) {
-        if (prev === undefined) delete process.env[key];
-        else process.env[key] = prev;
+        if (prev === undefined) Deno.env.delete(key);
+        else Deno.env.set(key, prev);
       }
     }
   }

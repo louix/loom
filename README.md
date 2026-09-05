@@ -435,10 +435,11 @@ re-measures on the next turn. `session.compact` is the RPC.
 ## Requirements
 
 - **Deno ≥ 2.2** (native TypeScript + JSX, no build step, no loader). Source
-  still uses `node:sqlite`, `node:net` (Unix sockets), `process.*`, and
-  `Buffer` in a few places — Deno's Node-compat layer runs these unmodified;
-  migrating them to Deno-native APIs is a separate future step, not required
-  to run `loom` today.
+  uses `node:sqlite` (Deno's own native implementation, exposed under the
+  Node-compatible module name — nothing to migrate there) and still uses
+  `node:net` for the daemon's Unix-socket IPC; migrating that to
+  `Deno.listen({ transport: "unix" })` is a separate future step. `process.*`
+  has been fully replaced with `Deno.*` equivalents.
 - `git` on `PATH`.
 - For the `claude` provider: Claude OAuth already set up in `~/.claude`. The
   `@anthropic-ai/claude-agent-sdk` dependency bundles the Claude Code CLI it

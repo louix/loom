@@ -228,7 +228,7 @@ export class BashShell {
     // the command left running go too. Negative pid = the group.
     if (typeof c.pid === "number") {
       try {
-        process.kill(-c.pid, "SIGKILL");
+        Deno.kill(-c.pid, "SIGKILL");
         return;
       } catch {
         // group already gone / never formed — fall through to the direct kill

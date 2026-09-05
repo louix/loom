@@ -22,7 +22,7 @@ export class DaemonAlreadyRunning extends Error {
  * pidfile (dead pid) is removed and the claim retried once.
  */
 export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
-  const info: PidfileInfo = { pid: process.pid, epoch, startedAt: Date.now() };
+  const info: PidfileInfo = { pid: Deno.pid, epoch, startedAt: Date.now() };
   const body = JSON.stringify(info);
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -56,7 +56,7 @@ export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
 export const releasePidfile = (path: string): void => {
   try {
     const info = JSON.parse(readFileSync(path, "utf8")) as PidfileInfo;
-    if (info.pid !== process.pid) return; // not ours to remove
+    if (info.pid !== Deno.pid) return; // not ours to remove
   } catch {
     return;
   }

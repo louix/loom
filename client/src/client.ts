@@ -66,7 +66,7 @@ export class LoomClient {
   daemonInfo: HelloResult["daemon"] | null = null;
 
   private constructor(opts: ConnectOptions) {
-    this.clientId = opts.clientId ?? `cli-${process.pid}-${randomUUID().slice(0, 8)}`;
+    this.clientId = opts.clientId ?? `cli-${Deno.pid}-${randomUUID().slice(0, 8)}`;
     this.#opts = {
       autospawn: true,
       reconnect: true,
@@ -199,10 +199,13 @@ export class LoomClient {
   async #spawnDaemon(): Promise<void> {
     const entry = this.#opts.daemonEntry;
     if (!entry) throw new Error("LoomClient: autospawn needs `daemonEntry` (path to loomd)");
-    const child = spawn(process.execPath, [entry, "--repo", this.#opts.repoRoot], {
-      detached: true,
-      stdio: "ignore",
-    });
+    // Re-invoking the running interpreter needs an explicit `run -A`: unlike
+    // `node <file>`, bare `deno <file>` runs with no permissions by default.
+    const child = spawn(
+      Deno.execPath(),
+      ["run", "-A", entry, "--repo", this.#opts.repoRoot],
+      { detached: true, stdio: "ignore" },
+    );
     child.unref();
   }
 

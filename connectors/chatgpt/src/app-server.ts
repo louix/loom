@@ -85,7 +85,7 @@ const launchOptions = (
     ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
   ],
   ...(search?.backend === "kagi"
-    ? { env: { ...process.env, [KAGI_TOKEN_ENV]: search.apiKey } }
+    ? { env: { ...Deno.env.toObject(), [KAGI_TOKEN_ENV]: search.apiKey } }
     : {}),
 });
 

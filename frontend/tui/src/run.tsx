@@ -18,6 +18,9 @@ import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
 
+const encoder = new TextEncoder();
+const writeStdout = (s: string): void => void Deno.stdout.writeSync(encoder.encode(s));
+
 export const runTui = async (
   client: LoomClient,
   /** `logs` — absolute daemon + TUI log paths for the "view logs" command;
@@ -29,7 +32,7 @@ export const runTui = async (
   // SGR mouse reporting so the wheel arrives as its own escape sequence —
   // without it, terminals translate wheel scroll into Up/Down arrow keys on
   // the alt screen, which App's keymap reads as fleet-selection movement.
-  if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+  if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
   const instance = render(
     <App
@@ -46,7 +49,7 @@ export const runTui = async (
   try {
     await instance.waitUntilExit();
   } finally {
-    if (process.stdout.isTTY) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
+    if (Deno.stdout.isTerminal()) writeStdout("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
     await client.close();
   }
 };

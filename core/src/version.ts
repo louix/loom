@@ -25,4 +25,4 @@ const fromGit = (): string | null => {
   return git(root, ["describe", "--tags", "--always", "--dirty"]);
 };
 
-export const LOOM_VERSION: string = process.env.LOOM_BUILD_VER || fromGit() || "unknown-version";
+export const LOOM_VERSION: string = Deno.env.get("LOOM_BUILD_VER") || fromGit() || "unknown-version";

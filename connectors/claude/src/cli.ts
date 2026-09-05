@@ -20,7 +20,7 @@ const isExecutableFile = (path: string): boolean => {
 };
 
 const onPath = (name: string): string | undefined => {
-  const raw = process.env["PATH"];
+  const raw = Deno.env.get("PATH");
   if (!raw) return undefined;
   for (const dir of raw.split(delimiter)) {
     if (!dir) continue;

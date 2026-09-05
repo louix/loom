@@ -14,9 +14,7 @@ import type { Logger } from "@loom/core/logger";
 import type { McpServerHandle } from "@loom/core/types";
 
 const cleanEnv = (extra: Record<string, string>): Record<string, string> => {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) out[k] = v;
-  return { ...out, ...extra };
+  return { ...Deno.env.toObject(), ...extra };
 };
 
 /**

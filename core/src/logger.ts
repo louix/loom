@@ -1,5 +1,7 @@
 import { appendFileSync } from "node:fs";
 
+const encoder = new TextEncoder();
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -38,7 +40,7 @@ const emit = (
     msg,
     ...fields,
   });
-  if (stderrSink) process.stderr.write(line + "\n");
+  if (stderrSink) Deno.stderr.writeSync(encoder.encode(line + "\n"));
   if (fileSink) {
     try {
       appendFileSync(fileSink, line + "\n");

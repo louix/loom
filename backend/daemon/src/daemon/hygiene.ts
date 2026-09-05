@@ -30,10 +30,14 @@ export interface HygieneReport {
 export const pidAlive = (pid: number): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    process.kill(pid, 0);
+    // Signal 0 sends nothing — it only probes whether `pid` exists and is
+    // signalable. Deno's Signal type is a name union with no "0" member, but
+    // the underlying syscall (and Deno's kill()) accepts it identically to
+    // Node's `process.kill(pid, 0)`.
+    Deno.kill(pid, 0 as unknown as Deno.Signal);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
+    return err instanceof Deno.errors.PermissionDenied;
   }
 };
 
@@ -80,7 +84,7 @@ const reapChildren = (children: ChildStore, epoch: string, log: Logger): number 
 
     log.warn("terminating stale child", { pid: row.pid, kind: row.kind });
     try {
-      process.kill(row.pid, "SIGTERM");
+      Deno.kill(row.pid, "SIGTERM");
     } catch {
       // already gone between the alive check and here
     }
@@ -90,7 +94,7 @@ const reapChildren = (children: ChildStore, epoch: string, log: Logger): number 
     setTimeout(() => {
       if (pidAlive(pid)) {
         try {
-          process.kill(pid, "SIGKILL");
+          Deno.kill(pid, "SIGKILL");
         } catch {
           /* gone */
         }

@@ -30,7 +30,7 @@ export type EditorHandoff = (text: string, opts?: EditorOpts) => Promise<string 
  */
 export const spawnEditor = (text: string, opts: EditorOpts = {}): string | null => {
   const ext = opts.ext ?? "md";
-  const editor = process.env["VISUAL"] || process.env["EDITOR"] || "vi";
+  const editor = Deno.env.get("VISUAL") || Deno.env.get("EDITOR") || "vi";
   const dir = mkdtempSync(join(tmpdir(), "loom-edit-"));
   const file = join(dir, `buffer.${ext}`);
   writeFileSync(file, text);

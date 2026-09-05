@@ -123,13 +123,28 @@ const USAGE: Record<string, string> = {
   --delete-branch              also \`git branch -D\` the session's branch`,
 };
 
-// `loom tail | head` (or any consumer that closes early) fires an async EPIPE
-// on stdout that `main().catch` can't intercept — exit cleanly, not with a
-// stack trace.
-process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EPIPE") process.exit(0);
-  throw err;
-});
+const encoder = new TextEncoder();
+
+// `loom tail | head` (or any consumer that closes early) makes a later write
+// throw BrokenPipe — exit cleanly there, not with a stack trace. Unlike
+// Node's stdout, Deno.stdout has no async 'error' event to intercept once for
+// every write; each write site checks for itself.
+const writeOut = (s: string): void => {
+  try {
+    Deno.stdout.writeSync(encoder.encode(s));
+  } catch (err) {
+    if (err instanceof Deno.errors.BrokenPipe) Deno.exit(0);
+    throw err;
+  }
+};
+const writeErr = (s: string): void => {
+  try {
+    Deno.stderr.writeSync(encoder.encode(s));
+  } catch (err) {
+    if (err instanceof Deno.errors.BrokenPipe) Deno.exit(0);
+    throw err;
+  }
+};
 
 const main = async (): Promise<void> => {
   const { values, positionals } = parseArgs({
@@ -153,18 +168,18 @@ const main = async (): Promise<void> => {
     },
   });
 
-  if (values.version) return void process.stdout.write(`loom ${LOOM_VERSION}\n`);
+  if (values.version) return void writeOut(`loom ${LOOM_VERSION}\n`);
   const cmd = positionals[0];
   if (values.help) {
-    return void process.stdout.write((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
+    return void writeOut((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
   }
 
-  const isTty = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const isTty = Deno.stdout.isTerminal() && Deno.stdin.isTerminal();
   const wantTui = cmd === "tui" || (!cmd && isTty);
-  if (!cmd && !wantTui) return void process.stdout.write(HELP + "\n");
+  if (!cmd && !wantTui) return void writeOut(HELP + "\n");
   if (cmd === "tui" && !isTty) {
-    process.stderr.write("loom tui needs an interactive terminal (stdin/stdout must be a TTY)\n");
-    process.exitCode = 2;
+    writeErr("loom tui needs an interactive terminal (stdin/stdout must be a TTY)\n");
+    Deno.exitCode = 2;
     return;
   }
 
@@ -190,7 +205,7 @@ const main = async (): Promise<void> => {
     // second grows the timeline without bound until it OOMs. Pin the prod build
     // unless a developer has asked for dev explicitly. Must run before the import
     // below, which is the first thing to pull in React.
-    process.env["NODE_ENV"] ??= "production";
+    if (!Deno.env.get("NODE_ENV")) Deno.env.set("NODE_ENV", "production");
 
     // The TUI owns the screen, so its logs go to a file only — a fresh
     // <repo>/.loom/tui.log per launch, in the daemon's own .loom/ so both logs
@@ -224,19 +239,19 @@ const main = async (): Promise<void> => {
     switch (cmd) {
       case "status": {
         const s = await client.request("daemon.status");
-        process.stdout.write(JSON.stringify(s, null, 2) + "\n");
+        writeOut(JSON.stringify(s, null, 2) + "\n");
         break;
       }
       case "ls": {
         const rows = await client.request<SessionSnapshot[]>("session.list");
-        if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+        if (values.json) writeOut(JSON.stringify(rows, null, 2) + "\n");
         else printSessions(rows);
         break;
       }
       case "get": {
         const id = need(positionals[1], "get <id>");
         const s = await client.request("session.get", { id });
-        process.stdout.write(JSON.stringify(s, null, 2) + "\n");
+        writeOut(JSON.stringify(s, null, 2) + "\n");
         break;
       }
       case "providers": {
@@ -250,7 +265,7 @@ const main = async (): Promise<void> => {
             account?: { loginMethod: string; org: string };
           }>
         >("providers.list");
-        if (values.json) process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+        if (values.json) writeOut(JSON.stringify(rows, null, 2) + "\n");
         else
           for (const p of rows) {
             const acct = p.account
@@ -258,7 +273,7 @@ const main = async (): Promise<void> => {
                   .filter(Boolean)
                   .join(" ")
               : "";
-            process.stdout.write(
+            writeOut(
               `  ${p.id}${p.isDefault ? " [default]" : ""}` +
                 `${p.defaultModel ? `  ${p.defaultModel}` : ""}` +
                 `${p.models.length ? `  (${p.models.length} models)` : ""}` +
@@ -270,19 +285,19 @@ const main = async (): Promise<void> => {
       case "models": {
         const id = need(positionals[1], "models <provider>");
         const r = await client.request<{ models: string[] }>("providers.probeModels", { id });
-        if (values.json) process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
-        else process.stdout.write(r.models.join("\n") + "\n");
+        if (values.json) writeOut(JSON.stringify(r.models, null, 2) + "\n");
+        else writeOut(r.models.join("\n") + "\n");
         break;
       }
       case "cache": {
         const id = positionals[1];
         const r = await client.request<{ models: ModelUsage[] }>("stats.models", id ? { id } : {});
         if (values.json) {
-          process.stdout.write(JSON.stringify(r.models, null, 2) + "\n");
+          writeOut(JSON.stringify(r.models, null, 2) + "\n");
           break;
         }
         if (r.models.length === 0) {
-          process.stdout.write("no token spend recorded yet\n");
+          writeOut("no token spend recorded yet\n");
           break;
         }
         const pad = Math.max(...r.models.map((m) => `${m.provider}/${m.model}`.length));
@@ -294,7 +309,7 @@ const main = async (): Promise<void> => {
           // the only signal for endpoints that report no TTL).
           const ttl = m.ttlMinutes > 0 ? `${m.ttlMinutes}m ttl` : "- ttl";
           const seen = m.maxHitGapSec > 0 ? `  ≥${Math.round(m.maxHitGapSec / 60)}m warm` : "";
-          process.stdout.write(
+          writeOut(
             `${`${m.provider}/${m.model}`.padEnd(pad)}  ` +
               `${(rate == null ? "n/a" : `${Math.round(rate * 100)}%`).padStart(4)} cached  ` +
               `${String(m.cacheRead).padStart(9)} cr  ${String(m.cacheWrite).padStart(9)} cw  ` +
@@ -305,21 +320,21 @@ const main = async (): Promise<void> => {
       }
       case "config": {
         const r = await client.request<{ warnings: string[] }>("config.check");
-        if (values.json) process.stdout.write(JSON.stringify(r, null, 2) + "\n");
-        else if (r.warnings.length === 0) process.stdout.write("config looks good\n");
+        if (values.json) writeOut(JSON.stringify(r, null, 2) + "\n");
+        else if (r.warnings.length === 0) writeOut("config looks good\n");
         else {
-          process.stdout.write(
+          writeOut(
             `${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`,
           );
-          for (const line of r.warnings) process.stdout.write(`  ! ${line}\n`);
-          process.exitCode = 1;
+          for (const line of r.warnings) writeOut(`  ! ${line}\n`);
+          Deno.exitCode = 1;
         }
         break;
       }
       case "history": {
         const id = need(positionals[1], "history <id>");
         const h = await client.request("session.history", { id });
-        process.stdout.write(JSON.stringify(h, null, 2) + "\n");
+        writeOut(JSON.stringify(h, null, 2) + "\n");
         break;
       }
       case "run": {
@@ -340,7 +355,7 @@ const main = async (): Promise<void> => {
           ...(worktree !== undefined ? { worktree } : {}),
         });
         const where = r.inPlace ? "  in-place" : "";
-        process.stdout.write(
+        writeOut(
           `started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`,
         );
         break;
@@ -350,13 +365,13 @@ const main = async (): Promise<void> => {
         const text = positionals.slice(2).join(" ");
         if (!text) need(undefined, "send <id> <text...>");
         const r = await client.request<SessionSnapshot>("session.send", { id, text });
-        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "interrupt": {
         const id = need(positionals[1], "interrupt <id>");
         const r = await client.request<SessionSnapshot>("session.interrupt", { id });
-        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "compact": {
@@ -366,7 +381,7 @@ const main = async (): Promise<void> => {
           id,
           ...(instructions ? { instructions } : {}),
         });
-        process.stdout.write(`${r.id} compacting (ctx ${r.contextUsed}/${r.contextLimit})\n`);
+        writeOut(`${r.id} compacting (ctx ${r.contextUsed}/${r.contextLimit})\n`);
         break;
       }
       case "approve":
@@ -383,7 +398,7 @@ const main = async (): Promise<void> => {
             ...(cmd === "deny" && values.text ? { message: values.text } : {}),
           },
         );
-        process.stdout.write(
+        writeOut(
           r.alreadyResolved ? `${requestId} was already resolved\n` : `${requestId} ${cmd}d\n`,
         );
         break;
@@ -402,7 +417,7 @@ const main = async (): Promise<void> => {
             by: client.clientId,
           },
         );
-        process.stdout.write(
+        writeOut(
           r.alreadyResolved ? `${requestId} was already answered\n` : `${requestId} answered\n`,
         );
         break;
@@ -429,7 +444,7 @@ const main = async (): Promise<void> => {
         // The permission mode the implementation runs in (ignored by discuss).
         if (values.mode) params["mode"] = values.mode;
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", params);
-        process.stdout.write(
+        writeOut(
           r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`,
         );
         break;
@@ -442,7 +457,7 @@ const main = async (): Promise<void> => {
           mode,
           by: client.clientId,
         });
-        process.stdout.write(`${r.id} mode -> ${r.mode}\n`);
+        writeOut(`${r.id} mode -> ${r.mode}\n`);
         break;
       }
       case "resume": {
@@ -451,7 +466,7 @@ const main = async (): Promise<void> => {
           id,
           by: client.clientId,
         });
-        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "done": {
@@ -461,7 +476,7 @@ const main = async (): Promise<void> => {
           by: client.clientId,
           ...(values.force ? { force: true } : {}),
         });
-        process.stdout.write(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${r.status}\n`);
         break;
       }
       case "rm": {
@@ -475,7 +490,7 @@ const main = async (): Promise<void> => {
             ...(values["force"] ? { force: true } : {}),
           },
         );
-        process.stdout.write(
+        writeOut(
           `removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`,
         );
         break;
@@ -488,15 +503,15 @@ const main = async (): Promise<void> => {
           ...(values.id ? { id: values.id } : {}),
           ...(values.force ? { force: true } : {}),
         });
-        process.stdout.write(`removed ${r.removed.length} worktree(s)\n`);
-        for (const f of r.failed) process.stderr.write(`  ${f.id.slice(0, 8)}: ${f.error}\n`);
+        writeOut(`removed ${r.removed.length} worktree(s)\n`);
+        for (const f of r.failed) writeErr(`  ${f.id.slice(0, 8)}: ${f.error}\n`);
         break;
       }
       case "ping": {
         const t0 = performance.now();
         const r = await client.request<{ uptimeMs: number }>("ping", { nonce: t0 });
         const rtt = (performance.now() - t0).toFixed(1);
-        process.stdout.write(
+        writeOut(
           `pong  rtt=${rtt}ms  daemon-uptime=${(r.uptimeMs / 1000).toFixed(1)}s\n`,
         );
         break;
@@ -510,7 +525,7 @@ const main = async (): Promise<void> => {
           ...(values.model ? { model: values.model } : {}),
           ...(values.reason ? { reason: values.reason } : {}),
         });
-        process.stdout.write(`created ${r.id}  status=${r.status}\n`);
+        writeOut(`created ${r.id}  status=${r.status}\n`);
         break;
       }
       case "set-status": {
@@ -522,7 +537,7 @@ const main = async (): Promise<void> => {
           by: client.clientId,
           ...(values.reason ? { reason: values.reason } : {}),
         });
-        process.stdout.write(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "emit": {
@@ -531,7 +546,7 @@ const main = async (): Promise<void> => {
         const event: Record<string, unknown> = { sessionId, type };
         if (values.text) event["text"] = values.text;
         const r = await client.request<{ seq: number }>("dev.emit", { event });
-        process.stdout.write(`emitted seq=${r.seq}\n`);
+        writeOut(`emitted seq=${r.seq}\n`);
         break;
       }
       case "tail": {
@@ -540,12 +555,12 @@ const main = async (): Promise<void> => {
       }
       case "stop": {
         await client.request("daemon.shutdown");
-        process.stdout.write("daemon shutting down\n");
+        writeOut("daemon shutting down\n");
         break;
       }
       default:
-        process.stderr.write(`unknown command: ${cmd}\n\n${HELP}\n`);
-        process.exitCode = 2;
+        writeErr(`unknown command: ${cmd}\n\n${HELP}\n`);
+        Deno.exitCode = 2;
     }
   } finally {
     if (cmd !== "tail") await client.close();
@@ -582,28 +597,28 @@ const resolveSid = async (client: LoomClient, raw: string): Promise<string> => {
 
 const need = (v: string | undefined, usage: string): string => {
   if (!v) {
-    process.stderr.write(`usage: loom ${usage}\n`);
-    process.exit(2);
+    writeErr(`usage: loom ${usage}\n`);
+    Deno.exit(2);
   }
   return v;
 };
 
 const printSessions = (rows: SessionSnapshot[]): void => {
   if (rows.length === 0) {
-    process.stdout.write("(no sessions)\n");
+    writeOut("(no sessions)\n");
     return;
   }
   let group = "";
   for (const s of rows) {
     if (s.status.kind !== group) {
       group = s.status.kind;
-      process.stdout.write(`\n${group.toUpperCase()}\n`);
+      writeOut(`\n${group.toUpperCase()}\n`);
     }
     const id = s.id.slice(0, 8);
     const cost = s.costUsd ? `$${s.costUsd.toFixed(2)}` : "—";
     const title = s.title ? s.title.slice(0, 44) : "(untitled)";
     const reason = s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : "";
-    process.stdout.write(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(46)} ${cost}${reason}\n`);
+    writeOut(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(46)} ${cost}${reason}\n`);
     const g = s.git;
     if (g) {
       const bits = [
@@ -613,45 +628,45 @@ const printSessions = (rows: SessionSnapshot[]): void => {
         g.behindBase ? `-${g.behindBase} behind base` : null,
         g.dirty ? "dirty" : "clean",
       ].filter(Boolean);
-      process.stdout.write(`            ${bits.join(" · ")}\n`);
+      writeOut(`            ${bits.join(" · ")}\n`);
       if (g.lastCommitSubject)
-        process.stdout.write(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
+        writeOut(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
     }
   }
 };
 
 const runTail = async (client: LoomClient): Promise<void> => {
-  process.stdout.write(`tailing ${client.daemonInfo?.repoRoot ?? "daemon"} — Ctrl-C to stop\n`);
+  writeOut(`tailing ${client.daemonInfo?.repoRoot ?? "daemon"} — Ctrl-C to stop\n`);
   client.on("reconnect", (i) =>
-    process.stdout.write(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
+    writeOut(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
   );
   client.on("resync", (i) =>
-    process.stdout.write(`[resync: ${(i as { reason: string }).reason}]\n`),
+    writeOut(`[resync: ${(i as { reason: string }).reason}]\n`),
   );
   client.on("close", () => {
-    process.stdout.write("[connection closed]\n");
-    process.exit(0);
+    writeOut("[connection closed]\n");
+    Deno.exit(0);
   });
   client.onPush((f: PushFrame) => {
     if (f.type === "event") {
       const e = f.event;
-      process.stdout.write(
+      writeOut(
         `#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`,
       );
     } else if (f.type === "session_updated") {
-      process.stdout.write(
+      writeOut(
         `#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`,
       );
     } else if (f.type === "session_removed") {
-      process.stdout.write(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
+      writeOut(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
     } else if (f.type === "providers_updated") {
-      process.stdout.write(`#${f.seq} providers_updated ${f.providers.length} provider(s)\n`);
+      writeOut(`#${f.seq} providers_updated ${f.providers.length} provider(s)\n`);
     } else if (f.type === "notice") {
-      process.stdout.write(`#${f.seq} notice           ${f.tone}: ${f.text}\n`);
+      writeOut(`#${f.seq} notice           ${f.tone}: ${f.text}\n`);
     }
   });
   await new Promise<void>((resolve) => {
-    process.on("SIGINT", () => {
+    Deno.addSignalListener("SIGINT", () => {
       void client.close().then(resolve);
     });
   });
@@ -687,10 +702,10 @@ main().catch((err) => {
   }
   // Keep --json consumers on one format: a JSON error object on stdout rather
   // than plain text on stderr.
-  if (process.argv.includes("--json")) {
-    process.stdout.write(JSON.stringify({ error: msg }) + "\n");
+  if (Deno.args.includes("--json")) {
+    writeOut(JSON.stringify({ error: msg }) + "\n");
   } else {
-    process.stderr.write(`loom: ${msg}\n`);
+    writeErr(`loom: ${msg}\n`);
   }
-  process.exit(1);
+  Deno.exit(1);
 });

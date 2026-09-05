@@ -78,7 +78,7 @@ export const readClaudeAccount = (dir: string): ClaudeAccount | null => {
   // The `claude` CLI/SDK honours $CLAUDE_CONFIG_DIR for the default profile;
   // match it so the provider-list account line isn't read from `~/.claude`
   // while sessions actually authenticate against the env-pointed dir.
-  const envDir = process.env["CLAUDE_CONFIG_DIR"];
+  const envDir = Deno.env.get("CLAUDE_CONFIG_DIR");
   if (envDir && root === join(homedir(), ".claude")) root = expandTilde(envDir);
   const credPath = join(root, ".credentials.json");
   const cfgPaths = configJsonCandidates(root);
@@ -91,7 +91,7 @@ export const readClaudeAccount = (dir: string): ClaudeAccount | null => {
   const subscriptionType = str(oauth["subscriptionType"]);
   let loginMethod = "";
   if (subscriptionType) loginMethod = LOGIN_METHOD[subscriptionType] ?? "Claude account";
-  else if (process.env["ANTHROPIC_API_KEY"]) loginMethod = "API key";
+  else if (Deno.env.get("ANTHROPIC_API_KEY")) loginMethod = "API key";
 
   let account: Record<string, unknown> = {};
   for (const p of cfgPaths) {

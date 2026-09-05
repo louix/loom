@@ -5,7 +5,10 @@ import { delimiter, dirname, join, resolve } from "node:path";
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
  * already contains a path separator? Used for best-effort tool fallbacks.
  */
-export const onPath = (cmd: string, env: NodeJS.ProcessEnv = process.env): boolean => {
+export const onPath = (
+  cmd: string,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): boolean => {
   const runnable = (p: string): boolean => {
     try {
       accessSync(p, constants.X_OK);
@@ -16,7 +19,7 @@ export const onPath = (cmd: string, env: NodeJS.ProcessEnv = process.env): boole
   };
   if (cmd.includes("/") || cmd.includes("\\")) return runnable(cmd);
   const exts =
-    process.platform === "win32" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
+    Deno.build.os === "windows" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
   for (const dir of (env["PATH"] ?? "").split(delimiter)) {
     if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
   }
@@ -27,7 +30,7 @@ export const onPath = (cmd: string, env: NodeJS.ProcessEnv = process.env): boole
  * Walk up from `start` until a directory containing `.git` is found.
  * That directory is the repo root and the anchor for everything in `.loom/`.
  */
-export const findRepoRoot = (start: string = process.cwd()): string => {
+export const findRepoRoot = (start: string = Deno.cwd()): string => {
   let dir = resolve(start);
   for (;;) {
     if (existsSync(join(dir, ".git"))) return dir;

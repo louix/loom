@@ -501,7 +501,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
  */
 export const resolveApiKey = (
   src: { apiKey?: string; apiKeyEnv?: string },
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string => {
   if (src.apiKey) return src.apiKey;
   if (src.apiKeyEnv) return env[src.apiKeyEnv] ?? "";
@@ -515,7 +515,10 @@ export const resolveApiKey = (
  * to `claude`, so that's not re-checked here. Logged at daemon start-up and
  * available over `config.check` / `loom config`.
  */
-export const lintConfig = (cfg: LoomConfig, env: NodeJS.ProcessEnv = process.env): string[] => {
+export const lintConfig = (
+  cfg: LoomConfig,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string[] => {
   const w: string[] = [];
   for (const p of cfg.claudeProfiles) {
     if (!existsSync(p.dir)) {
