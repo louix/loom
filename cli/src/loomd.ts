@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S deno run -A
 import { parseArgs } from "node:util";
 import { findRepoRoot } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";

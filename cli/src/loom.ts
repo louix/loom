@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S deno run -A
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
