@@ -252,4 +252,10 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE model_usage ADD COLUMN last_turn_at     INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE model_usage ADD COLUMN max_hit_gap_sec  INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // 20 — a user-authored note about a session, shown in Detail — meta, not part
+  // of the event log. Reached from the Space palette only, no dedicated key.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN comment TEXT;
+  `,
 ];

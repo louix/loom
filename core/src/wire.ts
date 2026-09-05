@@ -165,6 +165,8 @@ export interface SessionSnapshot {
   mode: string;
   status: SessionState;
   title: string | null;
+  /** A user-authored note about the session — meta, not part of the event log. */
+  comment: string | null;
   worktree: string | null;
   branch: string | null;
   baseBranch: string | null;

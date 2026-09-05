@@ -210,6 +210,7 @@ type DelegatedAct =
   | "mode"
   | "undo"
   | "title"
+  | "comment"
   | "new"
   | "find"
   | "filter"
@@ -1045,6 +1046,16 @@ export const mkFleetHandle = ({
             text: s.title ?? "",
           }),
         });
+      case "comment":
+        return void dispatch({
+          t: "openPrompt",
+          prompt: makePrompt({
+            kind: "comment",
+            sessionId: s.id,
+            label: "comment",
+            text: s.comment ?? "",
+          }),
+        });
       case "planreview": {
         const pend2 = pendingFor(state, s.id);
         if (!pend2.plan) return note("no plan pending", "dim");
@@ -1619,8 +1630,9 @@ export const mkFleetHandle = ({
     const text = p.buffer.text.trim();
     const by = client.clientId;
     // `deny` and `compact` both treat an empty submit as a valid choice
-    // (no reason / best-effort compaction); every other prompt needs text.
-    if (p.kind !== "deny" && p.kind !== "compact" && !text) return;
+    // (no reason / best-effort compaction); `comment` empty clears the note.
+    // Every other prompt needs text.
+    if (p.kind !== "deny" && p.kind !== "compact" && p.kind !== "comment" && !text) return;
 
     // A send typed while the target session is compacting: the daemon holds the
     // op gate for the whole (multi-minute) summarise and would reject with
@@ -1678,6 +1690,11 @@ export const mkFleetHandle = ({
           if (!p.sessionId) return "";
           await client.request("session.setTitle", { id: p.sessionId, title: text, by });
           return "renamed";
+        }
+        case "comment": {
+          if (!p.sessionId) return "";
+          await client.request("session.setComment", { id: p.sessionId, comment: text, by });
+          return text ? "comment saved" : "comment cleared";
         }
         case "compact": {
           if (!p.sessionId) return "";
@@ -2122,6 +2139,7 @@ export const mkFleetHandle = ({
       case "mode":
       case "undo":
       case "title":
+      case "comment":
       case "new":
       case "find":
       case "filter":

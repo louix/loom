@@ -2585,6 +2585,19 @@ export class Daemon {
       return this.#enrich(snap);
     });
 
+    d.register("session.setComment", (params) => {
+      const id = reqString(params, "id");
+      const p = isObj(params) ? params : {};
+      const comment =
+        typeof p["comment"] === "string" && p["comment"].trim() !== ""
+          ? p["comment"].trim().slice(0, 2000)
+          : null;
+      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+      const snap = this.#registry.setFields(id, { comment });
+      this.#emitSessionUpdated(snap, clientLabel(params));
+      return this.#enrich(snap);
+    });
+
     // markDone: archive a session. The run is stopped and its worktree is
     // reclaimed — in git the branch is left looking like any other branch —
     // but the row, the branch, and the stored transcript are kept. Messaging

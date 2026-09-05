@@ -140,6 +140,7 @@ export type PromptKind =
   | "deny"
   | "new"
   | "title"
+  | "comment"
   | "discuss"
   | "compact";
 
@@ -2251,6 +2252,7 @@ export type ActName =
   | "fork"
   | "rebase"
   | "title"
+  | "comment"
   | "delete"
   | "copybranch"
   | "viewlog"
@@ -2380,6 +2382,13 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       local.push({ keys: "F", label: "fork", act: "fork" });
     }
     local.push({ keys: "e", label: "rename", act: "title" });
+    // Palette-only, like keepwarm — a rarely-used per-session note, not a
+    // footer verb. No dedicated key.
+    local.push({
+      keys: "",
+      label: session.comment ? "edit comment" : "add comment",
+      act: "comment",
+    });
     if (session.branch || session.worktree) {
       local.push({ keys: "y", label: "copy branch", act: "copybranch" });
     }

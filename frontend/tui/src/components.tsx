@@ -97,6 +97,7 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   deny: "reason (optional)",
   new: "describe the task…",
   title: "session title",
+  comment: "note about this session (blank clears it)",
   discuss: "what should change about the plan?",
   compact: "steer the summary (optional) — blank = best-effort summary of everything",
   send: "type a message…",
@@ -359,7 +360,7 @@ const FleetRow = ({
   const idColor = pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
-  const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + cost.length + 1));
+  const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return (
@@ -372,6 +373,7 @@ const FleetRow = ({
       ) : (
         <Text color={cacheColor ?? C.faint}>{cacheColor ? "⟢ " : "  "}</Text>
       )}
+      <Text color={C.faint}>{s.comment ? "✎ " : "  "}</Text>
       <Text color={selected ? C.text : C.dim} bold={selected}>
         {title}
       </Text>
@@ -625,6 +627,13 @@ export const Detail = ({
           {`  “${truncate(g.lastCommitSubject, w - 4)}”`}
         </Text>
       ) : null}
+      {s.comment ? (
+        <Field label="comment">
+          <Text color={C.accentDim} wrap="truncate-end">
+            {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
+          </Text>
+        </Field>
+      ) : null}
       {queued.length > 0 ? (
         <Text color={C.accentDim} wrap="truncate-end">
           {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
@@ -689,6 +698,7 @@ export const detailRows = (
   if (Object.keys(s.rateLimits).length > 0) rows += 1;
   rows += 2; // git row + its marginTop
   if (s.git?.lastCommitSubject) rows += 1;
+  if (s.comment) rows += 1;
   if ((opts.queued ?? []).length > 0) rows += 1;
   if (s.subagents.length > 0) rows += 1;
   if ((s.backgroundTasks ?? []).length > 0) rows += 1;
@@ -1064,6 +1074,7 @@ const MODE_HINT: Record<PromptState["kind"], string> = {
   answerQuestion: "answer",
   deny: "deny",
   title: "rename",
+  comment: "save",
   discuss: "send",
   compact: "compact",
 };

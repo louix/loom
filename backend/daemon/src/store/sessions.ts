@@ -22,6 +22,7 @@ interface SessionRow {
   status: string;
   status_detail: string | null;
   title: string | null;
+  comment: string | null;
   worktree: string | null;
   branch: string | null;
   base_branch: string | null;
@@ -201,6 +202,7 @@ export class SessionStore {
       effort: string | null;
       mode: string;
       title: string | null;
+      comment: string | null;
       titleLocked: boolean;
       worktree: string | null;
       branch: string | null;
@@ -217,6 +219,7 @@ export class SessionStore {
       effort: "effort",
       mode: "mode",
       title: "title",
+      comment: "comment",
       titleLocked: "title_locked",
       worktree: "worktree",
       branch: "branch",
@@ -768,6 +771,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     mode: row.mode,
     status: parseSessionState(row.status, row.status_detail),
     title: row.title,
+    comment: row.comment,
     worktree: row.worktree,
     branch: row.branch,
     baseBranch: row.base_branch,
