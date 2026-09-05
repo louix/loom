@@ -2867,8 +2867,12 @@ const noticeForEvent = (s: TuiState, ev: HarnessEvent): Notice | null => {
     return { text: `question waiting${tag}`, tone: "accent", at: Date.now() };
   if (ev.type === "plan_review")
     return { text: `plan ready for review${tag}`, tone: "accent", at: Date.now() };
-  if (ev.type === "error" && ev.fatal)
-    return { text: `error: ${oneLine(ev.message, 80)}${tag}`, tone: "bad", at: Date.now() };
+  if (ev.type === "error")
+    return {
+      text: `${ev.fatal ? "error" : "recovered"}: ${oneLine(ev.message, 80)}${tag}`,
+      tone: ev.fatal ? "bad" : "warn",
+      at: Date.now(),
+    };
   if (ev.type === "result" && ev.kind === "ok" && ev.stopReason === "step_limit")
     return {
       text: `turn paused at the step ceiling${tag} — send to continue`,
