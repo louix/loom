@@ -103,6 +103,22 @@ interface CompactWait {
 /** {@link SessionMode} is a subset of the SDK's {@link PermissionMode}. */
 const toPermissionMode = (mode: SessionMode): PermissionMode => mode;
 
+/** Claude's `query()` options accept exactly these five — the shared, open
+ *  {@link EffortLevel} lets a model advertise anything, so an unrecognized
+ *  value (another vendor's string, a typo) is dropped here rather than sent
+ *  to the CLI and rejected. Vendor-specific restriction kept inside the
+ *  connector, per {@link EffortLevel}'s own doc comment. */
+const CLAUDE_QUERY_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const asQueryEffort = (effort: EffortLevel): NonNullable<Options["effort"]> | undefined =>
+  CLAUDE_QUERY_EFFORTS.has(effort) ? (effort as NonNullable<Options["effort"]>) : undefined;
+
+/** `applyFlagSettings`'s live effort field is a stricter subset than
+ *  `query()`'s own — no `max` — a genuine asymmetry between the SDK's two
+ *  effort surfaces, not a Loom omission. */
+const CLAUDE_FLAG_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+const asFlagEffort = (effort: EffortLevel): "low" | "medium" | "high" | "xhigh" | undefined =>
+  CLAUDE_FLAG_EFFORTS.has(effort) ? (effort as "low" | "medium" | "high" | "xhigh") : undefined;
+
 /** Built-in file-mutating tools — the target path rides in `file_path` /
  *  `notebook_path`. */
 const BUILTIN_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -408,6 +424,7 @@ class ClaudeSession implements AgentSession {
     }
 
     const env = queryEnv({ promptCacheTtl, configDir });
+    const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
@@ -419,7 +436,7 @@ class ClaudeSession implements AgentSession {
       env,
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
-      ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(queryEffort ? { effort: queryEffort } : {}),
       ...(resume ? { resume } : {}),
       ...(opts.disableTools && opts.disableTools.length > 0
         ? { disallowedTools: opts.disableTools }
@@ -903,8 +920,10 @@ class ClaudeSession implements AgentSession {
   }
 
   async setEffort(effort: EffortLevel): Promise<void> {
+    const flagEffort = asFlagEffort(effort);
+    if (!flagEffort) throw new Error(`Claude does not support live effort changes to "${effort}"`);
     try {
-      await this.#query?.applyFlagSettings({ effortLevel: effort });
+      await this.#query?.applyFlagSettings({ effortLevel: flagEffort });
       this.#effort = effort;
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);

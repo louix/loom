@@ -7,11 +7,28 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
+import { loomInstructions } from "@loom/core/paths";
+import { toolSteer } from "@loom/runtime/instructions";
 import { makeAisdkProvider } from "@loom/aisdk/provider";
 import { createChatGPTModels } from "./oauth.ts";
 import { CodexAppServerSession } from "./app-server.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
 import { discoverCodexModels } from "./discovery.ts";
+
+/**
+ * Code Mode sessions mount only `commit` (via `CodexAppServerSession`'s own
+ * `loom-mcp-server.mjs`, when `loomServer` is on) — never `ask_user`/`status`.
+ * The daemon's `systemPromptAppend` is written assuming the full Claude/aisdk
+ * loom tool set, so it would tell the model about tools that don't exist here;
+ * recompute the tool-steer for what's actually mounted instead of forwarding
+ * it verbatim. Skips the daemon's repoRoot-fallback LOOM.md lookup (Code Mode
+ * only has the worktree's own `cwd`), a narrow, acceptable gap versus a fully
+ * plumbed-through repo root.
+ */
+export const codeModeInstructions = (cwd: string, mountsCommit: boolean): string =>
+  [toolSteer(cwd, { askUser: false, commit: mountsCommit, status: false }), loomInstructions(cwd)]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .join("\n\n");
 
 /**
  * ChatGPT's catalog has two tool protocols. Keep the AI SDK adapter for
@@ -64,7 +81,7 @@ class ChatGPTProvider implements AgentProvider {
     if (opts.oneShot || !(await this.#isCodeMode(opts.model ?? "")))
       return this.#direct.createSession(opts);
     return CodexAppServerSession.start(
-      opts,
+      { ...opts, systemPromptAppend: codeModeInstructions(opts.cwd, opts.loomServer === true) },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,
@@ -74,7 +91,10 @@ class ChatGPTProvider implements AgentProvider {
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
     if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
     return CodexAppServerSession.resume(
-      ref,
+      // Code Mode's own `resume()` always mounts the commit-only loom server
+      // (its internal `opts.loomServer` is hardcoded `true`), independent of
+      // whatever `ref` carries — `SessionRef` has no `loomServer` field.
+      { ...ref, systemPromptAppend: codeModeInstructions(ref.cwd, true) },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,

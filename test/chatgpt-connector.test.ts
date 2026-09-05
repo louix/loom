@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { spawn } from "node:child_process";
 import { streamText } from "ai";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { createChatGPTModels } from "@loom/connector-chatgpt/oauth";
-import { createProvider } from "@loom/connector-chatgpt";
+import { createProvider, codeModeInstructions } from "@loom/connector-chatgpt";
 import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
 import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
@@ -49,6 +50,22 @@ test("ChatGPT's provider-level capabilities stay conservative across its two bac
   assert.equal(provider.capabilities.rewind, false);
   assert.equal(provider.capabilities.ownsTranscript, false);
   assert.equal(provider.capabilities.liveModelSwitch, false);
+});
+
+test("codeModeInstructions only mentions the loom tool Code Mode actually mounts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-"));
+  try {
+    const withCommit = codeModeInstructions(dir, true);
+    assert.match(withCommit, /call the `commit` tool/);
+    assert.doesNotMatch(withCommit, /call `ask_user`/);
+    assert.doesNotMatch(withCommit, /`status` tool reprints this root/);
+
+    const withoutLoomServer = codeModeInstructions(dir, false);
+    assert.doesNotMatch(withoutLoomServer, /call the `commit` tool/);
+    assert.doesNotMatch(withoutLoomServer, /call `ask_user`/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("ChatGPT OAuth connector constructs a v5 model without reading credentials eagerly", () => {
@@ -263,6 +280,14 @@ test("resolveCodexHome: config_dir, then auth_path's parent, then CODEX_HOME, th
   });
 });
 
+test("resolveCodexHome resolves a relative config_dir/auth_path to an absolute path", () => {
+  const cwd = process.cwd();
+  assert.equal(resolveCodexHome({ configDir: "./codex", env: {} }).dir, join(cwd, "codex"));
+  const relative = resolveCodexHome({ authPath: "./codex/auth.json", env: {} });
+  assert.equal(relative.dir, join(cwd, "codex"));
+  assert.equal(relative.authJsonPath, join(cwd, "codex", "auth.json"));
+});
+
 test("resolveCodexHome rejects a disagreeing config_dir/auth_path pair and a misnamed auth_path", () => {
   assert.throws(
     () => resolveCodexHome({ configDir: "/a", authPath: "/b/auth.json", env: {} }),
@@ -347,6 +372,65 @@ test("resume() forwards the ref's systemPromptAppend as developerInstructions on
   );
   assert.equal(withoutInstructions.providerRef, "fake-thread-1");
   await withoutInstructions.close();
+});
+
+/** Polls `dir` until it has an entry, for asserting a killed child process's
+ *  exit handler actually ran (see `LOOM_TEST_EXIT_MARKER_DIR` in the fixture). */
+const waitForMarker = async (dir: string, timeoutMs = 2000): Promise<string[]> => {
+  const { readdir } = await import("node:fs/promises");
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const entries = await readdir(dir);
+    if (entries.length > 0) return entries;
+    if (Date.now() > deadline) return entries;
+    await delay(20);
+  }
+};
+
+test("a failed thread/start closes the app-server process instead of leaking it", async () => {
+  const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
+  const codexHome = { dir: "/tmp/loom-codex-fail-test", authJsonPath: "/tmp/loom-codex-fail-test/auth.json" };
+  try {
+    Deno.env.set("LOOM_TEST_FAIL_STARTUP", "1");
+    Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
+    await assert.rejects(
+      () =>
+        CodexAppServerSession.start(
+          { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+          codexHome,
+          FAKE_CODEX,
+        ),
+      /forced thread\/start failure/,
+    );
+    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+  } finally {
+    Deno.env.delete("LOOM_TEST_FAIL_STARTUP");
+    Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
+    await rm(markerDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed thread/resume closes the app-server process instead of leaking it", async () => {
+  const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
+  const codexHome = { dir: "/tmp/loom-codex-fail-test", authJsonPath: "/tmp/loom-codex-fail-test/auth.json" };
+  try {
+    Deno.env.set("LOOM_TEST_FAIL_STARTUP", "1");
+    Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
+    await assert.rejects(
+      () =>
+        CodexAppServerSession.resume(
+          { sessionId: "s1", providerRef: "fake-thread-1", cwd: "/tmp" },
+          codexHome,
+          FAKE_CODEX,
+        ),
+      /forced thread\/resume failure/,
+    );
+    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+  } finally {
+    Deno.env.delete("LOOM_TEST_FAIL_STARTUP");
+    Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
+    await rm(markerDir, { recursive: true, force: true });
+  }
 });
 
 /** A minimal stand-in for `ChildProcessWithoutNullStreams`: real stdout/stderr

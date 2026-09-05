@@ -1001,7 +1001,7 @@ export class Daemon {
         ? { loomServer: true, systemPromptAppend: promptAppend }
         : {}),
       ...(o.model ? { model: o.model } : {}),
-      ...(o.effort ? { effort: o.effort as EffortLevel } : {}),
+      ...(o.effort ? { effort: o.effort } : {}),
       ...(o.parentId ? { parentId: o.parentId } : {}),
     };
 
@@ -1142,7 +1142,7 @@ export class Daemon {
         mode,
         mcpServers: mcpHandles,
         ...(model ? { model } : {}),
-        ...(row.effort ? { effort: row.effort as EffortLevel } : {}),
+        ...(row.effort ? { effort: row.effort } : {}),
         ...(isClaude || isAisdk || row.provider === "chatgpt" ? { systemPromptAppend: promptAppend } : {}),
       });
     } catch (err) {
@@ -2166,7 +2166,13 @@ export class Daemon {
       const id = reqString(params, "id");
       const parent = this.#registry.get(id);
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!this.#ownsTranscript(parent.provider)) {
+      // Resolve the provider's real capabilities rather than guess from
+      // config membership — an unloaded ChatGPT provider is configured under
+      // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
+      // conservatively `false` (it may route through Codex's own thread),
+      // so a config-membership guess would wrongly authorize a hard fork.
+      const parentProvider = await this.#providers.get(parent.provider);
+      if (!parentProvider.capabilities.ownsTranscript) {
         throw new RpcError(
           "bad_request",
           "hard fork needs a provider whose transcript Loom owns (aisdk-only for now — Claude support is fork-tree F3)",
@@ -2222,14 +2228,16 @@ export class Daemon {
         this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
         this.#pmsgs.copyTo(id, newId);
 
-        await this.#sessions.resume(await this.#providers.get(parent.provider), {
+        const mcpHandles = this.#mcpHandles();
+        await this.#sessions.resume(parentProvider, {
           sessionId: newId,
           providerRef: newId,
           cwd: wt.path,
           mode,
-          mcpServers: this.#mcpHandles(),
+          mcpServers: mcpHandles,
+          systemPromptAppend: systemPromptAppendFor(true, mcpHandles.length > 0, wt.path, this.repoRoot),
           ...(parent.model ? { model: parent.model } : {}),
-          ...(parent.effort ? { effort: parent.effort as EffortLevel } : {}),
+          ...(parent.effort ? { effort: parent.effort } : {}),
         });
       } catch (err) {
         await this.#sessions.close(newId).catch(() => {});
@@ -2370,7 +2378,7 @@ export class Daemon {
         typeof p["provider"] === "string" ? (p["provider"] as string) : undefined;
       if (
         retargetEffort !== undefined &&
-        !EFFORT_LEVELS.includes(retargetEffort as EffortLevel) &&
+        !EFFORT_LEVELS.includes(retargetEffort) &&
         !this.#advertisedEfforts(
           retargetProvider ?? parent.provider,
           retargetModel ?? parent.model,
@@ -2422,7 +2430,7 @@ export class Daemon {
           action,
           ...(mode ? { mode } : {}),
           ...(retargetModel ? { model: retargetModel } : {}),
-          ...(retargetEffort ? { effort: retargetEffort as EffortLevel } : {}),
+          ...(retargetEffort ? { effort: retargetEffort } : {}),
         };
       } else if (action === "revise") {
         const plan = typeof p["plan"] === "string" ? (p["plan"] as string) : "";
@@ -2498,7 +2506,7 @@ export class Daemon {
       const effort = reqString(params, "effort");
       const row = this.#registry.get(id);
       if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort as EffortLevel);
+      if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort);
       const snap = this.#registry.setFields(id, { effort });
       // A deliberate switch is also "the last effort used" for this provider.
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
@@ -2531,7 +2539,7 @@ export class Daemon {
       const model = wantModel ?? (this.#defaultModelFor(provider) || null);
       if (
         wantEffort !== undefined &&
-        !EFFORT_LEVELS.includes(wantEffort as EffortLevel) &&
+        !EFFORT_LEVELS.includes(wantEffort) &&
         !this.#advertisedEfforts(provider, model ?? undefined).includes(wantEffort)
       ) {
         throw new RpcError("bad_request", "effort must be a level this model supports");
@@ -2542,7 +2550,7 @@ export class Daemon {
       if (provider === row.provider) {
         if (this.#sessions.has(id)) {
           if (model) await this.#sessions.setModel(id, model);
-          if (effort) await this.#sessions.setEffort(id, effort as EffortLevel);
+          if (effort) await this.#sessions.setEffort(id, effort);
         }
         const snap = this.#registry.setFields(id, {
           ...(model ? { model } : {}),
@@ -2558,7 +2566,16 @@ export class Daemon {
         return snap;
       }
 
-      if (!this.#ownsTranscript(provider) || !this.#ownsTranscript(row.provider)) {
+      // Resolve real capabilities for both providers rather than guess from
+      // config membership — an unloaded ChatGPT provider is configured under
+      // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
+      // conservatively `false`, so a config-membership guess would wrongly
+      // authorize a transcript-based switch into (or out of) it.
+      const [fromProvider, toProvider] = await Promise.all([
+        this.#providers.get(row.provider),
+        this.#providers.get(provider),
+      ]);
+      if (!toProvider.capabilities.ownsTranscript || !fromProvider.capabilities.ownsTranscript) {
         throw new RpcError(
           "bad_request",
           "switching to or from a provider that doesn't own its transcript isn't supported yet — start a fresh session on it instead",
@@ -2574,18 +2591,21 @@ export class Daemon {
         );
       }
 
+      const cwd = row.worktree ?? this.repoRoot;
+      const mcpHandles = this.#mcpHandles();
       const ref: SessionRef = {
         sessionId: id,
         providerRef: this.#registry.store.providerRef(id) ?? id,
-        cwd: row.worktree ?? this.repoRoot,
+        cwd,
         mode: isSessionMode(row.mode) ? row.mode : "default",
-        mcpServers: this.#mcpHandles(),
+        mcpServers: mcpHandles,
+        systemPromptAppend: systemPromptAppendFor(true, mcpHandles.length > 0, cwd, this.repoRoot),
         model,
-        ...(effort ? { effort: effort as EffortLevel } : {}),
+        ...(effort ? { effort } : {}),
       };
 
       try {
-        await this.#sessions.setProvider(id, await this.#providers.get(provider), ref);
+        await this.#sessions.setProvider(id, toProvider, ref);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (/interrupt the session/.test(message)) {

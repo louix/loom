@@ -527,3 +527,33 @@ test("resumeSession forwards the ref's systemPromptAppend into the CLI's systemP
   });
   await s.close();
 });
+
+test("setEffort rejects a value the CLI's live flag settings don't support, without touching the query", async () => {
+  let applied: unknown;
+  __setClaudeSdk({
+    query: () =>
+      Object.assign(fakeQuery(), {
+        applyFlagSettings: async (settings: unknown) => {
+          applied = settings;
+        },
+      }) as never,
+  });
+
+  const provider = new ClaudeProvider();
+  const s = await provider.createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+
+  await s.setEffort("high");
+  assert.deepEqual(applied, { effortLevel: "high" });
+
+  await assert.rejects(() => s.setEffort("minimal"), /does not support live effort changes/);
+  assert.deepEqual(applied, { effortLevel: "high" }, "the unsupported value must never reach the CLI");
+
+  await s.close();
+});

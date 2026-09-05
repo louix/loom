@@ -7,8 +7,12 @@ import type { HarnessEvent, SessionState, TokenUsage } from "./events.ts";
 
 export type SessionMode = "default" | "plan" | "acceptEdits" | "auto";
 
-/** How hard the model should think — mirrors the Claude Agent SDK's `EffortLevel`. */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+/** How hard the model should think. Claude's five levels are the well-known
+ *  suggestions (for autocomplete); the type stays open so a model's own
+ *  advertised strings (an OpenAI `minimal`, a future vendor value) pass
+ *  through the shared interfaces and RPC validation without a cast — vendor-
+ *  specific restrictions belong inside connectors, not this union. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | (string & {});
 
 export interface ProviderCapabilities {
   /** Mode changes take effect immediately (Claude) vs. next turn (ADK). See

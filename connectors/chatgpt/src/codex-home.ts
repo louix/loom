@@ -41,6 +41,10 @@ export const resolveCodexHome = (opts: {
     );
   }
 
-  const dir = configDir ?? authPathDir ?? env["CODEX_HOME"] ?? join(homedir(), ".codex");
-  return { dir, authJsonPath: authPath ?? join(dir, "auth.json") };
+  // Absolute, resolved once here (against the daemon's own cwd) rather than
+  // left relative: discovery spawns don't set a child `cwd` while sessions
+  // spawn inside their worktree, so a relative CODEX_HOME would silently name
+  // two different directories depending on which path constructed it.
+  const dir = resolve(configDir ?? authPathDir ?? env["CODEX_HOME"] ?? join(homedir(), ".codex"));
+  return { dir, authJsonPath: authPath ? resolve(authPath) : join(dir, "auth.json") };
 };

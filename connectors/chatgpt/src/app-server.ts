@@ -170,21 +170,29 @@ export class CodexAppServerSession implements AgentSession {
       env: launch.env,
     });
     const s = new CodexAppServerSession(opts, proc);
-    await s.#initialize();
-    const started = await s.#rpc.requestStartup("thread/start", {
-      ...(opts.model ? { model: opts.model } : {}),
-      cwd: opts.cwd,
-      approvalPolicy: policyFor(opts.mode),
-      approvalsReviewer: approvalsReviewerFor(opts.mode),
-      sandbox: sandboxFor(opts.mode),
-      ...(opts.effort ? { effort: opts.effort } : {}),
-      ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
-    });
-    s.#threadId = (started as any)?.thread?.id ?? null;
-    if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
-    if (opts.prompt) await s.#startTurn(opts.prompt);
-    else s.#idle();
-    return s;
+    try {
+      await s.#initialize();
+      const started = await s.#rpc.requestStartup("thread/start", {
+        ...(opts.model ? { model: opts.model } : {}),
+        cwd: opts.cwd,
+        approvalPolicy: policyFor(opts.mode),
+        approvalsReviewer: approvalsReviewerFor(opts.mode),
+        sandbox: sandboxFor(opts.mode),
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
+      });
+      s.#threadId = (started as any)?.thread?.id ?? null;
+      if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
+      if (opts.prompt) await s.#startTurn(opts.prompt);
+      else s.#idle();
+      return s;
+    } catch (err) {
+      // Startup failed after the process was already spawned — close it (which
+      // kills the process) rather than leaving an orphaned `codex app-server`
+      // with a pending request no caller can ever reach.
+      s.close();
+      throw err;
+    }
   }
 
   static async resume(
@@ -217,19 +225,24 @@ export class CodexAppServerSession implements AgentSession {
       env: launch.env,
     });
     const s = new CodexAppServerSession(opts, proc);
-    await s.#initialize();
-    const resumed = await s.#rpc.requestStartup("thread/resume", {
-      threadId: ref.providerRef,
-      cwd: ref.cwd,
-      approvalPolicy: policyFor(opts.mode),
-      approvalsReviewer: approvalsReviewerFor(opts.mode),
-      sandbox: sandboxFor(opts.mode),
-      excludeTurns: true,
-      ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
-    });
-    s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
-    s.#idle();
-    return s;
+    try {
+      await s.#initialize();
+      const resumed = await s.#rpc.requestStartup("thread/resume", {
+        threadId: ref.providerRef,
+        cwd: ref.cwd,
+        approvalPolicy: policyFor(opts.mode),
+        approvalsReviewer: approvalsReviewerFor(opts.mode),
+        sandbox: sandboxFor(opts.mode),
+        excludeTurns: true,
+        ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
+      });
+      s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
+      s.#idle();
+      return s;
+    } catch (err) {
+      s.close();
+      throw err;
+    }
   }
 
   async #initialize(): Promise<void> {

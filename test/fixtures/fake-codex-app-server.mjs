@@ -10,14 +10,37 @@
  * assert the directory Loom resolved actually reached the subprocess.
  * `model/list` paginates between the two fixture pages via `params.cursor`.
  * `test/hang` deliberately never responds, for exercising request timeouts.
+ * `LOOM_TEST_FAIL_STARTUP=1` makes `thread/start`/`thread/resume` reply with a
+ * JSON-RPC error, for exercising `CodexAppServerSession`'s startup-failure
+ * cleanup. `LOOM_TEST_EXIT_MARKER_DIR`, when set, drops an empty file named
+ * after this process's pid into that directory on exit (for any reason —
+ * killed, crashed, or a clean stdin close), so a test can assert the child
+ * actually exited instead of leaking.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 // This file is a fixture, not a test. A bare `node --test` matches
 // `**/test/**/*.mjs` and would execute it, then hang forever on stdin. Bail
 // when the test runner is our parent (real spawns never carry this var).
 if (process.env["NODE_TEST_CONTEXT"]) process.exit(0);
+
+const exitMarkerDir = process.env["LOOM_TEST_EXIT_MARKER_DIR"];
+if (exitMarkerDir) {
+  process.on("exit", () => {
+    try {
+      writeFileSync(join(exitMarkerDir, String(process.pid)), "");
+    } catch {
+      // best effort — a missing/unwritable dir shouldn't crash the fixture
+    }
+  });
+  // `proc.kill()` sends SIGTERM by default; Node only runs `exit` handlers on
+  // a signal if something has actually handled it (otherwise the OS just
+  // terminates the process and JS never runs again). Handle it ourselves and
+  // exit normally so the marker above still gets written under a real kill.
+  process.on("SIGTERM", () => process.exit(0));
+}
 
 const fixture = (name) =>
   JSON.parse(
@@ -36,10 +59,18 @@ const handle = (req) => {
   }
   if (method === "initialized" || method === "test/hang") return;
   if (method === "thread/start") {
+    if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
+      send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/start failure" } });
+      return;
+    }
     send({ jsonrpc: "2.0", id, result: fixture("thread-start") });
     return;
   }
   if (method === "thread/resume") {
+    if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
+      send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/resume failure" } });
+      return;
+    }
     const base = fixture("thread-resume");
     // Echo whether developerInstructions arrived, in the thread id, so tests
     // can assert on it through `CodexAppServerSession.resume()`'s public
