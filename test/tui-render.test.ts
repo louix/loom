@@ -237,7 +237,7 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /\[manual\]/, "Detail shows the mode as a bracketed chip");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the permission mode
-      await delay(160);
+      await delay(360); // clear the 300ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "⇧⇥ cycled manual → plan");
       assert.match(stdout.last, /\[plan\]/, "the Detail chip follows the change");
@@ -319,6 +319,7 @@ models   = ["m1", "m2"]
       await waitFor(stdout, /\[manual\]/);
       click(at("[manual]"));
       await waitFor(stdout, /\[plan\]/);
+      await delay(360); // clear the 300ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === target.id)?.mode,
@@ -356,7 +357,7 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /\[manual\]/, "the send prompt shows the session's current mode");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
-      await delay(160);
+      await delay(360); // clear the 300ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === snap.id)?.mode,
