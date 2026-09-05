@@ -543,6 +543,46 @@ test("session_removed drops the row and reselects the head", () => {
   assert.equal(s.selectedId, "a");
 });
 
+test("session_removed selects the row above, not the fleet head", () => {
+  const a = snap({ id: "a", status: "awaiting_input" });
+  const b = snap({ id: "b", status: "running" });
+  const c = snap({ id: "c", status: "idle" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b, c] });
+  assert.deepEqual(
+    s.sessions.map((x) => x.id),
+    ["a", "b", "c"],
+  );
+  s = reduce(s, { t: "select", id: "b" });
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "b" },
+  });
+  // b sat between a and c — losing it should land on a (the row above), not
+  // snap back to the fleet head.
+  assert.deepEqual(
+    s.sessions.map((x) => x.id),
+    ["a", "c"],
+  );
+  assert.equal(s.selectedId, "a");
+});
+
+test("session_removed falls back to the new head when the removed row was already on top", () => {
+  const a = snap({ id: "a", status: "awaiting_input" });
+  const b = snap({ id: "b", status: "running" });
+  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  s = reduce(s, { t: "select", id: "a" });
+  s = reduce(s, {
+    t: "push",
+    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "a" },
+  });
+  // Nothing was above a — the only sensible landing spot is the new head.
+  assert.deepEqual(
+    s.sessions.map((x) => x.id),
+    ["b"],
+  );
+  assert.equal(s.selectedId, "b");
+});
+
 test("providers_updated adopts the pushed list as the new-session defaults", () => {
   let s = withProviders();
   // The daemon remembered a different last-used provider / model — the push

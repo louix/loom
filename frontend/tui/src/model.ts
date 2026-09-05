@@ -1070,6 +1070,7 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
     }
 
     case "session_removed": {
+      const removedIdx = s.sessions.findIndex((x) => x.id === frame.sessionId);
       const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
       const planGone = s.plan?.sessionId === frame.sessionId;
       // A send/answer/title/compact prompt aimed at a session another client
@@ -1079,10 +1080,16 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       // The pending selection itself was removed before it ever arrived — drop
       // the hold so the clamp falls back to the fleet head.
       const pendingSel = s.pendingSelectId === frame.sessionId ? undefined : s.pendingSelectId;
+      // If the removed row was the selected one, land on the row that was
+      // just above it rather than snapping to the fleet head.
+      const selectedId =
+        s.selectedId === frame.sessionId && removedIdx > 0
+          ? (sessions[removedIdx - 1]?.id ?? clampSelection(sessions, s.selectedId, pendingSel))
+          : clampSelection(sessions, s.selectedId, pendingSel);
       return {
         ...s,
         sessions,
-        selectedId: clampSelection(sessions, s.selectedId, pendingSel),
+        selectedId,
         pendingSelectId: pendingSel,
         pending: without(s.pending, frame.sessionId),
         queue: without(s.queue, frame.sessionId),
