@@ -189,6 +189,7 @@ model     = "gpt-5-codex"
 models    = ["gpt-5-codex", "gpt-5"]
 auth_path = "~/custom-codex/auth.json"
 codex_cli_path = "~/bin/codex"
+codex_builtin_web_search = true
 `);
   const p = c.providers.aisdk["chatgpt"];
   assert.ok(p);
@@ -197,8 +198,18 @@ codex_cli_path = "~/bin/codex"
   assert.equal(p.apiKeyEnv, "");
   assert.equal(p.authPath, join(homedir(), "custom-codex/auth.json"));
   assert.equal(p.codexCliPath, join(homedir(), "bin/codex"));
+  assert.equal(p.codexBuiltinWebSearch, true);
   assert.deepEqual(p.models, ["gpt-5-codex", "gpt-5"]);
   assert.deepEqual(lintConfig(c), []);
+});
+
+test("[chatgpt] keeps Codex web search unless disabled", () => {
+  assert.equal(cfg(`[chatgpt]\n`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch, true);
+  assert.equal(
+    cfg(`[chatgpt]\ncodex_builtin_web_search = false\n`).providers.aisdk["chatgpt"]
+      ?.codexBuiltinWebSearch,
+    false,
+  );
 });
 
 test("a low-level sdk = chatgpt profile routes without an API key", () => {

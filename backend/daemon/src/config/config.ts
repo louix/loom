@@ -129,6 +129,8 @@ export interface AisdkProfile {
   authPath: string;
   /** Explicit `codex` executable for Code Mode models. Empty resolves `codex` on PATH. */
   codexCliPath: string;
+  /** Keep Codex's native web search for Code Mode models. Default true. */
+  codexBuiltinWebSearch: boolean;
 }
 
 /**
@@ -445,6 +447,7 @@ const buildAisdkProfile = (
     connector: str(t["connector"], ""),
     authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
     codexCliPath: t["codex_cli_path"] ? expandTilde(str(t["codex_cli_path"], "")) : "",
+    codexBuiltinWebSearch: t["codex_builtin_web_search"] !== false,
   };
 };
 

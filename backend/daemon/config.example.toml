@@ -137,6 +137,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # models    = ["gpt-5.6-terra"]     # optional curated picker list
 # auth_path = "~/.codex/auth.json" # optional; this is already the default
 # codex_cli_path = "/usr/local/bin/codex" # optional; empty uses `codex` on PATH
+# codex_builtin_web_search = false # optional; default keeps Codex web search alongside Kagi
 #
 # Low-level escape hatch, if you need several native profiles or an unusual
 # combination: [providers.<id>] with adapter = "aisdk" and sdk =

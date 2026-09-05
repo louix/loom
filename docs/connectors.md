@@ -149,7 +149,10 @@ codex_cli_path = "/absolute/path/to/codex"
 Loom replaces the app-server's `mcp_servers` table for every Code Mode session
 with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
-back through Loom's existing permission UI.
+back through Loom's existing permission UI. When `[search] backend = "kagi"`,
+Loom also mounts Kagi's hosted MCP server using its configured key. Codex's
+native web search remains enabled by default; set
+`codex_builtin_web_search = false` to use Kagi alone.
 
 This is a vendored compatibility connector over the private Codex backend,
 rather than the public OpenAI API. That backend and its accepted model IDs can

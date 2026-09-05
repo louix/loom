@@ -22,17 +22,23 @@ class ChatGPTProvider implements AgentProvider {
   readonly #direct: AgentProvider;
   readonly #isCodeMode: (model: string) => Promise<boolean>;
   readonly #codexCliPath: string;
+  readonly #search: ConnectorContext["search"];
+  readonly #codexBuiltinWebSearch: boolean;
 
   constructor(
     id: string,
     direct: AgentProvider,
     isCodeMode: (model: string) => Promise<boolean>,
     codexCliPath?: string,
+    search?: ConnectorContext["search"],
+    codexBuiltinWebSearch = true,
   ) {
     this.id = id;
     this.#direct = direct;
     this.#isCodeMode = isCodeMode;
     this.#codexCliPath = codexCliPath || "codex";
+    this.#search = search;
+    this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
     this.capabilities = {
       ...direct.capabilities,
       liveModeSwitch: true,
@@ -45,11 +51,21 @@ class ChatGPTProvider implements AgentProvider {
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     if (opts.oneShot || !(await this.#isCodeMode(opts.model ?? "")))
       return this.#direct.createSession(opts);
-    return CodexAppServerSession.start(opts, this.#codexCliPath);
+    return CodexAppServerSession.start(
+      opts,
+      this.#codexCliPath,
+      this.#search,
+      this.#codexBuiltinWebSearch,
+    );
   }
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
     if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
-    return CodexAppServerSession.resume(ref, this.#codexCliPath);
+    return CodexAppServerSession.resume(
+      ref,
+      this.#codexCliPath,
+      this.#search,
+      this.#codexBuiltinWebSearch,
+    );
   }
   listPersistedSessions(): Promise<SessionRef[]> {
     return this.#direct.listPersistedSessions();
@@ -117,5 +133,7 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
     direct,
     async (model) => (await catalog.get(model)).tool_mode === "code_mode_only",
     ctx.config.codexCliPath,
+    ctx.search,
+    ctx.config.codexBuiltinWebSearch,
   );
 };

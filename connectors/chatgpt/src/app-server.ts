@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
+import type { SearchConfig } from "@loom/core/connector";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type {
   AdapterSnapshot,
@@ -32,26 +33,60 @@ type Rpc = {
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
 
-/** Serialize only Loom's stdio mounts as a TOML inline table for `codex -c`. */
-export const mcpConfig = (servers: McpServerHandle[]): string => {
+const KAGI_TOKEN_ENV = "LOOM_CODEX_KAGI_API_KEY";
+
+/** Serialize Loom's MCP mounts as a TOML inline table for `codex -c`. */
+export const mcpConfig = (servers: McpServerHandle[], search?: SearchConfig): string => {
   const value = (v: string): string => JSON.stringify(v); // JSON strings are TOML basic strings.
   const table = (entries: Record<string, string>): string =>
     `{ ${Object.entries(entries)
       .map(([key, val]) => `${value(key)} = ${value(val)}`)
       .join(", ")} }`;
-  return `{ ${servers
-    .filter((s) => s.spec.transport === "stdio")
-    .map((s) => {
-      const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "stdio" }>;
+  const entries = new Map(
+    servers.map((s) => {
+      if (s.spec.transport === "stdio") {
+        const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "stdio" }>;
+        const fields = [
+          `command = ${value(spec.command)}`,
+          ...(spec.args?.length ? [`args = [${spec.args.map(value).join(", ")}]`] : []),
+          ...(spec.env ? [`env = ${table(spec.env)}`] : []),
+        ];
+        return [s.name, `{ ${fields.join(", ")} }`] as const;
+      }
+      const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "http" }>;
       const fields = [
-        `command = ${value(spec.command)}`,
-        ...(spec.args?.length ? [`args = [${spec.args.map(value).join(", ")}]`] : []),
-        ...(spec.env ? [`env = ${table(spec.env)}`] : []),
+        `url = ${value(spec.url)}`,
+        ...(spec.headers ? [`http_headers = ${table(spec.headers)}`] : []),
       ];
-      return `${value(s.name)} = { ${fields.join(", ")} }`;
-    })
-    .join(", ")} }`;
+      return [s.name, `{ ${fields.join(", ")} }`] as const;
+    }),
+  );
+  if (search?.backend === "kagi") {
+    const base = (search.apiBase || "https://mcp.kagi.com").replace(/\/$/, "");
+    entries.set(
+      "kagi",
+      `{ url = ${value(`${base}/mcp`)}, bearer_token_env_var = ${value(KAGI_TOKEN_ENV)} }`,
+    );
+  }
+  return `{ ${[...entries.entries()].map(([name, config]) => `${value(name)} = ${config}`).join(", ")} }`;
 };
+
+const launchOptions = (
+  servers: McpServerHandle[],
+  search: SearchConfig | undefined,
+  builtinWebSearch: boolean,
+): { args: string[]; env?: NodeJS.ProcessEnv } => ({
+  args: [
+    "app-server",
+    "-c",
+    `mcp_servers=${mcpConfig(servers, search)}`,
+    // Loom's Kagi server is the configured search source for Code Mode too.
+    ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
+  ],
+  ...(search?.backend === "kagi"
+    ? { env: { ...process.env, [KAGI_TOKEN_ENV]: search.apiKey } }
+    : {}),
+});
 
 const policyFor = (mode: SessionMode): "untrusted" | "on-request" =>
   mode === "default" || mode === "plan" ? "untrusted" : "on-request";
@@ -123,12 +158,16 @@ export class CodexAppServerSession implements AgentSession {
   static async start(
     opts: CreateSessionOptions,
     cliPath = "codex",
+    search?: SearchConfig,
+    builtinWebSearch = true,
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const proc = spawn(cliPath, ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
+    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch);
+    const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
+      env: launch.env,
     });
     const s = new CodexAppServerSession(opts, proc);
     await s.#initialize();
@@ -148,7 +187,12 @@ export class CodexAppServerSession implements AgentSession {
     return s;
   }
 
-  static async resume(ref: SessionRef, cliPath = "codex"): Promise<CodexAppServerSession> {
+  static async resume(
+    ref: SessionRef,
+    cliPath = "codex",
+    search?: SearchConfig,
+    builtinWebSearch = true,
+  ): Promise<CodexAppServerSession> {
     if (!ref.providerRef) throw new Error("Codex session has no app-server thread id to resume");
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
@@ -159,9 +203,11 @@ export class CodexAppServerSession implements AgentSession {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const proc = spawn(cliPath, ["app-server", "-c", `mcp_servers=${mcpConfig(opts.mcpServers)}`], {
+    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch);
+    const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
+      env: launch.env,
     });
     const s = new CodexAppServerSession(opts, proc);
     await s.#initialize();

@@ -189,6 +189,7 @@ export class ProviderRegistry {
       sdk: p.sdk,
       ...(p.authPath ? { authPath: p.authPath } : {}),
       ...(p.codexCliPath ? { codexCliPath: p.codexCliPath } : {}),
+      ...(p.codexBuiltinWebSearch ? { codexBuiltinWebSearch: true } : {}),
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       includeUsage: p.includeUsage,
       promptCacheTtl: p.promptCacheTtl,

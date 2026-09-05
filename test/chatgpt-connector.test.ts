@@ -19,13 +19,17 @@ test("ChatGPT OAuth connector constructs a v5 model without reading credentials 
   assert.equal(model.modelId, "gpt-5.6-terra");
 });
 
-test("Code Mode serializes only Loom's stdio MCP mounts into app-server config", () => {
+test("Code Mode serializes Loom MCP mounts and configured Kagi into app-server config", () => {
   assert.equal(
     mcpConfig([
       { name: "tilth", spec: { transport: "stdio", command: "tilth", args: ["--mcp", "--edit"] } },
       { name: "remote", spec: { transport: "http", url: "https://example.invalid/mcp" } },
     ]),
-    '{ "tilth" = { command = "tilth", args = ["--mcp", "--edit"] } }',
+    '{ "tilth" = { command = "tilth", args = ["--mcp", "--edit"] }, "remote" = { url = "https://example.invalid/mcp" } }',
+  );
+  assert.equal(
+    mcpConfig([], { backend: "kagi", apiKey: "secret", apiBase: "", maxResults: 6 }),
+    '{ "kagi" = { url = "https://mcp.kagi.com/mcp", bearer_token_env_var = "LOOM_CODEX_KAGI_API_KEY" } }',
   );
 });
 

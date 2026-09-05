@@ -38,6 +38,8 @@ export interface ConnectorConfig {
   authPath?: string;
   /** ChatGPT Code Mode: explicit `codex` executable. Empty / omitted uses PATH. */
   codexCliPath?: string;
+  /** Keep Codex's own web search alongside Loom's configured Kagi MCP server. Default true. */
+  codexBuiltinWebSearch?: boolean;
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;
   /**
