@@ -34,11 +34,12 @@
             pkgs.nodejs_24
             pkgs.corepack
             pkgs.git
+            pkgs.deno
           ];
 
           shellHook = ''
             export COREPACK_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/loom-corepack"
-            echo "loom devshell — node $(node --version), pnpm $(pnpm --version 2>/dev/null || echo '(fetched on first use)')"
+            echo "loom devshell — node $(node --version), pnpm $(pnpm --version 2>/dev/null || echo '(fetched on first use)'), deno $(deno --version | head -1 | cut -d' ' -f2)"
           '';
         };
       });
