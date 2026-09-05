@@ -2553,6 +2553,42 @@ const body = (s: string): string =>
     .replace(/[ \t]+$/gm, "")
     .trimEnd();
 
+/**
+ * One `"question"="answer"` pair from an `AskUserQuestion` tool result. Non-greedy
+ * on both sides, ended by the next pair's opening quote or the trailing sentence
+ * that follows the whole set — not by any `"` inside the answer itself, so a quote
+ * embedded in free-text (`the session would "know" about it`) doesn't cut it short.
+ */
+const ASK_USER_QUESTION_PAIR = /"([^]*?)"="([^]*?)"(?=, "|\.\s|\.$|$)/g;
+
+/**
+ * The SDK renders a resolved `AskUserQuestion` as one run-on confirmation
+ * sentence (`The user answered: "…"="…", "…"="…". <note>`) — technically
+ * correct but unreadable once the answer is more than a few words. Reflow it
+ * into `Q:`/`A:` blocks for the event log; `null` (leave the raw text as-is)
+ * if the shape doesn't match.
+ */
+const formatAskUserQuestionResult = (raw: string): string | null => {
+  const prefix = "The user answered: ";
+  if (!raw.startsWith(prefix)) return null;
+  const rest = raw.slice(prefix.length);
+  const pairs: Array<{ q: string; a: string }> = [];
+  ASK_USER_QUESTION_PAIR.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let end = 0;
+  while ((m = ASK_USER_QUESTION_PAIR.exec(rest))) {
+    pairs.push({ q: m[1]!, a: m[2]! });
+    end = ASK_USER_QUESTION_PAIR.lastIndex;
+  }
+  if (pairs.length === 0) return null;
+  const note = rest.slice(end).replace(/^\.\s*/, "").trim();
+  const blocks = pairs.map((p, i) => {
+    const n = pairs.length > 1 ? String(i + 1) : "";
+    return `Q${n}: ${p.q}\nA${n}: ${p.a}`;
+  });
+  return [...blocks, ...(note ? [note] : [])].join("\n\n");
+};
+
 export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat => {
   switch (ev.type) {
     case "assistant_text":
@@ -2576,10 +2612,11 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       // already see — the call line (path + range) says enough; don't dump
       // the content into the log a second time.
       const terse = ev.ok && toolName !== undefined && isReadTool(toolName);
+      const full = ev.ok ? (formatAskUserQuestionResult(out) ?? out) : `error\n${out}`;
       return {
         glyph: "↳",
         text: ev.ok ? "ok" : `error ${oneLine(out || String(raw), 120)}`,
-        ...(out && !terse ? { full: ev.ok ? out : `error\n${out}` } : {}),
+        ...(out && !terse ? { full } : {}),
         tone: ev.ok ? "good" : "bad",
       };
     }
