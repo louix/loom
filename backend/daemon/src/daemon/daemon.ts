@@ -1034,7 +1034,10 @@ export class Daemon {
     const rowMode = this.#registry.get(id)?.mode;
     if (isSessionMode(rowMode) && rowMode !== o.mode) {
       try {
-        await this.#sessions.setMode(id, rowMode);
+        const r = await this.#sessions.setMode(id, rowMode);
+        if (!r.ok) {
+          this.#log.warn("could not apply a mode clicked during creation", { id, mode: rowMode, reason: r.reason });
+        }
       } catch (err) {
         // The run died between attach and here — its own teardown settles the
         // state, and the row already carries the clicked mode.
@@ -2417,7 +2420,15 @@ export class Daemon {
         throw new RpcError("bad_request", "mode must be one of manual|plan|acceptEdits|auto");
       }
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) await this.#sessions.setMode(id, mode);
+      if (this.#sessions.has(id)) {
+        const r = await this.#sessions.setMode(id, mode);
+        if (!r.ok) {
+          throw new RpcError(
+            "plan_pending",
+            "a plan review is pending — resolve it in the plan review before changing mode",
+          );
+        }
+      }
       const snap = this.#registry.setFields(id, { mode });
       // A deliberate switch is also "the last mode used" for the next new session.
       this.#providerDefaults.rememberMode(mode);

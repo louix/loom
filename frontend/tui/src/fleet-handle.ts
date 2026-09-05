@@ -1587,13 +1587,28 @@ export const mkFleetHandle = ({
       if (!state.sessions.some((x) => x.id === sessionId)) return;
       client
         .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
-        .catch((e: unknown) =>
+        .catch((e: unknown) => {
+          const code = e instanceof Error && "code" in e ? (e as { code?: unknown }).code : undefined;
+          if (code === "plan_pending") {
+            // The mode never actually left `plan` — a pending `ExitPlanMode`
+            // review has to be resolved through the real plan-review UI, not
+            // silently answered by the chip. Snap the optimistic display back
+            // and open the review so there's no impossible "chip says X, the
+            // live session is still parked on a plan" state to land in.
+            dispatch({ t: "modeOptimistic", sessionId, mode: "plan" });
+            const pend = pendingFor(state, sessionId);
+            if (pend.plan) {
+              dispatch({ t: "openPlan", sessionId, requestId: pend.plan, text: pend.planText ?? "" });
+            }
+            dispatch({ t: "notice", text: "a plan review is pending — resolve it first", tone: "bad" });
+            return;
+          }
           dispatch({
             t: "notice",
             text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
             tone: "bad",
-          }),
-        );
+          });
+        });
     }, 300);
     modeDebounce.set(sessionId, timer);
   };

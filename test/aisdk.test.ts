@@ -1651,7 +1651,7 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
   }
 });
 
-test("setMode away from plan while a review is pending resolves it, instead of hanging (fleet mode chip bypassing the plan-review UI)", async () => {
+test("setMode refuses to leave `plan` while a review is pending, instead of silently implementing or hanging (fleet mode chip bypassing the plan-review UI)", async () => {
   const { db, cleanup } = tmpDb();
   try {
     const store = new ProviderMessageStore(db);
@@ -1722,16 +1722,30 @@ test("setMode away from plan while a review is pending resolves it, instead of h
       mcpServers: [],
       loomServer: true,
     });
-    for (let i = 0; i < 200 && !evs.some((e) => e.type === "plan_review"); i++) {
+    let review: Extract<HarnessEvent, { type: "plan_review" }> | undefined;
+    for (let i = 0; i < 200 && !review; i++) {
       await new Promise((r) => setTimeout(r, 5));
+      review = evs.find(
+        (e): e is Extract<HarnessEvent, { type: "plan_review" }> => e.type === "plan_review",
+      );
     }
-    assert.ok(evs.some((e) => e.type === "plan_review"), "expected a plan_review");
+    assert.ok(review, "expected a plan_review");
 
     // The fleet's mode chip, not the plan-review UI: cycling straight to
     // `auto` while the `exit_plan` tool call is still parked on a decision.
-    // Before the fix this called the adapter's bare `setMode` and left the
-    // pending review (and the turn behind it) hanging forever.
-    await mgr.setMode("s1", "auto");
+    // This must neither hang (the pre-fix bug: a bare adapter `setMode` left
+    // the review, and the turn behind it, parked forever) nor silently
+    // decide the review on the user's behalf — it's an impossible state the
+    // chip alone shouldn't be able to reach, so it's refused outright.
+    const r = await mgr.setMode("s1", "auto");
+    assert.deepEqual(r, { ok: false, reason: "plan_pending" });
+    assert.equal(modes.length, 0, "mode must not change — the review wasn't answered");
+    assert.equal(mgr.snapshot("s1")?.mode, "plan");
+    assert.equal(results, 0, "no turn runs until the review is actually answered");
+
+    // The review is still live and answerable through the real UI.
+    const resp = await mgr.respondToPlan("s1", review.id, { action: "implement", mode: "auto" });
+    assert.deepEqual(resp, { ok: true, alreadyResolved: false });
     assert.equal(modes.at(-1), "auto");
 
     for (let i = 0; i < 200 && results === 0; i++) await new Promise((r) => setTimeout(r, 5));

@@ -60,6 +60,14 @@ export interface RespondResult {
   alreadyResolved: boolean;
 }
 
+/**
+ * `setMode`'s outcome. `plan_pending`: an outstanding `ExitPlanMode` review
+ * already blocks the turn on a human decision (`respondToPlan`) — the mode
+ * must not silently answer it either way, so the caller has to point the user
+ * back at the plan-review UI instead of the mode having just changed under it.
+ */
+export type SetModeResult = { ok: true } | { ok: false; reason: "plan_pending" };
+
 /** One account-plan usage window, e.g. Claude's `five_hour` / `seven_day`. */
 export interface RateLimitWindow {
   status: "allowed" | "allowed_warning" | "rejected";
@@ -611,25 +619,19 @@ export class SessionManager {
     return { ok: true, alreadyResolved: false };
   }
 
-  async setMode(id: string, mode: SessionMode): Promise<void> {
+  async setMode(id: string, mode: SessionMode): Promise<SetModeResult> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
-    // A pending `ExitPlanMode` review blocks the live turn on a human decision
-    // (`respondToPlan`); switching the mode chip away from `plan` out from
-    // under it — rather than through the plan-review UI — would otherwise
-    // leave that tool call hanging until the session closes (`#pendingPlans`
-    // in the adapter is only ever swept on teardown). Treat it the same as
-    // clicking "implement" in the review: resolve it into the mode being
-    // switched to, exactly the field `PlanDecision`'s `implement` carries for
-    // this purpose.
-    if (mode !== "plan") {
-      const pendingPlanId = [...run.pending].find(([, kind]) => kind === "plan_review")?.[0];
-      if (pendingPlanId !== undefined) {
-        await this.respondToPlan(id, pendingPlanId, { action: "implement", mode });
-        return;
-      }
+    // A pending `ExitPlanMode` review already blocks the turn on a human
+    // decision (`respondToPlan`) — the chip must not be able to answer it one
+    // way or the other by proxy. Refuse instead of guessing; the caller (the
+    // daemon's `session.setMode` RPC) points the user back at the real
+    // plan-review UI so they resolve it deliberately.
+    if (mode !== "plan" && [...run.pending.values()].includes("plan_review")) {
+      return { ok: false, reason: "plan_pending" };
     }
     await run.session.setMode(mode);
+    return { ok: true };
   }
 
   async setModel(id: string, model: string): Promise<void> {
