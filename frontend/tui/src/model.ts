@@ -2734,8 +2734,11 @@ const isEditTool = (name: string): boolean =>
  *  instead of rendering as a single JSON blob (see `tilthWriteBody`). */
 const isTilthWriteTool = (name: string): boolean => name.endsWith("tilth_write");
 
-const pathOf = (o: Record<string, unknown>): string | undefined =>
-  typeof o.file_path === "string" ? o.file_path : typeof o.path === "string" ? o.path : undefined;
+const pathOf = (o: Record<string, unknown>): string | undefined => {
+  if (typeof o.file_path === "string") return o.file_path;
+  if (typeof o.path === "string") return o.path;
+  return undefined;
+};
 
 const summarizeInput = (name: string, input: unknown): string => {
   if (input && typeof input === "object") {

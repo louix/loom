@@ -289,11 +289,9 @@ export class CodexAppServerSession implements AgentSession {
     this.#permissions.delete(id);
     const allow = decision.behavior === "allow";
     const result =
-      pending.kind === "command"
+      pending.kind === "command" || pending.kind === "file"
         ? { decision: allow ? "accept" : "decline" }
-        : pending.kind === "file"
-          ? { decision: allow ? "accept" : "decline" }
-          : { decision: allow ? "approved" : "denied" };
+        : { decision: allow ? "approved" : "denied" };
     this.#write({ id: pending.rpcId, result });
   }
   async answerQuestion(_id: string, _text: string): Promise<void> {

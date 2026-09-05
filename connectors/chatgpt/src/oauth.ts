@@ -326,8 +326,12 @@ const rateLimitMetadataFor = (headers: Headers): SharedV2ProviderMetadata | unde
       const utilization = Number(headers.get(`x-${prefix}-${window}-used-percent`));
       if (!Number.isFinite(utilization)) continue;
       const resetSeconds = Number(headers.get(`x-${prefix}-${window}-reset-at`));
+      let status: "rejected" | "allowed_warning" | "allowed";
+      if (utilization >= 100) status = "rejected";
+      else if (utilization >= 80) status = "allowed_warning";
+      else status = "allowed";
       rateLimits[`${prefix}-${window}`] = {
-        status: utilization >= 100 ? "rejected" : utilization >= 80 ? "allowed_warning" : "allowed",
+        status,
         utilization,
         ...(Number.isFinite(resetSeconds) && resetSeconds > 0
           ? { resetsAt: resetSeconds * 1000 }
