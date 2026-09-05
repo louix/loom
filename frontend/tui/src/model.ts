@@ -2052,14 +2052,124 @@ export type FleetHit =
   | { kind: "mode"; y: number; x0: number; x1: number };
 
 /**
- * The screen row of every FLEET entry for the current state — a plain running
- * row counter that mirrors `Fleet` / `FleetRow` / `FleetChildRows` in
- * `components.tsx`: every entry is exactly one line and the leading chrome
- * (border, title, optional filter box, the blocks box's `marginTop`) is fixed.
- * An active filter renders one flat ranked list; otherwise the status groups.
- * `originY` is the fleet pane's top screen row, `maxY` the last visible row
- * (Ink clips past it). Kept in lockstep with the JSX — `test/tui-model.test.ts`
- * pins it against the render.
+ * One row of the FLEET list, in the exact order `Fleet` draws it: a blank
+ * spacer before every status group but the first, its header, then each
+ * session and the (possibly capped) rows for the work it has fanned out.
+ * `fleetHits` (click hit-testing) and the `Fleet` JSX both window *this* list
+ * — via {@link fleetLayout} — instead of re-deriving the grouping/children
+ * logic, so a click can never land on a row the pane doesn't actually draw.
+ */
+export type FleetEntry =
+  | { kind: "blank" }
+  | { kind: "groupHeader"; group: Group }
+  | { kind: "session"; s: SessionSnapshot }
+  | { kind: "child"; s: SessionSnapshot; c: FleetChild; isLast: boolean }
+  | { kind: "childMore"; s: SessionSnapshot; extra: number };
+
+/** An active filter renders one flat ranked list; otherwise the status
+ *  groups (see {@link groupsOf}). */
+export const fleetEntries = (state: TuiState): FleetEntry[] => {
+  const query = state.find?.buffer.text ?? "";
+  const matched = searchSessions(state, query).map((m) => m.session);
+  const active = query.trim() !== "";
+  const focused = focusedChildOf(state);
+  const out: FleetEntry[] = [];
+
+  const pushSession = (s: SessionSnapshot): void => {
+    out.push({ kind: "session", s });
+    const kids = childrenOf(s);
+    if (kids.length === 0) return;
+    // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.
+    const drilled = focused != null && s.id === state.selectedId;
+    const shown = drilled ? kids : kids.slice(0, 4);
+    const extra = drilled ? 0 : kids.length - shown.length;
+    shown.forEach((c, i) =>
+      out.push({ kind: "child", s, c, isLast: i === shown.length - 1 && extra === 0 }),
+    );
+    if (extra > 0) out.push({ kind: "childMore", s, extra });
+  };
+
+  if (active) {
+    for (const s of matched) pushSession(s);
+  } else {
+    for (const group of groupsOf(matched)) {
+      if (out.length > 0) out.push({ kind: "blank" });
+      out.push({ kind: "groupHeader", group });
+      for (const s of group.sessions) pushSession(s);
+    }
+  }
+  return out;
+};
+
+/** The entry that carries the visual cursor: the focused child's row while
+ *  drilled in, else the selected session's row. -1 if neither survives the
+ *  current filter — nothing to scroll toward. */
+export const fleetSelectedEntryIndex = (state: TuiState, entries: FleetEntry[]): number => {
+  const focused = focusedChildOf(state);
+  if (focused) {
+    const i = entries.findIndex(
+      (e) => e.kind === "child" && e.s.id === state.selectedId && e.c.key === focused.key,
+    );
+    if (i >= 0) return i;
+  }
+  return entries.findIndex((e) => e.kind === "session" && e.s.id === state.selectedId);
+};
+
+/**
+ * FLEET has no manual scroll — it just keeps the cursor on screen. Centers
+ * the selected row in the visible window (clamped to the list's ends),
+ * recomputed fresh from `selectedIndex` on every render, so there's no
+ * separate scroll-position state that could fall out of sync with it.
+ */
+export const fleetScrollOffset = (total: number, selectedIndex: number, budget: number): number => {
+  if (total <= budget || selectedIndex < 0) return 0;
+  const maxOffset = total - budget;
+  return Math.min(maxOffset, Math.max(0, selectedIndex - Math.floor(budget / 2)));
+};
+
+/** Chrome rows the FLEET pane spends before its first entry: the top border,
+ *  the title, and the blocks box's marginTop. The filter box (its own
+ *  marginTop plus the InputLine) spends two more while it's open. */
+const FLEET_CHROME_ROWS = 3;
+const FLEET_FILTER_ROWS = 2;
+
+/** Entry rows the FLEET pane can draw for a given body height — shared by
+ *  the JSX (its `height` prop) and hit-testing (`maxY - originY + 1`) so
+ *  neither can drift from what the other thinks fits. */
+export const fleetRowBudget = (bodyH: number, hasFilter: boolean): number =>
+  Math.max(1, bodyH - FLEET_CHROME_ROWS - (hasFilter ? FLEET_FILTER_ROWS : 0));
+
+export interface FleetLayout {
+  /** Entries to actually draw this frame, top to bottom. */
+  readonly visible: FleetEntry[];
+  /** Index into the full list of `visible[0]` — 0 unless scrolled. */
+  readonly offset: number;
+  /** The full (unwindowed) entry count, for the "N of M" indicator. */
+  readonly total: number;
+}
+
+/**
+ * Windows {@link fleetEntries} to `budget` rows, scrolled to keep the
+ * current selection on screen. Children add rows per session, so this is
+ * the only way to know how many sessions actually fit. When the list
+ * doesn't fit, the last row is given up to a scroll indicator instead of an
+ * entry — see `Fleet` in components.tsx.
+ */
+export const fleetLayout = (state: TuiState, budget: number): FleetLayout => {
+  const entries = fleetEntries(state);
+  if (entries.length <= budget) return { visible: entries, offset: 0, total: entries.length };
+  const shown = Math.max(1, budget - 1);
+  const offset = fleetScrollOffset(entries.length, fleetSelectedEntryIndex(state, entries), shown);
+  return { visible: entries.slice(offset, offset + shown), offset, total: entries.length };
+};
+
+/**
+ * The screen row of every visible FLEET entry for the current state — walks
+ * the same windowed list `Fleet` draws (see {@link fleetLayout}), so a click
+ * always resolves to what's actually on screen, scrolled or not. `originY`
+ * is the fleet pane's top screen row, `maxY` the last row the body area
+ * gives it. Kept in lockstep with the JSX by construction, not convention —
+ * both read `fleetEntries`/`fleetLayout`, neither re-derives the other.
  */
 export const fleetHits = (
   state: TuiState,
@@ -2068,47 +2178,19 @@ export const fleetHits = (
   const { originX, originY, maxY } = geom;
   const x0 = originX;
   const x1 = originX + geom.listW - 1;
-  const query = state.find?.buffer.text ?? "";
-  const matched = searchSessions(state, query).map((m) => m.session);
-  const active = query.trim() !== "";
-  const focused = focusedChildOf(state);
+  const hasFilter = state.find != null;
+  const budget = fleetRowBudget(maxY - originY + 1, hasFilter);
+  const { visible } = fleetLayout(state, budget);
 
   const out: FleetHit[] = [];
-  let y = originY;
-  y += 1; // round-border top
-  y += 1; // pane title
-  if (state.find) y += 2; // the filter box's marginTop + its InputLine
-  y += 1; // the blocks box's marginTop
-  if (matched.length === 0) return out;
-
-  const emitSession = (s: SessionSnapshot): void => {
-    if (y <= maxY) out.push({ kind: "session", y, x0, x1, id: s.id });
+  let y = originY + FLEET_CHROME_ROWS + (hasFilter ? FLEET_FILTER_ROWS : 0);
+  for (const entry of visible) {
+    if (entry.kind === "session") out.push({ kind: "session", y, x0, x1, id: entry.s.id });
+    else if (entry.kind === "child")
+      out.push({ kind: "child", y, x0, x1, sessionId: entry.s.id, key: entry.c.key });
+    else if (entry.kind === "childMore")
+      out.push({ kind: "childMore", y, x0, x1, sessionId: entry.s.id });
     y += 1;
-    const kids = childrenOf(s);
-    if (kids.length === 0) return;
-    // Mirrors FleetChildRows: 4 children shown, cap lifted while drilled in.
-    const drilled = focused != null && s.id === state.selectedId;
-    const shown = drilled ? kids : kids.slice(0, 4);
-    const extra = drilled ? 0 : kids.length - shown.length;
-    for (const c of shown) {
-      if (y <= maxY) out.push({ kind: "child", y, x0, x1, sessionId: s.id, key: c.key });
-      y += 1;
-    }
-    if (extra > 0) {
-      if (y <= maxY) out.push({ kind: "childMore", y, x0, x1, sessionId: s.id });
-      y += 1;
-    }
-  };
-
-  if (active) {
-    for (const s of matched) emitSession(s);
-  } else {
-    const groups = groupsOf(matched);
-    for (let i = 0; i < groups.length; i += 1) {
-      if (i > 0) y += 1; // inter-group marginTop
-      y += 1; // group header
-      for (const s of groups[i]!.sessions) emitSession(s);
-    }
   }
   return out;
 };

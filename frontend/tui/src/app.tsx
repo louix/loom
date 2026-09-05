@@ -160,7 +160,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       body = (
         <Box height={bodyH} gap={1}>
           <Box width={leftW}>
-            <Fleet state={state} tick={view.tick} width={leftW} now={Date.now()} />
+            <Fleet state={state} tick={view.tick} width={leftW} height={bodyH} now={Date.now()} />
           </Box>
           <Box width={rightW} flexDirection="column">
             <Detail
@@ -188,7 +188,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       // Narrow `overview`: only the fleet fits — detail + events wait for `⇥`.
       body = (
         <Box height={bodyH}>
-          <Fleet state={state} tick={view.tick} width={cols} now={Date.now()} />
+          <Fleet state={state} tick={view.tick} width={cols} height={bodyH} now={Date.now()} />
         </Box>
       );
       break;

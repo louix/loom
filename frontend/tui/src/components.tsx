@@ -14,11 +14,11 @@ import { searchSessions } from "./fleet-search.ts";
 import {
   cacheHeat,
   cacheStatus,
-  childrenOf,
   clock,
+  fleetLayout,
+  fleetRowBudget,
   focusedChildOf,
   footerHints,
-  groupsOf,
   logFilterTag,
   parseAskUserQuestions,
   pickerVisible,
@@ -183,21 +183,18 @@ export const Fleet = ({
   state,
   tick,
   width,
+  height,
   now = Date.now(),
 }: {
   state: TuiState;
   tick: number;
   width: number;
+  /** Row budget for the whole pane, border to border — entries beyond it
+   *  scroll (centered on the selection) instead of spilling past the pane
+   *  into whatever the layout put next (the reply box, the footer). */
+  height: number;
   now?: number;
 }): ReactNode => {
-  // The fleet filter (`/`) narrows the list in place and ranks it — title hits
-  // first, then your messages, then the agent's (see `searchSessions`). With a
-  // query up the pane is one flat, relevance-ordered list; without, the
-  // familiar status groups.
-  const query = state.find?.buffer.text ?? "";
-  const matched = searchSessions(state, query).map((m) => m.session);
-  const active = query.trim() !== "";
-  const groups = groupsOf(matched);
   const iw = inside(width);
   const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
   const compactingIds = new Set(Object.keys(state.compacting));
@@ -206,24 +203,12 @@ export const Fleet = ({
   const childKeyOf = (s: SessionSnapshot): string | null =>
     focused && s.id === state.selectedId ? focused.key : null;
 
-  const row = (s: SessionSnapshot) => (
-    <Box key={s.id} flexDirection="column" flexShrink={0}>
-      {FleetRow({
-        s,
-        selected: s.id === state.selectedId,
-        focused: childKeyOf(s) != null,
-        tick,
-        iw,
-        now,
-        pcolor,
-        compacting: compactingIds.has(s.id),
-      })}
-      {FleetChildRows({ s, tick, iw, focusedKey: childKeyOf(s) })}
-    </Box>
-  );
+  const budget = fleetRowBudget(height, state.find != null);
+  const { visible, offset, total } = fleetLayout(state, budget);
+  const truncated = total > visible.length;
 
   let blocks: ReactNode[];
-  if (matched.length === 0) {
+  if (total === 0) {
     blocks = [
       state.find ? (
         <Text key="empty" color={C.dim} wrap="truncate-end">
@@ -237,19 +222,49 @@ export const Fleet = ({
         </Text>
       ),
     ];
-  } else if (active) {
-    blocks = matched.map(row);
   } else {
-    blocks = groups.map((g, i) => (
-      <Box key={g.status} flexDirection="column" marginTop={i ? 1 : 0} flexShrink={0}>
-        <Text bold>
-          <Text color={statusLook(g.status).color}>{statusLook(g.status).glyph + " "}</Text>
-          <Text color={C.dim}>{g.label.toUpperCase()}</Text>
-          <Text color={C.faint}>{`  ${g.sessions.length}`}</Text>
-        </Text>
-        {g.sessions.map(row)}
-      </Box>
-    ));
+    blocks = visible.map((entry, i) => {
+      switch (entry.kind) {
+        case "blank":
+          return <Box key={`blank-${i}`} height={1} />;
+        case "groupHeader":
+          return (
+            <Text key={`hdr-${entry.group.status}`} bold>
+              <Text color={statusLook(entry.group.status).color}>
+                {statusLook(entry.group.status).glyph + " "}
+              </Text>
+              <Text color={C.dim}>{entry.group.label.toUpperCase()}</Text>
+              <Text color={C.faint}>{`  ${entry.group.sessions.length}`}</Text>
+            </Text>
+          );
+        case "session":
+          return FleetRow({
+            s: entry.s,
+            selected: entry.s.id === state.selectedId,
+            focused: childKeyOf(entry.s) != null,
+            tick,
+            iw,
+            now,
+            pcolor,
+            compacting: compactingIds.has(entry.s.id),
+          });
+        case "child":
+          return FleetChildRow({
+            rowKey: `${entry.s.id}:${entry.c.key}`,
+            c: entry.c,
+            isLast: entry.isLast,
+            sel: entry.c.key === childKeyOf(entry.s),
+            tick,
+            iw,
+          });
+        case "childMore":
+          return (
+            <Text key={`more-${entry.s.id}`} color={C.faint}>
+              {`  └ +${entry.extra} more`}
+            </Text>
+          );
+      }
+    });
   }
 
   let title = "FLEET";
@@ -259,9 +274,9 @@ export const Fleet = ({
       Math.max(8, iw - 24),
     )}`;
   } else if (state.find) {
-    title = `FLEET · ${matched.length}/${state.sessions.length} match${
-      matched.length === 1 ? "" : "es"
-    }`;
+    const query = state.find.buffer.text;
+    const matched = searchSessions(state, query).length;
+    title = `FLEET · ${matched}/${state.sessions.length} match${matched === 1 ? "" : "es"}`;
   }
 
   return (
@@ -289,6 +304,11 @@ export const Fleet = ({
       ) : null}
       <Box flexDirection="column" marginTop={1} flexShrink={0}>
         {blocks}
+        {truncated ? (
+          <Text color={C.faint} wrap="truncate-end">
+            {`↕ ${offset + 1}–${offset + visible.length} of ${total}`}
+          </Text>
+        ) : null}
       </Box>
     </Box>
   );
@@ -374,58 +394,41 @@ const childGlyph = (c: FleetChild): string =>
   c.source === "sub" ? "⑂" : (BG_KIND_GLYPH[c.taskKind ?? "other"] ?? "•");
 
 /**
- * Indented rows under a fleet row for the work it has fanned out: live
- * background tasks (async subagents, backgrounded shells) and any still-running
- * foreground sub-agents. Only shown while there is something live — settled
- * sessions collapse back to a single line. Capped, with a "+N more" tail —
- * except while the fleet is drilled into this session's children, where every
- * selectable child must be visible, so the cap lifts.
+ * One indented row under a fleet session for a live background task or
+ * still-running foreground sub-agent — called per {@link FleetEntry} `child`
+ * (and `childMore`) entry, since those are now the fleet's own flat rows
+ * rather than a nested block per session (see `fleetEntries`).
  */
-const FleetChildRows = ({
-  s,
+const FleetChildRow = ({
+  rowKey,
+  c,
+  isLast,
+  sel,
   tick,
   iw,
-  focusedKey = null,
 }: {
-  s: SessionSnapshot;
+  /** Session-qualified key — plain child keys aren't unique across sessions
+   *  once every row sits in one flat list. */
+  rowKey: string;
+  c: FleetChild;
+  /** Last child shown for its session (draws `└` instead of `├`) — false
+   *  when a "+N more" row follows it. */
+  isLast: boolean;
+  sel: boolean;
   tick: number;
   iw: number;
-  /** The focused child key while drilled into this session; null otherwise. */
-  focusedKey?: string | null;
 }): ReactNode => {
-  const kids = childrenOf(s);
-  if (kids.length === 0) return null;
-
-  const MAX = 4;
-  const shown = focusedKey != null ? kids : kids.slice(0, MAX);
-  const extra = focusedKey != null ? 0 : kids.length - shown.length;
   const room = Math.max(6, iw - 8);
-
   return (
-    <Box flexDirection="column" flexShrink={0}>
-      {shown.map((c, i) => {
-        // The cursor keeps the parent row's 2-col gutter; the tree connector
-        // follows it, so focused and idle rows stay column-aligned.
-        const sel = c.key === focusedKey;
-        const tree = i === shown.length - 1 && extra === 0 ? "└ " : "├ ";
-        return (
-          <Text key={c.key} wrap="truncate-end">
-            <Text color={sel ? C.accent : C.faint}>{sel ? "▍ " : "  "}</Text>
-            <Text color={C.faint}>{tree}</Text>
-            <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
-            <Text color={C.faint}>{childGlyph(c) + " "}</Text>
-            <Text color={sel ? C.text : C.dim} bold={sel}>
-              {truncate(c.label.replace(/\s+/g, " ").trim(), room)}
-            </Text>
-          </Text>
-        );
-      })}
-      {extra > 0 ? (
-        <Text key="more" color={C.faint}>
-          {`  └ +${extra} more`}
-        </Text>
-      ) : null}
-    </Box>
+    <Text key={rowKey} wrap="truncate-end">
+      <Text color={sel ? C.accent : C.faint}>{sel ? "▍ " : "  "}</Text>
+      <Text color={C.faint}>{isLast ? "└ " : "├ "}</Text>
+      <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
+      <Text color={C.faint}>{childGlyph(c) + " "}</Text>
+      <Text color={sel ? C.text : C.dim} bold={sel}>
+        {truncate(c.label.replace(/\s+/g, " ").trim(), room)}
+      </Text>
+    </Text>
   );
 };
 
