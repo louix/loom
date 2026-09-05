@@ -45,8 +45,8 @@
     "typecheck:silent": "deno check .",
     "watch": "deno check . --watch",
     "test": "NO_COLOR=1 deno test -A test/",
-    "test:silent": "NO_COLOR=1 deno test -A --reporter=dot test/",
-    "test:timing": "NO_COLOR=1 deno test -A --reporter=pretty test/",
+    "test:silent": "NO_COLOR=1 deno run -A scripts/fail-only-reporter.ts test/",
+    "test:timing": "NO_COLOR=1 deno run -A scripts/timing-reporter.ts test/",
     "lint": "deno run -A npm:oxlint@1.79.0 .",
     "format": "deno run -A npm:oxfmt@0.64.0 .",
     "format:check": "deno run -A npm:oxfmt@0.64.0 --check ."
