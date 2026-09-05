@@ -2291,6 +2291,19 @@ export class Daemon {
           ? (p["instructions"] as string).trim()
           : undefined;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      if (instructions) {
+        const row = this.#registry.get(id);
+        const caps = row && this.#providers.capsOf(row.provider);
+        // A provider that hasn't reported real capabilities yet can't be
+        // running a session already (creation always resolves the provider
+        // first), so `caps` is only absent here for an unknown row.
+        if (caps && !caps.compactionInstructions) {
+          throw new RpcError(
+            "bad_request",
+            `${row?.provider} does not support custom compaction instructions — retry without them`,
+          );
+        }
+      }
       await this.#sessions.compact(id, instructions);
       return this.#registry.mustGet(id);
     });

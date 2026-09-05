@@ -23,6 +23,7 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";
+import { verifyChatGptAccount } from "./account.ts";
 import type { CodexHome } from "./codex-home.ts";
 
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -78,6 +79,12 @@ const launchOptions = (
 ): { args: string[]; env: NodeJS.ProcessEnv } => ({
   args: [
     "app-server",
+    "-c",
+    // Pin file-based credential storage so this process reads the same
+    // auth.json the REST catalog does, regardless of what a keyring/auto
+    // `cli_auth_credentials_store` setting in the user's own config.toml
+    // would otherwise select — the two credential paths must agree.
+    'cli_auth_credentials_store="file"',
     "-c",
     `mcp_servers=${mcpConfig(servers, search)}`,
     // Loom's Kagi server is the configured search source for Code Mode too.
@@ -251,6 +258,7 @@ export class CodexAppServerSession implements AgentSession {
       capabilities: { experimentalApi: true },
     });
     this.#rpc.notify("initialized", {});
+    await verifyChatGptAccount(this.#rpc);
   }
 
   get providerRef(): string | null {
@@ -275,9 +283,13 @@ export class CodexAppServerSession implements AgentSession {
 
   async compact(instructions?: string): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
-    // app-server's compact endpoint currently accepts no instruction payload.
-    // Preserve the interface argument for parity with other adapters.
-    void instructions;
+    // `thread/compact/start` accepts no instruction payload — reject rather
+    // than silently run plain compaction and drop what the caller asked for
+    // (capabilities.compactionInstructions is false; the daemon should already
+    // have rejected this, this is the adapter's own defensive check).
+    if (instructions?.trim()) {
+      throw new Error("Codex Code Mode compaction does not support custom instructions");
+    }
     await this.#rpc.request("thread/compact/start", { threadId: this.#threadId });
   }
 

@@ -433,6 +433,45 @@ test("a failed thread/resume closes the app-server process instead of leaking it
   }
 });
 
+test("a non-ChatGPT authenticated account is rejected without leaking the process", async () => {
+  const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
+  const codexHome = { dir: "/tmp/loom-codex-account-test", authJsonPath: "/tmp/loom-codex-account-test/auth.json" };
+  try {
+    Deno.env.set("LOOM_TEST_ACCOUNT_TYPE", "apiKey");
+    Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
+    await assert.rejects(
+      () =>
+        CodexAppServerSession.start(
+          { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+          codexHome,
+          FAKE_CODEX,
+        ),
+      /not authenticated with a ChatGPT subscription account.*apiKey/,
+    );
+    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+  } finally {
+    Deno.env.delete("LOOM_TEST_ACCOUNT_TYPE");
+    Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
+    await rm(markerDir, { recursive: true, force: true });
+  }
+});
+
+test("Code Mode compact() rejects custom instructions instead of silently running plain compaction", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-compact-test", authJsonPath: "/tmp/loom-codex-compact-test/auth.json" };
+  const s = await CodexAppServerSession.start(
+    { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+  );
+  try {
+    await assert.rejects(() => s.compact("keep the plan verbatim"), /does not support custom instructions/);
+    await s.compact(); // plain compaction still works
+    await s.compact("   "); // blank instructions are the same as none
+  } finally {
+    await s.close();
+  }
+});
+
 /** A minimal stand-in for `ChildProcessWithoutNullStreams`: real stdout/stderr
  *  streams a test can write fake server lines into, plus a `stdin.write` spy
  *  and an EventEmitter for `exit`/`error` — enough for `CodexRpcClient`

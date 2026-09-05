@@ -29,6 +29,13 @@ export interface ProviderCapabilities {
   subagents: boolean;
   /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
   compaction: boolean;
+  /** `compact(instructions)` actually honors a custom `instructions` string
+   *  rather than silently ignoring it — independent of {@link compaction}
+   *  (Claude and aisdk both honor instructions but get there differently: one
+   *  through its own harness, one by Loom's own summarizer). A caller must
+   *  reject non-blank instructions up front when this is `false` rather than
+   *  silently downgrading to plain compaction the caller didn't ask for. */
+  compactionInstructions: boolean;
   /** The session's message history lives in Loom's own transcript store
    *  (aisdk's `provider_messages`) rather than in a thread the provider owns
    *  (Claude's session, a Codex app-server thread). Gates whether the daemon's

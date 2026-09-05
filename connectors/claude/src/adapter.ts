@@ -52,6 +52,7 @@ const CAPS: ProviderCapabilities = {
   rewind: true, // fork the transcript truncated, then resume it — ClaudeSession.rewind
   subagents: true,
   compaction: true,
+  compactionInstructions: true, // /compact takes a custom summary steer
   ownsTranscript: false, // history lives in the Claude Agent SDK's own session
   oneShot: true,
   // `includePartialMessages` is off and the mapper drops `stream_event`, so

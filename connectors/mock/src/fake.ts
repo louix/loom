@@ -32,6 +32,7 @@ const CAPS: ProviderCapabilities = {
   rewind: true,
   subagents: false,
   compaction: true,
+  compactionInstructions: true,
   ownsTranscript: false,
   oneShot: true,
   partialTokens: false,

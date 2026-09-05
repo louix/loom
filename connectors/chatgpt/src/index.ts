@@ -73,6 +73,12 @@ class ChatGPTProvider implements AgentProvider {
       forking: false,
       rewind: false,
       compaction: true,
+      // Code Mode's `thread/compact/start` currently accepts no instruction
+      // payload (app-server.ts's `compact()` throws rather than silently drop
+      // a caller's instructions); the direct aisdk backend's own
+      // `compactionInstructions: true` would otherwise leak through the spread
+      // above and let a caller assume a custom summary steer always survives.
+      compactionInstructions: false,
       ownsTranscript: false,
     };
   }

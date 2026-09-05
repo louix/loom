@@ -107,6 +107,7 @@ export class AisdkProvider implements AgentProvider {
       rewind: true, // Loom owns the ModelMessage[] — slicing it is exact
       subagents: opts.subagents ?? true, // the `task` tool spawns a depth-1 sub-agent
       compaction: false, // Loom summarises + rebuilds history; not the provider's own /compact
+      compactionInstructions: true, // the summarizer prompt takes a custom instructions steer
       ownsTranscript: true, // Loom owns the ModelMessage[] in `provider_messages`
       oneShot: true,
       partialTokens: true,

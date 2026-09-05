@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import type { DiscoveredModel } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";
+import { verifyChatGptAccount } from "./account.ts";
 import type { CodexHome } from "./codex-home.ts";
 
 interface ModelListRow {
@@ -34,7 +35,7 @@ export const discoverCodexModels = async (opts: {
   cliPath: string;
   codexHome: CodexHome;
 }): Promise<DiscoveredCodexModel[]> => {
-  const proc = spawn(opts.cliPath, ["app-server"], {
+  const proc = spawn(opts.cliPath, ["app-server", "-c", 'cli_auth_credentials_store="file"'], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...Deno.env.toObject(), CODEX_HOME: opts.codexHome.dir },
   });
@@ -45,6 +46,7 @@ export const discoverCodexModels = async (opts: {
       capabilities: { experimentalApi: true },
     });
     rpc.notify("initialized", {});
+    await verifyChatGptAccount(rpc);
     const models: DiscoveredCodexModel[] = [];
     let cursor: string | undefined;
     for (;;) {

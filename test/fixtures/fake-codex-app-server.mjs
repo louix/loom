@@ -58,6 +58,20 @@ const handle = (req) => {
     return;
   }
   if (method === "initialized" || method === "test/hang") return;
+  if (method === "account/read") {
+    // LOOM_TEST_ACCOUNT_TYPE lets a test simulate a non-ChatGPT account
+    // (unset → the normal, valid ChatGPT subscription account).
+    const type = process.env["LOOM_TEST_ACCOUNT_TYPE"] || "chatgpt";
+    send({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        account: { type, email: "test@example.com", planType: "pro" },
+        requiresOpenaiAuth: true,
+      },
+    });
+    return;
+  }
   if (method === "thread/start") {
     if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
       send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/start failure" } });
