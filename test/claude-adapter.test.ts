@@ -283,6 +283,52 @@ test("compact() holds until the compact_boundary lands, beating compact_progress
   await reader;
 });
 
+test("implement fresh waits for compaction before sending the implementation turn", async (t) => {
+  let canUse!: FakeCanUseTool;
+  let q!: ReturnType<typeof fakeLiveQuery>;
+  const inputs: string[] = [];
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      const request = args as {
+        prompt: AsyncIterable<{ message?: { content?: string } }>;
+        options: { canUseTool: FakeCanUseTool };
+      };
+      canUse = request.options.canUseTool;
+      void (async () => {
+        for await (const input of request.prompt) inputs.push(input.message?.content ?? "");
+      })();
+      q = fakeLiveQuery();
+      return q as never;
+    },
+  });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "plan this",
+    mode: "plan",
+    mcpServers: [],
+    loomServer: false,
+  });
+  t.after(() => s.close());
+
+  const review = canUse("ExitPlanMode", { plan: "the plan" }, { toolUseID: "p1" });
+  await delay(20);
+  await s.respondToPlan("p1", { action: "implement_fresh", mode: "auto" });
+  await review;
+  await delay(20);
+  assert.ok(inputs.some((input) => input.startsWith("/compact")));
+  assert.ok(!inputs.some((input) => input.startsWith("The plan is approved")));
+
+  q.push({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "manual", pre_tokens: 10_000, post_tokens: 1_000 },
+  });
+  for (let i = 0; i < 40 && !inputs.some((input) => input.startsWith("The plan is approved")); i++)
+    await delay(10);
+  assert.ok(inputs.some((input) => input.startsWith("The plan is approved")));
+});
+
 test("a failed turn without a boundary releases the compact wait", async (t) => {
   const { s, q, seen, reader } = await setupLive(t);
   const done = s.compact();

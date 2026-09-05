@@ -754,21 +754,30 @@ class ClaudeSession implements AgentSession {
 
     resolve({ behavior: "deny", message: "Plan accepted — implementing now." });
     if (decision.action === "implement_fresh") {
-      // An `⌥p` retarget on the same provider — apply it before the compact so
-      // the summarise and the implement turn both run under the new model.
-      if (decision.model) await this.setModel(decision.model);
-      if (decision.effort) await this.setEffort(decision.effort);
-      // Fire-and-forget: the CLI consumes the inbox FIFO, so the `/compact`
-      // lands ahead of the implement turn below without parking this RPC (a
-      // 30s client timeout) for the multi-minute summarise. The tracked wait
-      // still beats and holds the op gate until the boundary lands.
-      void this.compact(
-        "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
-      ).catch(() => {});
+      void this.#implementFresh(decision);
+      return;
     }
     await this.setMode(decision.mode ?? "acceptEdits");
     const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";
     await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
+  }
+
+  async #implementFresh(decision: Extract<PlanDecision, { action: "implement_fresh" }>): Promise<void> {
+    try {
+      if (decision.model) await this.setModel(decision.model);
+      if (decision.effort) await this.setEffort(decision.effort);
+      await this.compact(
+        "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
+      );
+      if (this.#closing) return;
+      await this.setMode(decision.mode ?? "acceptEdits");
+      await this.send("The plan is approved. Implement it now:\n\nthe plan you just presented");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.#log.warn("plan compaction failed", { err: message });
+      if (!this.#closing)
+        this.#outbox.push({ type: "error", sessionId: this.id, ts: Date.now(), message, fatal: false });
+    }
   }
 
   async interrupt(): Promise<void> {
