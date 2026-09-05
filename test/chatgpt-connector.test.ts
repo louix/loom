@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { streamText } from "ai";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { createChatGPTModels } from "@loom/connector-chatgpt/oauth";
-import { mcpConfig } from "@loom/connector-chatgpt/app-server";
+import { approvalsReviewerFor, mcpConfig } from "@loom/connector-chatgpt/app-server";
 
 test("ChatGPT OAuth connector constructs a v5 model without reading credentials eagerly", () => {
   // Constructing the provider must not touch ~/.codex/auth.json: a user should
@@ -31,6 +31,13 @@ test("Code Mode serializes Loom MCP mounts and configured Kagi into app-server c
     mcpConfig([], { backend: "kagi", apiKey: "secret", apiBase: "", maxResults: 6 }),
     '{ "kagi" = { url = "https://mcp.kagi.com/mcp", bearer_token_env_var = "LOOM_CODEX_KAGI_API_KEY" } }',
   );
+});
+
+test("Code Mode routes auto-mode approvals through Codex's automatic reviewer", () => {
+  assert.equal(approvalsReviewerFor("auto"), "auto_review");
+  assert.equal(approvalsReviewerFor("acceptEdits"), "user");
+  assert.equal(approvalsReviewerFor("default"), "user");
+  assert.equal(approvalsReviewerFor("plan"), "user");
 });
 
 test("ChatGPT serializes tool history as Responses input items", async () => {

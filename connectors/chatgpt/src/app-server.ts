@@ -5,6 +5,7 @@
  * its per-session MCP configuration, and the human approval surface.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
@@ -88,11 +89,24 @@ const launchOptions = (
     : {}),
 });
 
+const loomMcpServer = (cwd: string): McpServerHandle => ({
+  name: "loom",
+  spec: {
+    transport: "stdio",
+    command: process.execPath,
+    args: [fileURLToPath(new URL("./loom-mcp-server.mjs", import.meta.url))],
+    env: { LOOM_WORKTREE: cwd },
+  },
+});
+
 const policyFor = (mode: SessionMode): "untrusted" | "on-request" =>
   mode === "default" || mode === "plan" ? "untrusted" : "on-request";
 
 const sandboxFor = (mode: SessionMode): "read-only" | "workspace-write" =>
   mode === "plan" ? "read-only" : "workspace-write";
+
+export const approvalsReviewerFor = (mode: SessionMode): "user" | "auto_review" =>
+  mode === "auto" ? "auto_review" : "user";
 
 export class CodexAppServerSession implements AgentSession {
   readonly id: string;
@@ -163,7 +177,11 @@ export class CodexAppServerSession implements AgentSession {
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch);
+    const launch = launchOptions(
+      opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
+      search,
+      builtinWebSearch,
+    );
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
@@ -175,7 +193,7 @@ export class CodexAppServerSession implements AgentSession {
       ...(opts.model ? { model: opts.model } : {}),
       cwd: opts.cwd,
       approvalPolicy: policyFor(opts.mode),
-      approvalsReviewer: "user",
+      approvalsReviewer: approvalsReviewerFor(opts.mode),
       sandbox: sandboxFor(opts.mode),
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
@@ -200,10 +218,15 @@ export class CodexAppServerSession implements AgentSession {
       prompt: "",
       mode: ref.mode ?? "default",
       mcpServers: ref.mcpServers ?? [],
+      loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch);
+    const launch = launchOptions(
+      opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
+      search,
+      builtinWebSearch,
+    );
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
@@ -215,7 +238,7 @@ export class CodexAppServerSession implements AgentSession {
       threadId: ref.providerRef,
       cwd: ref.cwd,
       approvalPolicy: policyFor(opts.mode),
-      approvalsReviewer: "user",
+      approvalsReviewer: approvalsReviewerFor(opts.mode),
       sandbox: sandboxFor(opts.mode),
       excludeTurns: true,
     });
@@ -290,6 +313,20 @@ export class CodexAppServerSession implements AgentSession {
     throw new Error("Codex app-server rewind is not yet supported by Loom");
   }
   async setMode(mode: SessionMode): Promise<void> {
+    if (!this.#threadId) throw new Error("Codex thread has not started");
+    await this.#request("thread/settings/update", {
+      threadId: this.#threadId,
+      approvalPolicy: policyFor(mode),
+      approvalsReviewer: approvalsReviewerFor(mode),
+      sandboxPolicy: this.#sandboxPolicyFor(mode),
+    });
+    if (this.#turnId) {
+      await this.#request("turn/settings/update", {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        approvalsReviewer: approvalsReviewerFor(mode),
+      });
+    }
     this.#mode = mode;
   }
   async setModel(model: string): Promise<void> {
@@ -326,7 +363,7 @@ export class CodexAppServerSession implements AgentSession {
       model: this.#model || undefined,
       effort: this.#effort ?? undefined,
       approvalPolicy: policyFor(this.#mode),
-      approvalsReviewer: "user",
+      approvalsReviewer: approvalsReviewerFor(this.#mode),
       sandboxPolicy: this.#sandboxPolicy(),
     });
     this.#turnId = (result as any)?.turn?.id ?? this.#turnId;
@@ -348,7 +385,10 @@ export class CodexAppServerSession implements AgentSession {
     });
   }
   #sandboxPolicy(): Record<string, unknown> {
-    if (this.#mode === "plan") return { type: "readOnly", networkAccess: false };
+    return this.#sandboxPolicyFor(this.#mode);
+  }
+  #sandboxPolicyFor(mode: SessionMode): Record<string, unknown> {
+    if (mode === "plan") return { type: "readOnly", networkAccess: false };
     return {
       type: "workspaceWrite",
       writableRoots: [this.#cwd],

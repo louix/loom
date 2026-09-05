@@ -995,7 +995,9 @@ export class Daemon {
       mcpServers: mcpHandles,
       disableTools: this.config.providers.claude.disableBuiltin,
       settingSources: this.config.providers.claude.settingSources,
-      ...(isClaude || isAisdk ? { loomServer: true, systemPromptAppend: promptAppend } : {}),
+      ...(isClaude || isAisdk || o.providerId === "chatgpt"
+        ? { loomServer: true, systemPromptAppend: promptAppend }
+        : {}),
       ...(o.model ? { model: o.model } : {}),
       ...(o.effort ? { effort: o.effort as EffortLevel } : {}),
       ...(o.parentId ? { parentId: o.parentId } : {}),
