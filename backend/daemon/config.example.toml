@@ -130,6 +130,8 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # [chatgpt] — ChatGPT/Codex subscription, not an OpenAI API key. Run
 # `codex login` once; the connector reads ~/.codex/auth.json and refreshes its
 # OAuth token when needed. Loom auto-detects this account-specific catalogue.
+# `code_mode_only` models additionally require the `codex` binary on PATH;
+# Loom launches `codex app-server` and supplies this config's [[mcp]] mounts.
 # [chatgpt]
 # model     = "gpt-5.6-terra"       # optional pin / default
 # models    = ["gpt-5.6-terra"]     # optional curated picker list

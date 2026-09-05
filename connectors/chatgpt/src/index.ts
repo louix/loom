@@ -1,8 +1,56 @@
 /** ChatGPT subscription connector, authenticated by Codex's ~/.codex/auth.json. */
-import type { AgentProvider, DiscoveredModel } from "@loom/core/types";
+import type {
+  AgentProvider,
+  AgentSession,
+  CreateSessionOptions,
+  DiscoveredModel,
+  SessionRef,
+} from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
 import { makeAisdkProvider } from "@loom/aisdk/provider";
 import { createChatGPTModels } from "./oauth.ts";
+import { CodexAppServerSession } from "./app-server.ts";
+
+/**
+ * ChatGPT's catalog has two tool protocols. Keep the AI SDK adapter for
+ * regular Responses function tools, and route Code Mode-only models through
+ * Codex's local app-server so they get Codex's full local host instead.
+ */
+class ChatGPTProvider implements AgentProvider {
+  readonly id: string;
+  readonly capabilities;
+  readonly #direct: AgentProvider;
+  readonly #isCodeMode: (model: string) => Promise<boolean>;
+
+  constructor(id: string, direct: AgentProvider, isCodeMode: (model: string) => Promise<boolean>) {
+    this.id = id;
+    this.#direct = direct;
+    this.#isCodeMode = isCodeMode;
+    this.capabilities = {
+      ...direct.capabilities,
+      liveModeSwitch: true,
+      forking: false,
+      rewind: false,
+      compaction: true,
+    };
+  }
+
+  async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
+    if (opts.oneShot || !(await this.#isCodeMode(opts.model ?? "")))
+      return this.#direct.createSession(opts);
+    return CodexAppServerSession.start(opts);
+  }
+  async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
+    return CodexAppServerSession.resume(ref);
+  }
+  listPersistedSessions(): Promise<SessionRef[]> {
+    return this.#direct.listPersistedSessions();
+  }
+  listModels(): Promise<DiscoveredModel[]> {
+    return this.#direct.listModels?.() ?? Promise.resolve([]);
+  }
+}
 
 export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvider> => {
   if (!ctx.transcript)
@@ -41,7 +89,7 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
             }
           : {}),
       }));
-  return makeAisdkProvider(
+  const direct = makeAisdkProvider(
     {
       id: ctx.id,
       model: ctx.config.model ?? "",
@@ -56,5 +104,10 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
       listModels,
     },
     ctx.transcript,
+  );
+  return new ChatGPTProvider(
+    ctx.id,
+    direct,
+    async (model) => (await catalog.get(model)).tool_mode === "code_mode_only",
   );
 };

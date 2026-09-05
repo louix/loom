@@ -210,8 +210,9 @@ inline with `api_key`.
 - `[chatgpt]` — uses the ChatGPT/Codex subscription authenticated by `codex
 login` in `~/.codex/auth.json`; no OpenAI API key. Its authenticated Codex
   catalogue is discovered automatically. Direct-tool models get Loom's normal
-  tool, MCP, and sub-agent surface; `code_mode_only` models currently use the
-  Codex shell bridge.
+  tool, MCP, and sub-agent surface. `code_mode_only` models run through the
+  locally installed `codex app-server`, which supplies Codex's full Code Mode
+  host while Loom retains its MCP and approval configuration.
 - `[providers.<id>]` with `adapter = "aisdk"` and `sdk =
 "openai" | "google" | "anthropic" | "chatgpt"` — the low-level escape hatch, kept for
   several native profiles or unusual setups.

@@ -133,14 +133,19 @@ Run it with `loom run --provider chatgpt "…"`, or set
 The connector follows each model's `tool_mode` metadata. Models without
 `code_mode_only` accept Loom's normal functions, so they can use MCP, web
 search, plan tools, and sub-agents (all still governed by Loom's permission
-gate). Codex's newer `code_mode_only` models require Codex's separate code-mode
-host protocol; Loom currently exposes only their compatible shell bridge.
-Choose a direct-tool model when you need the full Loom surface.
+gate). `code_mode_only` models start the local `codex app-server` binary, which
+in turn starts Codex's Code Mode host and provides its native patching,
+approvals, steering, and sub-agent tools. Install `codex` and run `codex login`
+before using one.
+
+Loom replaces the app-server's `mcp_servers` table for every Code Mode session
+with the session's configured Loom mounts. Its tilth / fff servers therefore do
+not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
+back through Loom's existing permission UI.
 
 This is a vendored compatibility connector over the private Codex backend,
 rather than the public OpenAI API. That backend and its accepted model IDs can
-change independently of Loom; model discovery avoids stale IDs, but the
-code-mode protocol remains a future integration point.
+change independently of Loom; model discovery avoids stale IDs.
 
 ## Worktrees
 

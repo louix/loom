@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { streamText } from "ai";
 import { AisdkEventMapper } from "@loom/aisdk/map";
 import { createChatGPTModels } from "@loom/connector-chatgpt/oauth";
+import { mcpConfig } from "@loom/connector-chatgpt/app-server";
 
 test("ChatGPT OAuth connector constructs a v5 model without reading credentials eagerly", () => {
   // Constructing the provider must not touch ~/.codex/auth.json: a user should
@@ -16,6 +17,16 @@ test("ChatGPT OAuth connector constructs a v5 model without reading credentials 
   assert.equal(model.specificationVersion, "v2");
   assert.equal(model.provider, "chatgpt");
   assert.equal(model.modelId, "gpt-5.6-terra");
+});
+
+test("Code Mode serializes only Loom's stdio MCP mounts into app-server config", () => {
+  assert.equal(
+    mcpConfig([
+      { name: "tilth", spec: { transport: "stdio", command: "tilth", args: ["--mcp", "--edit"] } },
+      { name: "remote", spec: { transport: "http", url: "https://example.invalid/mcp" } },
+    ]),
+    '{ "tilth" = { command = "tilth", args = ["--mcp", "--edit"] } }',
+  );
 });
 
 test("ChatGPT serializes tool history as Responses input items", async () => {

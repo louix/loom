@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./oauth": "./src/oauth.ts"
+    "./oauth": "./src/oauth.ts",
+    "./app-server": "./src/app-server.ts"
   },
   "dependencies": {
     "@loom/aisdk": "workspace:*",
