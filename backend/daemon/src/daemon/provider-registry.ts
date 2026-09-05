@@ -118,7 +118,7 @@ export class ProviderRegistry {
     const load = this.#manifest[pkg];
     if (!load) {
       throw new Error(
-        `provider "${id}" needs connector ${pkg}, which is not installed — \`pnpm add ${pkg}\``,
+        `provider "${id}" needs connector ${pkg}, which isn't in this build's manifest`,
       );
     }
     const profile = this.#config.providers.aisdk[id];

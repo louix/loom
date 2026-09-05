@@ -1,12 +1,10 @@
 /**
- * The connector manifest the daemon runs with. Static `import()` specifiers so
- * pnpm links the packages into this (the `loom` CLI) package; each thunk is
- * invoked only when a session actually uses that provider, so the daemon never
- * evaluates a vendor SDK it doesn't need.
- *
- * A production install that skips a connector (`pnpm install --prod`, no
- * `pnpm add @loom/connector-gemini`) still lists it here — the thunk throws a
- * readable "not installed" error only if a session asks for that provider.
+ * The connector manifest the daemon runs with. Static `import()` specifiers,
+ * each resolved by its workspace member's `deno.json` name; every thunk is
+ * invoked only when a session actually uses that provider, so the daemon
+ * never evaluates a vendor SDK it doesn't need — even though `deno install`
+ * resolves all of them up front (Deno has no equivalent to npm's
+ * `optionalDependencies` for skipping unused workspace members).
  */
 import type { ConnectorManifest } from "@loom/core/connector";
 

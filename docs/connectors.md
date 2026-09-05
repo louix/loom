@@ -1,17 +1,23 @@
 # Connectors
 
-A **connector** is a package that teaches Loom to drive one kind of model
-backend. Loom ships none — you install what you use:
+A **connector** is a workspace member that teaches Loom to drive one kind of
+model backend:
 
-```sh
-pnpm add @loom/connector-claude     # Claude, via @anthropic-ai/claude-agent-sdk
-pnpm add @loom/connector-chatgpt    # ChatGPT/Codex subscription, via ~/.codex/auth.json
-pnpm add @loom/connector-generic    # any OpenAI-compatible endpoint + native Anthropic
-pnpm add @loom/connector-gemini     # Google Gemini
+```
+connectors/claude/     @loom/connector-claude     Claude, via @anthropic-ai/claude-agent-sdk
+connectors/chatgpt/    @loom/connector-chatgpt    ChatGPT/Codex subscription, via ~/.codex/auth.json
+connectors/generic/    @loom/connector-generic    any OpenAI-compatible endpoint + native Anthropic
+connectors/gemini/     @loom/connector-gemini     Google Gemini
 ```
 
-`@loom/connector-mock` (a devDependency) is the scriptable, SDK-free provider the
-test suite and `loom run --provider fake` use.
+`deno install` at the repo root resolves all of them regardless of which you
+actually configure — Deno's workspace model has no equivalent to npm's
+`optionalDependencies` for skipping unused ones. `ProviderRegistry` still
+loads a connector's code lazily by name at runtime, so an unconfigured
+provider never actually executes.
+
+`@loom/connector-mock` is the scriptable, SDK-free provider the test suite and
+`loom run --provider fake` use.
 
 ## The layers
 
@@ -82,10 +88,10 @@ export async function createProvider(ctx: ConnectorContext) {
 }
 ```
 
-`package.json`: `"type": "module"`, `"exports": { ".": "./src/index.ts" }`,
-`"dependencies": { "@loom/core": "…", "@loom/aisdk": "…", "@ai-sdk/…": "…" }`.
-No build step — source is `.ts`; add a `tsconfig.build.json` only if you publish
-`.d.ts`.
+`deno.json`: `"name": "@my-org/loom-connector-thing"`,
+`"exports": { ".": "./src/index.ts" }`. Add it to the root `deno.json`'s
+`"workspace"` array and reference any third-party npm deps in its `"imports"`.
+No build step — source is `.ts`.
 
 ## Routing a config profile to a connector
 
@@ -108,9 +114,10 @@ connector = "@my-org/loom-connector-thing"
 base_url  = "https://…"
 ```
 
-The connector must be resolvable from the `loom` package (`pnpm add` it) and
-listed in the CLI's manifest, or `session.create` fails with _"provider … needs
-connector … , which is not installed"_.
+The connector must be a workspace member (in root `deno.json`'s `"workspace"`
+array) and listed in the CLI's manifest (`cli/src/connectors.ts`), or
+`session.create` fails with _"provider … needs connector … , which isn't in
+this build's manifest"_.
 
 ## ChatGPT subscription
 
@@ -160,11 +167,11 @@ change independently of Loom; model discovery avoids stale IDs.
 
 ## Worktrees
 
-`virtualStoreType: global` (in `pnpm-workspace.yaml`) shares one
-content-addressable store across every git worktree of the repo, so
-`pnpm install` in a fresh worktree is near-instant. It hardlinks only when the
-worktree and `~/.local/share/pnpm` are on the same filesystem — a worktree on a
-different volume falls back to copying.
+Deno's module cache (`DENO_DIR`, `~/.cache/deno` by default) shares one
+content-addressed store across every git worktree of the repo, so
+`deno install` in a fresh worktree is near-instant. It hardlinks only when the
+worktree and `DENO_DIR` are on the same filesystem — a worktree on a different
+volume falls back to copying.
 
 Loom's own session worktrees (`.loom/trees/<slug>`) never run an install: the
 daemon resolves its imports from where it was launched, and an agent's `bash` /

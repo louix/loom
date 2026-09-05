@@ -434,42 +434,38 @@ re-measures on the next turn. `session.compact` is the RPC.
 
 ## Requirements
 
-- Node **≥ 24** (uses native TypeScript type-stripping and `node:sqlite`; no
-  build step, no native modules of our own).
+- **Deno ≥ 2.2** (native TypeScript + JSX, no build step, no loader). Source
+  still uses `node:sqlite`, `node:net` (Unix sockets), `process.*`, and
+  `Buffer` in a few places — Deno's Node-compat layer runs these unmodified;
+  migrating them to Deno-native APIs is a separate future step, not required
+  to run `loom` today.
 - `git` on `PATH`.
 - For the `claude` provider: Claude OAuth already set up in `~/.claude`. The
   `@anthropic-ai/claude-agent-sdk` dependency bundles the Claude Code CLI it
   drives.
 - The TUI is built with Ink (React for terminals) — the one place Loom leans on
-  a UI framework. It still runs straight through Node's type-stripping: the
-  components use `createElement`, no JSX, no build step. Type-stripping works
-  across the pnpm workspace too — packages import each other as `.ts` through
-  their `node_modules` symlink; `.d.ts` is a publish-only concern.
-- **pnpm ≥ 11.23** — provisioned by corepack (`corepack enable`, once per
-  machine; the version is pinned in `packageManager`). Where corepack can't
-  write a global shim, run it as `corepack pnpm …` or install pnpm standalone.
+  a UI framework, and the one place JSX shows up (`.tsx`). Deno transpiles it
+  natively, no build step. Workspace packages import each other as bare
+  specifiers (`@loom/core/paths`) resolved by each member's `deno.json` name —
+  no `node_modules` symlink walk.
 
 ```sh
-pnpm install
+deno install
 ```
 
-`virtualStoreType: global` (in `pnpm-workspace.yaml`) keeps one content-addressable
-store shared across every git worktree of the repo, so `pnpm install` in a fresh
-worktree is near-instant and near-free on disk. Keep worktrees on the same
-filesystem as `~/.local/share/pnpm` or the store falls back to copying.
+Deno's module cache (`DENO_DIR`, `~/.cache/deno` by default) hard-links into
+every project's `node_modules` from one shared, content-addressed store, with
+no extra config — so a fresh git worktree's `deno install` is near-instant and
+near-free on disk, the same property `pnpm`'s `virtualStoreType: global` used
+to need spelling out explicitly.
 
-**Providers ship as separate packages.** A production install of `loom` has no
-connector and no model SDK — add what you use:
-
-```sh
-pnpm add @loom/connector-claude    # Claude, via @anthropic-ai/claude-agent-sdk
-pnpm add @loom/connector-chatgpt   # ChatGPT/Codex subscription via ~/.codex/auth.json
-pnpm add @loom/connector-generic   # any OpenAI-compatible endpoint + native Anthropic
-pnpm add @loom/connector-gemini    # Google Gemini
-```
-
-New dependencies observe a 7-day release cooldown (`minimumReleaseAge` in
-`pnpm-workspace.yaml`) and pin exact (`save-exact` in `.npmrc`).
+**Providers ship as separate workspace members** under `connectors/` — `deno
+install` at the repo root still resolves every one of them regardless of which
+you actually use. Deno's workspace model has no equivalent to npm's
+`optionalDependencies` for skipping unused ones; `ProviderRegistry` still loads
+each connector's code lazily by name at runtime, so an unconfigured provider's
+module never actually executes, but its dependencies do land in
+`node_modules`. Accepted gap, not silently worked around.
 
 ## Usage
 
@@ -477,7 +473,7 @@ Everything is driven through `loom`; the daemon starts automatically on first
 use and writes to `<repo>/.loom/`.
 
 ```sh
-loom                  # no command in a TTY → the fleet UI  (or: pnpm loom)
+loom                  # no command in a TTY → the fleet UI  (or: deno task loom)
 loom tui             # the same, explicitly
 loom status          # daemon health and counts
 loom ls              # sessions, in fleet-view order
@@ -532,12 +528,14 @@ loomd --repo . --log-level debug
 ## Development
 
 ```sh
-pnpm run typecheck    # tsc --noEmit across the workspace
-pnpm test             # node:test — 562 cases; test:silent prints only failures
-pnpm run test:timing  # per-file duration table + wall vs Σ(files) overlap ratio
+deno task typecheck    # deno check . across the workspace
+deno task test          # node:test-authored suite run under deno test — 634 cases
+deno task test:silent   # same suite; prints only failures
+deno task test:timing   # per-file duration table (deno test has one process, not
+                         # one child per file, so there's no wall-vs-Σ overlap ratio)
 ```
 
-### Layout — a pnpm workspace
+### Layout — a Deno workspace
 
 ```
 core/                @loom/core   the seam + zero-dep helpers, no model SDK —
@@ -558,13 +556,13 @@ connectors/
   gemini/            @loom/connector-gemini     Google Gemini (@ai-sdk/google)
 cli/                 loom           the `loom` + `loomd` bins; builds the connector manifest
 harness/             @loom/harness  makeHarness — a private devDependency of the tests
-test/                the cross-package integration suite (`node --test`)
+test/                the cross-package integration suite (`node:test`, run via `deno test`)
 ```
 
-Connectors are `optionalDependencies` of `loom`: dev and CI get all of them, a
-`--prod` / `--no-optional` install gets none. `ProviderRegistry` loads one lazily
-by package name from a manifest the CLI supplies — the daemon package names
-connectors only as strings, so it never evaluates a model SDK it doesn't use.
+`ProviderRegistry` loads a connector lazily by package name from a manifest the
+CLI supplies — the daemon names connectors only as strings, so it never
+evaluates a model SDK it isn't configured to use, even though `deno install`
+resolves every connector's dependencies up front (see Requirements above).
 See [`docs/connectors.md`](docs/connectors.md) for the `createProvider` contract.
 
 ### `.loom/` runtime directory
