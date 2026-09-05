@@ -6,17 +6,18 @@ Make ChatGPT a first-class Loom provider: changing models must not change
 authentication, Loom tools, question and plan workflows, or persistence strategy.
 
 Use Codex app-server for every ChatGPT model. An installed Codex binary is an
-acceptable requirement. Codex owns subscription authentication, model protocols
-and native execution; Loom owns tool configuration, interactions, session state
-and git workflows.
+acceptable requirement. Codex owns subscription authentication and native model
+protocols; Loom owns execution routing, tool configuration, interactions, session
+state and git workflows.
 
 Authenticate through `~/<codex-dir>/auth.json`, with Codex managing token refresh.
 Do not require or silently fall back to an API key. Preserve custom Codex
 directories and provide migration guidance for existing `auth_path` settings.
 
 The target is consistent Loom workflows, not an identical native tool surface.
-Retain native execution where it fits Loom's policy, and use supported masking
-controls for tools replaced by configured Loom tools.
+Retain native execution only within the selected execution boundary, and use
+supported masking controls for tools replaced by configured Loom tools. Provider
+parity does not by itself establish credential isolation.
 
 Remove the direct OAuth/Responses implementation rather than retaining a second
 backend. Old direct-backend sessions remain readable but cannot resume; preserve
@@ -68,13 +69,37 @@ startup failures leave no processes or pending requests behind.
 
 **Acceptance:** Existing providers pass regression tests through the shared layer.
 
-## Phase 4: Unify all ChatGPT models on app-server
+## Interfaces for later isolation
+
+Finish provider parity first; implement [isolation](isolation-plan.md) afterward.
+Build these concrete seams now, with local implementations:
+
+- Session-bound, structured tool dispatch for workspace, Git and search
+  operations. The dispatcher determines session/worktree authority; connector
+  code does not hardwire host execution or require search credentials.
+- Injectable process launch with explicit executable, environment, cwd and
+  writable provider-state configuration. Discovery and titling use the same
+  launch/authentication path as sessions.
+- Distinct provider cwd and tool-visible workspace root; do not assume identical
+  paths or require provider code to inspect the workspace to generate instructions.
+- Separate Loom session, native thread, provider process and workspace lifetimes.
+  Replacing one must not implicitly discard the others.
+
+Do not implement worker RPC, VM orchestration, images, mount/network enforcement
+or the full hardened Git suite in this change set. Existing Git tools should use
+the dispatch interface. An optional VM smoke test can catch launch/path assumptions
+without making production isolation a prerequisite for parity.
+
+## Phase 4: Unify all ChatGPT models on app-server and brokered tools
 
 - Route creation, resume and model changes through Codex.
-- Mount shared Loom tools through dynamic tools and preserve configured external
-  MCP mounts, including read-only annotations and normalized Loom event names.
+- Mount shared Loom tools through dynamic tools backed by a session-bound
+  execution interface, initially local and suitable for later serialization.
+  Preserve configured external MCP tool semantics, read-only annotations and
+  normalized Loom event names. Keep execution placement behind the interface.
 - Apply configured search and supported native-tool masking. Disable native web
-  search by default; retain `codex_builtin_web_search = true` as an explicit opt-in.
+  search by default; retain `codex_builtin_web_search = true` as an explicit opt-in
+  only where configured policy permits it.
 - Persist an explicit history/backend discriminator; resume native threads
   independently of model choice.
 - Remove direct OAuth/Responses code, `codex-shell` branches and the standalone
@@ -84,7 +109,8 @@ startup failures leave no processes or pending requests behind.
   old execution path.
 
 **Acceptance:** Selecting a different ChatGPT model no longer selects a different
-harness.
+harness. Tool dispatch and process launch are replaceable without changing the
+model loop; no production VM implementation is required.
 
 ## Phase 5: Complete questions, plans and mode switching
 
@@ -94,15 +120,24 @@ harness.
   the context-reset behavior required for implement fresh.
 - Coordinate planning instructions, native permissions and host-tool policy.
   Plan mode uses read-only execution; default uses human review; accept-edits
-  permits workspace edits while retaining escalation approval; auto uses Codex's
-  automatic reviewer. Host-executed tools also require Loom's policy because
-  Codex's filesystem sandbox does not protect them.
+  permits workspace edits while retaining escalation approval. Loom remains the
+  final authority for brokered tools; Codex's automatic reviewer cannot approve
+  its own Loom tool requests. Auto mode does not override execution policy or
+  grant administrative authority. Enforce policy at execution time in the
+  dispatcher, not only when tools are advertised to the model.
 - Serialize settings changes with active turns. Model and effort changes apply at
   the next generation boundary. Host-tool mode policy updates immediately;
   native policy updates at an acknowledged boundary, interrupting first when
   needed to enforce a restriction.
 - Ensure interrupt and close settle every parked interaction, cancel work and
   stop further events before returning.
+- Handle native approvals through app-server explicitly; never depend on an
+  interactive CLI prompt. Denied native execution must not trigger a host or
+  unsandboxed fallback, and permitted brokered tools must remain usable.
+- Associate parent and subagent thread IDs with the owning session; route their
+  approvals through the same handler and reject unknown requests. Reapply policy,
+  tool configuration and instructions on every start/resume. Approval handling
+  does not imply native reads are confined; isolation is a separate workstream.
 
 **Acceptance:** Users can plan, answer questions, approve work and change modes
 without stuck sessions or stale policy.
@@ -117,6 +152,9 @@ without stuck sessions or stale policy.
 - Implement custom-summary restart and implement fresh through a shared
   summarize-and-restart operation. Preserve the Loom session and branch, and
   replace the native thread only after success.
+- Preserve workspace lifetime and recoverable native state across provider
+  process/thread replacement. Generate tool instructions using the explicit
+  workspace root, independently of provider cwd.
 - Add ephemeral titling with execution tools, MCP, skills and subagents disabled,
   with startup included in the timeout.
 - Verify manual title locking, branch renaming and base-branch-aware git helpers.
@@ -132,10 +170,15 @@ Codex behavior, and all plan decisions are supported.
   unsupported history transfers and legacy-session handling.
 - Test custom Codex homes, environment precedence, missing or invalid
   authentication, and absence of API-key fallback.
+- Test private state recovery, session-bound routing, cross-session rejection,
+  parent/subagent approvals and settings reapplication on resume. Exercise
+  injectable launch/dispatch and differing provider/workspace paths with fakes.
 - Add opt-in live smoke tests for ordinary and Code Mode models, including
   switching between them within one session.
 - Document configuration migration, Codex requirements and explicit capability
   limits. Keep unsupported history transfers unavailable with accurate errors.
+- Clearly label this rollout as provider parity, not a credential-isolation
+  guarantee; link to the subsequent isolation workstream.
 - Run typecheck, relevant tests and the full suite in the repository's Deno
   development environment.
 
@@ -148,6 +191,11 @@ Keep the existing ChatGPT path active through phases 1–3. Phase 4 is the singl
 backend cutover; phases 5–7 complete and verify parity without maintaining two
 implementations. Each phase should be independently reviewable. The overall
 parity work is complete only after phase 7.
+
+Agree dispatch, launch and lifecycle contracts before phase 4. Use the spike
+findings to avoid hardwired local assumptions, but do not gate explicitly
+non-isolated parity on strict-isolation feasibility. Production VMs and security
+acceptance follow this change set under the isolation plan.
 
 ## References
 
