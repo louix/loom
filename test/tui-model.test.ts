@@ -28,7 +28,6 @@ import {
   escapeTarget,
   fleetHits,
   focusedChildOf,
-  focusedPending,
   footerHints,
   formatEvent,
   groupsOf,
@@ -39,7 +38,6 @@ import {
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
-  pendingFor,
   pickerCurrent,
   pickerVisible,
   providerColorOf,
@@ -49,7 +47,6 @@ import {
   condenseLog,
   anyCompacting,
   compactingFor,
-  firstPerm,
   reduce,
   selectedSession,
   sessionLog,
@@ -65,6 +62,8 @@ import {
   connectionOf,
   fleetDaemon,
   fleetSessions,
+  activeRequest,
+  requestsFor,
 } from "@loom/tui/model";
 import {
   detailRows,
@@ -1057,7 +1056,7 @@ test("an outstanding request is read off the snapshot, so old history cannot res
     requests: [req],
   });
   let s = reduce(initialState(), fleet([blocked]));
-  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "bash", input: {} });
+  assert.deepEqual(activeRequest(s, "a"), req);
 
   // Scrolling back through history delivers the *original* permission_request
   // event. It is transcript and nothing more — the request set does not move.
@@ -1080,7 +1079,7 @@ test("an outstanding request is read off the snapshot, so old history cannot res
     ]),
   });
   assert.deepEqual(
-    pendingFor(s, "a").permissions?.map((p) => p.id),
+    requestsFor(s, "a").map((r) => r.id),
     ["p1"],
     "a long-answered request in old history is not offered for answering again",
   );
@@ -1112,45 +1111,45 @@ test("an outstanding request is read off the snapshot, so old history cannot res
     ]),
   });
   assert.deepEqual(compactingFor(s, "a"), { startedAt: 5, before: 90_000, generated: 12 });
-  assert.equal(pendingFor(s, "a").permissions?.length, 1);
+  assert.equal(requestsFor(s, "a").length, 1);
 
-  // The daemon says the session is no longer blocked: the request set is empty
-  // and so is the projection, with no pruning pass to remember to run.
+  // The daemon says the session is no longer blocked: the request set is empty,
+  // with no local projection to prune alongside it.
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.deepEqual(pendingFor(s, "a"), {});
+  assert.deepEqual(requestsFor(s, "a"), []);
+  assert.equal(activeRequest(s, "a"), null);
 });
 
-test("answering a request hides it until the snapshot agrees, then stops overriding", () => {
-  const perm = (id: string) => ({
-    kind: "permission" as const,
+test("the active request is the one the daemon says the turn is blocked on", () => {
+  const perm = (id: string): SessionInteraction => ({
+    kind: "permission",
     id,
     tool: "bash",
     input: {},
     at: 1,
   });
-  const blocked = (ids: string[]) =>
-    snap({
-      id: "a",
-      status: "awaiting_input",
-      awaitReason: "permission",
-      requests: ids.map(perm),
-    });
-  let s = reduce(initialState(), fleet([blocked(["p1", "p2"])]));
+  const plan: SessionInteraction = { kind: "plan_review", id: "pr1", plan: "the plan", at: 2 };
+  const blocked = (requests: SessionInteraction[], on: AwaitReason) =>
+    snap({ id: "a", status: "awaiting_input", awaitReason: on, requests });
 
-  // Answer the first. The prompt must move straight to the second rather than
-  // stall for a round trip — but nothing is written into the request list.
-  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
-  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+  // A permission was raised first, but the turn is parked on the plan review.
+  let s = reduce(initialState(), fleet([blocked([perm("p1"), plan], "plan_review")]));
+  assert.equal(activeRequest(s, "a")?.id, "pr1", "the awaiting reason picks the request");
   assert.deepEqual(
-    fleetSessions(s)[0]?.requests.map((r) => r.id),
-    ["p1", "p2"],
-    "the authoritative list is untouched",
+    requestsFor(s, "a").map((r) => r.id),
+    ["p1", "pr1"],
+    "and the rest are still outstanding, in the daemon's order",
   );
 
-  // The daemon catches up and drops p1. The overlay has done its job and goes.
-  s = reduce(s, fleet([blocked(["p2"])]));
-  assert.deepEqual(s.resolved, {});
-  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+  // A reason nothing matches falls back to the first request rather than
+  // showing nothing to act on.
+  s = reduce(initialState(), fleet([blocked([perm("p1"), perm("p2")], "question")]));
+  assert.equal(activeRequest(s, "a")?.id, "p1");
+
+  // Not blocked at all: no request, and no local state left claiming otherwise.
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
+  assert.equal(activeRequest(s, "a"), null);
+  assert.deepEqual(requestsFor(s, "a"), []);
 });
 
 test("expireNotice clears the notice only once its ttl has elapsed", () => {
@@ -1311,9 +1310,9 @@ test("condenseLog: a lone thinking / tool line still collapses; other kinds pass
 // pending round-trips
 // ---------------------------------------------------------------------------
 
-test("parallel permission requests queue in the snapshot's order; each resolvePerm advances", () => {
-  const perm = (id: string, command: string) => ({
-    kind: "permission" as const,
+test("resolving one of several permissions retires exactly that one, FIFO", () => {
+  const perm = (id: string, command: string): SessionInteraction => ({
+    kind: "permission",
     id,
     tool: "bash",
     input: { command },
@@ -1323,48 +1322,87 @@ test("parallel permission requests queue in the snapshot's order; each resolvePe
     snap({ id: "a", status: "awaiting_input", awaitReason: "permission", requests });
   let s = reduce(initialState(), fleet([blocked([perm("p1", "ls"), perm("p2", "pwd")])]));
 
-  assert.deepEqual(firstPerm(pendingFor(s, "a")), {
-    id: "p1",
-    tool: "bash",
-    input: { command: "ls" },
-  });
-  assert.equal(pendingFor(s, "a").permissions?.length, 2);
+  assert.deepEqual(activeRequest(s, "a"), perm("p1", "ls"), "oldest first");
+  assert.equal(requestsFor(s, "a").length, 2, "and the queue behind it is not discarded");
 
-  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
-  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
-  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p2" });
-  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
-  assert.equal(pendingFor(s, "a").permissions, undefined);
-
-  // Another client answered one of them: it simply stops being in the snapshot,
-  // and exactly that one disappears here.
-  s = reduce(initialState(), fleet([blocked([perm("p1", "ls"), perm("p2", "pwd")])]));
+  // Another client answers p1. It stops being in the snapshot, exactly that one
+  // disappears, the next is actionable, and the session is still blocked.
   s = reduce(s, fleet([blocked([perm("p2", "pwd")])]));
   assert.deepEqual(
-    pendingFor(s, "a").permissions?.map((p) => p.id),
+    requestsFor(s, "a").map((r) => r.id),
     ["p2"],
   );
+  assert.equal(activeRequest(s, "a")?.id, "p2");
+  assert.equal(fleetSessions(s)[0]?.status.kind, "awaiting_input");
 
   // And a session moving on leaves nothing to answer.
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
-  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
+  assert.equal(activeRequest(s, "a"), null);
 });
 
-test("qnav: liveQNav gates on session + request id, and resolvePerm clears a match", () => {
+test("a resolved request closes the UI bound to it, and nothing else", () => {
+  const q = (id: string): SessionInteraction => ({
+    kind: "user_question",
+    id,
+    tool: "AskUserQuestion",
+    input: { questions: [] },
+    at: 1,
+  });
+  const blocked = (requests: SessionInteraction[]) =>
+    snap({ id: "a", status: "awaiting_input", awaitReason: "user_question", requests });
+
+  // Typing an answer to q1, with an unrelated cancelled send draft beside it.
+  let s = reduce(initialState(), fleet([blocked([q("q1")]), snap({ id: "b", status: "idle" })]));
+  s = { ...s, lastDraft: "an unrelated half-typed message" };
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({
+      kind: "answerQuestion",
+      sessionId: "a",
+      requestId: "q1",
+      label: "answer",
+    }),
+  });
+  s = reduce(s, {
+    t: "qnavSet",
+    nav: { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } },
+  });
+
+  // Another client answers q1 and the agent asks something new.
+  s = reduce(s, fleet([blocked([q("q2")]), snap({ id: "b", status: "idle" })]));
+
+  assert.equal(s.prompt, null, "the prompt for a request that is gone closes");
+  assert.equal(s.mode, "browse");
+  assert.equal(s.qnav, null, "and so does the navigation through its questions");
+  assert.match(s.notice?.text ?? "", /resolved elsewhere/);
+  assert.equal(s.lastDraft, "an unrelated half-typed message", "an unrelated draft is untouched");
+
+  // Nothing typed for q1 is re-aimed at q2: opening its prompt starts clean.
+  assert.equal(activeRequest(s, "a")?.id, "q2");
+  assert.equal(liveQNav(s.qnav, "a", "q2"), null);
+});
+
+test("a send or title prompt is not closed because some request was resolved", () => {
+  const perm: SessionInteraction = { kind: "permission", id: "p1", tool: "bash", input: {}, at: 1 };
+  const blocked = (requests: SessionInteraction[]) =>
+    snap({ id: "a", status: "awaiting_input", awaitReason: "permission", requests });
+  let s = reduce(initialState(), fleet([blocked([perm])]));
+  s = reduce(s, {
+    t: "openPrompt",
+    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "half typed" }),
+  });
+
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
+  assert.equal(s.prompt?.kind, "send", "a prompt with no request id has nothing to reconcile");
+  assert.equal(s.prompt?.buffer.text, "half typed");
+});
+
+test("liveQNav gates on session + request id", () => {
   const nav = { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } };
   assert.equal(liveQNav(nav, "a", "q1"), nav);
   assert.equal(liveQNav(nav, "b", "q1"), null, "wrong session → stale");
   assert.equal(liveQNav(nav, "a", "q2"), null, "wrong request → stale");
   assert.equal(liveQNav(null, "a", "q1"), null);
-
-  let s = reduce(initialState(), { t: "qnavSet", nav });
-  assert.deepEqual(s.qnav, nav);
-  // resolving an unrelated request leaves it alone
-  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "other" });
-  assert.deepEqual(s.qnav, nav);
-  // resolving the one it tracks clears it
-  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "q1" });
-  assert.equal(s.qnav, null);
 });
 
 test("a question carries its text and context, and goes when the snapshot drops it", () => {
@@ -1379,12 +1417,10 @@ test("a question carries its text and context, and goes when the snapshot drops 
     initialState(),
     fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "question", requests: [q] })]),
   );
-  assert.equal(pendingFor(s, "a").question, "q1");
-  assert.equal(pendingFor(s, "a").questionText, "which store?");
-  assert.equal(pendingFor(s, "a").questionContext, "for the cache");
+  assert.deepEqual(activeRequest(s, "a"), q, "id, kind and payload travel together");
 
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
-  assert.equal(pendingFor(s, "a").question, undefined);
+  assert.equal(activeRequest(s, "a"), null);
 });
 
 test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
@@ -1395,8 +1431,9 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
     requests: [{ kind: "plan_review", id: "pr1", plan: "step one\nstep two", at: 1 }],
   });
   let s = reduce(initialState(), fleet([a]));
-  assert.equal(pendingFor(s, "a").plan, "pr1");
-  assert.equal(pendingFor(s, "a").planText, "step one\nstep two");
+  const active = activeRequest(s, "a");
+  assert.equal(active?.id, "pr1");
+  assert.equal(active?.kind === "plan_review" ? active.plan : "", "step one\nstep two");
 
   s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
   assert.equal(s.mode, "plan");
@@ -1423,7 +1460,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(s.plan, null);
   assert.equal(s.mode, "browse");
-  assert.equal(pendingFor(s, "a").plan, undefined);
+  assert.equal(activeRequest(s, "a"), null);
 });
 
 test("⌥p stages an implement-fresh retarget onto the plan overlay", () => {
@@ -1478,26 +1515,6 @@ test("makePicker clamps its initial index into range", () => {
   assert.equal(makePicker({ kind: "model", title: "t", items, index: 9 }).index, 1);
   assert.equal(makePicker({ kind: "model", title: "t", items, index: -1 }).index, 0);
   assert.equal(makePicker({ kind: "model", title: "t", items }).index, 0);
-});
-
-test("focusedPending keeps only the surface the daemon says the session is parked on", () => {
-  const stale = {
-    plan: "pr-old",
-    planText: "old plan",
-    permissions: [{ id: "p1", tool: "bash", input: { command: "ls" } }],
-  };
-  // parked on a permission → the stale plan must not win the panel
-  assert.deepEqual(focusedPending(stale, "permission"), {
-    permissions: stale.permissions,
-  });
-  // parked on the plan → the plan stays
-  assert.deepEqual(focusedPending(stale, "plan_review"), {
-    plan: "pr-old",
-    planText: "old plan",
-  });
-  // an `on` with nothing matching keeps everything (no info to drop by)
-  assert.deepEqual(focusedPending(stale, "question"), stale);
-  assert.deepEqual(focusedPending(stale, null), stale);
 });
 
 // ---------------------------------------------------------------------------
@@ -2248,13 +2265,11 @@ test("a permission carries its tool + input; leaving awaiting_input clears it", 
       }),
     ]),
   );
-  assert.deepEqual(firstPerm(pendingFor(s, "a")), {
-    id: "p1",
-    tool: "Bash",
-    input: { command: "rm -rf x" },
-  });
+  const r = activeRequest(s, "a");
+  assert.equal(r?.kind, "permission");
+  assert.equal(r?.id, "p1");
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
-  assert.deepEqual(pendingFor(s, "a"), {});
+  assert.equal(activeRequest(s, "a"), null);
 });
 
 test("a queue outlives its session here, for the drain to strand and report", () => {

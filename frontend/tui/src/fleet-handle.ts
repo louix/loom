@@ -16,6 +16,7 @@ import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
 import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
+import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import type { ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type {
@@ -41,8 +42,10 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
+  activeRequest,
   fleetProviders,
   fleetSessions,
+  requestsFor,
   sessionMode,
   allowedActs,
   commandsFor,
@@ -52,11 +55,9 @@ import {
   defaultProviderId,
   effortPickItems,
   escapeTarget,
-  firstPerm,
   fleetHits,
   anyCompacting,
   compactingFor,
-  focusedPending,
   initialState,
   liveQNav,
   makePicker,
@@ -66,7 +67,6 @@ import {
   modelPickItems,
   modelSupportsEffort,
   parseAskUserQuestions,
-  pendingFor,
   pickerCurrent,
   promptOnPane,
   providerAccountOf,
@@ -84,7 +84,6 @@ import {
   type ConfirmState,
   type FleetHit,
   type LogLine,
-  type Pending,
   type PickerState,
   type PromptState,
   type QNav,
@@ -130,11 +129,11 @@ const questionState = (
   sessionId: string | null | undefined,
 ): { requestId: string; qs: AskUserQuestionItem[]; nav: QNav | null } | null => {
   if (!sessionId) return null;
-  const fp = firstPerm(pendingFor(state, sessionId));
-  if (fp?.tool !== "AskUserQuestion") return null;
-  const qs = parseAskUserQuestions(fp.input);
+  const r = activeRequest(state, sessionId);
+  if (r?.kind !== "user_question") return null;
+  const qs = parseAskUserQuestions(r.input);
   if (qs.length === 0) return null;
-  return { requestId: fp.id, qs, nav: liveQNav(state.qnav, sessionId, fp.id) };
+  return { requestId: r.id, qs, nav: liveQNav(state.qnav, sessionId, r.id) };
 };
 
 /** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
@@ -273,7 +272,10 @@ export interface FleetView {
   /** The active layout view — `⇥` toggles it, `Esc` resets to `overview`. */
   readonly layoutView: LayoutView;
   readonly sel: SessionSnapshot | null;
-  readonly pend: Pending;
+  /** The request the panel shows and the keys act on — see `activeRequest`. */
+  readonly request: SessionInteraction | null;
+  /** How many the selected session has outstanding in total, `request` included. */
+  readonly requestCount: number;
   readonly allowed: ReadonlySet<ActName>;
   readonly showRequest: boolean;
   /** Which `AskUserQuestion` question the request panel should show — the one
@@ -347,16 +349,11 @@ const deriveView = (
   dims: { cols: number; rows: number },
 ): FleetView => {
   const sel = selectedSession(state);
-  // The request panel shows what the turn is parked on. `pending` is
-  // reconstructed from the event stream and can hold stale entries (a plan
-  // approved elsewhere never emits a clearing event), so narrow it to the
-  // daemon's own answer for what's outstanding.
-  const pend = sel
-    ? focusedPending(
-        pendingFor(state, sel.id),
-        sel.status.kind === "awaiting_input" ? sel.status.on : null,
-      )
-    : {};
+  // The panel shows what the turn is parked on, straight off the snapshot: the
+  // request's id, kind and payload travel together from here to the screen and
+  // back to the RPC that answers it.
+  const request = sel ? activeRequest(state, sel.id) : null;
+  const requestCount = sel ? requestsFor(state, sel.id).length : 0;
   const allowed = allowedActs(sel);
 
   // The approve / answer / plan panel sits full-width just above the footer in
@@ -364,7 +361,7 @@ const deriveView = (
   const showRequest =
     (state.mode === "browse" || state.mode === "prompt") &&
     sel?.status.kind === "awaiting_input" &&
-    (firstPerm(pend) !== undefined || pend.question !== undefined || pend.plan !== undefined);
+    request !== null;
 
   // Never floor these above the real terminal size: the whole frame is laid
   // out at exactly `cols` × `rows`, and a frame wider/taller than the terminal
@@ -380,8 +377,8 @@ const deriveView = (
   const questionIdx =
     state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
       ? (state.prompt.qaIdx ?? 0)
-      : (liveQNav(state.qnav, sel?.id, firstPerm(pend)?.id)?.idx ?? 0);
-  const requestH = showRequest ? requestPanelRows(pend, cols, questionIdx) : 0;
+      : (liveQNav(state.qnav, sel?.id, request?.id)?.idx ?? 0);
+  const requestH = showRequest ? requestPanelRows(request, cols, questionIdx) : 0;
 
   // Below this width the three-column split starves every column (~20 cols each
   // on a phone-sized SSH window), so `overview` is the fleet list alone — the
@@ -457,7 +454,8 @@ const deriveView = (
     planScroll,
     layoutView,
     sel,
-    pend,
+    request,
+    requestCount,
     allowed,
     showRequest: showRequest === true,
     questionIdx,
@@ -525,6 +523,27 @@ export const mkFleetHandle = ({
   // twice. Holds the overlay object already acted on — a fresh overlay has a
   // new identity and passes.
   let overlayActed: object | null = null;
+  // The same latch for request keys. Ink hands a batched stdin chunk to the key
+  // handler one byte at a time, before the view updates — so "aa" would issue
+  // two `respondPermission` calls for the same request. Holds the id already
+  // submitted; the next request has a different id and passes.
+  //
+  // It is a duplicate-keystroke guard and nothing else. What is outstanding is
+  // the snapshot's to say, and an answer whose outcome is uncertain is never
+  // re-sent: only a call that *failed* clears the latch, and only for a retry
+  // the user asks for.
+  let requestActed: string | null = null;
+  const claimRequest = (requestId: string): boolean => {
+    if (requestActed === requestId) return false;
+    requestActed = requestId;
+    return true;
+  };
+  const releaseRequest = (requestId: string, err: unknown): void => {
+    // A dropped or timed-out reply means the daemon may well have applied it.
+    // Keep the latch: retrying would answer the same request twice.
+    if (isAmbiguousFailure(err)) return;
+    if (requestActed === requestId) requestActed = null;
+  };
   // Ink delivers a batched stdin chunk one byte at a time before the view
   // updates. A second `\r` right after `submitPrompt` closed the prompt would
   // otherwise be handled in `browse` mode and fire `runAct("send"|"answer")` on
@@ -910,24 +929,23 @@ export const mkFleetHandle = ({
   /** `o` / `⌥o` — open the pending request, or the event log, in `$EDITOR` read-only. */
   const viewInEditor = async (): Promise<void> => {
     const s = selectedSession(state);
-    const pend = s ? pendingFor(state, s.id) : {};
-    const fp = firstPerm(pend);
-    if (pend.plan !== undefined) {
-      await openEditor(pend.planText ?? "", { ext: "md" });
-    } else if (fp) {
-      const qs = fp.tool === "AskUserQuestion" ? parseAskUserQuestions(fp.input) : [];
-      await (qs.length > 0
-        ? openEditor(formatQuestionsForEditor(qs), { ext: "md" })
-        : openEditor(JSON.stringify({ tool: fp.tool, input: fp.input }, null, 2), {
-            ext: "json",
-          }));
-    } else if (pend.question !== undefined) {
-      await openEditor([pend.questionText ?? "", "", pend.questionContext ?? ""].join("\n"), {
-        ext: "md",
-      });
-    } else {
+    const r = s ? activeRequest(state, s.id) : null;
+    if (r === null) {
       await openEditor(logText(), { ext: "log" });
+      return;
     }
+    await foldInteraction<Promise<unknown>>({
+      onPlanReview: (p) => openEditor(p.plan, { ext: "md" }),
+      onQuestion: (q) => openEditor([q.question, "", q.context ?? ""].join("\n"), { ext: "md" }),
+      onUserQuestion: (u) => {
+        const qs = parseAskUserQuestions(u.input);
+        return qs.length > 0
+          ? openEditor(formatQuestionsForEditor(qs), { ext: "md" })
+          : openEditor(JSON.stringify({ tool: u.tool, input: u.input }, null, 2), { ext: "json" });
+      },
+      onPermission: (p) =>
+        openEditor(JSON.stringify({ tool: p.tool, input: p.input }, null, 2), { ext: "json" }),
+    })(r);
   };
 
   /** Command palette: the tail of both process logs in `$EDITOR` — daemon.log
@@ -1045,50 +1063,56 @@ export const mkFleetHandle = ({
     }
     switch (name) {
       case "approve": {
-        const fp = firstPerm(pendingFor(state, s.id));
-        if (!fp) return note("no permission request pending", "dim");
-        const requestId = fp.id;
+        const r = activeRequest(state, s.id);
+        if (r === null || (r.kind !== "permission" && r.kind !== "user_question")) {
+          return note("no permission request pending", "dim");
+        }
+        const requestId = r.id;
+        if (!claimRequest(requestId)) return;
         return perform(async () => {
-          const r = await client.request<{ alreadyResolved: boolean }>(
-            "session.respondPermission",
-            {
+          const res = await client
+            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
               id: s.id,
               requestId,
               decision: "allow",
               by,
-            },
-          );
-          dispatch({ t: "resolvePerm", sessionId: s.id, id: requestId });
-          return r.alreadyResolved ? `${requestId} already resolved` : `approved ${requestId}`;
+            })
+            .catch((e: unknown) => {
+              releaseRequest(requestId, e);
+              throw e;
+            });
+          return res.alreadyResolved ? `${requestId} already resolved` : `approved ${requestId}`;
         });
       }
       case "deny": {
-        const fp = firstPerm(pendingFor(state, s.id));
-        if (!fp) return note("no permission request pending", "dim");
+        const r = activeRequest(state, s.id);
+        if (r === null || (r.kind !== "permission" && r.kind !== "user_question")) {
+          return note("no permission request pending", "dim");
+        }
         return void dispatch({
           t: "openPrompt",
           prompt: makePrompt({
             kind: "deny",
             sessionId: s.id,
-            requestId: fp.id,
-            label: `deny ${fp.id}`,
+            requestId: r.id,
+            label: `deny ${r.id}`,
           }),
         });
       }
       case "answer": {
-        const pend = pendingFor(state, s.id);
-        if (pend.question !== undefined) {
+        const r = activeRequest(state, s.id);
+        if (r?.kind === "question") {
           return void dispatch({
             t: "openPrompt",
             prompt: makePrompt({
               kind: "answer",
               sessionId: s.id,
-              requestId: pend.question,
+              requestId: r.id,
               label: "answer",
             }),
           });
         }
-        if (firstPerm(pend)?.tool === "AskUserQuestion") {
+        if (r?.kind === "user_question") {
           const q = questionState(state, s.id);
           if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
           return void dispatch({
@@ -1143,13 +1167,13 @@ export const mkFleetHandle = ({
           }),
         });
       case "planreview": {
-        const pend2 = pendingFor(state, s.id);
-        if (!pend2.plan) return note("no plan pending", "dim");
+        const plan = requestsFor(state, s.id).find((r) => r.kind === "plan_review");
+        if (!plan) return note("no plan pending", "dim");
         return void dispatch({
           t: "openPlan",
           sessionId: s.id,
-          requestId: pend2.plan,
-          text: pend2.planText ?? "",
+          requestId: plan.id,
+          text: plan.plan,
         });
       }
       case "interrupt":
@@ -1708,14 +1732,9 @@ export const mkFleetHandle = ({
             // snaps the chip back to the `plan` the snapshot still reports;
             // open the review so there's no impossible "chip says X, the live
             // session is still parked on a plan" state to land in.
-            const pend = pendingFor(state, sessionId);
-            if (pend.plan) {
-              dispatch({
-                t: "openPlan",
-                sessionId,
-                requestId: pend.plan,
-                text: pend.planText ?? "",
-              });
+            const plan = requestsFor(state, sessionId).find((r) => r.kind === "plan_review");
+            if (plan) {
+              dispatch({ t: "openPlan", sessionId, requestId: plan.id, text: plan.plan });
             }
             dispatch({
               t: "notice",
@@ -1878,38 +1897,45 @@ export const mkFleetHandle = ({
             });
             return "";
           }
-          const fp = firstPerm(pendingFor(state, p.sessionId));
+          // The tool call's own input, so the answers ride back on the shape
+          // the SDK sent — read off the request being answered, by id.
+          const requestId = p.requestId;
+          const target = requestsFor(state, p.sessionId).find((r) => r.id === requestId);
+          const rawInput = target?.kind === "user_question" ? target.input : undefined;
           const baseInput =
-            fp && fp.input && typeof fp.input === "object"
-              ? (fp.input as Record<string, unknown>)
-              : {};
-          const r = await client.request<{ alreadyResolved: boolean }>(
-            "session.respondPermission",
-            {
+            rawInput && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
+          if (!claimRequest(requestId)) return "";
+          const r = await client
+            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
               id: p.sessionId,
-              requestId: p.requestId,
+              requestId,
               decision: "allow",
               updatedInput: { ...baseInput, answers },
               by,
-            },
-          );
-          dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
-          return r.alreadyResolved ? `${p.requestId} already resolved` : "answered";
+            })
+            .catch((e: unknown) => {
+              releaseRequest(requestId, e);
+              throw e;
+            });
+          return r.alreadyResolved ? ` already resolved` : "answered";
         }
         case "deny": {
           if (!p.sessionId || !p.requestId) return "";
-          const r = await client.request<{ alreadyResolved: boolean }>(
-            "session.respondPermission",
-            {
+          const requestId = p.requestId;
+          if (!claimRequest(requestId)) return "";
+          const r = await client
+            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
               id: p.sessionId,
-              requestId: p.requestId,
+              requestId,
               decision: "deny",
               by,
               ...(text ? { message: text } : {}),
-            },
-          );
-          dispatch({ t: "resolvePerm", sessionId: p.sessionId, id: p.requestId });
-          return r.alreadyResolved ? `${p.requestId} already resolved` : `denied ${p.requestId}`;
+            })
+            .catch((e: unknown) => {
+              releaseRequest(requestId, e);
+              throw e;
+            });
+          return r.alreadyResolved ? `${requestId} already resolved` : `denied ${requestId}`;
         }
         default:
           return absurd(p.kind);

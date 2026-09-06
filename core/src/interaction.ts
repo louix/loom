@@ -10,7 +10,7 @@
  * tracked beside it.
  */
 import { absurd } from "./absurd.ts";
-import type { AwaitReason, HarnessEvent } from "./events.ts";
+import type { HarnessEvent } from "./events.ts";
 
 /** A tool call gated on approve/deny. */
 export interface PermissionInteraction {
@@ -86,15 +86,6 @@ export const foldInteraction =
     }
   };
 
-/** The `awaiting_input` payload this request blocks the turn on. */
-export const interactionReason = (i: SessionInteraction): AwaitReason =>
-  foldInteraction<AwaitReason>({
-    onPermission: () => "permission",
-    onUserQuestion: () => "user_question",
-    onQuestion: () => "question",
-    onPlanReview: () => "plan_review",
-  })(i);
-
 /**
  * The interaction an adapter event raises, or null when the event doesn't block
  * the turn. The single place the "`AskUserQuestion` is a multiple-choice prompt,
@@ -128,12 +119,3 @@ export const interactionFor = (ev: HarnessEvent): SessionInteraction | null => {
       return null;
   }
 };
-
-/** A short human label, e.g. `permission · Bash`. For CLI / logs. */
-export const interactionLabel = (i: SessionInteraction): string =>
-  foldInteraction<string>({
-    onPermission: (p) => `permission · ${p.tool}`,
-    onUserQuestion: () => "question · choices",
-    onQuestion: () => "question",
-    onPlanReview: () => "plan review",
-  })(i);

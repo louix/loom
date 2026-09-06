@@ -228,7 +228,12 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       <Header state={state} width={cols} />
       {body}
       {view.showRequest ? (
-        <RequestPanel pending={view.pend} width={cols} questionIdx={view.questionIdx} />
+        <RequestPanel
+          request={view.request}
+          queued={view.requestCount}
+          width={cols}
+          questionIdx={view.questionIdx}
+        />
       ) : null}
       <FooterArea state={state} width={cols} />
     </Box>

@@ -19,7 +19,7 @@
  * turn's blocking request (permission / question / plan) moves them on.
  */
 import type { HarnessEvent } from "@loom/core/events";
-import { interactionFor, interactionReason } from "@loom/core/interaction";
+import { interactionFor } from "@loom/core/interaction";
 import {
   type SessionState,
   stateAwaitingInput,
@@ -53,7 +53,10 @@ export const deriveStatus = (
   // while already blocked still transitions (the manager de-dupes on
   // kind + payload).
   const request = interactionFor(ev);
-  if (request) return stateAwaitingInput(interactionReason(request));
+  // `AwaitReason` and the interaction's `kind` are the same closed set on
+  // purpose: what the turn is blocked on is *derived* from the request, never
+  // tracked beside it.
+  if (request) return stateAwaitingInput(request.kind);
 
   switch (ev.type) {
     case "assistant_text":

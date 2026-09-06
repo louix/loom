@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-4 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-5 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -484,27 +484,27 @@ Tests: the existing interaction and render cases.
 
 ### Change
 
-- [ ] Make request rendering and actions consume `SessionInteraction` directly.
+- [x] Make request rendering and actions consume `SessionInteraction` directly.
       Keep ID, kind and payload together through the whole path.
-- [ ] Use one small selector for the active request: prefer the first request
+- [x] Use one small selector for the active request: prefer the first request
       matching the authoritative awaiting reason, falling back to the first request
       in snapshot order. Preserve FIFO within parallel permissions and retain all
       remaining requests; selecting one must not discard the rest.
-- [ ] Preserve both free-text questions and native `AskUserQuestion` choices.
+- [x] Preserve both free-text questions and native `AskUserQuestion` choices.
       Keep choice parsing at the boundary where its unknown input is interpreted.
-- [ ] Reconcile every request-bound prompt, plan overlay and question navigator
+- [x] Reconcile every request-bound prompt, plan overlay and question navigator
       against the exact session/request ID in each new data snapshot. Close/reset
       obsolete interaction UI. Preserve typed text as a local draft where supported;
       never send it to a different request automatically.
-- [ ] Do not close unrelated send/title prompts merely because some request was
+- [x] Do not close unrelated send/title prompts merely because some request was
       resolved. Continue preserving local state while connection state is pending.
-- [ ] Delete `Pending`, `PendingPerm`, `pendingFor`'s optional-field conversion,
+- [x] Delete `Pending`, `PendingPerm`, `pendingFor`'s optional-field conversion,
       `focusedPending`, and their obsolete callers after migrating all consumers.
-- [ ] Delete the `resolved` shadow set, `pruneResolved`, and `resolvePerm`
+- [x] Delete the `resolved` shadow set, `pruneResolved`, and `resolvePerm`
       bookkeeping. Use the authoritative snapshot for outstanding requests. Retain
       a local submission latch solely to prevent duplicate key actions; it must not
       become a second request model or automatically retry an uncertain response.
-- [ ] Replace `interactionReason(i)` with `i.kind` where needed. Remove unused
+- [x] Replace `interactionReason(i)` with `i.kind` where needed. Remove unused
       `interactionLabel`. Keep/use an exhaustive fold where it simplifies rendering;
       do not keep wrappers just because the type is a union.
 
@@ -522,6 +522,74 @@ Tests: the existing interaction and render cases.
 Done: searches for the deleted projection/reconciliation names return no
 production callers. Delete the old `focusedPending` tests; keep the observable
 behavior above. This step must remove production code overall.
+
+**Done.** Production source is **net −55 lines** (262 added, 317 deleted) across
+six files; tests are +105. Grepping the workspace for `Pending`, `PendingPerm`,
+`pendingFor`, `firstPerm`, `focusedPending`, `pruneResolved`, `resolvePerm`,
+`interactionReason` and `interactionLabel` returns nothing outside two unrelated
+namesakes (`runtime/src/pending.ts`'s adapter-side parked-promise registry and
+the ChatGPT connector's RPC waiter).
+
+What was removed, and why each could go rather than being moved:
+
+- **`Pending` / `PendingPerm`.** A second shape for the request set, built by
+  flattening `SessionInteraction` into optional fields — `plan` and `planText`
+  beside each other, `permission` and `user_question` merged into one
+  `permissions` array. Every consumer now takes the interaction itself, so the
+  id, kind and payload stay together from the snapshot to the screen to the RPC
+  that answers it. `RequestPanel` is an exhaustive `foldInteraction`, which is
+  what made the flattening unnecessary rather than merely inconvenient.
+- **`focusedPending`.** It existed to undo damage `pendingFor` did: having
+  merged everything into one bag, it had to narrow the bag back down using
+  `status.on`. `activeRequest` reads `status.on` once, picks the matching
+  request, and keeps the rest — twelve lines instead of two functions, and
+  "selecting one must not discard the rest" is now structural rather than a
+  rule to remember.
+- **The `resolved` shadow set**, with `pruneResolved` and the `resolvePerm`
+  action. It was a second request model: a per-session list of ids the client
+  had answered, hidden from a projection, pruned against the snapshot on every
+  install. What replaces it is one closure variable in the handle holding the
+  last request id submitted. That is a duplicate-keystroke guard and nothing
+  else — it never hides a request, and `releaseRequest` deliberately keeps the
+  latch on a disconnected or timed-out reply, because retrying an uncertain
+  answer would resolve the same request twice.
+- **`interactionReason`.** `AwaitReason` and `SessionInteraction["kind"]` are
+  the same closed set on purpose, so the fold was the identity written out
+  longhand. `status-machine.ts` uses `request.kind`.
+- **`interactionLabel`.** No callers.
+
+What was added, deliberately: request-bound UI is now reconciled against the
+exact `(session, request)` pair in every data snapshot. A prompt, plan overlay
+or question navigator whose request the snapshot no longer carries closes, with
+a notice saying it was resolved elsewhere. A `send` or `title` prompt carries no
+request id and is untouched by any of it — resolving a permission does not close
+the message someone is half-way through typing.
+
+Regressions, each verified to fail with its fix reverted in place:
+
+1. `a resolved request closes the UI bound to it, and nothing else` — client B
+   resolves the exact request client A is answering; A's prompt and navigator
+   close, an unrelated draft survives, and nothing typed for the old request is
+   re-aimed at the new one.
+2. `resolving one of several permissions retires exactly that one, FIFO`.
+3. Covered by 1's second half: a new question id inherits no answers or cursor.
+4. `loading old history changes no outstanding request`, driven through the
+   real handle.
+5. `a batched duplicate approval key issues one RPC, with no shadow request
+set` — two `a` presses in one stdin chunk against the same snapshot.
+
+Deleted tests: `focusedPending keeps only the surface…` (the function is gone)
+and `answering a request hides it until the snapshot agrees` (it asserted the
+shadow set). The observable behaviour both were reaching for is covered above.
+
+One deliberate behaviour change worth naming: answering the first of several
+parallel permissions now waits a round trip before the panel moves to the next,
+where the shadow set moved instantly. That is the cost of having one source of
+truth for what is outstanding, and §6 shortens the wait by publishing the
+snapshot as part of the same transition.
+
+Verified: typecheck, lint and format:check clean; `deno task test` 645 passed
+(115 steps) / 0 failed.
 
 ## 6. Make publication follow a complete event transition
 

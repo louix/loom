@@ -11,8 +11,9 @@ import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
 import type { ClientState } from "@loom/client";
 import { loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
-import { stateIdle, stateRunning } from "@loom/core/session-state";
+import { stateAwaitingInput, stateIdle, stateRunning } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
+import type { SessionInteraction } from "@loom/core/interaction";
 import type {
   DaemonInfo,
   HistoryCursor,
@@ -42,6 +43,7 @@ import {
   makePrompt,
   queueFor,
   reduce,
+  requestsFor,
   sessionLog,
   TRANSCRIPT_CAP,
   transcriptFor,
@@ -1917,17 +1919,19 @@ model    = "gpt-5"
     },
   ];
 
-  const askPending = (input: unknown = { questions: QUESTIONS }) => ({
-    permissions: [{ id: "p1", tool: "AskUserQuestion", input }],
+  const askRequest = (input: unknown = { questions: QUESTIONS }): SessionInteraction => ({
+    kind: "user_question",
+    id: "p1",
+    tool: "AskUserQuestion",
+    input,
+    at: 1,
   });
 
   test("the request panel expands to show every option of the active question", () => {
-    const pend = askPending();
+    const request = askRequest();
     // every option letter is present — not clipped at a) b) like the old fixed
     // 5-row body did
-    const out = stripAnsi(
-      renderToString(createElement(RequestPanel, { pending: pend, width: 80 })),
-    );
+    const out = stripAnsi(renderToString(createElement(RequestPanel, { request, width: 80 })));
     for (const letter of ["a)", "b)", "c)", "d)"]) {
       assert.ok(out.includes(letter), `option ${letter} is rendered: ${JSON.stringify(out)}`);
     }
@@ -1937,15 +1941,15 @@ model    = "gpt-5"
     // overflow or leave a gap
     assert.equal(
       out.split("\n").length,
-      requestPanelRows(pend, 80, 0),
+      requestPanelRows(request, 80, 0),
       "panel height equals its reservation",
     );
   });
 
   test("requestPanelRows tracks the previewed question and caps its growth", () => {
-    const pend = askPending();
-    const q0 = requestPanelRows(pend, 80, 0);
-    const q1 = requestPanelRows(pend, 80, 1);
+    const request = askRequest();
+    const q0 = requestPanelRows(request, 80, 0);
+    const q1 = requestPanelRows(request, 80, 1);
     assert.ok(q0 > q1, "the 4-option question reserves more rows than the 2-option one");
     // a pathological question can't grow the panel without bound
     const huge = {
@@ -1957,12 +1961,18 @@ model    = "gpt-5"
         },
       ],
     };
-    assert.ok(requestPanelRows({ ...askPending(huge) }, 80, 0) <= 18, "body is capped");
+    assert.ok(requestPanelRows(askRequest(huge), 80, 0) <= 18, "body is capped");
   });
 
   test("a non-question permission keeps the fixed panel height", () => {
-    const pend = { permissions: [{ id: "p1", tool: "Bash", input: { command: "npm publish" } }] };
-    assert.equal(requestPanelRows(pend, 80, 0), 8);
+    const request: SessionInteraction = {
+      kind: "permission",
+      id: "p1",
+      tool: "Bash",
+      input: { command: "npm publish" },
+      at: 1,
+    };
+    assert.equal(requestPanelRows(request, 80, 0), 8);
   });
 
   test("askQuestionLines letters every option and returns them all", () => {
@@ -1995,17 +2005,13 @@ model    = "gpt-5"
 
   test("the request-panel hint offers ←/→ only for a multi-question call", () => {
     const multi = stripAnsi(
-      renderToString(createElement(RequestPanel, { pending: askPending(), width: 90 })),
+      renderToString(createElement(RequestPanel, { request: askRequest(), width: 90 })),
     );
     assert.match(multi, /←\/→ question/);
     const one = stripAnsi(
       renderToString(
         createElement(RequestPanel, {
-          pending: {
-            permissions: [
-              { id: "p1", tool: "AskUserQuestion", input: { questions: [QUESTIONS[0]!] } },
-            ],
-          },
+          request: askRequest({ questions: [QUESTIONS[0]!] }),
           width: 90,
         }),
       ),
@@ -2511,6 +2517,90 @@ describe("tui transcript paging through the handle", () => {
       assert.equal(followed.following, true, "and resumed following it");
       assert.equal(followed.lines.at(-1)?.id, 20_001);
       assert.equal(handle.getView().logScroll, 0, "with the viewport back at the tail");
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("tui interaction actions through the handle", () => {
+  const permRequest = (id: string): SessionInteraction => ({
+    kind: "permission",
+    id,
+    tool: "Bash",
+    input: { command: "ls" },
+    at: 1,
+  });
+  const parked = (...requests: SessionInteraction[]): SessionSnapshot =>
+    testSession({ id: "a", status: stateAwaitingInput("permission"), requests });
+
+  test("a batched duplicate approval key issues one RPC, with no shadow request set", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(parked(permRequest("p1"), permRequest("p2"))));
+      assert.equal(handle.getView().request?.id, "p1", "oldest first");
+      assert.equal(handle.getView().requestCount, 2, "and the panel knows one is queued behind");
+
+      // Ink delivers a batched "aa" one byte at a time, before the view
+      // updates — so the second press sees the same snapshot as the first.
+      handle.handleKey("a", {} as Key);
+      handle.handleKey("a", {} as Key);
+      const calls = fake.of("session.respondPermission");
+      assert.equal(calls.length, 1, "exactly one approval reached the daemon");
+      assert.equal(calls[0]?.params["requestId"], "p1");
+
+      // The authoritative list is untouched: nothing local hides p1, and the
+      // panel keeps showing it until the daemon says otherwise.
+      assert.deepEqual(
+        requestsFor(handle.getView().state, "a").map((r) => r.id),
+        ["p1", "p2"],
+      );
+      assert.equal(handle.getView().request?.id, "p1");
+
+      // The daemon catches up. p2 is a different request, so it is actionable.
+      calls[0]?.resolve({ alreadyResolved: false });
+      fake.deliver(fleetOf(parked(permRequest("p2"))));
+      assert.equal(handle.getView().request?.id, "p2");
+      handle.handleKey("a", {} as Key);
+      assert.equal(fake.of("session.respondPermission").length, 2);
+      assert.equal(fake.of("session.respondPermission")[1]?.params["requestId"], "p2");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("loading old history changes no outstanding request", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(parked(permRequest("p1"))));
+      fake.heads()[0]?.resolve({
+        items: [
+          {
+            id: 1,
+            event: {
+              sessionId: "a",
+              ts: 1,
+              type: "permission_request" as const,
+              id: "ancient",
+              tool: "rm",
+              input: {},
+            },
+          },
+        ],
+        olderCursor: null,
+      });
+      await delay(0);
+
+      // A long-answered request in old history is transcript and nothing more.
+      assert.deepEqual(
+        requestsFor(handle.getView().state, "a").map((r) => r.id),
+        ["p1"],
+      );
+      assert.equal(handle.getView().request?.id, "p1");
     } finally {
       teardown();
     }

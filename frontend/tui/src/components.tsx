@@ -9,6 +9,7 @@ import { Box, Text } from "ink";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
+import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { searchSessions } from "./fleet-search.ts";
 import {
@@ -35,7 +36,6 @@ import {
   type ConfirmState,
   type FleetChild,
   type LogLine,
-  type Pending,
   type PickerState,
   type PromptKind,
   type PromptState,
@@ -1397,10 +1397,13 @@ const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[
  *  clipping the active question. Non-question requests keep the fixed
  *  {@link REQUEST_PANEL_ROWS}; an `AskUserQuestion` grows to fit question
  *  `questionIdx`'s options, capped at {@link REQUEST_PANEL_MAX_BODY}. */
-export const requestPanelRows = (pending: Pending, width: number, questionIdx = 0): number => {
-  const p0 = (pending.permissions ?? [])[0];
-  if (!p0 || p0.tool !== "AskUserQuestion") return REQUEST_PANEL_ROWS;
-  const qs = parseAskUserQuestions(p0.input);
+export const requestPanelRows = (
+  request: SessionInteraction | null,
+  width: number,
+  questionIdx = 0,
+): number => {
+  if (request?.kind !== "user_question") return REQUEST_PANEL_ROWS;
+  const qs = parseAskUserQuestions(request.input);
   if (qs.length === 0) return REQUEST_PANEL_ROWS;
   const body = Math.max(
     REQUEST_PANEL_MIN_BODY,
@@ -1429,11 +1432,18 @@ const describeRequest = (input: unknown, w: number): string[] => {
 };
 
 export const RequestPanel = ({
-  pending,
+  request,
+  queued = 1,
   width,
   questionIdx = 0,
 }: {
-  pending: Pending;
+  /** The request being acted on — one of the session's, chosen by the model's
+   *  `activeRequest`. Rendered from the interaction itself, so its id, kind and
+   *  payload stay together all the way to the screen. */
+  request: SessionInteraction | null;
+  /** How many requests the session has outstanding in total, this one included
+   *  — the panel says so, because answering this one does not clear the rest. */
+  queued?: number;
   width: number;
   /** For `AskUserQuestion`: which question to show — the one the answer prompt
    *  is currently collecting. */
@@ -1459,69 +1469,72 @@ export const RequestPanel = ({
     </Box>
   );
 
-  if (pending.question !== undefined) {
-    return box(
-      "? QUESTION",
-      [
-        ...wrapText((pending.questionText ?? "").replace(/\s+/g, " ").trim(), w)
-          .slice(0, 4)
-          .map((l, i) => (
-            <Text key={i} color={C.text}>
-              {l}
+  if (request === null) return null;
+  const lines = (text: string, max: number, key = ""): ReactNode[] =>
+    wrapText(text.replace(/\s+/g, " ").trim(), w)
+      .slice(0, max)
+      .map((l, i) => (
+        <Text key={`${key}${i}`} color={C.text} wrap="truncate-end">
+          {l}
+        </Text>
+      ));
+  // "…and N more" is the whole reason the panel takes a count: answering the
+  // one on screen leaves the others outstanding and the turn still blocked.
+  const alsoQueued = queued > 1 ? `  ·  ${queued - 1} more queued` : "";
+
+  return foldInteraction<ReactNode>({
+    onQuestion: (q) =>
+      box(
+        "? QUESTION",
+        [
+          ...lines(q.question, 4),
+          q.context ? (
+            <Text key="ctx" color={C.faint} wrap="truncate-end">
+              {truncate(q.context.replace(/\s+/g, " ").trim(), w)}
             </Text>
-          )),
-        pending.questionContext ? (
-          <Text key="ctx" color={C.faint} wrap="truncate-end">
-            {truncate(pending.questionContext.replace(/\s+/g, " ").trim(), w)}
-          </Text>
-        ) : null,
-      ],
-      "a answer  ·  ⌥o / o view  ·  i interrupt",
-    );
-  }
-  if (pending.plan !== undefined) {
-    return box(
-      "❖ PLAN REVIEW",
-      wrapText((pending.planText ?? "").replace(/\s+/g, " ").trim(), w)
-        .slice(0, 5)
-        .map((l, i) => (
+          ) : null,
+        ],
+        `a answer  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
+      ),
+    onPlanReview: (p) =>
+      box(
+        "❖ PLAN REVIEW",
+        lines(p.plan, 5),
+        `a review  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
+      ),
+    onUserQuestion: (u) => {
+      const qs = parseAskUserQuestions(u.input);
+      // Title position marker: which question of this call we're on, plus —
+      // when others are queued behind it — where this one sits in the queue.
+      const pos = [
+        qs.length > 1 ? `${questionIdx + 1}/${qs.length}` : "",
+        queued > 1 ? `1 of ${queued}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return box(
+        `? QUESTION${pos ? ` (${pos})` : ""}`,
+        describeAskUserQuestion(u.input, w, questionIdx).map((l, i) => (
           <Text key={i} color={C.text} wrap="truncate-end">
             {l}
           </Text>
         )),
-      "a review  ·  ⌥o / o view  ·  i interrupt",
-    );
-  }
-  const perms = pending.permissions ?? [];
-  if (perms.length > 0) {
-    const p0 = perms[0]!;
-    const isQuestion = p0.tool === "AskUserQuestion";
-    const qs = isQuestion ? parseAskUserQuestions(p0.input) : [];
-    // Title position marker: which question of this call we're on, plus — if
-    // other requests are queued behind it — where this one sits in the queue.
-    const pos = [
-      qs.length > 1 ? `${questionIdx + 1}/${qs.length}` : "",
-      perms.length > 1 ? `1 of ${perms.length}` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const more = pos ? ` (${pos})` : "";
-    return box(
-      isQuestion ? `? QUESTION${more}` : `⇱ PERMISSION — ${p0.tool || "tool"}${more}`,
-      (isQuestion
-        ? describeAskUserQuestion(p0.input, w, questionIdx)
-        : describeRequest(p0.input, w)
-      ).map((l, i) => (
-        <Text key={i} color={C.text} wrap="truncate-end">
-          {l}
-        </Text>
-      )),
-      `${isQuestion ? "a answer" : "a approve"}  ·  d deny${
-        isQuestion && qs.length > 1 ? "  ·  ←/→ question" : ""
-      }  ·  ⌥o / o view  ·  i interrupt${perms.length > 1 ? "  ·  more queued" : ""}`,
-    );
-  }
-  return null;
+        `a answer  ·  d deny${
+          qs.length > 1 ? "  ·  ←/→ question" : ""
+        }  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
+      );
+    },
+    onPermission: (p) =>
+      box(
+        `⇱ PERMISSION — ${p.tool || "tool"}${queued > 1 ? ` (1 of ${queued})` : ""}`,
+        describeRequest(p.input, w).map((l, i) => (
+          <Text key={i} color={C.text} wrap="truncate-end">
+            {l}
+          </Text>
+        )),
+        `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
+      ),
+  })(request);
 };
 
 // ---------------------------------------------------------------------------

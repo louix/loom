@@ -5,14 +5,10 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import type {
-  AwaitReason,
-  BackgroundTaskKind,
-  HarnessEvent,
-  SessionStateKind,
-} from "@loom/core/events";
+import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
+import type { SessionInteraction } from "@loom/core/interaction";
 import type {
   DaemonInfo,
   DaemonSnapshot,
@@ -218,6 +214,8 @@ export interface Notice {
   at: number;
 }
 
+const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
+
 export type PromptKind =
   | "send"
   | "answer"
@@ -418,57 +416,6 @@ export interface ConfirmState {
   force?: boolean;
 }
 
-export interface PendingPerm {
-  id: string;
-  tool: string;
-  input: unknown;
-}
-
-/**
- * Outstanding round-trips per session, recovered from the event stream — the
- * ids to answer with, plus enough of the request to show what it's asking.
- * `permissions` is a queue: parallel tool calls in one step each raise their
- * own `permission_request`, and the turn stays blocked until every one is
- * answered. `ask_user` / `ExitPlanMode` don't parallelise, so those stay single.
- */
-export interface Pending {
-  permissions?: PendingPerm[];
-  question?: string;
-  questionText?: string;
-  questionContext?: string;
-  plan?: string;
-  planText?: string;
-}
-
-/** The permission request the UI should surface next (FIFO). */
-export const firstPerm = (p: Pending): PendingPerm | undefined => {
-  return p.permissions?.[0];
-};
-
-/**
- * Keep only the surface the daemon says the session is parked on. `pending` is
- * reconstructed from the event stream, and not every resolution leaves a mark
- * there (a plan approved on another client / before a reconnect never emits
- * one), so a stale entry can outlive the request it describes. `status.on` is
- * the daemon's own outstanding-request map — authoritative for what the turn
- * is blocked on *now* — so when it matches something we hold, drop the rest.
- * An `on` with nothing matching (or none at all) keeps everything.
- */
-export const focusedPending = (p: Pending, on: AwaitReason | null): Pending => {
-  if (!on) return p;
-  if (on === "plan_review" && p.plan !== undefined)
-    return { plan: p.plan, ...(p.planText ? { planText: p.planText } : {}) };
-  if (on === "question" && p.question !== undefined)
-    return {
-      question: p.question,
-      ...(p.questionText ? { questionText: p.questionText } : {}),
-      ...(p.questionContext ? { questionContext: p.questionContext } : {}),
-    };
-  if ((on === "permission" || on === "user_question") && p.permissions && p.permissions.length > 0)
-    return { permissions: p.permissions };
-  return p;
-};
-
 /** One question from an `AskUserQuestion` tool call, narrowed for display. */
 export interface AskUserQuestionItem {
   question: string;
@@ -579,14 +526,6 @@ export interface TuiState {
    */
   transcriptGen: number;
   logFilter: LogFilter;
-  /**
-   * Requests this client has answered but whose absence the snapshot has yet to
-   * report, per session. A local overlay beside the authoritative request list,
-   * never a write into it: it exists so answering the first of three queued
-   * permissions moves straight to the second instead of stalling for a round
-   * trip. Entries retire when the snapshot stops carrying the id.
-   */
-  resolved: Record<string, readonly string[]>;
   /** Follow-up messages typed at a still-running session, awaiting its next idle. */
   queue: Record<string, string[]>;
   /**
@@ -657,7 +596,6 @@ export const initialState = (): TuiState => {
     transcripts: {},
     transcriptGen: 0,
     logFilter: "everything",
-    resolved: {},
     queue: {},
     heldSend: {},
     notice: null,
@@ -746,7 +684,6 @@ export type Action =
   | { t: "openFind" }
   | { t: "findSet"; buffer: Buffer }
   | { t: "closeFind" }
-  | { t: "resolvePerm"; sessionId: string; id: string }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "help"; value: boolean }
   | { t: "doctor"; value: boolean }
@@ -1059,7 +996,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, logFilter: a.value };
 
     case "notice":
-      return { ...s, notice: { text: a.text, tone: a.tone, at: Date.now() } };
+      return { ...s, notice: mkNotice(a.text, a.tone) };
 
     case "expireNotice":
       if (!s.notice) return s;
@@ -1260,13 +1197,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "closeFind":
       return s.find ? { ...s, find: null } : s;
 
-    case "resolvePerm": {
-      const qnav = liveQNav(s.qnav, a.sessionId, a.id) ? null : s.qnav;
-      const held = s.resolved[a.sessionId] ?? [];
-      if (held.includes(a.id)) return qnav === s.qnav ? s : { ...s, qnav };
-      return { ...s, qnav, resolved: { ...s.resolved, [a.sessionId]: [...held, a.id] } };
-    }
-
     case "qnavSet":
       return { ...s, qnav: a.nav };
 
@@ -1309,18 +1239,28 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
   const sessions = sortSessions(state.value.sessions);
   const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
   const live = new Set(sessions.map((x) => x.id));
-  // An open plan overlay survives only while its *exact* request id is still
-  // outstanding. Answered here, answered in another window, or the session
-  // moved on — all three read the same way in a snapshot, and all three mean
-  // the overlay can no longer be acted on.
-  const planGone =
-    s.plan !== null &&
-    !sessions.some(
-      (x) => x.id === s.plan?.sessionId && x.requests.some((r) => r.id === s.plan?.requestId),
-    );
+  // Every outstanding request, addressed the way the UI holds one — request ids
+  // are unique within a session, not across the fleet.
+  const open = new Set<string>();
+  for (const x of sessions) for (const r of x.requests) open.add(`${x.id} ${r.id}`);
+  /**
+   * Anything bound to a *specific* request survives only while that exact
+   * request is still outstanding. Answered here, answered in another window, or
+   * the turn moved on — all three read the same way in a snapshot, and all
+   * three mean the thing on screen can no longer be acted on. Whatever replaced
+   * it is a different request, and nothing typed for one is re-aimed at it.
+   */
+  const goneFor = (sid: string | null | undefined, rid: string | undefined): boolean =>
+    sid != null && rid !== undefined && !open.has(`${sid} ${rid}`);
+  const planGone = s.plan !== null && goneFor(s.plan.sessionId, s.plan.requestId);
   // A send / answer / title / compact prompt or a picker aimed at a session
-  // another client just removed would loop on submit (RPC error → reopen).
-  const promptGone = s.prompt?.sessionId != null && !live.has(s.prompt.sessionId);
+  // another client just removed would loop on submit (RPC error → reopen). A
+  // request-bound prompt also goes when its request does; a `send` or `title`
+  // prompt carries no request id, so resolving one never closes it.
+  const promptGone =
+    (s.prompt?.sessionId != null && !live.has(s.prompt.sessionId)) ||
+    goneFor(s.prompt?.sessionId, s.prompt?.requestId);
+  const qnavGone = s.qnav !== null && goneFor(s.qnav.sessionId, s.qnav.requestId);
   const pickerSession = s.picker?.ctx?.liveSessionId;
   const pickerGone = pickerSession != null && !live.has(pickerSession);
   const picker = pickerGone ? null : rederiveOpenPicker({ ...s, fleet });
@@ -1330,6 +1270,7 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
+    ...(qnavGone ? { qnav: null } : {}),
     // `queue` is deliberately NOT pruned here. A queue whose session has gone
     // is stranded, and stranding it is news — silently dropping it loses a
     // message the user typed with no word about it. `drainQueues` clears it and
@@ -1337,10 +1278,17 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     heldSend: pruneByLive(s.heldSend, sessions),
     modeDraft: pruneByLive(s.modeDraft, sessions),
     transcripts: pruneByLive(s.transcripts, sessions),
-    resolved: pruneResolved(pruneByLive(s.resolved, sessions), sessions),
     ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
     ...(promptGone
-      ? { prompt: null, mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode }
+      ? {
+          prompt: null,
+          mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode,
+          // Say why it vanished, but only when the session is still there —
+          // a removed session already reports itself.
+          ...(s.prompt?.requestId !== undefined && live.has(s.prompt.sessionId ?? "")
+            ? { notice: mkNotice("that request was resolved elsewhere", "dim") }
+            : {}),
+        }
       : {}),
     ...pickerPatch(s, pickerGone, picker),
   };
@@ -1433,29 +1381,6 @@ const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {
   if (!(key in rec)) return rec;
   const { [key]: _drop, ...rest } = rec;
   return rest;
-};
-
-/**
- * Retire optimistically-hidden request ids the snapshot no longer carries — the
- * daemon has caught up, so the overlay has done its job. Anything still
- * outstanding stays hidden until it does.
- */
-const pruneResolved = (
-  resolved: Record<string, readonly string[]>,
-  sessions: readonly SessionSnapshot[],
-): Record<string, readonly string[]> => {
-  let changed = false;
-  const out: Record<string, readonly string[]> = {};
-  for (const [id, ids] of Object.entries(resolved)) {
-    const open = new Set(sessions.find((x) => x.id === id)?.requests.map((r) => r.id) ?? []);
-    const kept = ids.filter((x) => open.has(x));
-    if (kept.length === ids.length) out[id] = ids;
-    else {
-      changed = true;
-      if (kept.length > 0) out[id] = kept;
-    }
-  }
-  return changed ? out : resolved;
 };
 
 /** Drop entries keyed by a session that no longer exists. */
@@ -1605,37 +1530,28 @@ export const focusedChildOf = (s: TuiState): FleetChild | null => {
  * bookkeeping. Ids this client has just answered are hidden until the snapshot
  * agrees (see {@link TuiState.resolved}).
  */
-export const pendingFor = (s: TuiState, id: string | null): Pending => {
-  if (!id) return {};
-  const session = fleetSessions(s).find((x) => x.id === id);
-  if (!session) return {};
-  const hidden = new Set(s.resolved[id] ?? []);
-  const out: Pending = {};
-  const permissions: PendingPerm[] = [];
-  for (const r of session.requests) {
-    if (hidden.has(r.id)) continue;
-    switch (r.kind) {
-      // `AskUserQuestion` arrives as a permission request whose tool happens to
-      // be a multiple-choice prompt — same resolve path, so same bucket.
-      case "permission":
-      case "user_question":
-        permissions.push({ id: r.id, tool: r.tool, input: r.input });
-        break;
-      case "question":
-        out.question = r.id;
-        out.questionText = r.question;
-        if (r.context !== undefined) out.questionContext = r.context;
-        break;
-      case "plan_review":
-        out.plan = r.id;
-        out.planText = r.plan;
-        break;
-      default:
-        return absurd(r);
-    }
-  }
-  if (permissions.length > 0) out.permissions = permissions;
-  return out;
+const NO_REQUESTS: readonly SessionInteraction[] = [];
+
+/** Everything the session is parked on, in the daemon's order — oldest first,
+ *  which is the order parallel permissions must be answered in. */
+export const requestsFor = (s: TuiState, id: string | null): readonly SessionInteraction[] =>
+  (id ? fleetSessions(s).find((x) => x.id === id)?.requests : undefined) ?? NO_REQUESTS;
+
+/**
+ * The one request the panel shows and the keys act on.
+ *
+ * `awaiting_input`'s reason is the daemon's own answer to "what is this turn
+ * blocked on", so prefer the first request of that kind; a session that reports
+ * no reason, or one nothing matches, falls back to the first request it has.
+ * Selecting never discards the rest — {@link requestsFor} still has them, in
+ * order, and the panel says how many are queued behind this one.
+ */
+export const activeRequest = (s: TuiState, id: string | null): SessionInteraction | null => {
+  const requests = requestsFor(s, id);
+  if (requests.length === 0) return null;
+  const status = fleetSessions(s).find((x) => x.id === id)?.status;
+  const on = status?.kind === "awaiting_input" ? status.on : null;
+  return (on ? requests.find((r) => r.kind === on) : undefined) ?? requests[0] ?? null;
 };
 
 /** A compaction the daemon reports in flight for `id`, or null. */
