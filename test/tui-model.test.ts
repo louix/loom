@@ -84,7 +84,7 @@ import {
   type PickerDest,
   type PlanReview,
 } from "@loom/tui/overlay";
-import { activeRequest, liveQNav, requestsFor } from "@loom/tui/interactions";
+import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
 import { cleared, enqueue, outboxOf, pending, release, type Outbox } from "@loom/tui/composer";
 import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
 
@@ -2327,6 +2327,49 @@ test("an outbox owns one message at a time, with the unsent tail explicit", () =
   assert.deepEqual(pending(out!.box), ["second"], "and moves up once the hold is released");
   assert.equal(release(box), null, "only a held message can be released");
   assert.deepEqual(pending(cleared(box)), []);
+});
+
+test("a request's guard is its own: an uncertain answer blocks only that request", async () => {
+  const settle: Array<(e: unknown) => void> = [];
+  const sent: string[] = [];
+  let sessions: SessionSnapshot[] = [
+    snap({
+      id: "a",
+      status: "awaiting_input",
+      requests: [
+        { kind: "permission", id: "p1", tool: "Bash", input: {}, at: 1 },
+        { kind: "permission", id: "p2", tool: "Bash", input: {}, at: 2 },
+      ],
+    }),
+  ];
+  const it = mkInteractions({
+    request: <T>(_m: string, params: Record<string, unknown>) => {
+      sent.push(String(params["requestId"]));
+      return new Promise<T>((_res, rej) => settle.push(rej));
+    },
+    by: "me",
+    fleet: () => sessions,
+  });
+
+  // p1's reply never comes back — it may well have been applied.
+  const first = it.respond("a", "p1", { t: "allow" });
+  settle[0]?.(Object.assign(new Error("dropped"), { code: "disconnected" }));
+  await assert.rejects(first);
+  void it.respond("a", "p1", { t: "allow" });
+  assert.deepEqual(sent, ["p1"], "p1 is not answered a second time");
+
+  // A different request is a different guard, and answering it changes nothing
+  // about p1's — the old single latch released p1 here.
+  void it.respond("a", "p2", { t: "deny", message: "" });
+  void it.respond("a", "p1", { t: "allow" });
+  assert.deepEqual(sent, ["p1", "p2"], "p2 goes, p1 stays held");
+
+  // The daemon stops listing p1: it is settled, whichever way it went, and
+  // there is nothing left for its guard to protect.
+  sessions = [snap({ id: "a", status: "idle", requests: [] })];
+  it.settle();
+  void it.respond("a", "p1", { t: "allow" });
+  assert.deepEqual(sent, ["p1", "p2", "p1"]);
 });
 
 test("a permission carries its tool + input; leaving awaiting_input clears it", () => {

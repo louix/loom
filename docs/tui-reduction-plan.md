@@ -133,23 +133,23 @@ to silence the migration. This step must reduce production code, not just move i
 Files: `fleet-handle.ts`, `model.ts`, components consuming their state.
 Introduce `interactions.ts` and `composer.ts` under `frontend/tui/src/`.
 
-- [ ] Put pure request selection, answer progression, and decision construction
+- [x] Put pure request selection, answer progression, and decision construction
       beside a small interaction handle. Read outstanding requests directly from
       daemon snapshots; do not recreate a local pending/resolved request database.
-- [ ] Keep one submission guard scoped to the relevant session/request operation.
+- [x] Keep one submission guard scoped to the relevant session/request operation.
       Batched duplicate keys issue one command. Failure and request replacement
       must not leave another request blocked or reuse the old answer.
-- [ ] Put drafts, queued messages, and send progression in the composer. Replace
+- [x] Put drafts, queued messages, and send progression in the composer. Replace
       correlated `draining`, `lastDrainTurn`, and held-text bookkeeping with a
       per-session union whose active variant owns its message and turn barrier.
       Keep the unsent tail explicit; do not call it an uncertain send.
-- [ ] Commit the sending/held/removed state before invoking effects or publishing
+- [x] Commit the sending/held/removed state before invoking effects or publishing
       notices. Reducers never call dispatch. Sending completion produces a new
       input to the owning handle, not recursive inspection of the entire app.
-- [ ] On timeout/disconnect, preserve the ambiguous message for explicit review,
+- [x] On timeout/disconnect, preserve the ambiguous message for explicit review,
       prevent its automatic resend, and preserve remaining unsent entries. Keep
       the existing next-turn rule; do not drain several entries on one idle snapshot.
-- [ ] Root composition forwards fleet updates and user intentions. Components
+- [x] Root composition forwards fleet updates and user intentions. Components
       receive views/actions; they do not perform RPCs or reconcile daemon state.
       Feature modules must not import the root fleet handle or each other cyclically.
 
