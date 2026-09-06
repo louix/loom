@@ -5,6 +5,7 @@
     "./run": "./src/run.tsx",
     "./app": "./src/app.tsx",
     "./model": "./src/model.ts",
+    "./overlay": "./src/overlay.ts",
     "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",
     "./editor-handoff": "./src/editor-handoff.ts",

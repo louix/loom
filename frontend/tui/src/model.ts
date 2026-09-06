@@ -31,6 +31,13 @@ import {
 } from "@loom/core/loadable";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
+import {
+  newPrompt,
+  promptTarget,
+  sessionPrompt,
+  type NewSessionSettings,
+  type Prompt,
+} from "./overlay.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
@@ -215,92 +222,6 @@ export interface Notice {
 }
 
 const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
-
-export type PromptKind =
-  | "send"
-  | "answer"
-  | "answerQuestion"
-  | "deny"
-  | "new"
-  | "title"
-  | "comment"
-  | "discuss"
-  | "compact";
-
-export interface PromptState {
-  kind: PromptKind;
-  /** Target session; `null` only for `new`. */
-  sessionId: string | null;
-  /** Permission / question id, for `answer` and `deny`. */
-  requestId?: string;
-  label: string;
-  buffer: Buffer;
-  /** Permission mode for the session to be created — `new` only. */
-  mode?: SessionMode;
-  /** Provider / model for the session to be created — `new` via the `N` flow. */
-  provider?: string;
-  model?: string;
-  /** Thinking effort for the session to be created, when the model takes one. */
-  effort?: string;
-  /** History cursor: 0 = the live buffer, 1..N = {@link TuiState.promptHistory} from newest. */
-  histIdx: number;
-  /** Live buffer text, stashed while browsing history. */
-  draft: string;
-  /** `answerQuestion` only: every question from this `AskUserQuestion` call, in
-   *  order — the prompt shows them one at a time rather than all at once. */
-  qaAll?: AskUserQuestionItem[];
-  /** `answerQuestion` only: index into {@link qaAll} of the question this prompt
-   *  is currently collecting. `⇥` / `⇧⇥` (also `⌥→` / `⌥←`) move between them in
-   *  any order; `Enter` jumps to the next one still unanswered and resolves the
-   *  permission once none are left. */
-  qaIdx?: number;
-  /** `answerQuestion` only: answers collected so far, keyed by question text —
-   *  carried as you move between questions so nothing typed is lost. */
-  qaAnswers?: Record<string, string>;
-}
-
-export const makePrompt = (init: {
-  kind: PromptKind;
-  sessionId: string | null;
-  requestId?: string;
-  label: string;
-  text?: string;
-  mode?: SessionMode;
-  /** For `new`: the provider / model / effort chosen in the `N` picker flow. */
-  provider?: string;
-  model?: string;
-  effort?: string;
-  qaAll?: AskUserQuestionItem[];
-  qaIdx?: number;
-  qaAnswers?: Record<string, string>;
-}): PromptState => {
-  return {
-    kind: init.kind,
-    sessionId: init.sessionId,
-    label: init.label,
-    ...(init.requestId ? { requestId: init.requestId } : {}),
-    ...(init.mode ? { mode: init.mode } : {}),
-    ...(init.provider ? { provider: init.provider } : {}),
-    ...(init.model ? { model: init.model } : {}),
-    ...(init.effort ? { effort: init.effort } : {}),
-    ...(init.qaAll ? { qaAll: init.qaAll } : {}),
-    ...(init.qaIdx !== undefined ? { qaIdx: init.qaIdx } : {}),
-    ...(init.qaAnswers ? { qaAnswers: init.qaAnswers } : {}),
-    buffer: buffer(init.text ?? ""),
-    histIdx: 0,
-    draft: "",
-  };
-};
-
-/**
- * Where a prompt's input renders. Every session-targeted prompt (send, answer,
- * deny, rename, discuss, compact) draws on that session's EVENTS pane — you're
- * replying to a specific agent, so the input sits with its transcript. Only the
- * sessionless `new` prompt stays in the footer.
- */
-export const promptOnPane = (p: PromptState | null | undefined): boolean => {
-  return p?.sessionId != null;
-};
 
 // ---------------------------------------------------------------------------
 // picker overlay — provider choice, model choice, undo, the command palette
@@ -541,7 +462,7 @@ export interface TuiState {
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
    *  on open; kept between opens so a reopen paints immediately. */
   doctor: DoctorReport | null;
-  prompt: PromptState | null;
+  prompt: Prompt | null;
   confirm: ConfirmState | null;
   /**
    * An open plan-review overlay: the plan text + the ids to resolve it with,
@@ -658,7 +579,7 @@ export type Action =
   | { t: "logFilter"; value: LogFilter }
   | { t: "notice"; text: string; tone: Tone }
   | { t: "expireNotice"; now: number; ttlMs?: number }
-  | { t: "openPrompt"; prompt: PromptState }
+  | { t: "openPrompt"; prompt: Prompt }
   | { t: "promptSet"; buffer: Buffer }
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
@@ -1017,11 +938,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     }
 
     case "promptCycleMode": {
-      if (!s.prompt || s.prompt.kind !== "new") return s;
-      const cur = s.prompt.mode ?? "default";
+      const p = s.prompt;
+      if (p?.t !== "new") return s;
       const next =
-        SESSION_MODES[(SESSION_MODES.indexOf(cur) + 1) % SESSION_MODES.length] ?? "default";
-      return { ...s, prompt: { ...s.prompt, mode: next } };
+        SESSION_MODES[(SESSION_MODES.indexOf(p.settings.mode) + 1) % SESSION_MODES.length] ??
+        "default";
+      return { ...s, prompt: { ...p, settings: { ...p.settings, mode: next } } };
     }
 
     case "promptHistoryNav": {
@@ -1050,10 +972,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "closePrompt": {
       const p = s.prompt;
-      const draftable = p && (p.kind === "new" || p.kind === "send");
-      let lastDraft = s.lastDraft;
-      if (draftable) lastDraft = a.saveDraft ? p.buffer.text : "";
-      return { ...s, mode: "browse", prompt: null, lastDraft };
+      // Only the two free-text prompts leave a recoverable draft behind.
+      const draftable = p?.t === "new" || (p?.t === "session" && p.kind === "send");
+      if (!draftable) return { ...s, mode: "browse", prompt: null };
+      return { ...s, mode: "browse", prompt: null, lastDraft: a.saveDraft ? p.buffer.text : "" };
     }
 
     case "echo": {
@@ -1250,16 +1172,18 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
    * three mean the thing on screen can no longer be acted on. Whatever replaced
    * it is a different request, and nothing typed for one is re-aimed at it.
    */
-  const goneFor = (sid: string | null | undefined, rid: string | undefined): boolean =>
-    sid != null && rid !== undefined && !open.has(`${sid} ${rid}`);
+  const goneFor = (sid: string | null | undefined, rid: string | null | undefined): boolean =>
+    sid != null && rid != null && !open.has(`${sid} ${rid}`);
   const planGone = s.plan !== null && goneFor(s.plan.sessionId, s.plan.requestId);
   // A send / answer / title / compact prompt or a picker aimed at a session
   // another client just removed would loop on submit (RPC error → reopen). A
   // request-bound prompt also goes when its request does; a `send` or `title`
   // prompt carries no request id, so resolving one never closes it.
+  const promptAt = s.prompt ? promptTarget(s.prompt) : null;
   const promptGone =
-    (s.prompt?.sessionId != null && !live.has(s.prompt.sessionId)) ||
-    goneFor(s.prompt?.sessionId, s.prompt?.requestId);
+    promptAt !== null &&
+    ((promptAt.sessionId !== null && !live.has(promptAt.sessionId)) ||
+      goneFor(promptAt.sessionId, promptAt.requestId));
   const qnavGone = s.qnav !== null && goneFor(s.qnav.sessionId, s.qnav.requestId);
   const pickerSession = s.picker?.ctx?.liveSessionId;
   const pickerGone = pickerSession != null && !live.has(pickerSession);
@@ -1285,7 +1209,7 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
           mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode,
           // Say why it vanished, but only when the session is still there —
           // a removed session already reports itself.
-          ...(s.prompt?.requestId !== undefined && live.has(s.prompt.sessionId ?? "")
+          ...(promptAt?.requestId != null && live.has(promptAt.sessionId ?? "")
             ? { notice: mkNotice("that request was resolved elsewhere", "dim") }
             : {}),
         }
@@ -1917,6 +1841,24 @@ export const defaultModeOf = (s: TuiState): SessionMode => {
   return fleetProviders(s)[0]?.defaultMode ?? "default";
 };
 
+/** The creation settings a `new` prompt starts from. Anything the ⌥p wizard
+ *  already settled is passed in; the rest comes from the daemon's remembered
+ *  defaults, so the prompt always shows what it would actually create. */
+export const newSettings = (
+  s: TuiState,
+  provider: string | null,
+  model: string | null,
+  effort: string | null,
+): NewSessionSettings => {
+  const pid = provider ?? defaultProviderId(s);
+  return {
+    mode: defaultModeOf(s),
+    provider: pid,
+    model: model ?? (defaultModelOf(s, pid) || null),
+    effort,
+  };
+};
+
 export const providerPickItems = (s: TuiState): PickItem[] => {
   return fleetProviders(s).map((p) => ({
     id: p.id,
@@ -2022,23 +1964,13 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
       return p.ctx.reopenSend !== undefined
         ? {
             t: "openPrompt",
-            prompt: makePrompt({
-              kind: "send",
-              sessionId: p.ctx.reopenSend,
-              label: "send",
-              ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
-            }),
+            prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
           }
         : { t: "closePicker" };
     }
     return {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "new",
-        sessionId: null,
-        label: "new session",
-        text: p.ctx?.draft ?? "",
-      }),
+      prompt: newPrompt(newSettings(s, null, null, null), p.ctx?.draft ?? ""),
     };
   }
   // Live ⌥p wizard: Esc from the model list steps back to the provider list.
@@ -2077,18 +2009,13 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
     }
     return {
       t: "openPrompt",
-      prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text: draft }),
+      prompt: newPrompt(newSettings(s, null, null, null), draft),
     };
   }
   if (p.kind === "model" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
     return {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "send",
-        sessionId: p.ctx.reopenSend,
-        label: "send",
-        ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
-      }),
+      prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
     };
   }
   if (p.kind === "effort" && p.ctx?.viaModelStep) {
@@ -2108,24 +2035,13 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
   if (p.kind === "effort" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
     return {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "send",
-        sessionId: p.ctx.reopenSend,
-        label: "send",
-        ...(p.ctx.draft !== undefined ? { text: p.ctx.draft } : {}),
-      }),
+      prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
     };
   }
   if (p.kind === "effort" && !p.ctx?.liveSessionId) {
     return {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "new",
-        sessionId: null,
-        label: "new session",
-        ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
-        text: p.ctx?.draft ?? "",
-      }),
+      prompt: newPrompt(newSettings(s, p.ctx?.provider ?? null, null, null), p.ctx?.draft ?? ""),
     };
   }
   return { t: "closePicker" };

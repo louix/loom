@@ -10,13 +10,13 @@ import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
+import { promptOnPane } from "./overlay.ts";
 import {
   compactingFor,
   fleetSessions,
   providerAccountOf,
   providerColorOf,
   providerInfo,
-  promptOnPane,
   queueFor,
 } from "./model.ts";
 import { C } from "./theme.ts";

@@ -50,7 +50,6 @@ import {
   allowedActs,
   commandsFor,
   cycleLogFilter,
-  defaultModeOf,
   defaultModelOf,
   defaultProviderId,
   effortPickItems,
@@ -60,15 +59,14 @@ import {
   compactingFor,
   initialState,
   liveQNav,
+  newSettings,
   makePicker,
   transcriptFor,
-  makePrompt,
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
   parseAskUserQuestions,
   pickerCurrent,
-  promptOnPane,
   providerAccountOf,
   providerInfo,
   providerPickItems,
@@ -85,10 +83,20 @@ import {
   type FleetHit,
   type LogLine,
   type PickerState,
-  type PromptState,
   type QNav,
   type TuiState,
 } from "./model.ts";
+import {
+  newPrompt,
+  promptKind,
+  promptOnPane,
+  questionsPrompt,
+  requestPrompt,
+  sessionPrompt,
+  type Prompt,
+  type RequestPromptKind,
+  type SessionPromptKind,
+} from "./overlay.ts";
 
 /** Footer label for the `answerQuestion` prompt: the current question's short
  *  `header` chip, plus `N/total` progress when the `AskUserQuestion` call asked
@@ -97,28 +105,27 @@ const questionPromptLabel = (all: AskUserQuestionItem[], idx: number): string =>
   const tag = all[idx]?.header || "answer";
   return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
 };
-
-/** The answer prompt for question `idx` of an `AskUserQuestion`, prefilled from
- *  whatever's been gathered so far (`answers`, keyed by question text). `idx` is
- *  clamped to the question count. */
-const answerQuestionPrompt = (
+/** Where an `AskUserQuestion` answer prompt should be parked and what it should
+ *  start from: question `idx` (clamped) and whatever has been answered so far.
+ *  Both live in {@link QNav}, which outlives the prompt, so this pairs the two
+ *  dispatches that put them there and open the editor on them. */
+const questionPromptFor = (
   sessionId: string,
   requestId: string,
   qs: AskUserQuestionItem[],
   answers: Record<string, string>,
   idx: number,
-): PromptState => {
+): { nav: QNav; prompt: Prompt } => {
   const at = Math.max(0, Math.min(qs.length - 1, idx));
-  return makePrompt({
-    kind: "answerQuestion",
-    sessionId,
-    requestId,
-    label: questionPromptLabel(qs, at),
-    text: answers[qs[at]!.question] ?? "",
-    qaAll: qs,
-    qaIdx: at,
-    qaAnswers: answers,
-  });
+  return {
+    nav: { sessionId, requestId, idx: at, answers },
+    prompt: questionsPrompt(
+      sessionId,
+      requestId,
+      questionPromptLabel(qs, at),
+      answers[qs[at]!.question] ?? "",
+    ),
+  };
 };
 
 /** The `AskUserQuestion` a session is parked on, if any — its request id and
@@ -370,14 +377,11 @@ const deriveView = (
   const cols = Math.max(1, dims.cols);
   const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state, cols);
-  // Which question the request panel previews: the one the answer prompt is
-  // collecting, else the one `qnav` last left the browse-mode selection on. The
-  // panel sizes itself to fit it (see `requestPanelRows`), so this has to be
-  // settled before the row budget.
-  const questionIdx =
-    state.mode === "prompt" && state.prompt?.kind === "answerQuestion"
-      ? (state.prompt.qaIdx ?? 0)
-      : (liveQNav(state.qnav, sel?.id, request?.id)?.idx ?? 0);
+  // Which question the request panel previews — the one `qnav` is parked on,
+  // which is also the one an open answer prompt is collecting. The panel sizes
+  // itself to fit it (see `requestPanelRows`), so this has to be settled before
+  // the row budget.
+  const questionIdx = liveQNav(state.qnav, sel?.id, request?.id)?.idx ?? 0;
   const requestH = showRequest ? requestPanelRows(request, cols, questionIdx) : 0;
 
   // Below this width the three-column split starves every column (~20 cols each
@@ -417,7 +421,7 @@ const deriveView = (
   const eventsW = body === "sessionPane" ? cols : rightW;
   // A session-targeted prompt draws its input group under the EVENTS log (its
   // label + editor rows) — budget them against the log's height.
-  const paneH = promptOnPane(state.prompt) ? promptPaneRows(state, eventsW) : 0;
+  const paneH = promptPaneRows(state, eventsW);
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
   const logPage = Math.max(1, splitLogH - 3);
 
@@ -920,7 +924,7 @@ export const mkFleetHandle = ({
       return note("open a prompt first — press o to view the log", "dim");
     const p = state.prompt;
     const next = await openEditor(p.buffer.text, {
-      ext: p.kind === "new" ? "md" : "txt",
+      ext: p.t === "new" ? "md" : "txt",
       aside: { name: "events.log", body: logText() },
     });
     if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
@@ -989,24 +993,28 @@ export const mkFleetHandle = ({
       .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
   };
 
+  /** Park `qnav` on question `idx` and open the answer prompt there. The prompt
+   *  itself carries only the session + request it resolves; which question and
+   *  the answers so far live in `qnav`, which survives the prompt closing. */
+  const openQuestionPrompt = (
+    sessionId: string,
+    requestId: string,
+    qs: AskUserQuestionItem[],
+    answers: Record<string, string>,
+    idx: number,
+  ): void => {
+    const { nav, prompt } = questionPromptFor(sessionId, requestId, qs, answers, idx);
+    dispatch({ t: "qnavSet", nav });
+    dispatch({ t: "openPrompt", prompt });
+  };
+
   const act = (name: DelegatedAct): void => {
     const s = selectedSession(state);
     const by = client.clientId;
     if (name === "new") {
-      const pid = defaultProviderId(state);
-      const dm = defaultModelOf(state, pid);
-      const mode = defaultModeOf(state);
       return void dispatch({
         t: "openPrompt",
-        prompt: makePrompt({
-          kind: "new",
-          sessionId: null,
-          label: "new session",
-          provider: pid,
-          mode,
-          ...(dm ? { model: dm } : {}),
-          ...(state.lastDraft ? { text: state.lastDraft } : {}),
-        }),
+        prompt: newPrompt(newSettings(state, null, null, null), state.lastDraft),
       });
     }
     if (name === "filter") {
@@ -1091,12 +1099,7 @@ export const mkFleetHandle = ({
         }
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "deny",
-            sessionId: s.id,
-            requestId: r.id,
-            label: `deny ${r.id}`,
-          }),
+          prompt: requestPrompt("deny", s.id, r.id, `deny ${r.id}`),
         });
       }
       case "answer": {
@@ -1104,27 +1107,19 @@ export const mkFleetHandle = ({
         if (r?.kind === "question") {
           return void dispatch({
             t: "openPrompt",
-            prompt: makePrompt({
-              kind: "answer",
-              sessionId: s.id,
-              requestId: r.id,
-              label: "answer",
-            }),
+            prompt: requestPrompt("answer", s.id, r.id, "answer"),
           });
         }
         if (r?.kind === "user_question") {
           const q = questionState(state, s.id);
           if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
-          return void dispatch({
-            t: "openPrompt",
-            prompt: answerQuestionPrompt(
-              s.id,
-              q.requestId,
-              q.qs,
-              q.nav?.answers ?? {},
-              q.nav?.idx ?? 0,
-            ),
-          });
+          return void openQuestionPrompt(
+            s.id,
+            q.requestId,
+            q.qs,
+            q.nav?.answers ?? {},
+            q.nav?.idx ?? 0,
+          );
         }
         return note("no question pending", "dim");
       }
@@ -1138,33 +1133,18 @@ export const mkFleetHandle = ({
         const text = held ?? state.lastDraft;
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "send",
-            sessionId: s.id,
-            label: "send",
-            ...(text ? { text } : {}),
-          }),
+          prompt: sessionPrompt("send", s.id, "send", text),
         });
       }
       case "title":
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "title",
-            sessionId: s.id,
-            label: "rename",
-            text: s.title ?? "",
-          }),
+          prompt: sessionPrompt("title", s.id, "rename", s.title ?? ""),
         });
       case "comment":
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "comment",
-            sessionId: s.id,
-            label: "comment",
-            text: s.comment ?? "",
-          }),
+          prompt: sessionPrompt("comment", s.id, "comment", s.comment ?? ""),
         });
       case "planreview": {
         const plan = requestsFor(state, s.id).find((r) => r.kind === "plan_review");
@@ -1184,11 +1164,7 @@ export const mkFleetHandle = ({
       case "compact":
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "compact",
-            sessionId: s.id,
-            label: "compact — steer summary (blank = best effort)",
-          }),
+          prompt: sessionPrompt("compact", s.id, "compact — steer summary (blank = best effort)"),
         });
       case "keepwarm": {
         const on = !s.keepWarm;
@@ -1376,12 +1352,7 @@ export const mkFleetHandle = ({
       if (back !== undefined) {
         dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "send",
-            sessionId: back,
-            label: "send",
-            ...(draft !== undefined ? { text: draft } : {}),
-          }),
+          prompt: sessionPrompt("send", back, "send", draft ?? ""),
         });
       }
       const sess = fleetSessions(state).find((x) => x.id === id);
@@ -1434,15 +1405,10 @@ export const mkFleetHandle = ({
     }
     dispatch({
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "new",
-        sessionId: null,
-        label: "new session",
-        ...(ctx?.provider ? { provider: ctx.provider } : {}),
-        ...(ctx?.draft !== undefined ? { text: ctx.draft } : {}),
-        model,
-        ...(effort ? { effort } : {}),
-      }),
+      prompt: newPrompt(
+        newSettings(state, ctx?.provider ?? null, model, effort ?? null),
+        ctx?.draft ?? "",
+      ),
     });
   };
 
@@ -1474,13 +1440,10 @@ export const mkFleetHandle = ({
       if (p.kind === "model" && !p.ctx?.liveSessionId) {
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "new",
-            sessionId: null,
-            label: "new session",
-            ...(p.ctx?.provider ? { provider: p.ctx.provider } : {}),
-            ...(p.ctx?.draft !== undefined ? { text: p.ctx.draft } : {}),
-          }),
+          prompt: newPrompt(
+            newSettings(state, p.ctx?.provider ?? null, null, null),
+            p.ctx?.draft ?? "",
+          ),
         });
       }
       if (p.kind === "effort") {
@@ -1545,12 +1508,7 @@ export const mkFleetHandle = ({
             // if you'd pressed Enter on the session — edit and re-send, or Esc.
             dispatch({
               t: "openPrompt",
-              prompt: makePrompt({
-                kind: "send",
-                sessionId: id,
-                label: "send",
-                ...(prefill ? { text: prefill } : {}),
-              }),
+              prompt: sessionPrompt("send", id, "send", prefill),
             });
           })
           .catch((e: unknown) =>
@@ -1766,18 +1724,20 @@ export const mkFleetHandle = ({
     if (!p) return;
     const text = p.buffer.text.trim();
     const by = client.clientId;
+    const kind = promptKind(p);
     // `deny` and `compact` both treat an empty submit as a valid choice
     // (no reason / best-effort compaction); `comment` empty clears the note.
     // Every other prompt needs text.
-    if (p.kind !== "deny" && p.kind !== "compact" && p.kind !== "comment" && !text) return;
+    if (kind !== "deny" && kind !== "compact" && kind !== "comment" && !text) return;
 
     // A send typed while the target session is compacting: the daemon holds the
     // op gate for the whole (multi-minute) summarise and would reject with
     // `code:"busy"`. Reuse the outgoing queue instead — `drainQueues` releases
     // it on the first update after the snapshot stops reporting a compaction.
     // (`code:"busy"` is still caught below for a race.)
-    if (p.kind === "send" && p.sessionId && text && compactingFor(state, p.sessionId)) {
-      queueSend(p.sessionId, text, "queued until compaction finishes");
+    const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;
+    if (sendTo !== null && text && compactingFor(state, sendTo)) {
+      queueSend(sendTo, text, "queued until compaction finishes");
       return;
     }
 
@@ -1789,30 +1749,14 @@ export const mkFleetHandle = ({
 
     dispatch({ t: "closePrompt" });
 
-    const run = async (): Promise<string> => {
-      switch (p.kind) {
-        case "new": {
-          const r = await client.request<SessionSnapshot>("session.create", {
-            prompt: text,
-            by,
-            ...(p.mode && p.mode !== "default" ? { mode: p.mode } : {}),
-            ...(p.provider ? { provider: p.provider } : {}),
-            ...(p.model ? { model: p.model } : {}),
-            ...(p.effort ? { effort: p.effort } : {}),
-          });
-          dispatch({ t: "select", id: r.id });
-          dispatch({ t: "pushHistory", text });
-          // No local echo — the daemon emits a `user_message` for the opening
-          // prompt too, so it's in the log for every client and after a reopen.
-          return `started ${shortId(r.id)}`;
-        }
+    const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
+      switch (k) {
         case "send": {
-          if (!p.sessionId) return "";
           // No local echo — the daemon emits a `user_message` event that every
           // client (this one included) renders. The RPC tells us whether it
           // actually landed mid-turn.
           const r = await client.request<{ injected?: boolean }>("session.send", {
-            id: p.sessionId,
+            id: sessionId,
             text,
           });
           dispatch({ t: "pushHistory", text });
@@ -1823,29 +1767,33 @@ export const mkFleetHandle = ({
             ? `injected “${truncate(text.replace(/\s+/g, " ").trim(), 40)}” — lands after the current tool call`
             : "sent";
         }
-        case "title": {
-          if (!p.sessionId) return "";
-          await client.request("session.setTitle", { id: p.sessionId, title: text, by });
+        case "title":
+          await client.request("session.setTitle", { id: sessionId, title: text, by });
           return "renamed";
-        }
-        case "comment": {
-          if (!p.sessionId) return "";
-          await client.request("session.setComment", { id: p.sessionId, comment: text, by });
+        case "comment":
+          await client.request("session.setComment", { id: sessionId, comment: text, by });
           return text ? "comment saved" : "comment cleared";
-        }
-        case "compact": {
-          if (!p.sessionId) return "";
+        case "compact":
           await client.request("session.compact", {
-            id: p.sessionId,
+            id: sessionId,
             ...(text ? { instructions: text } : {}),
           });
           return text ? "compacting — focused" : "compacting context";
-        }
+        default:
+          return absurd(k);
+      }
+    };
+
+    const runRequest = async (
+      k: RequestPromptKind,
+      sessionId: string,
+      requestId: string,
+    ): Promise<string> => {
+      switch (k) {
         case "discuss": {
-          if (!p.sessionId || !p.requestId) return "";
           const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
-            id: p.sessionId,
-            requestId: p.requestId,
+            id: sessionId,
+            requestId,
             action: "discuss",
             message: text,
             by,
@@ -1854,78 +1802,19 @@ export const mkFleetHandle = ({
           return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
         }
         case "answer": {
-          if (!p.sessionId || !p.requestId) return "";
           const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
-            id: p.sessionId,
-            requestId: p.requestId,
+            id: sessionId,
+            requestId,
             text,
             by,
           });
           return r.alreadyResolved ? "already answered" : "answered";
         }
-        case "answerQuestion": {
-          if (!p.sessionId || !p.requestId || !p.qaAll || p.qaAll.length === 0) return "";
-          const idx = Math.min(p.qaIdx ?? 0, p.qaAll.length - 1);
-          const answers = { ...p.qaAnswers, [p.qaAll[idx]!.question]: text };
-          // Every question needs a non-blank answer before the permission
-          // resolves. Jump to the next one still missing (wrapping past the
-          // end); if the only gap is the current question, say so and wait.
-          let missing = -1;
-          for (let k = 1; k <= p.qaAll.length; k++) {
-            const j = (idx + k) % p.qaAll.length;
-            if ((answers[p.qaAll[j]!.question] ?? "").trim() === "") {
-              missing = j;
-              break;
-            }
-          }
-          // Keep the running answers in `qnav` so an Esc from here (or the next
-          // question) still has them.
-          const stash = (at: number): void =>
-            void dispatch({
-              t: "qnavSet",
-              nav: { sessionId: p.sessionId!, requestId: p.requestId!, idx: at, answers },
-            });
-          if (missing === idx) {
-            stash(idx);
-            return "answer this question before submitting";
-          }
-          if (missing !== -1) {
-            stash(missing);
-            dispatch({
-              t: "openPrompt",
-              prompt: answerQuestionPrompt(p.sessionId, p.requestId, p.qaAll, answers, missing),
-            });
-            return "";
-          }
-          // The tool call's own input, so the answers ride back on the shape
-          // the SDK sent — read off the request being answered, by id.
-          const requestId = p.requestId;
-          const target = requestsFor(state, p.sessionId).find((r) => r.id === requestId);
-          const rawInput = target?.kind === "user_question" ? target.input : undefined;
-          const baseInput =
-            rawInput && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
-          if (!claimRequest(requestId)) return "";
-          const r = await client
-            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
-              id: p.sessionId,
-              requestId,
-              decision: "allow",
-              updatedInput: { ...baseInput, answers },
-              by,
-            })
-            .catch((e: unknown) => {
-              releaseRequest(requestId, e);
-              throw e;
-            });
-          return r.alreadyResolved ? ` already resolved` : "answered";
-        }
         case "deny": {
-          if (!p.sessionId || !p.requestId) return "";
-          const requestId = p.requestId;
           if (!claimRequest(requestId)) return "";
           const r = await client
             .request<{ alreadyResolved: boolean }>("session.respondPermission", {
-              id: p.sessionId,
+              id: sessionId,
               requestId,
               decision: "deny",
               by,
@@ -1938,7 +1827,80 @@ export const mkFleetHandle = ({
           return r.alreadyResolved ? `${requestId} already resolved` : `denied ${requestId}`;
         }
         default:
-          return absurd(p.kind);
+          return absurd(k);
+      }
+    };
+
+    /** Record this answer, then either move to the next unanswered question or
+     *  resolve the whole `AskUserQuestion`. The questions come from the request
+     *  itself and the progress from `qnav` — the prompt holds neither, so there
+     *  is no stale copy to reconcile. */
+    const runQuestions = async (sessionId: string, requestId: string): Promise<string> => {
+      const q = questionState(state, sessionId);
+      if (!q || q.requestId !== requestId) return "";
+      const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
+      const answers = { ...q.nav?.answers, [q.qs[idx]!.question]: text };
+      // Every question needs a non-blank answer before the permission resolves.
+      // Jump to the next one still missing, wrapping past the end.
+      let missing = -1;
+      for (let k = 1; k < q.qs.length; k++) {
+        const j = (idx + k) % q.qs.length;
+        if ((answers[q.qs[j]!.question] ?? "").trim() === "") {
+          missing = j;
+          break;
+        }
+      }
+      if (missing !== -1) {
+        openQuestionPrompt(sessionId, requestId, q.qs, answers, missing);
+        return "";
+      }
+      // The tool call's own input, so the answers ride back on the shape the
+      // SDK sent — read off the request being answered, by id.
+      const target = requestsFor(state, sessionId).find((r) => r.id === requestId);
+      const rawInput = target?.kind === "user_question" ? target.input : undefined;
+      const baseInput =
+        rawInput && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
+      if (!claimRequest(requestId)) return "";
+      const r = await client
+        .request<{ alreadyResolved: boolean }>("session.respondPermission", {
+          id: sessionId,
+          requestId,
+          decision: "allow",
+          updatedInput: { ...baseInput, answers },
+          by,
+        })
+        .catch((e: unknown) => {
+          releaseRequest(requestId, e);
+          throw e;
+        });
+      return r.alreadyResolved ? ` already resolved` : "answered";
+    };
+
+    const run = async (): Promise<string> => {
+      switch (p.t) {
+        case "new": {
+          const r = await client.request<SessionSnapshot>("session.create", {
+            prompt: text,
+            by,
+            ...(p.settings.mode !== "default" ? { mode: p.settings.mode } : {}),
+            ...(p.settings.provider ? { provider: p.settings.provider } : {}),
+            ...(p.settings.model ? { model: p.settings.model } : {}),
+            ...(p.settings.effort ? { effort: p.settings.effort } : {}),
+          });
+          dispatch({ t: "select", id: r.id });
+          dispatch({ t: "pushHistory", text });
+          // No local echo — the daemon emits a `user_message` for the opening
+          // prompt too, so it's in the log for every client and after a reopen.
+          return `started ${shortId(r.id)}`;
+        }
+        case "session":
+          return runSession(p.kind, p.sessionId);
+        case "request":
+          return runRequest(p.kind, p.sessionId, p.requestId);
+        case "questions":
+          return runQuestions(p.sessionId, p.requestId);
+        default:
+          return absurd(p);
       }
     };
 
@@ -1947,13 +1909,8 @@ export const mkFleetHandle = ({
       .catch((e: unknown) => {
         // Lost the race with a compaction that started between the pre-check
         // above and the RPC — queue rather than error.
-        if (
-          p.kind === "send" &&
-          p.sessionId &&
-          text &&
-          (e as { code?: unknown })?.code === "busy"
-        ) {
-          queueSend(p.sessionId, text, "queued until compaction finishes");
+        if (sendTo !== null && text && (e as { code?: unknown })?.code === "busy") {
+          queueSend(sendTo, text, "queued until compaction finishes");
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to
@@ -2369,12 +2326,15 @@ export const mkFleetHandle = ({
 
     if (state.mode === "prompt" && state.prompt) {
       const p = state.prompt;
+      // The live session a `send` prompt is composing at — the only prompt whose
+      // ⌥ actions retarget an existing session rather than the one being made.
+      const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;
       // ⌥-prefixed prompt actions — "step out to a bigger tool" without losing
       // what's typed. Ctrl is reserved for readline motions (applyKey).
       if (key.meta && input === "e") return void editPrompt();
       if (key.meta && input === "o") {
         // A new-session prompt has no session and no log to open yet.
-        return void (p.kind === "new"
+        return void (p.t === "new"
           ? dispatch({
               t: "notice",
               text: "no log yet — you're starting a new session",
@@ -2384,25 +2344,25 @@ export const mkFleetHandle = ({
       }
       // ⇧⇥ cycles the permission mode without leaving the prompt.
       if (key.tab && key.shift) {
-        if (p.kind === "new") return void dispatch({ t: "promptCycleMode" });
-        if (p.kind === "send" && p.sessionId) return void cycleSessionMode(p.sessionId);
+        if (p.t === "new") return void dispatch({ t: "promptCycleMode" });
+        if (sendTo) return void cycleSessionMode(sendTo);
         return;
       }
       // ⌥m swaps the model without leaving the prompt.
       if (key.meta && input === "m") {
-        if (p.kind === "new") {
-          const pid = p.provider ?? defaultProviderId(state);
+        if (p.t === "new") {
+          const pid = p.settings.provider ?? defaultProviderId(state);
           const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
           return void openModelStep(pid, tag, { draft: p.buffer.text });
         }
-        if (p.kind === "send" && p.sessionId) return void switchModel(p.sessionId, p.buffer.text);
+        if (sendTo) return void switchModel(sendTo, p.buffer.text);
         return;
       }
       // ⌥t swaps the thinking-effort level without leaving the prompt.
       if (key.meta && input === "t") {
-        if (p.kind === "new") {
-          const pid = p.provider ?? defaultProviderId(state);
-          const mid = p.model || defaultModelOf(state, pid);
+        if (p.t === "new") {
+          const pid = p.settings.provider ?? defaultProviderId(state);
+          const mid = p.settings.model || defaultModelOf(state, pid);
           if (!mid || !modelSupportsEffort(state, pid, mid)) {
             return void dispatch({
               t: "notice",
@@ -2413,22 +2373,21 @@ export const mkFleetHandle = ({
           const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
           return void openEffortStep(pid, mid, tag, { draft: p.buffer.text });
         }
-        if (p.kind === "send" && p.sessionId) return void switchEffort(p.sessionId, p.buffer.text);
+        if (sendTo) return void switchEffort(sendTo, p.buffer.text);
         return;
       }
       if (key.meta && input === "p") {
-        if (p.kind === "new") return void pickProviderModel(p.buffer.text);
-        if (p.kind === "send" && p.sessionId)
-          return void pickProviderModelForSession(p.sessionId, p.buffer.text);
+        if (p.t === "new") return void pickProviderModel(p.buffer.text);
+        if (sendTo) return void pickProviderModelForSession(sendTo, p.buffer.text);
         return;
       }
-      if (key.meta && input === "x" && p.kind === "send" && p.sessionId) {
-        return void dispatch({ t: "clearQueue", sessionId: p.sessionId });
+      if (key.meta && input === "x" && sendTo) {
+        return void dispatch({ t: "clearQueue", sessionId: sendTo });
       }
       // ⌥⏎ while the target is still working queues for turn end instead of its
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
-      if (key.meta && key.return && p.kind === "send" && p.sessionId) {
-        const target = fleetSessions(state).find((x) => x.id === p.sessionId);
+      if (key.meta && key.return && sendTo) {
+        const target = fleetSessions(state).find((x) => x.id === sendTo);
         if (
           target &&
           (target.status.kind === "running" ||
@@ -2436,7 +2395,7 @@ export const mkFleetHandle = ({
             target.status.kind === "working_background")
         ) {
           const text = p.buffer.text.trim();
-          return void (text && queueSend(p.sessionId, text));
+          return void (text && queueSend(sendTo, text));
         }
       }
       const res = applyKey(p.buffer, input, key);
@@ -2444,7 +2403,7 @@ export const mkFleetHandle = ({
         case "cancel":
           // Backing out of the plan "discuss" sub-prompt returns to the plan
           // overlay — the daemon is still blocked on the decision.
-          if (p.kind === "discuss" && p.sessionId && p.requestId && state.plan) {
+          if (p.t === "request" && p.kind === "discuss" && state.plan) {
             return void dispatch({
               t: "openPlan",
               sessionId: p.sessionId,
@@ -2454,17 +2413,20 @@ export const mkFleetHandle = ({
           }
           // Esc on an AskUserQuestion answer drops back to the request panel
           // (the daemon stays blocked) rather than abandoning the whole call:
-          // answers gathered so far — including whatever is typed now — are
-          // stashed in `qnav`, so ← / → can move to another question and `a`
-          // resumes where you left off.
-          if (p.kind === "answerQuestion" && p.qaAll && p.sessionId && p.requestId) {
-            const idx = Math.min(p.qaIdx ?? 0, p.qaAll.length - 1);
-            const answers = { ...p.qaAnswers };
-            if (p.buffer.text.trim() !== "") answers[p.qaAll[idx]!.question] = p.buffer.text;
-            dispatch({
-              t: "qnavSet",
-              nav: { sessionId: p.sessionId, requestId: p.requestId, idx, answers },
-            });
+          // answers gathered so far — including whatever is typed now — stay in
+          // `qnav`, so ← / → can move to another question and `a` resumes where
+          // you left off.
+          if (p.t === "questions") {
+            const q = questionState(state, p.sessionId);
+            if (q && q.requestId === p.requestId) {
+              const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
+              const answers = { ...q.nav?.answers };
+              if (p.buffer.text.trim() !== "") answers[q.qs[idx]!.question] = p.buffer.text;
+              dispatch({
+                t: "qnavSet",
+                nav: { sessionId: p.sessionId, requestId: p.requestId, idx, answers },
+              });
+            }
             return void dispatch({ t: "closePrompt", saveDraft: false });
           }
           return void dispatch({ t: "closePrompt", saveDraft: true });
@@ -2506,12 +2468,7 @@ export const mkFleetHandle = ({
         if (!pl) return;
         return void dispatch({
           t: "openPrompt",
-          prompt: makePrompt({
-            kind: "discuss",
-            sessionId: pl.sessionId,
-            requestId: pl.requestId,
-            label: "discuss plan",
-          }),
+          prompt: requestPrompt("discuss", pl.sessionId, pl.requestId, "discuss plan"),
         });
       }
       // esc backs out to the fleet without answering — the daemon stays blocked

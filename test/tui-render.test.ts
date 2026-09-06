@@ -41,7 +41,6 @@ import {
 } from "@loom/tui/fleet-handle";
 import {
   initialState,
-  makePrompt,
   queueFor,
   reduce,
   requestsFor,
@@ -49,6 +48,7 @@ import {
   TRANSCRIPT_CAP,
   transcriptFor,
 } from "@loom/tui/model";
+import { questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -1880,12 +1880,7 @@ model    = "gpt-5"
     // is 34: this 36-x word hard-breaks into a full row plus "xx tail".
     const state = reduce(initialState(), {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "send",
-        sessionId: "a",
-        label: "send",
-        text: `${"x".repeat(36)} tail`,
-      }),
+      prompt: sessionPrompt("send", "a", "send", `${"x".repeat(36)} tail`),
     });
     const out = stripAnsi(renderToString(createElement(PromptPane, { state, width: 40 })));
     assert.ok(!out.includes("…"), "the editor must never ellipsize its own text");
@@ -1987,15 +1982,7 @@ model    = "gpt-5"
   test("the answer footer says esc steps back to the panel, not cancel", () => {
     const state = reduce(initialState(), {
       t: "openPrompt",
-      prompt: makePrompt({
-        kind: "answerQuestion",
-        sessionId: "a",
-        requestId: "p1",
-        label: "answer 1/2: Auth",
-        qaAll: QUESTIONS,
-        qaIdx: 0,
-        qaAnswers: {},
-      }),
+      prompt: questionsPrompt("a", "p1", "answer 1/2: Auth"),
     });
     const out = stripAnsi(renderToString(createElement(FooterArea, { state, width: 120 })));
     assert.match(out, /esc back/);

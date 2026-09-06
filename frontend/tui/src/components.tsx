@@ -38,10 +38,9 @@ import {
   type FleetChild,
   type LogLine,
   type PickerState,
-  type PromptKind,
-  type PromptState,
   type TuiState,
 } from "./model.ts";
+import { promptKind, type Prompt, type PromptKind } from "./overlay.ts";
 import {
   bar,
   C,
@@ -107,7 +106,7 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   compact: "steer the summary (optional) — blank = best-effort summary of everything",
   send: "type a message…",
   answer: "type a message…",
-  answerQuestion: 'type your answer — e.g. "a" or "a, but …"',
+  questions: 'type your answer — e.g. "a" or "a, but …"',
 };
 
 /** Context-meter colour by fill fraction. */
@@ -1090,11 +1089,11 @@ export const InputLine = ({
 // footer: contextual hints, or the prompt editor
 // ---------------------------------------------------------------------------
 
-const MODE_HINT: Record<PromptState["kind"], string> = {
+const MODE_HINT: Record<PromptKind, string> = {
   new: "start",
   send: "send",
   answer: "answer",
-  answerQuestion: "answer",
+  questions: "answer",
   deny: "deny",
   title: "rename",
   comment: "save",
@@ -1112,29 +1111,25 @@ const modeChip = (mode: string | null | undefined): ReactNode => {
   );
 };
 
-const promptHints = (p: PromptState, queued: number, sessionMode?: string | null): string => {
-  const bits = [`enter ${MODE_HINT[p.kind]}`, "⌥⏎ newline", "⌥e editor"];
+const promptHints = (p: Prompt, queued: number, sessionMode?: string | null): string => {
+  const bits = [`enter ${MODE_HINT[promptKind(p)]}`, "⌥⏎ newline", "⌥e editor"];
   // a new-session prompt has no session / log yet; an AskUserQuestion answer
   // opens the formatted question sheet rather than the event log
-  if (p.kind === "answerQuestion") bits.push("⌥o view");
-  else if (p.kind !== "new") bits.push("⌥o log");
-  if (p.kind === "new") {
+  if (p.t === "questions") bits.push("⌥o view");
+  else if (p.t !== "new") bits.push("⌥o log");
+  if (p.t === "new") {
     // ⇧⇥ cycles the mode the session starts in; ⌥m / ⌥p pick its model.
-    bits.push(`⇧⇥ mode:${modeLabel(p.mode)}`);
-    bits.push("⌥p provider/model");
-  } else if (p.kind === "send") {
+    bits.push(`⇧⇥ mode:${modeLabel(p.settings.mode)}`, "⌥p provider/model", "↑↓ history");
+  } else if (p.t === "session" && p.kind === "send") {
     // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
     // without leaving the half-typed message.
-    bits.push(`⇧⇥ mode:${modeLabel(sessionMode)}`);
-    bits.push("⌥m model");
-    bits.push("⌥p provider");
+    bits.push(`⇧⇥ mode:${modeLabel(sessionMode)}`, "⌥m model", "⌥p provider", "↑↓ history");
+    if (queued > 0) bits.push(`⌥x clear ${queued} queued`);
   }
-  if (p.kind === "new" || p.kind === "send") bits.push("↑↓ history");
-  if (p.kind === "send" && queued > 0) bits.push(`⌥x clear ${queued} queued`);
   // Esc on an AskUserQuestion answer drops back to the request panel (where
   // ← / → move between questions), keeping what's been answered — it doesn't
   // abandon the whole call the way cancelling any other prompt does.
-  bits.push(p.kind === "answerQuestion" ? "esc back" : "esc cancel");
+  bits.push(p.t === "questions" ? "esc back" : "esc cancel");
   return bits.join("  ·  ");
 };
 
@@ -1156,51 +1151,43 @@ const noticeGlyph = (tone: Tone): string => {
 };
 
 export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  if (state.mode === "prompt" && state.prompt) {
-    const p = state.prompt;
-    if (p.sessionId !== null) {
-      // A reply to a session — the input lives on that session's EVENTS pane
-      // (`PromptPane`, under the log); the footer keeps only the hints row.
-      const mode =
-        p.kind === "send" ? fleetSessions(state).find((x) => x.id === p.sessionId)?.mode : null;
-      return (
-        <Box width={width} paddingX={1}>
-          <Text color={C.faint} wrap="truncate-end">
-            {promptHints(p, p.kind === "send" ? queueFor(state, p.sessionId).length : 0, mode)}
-          </Text>
-        </Box>
-      );
-    }
-    const queued = p.kind === "send" ? queueFor(state, p.sessionId).length : 0;
-    const placeholder = PROMPT_PLACEHOLDER[p.kind];
-    const prov = p.kind === "new" ? providerInfo(state, p.provider ?? "") : null;
-    // A send prompt re-modes / re-models its target with ⇧⇥ / ⌥m, so it shows
-    // the session's current mode chip too.
-    const sendSess =
-      p.kind === "send" && p.sessionId
-        ? fleetSessions(state).find((x) => x.id === p.sessionId)
-        : null;
-    const showModeChip = p.kind === "new" || sendSess != null;
-    const chipMode = p.kind === "new" ? p.mode : sendSess?.mode;
+  const p = state.mode === "prompt" ? state.prompt : null;
+  if (p && p.t !== "new") {
+    // A reply to a session — the input lives on that session's EVENTS pane
+    // (`PromptPane`, under the log); the footer keeps only the hints row.
+    const send = p.t === "session" && p.kind === "send";
+    const sess = send ? fleetSessions(state).find((x) => x.id === p.sessionId) : undefined;
+    return (
+      <Box width={width} paddingX={1}>
+        <Text color={C.faint} wrap="truncate-end">
+          {promptHints(p, send ? queueFor(state, p.sessionId).length : 0, sess?.mode)}
+        </Text>
+      </Box>
+    );
+  }
+  if (p) {
+    // `new` is the one prompt with no session to sit beside, so it draws its
+    // whole input group — label, provider/model chips, editor, hints — here.
+    const prov = providerInfo(state, p.settings.provider ?? "");
     return (
       <Box flexDirection="column" width={width} paddingX={1}>
         <Box gap={1}>
           <Text color={C.accent} bold wrap="truncate-end">
             {p.label}
           </Text>
-          {showModeChip ? modeChip(chipMode) : null}
-          {p.kind === "new" ? (
-            <Text color={prov?.color || C.faint} wrap="truncate-end">
-              {`${prov?.tag ?? p.provider ?? "?"} / ${p.model || prov?.defaultModel || "auto"}`}
-            </Text>
-          ) : null}
-          {p.kind === "new" ? <Text color={C.faint}>{"⌥p change"}</Text> : null}
+          {modeChip(p.settings.mode)}
+          <Text color={prov?.color || C.faint} wrap="truncate-end">
+            {`${prov?.tag ?? p.settings.provider ?? "?"} / ${
+              p.settings.model || prov?.defaultModel || "auto"
+            }`}
+          </Text>
+          <Text color={C.faint}>{"⌥p change"}</Text>
         </Box>
-        <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={placeholder} />
+        <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={PROMPT_PLACEHOLDER.new} />
         {/* Truncate, never wrap — this row is budgeted as exactly one line
             (see promptRows); wrapping it grows the frame past the terminal. */}
         <Text color={C.faint} wrap="truncate-end">
-          {promptHints(p, queued, sendSess?.mode)}
+          {promptHints(p, 0, null)}
         </Text>
       </Box>
     );
@@ -1256,14 +1243,12 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
  *  while it's up, or Ink's repaints drift and the top bar slides off the
  *  alt screen. */
 export const promptRows = (state: TuiState, cols: number): number => {
-  if (state.mode !== "prompt" || !state.prompt) return 2 + (state.notice ? 1 : 0);
+  const p = state.mode === "prompt" ? state.prompt : null;
+  if (!p) return 2 + (state.notice ? 1 : 0);
   // A reply prompt's input is budgeted on the EVENTS pane (promptPaneRows);
   // the footer carries just its hints row.
-  if (state.prompt.sessionId !== null) return 1;
-  const editor = Math.min(
-    MAX_EDITOR_ROWS,
-    layoutWrapped(state.prompt.buffer, editorRoom(cols)).rows.length,
-  );
+  if (p.t !== "new") return 1;
+  const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, editorRoom(cols)).rows.length);
   return 1 /* label */ + editor + 1; /* hints */
 };
 
@@ -1276,7 +1261,7 @@ const paneRoom = (width: number): number => Math.max(8, width - 6);
  *  Keep in sync with {@link PromptPane}'s room. */
 export const promptPaneRows = (state: TuiState, width: number): number => {
   const p = state.prompt;
-  if (!p || p.sessionId === null) return 0;
+  if (!p || p.t === "new") return 0;
   const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, paneRoom(width)).rows.length);
   return 1 /* label */ + editor;
 };
@@ -1286,8 +1271,11 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
  *  replying to this agent, so the input sits with its transcript. */
 export const PromptPane = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   const p = state.prompt;
-  if (!p || p.sessionId === null) return null;
-  const sess = p.kind === "send" ? fleetSessions(state).find((x) => x.id === p.sessionId) : null;
+  if (!p || p.t === "new") return null;
+  const sess =
+    p.t === "session" && p.kind === "send"
+      ? fleetSessions(state).find((x) => x.id === p.sessionId)
+      : undefined;
   return (
     <Box flexDirection="column" width={width} paddingX={2}>
       <Box gap={1}>
@@ -1296,7 +1284,11 @@ export const PromptPane = ({ state, width }: { state: TuiState; width: number })
         </Text>
         {sess ? modeChip(sess.mode) : null}
       </Box>
-      <InputLine buf={p.buffer} room={paneRoom(width)} placeholder={PROMPT_PLACEHOLDER[p.kind]} />
+      <InputLine
+        buf={p.buffer}
+        room={paneRoom(width)}
+        placeholder={PROMPT_PLACEHOLDER[promptKind(p)]}
+      />
     </Box>
   );
 };

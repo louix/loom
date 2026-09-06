@@ -34,7 +34,7 @@ import {
   initialState,
   liveQNav,
   makePicker,
-  makePrompt,
+  newSettings,
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
@@ -73,7 +73,17 @@ import {
   promptRows,
 } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
+import {
+  newPrompt,
+  promptKind,
+  questionsPrompt,
+  sessionPrompt,
+  type NewSessionSettings,
+} from "@loom/tui/overlay";
 import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
+
+/** A `new` prompt's creation settings, as a fresh state produces them. */
+const settings: NewSessionSettings = { mode: "default", provider: null, model: null, effort: null };
 import {
   bar,
   humanTokens,
@@ -1356,12 +1366,7 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   s = { ...s, lastDraft: "an unrelated half-typed message" };
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({
-      kind: "answerQuestion",
-      sessionId: "a",
-      requestId: "q1",
-      label: "answer",
-    }),
+    prompt: questionsPrompt("a", "q1", "answer"),
   });
   s = reduce(s, {
     t: "qnavSet",
@@ -1389,11 +1394,15 @@ test("a send or title prompt is not closed because some request was resolved", (
   let s = reduce(initialState(), fleet([blocked([perm])]));
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "half typed" }),
+    prompt: sessionPrompt("send", "a", "send", "half typed"),
   });
 
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.equal(s.prompt?.kind, "send", "a prompt with no request id has nothing to reconcile");
+  assert.equal(
+    s.prompt && promptKind(s.prompt),
+    "send",
+    "a prompt with no request id has nothing to reconcile",
+  );
   assert.equal(s.prompt?.buffer.text, "half typed");
 });
 
@@ -2122,7 +2131,7 @@ test("tilth_write's batch `files` renders one block per file, and the one-liner 
 test("prompt open / edit / close transitions", () => {
   let s = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+    prompt: sessionPrompt("send", "a", "send"),
   });
   assert.equal(s.mode, "prompt");
   s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
@@ -2136,7 +2145,7 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   // cancelling a `new` prompt saves the draft
   let s = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
+    prompt: newPrompt(settings),
   });
   s = reduce(s, { t: "promptSet", buffer: buffer("fix the bug") });
   s = reduce(s, { t: "closePrompt", saveDraft: true });
@@ -2145,7 +2154,7 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   // ...and a `send` prompt opened afterwards picks it up
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: s.lastDraft }),
+    prompt: sessionPrompt("send", "a", "send", s.lastDraft),
   });
   assert.equal(s.prompt?.buffer.text, "fix the bug");
 
@@ -2159,7 +2168,7 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   withDraft = { ...withDraft, lastDraft: "fix the bug" };
   withDraft = reduce(withDraft, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "title", sessionId: "a", label: "rename", text: "old title" }),
+    prompt: sessionPrompt("title", "a", "rename", "old title"),
   });
   withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
   withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
@@ -2172,7 +2181,7 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   // submitting (closePrompt without saveDraft) consumes the draft
   let sent = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "fix the bug" }),
+    prompt: sessionPrompt("send", "a", "send", "fix the bug"),
   });
   sent = { ...sent, lastDraft: "fix the bug" };
   sent = reduce(sent, { t: "closePrompt" });
@@ -2182,24 +2191,21 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
 test("promptCycleMode only cycles for a `new` prompt", () => {
   let s = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "new", sessionId: null, label: "new" }),
+    prompt: newPrompt(settings),
   });
-  assert.equal(
-    s.prompt?.mode,
-    undefined,
-    "a fresh new-prompt carries no mode — it just uses the default",
-  );
+  const mode = (x: TuiState) => (x.prompt?.t === "new" ? x.prompt.settings.mode : null);
+  assert.equal(mode(s), "default", "a fresh new-prompt starts on the daemon's default mode");
   s = reduce(s, { t: "promptCycleMode" });
-  assert.equal(s.prompt?.mode, "plan");
+  assert.equal(mode(s), "plan");
   s = reduce(s, { t: "promptCycleMode" });
-  assert.equal(s.prompt?.mode, "acceptEdits");
+  assert.equal(mode(s), "acceptEdits");
 
   let t = reduce(initialState(), {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+    prompt: sessionPrompt("send", "a", "send"),
   });
   t = reduce(t, { t: "promptCycleMode" });
-  assert.equal(t.prompt?.mode, undefined);
+  assert.equal(t.prompt?.t, "session", "a send prompt has no mode to cycle");
 });
 
 test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav walks it", () => {
@@ -2209,7 +2215,7 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
 
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text: "live" }),
+    prompt: sessionPrompt("send", "a", "send", "live"),
   });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(s.prompt?.buffer.text, "three");
@@ -2225,7 +2231,7 @@ test("editing a recalled history entry detaches it from the walk", () => {
   s = reduce(s, { t: "pushHistory", text: "hi" });
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+    prompt: sessionPrompt("send", "a", "send"),
   });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(s.prompt?.buffer.text, "hi");
@@ -2252,7 +2258,7 @@ test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   s = reduce(s, { t: "pushHistory", text: "old" });
   s = reduce(s, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "send", sessionId: "a", label: "send" }),
+    prompt: sessionPrompt("send", "a", "send"),
   });
   s = reduce(s, { t: "promptSet", buffer: buffer("typed") });
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
@@ -2838,7 +2844,7 @@ test("escapeTarget: an effort step reached via the model wizard steps back to it
   });
   const reopened = escapeTarget(bareSend, s);
   assert.equal(reopened.t, "openPrompt");
-  assert.equal(reopened.t === "openPrompt" && reopened.prompt.kind, "send");
+  assert.equal(reopened.t === "openPrompt" && promptKind(reopened.prompt), "send");
   assert.equal(reopened.t === "openPrompt" && reopened.prompt.buffer.text, "half-typed");
 
   // A bare ⌥t from the `new` prompt — restores it with the draft and provider.
@@ -2850,8 +2856,11 @@ test("escapeTarget: an effort step reached via the model wizard steps back to it
   });
   const restored = escapeTarget(bareNew, s);
   assert.equal(restored.t, "openPrompt");
-  assert.equal(restored.t === "openPrompt" && restored.prompt.kind, "new");
-  assert.equal(restored.t === "openPrompt" && restored.prompt.provider, "claude");
+  assert.equal(restored.t === "openPrompt" && promptKind(restored.prompt), "new");
+  assert.equal(
+    restored.t === "openPrompt" && restored.prompt.t === "new" && restored.prompt.settings.provider,
+    "claude",
+  );
   assert.equal(restored.t === "openPrompt" && restored.prompt.buffer.text, "hi");
 });
 
@@ -2868,7 +2877,7 @@ test("escapeTarget: the live ⌥p provider wizard steps back through its own tra
   });
   const back1 = escapeTarget(fromSend, s);
   assert.equal(back1.t, "openPrompt");
-  assert.equal(back1.t === "openPrompt" && back1.prompt.kind, "send");
+  assert.equal(back1.t === "openPrompt" && promptKind(back1.prompt), "send");
   assert.equal(back1.t === "openPrompt" && back1.prompt.buffer.text, "wip");
 
   // Provider step of a live switch from the fleet view (nothing behind it) —
@@ -2903,20 +2912,14 @@ test("escapeTarget: the live ⌥p provider wizard steps back through its own tra
   });
   const back4 = escapeTarget(newWizard, s);
   assert.equal(back4.t, "openPrompt");
-  assert.equal(back4.t === "openPrompt" && back4.prompt.kind, "new");
+  assert.equal(back4.t === "openPrompt" && promptKind(back4.prompt), "new");
   assert.equal(back4.t === "openPrompt" && back4.prompt.buffer.text, "idea");
 });
 
-test("makePrompt carries provider + model for the ⌃P chooser flow", () => {
-  const p = makePrompt({
-    kind: "new",
-    sessionId: null,
-    label: "new",
-    provider: "openai",
-    model: "o4",
-  });
-  assert.equal(p.provider, "openai");
-  assert.equal(p.model, "o4");
+test("newSettings folds the ⌃P chooser's provider + model into the new prompt", () => {
+  const p = newPrompt(newSettings(withProviders(), "openai", "o4", null));
+  assert.equal(p.t === "new" && p.settings.provider, "openai");
+  assert.equal(p.t === "new" && p.settings.model, "o4");
 });
 
 test("defaultModelOf reads the provider's advertised default model", () => {
@@ -2990,7 +2993,7 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
   // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
   const prompted = reduce(noted, {
     t: "openPrompt",
-    prompt: makePrompt({ kind: "new", sessionId: null, label: "new session" }),
+    prompt: newPrompt(settings),
   });
   assert.equal(promptRows(prompted, 100), 3);
 });
@@ -2999,7 +3002,7 @@ test("promptRows counts word-wrapped editor rows at the terminal's width", () =>
   const open = (text: string) =>
     reduce(initialState(), {
       t: "openPrompt",
-      prompt: makePrompt({ kind: "new", sessionId: null, label: "new session", text }),
+      prompt: newPrompt(settings, text),
     });
   // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
   const wide = open("one two three");
@@ -3014,7 +3017,7 @@ test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => 
   const open = (text: string) =>
     reduce(initialState(), {
       t: "openPrompt",
-      prompt: makePrompt({ kind: "send", sessionId: "a", label: "send", text }),
+      prompt: sessionPrompt("send", "a", "send", text),
     });
   // The footer carries only the hints row…
   assert.equal(promptRows(open(""), 100), 1);
