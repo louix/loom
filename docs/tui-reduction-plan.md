@@ -57,18 +57,18 @@ construction; it does not prove the correct transition or asynchronous effect.
 
 Files: existing scripts, tests, `frontend/tui/src/run.tsx`.
 
-- [ ] Record HEAD and run `deno task typecheck`, `deno task test:silent`,
+- [x] Record HEAD and run `deno task typecheck`, `deno task test:silent`,
       `deno task lint`, and `deno task format:check` in the repository environment.
       Record environmental failures honestly; do not use `--no-check` as a pass.
-- [ ] Measure four scenarios at fixed terminal dimensions: idle, one streaming
+- [x] Measure four scenarios at fixed terminal dimensions: idle, one streaming
       session, scrolling a long transcript, and typing/changing mode while streaming.
       Use the same transcript and scripted input for before/after comparisons.
-- [ ] Capture render count/time with Ink's `onRender`, stdout bytes/write count,
+- [x] Capture render count/time with Ink's `onRender`, stdout bytes/write count,
       and key-to-visible-feedback latency. Write diagnostics to a file, never the
       live TUI's stdout. Keep instrumentation temporary or in one opt-in script.
-- [ ] Separately measure mode keypress → local feedback → RPC dispatch → RPC
+- [x] Separately measure mode keypress → local feedback → RPC dispatch → RPC
       settlement/applied snapshot. The existing 300ms debounce is not socket latency.
-- [ ] Record production and test line counts for affected files. Do not include
+- [x] Record production and test line counts for affected files. Do not include
       docs as production reduction or use total test count as a quality metric.
 
 Done: a reproducible comparison exists. If no interactive terminal is available,
