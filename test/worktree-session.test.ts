@@ -204,7 +204,7 @@ test("messaging an archived session re-checks out its branch and resumes on it",
   await c.close();
 });
 
-test("session.remove deletes the row + worktree, keeps the branch, pushes session_removed", async () => {
+test("session.remove deletes the row + worktree, keeps the branch, drops it from the snapshot", async () => {
   const c = await client();
   const s = await c.request<SessionSnapshot>("session.create", {
     prompt: "throwaway spike",

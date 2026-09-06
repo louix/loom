@@ -196,7 +196,6 @@ const main = async (): Promise<void> => {
     sockPath: sock,
     daemonEntry: fileURLToPath(new URL("./loomd.ts", import.meta.url)),
     reconnect,
-    ...(wantTui ? { replayHistory: true } : {}),
   });
 
   if (wantTui) {
@@ -362,7 +361,7 @@ const main = async (): Promise<void> => {
           ...(worktree !== undefined ? { worktree } : {}),
         });
         const where = r.inPlace ? "  in-place" : "";
-        writeOut(`started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`);
+        writeOut(`started ${r.id}  provider=${r.provider}  status=${r.status.kind}${where}\n`);
         break;
       }
       case "send": {
@@ -524,7 +523,7 @@ const main = async (): Promise<void> => {
           ...(values.model ? { model: values.model } : {}),
           ...(values.reason ? { reason: values.reason } : {}),
         });
-        writeOut(`created ${r.id}  status=${r.status}\n`);
+        writeOut(`created ${r.id}  status=${r.status.kind}\n`);
         break;
       }
       case "set-status": {

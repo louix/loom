@@ -1128,7 +1128,7 @@ export class Daemon {
    * Re-instantiate the adapter for a session that isn't currently live (a
    * daemon restart left it `interrupted`, or its last turn ended). Caller must
    * have checked `!#sessions.has(id)`. Returns the fresh snapshot; the caller
-   * emits `session_updated`.
+   * publishes it.
    */
   async #reviveSession(id: string): Promise<SessionSnapshot> {
     // Held for the whole rebuild: the adapter is constructed from the row's
@@ -2236,8 +2236,8 @@ export class Daemon {
 
       this.emitEvent({ type: "rewind", sessionId: id, ts: Date.now(), toTurn });
 
-      // SessionManager.rewind already broadcast a `session_updated` from its
-      // idle transition, but with the pre-truncation turn count — re-emit with
+      // SessionManager.rewind already published a snapshot from its idle
+      // transition, but with the pre-truncation turn count — publish again with
       // the corrected one. The cold path drives the status itself.
       const updated = this.#sessions.has(id)
         ? this.#registry.mustGet(id)
@@ -3014,9 +3014,13 @@ export class Daemon {
   #hHello(params: unknown, ctx: RpcContext): HelloResult {
     const p = (isObj(params) ? params : {}) as Partial<HelloParams>;
     if (p.protocolVersion !== undefined && p.protocolVersion !== PROTOCOL_VERSION) {
+      // The version rides in `data` as well as the message: the client renders
+      // its own "upgrade" line from it, and parsing that out of prose would be
+      // a second, worse protocol.
       throw new RpcError(
         "protocol_mismatch",
         `client protocol ${p.protocolVersion} != daemon ${PROTOCOL_VERSION}`,
+        { daemon: PROTOCOL_VERSION },
       );
     }
     ctx.conn.clientId = typeof p.clientId === "string" ? p.clientId : `anon-${ctx.conn.id}`;

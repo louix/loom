@@ -116,9 +116,11 @@ export interface EventPush {
   seq: number;
   /**
    * The daemon epoch (a fresh id per daemon process) that issued `seq`. The
-   * seq counter resets to 1 on every daemon start, so it is only unique
-   * *within* an epoch — clients must key dedupe / identity on (epoch, seq),
-   * or a post-restart frame silently collides with a pre-restart one.
+   * counter resets to 1 on every daemon start, so `seq` alone is unique only
+   * *within* an epoch. Together the pair addresses a position in this
+   * connection's raw stream — that is all: which frames a reconnect still
+   * needs, and whether the ring rolled past them. It is not the transcript's
+   * identity, which is {@link id} and survives a restart.
    */
   epoch: string;
   type: "event";
@@ -135,8 +137,10 @@ export interface EventPush {
 
 /**
  * The daemon could not replay the client's requested `sinceSeq` because the
- * ring buffer had already rolled past it. The client must discard local state
- * and treat the `hello` snapshot (or a fresh `session.list`) as authoritative.
+ * ring buffer had already rolled past it. Authoritative state needs nothing
+ * doing — the next {@link StatePush} carries all of it — but transcript entries
+ * in the gap were missed, so a client holding cached pages must drop them and
+ * re-read rather than keep a hole it cannot see.
  */
 export interface ResyncPush {
   kind: "push";
@@ -396,8 +400,8 @@ export interface ProviderInfo {
   modelChoices?: ModelChoice[];
   /**
    * The start-up model discovery is still running (the Claude CLI catalog
-   * probe). The picker shows a loading state instead of the list; a
-   * `providers_updated` push carries the settled list when it lands.
+   * probe). The picker shows a loading state instead of the list; the next
+   * state snapshot carries the settled list when it lands.
    */
   modelsLoading?: boolean;
   /**

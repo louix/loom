@@ -1041,7 +1041,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     const release = fs.blockCompact();
     const compacting = c.request("session.compact", { id }); // held on the gate
     await waitFor(() => fs.compacts.length === 1);
-    // `fs.compacts` ticks synchronously in the adapter; the `session_updated` that
+    // `fs.compacts` ticks synchronously in the adapter; the snapshot that
     // carries the flag still has a socket round-trip to make — wait for it rather
     // than racing the delivery.
     await waitFor(() => latestCompacting() !== undefined);
@@ -1062,7 +1062,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     release();
     await compacting;
     // The overlay rides the snapshot only while the gate is held — the release
-    // emits a fresh `session_updated` without the flag.
+    // publishes a fresh snapshot without the flag.
     await waitFor(() => latestCompacting() === undefined);
     assert.equal(latestCompacting(), undefined, "the overlay clears when the gate releases");
     assert.equal(fs.compacts.length, 1);

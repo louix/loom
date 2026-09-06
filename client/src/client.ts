@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   DaemonSnapshot,
-  EventPush,
   Frame,
   HelloResult,
   PushFrame,
@@ -32,13 +31,6 @@ export interface ConnectOptions {
   autospawn?: boolean;
   /** Reconnect (with gap replay) if the connection drops. Default true. */
   reconnect?: boolean;
-  /**
-   * On the first attach, ask the daemon to replay its whole buffered push
-   * stream (`sinceSeq: 0`) instead of starting from the live head. Lets a
-   * client that just launched — the TUI — show the history the running daemon
-   * still holds. Default false; falls back to a `resync` if the buffer rolled.
-   */
-  replayHistory?: boolean;
   clientId?: string;
 }
 
@@ -59,6 +51,36 @@ export const showConnectionError = (e: ConnectionError): string =>
   e.kind === "protocol_mismatch"
     ? `daemon speaks wire protocol v${e.daemon}, this client is v${e.client} — upgrade`
     : e.message;
+
+/**
+ * Marks a handshake failure that reconnecting cannot fix, so the reconnect loop
+ * stops instead of dialling an incompatibility forever. A symbol rather than a
+ * message match: the error crosses the wire from the daemon in one direction
+ * and is raised locally in the other, and only one of those has a shape we own.
+ */
+const FATAL: unique symbol = Symbol("loom.fatalConnectionError");
+
+const mkFatal = (e: ConnectionError): Error =>
+  Object.assign(new Error(showConnectionError(e)), { [FATAL]: e });
+
+const fatalOf = (err: unknown): ConnectionError | null => {
+  if (typeof err !== "object" || err === null || !(FATAL in err)) return null;
+  return (err as { [FATAL]: ConnectionError })[FATAL];
+};
+
+/** Does `err` carry the daemon's RPC error code `code`? (`#settle` copies the
+ *  wire error's `code` / `data` onto the rejection it raises.) */
+const isRpcCode = (err: unknown, code: string): boolean =>
+  typeof err === "object" && err !== null && (err as { code?: unknown }).code === code;
+
+/** The daemon's own protocol version off a `protocol_mismatch` rejection.
+ *  0 when it didn't say — rendered as "v0", still unmistakably a mismatch. */
+const daemonVersionOf = (err: unknown): number => {
+  const data = (err as { data?: unknown } | null)?.data;
+  const v =
+    typeof data === "object" && data !== null ? (data as { daemon?: unknown }).daemon : null;
+  return typeof v === "number" ? v : 0;
+};
 
 /**
  * The client's view of daemon state. `idle` before {@link LoomClient.connect}
@@ -98,6 +120,13 @@ export class LoomClient {
   #lastSeq = 0;
   #closed = false;
   /**
+   * A handshake failure no reconnect can fix, latched on first sight. While
+   * set, the reconnect loop does not run and a dropped socket keeps the `error`
+   * state rather than falling back to `pending` — the two builds cannot be made
+   * to agree by waiting, so saying "reconnecting…" would be a lie.
+   */
+  #fatal: ConnectionError | null = null;
+  /**
    * Bumped on every `#attach`. Every socket callback carries the generation it
    * was started under and no-ops when it no longer matches, so a read, a close
    * or a response from a socket the reconnect loop has already superseded
@@ -115,10 +144,6 @@ export class LoomClient {
   #preHelloQueue: Array<PushFrame | StatePush> = [];
   /** The daemon epoch from the last hello — a change means it restarted. */
   #daemonEpoch: string | null = null;
-  /** Bounded ring of every event frame seen — lets a late subscriber backfill. */
-  #eventLog: EventPush[] = [];
-  #eventLogCap = 5000;
-
   daemonInfo: HelloResult["daemon"] | null = null;
 
   #state: ClientState = loadableIdle;
@@ -129,7 +154,6 @@ export class LoomClient {
     this.#opts = {
       autospawn: true,
       reconnect: true,
-      replayHistory: false,
       daemonEntry: "",
       clientId: this.clientId,
       ...opts,
@@ -141,7 +165,7 @@ export class LoomClient {
     c.#setState(loadablePending);
     try {
       await c.#dial(opts.autospawn ?? true);
-      await c.#handshake(c.#opts.replayHistory ? 0 : undefined);
+      await c.#handshake(undefined);
     } catch (err) {
       // `#handshake` already installed the precise error for a protocol
       // mismatch; anything else is the transport failing to come up at all.
@@ -262,15 +286,6 @@ export class LoomClient {
 
   get lastSeq(): number {
     return this.#lastSeq;
-  }
-
-  /**
-   * Every event frame received so far (bounded), oldest first. A client that
-   * subscribes with {@link onPush} after the initial `hello` replay can seed
-   * itself from this; de-dupe live frames against it by `seq`.
-   */
-  get bufferedEvents(): readonly EventPush[] {
-    return this.#eventLog;
   }
 
   async close(): Promise<void> {
@@ -451,12 +466,6 @@ export class LoomClient {
       void this.#resync(frame.reason);
       return;
     }
-    if (frame.type === "event") {
-      this.#eventLog.push(frame);
-      if (this.#eventLog.length > this.#eventLogCap) {
-        this.#eventLog.splice(0, this.#eventLog.length - this.#eventLogCap);
-      }
-    }
     for (const l of this.#pushListeners) {
       try {
         l(frame);
@@ -466,25 +475,40 @@ export class LoomClient {
     }
   }
 
+  /** Record a mismatch and raise it as terminal. Reconnecting cannot make two
+   *  incompatible builds agree, so this is an `error` the UI surfaces rather
+   *  than a `pending` spinner that never resolves. */
+  #mismatch(daemonVersion: number): Error {
+    const e: ConnectionError = {
+      kind: "protocol_mismatch",
+      daemon: daemonVersion,
+      client: PROTOCOL_VERSION,
+    };
+    this.#fatal = e;
+    this.#setState(loadableFailed(e));
+    return mkFatal(e);
+  }
+
   async #handshake(sinceSeq: number | undefined): Promise<void> {
     this.#helloDone = false;
-    const result = await this.request<HelloResult>("hello", {
-      protocolVersion: PROTOCOL_VERSION,
-      clientId: this.clientId,
-      ...(sinceSeq !== undefined ? { sinceSeq } : {}),
-    });
+    let result: HelloResult;
+    try {
+      result = await this.request<HelloResult>("hello", {
+        protocolVersion: PROTOCOL_VERSION,
+        clientId: this.clientId,
+        ...(sinceSeq !== undefined ? { sinceSeq } : {}),
+      });
+    } catch (err) {
+      // The daemon refused our version outright. It reports its own in the
+      // error's `data`; an older daemon that didn't send one leaves us saying
+      // "unknown", which still reads as an incompatibility rather than a drop.
+      if (!isRpcCode(err, "protocol_mismatch")) throw err;
+      throw this.#mismatch(daemonVersionOf(err));
+    }
     // The daemon rejects a mismatched request version, but a future lenient
     // daemon on a changed frame shape would slip through — check both ways.
     if (result.protocolVersion !== PROTOCOL_VERSION) {
-      // Terminal: reconnecting cannot make two incompatible builds agree, so
-      // this is an `error` the UI must surface rather than a `pending` spinner.
-      const mismatch: ConnectionError = {
-        kind: "protocol_mismatch",
-        daemon: result.protocolVersion,
-        client: PROTOCOL_VERSION,
-      };
-      this.#setState(loadableFailed(mismatch));
-      throw new Error(showConnectionError(mismatch));
+      throw this.#mismatch(result.protocolVersion);
     }
     // A different epoch across a reconnect ⇒ the daemon restarted: its seq and
     // in-memory version counters reset, so any replay it offered against our
@@ -495,7 +519,6 @@ export class LoomClient {
     if (restarted || sinceSeq === undefined || !result.replaying) {
       this.#lastSeq = result.seq;
     }
-    if (restarted) this.#eventLog = [];
     this.#helloDone = true;
     const queued = this.#preHelloQueue;
     this.#preHelloQueue = [];
@@ -515,7 +538,7 @@ export class LoomClient {
     this.#sock = null;
     // The daemon may still run an in-flight `session.create` / `session.compact`
     // to completion — the caller can't know. Tag the rejection so it can choose
-    // to reconcile (poll / wait for the replayed `session_updated`) rather than
+    // to reconcile (poll, or wait for the next snapshot) rather than
     // treat it as a hard failure.
     for (const [, waiter] of this.#pending) {
       waiter.reject(
@@ -528,6 +551,12 @@ export class LoomClient {
       );
     }
     this.#pending.clear();
+    if (this.#fatal !== null) {
+      // The `error` is already installed and is the truth; nothing about the
+      // socket going away afterwards changes it.
+      this.#fire("close");
+      return;
+    }
     if (this.#closed || !this.#opts.reconnect) {
       // A deliberate close is not a failure — nothing is being asked for any
       // more, so the state goes back to `idle`. A drop with reconnect off is,
@@ -548,7 +577,7 @@ export class LoomClient {
 
   async #reconnectLoop(): Promise<void> {
     let waitMs = 100;
-    while (!this.#closed) {
+    while (!this.#closed && this.#fatal === null) {
       try {
         // Try to connect first; only fork a daemon when nothing is listening
         // (mirrors #dial) — otherwise a briefly-unreachable daemon makes us
@@ -566,7 +595,11 @@ export class LoomClient {
         await this.#handshake(this.#lastSeq);
         this.#fire("reconnect", { lastSeq: this.#lastSeq });
         return;
-      } catch {
+      } catch (err) {
+        // A version incompatibility is not a transient failure. Retrying it
+        // would leave the UI flickering between "reconnecting" and the real
+        // error forever, and re-spawn a daemon it still cannot talk to.
+        if (fatalOf(err)) return;
         // Full-ish jitter so a fleet of clients (TUI + `loom tail` + CLI) that
         // dropped together don't retry — and re-spawn a daemon — in lockstep.
         await delay(waitMs / 2 + Math.random() * (waitMs / 2));
@@ -577,9 +610,9 @@ export class LoomClient {
 
   async #resync(reason: string): Promise<void> {
     // The daemon says our seq is unrecoverable (buffer rolled, or it
-    // restarted). Discard the local event-log gap and re-baseline from a
-    // fresh hello rather than carrying a stale #lastSeq / version view.
-    this.#eventLog = [];
+    // restarted). Re-baseline from a fresh hello rather than carrying a stale
+    // `#lastSeq` forward; the listener re-reads the transcript, which is the
+    // only thing with a gap in it.
     try {
       const result = await this.request<HelloResult>("hello", {
         protocolVersion: PROTOCOL_VERSION,

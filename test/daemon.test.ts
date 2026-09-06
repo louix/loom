@@ -692,7 +692,7 @@ models   = ["pin-a"]
   }
 });
 
-test("remembering defaults broadcasts a providers_updated push with the fresh list", async () => {
+test("remembering defaults publishes a snapshot with the fresh provider list", async () => {
   const hh = await makeHarness({
     config: `
 [providers.local]
@@ -1765,7 +1765,7 @@ test("a provider-set change on disk asks for a restart rather than applying live
   }
 });
 
-test("model probes resolving at bring-up append a providers_updated push with the detected list", async () => {
+test("model probes resolving at bring-up publish a snapshot with the detected list", async () => {
   const srv = await modelsStub([
     // one metadata-carrying row so the push's modelChoices is exercised too
     { id: "det-b", display_name: "Det B", context_tokens: 32_768 },
@@ -1807,7 +1807,7 @@ base_url = "${srv.base}"
   }
 });
 
-test("no providers_updated push at bring-up when the provider list is fully pinned", async () => {
+test("no extra snapshot at bring-up when the provider list is fully pinned", async () => {
   const hh = await makeHarness({
     config: `
 [providers.local]

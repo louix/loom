@@ -196,7 +196,7 @@ const daemon: DaemonInfo = {
 
 /**
  * A complete-replacement snapshot action — the only way fleet state reaches the
- * reducer. Tests that used to push a single `session_updated` now hand over the
+ * reducer. Tests that used to push a single per-session update now hand over the
  * whole fleet as it stands after the change, which is exactly what the daemon
  * does.
  */
@@ -759,23 +759,24 @@ test("permission / question / fatal-error events raise a notice", () => {
   assert.equal(s.notice?.tone, "bad");
 });
 
-test("a replayed (backfilled) event never raises a notice — it's transcript, not live (U2)", () => {
-  let s = initialState();
+test("a history page never raises a notice — it's transcript, not news (U2)", () => {
+  const a = snap({ id: "s1", status: "running" });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, {
-    t: "push",
-    replay: true,
-    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+    t: "historyPage",
+    sessionId: "s1",
+    older: true,
+    gen: s.transcriptGen,
+    page: historyPage([
+      { id: 1, event: ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} }) },
+      { id: 2, event: ev({ type: "error", message: "old boom", fatal: true }) },
+    ]),
   });
-  s = reduce(s, {
-    t: "push",
-    replay: true,
-    frame: push(2, ev({ type: "error", message: "old boom", fatal: true })),
-  });
-  assert.equal(s.notice, null, "no notice flashed from replayed history");
-  // …but the frame still lands in the log.
-  assert.ok(
-    lines(s).some((l) => l.id === 1) && lines(s).some((l) => l.id === 2),
-    "replayed frames are still logged",
+  assert.equal(s.notice, null, "scrolling back must not flash a long-settled approval or error");
+  // …but the entries still land in the transcript.
+  assert.deepEqual(
+    lines(s).map((l) => l.id),
+    [1, 2],
   );
 });
 
@@ -965,6 +966,35 @@ test("an outstanding request is read off the snapshot, so old history cannot res
     ["p1"],
     "a long-answered request in old history is not offered for answering again",
   );
+
+  // Same for a compaction in flight: the page carries the `compact` event that
+  // ended some earlier one, and the indicator is unmoved by it.
+  s = reduce(
+    s,
+    fleet([
+      snap({
+        id: "a",
+        status: "awaiting_input",
+        awaitReason: "permission",
+        requests: [req],
+        compacting: { startedAt: 5, before: 90_000, generated: 12 },
+      }),
+    ]),
+  );
+  s = reduce(s, {
+    t: "historyPage",
+    sessionId: "a",
+    older: true,
+    gen: s.transcriptGen,
+    page: historyPage([
+      {
+        id: 1,
+        event: ev({ type: "compact", sessionId: "a", trigger: "auto", before: 1, after: 1 }),
+      },
+    ]),
+  });
+  assert.deepEqual(compactingFor(s, "a"), { startedAt: 5, before: 90_000, generated: 12 });
+  assert.equal(pendingFor(s, "a").permissions?.length, 1);
 
   // The daemon says the session is no longer blocked: the request set is empty
   // and so is the projection, with no pruning pass to remember to run.

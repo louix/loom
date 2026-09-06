@@ -111,19 +111,18 @@ const harness = async (
   opts: { config?: string } = {},
 ): Promise<{
   h: Harness;
-  connect: (replayHistory?: boolean) => Promise<LoomClient>;
+  connect: () => Promise<LoomClient>;
   cleanup: () => Promise<void>;
 }> => {
   const h = await makeHarness(opts);
   return {
     h,
-    connect: (replayHistory = false) =>
+    connect: () =>
       LoomClient.connect({
         repoRoot: h.repoRoot,
         sockPath: h.sockPath,
         autospawn: false,
         reconnect: true,
-        replayHistory,
       }),
     cleanup: () => h.cleanup(),
   };
@@ -637,45 +636,7 @@ models   = ["m1", "m2"]
     }
   });
 
-  test("re-opening the TUI backfills the event log from the running daemon", async () => {
-    const { connect, cleanup } = await harness();
-    const first = await connect();
-    const s = await first.request<SessionSnapshot>("session.createStub", {
-      prompt: "long-lived session",
-      status: "running",
-      provider: "fake",
-    });
-    await first.request("dev.emit", {
-      event: { sessionId: s.id, type: "assistant_text", text: "something from an earlier viewing" },
-    });
-    await delay(80);
-    await first.close();
-
-    const second = await connect(true);
-    const { stdout, app } = mount(second);
-    try {
-      assert.ok(
-        second.bufferedEvents.some(
-          (f) =>
-            f.event.type === "assistant_text" &&
-            f.event.text === "something from an earlier viewing",
-        ),
-        "the client replayed the daemon's buffered history",
-      );
-      await delay(200);
-      assert.match(
-        stdout.last,
-        /something from an earlier viewing/,
-        "the TUI seeded its log from it",
-      );
-    } finally {
-      app.unmount();
-      await second.close();
-      await cleanup();
-    }
-  });
-
-  test("selecting a session backfills its durable history when the live ring doesn't have it", async () => {
+  test("re-opening the TUI reads the session's history back from the daemon", async () => {
     const { connect, cleanup } = await harness();
     const first = await connect();
     const s = await first.request<SessionSnapshot>("session.createStub", {
@@ -689,11 +650,10 @@ models   = ["m1", "m2"]
     await delay(80);
     await first.close();
 
-    // No replayHistory: unlike the test above, this client's own ring starts
-    // empty, so the old client's history can only reach the TUI via the new
-    // per-session `session.events` fetch triggered by selecting the session.
-    const second = await connect(false);
-    assert.equal(second.bufferedEvents.length, 0);
+    // A fresh client sees none of that on its push stream — it wasn't attached.
+    // The transcript is a fetched resource, so the `session.events` page pulled
+    // when the session is selected is the one and only path it arrives by.
+    const second = await connect();
     const { stdout, app } = mount(second);
     try {
       await delay(200);
@@ -729,7 +689,7 @@ models   = ["m1", "m2"]
     // Fresh client, empty ring: this history reaches the TUI only through paged
     // `session.events` fetches. Page size 3 → the newest 3 on select, older ones
     // only once the viewport nears the top.
-    const second = await connect(false);
+    const second = await connect();
     const { stdout, stdin, app } = mount(second, { historyPageSize: 3 }, { rows: 24 });
     try {
       await waitFor(stdout, /history line 9/);
@@ -780,7 +740,7 @@ models   = ["m1", "m2"]
     await delay(80);
     await first.close();
 
-    const second = await connect(false);
+    const second = await connect();
     const { stdout, stdin, app } = mount(second);
     try {
       // The tail view shows event 6's wrapped filler; its head row is a page up.
@@ -824,7 +784,7 @@ models   = ["m1", "m2"]
     // Drive the real fleet handle — the App minus ink. The view updates
     // synchronously on every dispatch, so assertions read state instead of
     // racing ink's render delivery, which has no latency bound on a fake stdout.
-    const second = await connect(false);
+    const second = await connect();
     const handle = mkFleetHandle({
       client: second,
       term: {

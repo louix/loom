@@ -404,17 +404,17 @@ events now drive a real session so the daemon's own request set is what is asser
 
 ## 5. Remove superseded paths and validate
 
-- [ ] Update all wire consumers together, including `cli/src/loom.ts`, harness
+- [x] Update all wire consumers together, including `cli/src/loom.ts`, harness
       code, and fixtures. Bump `PROTOCOL_VERSION` for incompatible wire changes and
       ensure mismatch fails clearly rather than reconnecting indefinitely.
-- [ ] Remove obsolete state version counters, state replay/resync handlers,
+- [x] Remove obsolete state version counters, state replay/resync handlers,
       pre-mount state reconstruction, duplicate connection/boot flags, and comments
       describing the old protocol once their callers are migrated.
-- [ ] Inspect `loom tail` before deleting event infrastructure. Its raw-event
+- [x] Inspect `loom tail` before deleting event infrastructure. Its raw-event
       replay is a separate existing feature: preserve it if still consumed, keeping
       snapshots out of it. Epoch/seq can remain for that stream; they no longer
       identify transcript pages or reconcile authoritative state.
-- [ ] Replace tests asserting removed protocol machinery with tests of the
+- [x] Replace tests asserting removed protocol machinery with tests of the
       behavior below. Preserve unrelated feature coverage.
 
 Focused verification (extend existing suites):
@@ -455,3 +455,75 @@ Done means one authoritative client `Loadable`, complete replaceable snapshots,
 independent transcript pages, the superseded reconciliation code removed, and
 validation recorded. Report any actual environment blocker and the precise
 checks that could not run; do not mark unrun checks as passing.
+
+**Done.** Notes:
+
+- **Protocol mismatch was not terminal.** `#handshake` installed the `error` state
+  and threw, but `#reconnectLoop` caught everything and retried, so two
+  incompatible builds left the UI cycling between "reconnecting…" and the real
+  error forever — and re-spawning a daemon it could never talk to. The daemon-side
+  rejection (an `RpcError`) was not recognised as a mismatch at all, so that
+  direction never even reached the `error` state. A mismatch now latches `#fatal`,
+  which stops the loop and keeps a later socket close from falling back to
+  `pending`; the daemon reports its own version in the error's `data` rather than
+  leaving the client to parse it out of prose. Verified against a pass-through of
+  the old loop: the reconnect test fails without it.
+- **Removed the pre-mount state reconstruction** — `replayHistory`,
+  `LoomClient.bufferedEvents` and its 5000-frame ring, and the TUI's replay of them
+  at mount. It was a second, worse path to the transcript: it couldn't page, it was
+  bounded by a ring the daemon shares across every session, and §4 made the
+  `session.events` page the one way history arrives. With it went the `replay` flag
+  on the `push` action, which existed only to stop that replay flashing stale
+  notices; live pushes are now always news, and history pages never touch the
+  notice line.
+- `loom tail` inspected and preserved. Exercised against a live daemon: raw events
+  still stream with their `seq` (`#2`, `#3`), and snapshots stay out of that stream
+  — they show as a one-line `[state: N session(s), M live]` summary. Epoch/seq
+  remain on `EventPush` for exactly this, and `EventPush.epoch`'s doc now says so
+  instead of claiming to be the transcript's identity.
+- Swept the comments that still described the old protocol (`session_updated` /
+  `session_removed` / `providers_updated` / the `session.list` resync fallback) in
+  `client.ts`, `wire.ts`, `sessions.ts`, `daemon.ts`, `model.ts`, `fleet-handle.ts`
+  and four test names. The only surviving mention is the `PROTOCOL_VERSION` note
+  that documents the v1→v2 break, which is the one place it belongs.
+- Fixed a real (pre-existing) wire-consumer bug in `cli/src/loom.ts`: `loom run` and
+  `loom stub` printed `status=[object Object]`, having never been updated when
+  `status` became a `SessionState`.
+
+Focused verification — where each row is covered:
+
+| Scenario                                              | Test                                                                                                    |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Two clients change mode, delayed adapter              | `daemon.test.ts` "overlapping mode changes apply in issue order…"                                       |
+| Second client attaches mid-request                    | `client-state.test.ts` "a client attaching mid-request gets the whole thing in its first snapshot"      |
+| One of several permissions resolves elsewhere         | `client-state.test.ts` "answering one of several permissions retires exactly that one, in both clients" |
+| Old history during a request or compaction            | `tui-model.test.ts` "an outstanding request is read off the snapshot…" (extended to compaction)         |
+| Session added/removed while disconnected              | `client-state.test.ts` "a disconnect goes pending…" (§2)                                                |
+| Old socket/fetch callback after reconnect             | `client-state.test.ts` (socket) + `tui-model.test.ts` "a page issued on a dropped connection…"          |
+| Live transcript overlaps a page fetch                 | `tui-model.test.ts` "a history page and the live stream merge by durable id, one entry each"            |
+| Pagination crosses a daemon restart                   | `daemon.test.ts` "transcript pagination is stable across a daemon restart"                              |
+| Connection drops during send/create                   | `client-state.test.ts` "a connection dropped mid-create does not resubmit it…"                          |
+| Partial writes / malformed frames / protocol mismatch | `connection.test.ts` (§2) + `client-state.test.ts` mismatch tests, both directions                      |
+
+Repository checks: `deno task typecheck`, `deno task test:silent`, `deno task lint`
+and `deno task format:check` all clean.
+
+Manual validation, against a real daemon in a scratch git repository (two
+`LoomClient`s standing in for two TUI windows, driven through the same RPCs the
+TUI uses; `loom tail` and the `loom` CLI run as themselves):
+
+- change mode in one window → both report `acceptEdits`
+- browse history → three pages walking backwards, cursors chaining, `olderCursor:
+null` only on the page that genuinely reaches the start
+- a malformed cursor → `bad_request`, distinguishable from exhaustion
+- restart the daemon → both clients transition `data → pending → data`, the fleet
+  re-baselines, the _pre-restart_ cursor still pages correctly, the newest page
+  returns identical ids, and the mode set before the restart survives it
+- an entry appended after the restart continues the same id ordering (…12, 13, 14)
+- `loom tail` streams raw events with their seq and reports snapshots as a summary
+  line, never as events
+
+Not run: the two _interactive_ TUI windows the plan describes. This session has no
+attachable terminal, so the Ink app could not be driven by hand. The equivalent
+paths are covered by `tui-render.test.ts`, which mounts the real app against a real
+daemon over a fake stdout/stdin, and by the manual run above at the client level.

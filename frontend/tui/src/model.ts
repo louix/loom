@@ -682,7 +682,7 @@ export const versionMismatchAction = (o: {
 export type Action =
   | { t: "state"; state: ClientState }
   | { t: "modeDraft"; sessionId: string; mode: SessionMode | null }
-  | { t: "push"; frame: PushFrame; replay?: boolean }
+  | { t: "push"; frame: PushFrame }
   | { t: "historyStart"; sessionId: string; older: boolean; gen: number }
   | { t: "historyPage"; sessionId: string; page: HistoryPage; older: boolean; gen: number }
   | { t: "historyFailed"; sessionId: string; older: boolean; error: string; gen: number }
@@ -845,7 +845,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       };
 
     case "push":
-      return applyPush(s, a.frame, a.replay === true);
+      return applyPush(s, a.frame);
 
     case "transcriptReset":
       return resetTranscripts(s);
@@ -906,8 +906,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     }
 
     case "select": {
-      // Optimistic: a freshly-created / forked session may not be in `sessions`
-      // yet (its `session_updated` push can trail the RPC response). Record it
+      // Optimistic: a freshly-created / forked session may not be in the fleet
+      // yet (the snapshot carrying it can trail the RPC response). Record it
       // as the pending selection so `clampSelection` holds it until it arrives.
       // A different session invalidates any child focus along with it.
       if (a.id === s.selectedId) return s;
@@ -1255,14 +1255,15 @@ const pickerPatch = (
   return rederived ? { picker: rederived } : {};
 };
 
-const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
+const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
-      // A replayed frame is *transcript*, not news (U2): re-running
-      // `noticeForEvent` would flash a long-settled "Bash needs approval" /
-      // "error: …" on the notice line for 4s.
-      const notice = replay ? s.notice : (noticeForEvent(s, ev) ?? s.notice);
+      // Only the live stream reaches here, so a notice is always news. History
+      // arrives as a `historyPage`, which never touches the notice line — a
+      // long-settled "Bash needs approval" flashing for 4s on scroll-back was
+      // exactly the confusion that separating the two resources removes (U2).
+      const notice = noticeForEvent(s, ev) ?? s.notice;
       // No durable id means the daemon did not persist this event, which is its
       // way of saying "not transcript": status transitions and compaction beats
       // are read off the session snapshot instead. They can still raise a
@@ -1905,7 +1906,7 @@ export const modelPickEmptyText = (s: TuiState, providerId: string): string => {
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };
 
-/** A `providers_updated` landed while a provider/model picker is open: rebuild
+/** A snapshot landed while a provider/model picker is open: rebuild
  *  its items from the fresh list — one opened while the daemon was still
  *  detecting models resolves here instead of sitting empty until reopened.
  *  The highlight follows its id when it survives. Null when the open picker

@@ -1818,8 +1818,9 @@ export const mkFleetHandle = ({
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to
-        // completion. Don't reopen the prompt (that invites a double submit);
-        // the replayed `session_updated` / events reconcile the view.
+        // completion. Don't reopen the prompt and don't retry (either invites a
+        // double submit); the snapshot that lands on reconnect says what
+        // actually happened, whichever way it went.
         if ((e as { code?: unknown })?.code === "disconnected") {
           note("connection dropped — the action may still be running", "bad");
           return;
@@ -2633,12 +2634,6 @@ export const mkFleetHandle = ({
       dispatch({ t: "expireNotice", now: Date.now() });
       publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
     }, 120);
-
-    // Backfill the log from history the daemon replayed before mount (re-opening
-    // the TUI against a live daemon); live frames de-dupe against it by seq.
-    // `replay` so a long-settled permission / error in that history doesn't
-    // flash a stale notice or re-open the request panel (U2).
-    for (const frame of client.bufferedEvents) dispatch({ t: "push", frame, replay: true });
 
     return () => {
       clearInterval(iv);
