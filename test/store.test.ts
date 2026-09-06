@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint, migrate, openDb, withTransaction } from "@loom/daemon/store/db";
+import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import {
   stateAwaitingInput,
   stateIdle,
@@ -49,6 +51,81 @@ test("migrations bring an empty db to head and are idempotent", () => {
       assert.ok(tables.includes(t), `missing table ${t}`);
     }
     db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a corrective migration reclassifies history_backend for a db that already ran the original (provider-name-based) migration 20, without touching explicit 'codex' rows", () => {
+  // Migrations are append-only: a database that already advanced to schema
+  // version 20 keeps whatever migration 20's SQL happened to be *when it
+  // ran*, forever — the runner only ever executes steps at or past the
+  // database's current version, so a later edit to migration 20's own text
+  // (which is what an earlier draft of this fix did, before review caught
+  // it) never reaches such a database. Simulate exactly that: hand-apply the
+  // *original*, naming-based migration 20 SQL (reproduced here verbatim,
+  // since the current migrations.ts no longer contains it — rewriting it in
+  // place doesn't help a database that already ran it), then open normally
+  // and confirm migration 21 alone — not a re-run of 20 — fixes it.
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = new DatabaseSync(path);
+    db.exec("PRAGMA foreign_keys = ON");
+    for (let v = 0; v < 19; v++) db.exec(MIGRATIONS[v]!); // migrations 1-19, verbatim
+    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    const setVersion = (v: number): void => {
+      db.prepare(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      ).run(String(v));
+    };
+    setVersion(19);
+    db.exec(`
+      ALTER TABLE sessions ADD COLUMN history_backend TEXT NOT NULL DEFAULT '';
+      UPDATE sessions SET history_backend = 'aisdk' WHERE provider = 'chatgpt';
+    `);
+    setVersion(20);
+
+    const now = Date.now();
+    const insertSession = (id: string, provider: string): void => {
+      db.prepare(
+        "INSERT INTO sessions (id, provider, mode, status, in_place, created_at, updated_at) " +
+          "VALUES (?, ?, 'default', 'starting', 1, ?, ?)",
+      ).run(id, provider, now, now);
+    };
+    const withTranscript = (id: string): void => {
+      db.prepare(
+        "INSERT INTO provider_messages (session_id, seq, role, content, created_at) VALUES (?, 1, 'user', '{}', ?)",
+      ).run(id, now);
+    };
+    // A real Codex thread (no transcript) — the naming-based migration
+    // wrongly marked this 'aisdk' just because provider = 'chatgpt'.
+    insertSession("s-false-positive", "chatgpt");
+    // A genuinely legacy row — the naming-based migration got this right
+    // already; the corrective migration must leave it alone.
+    insertSession("s-true-positive", "chatgpt");
+    withTranscript("s-true-positive");
+    // A custom sdk="chatgpt" profile's legacy row — the naming-based
+    // migration's `provider = 'chatgpt'` filter never matched it at all.
+    insertSession("s-missed-custom", "work");
+    withTranscript("s-missed-custom");
+    // Explicitly recorded by `Daemon#startSession` after the Phase 4 cutover
+    // — must never be overwritten by a heuristic migration.
+    insertSession("s-explicit-codex", "chatgpt");
+    db.prepare("UPDATE sessions SET history_backend = 'codex' WHERE id = ?").run("s-explicit-codex");
+    db.close();
+
+    const reopened = openDb(path); // runs every migration from 20 onward for real
+    const backendOf = (id: string): string =>
+      (
+        reopened.prepare("SELECT history_backend FROM sessions WHERE id = ?").get(id) as {
+          history_backend: string;
+        }
+      ).history_backend;
+    assert.equal(backendOf("s-false-positive"), "", "a real Codex thread wrongly marked 'aisdk' is corrected back to native");
+    assert.equal(backendOf("s-true-positive"), "aisdk", "a genuinely legacy row stays 'aisdk'");
+    assert.equal(backendOf("s-missed-custom"), "aisdk", "a custom sdk=chatgpt profile's legacy row, missed by the naming-based migration, is now caught");
+    assert.equal(backendOf("s-explicit-codex"), "codex", "an explicitly-recorded codex row is never overwritten by the corrective migration");
+    reopened.close();
   } finally {
     cleanup();
   }

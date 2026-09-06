@@ -291,4 +291,38 @@ export const MIGRATIONS: string[] = [
     WHERE history_backend = ''
       AND EXISTS (SELECT 1 FROM provider_messages WHERE provider_messages.session_id = sessions.id);
   `,
+
+  // 21 — corrective follow-up to 20. Migrations are append-only and never
+  // edited once shipped: any database that already advanced to schema
+  // version 20 keeps whatever that migration's SQL happened to be *at the
+  // time it ran* forever — the migration runner only executes a step whose
+  // index is >= the database's current version, so rewriting 20's own SQL
+  // after the fact (as an earlier draft of this migration briefly did) never
+  // reaches a database that already ran it. Only a new, later-numbered
+  // migration can correct data an earlier one already wrote.
+  //
+  // This exists because migration 20 first shipped naming-based
+  // (`WHERE provider = 'chatgpt'`) before being caught in review and
+  // rewritten to the evidence-based form above (`EXISTS (... provider_messages ...)`).
+  // A database that ran the naming-based version has two kinds of wrong rows:
+  // a `chatgpt` row with no `provider_messages` evidence (already a native
+  // Codex thread, wrongly marked 'aisdk' — would wrongly refuse to resume);
+  // and a `sdk = "chatgpt"` custom-profile row (e.g. `[providers.work]`) that
+  // does have `provider_messages` evidence but was never touched at all,
+  // since its provider name isn't literally `chatgpt` (still `''`, so it
+  // reads as resumable when it is not). Recompute both directions from the
+  // same evidence migration 20 should have used from the start.
+  //
+  // Never touches `'codex'` — that value is only ever written explicitly by
+  // `Daemon#startSession` for a session it just created on Codex's
+  // app-server (see `daemon.ts`), a stronger, direct signal than anything a
+  // migration can infer after the fact and never wrong to trust.
+  /* sql */ `
+  UPDATE sessions SET history_backend = 'aisdk'
+    WHERE history_backend = ''
+      AND EXISTS (SELECT 1 FROM provider_messages WHERE provider_messages.session_id = sessions.id);
+  UPDATE sessions SET history_backend = ''
+    WHERE history_backend = 'aisdk'
+      AND NOT EXISTS (SELECT 1 FROM provider_messages WHERE provider_messages.session_id = sessions.id);
+  `,
 ];
