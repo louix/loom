@@ -460,10 +460,25 @@ export class ClaudeEventMapper {
     // `result.usage` (summed over all of those calls) isn't it.
     if (m.parent_tool_use_id == null && m.message?.usage) {
       const u = m.message.usage;
-      this.state.contextUsed =
+      const used =
         (u.input_tokens ?? 0) +
         (u.cache_read_input_tokens ?? 0) +
         (u.cache_creation_input_tokens ?? 0);
+      // The meter should follow each request, not wait for the turn to close:
+      // a turn that fills the window does it *during* the turn, which is
+      // exactly when a stale bar is worth nothing. The turn's `usage` still
+      // carries the settled fill; this only gets there first. Beat only on a
+      // change, and never with a zero — an assistant message the SDK reports
+      // no usage for would blank the bar rather than hold it.
+      if (used > 0 && used !== this.state.contextUsed) {
+        this.state.contextUsed = used;
+        out.push({
+          type: "context",
+          ...base,
+          contextUsed: used,
+          ...(this.state.contextLimit > 0 ? { contextLimit: this.state.contextLimit } : {}),
+        });
+      }
       // Only the main loop, and only when it wrote: a subagent runs on its own
       // TTL knob (CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL, 5m by default), so
       // folding its frames in here would report the wrong lifetime for the

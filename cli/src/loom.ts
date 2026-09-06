@@ -686,6 +686,7 @@ const summarize = (ev: HarnessEvent): string => {
     return `plan  req=${ev.id}  (plan <id> ${ev.id} implement|fresh|revise|discuss)`;
   if (ev.type === "usage")
     return `+${ev.tokens.input}in/+${ev.tokens.output}out  ctx ${ev.contextUsed}/${ev.contextLimit}`;
+  if (ev.type === "context") return `ctx ${ev.contextUsed}/${ev.contextLimit ?? "?"}`;
   if (ev.type === "result") return ev.kind === "ok" ? "ok" : "failed";
   if (ev.type === "error") return ev.message.slice(0, 80);
   return "";

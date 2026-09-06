@@ -432,6 +432,35 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("a context beat moves the meter and nothing else", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.finishTurn({
+      usage: { input: 1200, cacheRead: 9000, cacheWrite: 250 },
+      contextUsed: 40_000,
+    });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1,
+    );
+    const settled = await c.request<SessionSnapshot>("session.get", { id });
+
+    fs.emit({ type: "context", contextUsed: 150_000 });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).contextUsed === 150_000,
+    );
+
+    // Only the numerator moved. No tokens were billed, no turn closed, and the
+    // cache countdown is still armed by the turn that actually ended — a beat
+    // that re-armed it would restart the clock on every model request.
+    const snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.deepEqual(snap.usage, settled.usage);
+    assert.equal(snap.turns, settled.turns);
+    assert.equal(snap.costUsd, settled.costUsd);
+    assert.equal(snap.contextLimit, settled.contextLimit);
+    assert.deepEqual(snap.cache, settled.cache);
+    await c.close();
+  });
+
   test("an observed cache TTL overrides the configured pin and is persisted", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);

@@ -164,6 +164,46 @@ test("contextUsed tracks the last single request, not the turn's cumulative usag
   assert.equal(usage?.contextUsed, 955_000);
 });
 
+test("the context meter beats mid-turn, once per change, never with a zero", () => {
+  // A turn that fills the window fills it *during* the turn; the turn's own
+  // `usage` lands too late to be a warning. Each main-loop request beats.
+  const m = new ClaudeEventMapper(SID);
+  const req = (used: number, parent: string | null = null) =>
+    byType(
+      m.map({
+        type: "assistant",
+        parent_tool_use_id: parent,
+        message: { content: [], usage: { input_tokens: used } },
+      }),
+      "context",
+    );
+
+  // The limit arrives with the first completed turn, so this early beat
+  // carries the numerator alone rather than a zero scale that would blank the
+  // bar on a resumed session.
+  const first = req(120_000);
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.contextUsed, 120_000);
+  assert.equal(first[0]?.contextLimit, undefined);
+
+  assert.deepEqual(req(120_000), [], "an unchanged fill is not worth a beat");
+  assert.deepEqual(req(0), [], "a message the SDK reports no usage for holds the bar");
+  // A subagent runs in its own window and must not move the main meter.
+  assert.deepEqual(req(900_000, "task-1"), []);
+  assert.equal(req(180_000)[0]?.contextUsed, 180_000);
+
+  // Once a turn has closed, the scale is known and rides along.
+  m.map({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 1,
+    usage: { input_tokens: 180_000 },
+    modelUsage: { "claude-sonnet-5": { inputTokens: 180_000, contextWindow: 200_000 } },
+  });
+  assert.equal(req(190_000)[0]?.contextLimit, 200_000);
+});
+
 test("a second turn's usage is the delta over cumulative, not the running total", () => {
   const m = new ClaudeEventMapper(SID);
   m.map({

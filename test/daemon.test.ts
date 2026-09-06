@@ -154,7 +154,7 @@ test("dev.emit is broadcast to a subscribed client with a monotonic seq", async 
   await c.close();
 });
 
-test("session.events returns a session's durable history, oldest first, excluding status/compact heartbeats", async () => {
+test("session.events returns a session's durable history, oldest first, excluding status/compact/context heartbeats", async () => {
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
 
@@ -162,7 +162,7 @@ test("session.events returns a session's durable history, oldest first, excludin
     event: { sessionId: stub.id, type: "assistant_text", text: "one" },
   });
   await c.request("dev.emit", { event: { sessionId: stub.id, type: "thinking", text: "two" } });
-  // neither of these should end up in the durable history — the TUI never
+  // none of these should end up in the durable history — the TUI never
   // renders them either (see `applyPush` in the frontend model)
   await c.request("dev.emit", {
     event: { sessionId: stub.id, type: "status_changed", status: { kind: "running" } },
@@ -175,6 +175,9 @@ test("session.events returns a session's durable history, oldest first, excludin
       generated: 10,
       before: 1000,
     },
+  });
+  await c.request("dev.emit", {
+    event: { sessionId: stub.id, type: "context", contextUsed: 40_000, contextLimit: 200_000 },
   });
 
   const page = await c.request<HistoryPage>("session.events", { id: stub.id });

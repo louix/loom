@@ -1734,6 +1734,46 @@ test("cacheStatus: warm counts down from lastTurnAt + ttl, then goes cold", () =
   assert.equal(cold.remainingMs, 0);
 });
 
+test("cacheStatus: a running turn is `live`, not a countdown running the wrong way", () => {
+  const T0 = 1_000_000;
+  const cache = {
+    ttlMinutes: 5,
+    ttlSource: "observed" as const,
+    lastTurnAt: T0,
+    lastRead: 8000,
+    lastWrite: 300,
+  };
+  // Well past the last turn's deadline: idle, that is honestly cold.
+  const late = T0 + 9 * 60_000;
+  assert.equal(cacheStatus(snap({ status: "idle", cache }), late).state, "cold");
+
+  // Running, it is not — every request of the live turn rewrites the prefix,
+  // so there is no deadline to have passed. No number is offered for one.
+  const live = cacheStatus(snap({ status: "running", cache }), late);
+  assert.equal(live.state, "live");
+  assert.equal(live.remainingMs, 0);
+  assert.equal(live.lastHit, "hit"); // last turn's split still reads true
+  assert.equal(live.source, "observed");
+
+  // Parked on a question, though, nothing is being written and the clock is
+  // real — which is exactly when the countdown is worth showing.
+  assert.equal(
+    cacheStatus(snap({ status: "awaiting_input", awaitReason: "question", cache }), late).state,
+    "cold",
+  );
+  // A session with no TTL at all stays unknown, running or not.
+  assert.equal(
+    cacheStatus(
+      snap({
+        status: "running",
+        cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: T0, lastRead: 0, lastWrite: 0 },
+      }),
+      late,
+    ).state,
+    "unknown",
+  );
+});
+
 test("cacheStatus: lastHit reads the read/write split", () => {
   const mk = (lastRead: number, lastWrite: number) =>
     cacheStatus(
@@ -1747,7 +1787,7 @@ test("cacheStatus: lastHit reads the read/write split", () => {
   assert.equal(mk(0, 0), null);
 });
 
-test("cacheHeat bands the remaining fraction; null when not warm", () => {
+test("cacheHeat bands the remaining fraction; fresh while live, null when not warm", () => {
   const T0 = 1_000_000;
   // ttl 60m; sample at minute offsets from the last turn
   const at = (min: number) =>
@@ -1770,6 +1810,27 @@ test("cacheHeat bands the remaining fraction; null when not warm", () => {
   assert.equal(at(45), "fading"); // 25% left
   assert.equal(at(58), "expiring"); // ~3% left
   assert.equal(at(61), null); // cold
+  // The same session, running: the fleet dot stays green rather than fading
+  // toward a deadline the live turn keeps pushing back. Blank is reserved for
+  // "no cache at all", which would be the wrong thing to say here.
+  assert.equal(
+    cacheHeat(
+      cacheStatus(
+        snap({
+          status: "running",
+          cache: {
+            ttlMinutes: 60,
+            ttlSource: "observed",
+            lastTurnAt: T0,
+            lastRead: 9,
+            lastWrite: 1,
+          },
+        }),
+        T0 + 61 * 60_000,
+      ),
+    ),
+    "fresh",
+  );
   assert.equal(
     cacheHeat(
       cacheStatus(

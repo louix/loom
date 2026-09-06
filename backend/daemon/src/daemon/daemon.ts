@@ -559,11 +559,13 @@ export class Daemon {
     // it sees the id.
     //
     // `status_changed` is redundant with `status_history`; `compact_progress`
-    // is a heartbeat the TUI never renders (see `applyPush` in the frontend
-    // model). Neither is transcript, so neither gets a row — and therefore
-    // neither gets an id. Nothing downstream may invent one for them.
+    // and `context` are heartbeats the TUI never renders (see `applyPush` in
+    // the frontend model). None is transcript, so none gets a row — and
+    // therefore none gets an id. Nothing downstream may invent one for them.
     const durable =
-      event.type === "status_changed" || event.type === "compact_progress"
+      event.type === "status_changed" ||
+      event.type === "compact_progress" ||
+      event.type === "context"
         ? null
         : this.#sessionEvents.append(event.sessionId, event);
     const frame = this.#events.append({

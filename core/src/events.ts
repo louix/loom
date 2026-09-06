@@ -112,6 +112,30 @@ export interface UsageEvent extends HarnessEventBase {
 }
 
 /**
+ * The context window's fill moved, with no token accounting attached. A turn
+ * drives many model requests and the meter should follow each one, but a
+ * {@link UsageEvent} carries three other facts — billable tokens, a turn
+ * boundary that arms the cache countdown, and the observed cache TTL — none of
+ * which a mid-turn request has settled yet. So the fill travels on its own.
+ *
+ * Ephemeral, like {@link CompactProgressEvent}: not persisted, never in the
+ * transcript, read only off the session snapshot. An adapter that already
+ * emits a `usage` per model request (the aisdk path) has no use for it.
+ */
+export interface ContextEvent extends HarnessEventBase {
+  type: "context";
+  /** Input tokens on the most recent request — numerator for context-window fill. */
+  contextUsed: number;
+  /**
+   * Model context limit from Loom's catalogue (not the SDK). Absent when the
+   * adapter hasn't learned it yet (it arrives with the first completed turn) —
+   * a beat without it moves the numerator and leaves the stored scale alone,
+   * rather than resetting a resumed session's limit to zero.
+   */
+  contextLimit?: number;
+}
+
+/**
  * The context window was compacted (`/compact`, or an automatic threshold in
  * the provider). `before` / `after` are the context-token counts either side of
  * the boundary; `after` is 0 when the provider doesn't report it until the next
@@ -290,6 +314,7 @@ export type HarnessEvent =
   | AnswerEvent
   | PlanReviewEvent
   | UsageEvent
+  | ContextEvent
   | CompactEvent
   | CompactProgressEvent
   | SubagentStartedEvent

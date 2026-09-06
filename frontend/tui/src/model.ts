@@ -1373,6 +1373,7 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
 const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
   "status_changed",
   "compact_progress",
+  "context",
   "background_tasks",
   "rate_limit",
 ]);
@@ -1573,10 +1574,16 @@ export const queueFor = (s: TuiState, id: string | null): string[] => {
 };
 
 export interface CacheStatus {
-  state: "warm" | "cold" | "unknown";
-  /** ms until the cache goes cold (0 unless warm). */
+  /**
+   * `live` — a turn is in flight, so every request in it rewrites the prefix
+   *   and no fixed expiry exists to count down to; the cache is warm by
+   *   construction. `warm` / `cold` — nothing is running, so `lastTurnAt + ttl`
+   *   is the real deadline. `unknown` — no TTL, or no turn has ever run.
+   */
+  state: "live" | "warm" | "cold" | "unknown";
+  /** ms until the cache goes cold (0 unless `warm` — a `live` one has no deadline). */
   remainingMs: number;
-  /** Fraction of the TTL still left, 0..1 (0 unless warm). */
+  /** Fraction of the TTL still left, 0..1 (0 unless `warm`). */
   fraction: number;
   /** What the last turn's read/write split says actually happened. */
   lastHit: "hit" | "rewrote" | null;
@@ -1591,9 +1598,19 @@ export interface CacheStatus {
 /**
  * Prompt-cache liveness for a session, given the current time. `unknown` when
  * no TTL is known or the session hasn't taken a turn. The countdown is an
- * estimate — it can't see mid-turn refreshes or server-side eviction, and on a
- * `config` source not even the TTL is confirmed — hence `lastHit`, the ground
- * truth from the last turn's cache read/write split.
+ * estimate — it can't see server-side eviction, and on a `config` source not
+ * even the TTL is confirmed — hence `lastHit`, the ground truth from the last
+ * turn's cache read/write split.
+ *
+ * A `running` session is reported `live` rather than counted down. `lastTurnAt`
+ * is armed by the turn that *finished*, so during the next one the countdown
+ * isn't merely stale, it runs the wrong way: each request of a live turn
+ * rewrites the prefix at the pinned TTL, so the true remaining lifetime keeps
+ * being restored while the display drains toward zero and eventually claims
+ * `cold` for a session that is demonstrably hitting cache. Only `running`
+ * qualifies — a session parked on `awaiting_input` (a permission prompt, a plan
+ * review) is issuing no requests, and its cache really is draining, which is
+ * exactly when the countdown earns its place.
  */
 export const cacheStatus = (s: SessionSnapshot | null, now: number): CacheStatus => {
   if (!s || s.cache.ttlMinutes <= 0 || s.cache.lastTurnAt <= 0) {
@@ -1603,9 +1620,12 @@ export const cacheStatus = (s: SessionSnapshot | null, now: number): CacheStatus
   let lastHit: CacheStatus["lastHit"] = null;
   if (lastRead > 0 && lastRead >= lastWrite) lastHit = "hit";
   else if (lastWrite > 0) lastHit = "rewrote";
+  const source = s.cache.ttlSource;
+  if (s.status.kind === "running") {
+    return { state: "live", remainingMs: 0, fraction: 0, lastHit, source };
+  }
   const ttlMs = ttlMinutes * 60_000;
   const remainingMs = lastTurnAt + ttlMs - now;
-  const source = s.cache.ttlSource;
   return remainingMs > 0
     ? { state: "warm", remainingMs, fraction: Math.min(1, remainingMs / ttlMs), lastHit, source }
     : { state: "cold", remainingMs: 0, fraction: 0, lastHit, source };
@@ -1616,8 +1636,11 @@ export const CACHE_FRESH_FRACTION = 0.33;
 /** …and below which it reads as about to lapse. */
 export const CACHE_EXPIRING_FRACTION = 0.08;
 
-/** Coarsen a warm {@link CacheStatus} into a heat band for the fleet dot; `null` when not warm. */
+/** Coarsen a {@link CacheStatus} into a heat band for the fleet dot; `null` when
+ *  there is no warm cache to show. A `live` one is `fresh` without consulting
+ *  `fraction`: it is being rewritten, so it is as warm as it ever gets. */
 export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | null => {
+  if (cs.state === "live") return "fresh";
   if (cs.state !== "warm") return null;
   if (cs.fraction >= CACHE_FRESH_FRACTION) return "fresh";
   if (cs.fraction >= CACHE_EXPIRING_FRACTION) return "fading";
@@ -1824,6 +1847,7 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "result":
     case "status_changed":
     case "compact_progress":
+    case "context":
     case "rate_limit":
     case "background_tasks":
       return null;
@@ -2705,6 +2729,9 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
         tone: "accent",
       };
     }
+    case "context":
+      // Never reaches the log (filtered in applyPush); here for exhaustiveness.
+      return { glyph: "∑", text: `ctx ${humanTokens(ev.contextUsed)}`, tone: "dim" };
     case "compact_progress":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
       return { glyph: "⇊", text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`, tone: "dim" };

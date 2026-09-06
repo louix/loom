@@ -120,8 +120,8 @@ export const deriveStatus = (
       return ev.fatal ? stateError(truncate(ev.message)) : current;
 
     default:
-      // usage, subagent_*, status_changed, compact*, rewind, user_message,
-      // rate_limit — not state-bearing on their own.
+      // usage, context, subagent_*, status_changed, compact*, rewind,
+      // user_message, rate_limit — not state-bearing on their own.
       return current;
   }
 };

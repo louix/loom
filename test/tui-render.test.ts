@@ -24,6 +24,7 @@ import type {
 import { App } from "@loom/tui/app";
 import {
   askQuestionLines,
+  Detail,
   FooterArea,
   logRowCount,
   PromptPane,
@@ -2017,6 +2018,33 @@ model    = "gpt-5"
       ),
     );
     assert.doesNotMatch(one, /←\/→ question/);
+  });
+
+  test("the Detail cache row drops the countdown while a turn is running", () => {
+    const T0 = 1_000_000;
+    const cache = {
+      ttlMinutes: 60,
+      ttlSource: "observed" as const,
+      lastTurnAt: T0,
+      lastRead: 9000,
+      lastWrite: 200,
+    };
+    const row = (session: SessionSnapshot): string =>
+      stripAnsi(
+        renderToString(createElement(Detail, { session, width: 80, now: T0 + 40 * 60_000 })),
+      )
+        .split("\n")
+        .find((l) => l.includes("cache")) ?? "";
+
+    // Idle: 20 of the 60 minutes are left and the row says so.
+    assert.match(row(testSession({ status: stateIdle, cache })), /⟢ warm ~20:00/);
+
+    // Running: no number — the live turn keeps rewriting the prefix, so there
+    // is nothing to count down to. The row stays, so the pane doesn't jump.
+    const live = row(testSession({ status: stateRunning, cache }));
+    assert.match(live, /⟢ warm {2}· {2}writing/);
+    assert.doesNotMatch(live, /~\d/, "no countdown is offered for a live cache");
+    assert.match(live, /last turn hit/, "the previous turn's split still reads true");
   });
 
   test("AskUserQuestion · esc drops to the panel, ←/→ pick a question, answers land in any order", async () => {

@@ -502,6 +502,17 @@ export class SessionManager {
       });
       return true;
     }
+    if (ev.type === "context") {
+      // Fill only: a mid-turn request has no settled token delta to accumulate
+      // and no turn boundary to arm the cache countdown with. `UsageDelta`'s
+      // context fields are absolute and every field is optional, so a partial
+      // delta moves the meter and leaves the rest of the row untouched.
+      this.#hooks.onUsage(id, {
+        contextUsed: ev.contextUsed,
+        ...(ev.contextLimit ? { contextLimit: ev.contextLimit } : {}),
+      });
+      return true;
+    }
     if (ev.type === "result") {
       this.#hooks.onUsage(id, { turns: 1 });
       return true;
