@@ -9,7 +9,7 @@
 import { commitInWorktree } from "@loom/core/commit";
 import { statusInWorktree } from "@loom/core/status";
 import { policy } from "@loom/runtime/policy";
-import type { PlanDecision, SessionMode } from "@loom/core/types";
+import type { PermissionDecision, PlanDecision, SessionMode } from "@loom/core/types";
 
 export interface ToolDispatchContext {
   mode: SessionMode;
@@ -22,6 +22,12 @@ export interface ToolDispatchContext {
   /** Present a plan for human review; resolves with their decision.
    *  Supplied by `CodexAppServerSession` for the `exit_plan` tool. */
   requestPlan?: (plan: string) => Promise<PlanDecision>;
+  /** Raise a real permission request and block on a human decision, for a
+   *  mutating loom tool `policy()` won't auto-allow in the current mode.
+   *  Supplied by `CodexAppServerSession`; omitted means there's no wait
+   *  machinery available, so `policy() === "ask"` falls back to an outright
+   *  deny (see `localToolDispatcher`'s `commit` branch). */
+  requestApproval?: (tool: string, args: Record<string, unknown>) => Promise<PermissionDecision>;
 }
 
 export interface ToolDispatchResult {
@@ -46,28 +52,36 @@ export type ToolDispatcher = (
  * — so a mutating tool needs Loom's *own* gate here, same as Claude/aisdk's
  * `commit` goes through `policy()` before running (see
  * `aisdk/src/gate.ts#wrapToolSet`). `policy()` returns "allow" only in
- * `auto` mode for a non-readonly name like `commit` — every other mode
- * (including `plan`) needs a human's answer to a `permission_request`, which
- * Codex sessions can't raise yet (`respondToPermission` only answers Codex's
- * own native approvals — Loom's own tool requests are a separate side
- * channel `respondToPermission` never touches, so Codex's own approvals
- * reviewer, even `auto_review`, can never approve one of these on its
- * behalf). Until a human actually approves it, "needs asking" means "deny",
- * not "silently run" — a temporary but safe stand-in outside `auto` mode,
- * not a silent gap. `ask_user`/`exit_plan` are exempt from this gate
- * entirely: both are read-only by name (`@loom/runtime/policy`'s
- * `READONLY_EXACT`), so `policy()` would always return "allow" for them
- * anyway — they just ask/present, they don't mutate anything.
+ * `auto` mode for a non-readonly name like `commit`; every other mode
+ * (including `plan`) raises a real `permission_request` via
+ * `ctx.requestApproval` and blocks on a human decision — the same
+ * pending-interaction machinery `ask_user`/`exit_plan` use, not a different
+ * path. Loom's own tool requests are a separate side channel Codex's own
+ * approvals reviewer never touches, so `auto_review` can never approve one
+ * of these on its behalf regardless of mode. Denial (explicit, or a
+ * synthesized one from `interrupt()`/`close()` draining a still-pending
+ * approval) returns before `commitInWorktree` ever runs — cancellation
+ * always prevents execution, never races it. `ctx.requestApproval` being
+ * absent (a caller that hasn't wired the wait machinery) falls back to an
+ * outright deny with guidance, rather than hanging forever. `ask_user`/
+ * `exit_plan` are exempt from this gate entirely: both are read-only by name
+ * (`@loom/runtime/policy`'s `READONLY_EXACT`), so `policy()` would always
+ * return "allow" for them anyway — they just ask/present, they don't mutate
+ * anything.
  */
 export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
-  if (tool === "commit" || tool === "status") {
-    if (policy(ctx.mode, tool) !== "allow") {
+  if (tool === "commit" && policy(ctx.mode, tool) !== "allow") {
+    if (!ctx.requestApproval) {
       return {
         ok: false,
         text:
-          `${tool} needs approval in ${ctx.mode} mode, which Codex sessions can't yet ask for — ` +
+          `${tool} needs approval in ${ctx.mode} mode, which this session can't ask for — ` +
           "switch to auto mode to allow it, or ask the user to do it manually.",
       };
+    }
+    const decision = await ctx.requestApproval(tool, args);
+    if (decision.behavior !== "allow") {
+      return { ok: false, text: decision.message ?? `${tool} was denied.` };
     }
   }
   if (tool === "commit") {

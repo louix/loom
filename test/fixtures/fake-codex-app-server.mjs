@@ -38,7 +38,14 @@
  * notification, so a test can call `setMode` while a turn is genuinely still
  * open. `LOOM_TEST_INTERRUPT_MARKER_FILE`, when set, is written on receiving
  * `turn/interrupt`, so a test can assert whether (or that) an interrupt
- * actually happened.
+ * actually happened. `LOOM_TEST_FAIL_TURN_INTERRUPT=1` makes `turn/interrupt`
+ * reply with a JSON-RPC error instead of `{}`, for exercising cleanup that
+ * must run even when the interrupt RPC itself fails.
+ * `LOOM_TEST_TOOL_CALL_AFTER_INTERRUPT_SPEC` (JSON `{tool, arguments}`), when
+ * set alongside `LOOM_TEST_APPROVAL_RESULT_FILE`, fires one `item/tool/call`
+ * request tagged with the turn being interrupted, right after replying to
+ * `turn/interrupt` — simulating a request that was already in flight for
+ * that turn, to exercise the client's stale-turn rejection.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -76,6 +83,19 @@ const send = (msg) => {
 
 let nextOutgoingId = 1_000_000; // far outside CodexRpcClient's own id space
 const pendingOutgoing = new Map();
+let startedThreadId; // set once thread/start replies, for handlers below it
+let afterInterruptFired = false; // LOOM_TEST_TOOL_CALL_AFTER_INTERRUPT_SPEC fires once
+
+/** Captures the client's eventual response to a fixture-initiated request
+ *  (`item/tool/call`, `item/tool/requestUserInput`, an approval-shaped
+ *  request, ...) into `resultFile` as JSON, for a test to poll. */
+const capture = (resultFile) => (response) => {
+  try {
+    writeFileSync(resultFile, JSON.stringify(response.result ?? { error: response.error }));
+  } catch {
+    // best effort — a missing/unwritable result file shouldn't crash the fixture
+  }
+};
 
 const handle = (req) => {
   const { id, method, params } = req;
@@ -112,6 +132,7 @@ const handle = (req) => {
       return;
     }
     const started = fixture("thread-start");
+    startedThreadId = started.thread.id;
     send({ jsonrpc: "2.0", id, result: started });
 
     // Deferred (setTimeout, not sent synchronously alongside the thread/start
@@ -127,14 +148,6 @@ const handle = (req) => {
       const { method, params } = JSON.parse(preNotification);
       setTimeout(() => send({ jsonrpc: "2.0", method, params }), 0);
     }
-
-    const capture = (resultFile) => (response) => {
-      try {
-        writeFileSync(resultFile, JSON.stringify(response.result ?? { error: response.error }));
-      } catch {
-        // best effort — a missing/unwritable result file shouldn't crash the fixture
-      }
-    };
 
     const spec = process.env["LOOM_TEST_TOOL_CALL_SPEC"];
     if (spec) {
@@ -244,6 +257,39 @@ const handle = (req) => {
       } catch {
         // best effort
       }
+    }
+    // Simulates a request that was already in flight for the turn being
+    // interrupted — e.g. a dynamic tool call the model made just before the
+    // interrupt reached Codex. Fired regardless of LOOM_TEST_FAIL_TURN_INTERRUPT
+    // below, tagged with the very turnId this request is interrupting, so the
+    // client's own staleness guard (not this fixture) is what's under test.
+    const afterInterruptSpec = process.env["LOOM_TEST_TOOL_CALL_AFTER_INTERRUPT_SPEC"];
+    if (afterInterruptSpec && !afterInterruptFired) {
+      afterInterruptFired = true;
+      const { tool, arguments: toolArgs } = JSON.parse(afterInterruptSpec);
+      const reqId = nextOutgoingId++;
+      pendingOutgoing.set(reqId, capture(process.env["LOOM_TEST_APPROVAL_RESULT_FILE"]));
+      send({
+        jsonrpc: "2.0",
+        id: reqId,
+        method: "item/tool/call",
+        params: {
+          threadId: startedThreadId,
+          turnId: params?.turnId ?? "fake-turn-1",
+          callId: "fake-call-after-interrupt",
+          namespace: null,
+          tool,
+          arguments: toolArgs ?? {},
+        },
+      });
+    }
+    if (process.env["LOOM_TEST_FAIL_TURN_INTERRUPT"]) {
+      send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: "fake app-server: forced turn/interrupt failure" },
+      });
+      return;
     }
     send({ jsonrpc: "2.0", id, result: {} });
     return;

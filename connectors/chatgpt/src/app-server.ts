@@ -203,21 +203,6 @@ const sandboxFor = (mode: SessionMode): "read-only" | "workspace-write" =>
 export const approvalsReviewerFor = (mode: SessionMode): "user" | "auto_review" =>
   mode === "auto" ? "auto_review" : "user";
 
-/**
- * Whether moving from `from` to `to` tightens at least one of the three
- * native axes (approval policy, sandbox, approvals reviewer) — used by
- * `setMode` to decide whether an active turn must be interrupted rather than
- * left to finish under the old, looser policy. Checked independently per
- * axis (not a single linear "restrictiveness" ranking across all four
- * modes, since the three axes don't move in lockstep — e.g. `auto` vs.
- * `acceptEdits` differ only in `approvalsReviewer`) — verified by hand
- * against all 12 ordered mode pairs.
- */
-export const isNativeRestriction = (from: SessionMode, to: SessionMode): boolean =>
-  (policyFor(to) === "untrusted" && policyFor(from) === "on-request") ||
-  (sandboxFor(to) === "read-only" && sandboxFor(from) === "workspace-write") ||
-  (approvalsReviewerFor(to) === "user" && approvalsReviewerFor(from) === "auto_review");
-
 export class CodexAppServerSession implements AgentSession {
   readonly id: string;
   readonly #rpc: CodexRpcClient;
@@ -232,6 +217,19 @@ export class CodexAppServerSession implements AgentSession {
    *  populated by anything this session does) is a separate, unverified
    *  protocol question this phase does not attempt to answer. */
   #subagentThreadIds = new Set<string>();
+  /** Turn ids this session has itself deliberately abandoned via
+   *  `interrupt()` (not turns that merely completed naturally — see
+   *  `#notification`'s `turn/completed` handler) — a request tagged with one
+   *  of these arrives too late to act on (e.g. a dynamic tool call from a
+   *  turn that was interrupted before Codex finished tearing it down
+   *  server-side) and is rejected in `#serverRequest` rather than
+   *  dispatched. A blocklist rather than an `=== this.#turnId` equality
+   *  check deliberately, so a brand-new turn's very first request — which
+   *  can legitimately arrive in the same buffered read as `turn/start`'s own
+   *  response, before the `await` that assigns `this.#turnId` has actually
+   *  run — is never mistaken for stale just because `this.#turnId` isn't set
+   *  yet. */
+  #staleTurnIds = new Set<string>();
   #threadId: string | null = null;
   #turnId: string | null = null;
   #model: string;
@@ -427,9 +425,12 @@ export class CodexAppServerSession implements AgentSession {
   async respondToPermission(id: string, decision: PermissionDecision): Promise<void> {
     this.#pending.resolvePermission(id, decision);
   }
-  /** loom `ask_user` handler: emit a `question` event, block until answered. */
-  #askUser(question: string, context: string | undefined): Promise<string> {
-    const id = randomUUID();
+  /** loom `ask_user` handler: emit a `question` event, block until answered.
+   *  `id` is the dynamic tool call's own `callId` (see `#toolCall`) — not a
+   *  freshly minted one — so a persisted-event-log replay can correlate this
+   *  question with the same call's `tool_call`/`tool_result` pair rather
+   *  than two unrelated ids that happen to describe the same interaction. */
+  #askUser(question: string, context: string | undefined, id: string): Promise<string> {
     const answer = this.#pending.requestQuestion(id);
     this.#events.push({
       type: "question",
@@ -445,9 +446,18 @@ export class CodexAppServerSession implements AgentSession {
     if (!this.#pending.resolveQuestion(id, text)) return;
     this.#events.push({ type: "answer", sessionId: this.id, ts: now(), id, text });
   }
+  /** loom `commit` handler for the case `@loom/runtime/policy`'s `policy()`
+   *  says "ask" rather than "allow": raise a real `permission_request` and
+   *  block on a human decision, the same as a native command/file approval,
+   *  instead of denying outright. `id` is the dynamic tool call's `callId`
+   *  (see `#askUser`'s doc comment for why). */
+  #requestApproval(tool: string, args: Record<string, unknown>, id: string): Promise<PermissionDecision> {
+    const decision = this.#pending.requestPermission(id);
+    this.#events.push({ type: "permission_request", sessionId: this.id, ts: now(), id, tool, input: args });
+    return decision;
+  }
   /** loom `exit_plan` handler: emit a `plan_review` event, block until decided. */
-  #requestPlan(plan: string): Promise<PlanDecision> {
-    const id = randomUUID();
+  #requestPlan(plan: string, id: string): Promise<PlanDecision> {
     const decision = this.#pending.requestPlan(id);
     this.#events.push({ type: "plan_review", sessionId: this.id, ts: now(), id, plan });
     return decision;
@@ -465,6 +475,12 @@ export class CodexAppServerSession implements AgentSession {
    * explicitly Phase 6's job per the plan doc, so it's treated as a plain
    * `implement` here rather than half-built), leave plan mode and send the
    * plan as a fresh instruction.
+   *
+   * `setMode` (below) unconditionally interrupts the still-running planning
+   * turn before this method's own `send()` runs — plan mode's turn was
+   * snapshotted read-only at its own `turn/start`, and nothing short of a
+   * fresh turn can make it writable, so a plain `turn/steer` on the old turn
+   * would leave the model trying to implement under the old restriction.
    */
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     if (!this.#pending.hasPlan(id)) return;
@@ -475,40 +491,69 @@ export class CodexAppServerSession implements AgentSession {
     await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
   }
 
+  /**
+   * Ends the current turn and drains every parked interaction — always, even
+   * when the `turn/interrupt` RPC itself throws (a `try`/`finally`, not a
+   * bare `await`): a failed interrupt request must not leave a permission/
+   * question/plan promise (or the caller waiting on this method) hanging
+   * forever just because the underlying RPC call failed. `this.#turnId` is
+   * captured and cleared *before* that RPC call, and the old id is recorded
+   * in `#staleTurnIds` before anything else — so any request tagged with it
+   * that's already in flight (or arrives while the interrupt is still
+   * pending) is rejected by `#serverRequest`'s guard rather than reaching a
+   * dispatcher and starting new work under a turn Loom already considers
+   * over.
+   */
   async interrupt(): Promise<void> {
-    if (this.#threadId && this.#turnId)
-      await this.#rpc.request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
+    const turnId = this.#turnId;
     this.#turnId = null;
-    this.#pending.failAll(
-      { behavior: "deny", message: "the turn was interrupted" },
-      "(the turn was interrupted)",
-      { action: "discuss", message: "the turn was interrupted" },
-    );
-    this.#idle();
+    if (turnId) this.#staleTurnIds.add(turnId);
+    try {
+      if (this.#threadId && turnId) {
+        await this.#rpc.request("turn/interrupt", { threadId: this.#threadId, turnId });
+      }
+    } finally {
+      this.#pending.failAll(
+        { behavior: "deny", message: "the turn was interrupted" },
+        "(the turn was interrupted)",
+        { action: "discuss", message: "the turn was interrupted" },
+      );
+      this.#idle();
+    }
   }
   async rewind(): Promise<void> {
     throw new Error("Codex app-server rewind is not yet supported by Loom");
   }
   /**
    * `thread/settings/update` only ever takes effect "for subsequent turns"
-   * (confirmed via the generated `ThreadSettingsUpdateParams` doc comments)
-   * — never the one currently running. The protocol also defines a
-   * `turn/settings/update` for exactly that live case, but it is absent from
-   * the freshly-generated bindings for the actually-installed `codex-cli`
-   * build (present only in the Rust source / an older/dev binding set) —
-   * calling it unconditionally, as this method used to, is a live
-   * compatibility risk, not a design choice. Instead: always set the
-   * thread-level default (safe, always available), then — only when a turn
-   * is actually running and the change is a genuine *restriction* on any of
-   * the three native axes — interrupt that turn so the stricter policy is
-   * guaranteed to apply before another native action runs, rather than
-   * silently finishing the current turn under the old, looser one. This
+   * (confirmed via the generated `ThreadSettingsUpdateParams` doc comments):
+   * `approvalPolicy`, `sandboxPolicy` and `approvalsReviewer` are each
+   * snapshotted once, at that turn's own `turn/start` (`#startTurn` passes
+   * all three explicitly), and nothing about the currently running turn
+   * changes when the thread's default changes underneath it. The protocol
+   * also defines a `turn/settings/update` for exactly that live case, but it
+   * is absent from the freshly-generated bindings for the actually-installed
+   * `codex-cli` build (present only in the Rust source / an older/dev
+   * binding set) — calling it unconditionally, as this method used to, is a
+   * live compatibility risk, not a design choice.
+   *
+   * So: always set the thread-level default (safe, always available), then
+   * — whenever a turn is actually running and the mode is genuinely
+   * changing — interrupt that turn so the new mode is guaranteed to apply to
+   * whatever runs next, rather than silently finishing the current turn
+   * under the old settings. This is deliberately unconditional on
+   * direction, not just tightening: every one of the three native axes is
+   * turn-snapshotted, so even a pure relaxation (e.g. leaving `plan`'s
+   * read-only sandbox for `acceptEdits`) needs a fresh turn to actually take
+   * effect — a `turn/steer` on the still-running, still-read-only turn would
+   * leave the model unable to write despite the "approved" mode change. This
    * ends the user's in-flight turn (the session goes idle); their next
-   * message starts a fresh one under the new mode.
+   * message (or `respondToPlan`'s own follow-up `send()`) starts a fresh one
+   * under the new mode.
    */
   async setMode(mode: SessionMode): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
-    const from = this.#mode;
+    const changed = mode !== this.#mode;
     await this.#rpc.request("thread/settings/update", {
       threadId: this.#threadId,
       approvalPolicy: policyFor(mode),
@@ -516,7 +561,7 @@ export class CodexAppServerSession implements AgentSession {
       sandboxPolicy: this.#sandboxPolicyFor(mode),
     });
     this.#mode = mode;
-    if (this.#turnId && isNativeRestriction(from, mode)) await this.interrupt();
+    if (this.#turnId && changed) await this.interrupt();
   }
   async setModel(model: string): Promise<void> {
     this.#model = model;
@@ -620,6 +665,14 @@ export class CodexAppServerSession implements AgentSession {
       !this.#subagentThreadIds.has(threadId)
     ) {
       this.#rpc.respondError(id, `request for unrecognized thread: ${threadId}`);
+      return;
+    }
+    // A request for a turn `interrupt()` already ended — see `#staleTurnIds`'
+    // doc comment for why this is a blocklist, not an `=== this.#turnId`
+    // equality check.
+    const turnId = typeof p["turnId"] === "string" ? p["turnId"] : undefined;
+    if (turnId && this.#staleTurnIds.has(turnId)) {
+      this.#rpc.respondError(id, `request for a turn that is no longer active: ${turnId}`);
       return;
     }
     if (method === "item/tool/call") {
@@ -749,6 +802,17 @@ export class CodexAppServerSession implements AgentSession {
   #toolCall(p: Record<string, unknown>, id: number | string): void {
     const tool = String(p["tool"] ?? "");
     const args = (p["arguments"] as Record<string, unknown> | null) ?? {};
+    // Codex's own `callId` for this specific call, confirmed (via the
+    // generated bindings and `codex-rs`'s own test suite, which asserts
+    // `ThreadItem::DynamicToolCall.id == call_id`) to be the exact id the
+    // eventual `dynamicToolCall` item — and therefore this call's own
+    // `tool_call`/`tool_result` events (`#item()`) — will carry. Reused as
+    // the id for any pending interaction this call raises (`ask_user`,
+    // `exit_plan`, a `commit` approval wait) instead of minting a fresh one,
+    // so a persisted-event-log replay can correlate "this question/plan/
+    // approval was resolved" from the id alone, the same way it already can
+    // for `ask_user`'s own `question`/`answer` pair.
+    const callId = typeof p["callId"] === "string" && p["callId"] ? p["callId"] : randomUUID();
     const respond = (text: string, success: boolean): void => {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
@@ -756,8 +820,9 @@ export class CodexAppServerSession implements AgentSession {
       mode: this.#mode,
       cwd: this.#cwd,
       ...(this.#base ? { base: this.#base } : {}),
-      askUser: (q, c) => this.#askUser(q, c),
-      requestPlan: (plan) => this.#requestPlan(plan),
+      askUser: (q, c) => this.#askUser(q, c, callId),
+      requestPlan: (plan) => this.#requestPlan(plan, callId),
+      requestApproval: (t, a) => this.#requestApproval(t, a, callId),
     }).then(
       (res) => respond(res.text, res.ok),
       (err: unknown) => respond(err instanceof Error ? err.message : String(err), false),
@@ -778,6 +843,18 @@ export class CodexAppServerSession implements AgentSession {
     if (method === "turn/started") this.#turnId = (p["turn"] as any)?.id ?? this.#turnId;
     if (method === "turn/completed") {
       const turn = p["turn"] as any;
+      const completedId = typeof turn?.id === "string" ? turn.id : undefined;
+      // A late notification for a turn already superseded by `interrupt()`
+      // (or, in principle, an even-newer turn) — `this.#turnId` has already
+      // moved on; acting on it here would wrongly clobber whatever turn is
+      // now actually live (or re-emit a `result`/`idle` for one that isn't
+      // running anymore). Deliberately *not* added to `#staleTurnIds` here
+      // the way `interrupt()` adds its own turn id: a normal completion
+      // doesn't invalidate anything still legitimately in flight for that
+      // turn the way Loom's own deliberate interrupt does — only requests
+      // for a turn Loom itself chose to abandon early are presumptively
+      // stale.
+      if (completedId && completedId !== this.#turnId) return;
       this.#turnId = null;
       this.#turns++;
       if (turn?.status === "failed")
