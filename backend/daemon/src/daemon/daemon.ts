@@ -74,7 +74,7 @@ import {
   type SessionRef,
 } from "@loom/core/types";
 import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./lifecycle.ts";
-import { systemPromptAppendFor } from "./prompt.ts";
+import { repoInstructionsFor, systemPromptAppendFor } from "./prompt.ts";
 
 /** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
@@ -1005,7 +1005,12 @@ export class Daemon {
       disableTools: this.config.providers.claude.disableBuiltin,
       settingSources: this.config.providers.claude.settingSources,
       ...(isClaude || isAisdk
-        ? { loomServer: true, systemPromptAppend: promptAppend }
+        ? {
+            loomServer: true,
+            systemPromptAppend: promptAppend,
+            repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+            workspaceRoot: cwd,
+          }
         : {}),
       ...(o.model ? { model: o.model } : {}),
       ...(o.effort ? { effort: o.effort } : {}),
@@ -1157,7 +1162,13 @@ export class Daemon {
         mcpServers: mcpHandles,
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
-        ...(isClaude || isAisdk ? { systemPromptAppend: promptAppend } : {}),
+        ...(isClaude || isAisdk
+          ? {
+              systemPromptAppend: promptAppend,
+              repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+              workspaceRoot: cwd,
+            }
+          : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

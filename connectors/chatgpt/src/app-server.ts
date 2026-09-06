@@ -5,15 +5,12 @@
  * its per-session MCP configuration, and the human approval surface. The wire
  * protocol itself (deadlines, diagnostics, cleanup) lives in `./rpc.ts`.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 import type { SearchConfig } from "@loom/core/connector";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
-import { commitInWorktree } from "@loom/core/commit";
-import { statusInWorktree } from "@loom/core/status";
 import { COMMIT_DESC, STATUS_DESC } from "@loom/runtime/loom-tools";
-import { policy } from "@loom/runtime/policy";
 import type {
   AdapterSnapshot,
   AgentSession,
@@ -28,6 +25,8 @@ import type {
 import { CodexRpcClient } from "./rpc.ts";
 import { verifyChatGptAccount } from "./account.ts";
 import type { CodexHome } from "./codex-home.ts";
+import { spawnCodex, type CodexLauncher } from "./launch.ts";
+import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
 
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
@@ -168,6 +167,7 @@ export class CodexAppServerSession implements AgentSession {
   #mode: SessionMode;
   #cwd: string;
   readonly #base: string | undefined;
+  readonly #dispatch: ToolDispatcher;
   #closing = false;
   #status = stateRunning;
   #usage = zeroUsage();
@@ -179,6 +179,7 @@ export class CodexAppServerSession implements AgentSession {
     opts: CreateSessionOptions,
     proc: ChildProcessWithoutNullStreams,
     base: string | undefined,
+    dispatch: ToolDispatcher,
   ) {
     this.id = opts.sessionId;
     this.#model = opts.model ?? "";
@@ -186,6 +187,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
     this.#base = base;
+    this.#dispatch = dispatch;
     this.#rpc = new CodexRpcClient(proc);
     this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
     this.#rpc.onNotification((method, params) => this.#notification(method, params));
@@ -209,16 +211,14 @@ export class CodexAppServerSession implements AgentSession {
     search?: SearchConfig,
     builtinWebSearch = false,
     base?: string,
+    launch: CodexLauncher = spawnCodex,
+    dispatch: ToolDispatcher = localToolDispatcher,
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
-    const proc = spawn(cliPath, launch.args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      cwd: opts.cwd,
-      env: launch.env,
-    });
-    const s = new CodexAppServerSession(opts, proc, base);
+    const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
+    const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
+    const s = new CodexAppServerSession(opts, proc, base, dispatch);
     try {
       await s.#initialize();
       const started = await s.#rpc.requestStartup("thread/start", {
@@ -252,6 +252,8 @@ export class CodexAppServerSession implements AgentSession {
     search?: SearchConfig,
     builtinWebSearch = false,
     base?: string,
+    launch: CodexLauncher = spawnCodex,
+    dispatch: ToolDispatcher = localToolDispatcher,
   ): Promise<CodexAppServerSession> {
     if (!ref.providerRef) throw new Error("Codex session has no app-server thread id to resume");
     const opts: CreateSessionOptions = {
@@ -264,13 +266,9 @@ export class CodexAppServerSession implements AgentSession {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
-    const proc = spawn(cliPath, launch.args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      cwd: opts.cwd,
-      env: launch.env,
-    });
-    const s = new CodexAppServerSession(opts, proc, base);
+    const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
+    const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
+    const s = new CodexAppServerSession(opts, proc, base, dispatch);
     try {
       await s.#initialize();
       const resumed = await s.#rpc.requestStartup("thread/resume", {
@@ -494,52 +492,24 @@ export class CodexAppServerSession implements AgentSession {
   }
   /** `item/tool/call` — Codex invoking one of Loom's own dynamic tools
    *  (`commit`/`status`, see `loomDynamicTools`). Reply on the envelope `id`,
-   *  not `params.callId` — they're different fields in the protocol. Both
-   *  tools are synchronous (`spawnSync`-backed), so this needs no async work.
-   *
-   *  Codex's own approval/sandbox machinery has no visibility into this
-   *  side-channel call — it runs in Loom's own process, not the sandboxed
-   *  turn — so a mutating tool needs Loom's *own* gate here, same as
-   *  Claude/aisdk's `commit` goes through `@loom/runtime/policy`'s `policy()`
-   *  before running (see `aisdk/src/gate.ts#wrapToolSet`). `policy()` returns
-   *  "allow" only in `auto` mode for a non-readonly name like `commit` —
-   *  every other mode (including `plan`) needs a human's answer to a
-   *  `permission_request`, which Codex sessions can't raise yet
-   *  (`respondToPermission` only answers Codex's own native approvals;
-   *  Phase 5 is where Loom's own pending-interaction machinery reaches
-   *  Codex tool calls). Until then, "needs asking" means "deny", not
-   *  "silently run" — a temporary but safe stand-in, not a silent gap. */
+   *  not `params.callId` — they're different fields in the protocol. The
+   *  actual gating/execution lives in `#dispatch` (see `tool-dispatch.ts`) —
+   *  this is just the RPC adapter: build the call context, await the
+   *  dispatcher, and turn its result (or a thrown error) into a response. */
   #toolCall(p: Record<string, unknown>, id: number | string): void {
     const tool = String(p["tool"] ?? "");
     const args = (p["arguments"] as Record<string, unknown> | null) ?? {};
     const respond = (text: string, success: boolean): void => {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
-    if (tool === "commit" || tool === "status") {
-      if (policy(this.#mode, tool) !== "allow") {
-        respond(
-          `${tool} needs approval in ${this.#mode} mode, which Codex sessions can't yet ask for — ` +
-            "switch to auto mode to allow it, or ask the user to do it manually.",
-          false,
-        );
-        return;
-      }
-    }
-    if (tool === "commit") {
-      const message = typeof args["message"] === "string" ? args["message"] : "";
-      const res = commitInWorktree(this.#cwd, message, { stageAll: args["stage_all"] !== false });
-      respond(res.text, res.ok);
-      return;
-    }
-    if (tool === "status") {
-      const res = statusInWorktree(this.#cwd, {
-        ...(this.#base ? { base: this.#base } : {}),
-        ...(args["patch"] === true ? { patch: true } : {}),
-      });
-      respond(res.text, res.ok);
-      return;
-    }
-    respond(`unsupported loom tool: ${tool}`, false);
+    this.#dispatch(tool, args, {
+      mode: this.#mode,
+      cwd: this.#cwd,
+      ...(this.#base ? { base: this.#base } : {}),
+    }).then(
+      (res) => respond(res.text, res.ok),
+      (err: unknown) => respond(err instanceof Error ? err.message : String(err), false),
+    );
   }
   #notification(method: string, p: Record<string, unknown>): void {
     if (method === "thread/tokenUsage/updated") {

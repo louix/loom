@@ -7,6 +7,8 @@
     "./codex-home": "./src/codex-home.ts",
     "./discovery": "./src/discovery.ts",
     "./rpc": "./src/rpc.ts",
-    "./account": "./src/account.ts"
+    "./account": "./src/account.ts",
+    "./launch": "./src/launch.ts",
+    "./tool-dispatch": "./src/tool-dispatch.ts"
   }
 }

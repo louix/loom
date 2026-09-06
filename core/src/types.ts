@@ -79,6 +79,17 @@ export interface CreateSessionOptions {
   parentId?: string;
   /** Steering text for the provider's system prompt — tool steer plus the repo's `.loom/LOOM.md`. */
   systemPromptAppend?: string;
+  /** Pre-resolved `.loom/LOOM.md` repository instructions (the daemon's own
+   *  `cwd`-then-repoRoot fallback already applied), or `null`/absent when
+   *  none exist. A connector that builds its own system-prompt append
+   *  instead of using `systemPromptAppend` verbatim (chatgpt) splices this
+   *  in directly rather than reading the file itself — only the daemon knows
+   *  the repo root a worktree `cwd` falls back to. */
+  repoInstructions?: string | null;
+  /** The directory to describe to the model as its workspace root (e.g. in
+   *  tool-steer text), kept distinct from `cwd` (where the provider's own
+   *  process/tooling actually runs). Defaults to `cwd` when omitted. */
+  workspaceRoot?: string;
   mcpServers: McpServerHandle[];
   /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */
   loomServer?: boolean;
@@ -107,6 +118,11 @@ export interface SessionRef {
   /** Steering text for the provider's system prompt — recomputed by the daemon
    *  at resume time the same way as at creation (see `CreateSessionOptions`). */
   systemPromptAppend?: string;
+  /** See {@link CreateSessionOptions.repoInstructions} — recomputed by the
+   *  daemon at resume time the same way as at creation. */
+  repoInstructions?: string | null;
+  /** See {@link CreateSessionOptions.workspaceRoot}. */
+  workspaceRoot?: string;
 }
 
 export type UserInput = string;

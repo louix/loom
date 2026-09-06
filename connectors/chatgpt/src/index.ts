@@ -8,12 +8,13 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
-import { loomInstructions } from "@loom/core/paths";
 import { toolSteer } from "@loom/runtime/instructions";
 import { ChatGPTCatalog } from "./catalog.ts";
 import { CodexAppServerSession } from "./app-server.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
 import { discoverCodexModels } from "./discovery.ts";
+import { spawnCodex, type CodexLauncher } from "./launch.ts";
+import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
 
 /** Model context-window enrichment is best-effort (see `listModels` below) —
  *  bound the *whole* operation explicitly, not just whatever internal timeout
@@ -36,15 +37,26 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
  * — no `ask_user` yet (Phase 5 wires up Codex's own answer path first). The
  * daemon's `systemPromptAppend` is written assuming the full set, so it would
  * tell the model about tools that don't exist here; recompute the tool-steer
- * for what's actually mounted instead of forwarding it verbatim. Skips the
- * daemon's repoRoot-fallback LOOM.md lookup (this connector only has the
- * session's own `cwd`), a narrow, acceptable gap versus a fully plumbed-
- * through repo root.
+ * for what's actually mounted instead of forwarding it verbatim.
+ *
+ * `repoInstructions` is the daemon's own pre-resolved `.loom/LOOM.md` text
+ * (`repoInstructionsFor` in `backend/daemon/src/daemon/prompt.ts`, already
+ * applying its `cwd`-then-`repoRoot` fallback) — this connector splices it
+ * in rather than reading the file itself, since only the daemon knows the
+ * repo root a worktree `cwd` falls back to. `workspaceRoot` is the directory
+ * described to the model as "the workspace root" for tool-steer purposes;
+ * kept distinct from the provider's own `cwd` (where Codex's process and
+ * sandbox actually run), even though the daemon passes the same value for
+ * both today.
  */
-export const codeModeInstructions = (cwd: string, mountsLoomTools: boolean): string =>
+export const codeModeInstructions = (
+  workspaceRoot: string,
+  mountsLoomTools: boolean,
+  repoInstructions: string | null,
+): string =>
   [
-    toolSteer(cwd, { askUser: false, commit: mountsLoomTools, status: mountsLoomTools }),
-    loomInstructions(cwd),
+    toolSteer(workspaceRoot, { askUser: false, commit: mountsLoomTools, status: mountsLoomTools }),
+    repoInstructions,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");
@@ -57,17 +69,21 @@ class ChatGPTProvider implements AgentProvider {
   readonly #search: ConnectorContext["search"];
   readonly #base: string | undefined;
   readonly #codexBuiltinWebSearch: boolean;
-  readonly #listModelsImpl: () => Promise<DiscoveredModel[]>;
+  readonly #listModelsImpl: (launch: CodexLauncher) => Promise<DiscoveredModel[]>;
+  readonly #launch: CodexLauncher;
+  readonly #dispatch: ToolDispatcher;
 
   constructor(
     id: string,
     models: string[],
-    listModels: () => Promise<DiscoveredModel[]>,
+    listModels: (launch: CodexLauncher) => Promise<DiscoveredModel[]>,
     codexHome: CodexHome,
     codexCliPath: string,
     base: string | undefined,
     search?: ConnectorContext["search"],
     codexBuiltinWebSearch = false,
+    launch: CodexLauncher = spawnCodex,
+    dispatch: ToolDispatcher = localToolDispatcher,
   ) {
     this.id = id;
     this.#listModelsImpl = listModels;
@@ -76,6 +92,8 @@ class ChatGPTProvider implements AgentProvider {
     this.#search = search;
     this.#base = base;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
+    this.#launch = launch;
+    this.#dispatch = dispatch;
     this.capabilities = {
       liveModeSwitch: true,
       liveModelSwitch: false,
@@ -99,33 +117,49 @@ class ChatGPTProvider implements AgentProvider {
   }
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
+    const workspaceRoot = opts.workspaceRoot ?? opts.cwd;
     return CodexAppServerSession.start(
-      { ...opts, systemPromptAppend: codeModeInstructions(opts.cwd, opts.loomServer === true) },
+      {
+        ...opts,
+        systemPromptAppend: codeModeInstructions(
+          workspaceRoot,
+          opts.loomServer === true,
+          opts.repoInstructions ?? null,
+        ),
+      },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
       this.#base,
+      this.#launch,
+      this.#dispatch,
     );
   }
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    const workspaceRoot = ref.workspaceRoot ?? ref.cwd;
     return CodexAppServerSession.resume(
       // Codex sessions always mount the loom dynamic tools on resume (the
       // daemon always resumes with `loomServer` semantics equivalent to
       // `true` for this provider — `SessionRef` has no `loomServer` field).
-      { ...ref, systemPromptAppend: codeModeInstructions(ref.cwd, true) },
+      {
+        ...ref,
+        systemPromptAppend: codeModeInstructions(workspaceRoot, true, ref.repoInstructions ?? null),
+      },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
       this.#base,
+      this.#launch,
+      this.#dispatch,
     );
   }
   listPersistedSessions(): Promise<SessionRef[]> {
     return Promise.resolve([]);
   }
   listModels(): Promise<DiscoveredModel[]> {
-    return this.#listModelsImpl();
+    return this.#listModelsImpl(this.#launch);
   }
 }
 
@@ -147,7 +181,7 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
   // (available even if the account marks them hidden); otherwise the picker
   // gets the account's own visible/default set.
   const restrictTo = ctx.config.models?.length ? new Set(ctx.config.models) : undefined;
-  const listModels = async (): Promise<DiscoveredModel[]> => {
+  const listModels = async (launch: CodexLauncher): Promise<DiscoveredModel[]> => {
     // Reasoning-effort discovery and the model list itself go through
     // app-server (Phase 2) — authoritative. Context-window sizes come from
     // the REST catalog, the only source that reports them; a config
@@ -156,7 +190,7 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     // catalog failure (expired credential, timeout, malformed response) must
     // not block model discovery or session creation.
     const [discovered, restCatalog] = await Promise.all([
-      discoverCodexModels({ cliPath: codexCliPath, codexHome }),
+      discoverCodexModels({ cliPath: codexCliPath, codexHome, launch }),
       withTimeout(catalog.list(), CATALOG_TIMEOUT_MS, "chatgpt model catalog fetch").catch((err) => {
         ctx.logger.warn("chatgpt model catalog fetch failed — context-window sizes may be unavailable", {
           error: err instanceof Error ? err.message : String(err),

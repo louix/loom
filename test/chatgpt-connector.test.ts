@@ -20,6 +20,7 @@ import {
   CodexAppServerSession,
   mcpConfig,
 } from "@loom/connector-chatgpt/app-server";
+import { spawnCodex, type CodexLaunchSpec, type CodexLauncher } from "@loom/connector-chatgpt/launch";
 
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
@@ -65,15 +66,33 @@ test("createProvider rejects the obsolete direct-backend base_url setting", () =
 test("codeModeInstructions only mentions the loom tools actually mounted", async () => {
   const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-"));
   try {
-    const mounted = codeModeInstructions(dir, true);
+    const mounted = codeModeInstructions(dir, true, null);
     assert.match(mounted, /call the `commit` tool/);
     assert.match(mounted, /`status` tool reprints this root/);
     assert.doesNotMatch(mounted, /call `ask_user`/);
 
-    const unmounted = codeModeInstructions(dir, false);
+    const unmounted = codeModeInstructions(dir, false, null);
     assert.doesNotMatch(unmounted, /call the `commit` tool/);
     assert.doesNotMatch(unmounted, /`status` tool reprints this root/);
     assert.doesNotMatch(unmounted, /call `ask_user`/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("codeModeInstructions splices in the caller's repoInstructions instead of reading LOOM.md itself", async () => {
+  // A directory with no `.loom/LOOM.md` on disk at all — proves the text
+  // below reached the output only because it was passed in, not because the
+  // connector went and read the filesystem (which is the whole point of
+  // threading `repoInstructions` through instead of calling `loomInstructions`
+  // locally: only the daemon knows the `cwd`-then-repoRoot fallback).
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-noloommd-"));
+  try {
+    const withInstructions = codeModeInstructions(dir, true, "# from the repo root fallback\n\ndo the thing");
+    assert.match(withInstructions, /from the repo root fallback/);
+
+    const withoutInstructions = codeModeInstructions(dir, true, null);
+    assert.doesNotMatch(withoutInstructions, /from the repo root fallback/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -208,6 +227,58 @@ test("discovery and session startup spawn the app-server with the same resolved 
   } finally {
     rpc.close();
   }
+});
+
+test("CodexAppServerSession.start/.resume and discoverCodexModels launch through the injected launcher", async () => {
+  // The launcher is the one seam that actually turns an executable +
+  // environment + cwd + state location into a running process — proving all
+  // three call sites (`start`, `resume`, `discoverCodexModels`) go through
+  // it, with the expected explicit fields, rather than each spawning
+  // independently.
+  const codexHome = {
+    dir: "/tmp/loom-codex-launch-injected",
+    authJsonPath: "/tmp/loom-codex-launch-injected/auth.json",
+  };
+  const specs: CodexLaunchSpec[] = [];
+  const launch: CodexLauncher = (spec) => {
+    specs.push(spec);
+    return spawnCodex(spec);
+  };
+
+  const started = await CodexAppServerSession.start(
+    { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+    undefined,
+    false,
+    undefined,
+    launch,
+  );
+  await started.close();
+  assert.equal(specs.length, 1);
+  assert.equal(specs[0]?.cliPath, FAKE_CODEX);
+  assert.equal(specs[0]?.cwd, "/tmp");
+  assert.equal(specs[0]?.codexHome, codexHome);
+  assert.equal(specs[0]?.env["CODEX_HOME"], codexHome.dir);
+
+  const resumed = await CodexAppServerSession.resume(
+    { sessionId: "s2", providerRef: "fake-thread-1", cwd: "/tmp" },
+    codexHome,
+    FAKE_CODEX,
+    undefined,
+    false,
+    undefined,
+    launch,
+  );
+  await resumed.close();
+  assert.equal(specs.length, 2);
+  assert.equal(specs[1]?.cliPath, FAKE_CODEX);
+
+  const models = await discoverCodexModels({ cliPath: FAKE_CODEX, codexHome, launch });
+  assert.ok(models.length > 0);
+  assert.equal(specs.length, 3);
+  assert.equal(specs[2]?.args[0], "app-server");
+  assert.equal(specs[2]?.codexHome, codexHome);
 });
 
 test("resume() forwards the ref's systemPromptAppend as developerInstructions on thread/resume", async () => {
@@ -367,6 +438,58 @@ test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on t
       assert.equal(result.contentItems[0]?.type, "inputText");
       assert.match(result.contentItems[0]?.text ?? "", /^committed [0-9a-f]{7,} Add a\.txt/);
       assert.equal(git("log", "-1", "--format=%s"), "Add a.txt");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+    await cleanup();
+  }
+});
+
+test("CodexAppServerSession.start runs the injected dispatcher instead of committing locally", async () => {
+  // Phase 5's approval-wait/cancellation logic wraps `ToolDispatcher`
+  // (`tool-dispatch.ts`) rather than growing inside `#toolCall`'s switch —
+  // this proves the seam actually exists: a fake dispatcher intercepts the
+  // call before any local `commitInWorktree` execution, and the real repo
+  // (which has an uncommitted `a.txt`) is left untouched.
+  const { root, git, cleanup } = repo();
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-dispatch-injected",
+    authJsonPath: "/tmp/loom-codex-dyntool-dispatch-injected/auth.json",
+  };
+  const resultFile = join(root, "..", `tool-call-result-dispatch-injected-${process.pid}.json`);
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  try {
+    await writeFile(join(root, "a.txt"), "hello\n");
+    const headBefore = git("rev-parse", "HEAD");
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "commit", arguments: { message: "Add a.txt" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: root, prompt: "go", mode: "auto", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+      undefined,
+      false,
+      undefined,
+      spawnCodex,
+      async (tool, args) => {
+        calls.push({ tool, args });
+        return { ok: true, text: "handled by the injected dispatcher, not git" };
+      },
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ type: string; text: string }>; success: boolean };
+      assert.equal(result.success, true);
+      assert.equal(result.contentItems[0]?.text, "handled by the injected dispatcher, not git");
+      assert.deepEqual(calls, [{ tool: "commit", args: { message: "Add a.txt" } }]);
+      assert.equal(git("rev-parse", "HEAD"), headBefore, "the injected dispatcher ran, not a real commit");
     } finally {
       await s.close();
     }

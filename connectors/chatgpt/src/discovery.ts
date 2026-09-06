@@ -4,11 +4,11 @@
  * `CODEX_HOME`) session startup uses, rather than a separate REST credential
  * path. See `docs/chatgpt-provider-plan.md` Phase 2.
  */
-import { spawn } from "node:child_process";
 import type { DiscoveredModel } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";
 import { verifyChatGptAccount } from "./account.ts";
 import type { CodexHome } from "./codex-home.ts";
+import { spawnCodex, type CodexLauncher } from "./launch.ts";
 
 interface ModelListRow {
   model?: string;
@@ -34,10 +34,15 @@ export interface DiscoveredCodexModel extends DiscoveredModel {
 export const discoverCodexModels = async (opts: {
   cliPath: string;
   codexHome: CodexHome;
+  launch?: CodexLauncher;
 }): Promise<DiscoveredCodexModel[]> => {
-  const proc = spawn(opts.cliPath, ["app-server", "-c", 'cli_auth_credentials_store="file"'], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const launch = opts.launch ?? spawnCodex;
+  const proc = launch({
+    cliPath: opts.cliPath,
+    args: ["app-server", "-c", 'cli_auth_credentials_store="file"'],
+    cwd: Deno.cwd(),
     env: { ...Deno.env.toObject(), CODEX_HOME: opts.codexHome.dir },
+    codexHome: opts.codexHome,
   });
   const rpc = new CodexRpcClient(proc);
   try {
