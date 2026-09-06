@@ -177,31 +177,64 @@ describe("client state subscription", { concurrency: 4 }, () => {
 // protocol mismatch — terminal, in both directions
 // ---------------------------------------------------------------------------
 
+/** One accepted socket, from the stub daemon's side. */
+interface StubConn {
+  /** 1 for the first connection this stub accepted, 2 for the next, … */
+  readonly nth: number;
+  /** Write one raw line, exactly as given — malformed frames included. */
+  send(line: string): Promise<void>;
+  close(): void;
+}
+
 /**
- * A socket that speaks just enough of the wire protocol to answer `hello`, and
- * answers it wrongly. `handshakes` counts accepted connections, which is how a
- * client that retries an incompatibility forever gives itself away.
+ * A socket that speaks just enough of the wire protocol to be driven by hand:
+ * the test decides what each `hello` is answered with, whether an opening
+ * snapshot follows it and when, and what raw lines go out afterwards. A real
+ * daemon can hold none of that back.
+ *
+ * `handshakes` counts accepted connections, which is how a client that retries
+ * something no amount of retrying can fix gives itself away.
  */
-const mkWrongVersionDaemon = async (
+const mkStubDaemon = async (
   sockPath: string,
-  reply: (id: number, handshake: number) => Record<string, unknown>,
+  onHello: (helloId: number, conn: StubConn) => void | Promise<void>,
 ): Promise<{
   handshakes: () => number;
+  received: () => ReadonlyArray<{ id: number; method: string }>;
   dropAll: () => void;
   close: () => Promise<void>;
 }> => {
   const listener = Deno.listen({ transport: "unix", path: sockPath });
   let accepted = 0;
   const conns = new Set<Deno.Conn>();
+  const enc = new TextEncoder();
+  const received: Array<{ id: number; method: string }> = [];
   const loop = (async () => {
     for await (const conn of listener) {
       accepted++;
       const nth = accepted;
       conns.add(conn);
+      const stub: StubConn = {
+        nth,
+        send: async (line) => {
+          try {
+            await conn.write(enc.encode(line + "\n"));
+          } catch {
+            /* the client hung up */
+          }
+        },
+        close: () => {
+          try {
+            conn.close();
+          } catch {
+            /* already gone */
+          }
+          conns.delete(conn);
+        },
+      };
       void (async () => {
         const buf = new Uint8Array(64 * 1024);
         const dec = new TextDecoder();
-        const enc = new TextEncoder();
         let acc = "";
         try {
           for (;;) {
@@ -212,9 +245,12 @@ const mkWrongVersionDaemon = async (
             while ((nl = acc.indexOf("\n")) !== -1) {
               const line = acc.slice(0, nl);
               acc = acc.slice(nl + 1);
+              // Every line as it arrived, so a test can check the client's own
+              // framing rather than only what it does with the answers.
               const frame = JSON.parse(line) as { id: number; method: string };
+              received.push(frame);
               if (frame.method !== "hello") continue;
-              await conn.write(enc.encode(JSON.stringify(reply(frame.id, nth)) + "\n"));
+              await onHello(frame.id, stub);
             }
           }
         } catch {
@@ -235,20 +271,46 @@ const mkWrongVersionDaemon = async (
   };
   return {
     handshakes: () => accepted,
+    received: (): ReadonlyArray<{ id: number; method: string }> => received,
     dropAll,
     close: async () => {
-      for (const c of conns) {
-        try {
-          c.close();
-        } catch {
-          /* already gone */
-        }
-      }
+      dropAll();
       listener.close();
       await loop.catch(() => {});
     },
   };
 };
+
+const stubDaemonInfo = (repoRoot: string) => ({
+  pid: 1,
+  version: "x",
+  startedAt: 0,
+  repoRoot,
+  epoch: "e",
+});
+
+/** A well-formed `hello` response, `over` patching the result. */
+const helloLine = (id: number, repoRoot: string, over: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    kind: "res",
+    id,
+    ok: true,
+    result: {
+      protocolVersion: PROTOCOL_VERSION,
+      seq: 0,
+      daemon: stubDaemonInfo(repoRoot),
+      replaying: false,
+      ...over,
+    },
+  });
+
+/** The opening snapshot a real daemon writes before its `hello` response. */
+const stateLine = (repoRoot: string, state?: unknown): string =>
+  JSON.stringify({
+    kind: "push",
+    type: "state",
+    state: state ?? { daemon: stubDaemonInfo(repoRoot), providers: [], sessions: [] },
+  });
 
 const mismatchOf = (c: LoomClient): { daemon: number; client: number } | null => {
   const s = c.getState();
@@ -260,24 +322,20 @@ const mismatchOf = (c: LoomClient): { daemon: number; client: number } | null =>
 nodeTest("a daemon that comes back on a different wire version stops the reconnect", async () => {
   const dir = await Deno.makeTempDir();
   const sockPath = `${dir}/loom.sock`;
-  const helloOk = (id: number, version: number): Record<string, unknown> => ({
-    kind: "res",
-    id,
-    ok: true,
-    result: {
-      protocolVersion: version,
-      seq: 0,
-      daemon: { pid: 1, version: "x", startedAt: 0, repoRoot: dir, epoch: "e" },
-      providers: [],
-    },
+  // First connection agrees, and completes properly — snapshot first, then the
+  // hello response, which is the order a real daemon writes them in. The one
+  // after a restart doesn't agree: the upgrade the user just installed brought a
+  // daemon this client can't talk to. That is the lenient direction — the hello
+  // succeeds and the *answer* is incompatible, so every frame shape from here
+  // on is unknowable.
+  const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+    if (conn.nth === 1) {
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+      return;
+    }
+    await conn.send(helloLine(id, dir, { protocolVersion: PROTOCOL_VERSION + 7 }));
   });
-  // First connection agrees; the one after a restart doesn't — the upgrade the
-  // user just installed brought a daemon this client can't talk to. This is the
-  // lenient direction: the hello succeeds and the *answer* is incompatible, so
-  // the frame shapes from here on are unknowable.
-  const stub = await mkWrongVersionDaemon(sockPath, (id, nth) =>
-    helloOk(id, nth === 1 ? PROTOCOL_VERSION : PROTOCOL_VERSION + 7),
-  );
   const c = await LoomClient.connect({
     repoRoot: dir,
     sockPath,
@@ -310,16 +368,20 @@ nodeTest("a daemon that rejects our wire version reports its own, terminally", a
   const sockPath = `${dir}/loom.sock`;
   // The strict direction, which is what a real daemon does: it refuses the
   // hello outright and names its version in the error's `data`.
-  const stub = await mkWrongVersionDaemon(sockPath, (id) => ({
-    kind: "res",
-    id,
-    ok: false as const,
-    error: {
-      code: "protocol_mismatch",
-      message: `client protocol ${PROTOCOL_VERSION} != daemon 99`,
-      data: { daemon: 99 },
-    },
-  }));
+  const stub = await mkStubDaemon(sockPath, (id, conn) =>
+    conn.send(
+      JSON.stringify({
+        kind: "res",
+        id,
+        ok: false,
+        error: {
+          code: "protocol_mismatch",
+          message: `client protocol ${PROTOCOL_VERSION} != daemon 99`,
+          data: { daemon: 99 },
+        },
+      }),
+    ),
+  );
   try {
     await assert.rejects(
       () => LoomClient.connect({ repoRoot: dir, sockPath, autospawn: false, reconnect: true }),
@@ -521,3 +583,252 @@ nodeTest(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// §3: the transport and startup contract
+// ---------------------------------------------------------------------------
+
+/** A temp dir + socket path, cleaned up after `fn`. */
+const withSock = async (fn: (dir: string, sockPath: string) => Promise<void>): Promise<void> => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await fn(dir, `${dir}/loom.sock`);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+};
+
+/** Has `p` settled either way within `ms`? For asserting it is still waiting. */
+const settledWithin = async (p: Promise<unknown>, ms: number): Promise<boolean> => {
+  const stillWaiting = Symbol("pending");
+  const done = () => "settled" as const;
+  return (await Promise.race([p.then(done, done), delay(ms, stillWaiting)])) !== stillWaiting;
+};
+
+nodeTest("connect waits for the opening snapshot, not just the hello response", async () => {
+  await withSock(async (dir, sockPath) => {
+    let release: (() => Promise<void>) | null = null;
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      // Answer the handshake, but hold the snapshot back.
+      await conn.send(helloLine(id, dir));
+      release = () => conn.send(stateLine(dir));
+    });
+    try {
+      const connecting = LoomClient.connect({ repoRoot: dir, sockPath, autospawn: false });
+      await waitFor(() => release !== null);
+      assert.equal(
+        await settledWithin(connecting, 150),
+        false,
+        "connect is still waiting on the snapshot",
+      );
+
+      await release!();
+      const c = await connecting;
+      try {
+        assert.equal(c.getState().tag, "data", "and resolves only once state is installed");
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+nodeTest("a handshake with no snapshot behind it fails and closes its socket", async () => {
+  await withSock(async (dir, sockPath) => {
+    // Never sends a snapshot at all. `connect()` must not hand back a client
+    // whose fleet is permanently unknown.
+    const stub = await mkStubDaemon(sockPath, (id, conn) => conn.send(helloLine(id, dir)));
+    try {
+      await assert.rejects(
+        () =>
+          LoomClient.connect({
+            repoRoot: dir,
+            sockPath,
+            autospawn: false,
+            reconnect: true,
+            firstSnapshotMs: 250,
+          }),
+        /no state snapshot/,
+      );
+      // And it gave up rather than reconnecting into the same wait forever.
+      const after = stub.handshakes();
+      await delay(400);
+      assert.equal(stub.handshakes(), after, "no reconnect attempts after the deadline");
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+nodeTest("malformed hello contents are rejected at the boundary", async () => {
+  await withSock(async (dir, sockPath) => {
+    // Valid JSON, valid envelope, but the result is not a hello: no `daemon`
+    // block to read a repo root or an epoch from.
+    const stub = await mkStubDaemon(sockPath, (id, conn) =>
+      conn.send(JSON.stringify({ kind: "res", id, ok: true, result: { protocolVersion: 2 } })),
+    );
+    try {
+      await assert.rejects(
+        () => LoomClient.connect({ repoRoot: dir, sockPath, autospawn: false }),
+        /malformed hello/,
+      );
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+nodeTest("a malformed snapshot is never installed as current state", async () => {
+  await withSock(async (dir, sockPath) => {
+    let bad: (() => Promise<void>) | null = null;
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+      bad = async () => {
+        // Valid JSON and a valid `state` discriminant, but `sessions` is not a
+        // list of sessions — installing it would put a shape the fleet cannot
+        // render behind every `tag === "data"` check in the app.
+        await conn.send(
+          stateLine(dir, { daemon: stubDaemonInfo(dir), providers: [], sessions: 7 }),
+        );
+      };
+    });
+    try {
+      const c = await LoomClient.connect({
+        repoRoot: dir,
+        sockPath,
+        autospawn: false,
+        reconnect: false,
+      });
+      try {
+        assert.equal(fleet(c)?.sessions.length, 0, "the good snapshot is installed");
+        await waitFor(() => bad !== null);
+        await bad!();
+
+        // The frame is refused *and* the stream it came on is dropped: a peer
+        // sending shapes we cannot read has already sent us frames we will
+        // never know we missed.
+        await waitFor(() => c.getState().tag !== "data", 3000);
+        assert.equal(fleet(c), null, "no stale snapshot is presented as current");
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+nodeTest("a line the client cannot parse drops the connection", async () => {
+  await withSock(async (dir, sockPath) => {
+    let garbage: (() => Promise<void>) | null = null;
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+      garbage = () => conn.send("{not json");
+    });
+    try {
+      const c = await LoomClient.connect({
+        repoRoot: dir,
+        sockPath,
+        autospawn: false,
+        reconnect: false,
+      });
+      try {
+        assert.equal(c.getState().tag, "data");
+        await waitFor(() => garbage !== null);
+        await garbage!();
+        await waitFor(() => c.getState().tag !== "data", 3000);
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+nodeTest("a dial that lands after close cannot reopen the client", async () => {
+  await withSock(async (dir, sockPath) => {
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+    });
+    const c = await LoomClient.connect({
+      repoRoot: dir,
+      sockPath,
+      autospawn: false,
+      reconnect: true,
+    });
+    try {
+      // Take the daemon away entirely, so the reconnect loop is parked in its
+      // backoff with a dial it cannot complete.
+      await stub.close();
+      await Deno.remove(sockPath).catch(() => {});
+      await waitFor(() => c.getState().tag === "pending");
+
+      // The caller finishes with the client while that loop is still running.
+      await c.close();
+      assert.equal(c.getState().tag, "idle");
+
+      // Now the daemon comes back. A dial completing after `close()` is not a
+      // reconnection — nothing may install a socket on a closed client.
+      const revived = await mkStubDaemon(sockPath, async (id, conn) => {
+        await conn.send(stateLine(dir));
+        await conn.send(helloLine(id, dir));
+      });
+      try {
+        await delay(600);
+        assert.equal(revived.handshakes(), 0, "the closed client did not dial the new daemon");
+        assert.equal(c.getState().tag, "idle", "and stayed closed");
+      } finally {
+        await revived.close();
+      }
+    } finally {
+      await c.close().catch(() => {});
+    }
+  });
+});
+
+nodeTest("concurrent requests reach the daemon whole and in issue order", async () => {
+  await withSock(async (dir, sockPath) => {
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+    });
+    try {
+      const c = await LoomClient.connect({
+        repoRoot: dir,
+        sockPath,
+        autospawn: false,
+        reconnect: false,
+      });
+      try {
+        // Fifty fat frames issued in one turn. Unserialized, `writeAll`'s
+        // partial writes interleave their halves and neither frame parses; the
+        // stub's own reader would throw on the first corrupted line.
+        const bulk = "z".repeat(64 * 1024);
+        for (let i = 0; i < 50; i++) {
+          void c.request("noop", { i, bulk }).catch(() => {}); // never answered
+        }
+        await waitFor(() => stub.received().filter((f) => f.method === "noop").length === 50, 5000);
+
+        const ids = stub
+          .received()
+          .filter((f) => f.method === "noop")
+          .map((f) => f.id);
+        assert.deepEqual(
+          ids,
+          [...ids].sort((a, b) => a - b),
+          "every frame arrived whole, exactly once, in the order it was issued",
+        );
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await stub.close();
+    }
+  });
+});

@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   DaemonSnapshot,
-  Frame,
   HelloResult,
   PushFrame,
   RequestFrame,
@@ -11,6 +10,7 @@ import type {
   StatePush,
 } from "@loom/core/wire";
 import { MAX_FRAME_BYTES, PROTOCOL_VERSION } from "@loom/core/wire";
+import { isHelloResult, isPushFrame, isResponseFrame, isStatePush } from "@loom/core/wire-decode";
 import {
   loadableFailed,
   loadableIdle,
@@ -32,6 +32,13 @@ export interface ConnectOptions {
   /** Reconnect (with gap replay) if the connection drops. Default true. */
   reconnect?: boolean;
   clientId?: string;
+  /**
+   * How long `connect()` waits for the daemon's opening snapshot once the
+   * handshake has succeeded, in ms. Default 10s. A test seam: a daemon that
+   * deliberately never sends one shouldn't take the full production deadline
+   * to prove it.
+   */
+  firstSnapshotMs?: number;
 }
 
 type PushListener = (frame: PushFrame) => void;
@@ -156,6 +163,11 @@ export class LoomClient {
       reconnect: true,
       daemonEntry: "",
       clientId: this.clientId,
+      // The daemon subscribes and enqueues its opening snapshot in one
+      // synchronous step *before* answering `hello`, so in the ordinary case
+      // that frame is already buffered when the handshake returns. This only
+      // bounds a daemon that answered and then sent nothing.
+      firstSnapshotMs: 10_000,
       ...opts,
     };
   }
@@ -166,6 +178,11 @@ export class LoomClient {
     try {
       await c.#dial(opts.autospawn ?? true);
       await c.#handshake(undefined);
+      // A hello response is not a connection. Every caller of `connect()` goes
+      // straight on to read the fleet, so resolving before the first snapshot
+      // hands them a `pending` and makes "no snapshot yet" indistinguishable
+      // from "no sessions".
+      await c.#awaitFirstSnapshot();
     } catch (err) {
       // `#handshake` already installed the precise error for a protocol
       // mismatch; anything else is the transport failing to come up at all.
@@ -180,6 +197,34 @@ export class LoomClient {
       throw err;
     }
     return c;
+  }
+
+  /** Resolve once a valid snapshot is installed; reject (having closed the
+   *  socket) if the daemon never sends one. Startup only — a reconnect keeps
+   *  the last snapshot until the new one lands. */
+  #awaitFirstSnapshot(): Promise<void> {
+    if (this.#state.tag === "data") return Promise.resolve();
+    const gen = this.#generation;
+    return new Promise<void>((resolve, reject) => {
+      let off: (() => void) | null = null;
+      const timer = setTimeout(() => {
+        off?.();
+        // Nothing will hold this client once `connect()` throws, so don't
+        // leave a socket or a reconnect loop running behind it.
+        this.#closed = true;
+        this.#invalidate(gen);
+        reject(new Error("daemon completed the handshake but sent no state snapshot"));
+      }, this.#opts.firstSnapshotMs);
+      // Safe to install after the timer: the `data` early-return above means
+      // `subscribe`'s immediate call cannot resolve before this returns.
+      off = this.subscribe((s) => {
+        if (s.tag === "idle" || s.tag === "pending") return;
+        clearTimeout(timer);
+        off?.();
+        if (s.tag === "data") resolve();
+        else reject(new Error(showConnectionError(s.error)));
+      });
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -236,16 +281,35 @@ export class LoomClient {
     return p as Promise<T>;
   }
 
-  /** Queue one frame on the current socket's write chain. Fire-and-forget: a
-   *  failure means the connection is dying, which the read loop is already
-   *  about to discover and route through `#onSocketClose`. */
+  /**
+   * Queue one frame on the current socket's write chain. A failure means part
+   * of a frame may be on the wire with no way to tell the daemon so: the frame
+   * is never retried (a mutation would then run twice) and nothing more is
+   * written onto a stream we know has lost bytes. Invalidating the socket
+   * routes the rest through `#onSocketClose`, which rejects everything
+   * outstanding as `disconnected` — the "may have completed" answer, which is
+   * the truth here.
+   */
   #send(frame: RequestFrame): void {
     const sock = this.#sock;
     if (!sock) return;
+    const gen = this.#generation;
     const bytes = encoder.encode(JSON.stringify(frame) + "\n");
     this.#writeChain = this.#writeChain.then(() =>
-      this.#sock === sock ? writeAll(sock, bytes).catch(() => {}) : undefined,
+      this.#sock === sock ? writeAll(sock, bytes).catch(() => this.#invalidate(gen)) : undefined,
     );
+  }
+
+  /** Drop the socket belonging to generation `gen`, if it is still the current
+   *  one. A superseded generation's socket is already gone and closing "the"
+   *  socket would take the live one with it. */
+  #invalidate(gen: number): void {
+    if (gen !== this.#generation) return;
+    try {
+      this.#sock?.close();
+    } catch {
+      // already gone
+    }
   }
 
   /** The current authoritative daemon state. */
@@ -298,6 +362,11 @@ export class LoomClient {
     this.#closed = true;
     const sock = this.#sock;
     this.#sock = null;
+    // Closing while reconnecting has no socket to drop, so `#onSocketClose`
+    // never runs and nothing else would move the state off `pending` — leaving
+    // a client the caller has finished with still saying "reconnecting…". A
+    // latched protocol mismatch is the truth and outlives the close.
+    if (this.#fatal === null) this.#setState(loadableIdle);
     if (!sock) return;
     try {
       sock.close();
@@ -381,7 +450,7 @@ export class LoomClient {
         // the live buffer would splice a dead connection's bytes into the new
         // one's frame stream.
         if (gen !== this.#generation) return;
-        this.#ingest(sock, this.#decoder.decode(buf.subarray(0, n), { stream: true }));
+        this.#ingest(gen, this.#decoder.decode(buf.subarray(0, n), { stream: true }));
       }
     } catch {
       // surfaced via close, same as the old socket 'error' no-op handler
@@ -390,7 +459,7 @@ export class LoomClient {
     }
   }
 
-  #ingest(sock: Deno.Conn, chunk: string): void {
+  #ingest(gen: number, chunk: string): void {
     this.#buf += chunk;
     // Symmetric with the daemon's `Connection.#ingest`: a frame (or a stream
     // with no newline) past the cap means a daemon bug or a corrupt stream —
@@ -398,11 +467,7 @@ export class LoomClient {
     // the buffer without bound.
     if (this.#buf.length > MAX_FRAME_BYTES) {
       this.#buf = "";
-      try {
-        sock.close();
-      } catch {
-        // already gone
-      }
+      this.#invalidate(gen);
       return;
     }
     let nl: number;
@@ -410,29 +475,46 @@ export class LoomClient {
       const line = this.#buf.slice(0, nl).trim();
       this.#buf = this.#buf.slice(nl + 1);
       if (line === "") continue;
-      let frame: Frame;
+      // Also symmetric with the daemon: a line we cannot read, or one whose
+      // shape we cannot route, is not a frame to skip past. The stream has
+      // already lost something we would never learn about, so drop the socket
+      // and re-baseline from a fresh snapshot instead of carrying on with a
+      // hole in it.
+      let parsed: unknown;
       try {
-        frame = JSON.parse(line) as Frame;
+        parsed = JSON.parse(line);
       } catch {
-        continue;
+        this.#buf = "";
+        this.#invalidate(gen);
+        return;
       }
-      this.#onFrame(frame);
+      if (!this.#onFrame(parsed)) {
+        this.#buf = "";
+        this.#invalidate(gen);
+        return;
+      }
     }
   }
 
-  #onFrame(frame: Frame): void {
-    if (frame.kind === "res") {
+  /** False when the frame is one this client cannot account for — an unknown
+   *  discriminant, an unaddressable response, or a malformed snapshot. The
+   *  daemon never sends `req` frames, so one of those counts too. */
+  #onFrame(frame: unknown): boolean {
+    if (isResponseFrame(frame)) {
       this.#settle(frame);
-    } else if (frame.kind === "push") {
+      return true;
+    }
+    if (isStatePush(frame) || isPushFrame(frame)) {
       if (!this.#helloDone) {
         // Bounded: a handshake that never completes must not let a chatty
         // daemon grow this without limit before the reconnect loop gives up.
         if (this.#preHelloQueue.length < 20_000) this.#preHelloQueue.push(frame);
-        return;
+        return true;
       }
       this.#route(frame);
+      return true;
     }
-    // "req" frames from the daemon are not part of the M1 protocol; ignore.
+    return false;
   }
 
   #route(frame: PushFrame | StatePush): void {
@@ -497,9 +579,9 @@ export class LoomClient {
 
   async #handshake(sinceSeq: number | undefined): Promise<void> {
     this.#helloDone = false;
-    let result: HelloResult;
+    let raw: unknown;
     try {
-      result = await this.request<HelloResult>("hello", {
+      raw = await this.request<unknown>("hello", {
         protocolVersion: PROTOCOL_VERSION,
         clientId: this.clientId,
         ...(sinceSeq !== undefined ? { sinceSeq } : {}),
@@ -511,6 +593,12 @@ export class LoomClient {
       if (!isRpcCode(err, "protocol_mismatch")) throw err;
       throw this.#mismatch(daemonVersionOf(err));
     }
+    // A well-formed hello reporting a version we can't speak is a mismatch,
+    // handled below. A hello whose *shape* is wrong is not that — we cannot
+    // even read which version it claims, so it's a transport failure the
+    // reconnect loop may retry.
+    if (!isHelloResult(raw)) throw new Error("daemon sent a malformed hello result");
+    const result: HelloResult = raw;
     // The daemon rejects a mismatched request version, but a future lenient
     // daemon on a changed frame shape would slip through — check both ways.
     if (result.protocolVersion !== PROTOCOL_VERSION) {
@@ -596,9 +684,26 @@ export class LoomClient {
           await this.#spawnDaemon();
           sock = await this.#connectWithRetry();
         }
+        // Dialling takes as long as it takes, and `close()` can land in the
+        // middle of it. A socket handed back after that is not a reconnection
+        // — installing it would reopen a client the caller has finished with.
+        if (this.#closed || this.#fatal !== null) {
+          try {
+            sock.close();
+          } catch {
+            // already gone
+          }
+          return;
+        }
         this.#sock = sock;
         this.#attach(sock);
+        const gen = this.#generation;
         await this.#handshake(this.#lastSeq);
+        // The socket this handshake was for has already been superseded (it
+        // dropped again mid-handshake, and `#onSocketClose` started another
+        // attempt). Its success belongs to a connection that no longer exists,
+        // so announcing a reconnect on it would describe the wrong one.
+        if (gen !== this.#generation || this.#closed) return;
         this.#fire("reconnect", { lastSeq: this.#lastSeq });
         return;
       } catch (err) {

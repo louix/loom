@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-2 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-3 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -280,25 +280,25 @@ Tests: `test/connection.test.ts`, `test/client-state.test.ts`.
 
 ### Change
 
-- [ ] Apply the outgoing backlog policy to `pushState`. A queued snapshot does
+- [x] Apply the outgoing backlog policy to `pushState`. A queued snapshot does
       not supersede an earlier encoded buffer. Keep drop-on-overflow; do not add
       batching or a delta protocol.
-- [ ] Make the client write chain close/invalidate its current connection on
+- [x] Make the client write chain close/invalidate its current connection on
       failure instead of swallowing the error. Reject pending RPCs through the
       existing failure path. Do not retry mutation frames.
-- [ ] Both readers must terminate a connection on invalid JSON. Remove the
+- [x] Both readers must terminate a connection on invalid JSON. Remove the
       `catch { continue; }` path.
-- [ ] Validate routing envelopes and the new state/hello payloads before using
+- [x] Validate routing envelopes and the new state/hello payloads before using
       them. Reject wrong discriminants, invalid response IDs, and malformed daemon,
       providers, sessions, status or request payloads. Define the snapshot decoder
       once at the boundary and reuse the domain shapes; do not build validators for
       every vendor SDK protocol as part of this change.
-- [ ] Resolve initial `connect()` only after protocol validation **and** the
+- [x] Resolve initial `connect()` only after protocol validation **and** the
       first valid snapshot. A hello response alone is insufficient. Reuse a bounded
       startup deadline; a missing initial snapshot must fail and close its socket.
-- [ ] Preserve the daemon's synchronous subscribe/enqueue-initial-snapshot
+- [x] Preserve the daemon's synchronous subscribe/enqueue-initial-snapshot
       operation. Do not put a second installable snapshot in the hello response.
-- [ ] Guard startup/reconnect continuations as well as socket reads with the
+- [x] Guard startup/reconnect continuations as well as socket reads with the
       current connection identity. A late response, close or dial result from a
       cancelled/superseded connection must not install state or reopen a closed client.
 
@@ -320,6 +320,72 @@ Tests: `test/connection.test.ts`, `test/client-state.test.ts`.
 
 Done: limits apply to every snapshot path; malformed frames cannot be silently
 lost; startup callers always receive current data or an explicit failure.
+
+**Done.** Regressions were written first; the three new `test/connection.test.ts`
+cases failed on arrival (`destroyed false !== true`; a frame after corrupted
+input still routed; an id-less request still dispatched), and the client cases
+failed against the pre-fix client.
+
+Where the shapes are checked: a new `core/src/wire-decode.ts` holds the boundary
+decoders both ends use — `isRequestFrame`, `isResponseFrame`, `isStatePush`,
+`isPushFrame`, `isHelloResult`, `isDaemonSnapshot`. It validates envelopes,
+discriminants, and the fields a consumer branches on or iterates; it does not
+try to schema-check a permission request's `input`, which is the vendor SDK's
+vocabulary and no part of this wire. Its header says so, so the next reader
+doesn't mistake the scope for an oversight.
+
+The substantive changes:
+
+- **One backlog rule for everything written.** `pushState` bypassed the ceiling
+  on the argument that snapshots supersede each other. They do as _values_ — not
+  as encoded buffers already sitting in the write chain, which is what the
+  ceiling counts. `#overBacklog()` is now the single check both `push` and
+  `pushState` make, and the stale comment claiming the exemption is gone.
+- **Neither reader skips a frame any more.** Both had a `catch { continue; }`
+  over `JSON.parse`. A line we cannot read means the stream has already lost
+  something we would never learn about, so both now drop the connection and
+  re-baseline. The same applies to a well-formed frame we cannot route: a
+  request with no id has no address to answer at.
+- **`connect()` waits for the opening snapshot.** A hello response is not a
+  connection; every caller goes straight on to read the fleet, and resolving
+  before the first snapshot makes "no snapshot yet" indistinguishable from "no
+  sessions". The wait is bounded by `firstSnapshotMs` (10s; a test seam lets a
+  case prove the deadline in 250ms), and a daemon that never sends one fails
+  with its socket closed and no reconnect loop left behind.
+- **The daemon's side of that contract is untouched**: `#hHello` still
+  subscribes and enqueues the opening snapshot in one synchronous step, before
+  the hello response, and the response still carries handshake metadata only.
+- **A write failure invalidates the client's connection** instead of being
+  swallowed. The frame is never retried — a mutation would then run twice — and
+  `#onSocketClose` rejects everything outstanding as `disconnected`, which is
+  the honest answer when part of a frame may be on the wire.
+- **Lifecycle continuations carry their connection's identity.** A dial that
+  completes after `close()` closes the socket it was handed rather than
+  installing it, and a handshake whose generation has been superseded does not
+  announce a reconnect for a socket that no longer exists.
+- **`close()` while reconnecting now returns to `idle`.** There was no socket to
+  drop, so `#onSocketClose` never ran and nothing moved the state off `pending`
+  — a client the caller had finished with went on saying "reconnecting…".
+
+Two things this step did _not_ verify directly, stated rather than glossed:
+
+- **A forced client-side write failure with reads still open is not reachable
+  over a real Unix socket** — a peer that makes writes fail has also ended
+  reads. The handling above is implemented and its consequences (pending RPCs
+  rejecting as `disconnected`, the fleet leaving `data`) are covered through the
+  dropped-peer path; the write-error branch itself is not driven by a test.
+- **The superseded-handshake guard is unreachable by construction.** `gen` can
+  only change during the hello `await`, and a drop during that await rejects the
+  pending request, so the continuation never runs with a stale generation. The
+  check is kept as a cheap invariant, not because a test exercises it.
+
+Frame ordering under partial writes is covered in both directions: the existing
+daemon-side case, plus a new client-side one that issues fifty 64 KiB requests
+in a single turn and asserts the stub read fifty whole, parseable lines in issue
+order.
+
+Verified: typecheck, lint and format:check clean; `deno task test` 636 passed
+(112 steps) / 0 failed.
 
 ## 4. Make transcript retention actually bounded
 

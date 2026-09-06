@@ -6,6 +6,7 @@ import {
   type ResponseFrame,
   type StatePush,
 } from "@loom/core/wire";
+import { isRequestFrame } from "@loom/core/wire-decode";
 
 const log = makeLogger("conn");
 
@@ -109,15 +110,27 @@ export class Connection {
       const line = this.#buf.slice(0, nl).trim();
       this.#buf = this.#buf.slice(nl + 1);
       if (line === "") continue;
-      let frame: Frame;
+      // A line we cannot read is not a frame to skip. Whatever it was, this
+      // stream has already lost something we will never learn about, and every
+      // frame after it is suspect — drop the connection and let the client
+      // reconnect onto a stream we can account for.
+      let parsed: unknown;
       try {
-        frame = JSON.parse(line) as Frame;
+        parsed = JSON.parse(line);
       } catch {
-        log.warn("unparseable frame", { conn: this.id });
-        continue;
+        log.warn("unparseable frame, dropping connection", { conn: this.id });
+        this.close();
+        return;
+      }
+      // Clients only send requests, and a request with no routable id cannot be
+      // answered — ignoring it silently leaves the peer waiting forever.
+      if (!isRequestFrame(parsed)) {
+        log.warn("unroutable frame, dropping connection", { conn: this.id });
+        this.close();
+        return;
       }
       try {
-        this.#onFrame(frame, this);
+        this.#onFrame(parsed, this);
       } catch (err) {
         log.error("frame handler threw", { conn: this.id, err: String(err) });
       }
@@ -150,26 +163,31 @@ export class Connection {
   }
 
   /**
-   * A complete state snapshot. Unlike {@link push} this is not subject to the
-   * backlog ceiling — a client behind on state is exactly the client that needs
-   * the current snapshot, and each one supersedes the last, so the queue can
-   * never grow past the frames already counted against `#backlogBytes`.
+   * True when this connection is too far behind to take another frame, in
+   * which case it has already been dropped. One rule for everything pushed:
+   * a snapshot supersedes the last one as a *value*, but not as an encoded
+   * buffer already sitting in the write chain, so a stalled client can be
+   * outrun by snapshots exactly as easily as by events.
    */
+  #overBacklog(): boolean {
+    if (this.#backlogBytes <= PUSH_BACKLOG_LIMIT_BYTES) return false;
+    log.warn("client not draining its socket — dropping connection", {
+      conn: this.id,
+      backlog: this.#backlogBytes,
+    });
+    this.close();
+    return true;
+  }
+
+  /** A complete state snapshot — outside the `seq` stream, but inside the
+   *  same backlog ceiling as everything else this connection writes. */
   pushState(frame: StatePush): void {
-    if (!this.subscribed || this.#closed) return;
+    if (!this.subscribed || this.#closed || this.#overBacklog()) return;
     this.#write(frame);
   }
 
   push(frame: PushFrame): void {
-    if (!this.subscribed || this.#closed) return;
-    if (this.#backlogBytes > PUSH_BACKLOG_LIMIT_BYTES) {
-      log.warn("client not draining its socket — dropping connection", {
-        conn: this.id,
-        backlog: this.#backlogBytes,
-      });
-      this.close();
-      return;
-    }
+    if (!this.subscribed || this.#closed || this.#overBacklog()) return;
     this.#write(frame);
   }
 

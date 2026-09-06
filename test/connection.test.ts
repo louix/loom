@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Frame, PushFrame } from "@loom/core/wire";
+import type { Frame, PushFrame, StatePush } from "@loom/core/wire";
 import { setLogLevel } from "@loom/core/logger";
 import { Connection, type FramedConn } from "@loom/daemon/daemon/connection";
 
@@ -14,20 +14,41 @@ const flush = async (): Promise<void> => {
 };
 
 /** A `FramedConn` stand-in: records writes, lets a test hold a write's
- *  promise open to simulate a client that isn't draining, and fires the
- *  read loop's EOF (`read()` resolving `null`) to simulate a close. */
+ *  promise open to simulate a client that isn't draining, feeds bytes to the
+ *  read loop, and fires its EOF (`read()` resolving `null`) on close. */
 const fakeConn = () => {
-  let resolveRead: (n: number | null) => void = () => {};
-  const readGate = new Promise<number | null>((r) => {
-    resolveRead = r;
-  });
+  // Incoming bytes a test has fed but the read loop hasn't taken yet, and the
+  // read that is parked waiting for them. Only one read is ever outstanding.
+  let inbox = "";
+  let eof = false;
+  let waiting: (() => void) | null = null;
+  const encoder = new TextEncoder();
   let writeGate: { resolve: (n: number) => void } | null = null;
   const decoder = new TextDecoder();
   return {
     writes: [] as string[],
     destroyed: false,
-    /** Never resolves on its own — this stand-in only exercises writes. */
-    read: (_p: Uint8Array): Promise<number | null> => readGate,
+    /** Deliver `s` to the connection's read loop as if the peer sent it. */
+    feed(s: string): void {
+      inbox += s;
+      waiting?.();
+      waiting = null;
+    },
+    async read(p: Uint8Array): Promise<number | null> {
+      for (;;) {
+        if (inbox !== "") {
+          const bytes = encoder.encode(inbox);
+          const n = Math.min(bytes.length, p.length);
+          p.set(bytes.subarray(0, n));
+          inbox = decoder.decode(bytes.subarray(n));
+          return n;
+        }
+        if (eof) return null;
+        await new Promise<void>((r) => {
+          waiting = r;
+        });
+      }
+    },
     write(p: Uint8Array): Promise<number> {
       if (writeGate) {
         // A write is being held open (simulating backpressure) — this call
@@ -50,7 +71,9 @@ const fakeConn = () => {
     },
     close(): void {
       this.destroyed = true;
-      resolveRead(null);
+      eof = true;
+      waiting?.();
+      waiting = null;
     },
   };
 };
@@ -226,4 +249,116 @@ test("a write that fails drops the connection rather than losing frames silently
 
   assert.equal(conn.destroyed, true, "the connection was dropped");
   assert.equal(closedCount, 1, "onClose fired");
+});
+
+// --- §3: the outgoing backlog ceiling covers every frame kind --------------
+
+/** A legal whole-fleet snapshot ~3 MiB wide, so a handful of them cross the
+ *  8 MiB ceiling on their own. The bulk rides a real string field. */
+const bigStateFrame = (n: number): StatePush => ({
+  kind: "push",
+  type: "state",
+  state: {
+    daemon: { pid: 1, version: "x", startedAt: 0, repoRoot: "/tmp", epoch: "e1" },
+    providers: [
+      {
+        id: `p${n}`,
+        models: ["y".repeat(3 * 1024 * 1024)],
+        defaultModel: "",
+        defaultEffort: "",
+        defaultMode: "default",
+        tag: "",
+        color: "",
+        isDefault: true,
+      },
+    ],
+    sessions: [],
+  },
+});
+
+test("a stalled writer cannot be outrun by snapshots alone", async () => {
+  const conn = fakeConn();
+  let closedCount = 0;
+  const c = new Connection(
+    conn as unknown as FramedConn,
+    () => {},
+    () => {
+      closedCount += 1;
+    },
+  );
+  c.subscribed = true;
+
+  // The first snapshot is handed to `write()` and held there — the client has
+  // stopped reading. Everything after it queues behind it.
+  c.pushState(bigStateFrame(1));
+  await flush();
+  assert.equal(conn.writes.length, 0, "the first write is held open");
+
+  // Snapshots are the *only* thing enqueued from here. Each supersedes the last
+  // as a value, but not as an encoded buffer already sitting in the chain —
+  // without a ceiling this grows for as long as the client stays wedged.
+  for (let i = 2; i <= 6; i++) c.pushState(bigStateFrame(i));
+  await flush();
+
+  assert.equal(conn.destroyed, true, "the wedged connection was dropped");
+  assert.equal(closedCount, 1, "onClose fired exactly once");
+
+  conn.releaseWrite();
+  await flush();
+  assert.equal(conn.writes.length, 1, "only the already-in-flight write completes");
+
+  c.pushState(bigStateFrame(99));
+  await flush();
+  assert.equal(conn.writes.length, 1, "and the closed connection takes no more");
+});
+
+test("the server reader drops a connection on a line it cannot parse", async () => {
+  const conn = fakeConn();
+  const frames: Frame[] = [];
+  let closedCount = 0;
+  new Connection(
+    conn as unknown as FramedConn,
+    (f) => frames.push(f),
+    () => {
+      closedCount += 1;
+    },
+  );
+
+  // A good frame, then a line that is not JSON, then another good frame. The
+  // middle line is not a frame to skip past: whatever it was, this stream is no
+  // longer one we can claim to be reading.
+  conn.feed('{"kind":"req","id":1,"method":"ping"}\n');
+  conn.feed("{not json\n");
+  conn.feed('{"kind":"req","id":2,"method":"ping"}\n');
+  await flush();
+
+  assert.deepEqual(
+    frames.map((f) => (f as { id?: number }).id),
+    [1],
+    "only the frame before the corruption was routed",
+  );
+  assert.equal(conn.destroyed, true, "the connection was dropped");
+  assert.equal(closedCount, 1);
+});
+
+test("the server reader drops a connection on a frame that isn't a routable request", async () => {
+  const conn = fakeConn();
+  const frames: Frame[] = [];
+  let closedCount = 0;
+  new Connection(
+    conn as unknown as FramedConn,
+    (f) => frames.push(f),
+    () => {
+      closedCount += 1;
+    },
+  );
+
+  // Valid JSON and a valid `kind`, but no id to answer on. Ignoring it leaves
+  // the peer waiting for a reply that can never be addressed to it.
+  conn.feed('{"kind":"req","method":"ping"}\n');
+  await flush();
+
+  assert.equal(frames.length, 0);
+  assert.equal(conn.destroyed, true, "the connection was dropped");
+  assert.equal(closedCount, 1);
 });
