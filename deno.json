@@ -44,9 +44,9 @@
   "tasks": {
     "loom": "deno run -A cli/src/loom.ts",
     "daemon": "deno run -A cli/src/loomd.ts",
-    "typecheck": "deno check .",
-    "typecheck:silent": "deno check .",
-    "watch": "deno check . --watch",
+    "typecheck": "deno check core client aisdk runtime harness backend/daemon frontend/tui connectors/generic connectors/claude connectors/gemini connectors/mock connectors/chatgpt cli scripts test",
+    "typecheck:silent": "deno task typecheck",
+    "watch": "deno task typecheck --watch",
     "test": "NO_COLOR=1 deno test -A test/",
     "test:silent": "NO_COLOR=1 deno run -A scripts/fail-only-reporter.ts test/",
     "test:timing": "NO_COLOR=1 deno run -A scripts/timing-reporter.ts test/",

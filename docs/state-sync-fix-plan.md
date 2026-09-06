@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: planned; no implementation is represented by these checkboxes.
+Status: step 0 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -27,21 +27,54 @@ the stated reason, then fix it. Do not add a framework to make the test possible
 
 Files: `deno.json`, existing test suites. No functional changes in this step.
 
-- [ ] Run in the repository Deno development environment. Record its version.
-- [ ] Stop the typecheck task from recursively checking other branches under
-  `.loom/trees`. Prefer explicitly checking the workspace directories plus
-  `scripts/` and `test/`; use the same scope for `typecheck:silent` and `watch`.
-  Do not edit or remove another worktree to make the command pass.
-- [ ] Resolve dependency installation with the existing lockfile. Do not disable
-  strictness, scatter `@ts-ignore`, change dependency versions, or permanently
-  use `--no-check` to hide missing Node types.
-- [ ] Record the checked baseline. If an environment issue persists, state the
-  exact failure separately from functional test results.
+- [x] Run in the repository Deno development environment. Record its version.
+- [x] Stop the typecheck task from recursively checking other branches under
+      `.loom/trees`. Prefer explicitly checking the workspace directories plus
+      `scripts/` and `test/`; use the same scope for `typecheck:silent` and `watch`.
+      Do not edit or remove another worktree to make the command pass.
+- [x] Resolve dependency installation with the existing lockfile. Do not disable
+      strictness, scatter `@ts-ignore`, change dependency versions, or permanently
+      use `--no-check` to hide missing Node types.
+- [x] Record the checked baseline. If an environment issue persists, state the
+      exact failure separately from functional test results.
 
 Known review results: the focused runtime runs passed 130 tests (6 steps) and
 71 tests (100 steps). The normal typecheck traversed an older worktree and failed
 on its obsolete ChatGPT `./oauth` import. An initial targeted checked run also
 failed resolving Node types. Neither is a verified regression in these commits.
+
+**Done.** Baseline recorded at `ae062be`, in the repository Nix shell:
+deno 2.9.5 (v8 15.0.245.2-rusty, typescript 6.0.3).
+
+`typecheck` now names the thirteen workspace directories plus `scripts/` and
+`test/` rather than `.`; `typecheck:silent` and `watch` delegate to it, so the
+scope cannot drift between the three. The recursion was real and is fixed: with
+a deliberately broken `.loom/trees/scratch-verify/broken.ts` in place,
+`deno check .` failed on it (`TS2307`) while `deno task typecheck` passed. The
+scratch tree was then removed. Nothing outside this worktree was touched — the
+old worktree that broke the reviewer's run still exists and is simply no longer
+in scope. `.loom/trees/` is already gitignored, so `lint` and `format:check`
+never had the problem and keep their `.` scope.
+
+The Node-types failure did not reproduce. `deno install --frozen=true` completes
+against the existing lockfile with no drift, and the targeted checked run
+resolves everything; no strictness flag, `@ts-ignore`, version change or
+`--no-check` was involved.
+
+Checked baseline, all four green on `ae062be` plus this step's `deno.json`
+change:
+
+| check                    | result                                                 |
+| ------------------------ | ------------------------------------------------------ |
+| `deno task typecheck`    | clean                                                  |
+| `deno task test`         | 622 passed (106 steps), 0 failed, 50s                  |
+| `deno task lint`         | clean (oxlint 1.79.0)                                  |
+| `deno task format:check` | clean after reformatting `docs/state-sync-fix-plan.md` |
+
+`format:check` failed on arrival: oxfmt wanted the plan document's list
+continuations indented under their bullets and `*all*` written `_all_`. That is
+a formatting-only rewrite of this document, made so the gate is green from the
+start.
 
 ## 1. Fix TUI effects during disconnect and reconnect
 
@@ -52,30 +85,30 @@ the behavior actually belongs to the reducer.
 ### Change
 
 - [ ] Gate `drainQueues`, `forgetDeadSessions`, and history requests on
-  `state.fleet.tag === "data"`. An unknown fleet is not an empty fleet.
+      `state.fleet.tag === "data"`. An unknown fleet is not an empty fleet.
 - [ ] On disconnect, preserve selection, drafts and unsent queue entries;
-  invalidate history requests, clear transcript caches and reset scroll.
-  **Do not start a replacement history request yet.**
+      invalidate history requests, clear transcript caches and reset scroll.
+      **Do not start a replacement history request yet.**
 - [ ] On transition from non-data to data, fetch the selected session's latest
-  page. Also fetch on selection change and an explicit cache reset while data.
+      page. Also fetch on selection change and an explicit cache reset while data.
 - [ ] Register live transcript listening before starting that initial fetch.
 - [ ] Allow a failed initial history fetch to be retried by leaving and
-  reselecting the session, as well as by reconnecting. Do not automatically loop
-  retries on every snapshot or render.
-- [ ] Check the captured transcript generation before *all* page callback work,
-  including scroll adjustments outside the reducer. A stale response must have
-  no viewport side effects.
+      reselecting the session, as well as by reconnecting. Do not automatically loop
+      retries on every snapshot or render.
+- [ ] Check the captured transcript generation before _all_ page callback work,
+      including scroll adjustments outside the reducer. A stale response must have
+      no viewport side effects.
 - [ ] If a current snapshot proves a queued session is gone/done/error, clear
-  that queue before dispatching its notice. Reentrant dispatch must not observe
-  the same stranded queue again.
+      that queue before dispatching its notice. Reentrant dispatch must not observe
+      the same stranded queue again.
 - [ ] Stop using fresh fallback arrays as change signals. Compare narrowed
-  authoritative snapshot references or use a stable empty display value.
-  This supports the data guard; it does not replace it.
+      authoritative snapshot references or use a stable empty display value.
+      This supports the data guard; it does not replace it.
 - [ ] Do not resubmit a send whose RPC was disconnected or timed out. Remove
-  that ambiguous head from automatic draining, preserve its text in an editable
-  local draft, and show that it may already have been sent. Preserve genuinely
-  unsent entries. Resending the ambiguous text requires an explicit user action;
-  no new wire operation-tracking system is needed.
+      that ambiguous head from automatic draining, preserve its text in an editable
+      local draft, and show that it may already have been sent. Preserve genuinely
+      unsent entries. Resending the ambiguous text requires an explicit user action;
+      no new wire operation-tracking system is needed.
 
 ### Required regressions
 
@@ -105,18 +138,18 @@ Tests: `test/daemon.test.ts` with controlled adapter promises.
 
 - [ ] Keep end-to-end serialization for explicit mode/model/effort commands.
 - [ ] Change the manager's mode-change notification into “this live session's
-  mode changed,” rather than a delayed assignment of a captured mode value.
+      mode changed,” rather than a delayed assignment of a captured mode value.
 - [ ] In its queued daemon handler, recheck session existence and read the
-  current live adapter snapshot's mode **when the handler runs**. Publish that
-  value. If there is no live adapter, do not write an old observation into the
-  stored session. A replacement adapter must not inherit an old captured mode.
+      current live adapter snapshot's mode **when the handler runs**. Publish that
+      value. If there is no live adapter, do not write an old observation into the
+      stored session. A replacement adapter must not inherit an old captured mode.
 - [ ] Skip a no-op registry mutation/publication when the applied mode already
-  agrees. Keep provider-default behavior consistent with existing explicit
-  settings commands; do not invent a new defaults policy in this fix.
+      agrees. Keep provider-default behavior consistent with existing explicit
+      settings commands; do not invent a new defaults policy in this fix.
 - [ ] Handle failures from the fire-and-forget queue promise; do not introduce
-  an unhandled rejection during teardown.
+      an unhandled rejection during teardown.
 - [ ] Preserve approval and interrupt preemption. Do not solve ordering by
-  placing approvals behind a turn that is waiting for approval.
+      placing approvals behind a turn that is waiting for approval.
 
 ### Required regression
 
@@ -144,26 +177,26 @@ Tests: `test/connection.test.ts`, `test/client-state.test.ts`.
 ### Change
 
 - [ ] Apply the outgoing backlog policy to `pushState`. A queued snapshot does
-  not supersede an earlier encoded buffer. Keep drop-on-overflow; do not add
-  batching or a delta protocol.
+      not supersede an earlier encoded buffer. Keep drop-on-overflow; do not add
+      batching or a delta protocol.
 - [ ] Make the client write chain close/invalidate its current connection on
-  failure instead of swallowing the error. Reject pending RPCs through the
-  existing failure path. Do not retry mutation frames.
+      failure instead of swallowing the error. Reject pending RPCs through the
+      existing failure path. Do not retry mutation frames.
 - [ ] Both readers must terminate a connection on invalid JSON. Remove the
-  `catch { continue; }` path.
+      `catch { continue; }` path.
 - [ ] Validate routing envelopes and the new state/hello payloads before using
-  them. Reject wrong discriminants, invalid response IDs, and malformed daemon,
-  providers, sessions, status or request payloads. Define the snapshot decoder
-  once at the boundary and reuse the domain shapes; do not build validators for
-  every vendor SDK protocol as part of this change.
+      them. Reject wrong discriminants, invalid response IDs, and malformed daemon,
+      providers, sessions, status or request payloads. Define the snapshot decoder
+      once at the boundary and reuse the domain shapes; do not build validators for
+      every vendor SDK protocol as part of this change.
 - [ ] Resolve initial `connect()` only after protocol validation **and** the
-  first valid snapshot. A hello response alone is insufficient. Reuse a bounded
-  startup deadline; a missing initial snapshot must fail and close its socket.
+      first valid snapshot. A hello response alone is insufficient. Reuse a bounded
+      startup deadline; a missing initial snapshot must fail and close its socket.
 - [ ] Preserve the daemon's synchronous subscribe/enqueue-initial-snapshot
-  operation. Do not put a second installable snapshot in the hello response.
+      operation. Do not put a second installable snapshot in the hello response.
 - [ ] Guard startup/reconnect continuations as well as socket reads with the
-  current connection identity. A late response, close or dial result from a
-  cancelled/superseded connection must not install state or reopen a closed client.
+      current connection identity. A late response, close or dial result from a
+      cancelled/superseded connection must not install state or reopen a closed client.
 
 ### Required regressions
 
@@ -177,7 +210,7 @@ Tests: `test/connection.test.ts`, `test/client-state.test.ts`.
 5. Send hello response, hold initial snapshot: `connect()` remains unresolved.
    Release snapshot: it resolves with data. Never release it: deadline closes
    the socket. Update mismatch fixtures to send a real initial snapshot on their
-   first *successful* connection.
+   first _successful_ connection.
 6. Deliberately release a held old callback after a new connection is installed,
    and a held dial after close. Neither can alter the new lifecycle state.
 
@@ -193,22 +226,22 @@ Tests: `test/tui-model.test.ts` plus one direct handle pagination case.
 ### Change
 
 - [ ] Enforce `TRANSCRIPT_CAP` after page merges, ordinary live appends and
-  out-of-order/replayed live merges. There must be one retention implementation.
+      out-of-order/replayed live merges. There must be one retention implementation.
 - [ ] Retain a contiguous browsing window. Paging older at the cap evicts the
-  newest end of that window; following the latest events evicts its oldest end.
-  Never silently connect two retained regions across an unrepresented gap.
+      newest end of that window; following the latest events evicts its oldest end.
+      Never silently connect two retained regions across an unrepresented gap.
 - [ ] Once newer entries have been evicted for older browsing, do not append
-  unrelated live-tail entries across the gap. Keep live notices separate.
-  The existing End/jump-to-latest action reloads the newest window and resumes
-  following it. Keep this state inside the transcript handle/model, not another
-  fleet-wide bookkeeping map.
+      unrelated live-tail entries across the gap. Keep live notices separate.
+      The existing End/jump-to-latest action reloads the newest window and resumes
+      following it. Keep this state inside the transcript handle/model, not another
+      fleet-wide bookkeeping map.
 - [ ] Base the older cursor on the retained window and actual server exhaustion.
-  Eviction must not produce `olderCursor: null`. The user must be able to reload
-  evicted older pages after returning to the latest window.
+      Eviction must not produce `olderCursor: null`. The user must be able to reload
+      evicted older pages after returning to the latest window.
 - [ ] Keep the visible reading position stable when older rows are prepended;
-  do not let a subsequent live event discard the window being read.
+      do not let a subsequent live event discard the window being read.
 - [ ] Keep loaded rows visible if a page request fails. Error/loading indicators
-  must use the existing Loadable state, not another boolean pair.
+      must use the existing Loadable state, not another boolean pair.
 
 ### Required regressions
 
@@ -233,28 +266,28 @@ Tests: the existing interaction and render cases.
 ### Change
 
 - [ ] Make request rendering and actions consume `SessionInteraction` directly.
-  Keep ID, kind and payload together through the whole path.
+      Keep ID, kind and payload together through the whole path.
 - [ ] Use one small selector for the active request: prefer the first request
-  matching the authoritative awaiting reason, falling back to the first request
-  in snapshot order. Preserve FIFO within parallel permissions and retain all
-  remaining requests; selecting one must not discard the rest.
+      matching the authoritative awaiting reason, falling back to the first request
+      in snapshot order. Preserve FIFO within parallel permissions and retain all
+      remaining requests; selecting one must not discard the rest.
 - [ ] Preserve both free-text questions and native `AskUserQuestion` choices.
-  Keep choice parsing at the boundary where its unknown input is interpreted.
+      Keep choice parsing at the boundary where its unknown input is interpreted.
 - [ ] Reconcile every request-bound prompt, plan overlay and question navigator
-  against the exact session/request ID in each new data snapshot. Close/reset
-  obsolete interaction UI. Preserve typed text as a local draft where supported;
-  never send it to a different request automatically.
+      against the exact session/request ID in each new data snapshot. Close/reset
+      obsolete interaction UI. Preserve typed text as a local draft where supported;
+      never send it to a different request automatically.
 - [ ] Do not close unrelated send/title prompts merely because some request was
-  resolved. Continue preserving local state while connection state is pending.
+      resolved. Continue preserving local state while connection state is pending.
 - [ ] Delete `Pending`, `PendingPerm`, `pendingFor`'s optional-field conversion,
-  `focusedPending`, and their obsolete callers after migrating all consumers.
+      `focusedPending`, and their obsolete callers after migrating all consumers.
 - [ ] Delete the `resolved` shadow set, `pruneResolved`, and `resolvePerm`
-  bookkeeping. Use the authoritative snapshot for outstanding requests. Retain
-  a local submission latch solely to prevent duplicate key actions; it must not
-  become a second request model or automatically retry an uncertain response.
+      bookkeeping. Use the authoritative snapshot for outstanding requests. Retain
+      a local submission latch solely to prevent duplicate key actions; it must not
+      become a second request model or automatically retry an uncertain response.
 - [ ] Replace `interactionReason(i)` with `i.kind` where needed. Remove unused
-  `interactionLabel`. Keep/use an exhaustive fold where it simplifies rendering;
-  do not keep wrappers just because the type is a union.
+      `interactionLabel`. Keep/use an exhaustive fold where it simplifies rendering;
+      do not keep wrappers just because the type is a union.
 
 ### Required regressions
 
@@ -277,19 +310,19 @@ Files: `backend/daemon/src/daemon/session-manager.ts`,
 `backend/daemon/src/daemon/daemon.ts`. Tests: manager/daemon suites.
 
 - [ ] Update request/progress/background/rate-limit state and derive status
-  before publishing the snapshot for that event.
+      before publishing the snapshot for that event.
 - [ ] Stop publishing halfway through result handling from `onUsage` and then
-  again from the status hook. Separate mutation from publication within this
-  existing event path; no timed batching or new event-bus layer.
+      again from the status hook. Separate mutation from publication within this
+      existing event path; no timed batching or new event-bus layer.
 - [ ] Ensure a rate-limit-only event publishes its changed snapshot even when
-  there is no status/usage change. Existing tests that fetch `session.get` do not
-  prove that subscribers received an update.
+      there is no status/usage change. Existing tests that fetch `session.get` do not
+      prove that subscribers received an update.
 - [ ] Preserve checkpoint/titling ordering: a completed turn's usage/turn count
-  must be recorded before its checkpoint. Keep asynchronous title completion as
-  a separate later transition.
+      must be recorded before its checkpoint. Keep asynchronous title completion as
+      a separate later transition.
 - [ ] Do not let a failed transcript/broadcast hook skip all subsequent
-  in-memory event bookkeeping. Handle that failure explicitly and log it; do
-  not silently pretend persistence succeeded.
+      in-memory event bookkeeping. Handle that failure explicitly and log it; do
+      not silently pretend persistence succeeded.
 
 Test subscribers, not only `session.get`: a result publishes one consistent
 completed-turn state; a rate-limit-only event reaches both clients; resolving
@@ -302,22 +335,22 @@ callback order. No snapshot advertises half of one synchronous transition.
 ## 7. Close the cutover and verify the reductions
 
 - [ ] Run the affected tests while implementing. Once the preceding steps pass,
-  run `deno task typecheck`, `deno task test:silent`, `deno task lint`, and
-  `deno task format:check`. Do not report unrun/unchecked checks as passing.
+      run `deno task typecheck`, `deno task test:silent`, `deno task lint`, and
+      `deno task format:check`. Do not report unrun/unchecked checks as passing.
 - [ ] Manually exercise two TUIs: queue a follow-up, disconnect/reconnect, browse
-  old history, answer a request in the other window, and overlap a mode change
-  with a plan decision. If interactive terminals are unavailable, name that
-  missing check rather than treating a client-only test as equivalent.
+      old history, answer a request in the other window, and overlap a mode change
+      with a plan decision. If interactive terminals are unavailable, name that
+      missing check rather than treating a client-only test as equivalent.
 - [ ] Verify `loom tail`, CLI list/create and protocol mismatch behavior.
 - [ ] Update `docs/state-sync-plan.md`: replace inaccurate completion claims
-  with the actual behavior and exact tests. Condense historical completion
-  journals into brief status/validation notes.
+      with the actual behavior and exact tests. Condense historical completion
+      journals into brief status/validation notes.
 - [ ] Report source, tests and docs line deltas separately. The reviewed growth
-  was source/config +616, tests +1,128, docs +280. Do not count moving code or
-  stripping comments as the substantive simplification.
+      was source/config +616, tests +1,128, docs +280. Do not count moving code or
+      stripping comments as the substantive simplification.
 - [ ] The final review must identify the removed representations and helpers,
-  not merely list added safety checks. Keep genuine boundary tests; remove
-  tests that only assert the deleted machinery.
+      not merely list added safety checks. Keep genuine boundary tests; remove
+      tests that only assert the deleted machinery.
 
 ## Separate follow-ups: do not smuggle them into the cutover
 
