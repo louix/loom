@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-3 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-4 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -395,22 +395,22 @@ Tests: `test/tui-model.test.ts` plus one direct handle pagination case.
 
 ### Change
 
-- [ ] Enforce `TRANSCRIPT_CAP` after page merges, ordinary live appends and
+- [x] Enforce `TRANSCRIPT_CAP` after page merges, ordinary live appends and
       out-of-order/replayed live merges. There must be one retention implementation.
-- [ ] Retain a contiguous browsing window. Paging older at the cap evicts the
+- [x] Retain a contiguous browsing window. Paging older at the cap evicts the
       newest end of that window; following the latest events evicts its oldest end.
       Never silently connect two retained regions across an unrepresented gap.
-- [ ] Once newer entries have been evicted for older browsing, do not append
+- [x] Once newer entries have been evicted for older browsing, do not append
       unrelated live-tail entries across the gap. Keep live notices separate.
       The existing End/jump-to-latest action reloads the newest window and resumes
       following it. Keep this state inside the transcript handle/model, not another
       fleet-wide bookkeeping map.
-- [ ] Base the older cursor on the retained window and actual server exhaustion.
+- [x] Base the older cursor on the retained window and actual server exhaustion.
       Eviction must not produce `olderCursor: null`. The user must be able to reload
       evicted older pages after returning to the latest window.
-- [ ] Keep the visible reading position stable when older rows are prepended;
+- [x] Keep the visible reading position stable when older rows are prepended;
       do not let a subsequent live event discard the window being read.
-- [ ] Keep loaded rows visible if a page request fails. Error/loading indicators
+- [x] Keep loaded rows visible if a page request fails. Error/loading indicators
       must use the existing Loadable state, not another boolean pair.
 
 ### Required regressions
@@ -426,6 +426,55 @@ Tests: `test/tui-model.test.ts` plus one direct handle pagination case.
 
 Done: page loading and live delivery obey the same bound, durable order remains
 correct, and bounded memory does not masquerade as the end of server history.
+
+**Done.** Four of the six new reducer cases fail against the previous logic and
+pass after — verified by reverting the two changed folds in place and re-running:
+"three legal pages never retain more than the cap", "older paging at capacity
+advances…", "a live event while browsing an older window…", and "jump to latest
+reloads the newest window…". The other two (duplicate/out-of-order delivery, a
+failed page keeping its window) guard behaviour that already held; they are
+regression cover, not reproductions.
+
+The cap had one implementation and two callers, and only one of them used it:
+`appendLive` trimmed, `foldPage` merged without a bound. Three 5,000-entry pages
+retained 15,000 lines. There is now a single `retain(t, lines, keep, atOldest)`
+that every growth goes through, and the two things it has to get right are
+stated as its parameters rather than implied by the call site:
+
+- **`keep` — which end survives.** The window is contiguous, so trimming has to
+  drop from the end the reader is moving away from: following the tail evicts
+  the front, paging back evicts the tail.
+- **`atOldest` — what the source claims about the front it supplied.** That
+  claim only holds while that front is still retained, which is why
+  `olderCursor` is now _recomputed from the retained window_ instead of copied
+  off the page. `null` means the retained front is the daemon's oldest entry and
+  nothing else, and anything evicted is refetchable by construction because the
+  cursor is always the front.
+
+`Transcript.following` is the new state, and it carries the asymmetry the old
+code had no way to express: only tail eviction leaves unrepresented history
+between the window and the live stream. While it is false, `appendLive` folds
+nothing in — an arriving event has nowhere contiguous to go, and drawing it onto
+the window would present a gap as continuous history. The event still reaches
+the user through the notice line, which is a separate path and untouched.
+`End` dispatches `transcriptFollow`, which drops the older window and puts
+`head` back to `idle` — the same edge that already makes the handle refetch —
+and following resumes. The state lives in the transcript, not in a fleet-wide
+map beside it.
+
+One handle-side consequence: after an older fold at the cap, `logScroll` cannot
+be adjusted by a row delta, because it counts up from a tail that has just
+moved. When the fold dropped the tail (or the view was pinned) the position is
+re-derived from the top instead. The fetch only fires within a page of the top,
+so that is where the reader already is.
+
+`test/tui-render.test.ts` drives the whole path through the real handle: two
+6,000-row pages fetched, 10,000 retained, the cursor advanced to the retained
+front, a live push that leaves the window alone, and `End` refetching the newest
+page and resuming.
+
+Verified: typecheck, lint and format:check clean; `deno task test` 643 passed
+(113 steps) / 0 failed.
 
 ## 5. Finish the interaction migration and delete the old projection
 

@@ -185,12 +185,24 @@ export interface Transcript {
   /** The next older page. Loaded entries stay put while this runs. */
   older: Loadable<string, null>;
   /**
-   * Where the next older page starts; `null` iff {@link lines} reaches the
-   * oldest entry the daemon holds. Retention re-points this at the new front
-   * rather than clearing it, so running out of room here can never be mistaken
-   * for the daemon running out of history.
+   * Where the next older page starts. Always the retained front, so anything
+   * dropped to stay inside {@link TRANSCRIPT_CAP} is refetchable by
+   * construction. `null` iff {@link lines} reaches the oldest entry the daemon
+   * holds — running out of room here can never be mistaken for the daemon
+   * running out of history.
    */
   olderCursor: HistoryCursor | null;
+  /**
+   * True while {@link lines} ends at the live tail, so an arriving event
+   * belongs immediately after the last retained line.
+   *
+   * Paging back past the cap sets it false: entries between this window and the
+   * live stream have been evicted, and appending an arriving event onto the
+   * window would draw a gap as continuous history. While false, live entries
+   * are not folded in at all — the notice line still reports them, and `End`
+   * (jump to latest) reloads the newest window and resumes following.
+   */
+  following: boolean;
   /**
    * Locally synthesised lines with no durable counterpart — the "queued: …"
    * marker for a follow-up waiting on the current turn. Rendered after
@@ -696,6 +708,8 @@ export type Action =
   | { t: "historyPage"; sessionId: string; page: HistoryPage; older: boolean; gen: number }
   | { t: "historyFailed"; sessionId: string; older: boolean; error: string; gen: number }
   | { t: "transcriptReset" }
+  /** Jump to latest: discard an older browsing window and refetch the newest. */
+  | { t: "transcriptFollow"; sessionId: string }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
@@ -740,14 +754,15 @@ export type Action =
 
 /**
  * Retained durable lines per session — roughly 20MB of event text per 10k lines
- * in a tool-heavy session.
+ * in a tool-heavy session. It bounds both the footprint and the per-event cost:
+ * every append copies the array, so an uncapped window makes each arriving
+ * frame more expensive than the last.
  *
- * A bound on *unattended* growth only. Live entries arriving at the tail can
- * evict the front, and that is safe because eviction re-points `olderCursor` at
- * the new front, so the evicted span is refetchable and `olderCursor === null`
- * keeps meaning "the daemon has nothing older" and nothing else. A page the
- * user deliberately scrolled back for is never evicted — the bound there is how
- * far they scrolled, which is finite and theirs to choose.
+ * The window is always *contiguous*. Whichever end the reader is at survives:
+ * following the tail evicts the front, paging back evicts the tail. Nothing
+ * evicted is lost — `olderCursor` is always the retained front — but the two
+ * cases are not symmetric, because only tail eviction leaves a hole between
+ * what is held and what is arriving. {@link Transcript.following} carries that.
  */
 export const TRANSCRIPT_CAP = 10_000;
 
@@ -756,6 +771,7 @@ const EMPTY_TRANSCRIPT: Transcript = {
   head: loadableIdle,
   older: loadableIdle,
   olderCursor: null,
+  following: true,
   echoes: [],
 };
 
@@ -790,36 +806,88 @@ const mergeById = (have: readonly LogLine[], add: readonly LogLine[]): LogLine[]
 };
 
 /**
- * Fold one live entry in. Almost always a plain append — its id is newer than
- * anything held — so that case avoids building a map per event. Applies the
- * retention cap, re-pointing `olderCursor` at whatever survives.
+ * The one retention rule, applied wherever a window grows: page merges,
+ * ordinary live appends, and out-of-order live merges all come through here.
+ *
+ * `keep` says which end the reader is at and therefore which end survives.
+ * `atOldest` is what the source claims about the *front* it supplied — a page
+ * whose `olderCursor` was `null`, or a window we already believed reached the
+ * daemon's first entry. That claim only holds while that front is still here,
+ * which is why `olderCursor` is recomputed from the retained window rather than
+ * copied from the page.
  */
-const appendLive = (t: Transcript, line: LogLine): Transcript => {
-  const last = t.lines[t.lines.length - 1];
-  if (last !== undefined && last.id !== null && line.id !== null && line.id <= last.id) {
-    // Out of order or a repeat of something already held: the page/live merge
-    // path handles both, and neither can push us over the cap.
-    return { ...t, lines: mergeById(t.lines, [line]) };
+const retain = (
+  t: Transcript,
+  lines: readonly LogLine[],
+  keep: "newest" | "oldest",
+  atOldest: boolean,
+): Transcript => {
+  const fits = lines.length <= TRANSCRIPT_CAP;
+  // Not `fits ? lines : slice(...)`: this runs on every arriving event, and
+  // computing the trim eagerly would put an O(n) copy on the common path where
+  // there is nothing to trim.
+  let kept = lines;
+  if (!fits) {
+    kept =
+      keep === "newest"
+        ? lines.slice(lines.length - TRANSCRIPT_CAP)
+        : lines.slice(0, TRANSCRIPT_CAP);
   }
-  const grown = [...t.lines, line];
-  if (grown.length <= TRANSCRIPT_CAP) return { ...t, lines: grown };
-  const kept = grown.slice(grown.length - TRANSCRIPT_CAP);
   const front = kept[0];
+  // `null` — and only `null` — means the retained front IS the daemon's oldest
+  // entry. Evicting the front withdraws that claim and points the cursor at
+  // what was dropped, so scroll-back can always get it back.
+  const frontKept = front !== undefined && front === lines[0];
+  let olderCursor = t.olderCursor;
+  if (atOldest && frontKept) olderCursor = null;
+  else if (front?.id != null) olderCursor = { olderThan: front.id };
   return {
     ...t,
     lines: kept,
-    olderCursor: front?.id != null ? { olderThan: front.id } : t.olderCursor,
+    olderCursor,
+    // Dropping the newest end puts unrepresented history between this window
+    // and the live stream. Nothing may be appended onto it until it is reloaded.
+    following: t.following && (fits || keep === "newest"),
   };
 };
 
-/** Fold a fetched page in. The page's own cursor is authoritative for where the
- *  next older page starts — a page is contiguous with what we hold, so its
- *  front is the transcript's front. */
-const foldPage = (t: Transcript, page: HistoryPage, lines: readonly LogLine[]): Transcript => ({
-  ...t,
-  lines: mergeById(t.lines, lines),
-  olderCursor: page.olderCursor,
-});
+/**
+ * Fold one live entry in. Almost always a plain append — its id is newer than
+ * anything held — so that case avoids building a map per event.
+ */
+const appendLive = (t: Transcript, line: LogLine): Transcript => {
+  // Browsing an older window: the entries between it and this one were evicted,
+  // so there is nowhere to put this that wouldn't misrepresent the history in
+  // between. `End` reloads the newest window; until then this line reaches the
+  // reader through the notice line, not the transcript.
+  if (!t.following) return t;
+  const atOldest = t.olderCursor === null;
+  const last = t.lines[t.lines.length - 1];
+  if (last !== undefined && last.id !== null && line.id !== null && line.id <= last.id) {
+    // Out of order, or a repeat of something already held. `mergeById` dedupes
+    // by durable id, so neither can grow the window twice — but a merge is a
+    // growth like any other and takes the same cap.
+    return retain(t, mergeById(t.lines, [line]), "newest", atOldest);
+  }
+  return retain(t, [...t.lines, line], "newest", atOldest);
+};
+
+/**
+ * Fold a fetched page in. An older page extends the front, so the window keeps
+ * its oldest end; a head page is the newest window by definition, so it keeps
+ * its newest and resumes following.
+ */
+const foldPage = (
+  t: Transcript,
+  page: HistoryPage,
+  lines: readonly LogLine[],
+  older: boolean,
+): Transcript => {
+  const merged = mergeById(t.lines, lines);
+  const atOldest = page.olderCursor === null;
+  if (older) return retain(t, merged, "oldest", atOldest);
+  return retain({ ...t, following: true }, merged, "newest", atOldest);
+};
 
 /** The lines a page contributes, in page order. Non-transcript kinds are
  *  dropped exactly as the live path drops them. */
@@ -861,6 +929,20 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "transcriptReset":
       return resetTranscripts(s);
 
+    case "transcriptFollow": {
+      // Jump to latest from an older window: drop what is held (it is a region
+      // of history the newest page may not touch) and put `head` back to
+      // `idle`, which is what makes the handle refetch the newest page. Echoes
+      // are ours, not the daemon's, and stay.
+      const t = transcriptOf(s, a.sessionId);
+      if (t.following) return s;
+      const next: Transcript = {
+        ...EMPTY_TRANSCRIPT,
+        echoes: t.echoes,
+      };
+      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
+    }
+
     case "historyStart": {
       if (a.gen !== s.transcriptGen) return s;
       const t = transcriptOf(s, a.sessionId);
@@ -877,7 +959,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // discarded.
       if (a.gen !== s.transcriptGen) return s;
       const t = transcriptOf(s, a.sessionId);
-      const folded = foldPage(t, a.page, pageLines(a.page));
+      const folded = foldPage(t, a.page, pageLines(a.page), a.older);
       const next: Transcript = a.older
         ? { ...folded, older: loadableLoaded(null) }
         : { ...folded, head: loadableLoaded(null) };

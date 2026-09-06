@@ -13,7 +13,13 @@ import type { ClientState } from "@loom/client";
 import { loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
-import type { DaemonInfo, HistoryCursor, HistoryPage, SessionSnapshot } from "@loom/core/wire";
+import type {
+  DaemonInfo,
+  HistoryCursor,
+  HistoryPage,
+  PushFrame,
+  SessionSnapshot,
+} from "@loom/core/wire";
 import { App } from "@loom/tui/app";
 import {
   askQuestionLines,
@@ -37,6 +43,7 @@ import {
   queueFor,
   reduce,
   sessionLog,
+  TRANSCRIPT_CAP,
   transcriptFor,
 } from "@loom/tui/model";
 import type { FakeProvider } from "@loom/connector-mock";
@@ -2119,6 +2126,7 @@ interface FakeCall {
  *  drive. Every request parks in `calls` until answered by hand. */
 const mkFakeClient = () => {
   const snapshotFns = new Set<(s: ClientState) => void>();
+  const pushFns = new Set<(f: PushFrame) => void>();
   const calls: FakeCall[] = [];
   let current: ClientState = loadableIdle;
 
@@ -2140,7 +2148,10 @@ const mkFakeClient = () => {
       fn(current);
       return () => snapshotFns.delete(fn);
     },
-    onPush: () => () => {},
+    onPush: (fn) => {
+      pushFns.add(fn);
+      return () => pushFns.delete(fn);
+    },
     on: () => () => {},
     close: () => Promise.resolve(),
   };
@@ -2155,6 +2166,10 @@ const mkFakeClient = () => {
       for (const fn of snapshotFns) fn(s);
     },
     of: (method: string): FakeCall[] => calls.filter((c) => c.method === method),
+    /** Deliver one live push frame, as the real client would. */
+    push: (frame: PushFrame): void => {
+      for (const fn of pushFns) fn(frame);
+    },
     /** Newest-page fetches and scroll-back fetches, told apart by the cursor. */
     heads: (): FakeCall[] => events().filter((c) => c.params["cursor"] === undefined),
     olders: (): FakeCall[] => events().filter((c) => c.params["cursor"] !== undefined),
@@ -2437,6 +2452,65 @@ describe("tui fleet-handle effects", () => {
       // The text is not lost: opening `send` on that session brings it back.
       handle.handleKey("", { return: true } as Key);
       assert.equal(handle.getView().state.prompt?.buffer.text, "follow up");
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("tui transcript paging through the handle", () => {
+  test("paging past the cap stops following the tail; End reloads the newest window", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm, historyPageSize: 6000 });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      fake.heads()[0]?.resolve(pageOf(20_000, 6_000, { olderThan: 14_001 }));
+      await delay(0);
+      assert.equal(transcriptFor(handle.getView().state, "a").following, true);
+
+      // Home scrolls to the oldest row held, which prefetches the next older
+      // page; folding it in takes the window past the cap.
+      handle.handleKey("", { home: true } as Key);
+      const older = fake.olders()[0];
+      assert.ok(older, "the climb asked for an older page");
+      assert.deepEqual(older.params["cursor"], { olderThan: 14_001 }, "using the held cursor");
+      older.resolve(pageOf(14_000, 6_000, { olderThan: 8_001 }));
+      await delay(0);
+
+      const browsing = transcriptFor(handle.getView().state, "a");
+      assert.equal(browsing.lines.length, TRANSCRIPT_CAP, "12,000 fetched, 10,000 retained");
+      assert.equal(browsing.lines[0]?.id, 8_001, "the oldest end is the end being read");
+      assert.equal(browsing.following, false, "the newest end was evicted");
+      assert.deepEqual(browsing.olderCursor, { olderThan: 8_001 }, "and the cursor advanced");
+
+      // A live event now has nowhere contiguous to go, so it stays out of the
+      // window the reader is looking at.
+      fake.push({
+        kind: "push",
+        seq: 1,
+        epoch: "e1",
+        type: "event",
+        id: 20_001,
+        event: { sessionId: "a", ts: 1, type: "assistant_text", text: "live" },
+      });
+      assert.equal(
+        transcriptFor(handle.getView().state, "a").lines,
+        browsing.lines,
+        "the rows being read are untouched",
+      );
+
+      // End is the way back: drop the older window and refetch the newest.
+      handle.handleKey("", { end: true } as Key);
+      const reloads = fake.heads();
+      assert.equal(reloads.length, 2, "jumping to latest refetched the newest page");
+      reloads[1]?.resolve(pageOf(20_001, 500, { olderThan: 19_502 }));
+      await delay(0);
+
+      const followed = transcriptFor(handle.getView().state, "a");
+      assert.equal(followed.following, true, "and resumed following it");
+      assert.equal(followed.lines.at(-1)?.id, 20_001);
+      assert.equal(handle.getView().logScroll, 0, "with the viewport back at the tail");
     } finally {
       teardown();
     }

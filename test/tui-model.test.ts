@@ -12,7 +12,7 @@ import {
   stateIdle,
 } from "@loom/core/session-state";
 import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
-import { loadableFailed, loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
+import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import type { EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
 import {
   actionsFor,
@@ -700,44 +700,162 @@ test("a repeated durable id folds once, and ids order the transcript, not timest
   assert.equal(lines(s).length, lines(before).length);
 });
 
-test("the per-session cap evicts the oldest lines and points the older cursor at them", () => {
-  // Built directly: driving the cap through `reduce` would be O(n²).
-  const backlog: LogLine[] = [];
-  for (let i = 1; i <= TRANSCRIPT_CAP; i++) {
-    backlog.push(toLogLine(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })));
-  }
-  let s: TuiState = {
-    ...initialState(),
-    transcripts: {
-      s1: {
-        lines: backlog,
-        head: loadableLoaded(null),
-        older: loadableIdle,
-        // The client has read all the way back: nothing older exists.
-        olderCursor: null,
-        echoes: [],
-      },
-    },
-  };
+// ---------------------------------------------------------------------------
+// transcript retention: one contiguous window, bounded at both ends
+// ---------------------------------------------------------------------------
+
+/** `n` durable entries ending at `lastId`, oldest first — one page's worth. */
+const bulkPage = (lastId: number, n: number, olderCursor: HistoryCursor | null): HistoryPage => ({
+  items: Array.from({ length: n }, (_, i) => {
+    const id = lastId - n + 1 + i;
+    return { id, event: ev({ type: "assistant_text", text: `line ${id}`, sessionId: "s1" }) };
+  }),
+  olderCursor,
+});
+
+const foldedPage = (s: TuiState, page: HistoryPage, older: boolean, sessionId = "s1"): TuiState =>
+  reduce(s, { t: "historyPage", sessionId, page, older, gen: s.transcriptGen });
+
+/** A transcript at exactly the cap, following the live tail, with `count`
+ *  entries older than it still on the daemon. */
+const atCapacity = (): TuiState =>
+  foldedPage(initialState(), bulkPage(11_000, TRANSCRIPT_CAP, { olderThan: 1_001 }), false);
+
+test("the cap evicts the oldest lines and points the older cursor at them", () => {
+  let s = atCapacity();
+  assert.equal(transcriptFor(s, "s1").lines.length, TRANSCRIPT_CAP);
+
   s = reduce(s, {
     t: "push",
-    frame: push(
-      TRANSCRIPT_CAP + 1,
-      ev({ type: "assistant_text", text: "the newest", sessionId: "s1" }),
-    ),
+    frame: push(11_001, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })),
   });
 
   const t = transcriptFor(s, "s1");
   assert.equal(t.lines.length, TRANSCRIPT_CAP);
-  assert.equal(t.lines[0]?.id, 2, "the oldest line was evicted");
+  assert.equal(t.lines[0]?.id, 1_002, "the oldest line was evicted");
   assert.equal(t.lines.at(-1)?.text, "the newest");
+  assert.equal(t.following, true, "the window still ends at the live tail");
   // The point of the whole exercise: running out of room here must never read
   // as the daemon running out of history, or scroll-back stops at the cap.
   assert.deepEqual(
     t.olderCursor,
-    { olderThan: 2 },
+    { olderThan: 1_002 },
     "eviction re-points the cursor at what it dropped, so the page is refetchable",
   );
+});
+
+test("three legal pages never retain more than the cap", () => {
+  let s = foldedPage(initialState(), bulkPage(15_000, 5_000, { olderThan: 10_001 }), false);
+  s = foldedPage(s, bulkPage(10_000, 5_000, { olderThan: 5_001 }), true);
+  s = foldedPage(s, bulkPage(5_000, 5_000, null), true);
+
+  const t = transcriptFor(s, "s1");
+  assert.equal(t.lines.length, TRANSCRIPT_CAP, "15,000 legal entries, 10,000 retained");
+  // Paging back keeps the end being read: the oldest, not the newest.
+  assert.equal(t.lines[0]?.id, 1);
+  assert.equal(t.lines.at(-1)?.id, 10_000);
+  assert.equal(t.following, false, "the newest end was evicted, so the tail is no longer held");
+  assert.equal(t.olderCursor, null, "and the retained front IS the daemon's oldest entry");
+});
+
+test("older paging at capacity advances, without looping or claiming false exhaustion", () => {
+  let s = atCapacity();
+  const cursors: Array<number | null> = [transcriptFor(s, "s1").olderCursor?.olderThan ?? null];
+
+  s = foldedPage(s, bulkPage(1_000, 500, { olderThan: 501 }), true);
+  cursors.push(transcriptFor(s, "s1").olderCursor?.olderThan ?? null);
+  s = foldedPage(s, bulkPage(500, 500, null), true);
+  cursors.push(transcriptFor(s, "s1").olderCursor?.olderThan ?? null);
+
+  assert.deepEqual(cursors, [1_001, 501, null], "each page starts strictly earlier than the last");
+  const t = transcriptFor(s, "s1");
+  assert.equal(t.lines.length, TRANSCRIPT_CAP);
+  assert.equal(t.lines[0]?.id, 1, "and the window reached the daemon's first entry");
+});
+
+test("a live event while browsing an older window changes nothing but the notice", () => {
+  // Page back past the cap: the newest end is evicted and the window no longer
+  // ends at the live tail.
+  let s = foldedPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }), true);
+  const before = transcriptFor(s, "s1");
+  assert.equal(before.following, false);
+
+  s = reduce(s, {
+    t: "push",
+    frame: push(99_999, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+  });
+
+  const after = transcriptFor(s, "s1");
+  assert.equal(after.lines, before.lines, "the rows being read are untouched");
+  assert.equal(
+    after.lines.at(-1)?.id,
+    before.lines.at(-1)?.id,
+    "and nothing was appended across the evicted span",
+  );
+  assert.match(
+    s.notice?.text ?? "",
+    /Bash needs approval/,
+    "the live event still reaches the user",
+  );
+});
+
+test("jump to latest reloads the newest window; evicted older pages can return", () => {
+  let s = foldedPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }), true);
+  assert.equal(transcriptFor(s, "s1").following, false);
+
+  s = reduce(s, { t: "transcriptFollow", sessionId: "s1" });
+  const reset = transcriptFor(s, "s1");
+  assert.deepEqual(reset.lines, [], "the older window is dropped");
+  assert.equal(reset.head.tag, "idle", "which is what makes the handle refetch");
+  assert.equal(reset.following, true);
+
+  // The newest page lands, and paging back from it reaches entries the older
+  // browsing session had evicted.
+  s = foldedPage(s, bulkPage(11_000, 1_000, { olderThan: 10_001 }), false);
+  assert.equal(transcriptFor(s, "s1").lines.at(-1)?.id, 11_000);
+  s = foldedPage(s, bulkPage(10_000, 1_000, { olderThan: 9_001 }), true);
+  const t = transcriptFor(s, "s1");
+  assert.equal(t.lines[0]?.id, 9_001, "previously evicted entries are back");
+  assert.equal(t.lines.length, 2_000);
+});
+
+test("duplicate and out-of-order live entries cannot bypass the cap or repeat an id", () => {
+  let s = atCapacity();
+  const same = ev({ type: "assistant_text", text: "again", sessionId: "s1" });
+  s = reduce(s, { t: "push", frame: push(11_001, same) });
+  s = reduce(s, { t: "push", frame: push(11_001, same) });
+  // An entry the daemon delivers late, older than everything held.
+  s = reduce(s, {
+    t: "push",
+    frame: push(7, ev({ type: "assistant_text", text: "late", sessionId: "s1" })),
+  });
+
+  const t = transcriptFor(s, "s1");
+  assert.equal(t.lines.length, TRANSCRIPT_CAP, "still exactly at the cap");
+  const ids = t.lines.map((l) => l.id);
+  assert.equal(new Set(ids).size, ids.length, "no id appears twice");
+  assert.deepEqual(
+    ids,
+    [...ids].sort((a, b) => (a ?? 0) - (b ?? 0)),
+    "and durable order still holds",
+  );
+});
+
+test("a failed page keeps the window that is already loaded", () => {
+  const s = atCapacity();
+  const before = transcriptFor(s, "s1").lines;
+  const failed = reduce(s, {
+    t: "historyFailed",
+    sessionId: "s1",
+    older: true,
+    gen: s.transcriptGen,
+    error: "history unavailable",
+  });
+
+  const t = transcriptFor(failed, "s1");
+  assert.equal(t.lines, before, "the rows on screen stay on screen");
+  assert.equal(t.older.tag, "error", "and the failure is the Loadable's, not a second flag");
+  assert.equal(t.head.tag, "data");
 });
 
 test("permission / question / fatal-error events raise a notice", () => {

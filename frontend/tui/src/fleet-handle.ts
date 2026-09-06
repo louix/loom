@@ -663,6 +663,7 @@ export const mkFleetHandle = ({
     // new top — otherwise the older page lands above it unseen.
     const beforeRows = shownLogRows();
     const wasPinnedTop = logScroll >= Math.max(0, beforeRows - page);
+    const tailBefore = t.lines[t.lines.length - 1]?.id ?? null;
     client
       .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE, cursor })
       .then((got) => {
@@ -672,11 +673,18 @@ export const mkFleetHandle = ({
         // viewport that no longer exists, so nothing below may run either.
         if (gen !== state.transcriptGen || state.selectedId !== id) return;
         dispatch({ t: "historyPage", sessionId: id, page: got, older: true, gen });
-        const grew = shownLogRows() - beforeRows;
-        if (grew > 0) {
-          if (wasPinnedTop) {
-            logScroll = Math.max(0, shownLogRows() - page); // stay pinned at the new top
-          }
+        const after = transcriptFor(state, id);
+        const rows = shownLogRows();
+        // At the cap the fold drops rows below the viewport as well as adding
+        // them above it, and `logScroll` counts *up from the tail* — so neither
+        // delta can be applied to it once the tail has moved. Re-derive the
+        // position from the top the reader is at instead. This fetch only fires
+        // within a page of the top, so that is where they already were.
+        const tailLost = (after.lines[after.lines.length - 1]?.id ?? null) !== tailBefore;
+        if (wasPinnedTop || tailLost) {
+          logScroll = Math.max(0, rows - page);
+          publish();
+        } else if (rows !== beforeRows) {
           // Publish even when the view wasn't pinned: the fold changed the log
           // (the "↑N more" indicator included), and an anchored view renders the
           // same rows either way — the re-render is free. Without this the fold
@@ -2567,6 +2575,15 @@ export const mkFleetHandle = ({
     }
     if (key.end) {
       logScroll = 0;
+      // Paging back far enough evicts the newest end of the window, and live
+      // entries stop being folded in while that is true. Jumping to the tail is
+      // the action that undoes it: drop the older window and refetch the newest
+      // page, which resumes following.
+      if (sel && !transcriptFor(state, sel.id).following) {
+        dispatch({ t: "transcriptFollow", sessionId: sel.id });
+        loadHistory();
+        return;
+      }
       return publish();
     }
     // ← / → move between the questions of a pending AskUserQuestion (the panel
