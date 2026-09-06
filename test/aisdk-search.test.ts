@@ -121,14 +121,3 @@ test("BuiltinTools mounts web_search only when a search config is given; it's re
   assert.equal("web_search" in withSearch.tools, true);
   assert.equal(isReadonly("web_search"), true); // never prompts in default mode
 });
-
-test("BuiltinTools codex mode exposes only the argv-shaped bash tool", () => {
-  const codex = new BuiltinTools("/tmp", undefined, "codex");
-  assert.deepEqual(Object.keys(codex.tools), ["bash"]);
-  const bash = codex.tools["bash"] as unknown as {
-    inputSchema: { safeParse(input: unknown): { success: boolean } };
-  };
-  assert.equal(bash.inputSchema.safeParse({ command: ["pwd"] }).success, true);
-  assert.equal(bash.inputSchema.safeParse({ command: "pwd" }).success, false);
-  codex.close();
-});

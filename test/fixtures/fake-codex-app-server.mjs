@@ -16,6 +16,12 @@
  * after this process's pid into that directory on exit (for any reason —
  * killed, crashed, or a clean stdin close), so a test can assert the child
  * actually exited instead of leaking.
+ * `LOOM_TEST_TOOL_CALL_SPEC` (JSON `{tool, arguments}`), when set alongside
+ * `LOOM_TEST_TOOL_CALL_RESULT_FILE`, makes `thread/start` fire a genuine
+ * server-initiated `item/tool/call` request right after replying — exercising
+ * `CodexAppServerSession#toolCall`'s real request/response path instead of
+ * calling its private method directly. The client's response is written to
+ * the result file as JSON for the test to poll.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -51,8 +57,19 @@ const send = (msg) => {
   process.stdout.write(JSON.stringify(msg) + "\n");
 };
 
+let nextOutgoingId = 1_000_000; // far outside CodexRpcClient's own id space
+const pendingOutgoing = new Map();
+
 const handle = (req) => {
   const { id, method, params } = req;
+  // A response to a request *we* sent (e.g. our own `item/tool/call`), not a
+  // request from the client — has an id but no method.
+  if (method === undefined && id !== undefined && pendingOutgoing.has(id)) {
+    const resolve = pendingOutgoing.get(id);
+    pendingOutgoing.delete(id);
+    resolve(req);
+    return;
+  }
   if (method === "initialize") {
     send({ jsonrpc: "2.0", id, result: { codexHome: process.env["CODEX_HOME"] ?? null } });
     return;
@@ -77,7 +94,36 @@ const handle = (req) => {
       send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/start failure" } });
       return;
     }
-    send({ jsonrpc: "2.0", id, result: fixture("thread-start") });
+    const started = fixture("thread-start");
+    send({ jsonrpc: "2.0", id, result: started });
+    const spec = process.env["LOOM_TEST_TOOL_CALL_SPEC"];
+    if (spec) {
+      const { tool, arguments: toolArgs } = JSON.parse(spec);
+      const reqId = nextOutgoingId++;
+      pendingOutgoing.set(reqId, (response) => {
+        try {
+          writeFileSync(
+            process.env["LOOM_TEST_TOOL_CALL_RESULT_FILE"],
+            JSON.stringify(response.result ?? { error: response.error }),
+          );
+        } catch {
+          // best effort — a missing/unwritable result file shouldn't crash the fixture
+        }
+      });
+      send({
+        jsonrpc: "2.0",
+        id: reqId,
+        method: "item/tool/call",
+        params: {
+          threadId: started.thread.id,
+          turnId: "fake-turn-1",
+          callId: "fake-call-1",
+          namespace: null,
+          tool,
+          arguments: toolArgs ?? {},
+        },
+      });
+    }
     return;
   }
   if (method === "thread/resume") {

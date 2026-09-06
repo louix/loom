@@ -2,7 +2,7 @@
   "name": "@loom/connector-chatgpt",
   "exports": {
     ".": "./src/index.ts",
-    "./oauth": "./src/oauth.ts",
+    "./catalog": "./src/catalog.ts",
     "./app-server": "./src/app-server.ts",
     "./codex-home": "./src/codex-home.ts",
     "./discovery": "./src/discovery.ts",

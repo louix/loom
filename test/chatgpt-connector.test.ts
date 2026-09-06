@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,10 +9,8 @@ import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
-import { streamText } from "ai";
-import { AisdkEventMapper } from "@loom/aisdk/map";
-import { createChatGPTModels } from "@loom/connector-chatgpt/oauth";
 import { createProvider, codeModeInstructions } from "@loom/connector-chatgpt";
+import { ChatGPTCatalog } from "@loom/connector-chatgpt/catalog";
 import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
 import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
@@ -22,63 +21,80 @@ import {
   mcpConfig,
 } from "@loom/connector-chatgpt/app-server";
 
-const noopTranscript = {
-  load: () => [],
-  count: () => 0,
-  append: () => {},
-  replaceFrom: () => {},
-  clear: () => {},
-  copyTo: () => {},
-};
-
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
-test("ChatGPT's provider-level capabilities stay conservative across its two backends", async () => {
-  // One provider id multiplexes a transcript-owning aisdk backend (ordinary
-  // models) and a thread-owning Code Mode backend (`code_mode_only` models).
-  // Until a per-session signal exists (Phase 4's persisted backend
-  // discriminator), the daemon must treat the whole provider conservatively so
-  // its transcript-based checkpoint / rewind / fork / cross-provider-switch
-  // machinery never runs against a Codex thread it doesn't own.
-  const provider = await createProvider({
+const repo = (): { root: string; git: (...a: string[]) => string; cleanup: () => Promise<void> } => {
+  const root = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+  const git = (...a: string[]) => execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", root]);
+  git("config", "user.email", "loom+chatgpt@localhost");
+  git("config", "user.name", "Loom (chatgpt)");
+  git("config", "commit.gpgsign", "false");
+  git("commit", "-q", "--allow-empty", "-m", "base");
+  return { root, git, cleanup: () => rm(root, { recursive: true, force: true }) };
+};
+
+test("ChatGPT provider capabilities reflect a Codex-owned thread, not a Loom-owned transcript", () => {
+  const provider = createProvider({
     id: "chatgpt",
     config: { authPath: "/definitely/not/auth.json" },
-    transcript: noopTranscript,
     logger: makeLogger("test"),
   });
   assert.equal(provider.capabilities.forking, false);
   assert.equal(provider.capabilities.rewind, false);
   assert.equal(provider.capabilities.ownsTranscript, false);
   assert.equal(provider.capabilities.liveModelSwitch, false);
+  assert.equal(provider.capabilities.liveModeSwitch, true);
+  assert.equal(provider.capabilities.compaction, true);
+  // Code Mode's `thread/compact/start` accepts no instruction payload.
+  assert.equal(provider.capabilities.compactionInstructions, false);
 });
 
-test("codeModeInstructions only mentions the loom tool Code Mode actually mounts", async () => {
+test("createProvider rejects the obsolete direct-backend base_url setting", () => {
+  assert.throws(
+    () =>
+      createProvider({
+        id: "chatgpt",
+        config: { authPath: "/definitely/not/auth.json", baseUrl: "https://example.invalid" },
+        logger: makeLogger("test"),
+      }),
+    /base_url.*is not supported anymore/,
+  );
+});
+
+test("codeModeInstructions only mentions the loom tools actually mounted", async () => {
   const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-"));
   try {
-    const withCommit = codeModeInstructions(dir, true);
-    assert.match(withCommit, /call the `commit` tool/);
-    assert.doesNotMatch(withCommit, /call `ask_user`/);
-    assert.doesNotMatch(withCommit, /`status` tool reprints this root/);
+    const mounted = codeModeInstructions(dir, true);
+    assert.match(mounted, /call the `commit` tool/);
+    assert.match(mounted, /`status` tool reprints this root/);
+    assert.doesNotMatch(mounted, /call `ask_user`/);
 
-    const withoutLoomServer = codeModeInstructions(dir, false);
-    assert.doesNotMatch(withoutLoomServer, /call the `commit` tool/);
-    assert.doesNotMatch(withoutLoomServer, /call `ask_user`/);
+    const unmounted = codeModeInstructions(dir, false);
+    assert.doesNotMatch(unmounted, /call the `commit` tool/);
+    assert.doesNotMatch(unmounted, /`status` tool reprints this root/);
+    assert.doesNotMatch(unmounted, /call `ask_user`/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("ChatGPT OAuth connector constructs a v5 model without reading credentials eagerly", () => {
-  // Constructing the provider must not touch ~/.codex/auth.json: a user should
-  // be able to configure Loom before running `codex login`, then get the
-  // provider's actionable auth error only when starting a session.
-  const { makeModel } = createChatGPTModels({
-    codexHome: resolveCodexHome({ authPath: "/definitely/not/auth.json" }),
-  });
-  const model = makeModel("gpt-5.6-terra");
-  assert.equal(model.specificationVersion, "v2");
-  assert.equal(model.provider, "chatgpt");
-  assert.equal(model.modelId, "gpt-5.6-terra");
+test("ChatGPTCatalog does not read credentials until list() is called", () => {
+  // Constructing it must not touch ~/.codex/auth.json: a user should be able
+  // to configure Loom before running `codex login`, then get the actionable
+  // auth error only when the catalog is actually fetched.
+  const catalog = new ChatGPTCatalog(resolveCodexHome({ authPath: "/definitely/not/auth.json" }));
+  assert.ok(catalog);
+});
+
+test("ChatGPTCatalog auth errors are actionable and never fall back to an API key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-noauth-"));
+  try {
+    const catalog = new ChatGPTCatalog(resolveCodexHome({ configDir: dir }));
+    await assert.rejects(() => catalog.list(), /codex login/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Code Mode serializes Loom MCP mounts and configured Kagi into app-server config", () => {
@@ -100,166 +116,6 @@ test("Code Mode routes auto-mode approvals through Codex's automatic reviewer", 
   assert.equal(approvalsReviewerFor("acceptEdits"), "user");
   assert.equal(approvalsReviewerFor("default"), "user");
   assert.equal(approvalsReviewerFor("plan"), "user");
-});
-
-test("ChatGPT serializes tool history as Responses input items", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-tools-test-"));
-  const authPath = join(dir, "auth.json");
-  await writeFile(
-    authPath,
-    JSON.stringify({ tokens: { access_token: "test-token", account_id: "test-account" } }),
-  );
-  const originalFetch = globalThis.fetch;
-  let request: Record<string, unknown> | undefined;
-  globalThis.fetch = async (input, init) => {
-    const url = String(input);
-    if (url.includes("/codex/models"))
-      return Response.json({ models: [{ slug: "gpt-5.5", base_instructions: "test" }] });
-    if (url.includes("/codex/responses")) {
-      const body = init?.body;
-      if (typeof body !== "string") throw new Error("expected a JSON request body");
-      request = JSON.parse(body) as Record<string, unknown>;
-      return new Response(
-        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n',
-      );
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
-  try {
-    const { makeModel } = createChatGPTModels({ codexHome: resolveCodexHome({ authPath }) });
-    await makeModel("gpt-5.5").doStream({
-      prompt: [
-        { role: "user", content: [{ type: "text", text: "Run pwd" }] },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId: "call-1",
-              toolName: "shell",
-              input: { command: "pwd" },
-            },
-          ],
-        },
-        {
-          role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: "call-1",
-              toolName: "shell",
-              output: { type: "text", value: "/workspace" },
-            },
-          ],
-        },
-      ],
-    } as never);
-    assert.deepEqual(request?.["input"], [
-      { role: "user", content: "Run pwd" },
-      { type: "function_call", call_id: "call-1", name: "shell", arguments: '{"command":"pwd"}' },
-      { type: "function_call_output", call_id: "call-1", output: "/workspace" },
-    ]);
-  } finally {
-    globalThis.fetch = originalFetch;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("ChatGPT cached-input usage feeds Loom's provider/model cache observation", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-test-"));
-  const authPath = join(dir, "auth.json");
-  await writeFile(
-    authPath,
-    JSON.stringify({ tokens: { access_token: "test-token", account_id: "test-account" } }),
-  );
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    if (url.includes("/codex/models"))
-      return Response.json({ models: [{ slug: "gpt-5.5", base_instructions: "test" }] });
-    if (url.includes("/codex/responses")) {
-      const event = {
-        type: "response.completed",
-        response: {
-          status: "completed",
-          usage: {
-            input_tokens: 100,
-            input_tokens_details: { cached_tokens: 40 },
-            output_tokens: 20,
-          },
-        },
-      };
-      return new Response(`event: response.completed\ndata: ${JSON.stringify(event)}\n\n`, {
-        headers: {
-          "x-codex-primary-used-percent": "42",
-          "x-codex-primary-window-minutes": "60",
-          "x-codex-primary-reset-at": "1700000000",
-          "x-codex-secondary-used-percent": "84",
-          "x-codex-secondary-reset-at": "1700003600",
-        },
-      });
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
-  try {
-    const { makeModel } = createChatGPTModels({ codexHome: resolveCodexHome({ authPath }) });
-    const result = streamText({
-      model: makeModel("gpt-5.5"),
-      prompt: "hello",
-    });
-    const mapper = new AisdkEventMapper("session", "gpt-5.5");
-    const events = [];
-    for await (const part of result.fullStream) {
-      events.push(...mapper.map(part));
-    }
-    const usage = events.find((event) => event.type === "usage");
-    assert.ok(usage && usage.type === "usage");
-    assert.deepEqual(usage.tokens, { input: 60, output: 20, cacheRead: 40, cacheWrite: 0 });
-    assert.equal(usage.contextUsed, 100);
-    assert.deepEqual(
-      events.filter((event) => event.type === "rate_limit"),
-      [
-        {
-          type: "rate_limit",
-          sessionId: "session",
-          ts: events[0]?.ts,
-          window: "codex-primary",
-          status: "allowed",
-          utilization: 42,
-          resetsAt: 1_700_000_000_000,
-        },
-        {
-          type: "rate_limit",
-          sessionId: "session",
-          ts: events[0]?.ts,
-          window: "codex-secondary",
-          status: "allowed_warning",
-          utilization: 84,
-          resetsAt: 1_700_003_600_000,
-        },
-      ],
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("Codex auth errors are actionable and never fall back to an API key", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-noauth-"));
-  try {
-    const { makeModel } = createChatGPTModels({ codexHome: resolveCodexHome({ configDir: dir }) });
-    await assert.rejects(
-      async () => {
-        await makeModel("gpt-5.5").doStream({
-          prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        } as never);
-      },
-      /codex login/,
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
 });
 
 test("resolveCodexHome: config_dir, then auth_path's parent, then CODEX_HOME, then ~/.codex", () => {
@@ -387,6 +243,22 @@ const waitForMarker = async (dir: string, timeoutMs = 2000): Promise<string[]> =
   }
 };
 
+/** Polls for `path` to exist and be non-empty, for the tool-call result file
+ *  the fixture writes asynchronously (see `LOOM_TEST_TOOL_CALL_RESULT_FILE`). */
+const waitForFile = async (path: string, timeoutMs = 2000): Promise<string> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const content = await readFile(path, "utf8");
+      if (content) return content;
+    } catch {
+      // not written yet
+    }
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
+    await delay(20);
+  }
+};
+
 test("a failed thread/start closes the app-server process instead of leaking it", async () => {
   const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
   const codexHome = { dir: "/tmp/loom-codex-fail-test", authJsonPath: "/tmp/loom-codex-fail-test/auth.json" };
@@ -469,6 +341,65 @@ test("Code Mode compact() rejects custom instructions instead of silently runnin
     await s.compact("   "); // blank instructions are the same as none
   } finally {
     await s.close();
+  }
+});
+
+test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on the envelope id", async () => {
+  const { root, git, cleanup } = repo();
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-commit", authJsonPath: "/tmp/loom-codex-dyntool-commit/auth.json" };
+  const resultFile = join(root, "..", `tool-call-result-${process.pid}.json`);
+  try {
+    await writeFile(join(root, "a.txt"), "hello\n");
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "commit", arguments: { message: "Add a.txt" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: root, prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ type: string; text: string }>; success: boolean };
+      assert.equal(result.success, true);
+      assert.equal(result.contentItems[0]?.type, "inputText");
+      assert.match(result.contentItems[0]?.text ?? "", /^committed [0-9a-f]{7,} Add a\.txt/);
+      assert.equal(git("log", "-1", "--format=%s"), "Add a.txt");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+    await cleanup();
+  }
+});
+
+test("Codex's item/tool/call reports an unsupported tool name as a failed (not errored) call", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-unknown", authJsonPath: "/tmp/loom-codex-dyntool-unknown/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-unknown-${process.pid}.json`);
+  try {
+    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "nonexistent", arguments: {} }));
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { success: boolean };
+      assert.equal(result.success, false);
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
   }
 });
 

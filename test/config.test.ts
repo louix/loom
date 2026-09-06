@@ -203,12 +203,12 @@ codex_builtin_web_search = true
   assert.deepEqual(lintConfig(c), []);
 });
 
-test("[chatgpt] keeps Codex web search unless disabled", () => {
-  assert.equal(cfg(`[chatgpt]\n`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch, true);
+test("[chatgpt] disables Codex web search unless explicitly enabled", () => {
+  assert.equal(cfg(`[chatgpt]\n`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch, false);
   assert.equal(
-    cfg(`[chatgpt]\ncodex_builtin_web_search = false\n`).providers.aisdk["chatgpt"]
+    cfg(`[chatgpt]\ncodex_builtin_web_search = true\n`).providers.aisdk["chatgpt"]
       ?.codexBuiltinWebSearch,
-    false,
+    true,
   );
 });
 

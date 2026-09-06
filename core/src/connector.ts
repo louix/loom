@@ -36,9 +36,9 @@ export interface ConnectorConfig {
   sdk?: "openai" | "google" | "anthropic" | "chatgpt";
   /** Optional Codex OAuth auth.json path; omitted uses `~/.codex/auth.json`. */
   authPath?: string;
-  /** ChatGPT Code Mode: explicit `codex` executable. Empty / omitted uses PATH. */
+  /** ChatGPT: explicit `codex` executable. Empty / omitted uses PATH. */
   codexCliPath?: string;
-  /** Keep Codex's own web search alongside Loom's configured Kagi MCP server. Default true. */
+  /** Keep Codex's own web search alongside Loom's configured Kagi MCP server. Default false. */
   codexBuiltinWebSearch?: boolean;
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;

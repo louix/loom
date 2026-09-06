@@ -138,6 +138,7 @@ const snap = (
     cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
     keepWarm: false,
     canRewind: true,
+    resumable: true,
     git: null,
     createdAt: now,
     updatedAt: now,

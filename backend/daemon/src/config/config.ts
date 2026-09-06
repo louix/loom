@@ -134,9 +134,9 @@ export interface AisdkProfile {
    * `auth_path` is only valid when they name the same directory.
    */
   configDir: string;
-  /** Explicit `codex` executable for Code Mode models. Empty resolves `codex` on PATH. */
+  /** Explicit `codex` executable for `sdk = "chatgpt"`. Empty resolves `codex` on PATH. */
   codexCliPath: string;
-  /** Keep Codex's native web search for Code Mode models. Default true. */
+  /** Keep Codex's native web search alongside Loom's configured search. Default false — set explicitly to opt in. */
   codexBuiltinWebSearch: boolean;
 }
 
@@ -455,7 +455,7 @@ const buildAisdkProfile = (
     authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
     configDir: t["config_dir"] ? expandTilde(str(t["config_dir"], "")) : "",
     codexCliPath: t["codex_cli_path"] ? expandTilde(str(t["codex_cli_path"], "")) : "",
-    codexBuiltinWebSearch: t["codex_builtin_web_search"] !== false,
+    codexBuiltinWebSearch: t["codex_builtin_web_search"] === true,
   };
 };
 

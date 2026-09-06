@@ -227,6 +227,13 @@ export interface SessionSnapshot {
    */
   canRewind: boolean;
   /**
+   * The session can be `session.resume`d. False only for a ChatGPT session
+   * created under the pre-Phase-4 direct backend, whose `provider_ref` is a
+   * Loom transcript id rather than a Codex thread id — its history stays
+   * readable but it can never be resumed. Runtime-only, not persisted.
+   */
+  resumable: boolean;
+  /**
    * A compaction is in flight and holds the session's op gate: `startedAt` is
    * when it began (epoch ms), `before` the context fill it started from.
    * Runtime-only, not persisted — beats aren't either, so this overlay is how

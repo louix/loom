@@ -4,140 +4,150 @@ import type {
   AgentSession,
   CreateSessionOptions,
   DiscoveredModel,
+  ProviderCapabilities,
   SessionRef,
 } from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
 import { loomInstructions } from "@loom/core/paths";
 import { toolSteer } from "@loom/runtime/instructions";
-import { makeAisdkProvider } from "@loom/aisdk/provider";
-import { createChatGPTModels } from "./oauth.ts";
+import { ChatGPTCatalog } from "./catalog.ts";
 import { CodexAppServerSession } from "./app-server.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
 import { discoverCodexModels } from "./discovery.ts";
 
 /**
- * Code Mode sessions mount only `commit` (via `CodexAppServerSession`'s own
- * `loom-mcp-server.mjs`, when `loomServer` is on) — never `ask_user`/`status`.
- * The daemon's `systemPromptAppend` is written assuming the full Claude/aisdk
- * loom tool set, so it would tell the model about tools that don't exist here;
- * recompute the tool-steer for what's actually mounted instead of forwarding
- * it verbatim. Skips the daemon's repoRoot-fallback LOOM.md lookup (Code Mode
- * only has the worktree's own `cwd`), a narrow, acceptable gap versus a fully
- * plumbed-through repo root.
+ * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`, see
+ * `app-server.ts`) are a strict subset of the full Claude/aisdk loom tool set
+ * — no `ask_user` yet (Phase 5 wires up Codex's own answer path first). The
+ * daemon's `systemPromptAppend` is written assuming the full set, so it would
+ * tell the model about tools that don't exist here; recompute the tool-steer
+ * for what's actually mounted instead of forwarding it verbatim. Skips the
+ * daemon's repoRoot-fallback LOOM.md lookup (this connector only has the
+ * session's own `cwd`), a narrow, acceptable gap versus a fully plumbed-
+ * through repo root.
  */
-export const codeModeInstructions = (cwd: string, mountsCommit: boolean): string =>
-  [toolSteer(cwd, { askUser: false, commit: mountsCommit, status: false }), loomInstructions(cwd)]
+export const codeModeInstructions = (cwd: string, mountsLoomTools: boolean): string =>
+  [
+    toolSteer(cwd, { askUser: false, commit: mountsLoomTools, status: mountsLoomTools }),
+    loomInstructions(cwd),
+  ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");
 
-/**
- * ChatGPT's catalog has two tool protocols. Keep the AI SDK adapter for
- * regular Responses function tools, and route Code Mode-only models through
- * Codex's local app-server so they get Codex's full local host instead.
- */
 class ChatGPTProvider implements AgentProvider {
   readonly id: string;
-  readonly capabilities;
-  readonly #direct: AgentProvider;
-  readonly #isCodeMode: (model: string) => Promise<boolean>;
+  readonly capabilities: ProviderCapabilities;
   readonly #codexHome: CodexHome;
   readonly #codexCliPath: string;
   readonly #search: ConnectorContext["search"];
+  readonly #base: string | undefined;
   readonly #codexBuiltinWebSearch: boolean;
+  readonly #listModelsImpl: () => Promise<DiscoveredModel[]>;
 
   constructor(
     id: string,
-    direct: AgentProvider,
-    isCodeMode: (model: string) => Promise<boolean>,
+    models: string[],
+    listModels: () => Promise<DiscoveredModel[]>,
     codexHome: CodexHome,
     codexCliPath: string,
+    base: string | undefined,
     search?: ConnectorContext["search"],
-    codexBuiltinWebSearch = true,
+    codexBuiltinWebSearch = false,
   ) {
     this.id = id;
-    this.#direct = direct;
-    this.#isCodeMode = isCodeMode;
+    this.#listModelsImpl = listModels;
     this.#codexHome = codexHome;
     this.#codexCliPath = codexCliPath;
     this.#search = search;
+    this.#base = base;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
-    // Conservative provider-level defaults: this one provider id spans a
-    // transcript-owning aisdk backend and a thread-owning Code Mode backend
-    // (see `#isCodeMode`), and there's no per-session signal yet to report
-    // these more precisely for whichever one a given session actually runs on
-    // (Phase 4 adds a persisted backend discriminator for that).
     this.capabilities = {
-      ...direct.capabilities,
       liveModeSwitch: true,
       liveModelSwitch: false,
       forking: false,
       rewind: false,
+      // No Loom `task` tool is mounted for Codex sessions — Codex's own
+      // multi-agent activity (`subAgentActivity` items) is a different,
+      // natively-driven feature, observed passively, not this capability.
+      subagents: false,
       compaction: true,
       // Code Mode's `thread/compact/start` currently accepts no instruction
       // payload (app-server.ts's `compact()` throws rather than silently drop
-      // a caller's instructions); the direct aisdk backend's own
-      // `compactionInstructions: true` would otherwise leak through the spread
-      // above and let a caller assume a custom summary steer always survives.
+      // a caller's instructions).
       compactionInstructions: false,
       ownsTranscript: false,
+      oneShot: true,
+      partialTokens: true,
+      permissionModes: ["default", "plan", "acceptEdits", "auto"],
+      models,
     };
   }
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
-    if (opts.oneShot || !(await this.#isCodeMode(opts.model ?? "")))
-      return this.#direct.createSession(opts);
     return CodexAppServerSession.start(
       { ...opts, systemPromptAppend: codeModeInstructions(opts.cwd, opts.loomServer === true) },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
+      this.#base,
     );
   }
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
-    if (!(await this.#isCodeMode(ref.model ?? ""))) return this.#direct.resumeSession(ref);
     return CodexAppServerSession.resume(
-      // Code Mode's own `resume()` always mounts the commit-only loom server
-      // (its internal `opts.loomServer` is hardcoded `true`), independent of
-      // whatever `ref` carries — `SessionRef` has no `loomServer` field.
+      // Codex sessions always mount the loom dynamic tools on resume (the
+      // daemon always resumes with `loomServer` semantics equivalent to
+      // `true` for this provider — `SessionRef` has no `loomServer` field).
       { ...ref, systemPromptAppend: codeModeInstructions(ref.cwd, true) },
       this.#codexHome,
       this.#codexCliPath,
       this.#search,
       this.#codexBuiltinWebSearch,
+      this.#base,
     );
   }
   listPersistedSessions(): Promise<SessionRef[]> {
-    return this.#direct.listPersistedSessions();
+    return Promise.resolve([]);
   }
   listModels(): Promise<DiscoveredModel[]> {
-    return this.#direct.listModels?.() ?? Promise.resolve([]);
+    return this.#listModelsImpl();
   }
 }
 
-export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvider> => {
-  if (!ctx.transcript)
-    throw new Error(`connector ${JSON.stringify(ctx.id)} needs a transcript store`);
+export const createProvider = (ctx: ConnectorContext): AgentProvider => {
+  if (ctx.config.baseUrl) {
+    throw new Error(
+      `chatgpt provider ${JSON.stringify(ctx.id)}: \`base_url\` is not supported anymore — ` +
+        "every ChatGPT model now runs through Codex's app-server, not a direct Responses API " +
+        "endpoint. Remove `base_url` from this provider's config.",
+    );
+  }
   const codexHome = resolveCodexHome({
     ...(ctx.config.configDir ? { configDir: ctx.config.configDir } : {}),
     ...(ctx.config.authPath ? { authPath: ctx.config.authPath } : {}),
   });
   const codexCliPath = ctx.config.codexCliPath || "codex";
-  const { catalog, makeModel } = createChatGPTModels({
-    codexHome,
-    ...(ctx.config.baseUrl ? { baseUrl: ctx.config.baseUrl } : {}),
-  });
+  const catalog = new ChatGPTCatalog(codexHome);
   // A curated `models` list restricts the picker to exactly those ids
   // (available even if the account marks them hidden); otherwise the picker
   // gets the account's own visible/default set.
   const restrictTo = ctx.config.models?.length ? new Set(ctx.config.models) : undefined;
   const listModels = async (): Promise<DiscoveredModel[]> => {
-    // Reasoning-effort discovery goes through app-server (Phase 2); context
-    // window sizes still come from the REST catalog, which is the only one of
-    // the two that reports them — a config `model_context` pin wins over both.
+    // Reasoning-effort discovery and the model list itself go through
+    // app-server (Phase 2) — authoritative. Context-window sizes come from
+    // the REST catalog, the only source that reports them; a config
+    // `model_context` pin wins over both. The catalog is best-effort: app-
+    // server's `model/list` has no context-window field at all, but a
+    // catalog failure (expired credential, timeout, malformed response) must
+    // not block model discovery or session creation.
     const [discovered, restCatalog] = await Promise.all([
       discoverCodexModels({ cliPath: codexCliPath, codexHome }),
-      catalog.list(),
+      catalog.list().catch((err) => {
+        ctx.logger.warn("chatgpt model catalog fetch failed — context-window sizes may be unavailable", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      }),
     ]);
     const contextById = new Map(
       restCatalog.map((m) => [m.slug, m.max_context_window ?? m.context_window] as const),
@@ -149,28 +159,13 @@ export const createProvider = async (ctx: ConnectorContext): Promise<AgentProvid
         return { ...model, ...(context ? { context } : {}) };
       });
   };
-  const direct = makeAisdkProvider(
-    {
-      id: ctx.id,
-      model: ctx.config.model ?? "",
-      models: ctx.config.models ?? [],
-      ...(ctx.config.modelContext ? { modelContext: ctx.config.modelContext } : {}),
-      ...(ctx.config.maxSteps !== undefined ? { maxSteps: ctx.config.maxSteps } : {}),
-      providerOptionsName: "chatgpt",
-      makeModel,
-      toolMode: async (model) =>
-        (await catalog.get(model)).tool_mode === "code_mode_only" ? "codex-shell" : "full",
-      subagents: true,
-      listModels,
-    },
-    ctx.transcript,
-  );
   return new ChatGPTProvider(
     ctx.id,
-    direct,
-    async (model) => (await catalog.get(model)).tool_mode === "code_mode_only",
+    ctx.config.models ?? [],
+    listModels,
     codexHome,
     codexCliPath,
+    ctx.baseBranch,
     ctx.search,
     ctx.config.codexBuiltinWebSearch,
   );

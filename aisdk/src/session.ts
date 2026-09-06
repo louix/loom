@@ -108,8 +108,6 @@ export interface AisdkSessionOptions {
   mcpHandles: McpServerHandle[];
   /** Mount the `loom` tools + first-party Bash/Edit/Grep + plan/task tools. */
   loomServer: boolean;
-  /** Full Loom tools, or the Codex subscription backend's shell-only surface. */
-  toolMode?: "full" | "codex-shell";
   /** Resolved `web_search` config, when configured. */
   search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
@@ -145,7 +143,6 @@ export class AisdkSession implements AgentSession {
   readonly #base: string | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
-  readonly #toolMode: "full" | "codex-shell";
   readonly #store: TranscriptStore | null;
   readonly #oneShot: boolean;
   readonly #maxSteps: number;
@@ -211,7 +208,6 @@ export class AisdkSession implements AgentSession {
     this.#base = opts.base;
     this.#mcpHandles = opts.mcpHandles;
     this.#loomServer = opts.loomServer;
-    this.#toolMode = opts.toolMode ?? "full";
     this.#store = opts.store;
     this.#oneShot = opts.oneShot;
     this.#maxSteps = Math.max(1, Math.trunc(opts.maxSteps ?? DEFAULT_MAX_STEPS));
@@ -492,14 +488,6 @@ export class AisdkSession implements AgentSession {
     if (!this.#baseToolsPromise) {
       this.#baseToolsPromise = (async () => {
         const base: ToolSet = {};
-        // The ChatGPT subscription backend accepts only Codex's predefined
-        // shell tool. Do not advertise MCP or Loom's custom functions: the
-        // upstream OAuth provider must reject them, and a model would be left
-        // with calls it cannot make.
-        if (this.#toolMode === "codex-shell") {
-          this.#builtins = new BuiltinTools(this.#cwd, undefined, "codex");
-          return this.#builtins.tools;
-        }
         // MCP servers claim their names first: a configured server offering a
         // builtin's name (fff's `grep`) replaces it — the tool steer points
         // the model at those servers, so it must see their tools, not ours.

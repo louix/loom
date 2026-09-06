@@ -12,7 +12,7 @@
 import type { ToolSet } from "ai";
 import type { SearchConfig } from "@loom/core/connector";
 import { BackgroundTasks, backgroundTools } from "./background.ts";
-import { BashShell, bashTool, codexBashTool } from "./bash.ts";
+import { BashShell, bashTool } from "./bash.ts";
 import { editTool } from "./edit.ts";
 import { grepTool } from "./grep.ts";
 import { fetchTool } from "./kagi.ts";
@@ -23,13 +23,9 @@ export class BuiltinTools {
   readonly #background: BackgroundTasks;
   readonly tools: ToolSet;
 
-  constructor(cwd: string, search?: SearchConfig, mode: "loom" | "codex" = "loom") {
+  constructor(cwd: string, search?: SearchConfig) {
     this.#shell = new BashShell(cwd);
     this.#background = new BackgroundTasks(cwd);
-    if (mode === "codex") {
-      this.tools = { bash: codexBashTool(this.#shell) } as ToolSet;
-      return;
-    }
     this.tools = {
       bash: bashTool(this.#shell),
       edit: editTool(cwd),

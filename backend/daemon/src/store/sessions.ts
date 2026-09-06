@@ -66,6 +66,10 @@ export interface NewSession {
   /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
   inPlace?: boolean;
   providerRef?: string | null;
+  /** Which backend actually owns this session's history (`''` = the
+   *  provider's own native thread; `'aisdk'` = a legacy Loom-owned
+   *  transcript, chatgpt-only, immutable after create). See migration 20. */
+  historyBackend?: string;
 }
 
 export interface UsageDelta {
@@ -118,8 +122,8 @@ export class SessionStore {
         .prepare(
           `INSERT INTO sessions
              (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
-              base_branch, in_place, provider_ref, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
+              base_branch, in_place, provider_ref, history_backend, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           s.id,
@@ -134,6 +138,7 @@ export class SessionStore {
           s.baseBranch ?? null,
           s.inPlace ? 1 : 0,
           s.providerRef ?? null,
+          s.historyBackend ?? "",
           now,
           now,
         );
@@ -485,6 +490,16 @@ export class SessionStore {
     return row?.provider_ref ?? null;
   }
 
+  /** Which backend owns this session's history (`""` = the provider's own
+   *  native thread; `"aisdk"` = a legacy, pre-cutover ChatGPT transcript).
+   *  Immutable after create — see migration 20. */
+  historyBackend(id: string): string {
+    const row = this.#db.prepare("SELECT history_backend FROM sessions WHERE id = ?").get(id) as
+      | { history_backend: string }
+      | undefined;
+    return row?.history_backend ?? "";
+  }
+
   /** The base short-SHA the operator was last nudged to integrate for this
    *  session (`""` = never / integrated since). Persisted so a daemon restart
    *  doesn't re-inject the same "base advanced" nudge turn. */
@@ -803,6 +818,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     },
     keepWarm: false, // runtime overlay filled in by the daemon
     canRewind: false, // runtime overlay filled in by the daemon
+    resumable: true, // runtime overlay filled in by the daemon
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

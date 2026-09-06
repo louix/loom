@@ -281,27 +281,3 @@ export const bashTool = (shell: BashShell) => {
   });
 };
 
-/**
- * Codex's subscription endpoint exposes a fixed `shell` schema whose command
- * is an argv array. The OAuth provider maps that endpoint tool back onto our
- * `bash` tool, so accept that schema here and translate it to the persistent
- * shell safely. Kept separate from {@link bashTool}: normal providers continue
- * to see Loom's more ergonomic string-command schema.
- */
-export const codexBashTool = (shell: BashShell) => {
-  const quote = (arg: string): string => `'${arg.replace(/'/g, "'\\\"'\\\"'")}'`;
-  return tool({
-    description: "Run a command in the session shell and return its output.",
-    inputSchema: z.object({
-      command: z.array(z.string()).min(1).describe("Command and arguments as an argv array."),
-      workdir: z.string().optional().describe("Optional directory for this command."),
-      timeout: z.number().positive().optional().describe("Wall-clock timeout in seconds."),
-    }),
-    execute: async ({ command, workdir, timeout }) => {
-      const invocation = command.map(quote).join(" ");
-      const source = workdir ? `cd -- ${quote(workdir)} && ${invocation}` : invocation;
-      const r = await shell.run(source, (timeout ?? DEFAULT_TIMEOUT_MS / 1000) * 1000);
-      return { output: r.output, exit_code: r.exitCode, timed_out: r.timedOut };
-    },
-  });
-};

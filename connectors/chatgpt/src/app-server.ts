@@ -6,11 +6,13 @@
  * protocol itself (deadlines, diagnostics, cleanup) lives in `./rpc.ts`.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 import type { SearchConfig } from "@loom/core/connector";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
+import { commitInWorktree } from "@loom/core/commit";
+import { statusInWorktree } from "@loom/core/status";
+import { COMMIT_DESC, STATUS_DESC } from "@loom/runtime/loom-tools";
 import type {
   AdapterSnapshot,
   AgentSession,
@@ -97,15 +99,52 @@ const launchOptions = (
   },
 });
 
-const loomMcpServer = (cwd: string): McpServerHandle => ({
-  name: "loom",
-  spec: {
-    transport: "stdio",
-    command: process.execPath,
-    args: [fileURLToPath(new URL("./loom-mcp-server.mjs", import.meta.url))],
-    env: { LOOM_WORKTREE: cwd },
+/**
+ * Loom's own tools (`commit`, `status`), mounted as Codex dynamic tools
+ * (`thread/start`/`thread/resume`'s `dynamicTools`) rather than a separate
+ * stdio MCP server — Codex calls them directly via a server-initiated
+ * `item/tool/call` request (`#toolCall` below). `ask_user` isn't mounted yet:
+ * `answerQuestion` below still throws "not yet supported" (Phase 5).
+ */
+const loomDynamicTools = (): Record<string, unknown>[] => [
+  {
+    type: "function",
+    name: "commit",
+    description: COMMIT_DESC,
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: {
+          type: "string",
+          description: "Commit message. First line is the subject; keep it under ~72 chars.",
+        },
+        stage_all: {
+          type: "boolean",
+          description:
+            "Stage all changes first (git add -A). Default true; set false to commit only what is already staged.",
+        },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
   },
-});
+  {
+    type: "function",
+    name: "status",
+    description: STATUS_DESC,
+    inputSchema: {
+      type: "object",
+      properties: {
+        patch: {
+          type: "boolean",
+          description:
+            "Include the working diff against HEAD (clamped; untracked files are not included).",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+];
 
 const policyFor = (mode: SessionMode): "untrusted" | "on-request" =>
   mode === "default" || mode === "plan" ? "untrusted" : "on-request";
@@ -127,6 +166,7 @@ export class CodexAppServerSession implements AgentSession {
   #effort: EffortLevel | null;
   #mode: SessionMode;
   #cwd: string;
+  readonly #base: string | undefined;
   #closing = false;
   #status = stateRunning;
   #usage = zeroUsage();
@@ -134,12 +174,17 @@ export class CodexAppServerSession implements AgentSession {
   #contextLimit = 0;
   #turns = 0;
 
-  private constructor(opts: CreateSessionOptions, proc: ChildProcessWithoutNullStreams) {
+  private constructor(
+    opts: CreateSessionOptions,
+    proc: ChildProcessWithoutNullStreams,
+    base: string | undefined,
+  ) {
     this.id = opts.sessionId;
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
+    this.#base = base;
     this.#rpc = new CodexRpcClient(proc);
     this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
     this.#rpc.onNotification((method, params) => this.#notification(method, params));
@@ -161,22 +206,18 @@ export class CodexAppServerSession implements AgentSession {
     codexHome: CodexHome,
     cliPath = "codex",
     search?: SearchConfig,
-    builtinWebSearch = true,
+    builtinWebSearch = false,
+    base?: string,
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const launch = launchOptions(
-      opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
-      search,
-      builtinWebSearch,
-      codexHome,
-    );
+    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
       env: launch.env,
     });
-    const s = new CodexAppServerSession(opts, proc);
+    const s = new CodexAppServerSession(opts, proc, base);
     try {
       await s.#initialize();
       const started = await s.#rpc.requestStartup("thread/start", {
@@ -187,6 +228,7 @@ export class CodexAppServerSession implements AgentSession {
         sandbox: sandboxFor(opts.mode),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
+        ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
       });
       s.#threadId = (started as any)?.thread?.id ?? null;
       if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
@@ -207,7 +249,8 @@ export class CodexAppServerSession implements AgentSession {
     codexHome: CodexHome,
     cliPath = "codex",
     search?: SearchConfig,
-    builtinWebSearch = true,
+    builtinWebSearch = false,
+    base?: string,
   ): Promise<CodexAppServerSession> {
     if (!ref.providerRef) throw new Error("Codex session has no app-server thread id to resume");
     const opts: CreateSessionOptions = {
@@ -220,18 +263,13 @@ export class CodexAppServerSession implements AgentSession {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const launch = launchOptions(
-      opts.loomServer ? [...opts.mcpServers, loomMcpServer(opts.cwd)] : opts.mcpServers,
-      search,
-      builtinWebSearch,
-      codexHome,
-    );
+    const launch = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
     const proc = spawn(cliPath, launch.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
       env: launch.env,
     });
-    const s = new CodexAppServerSession(opts, proc);
+    const s = new CodexAppServerSession(opts, proc, base);
     try {
       await s.#initialize();
       const resumed = await s.#rpc.requestStartup("thread/resume", {
@@ -242,6 +280,11 @@ export class CodexAppServerSession implements AgentSession {
         sandbox: sandboxFor(opts.mode),
         excludeTurns: true,
         ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
+        // Codex persists dynamic tools in thread rollout metadata and restores
+        // them when the caller sends none — but Loom always resends its own
+        // set here, the same reason it always resends `developerInstructions`:
+        // a stale steer/tool set surviving a daemon restart would be a bug.
+        ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
       });
       s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
       s.#idle();
@@ -406,6 +449,10 @@ export class CodexAppServerSession implements AgentSession {
     };
   }
   #serverRequest(method: string, p: Record<string, unknown>, id: number | string): void {
+    if (method === "item/tool/call") {
+      this.#toolCall(p, id);
+      return;
+    }
     const pid = String(p["approvalId"] ?? p["itemId"] ?? p["callId"] ?? id);
     if (method === "item/commandExecution/requestApproval") {
       this.#permissions.set(pid, { rpcId: id, kind: "command" });
@@ -441,7 +488,42 @@ export class CodexAppServerSession implements AgentSession {
       this.#rpc.respondError(id, `unsupported request: ${method}`);
     }
   }
+  /** `item/tool/call` — Codex invoking one of Loom's own dynamic tools
+   *  (`commit`/`status`, see `loomDynamicTools`). Reply on the envelope `id`,
+   *  not `params.callId` — they're different fields in the protocol. Both
+   *  tools are synchronous (`spawnSync`-backed), so this needs no async work
+   *  and no pending-interaction bookkeeping. */
+  #toolCall(p: Record<string, unknown>, id: number | string): void {
+    const tool = String(p["tool"] ?? "");
+    const args = (p["arguments"] as Record<string, unknown> | null) ?? {};
+    const respond = (text: string, success: boolean): void => {
+      this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
+    };
+    if (tool === "commit") {
+      const message = typeof args["message"] === "string" ? args["message"] : "";
+      const res = commitInWorktree(this.#cwd, message, { stageAll: args["stage_all"] !== false });
+      respond(res.text, res.ok);
+      return;
+    }
+    if (tool === "status") {
+      const res = statusInWorktree(this.#cwd, {
+        ...(this.#base ? { base: this.#base } : {}),
+        ...(args["patch"] === true ? { patch: true } : {}),
+      });
+      respond(res.text, res.ok);
+      return;
+    }
+    respond(`unsupported loom tool: ${tool}`, false);
+  }
   #notification(method: string, p: Record<string, unknown>): void {
+    if (method === "thread/tokenUsage/updated") {
+      const usage = p["tokenUsage"] as Record<string, unknown> | undefined;
+      const limit = usage?.["modelContextWindow"];
+      if (typeof limit === "number") this.#contextLimit = limit;
+      const total = usage?.["total"] as Record<string, unknown> | undefined;
+      if (typeof total?.["totalTokens"] === "number") this.#contextUsed = total.totalTokens;
+      return;
+    }
     const item = p["item"] as Record<string, unknown> | undefined;
     if (method === "item/completed" && item) this.#item(item);
     if (method === "item/agentMessage/delta") return; // final item is authoritative and avoids duplicate transcript text.
@@ -520,6 +602,28 @@ export class CodexAppServerSession implements AgentSession {
         id,
         ok: item["status"] === "completed",
         output: item["result"] ?? item["error"] ?? "",
+      });
+    } else if (type === "dynamicToolCall") {
+      const contentItems = (item["contentItems"] as Array<Record<string, unknown>> | null) ?? [];
+      const output = contentItems
+        .map((c) => (c["type"] === "inputText" ? String(c["text"] ?? "") : ""))
+        .filter(Boolean)
+        .join("\n");
+      this.#events.push({
+        type: "tool_call",
+        sessionId: this.id,
+        ts,
+        id,
+        name: String(item["tool"] ?? ""),
+        input: item["arguments"],
+      });
+      this.#events.push({
+        type: "tool_result",
+        sessionId: this.id,
+        ts,
+        id,
+        ok: item["success"] === true,
+        output,
       });
     } else if (type === "subAgentActivity") {
       const subagentId = String(item["agentThreadId"] ?? id);

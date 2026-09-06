@@ -258,4 +258,21 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN comment TEXT;
   `,
+
+  // 21 — which backend actually owns a ChatGPT session's history. Phase 4 of
+  // the ChatGPT provider plan cut every ChatGPT model over to Codex's
+  // app-server (a provider-owned thread, `provider_ref` = a Codex thread id);
+  // before that, ordinary ChatGPT models ran on a direct OAuth/Responses
+  // backend with a Loom-owned aisdk transcript. Both wrote the same
+  // `provider = 'chatgpt'` row, so a pre-cutover row's `provider_ref` isn't a
+  // Codex thread id at all and must never be handed to `thread/resume` — it
+  // would either error confusingly or silently start an unrelated new thread.
+  // '' means "native/provider-owned thread" (every non-chatgpt row, and every
+  // chatgpt row created after this migration); 'aisdk' is a pure legacy
+  // marker for rows that predate it and marks them non-resumable (still
+  // readable) going forward. See `Daemon#resumable`.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN history_backend TEXT NOT NULL DEFAULT '';
+  UPDATE sessions SET history_backend = 'aisdk' WHERE provider = 'chatgpt';
+  `,
 ];

@@ -614,6 +614,8 @@ export class Daemon {
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
     const canRewind = this.#canRewind(s.provider);
     if (canRewind !== out.canRewind) out = { ...out, canRewind };
+    const resumable = this.#resumable(s.provider, s.id);
+    if (resumable !== out.resumable) out = { ...out, resumable };
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
     if (gitPath) {
@@ -973,6 +975,11 @@ export class Daemon {
       branch: wt ? wt.branch : null,
       baseBranch: wt ? wt.baseRef : this.config.baseBranch,
       ...(wt ? {} : { inPlace: true }),
+      // Every ChatGPT session created from here on runs on Codex's app-server
+      // (a provider-owned thread) — explicit so a future `grep` for
+      // `history_backend = 'codex'` finds real rows, not just the absence of
+      // the pre-cutover 'aisdk' legacy marker (migration 20).
+      ...(o.providerId === "chatgpt" ? { historyBackend: "codex" } : {}),
     });
 
     // Remember what this session was created with, so the next `new`
@@ -1095,6 +1102,13 @@ export class Daemon {
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
+    if (!this.#resumable(row.provider, id)) {
+      throw new RpcError(
+        "bad_request",
+        `session ${id.slice(0, 8)} used ChatGPT's old direct backend, which Loom no longer supports; ` +
+          "its history stays viewable but it cannot be resumed — start a new session to continue",
+      );
+    }
     if (!this.#providers.has(row.provider)) {
       const owners = isClaudeId(row.provider) ? findClaudeOwner(this.config.claudeProfiles, providerRef) : [];
       if (owners.length === 1) {
@@ -1451,6 +1465,18 @@ export class Daemon {
     const caps = this.#providers.capsOf(providerId);
     if (caps) return caps.ownsTranscript;
     return this.#isAisdk(providerId);
+  }
+
+  /** Whether `id` (a session row, not a provider) can be resumed. Only
+   *  ChatGPT sessions created under the pre-Phase-4 direct backend
+   *  (`history_backend = 'aisdk'`) are excluded — their `provider_ref` is a
+   *  Loom transcript-store id, not a Codex thread id, and handing it to
+   *  `CodexAppServerSession.resume()` would either error confusingly or
+   *  silently start an unrelated new thread. History stays readable; only
+   *  resuming is blocked. */
+  #resumable(providerId: string, id: string): boolean {
+    if (providerId !== "chatgpt") return true;
+    return this.#registry.store.historyBackend(id) !== "aisdk";
   }
 
   /** Effort strings `providerId`/`model` actually advertises, beyond Loom's own
