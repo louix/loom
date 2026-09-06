@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,9 +15,12 @@ import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
 import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
+import type { PlanDecision } from "@loom/core/types";
+import { policy } from "@loom/runtime/policy";
 import {
   approvalsReviewerFor,
   CodexAppServerSession,
+  isNativeRestriction,
   mcpConfig,
 } from "@loom/connector-chatgpt/app-server";
 import { spawnCodex, type CodexLaunchSpec, type CodexLauncher } from "@loom/connector-chatgpt/launch";
@@ -66,15 +69,31 @@ test("createProvider rejects the obsolete direct-backend base_url setting", () =
 test("codeModeInstructions only mentions the loom tools actually mounted", async () => {
   const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-"));
   try {
-    const mounted = codeModeInstructions(dir, true, null);
+    const mounted = codeModeInstructions(dir, true, true, null);
     assert.match(mounted, /call the `commit` tool/);
     assert.match(mounted, /`status` tool reprints this root/);
-    assert.doesNotMatch(mounted, /call `ask_user`/);
+    assert.match(mounted, /call `ask_user`/);
 
-    const unmounted = codeModeInstructions(dir, false, null);
+    const unmounted = codeModeInstructions(dir, false, false, null);
     assert.doesNotMatch(unmounted, /call the `commit` tool/);
     assert.doesNotMatch(unmounted, /`status` tool reprints this root/);
     assert.doesNotMatch(unmounted, /call `ask_user`/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("codeModeInstructions never mentions ask_user when askUserMounted is false, even with commit/status mounted (the resume case)", async () => {
+  // `resumeSession` always passes `askUserMounted: false` regardless of
+  // `mountsLoomTools` — a resumed thread created before ask_user existed
+  // genuinely doesn't have it registered, and Loom has no way to tell that
+  // case apart from a newer thread that does. Under-claiming is safe.
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-resume-"));
+  try {
+    const resumed = codeModeInstructions(dir, true, false, null);
+    assert.match(resumed, /call the `commit` tool/);
+    assert.match(resumed, /`status` tool reprints this root/);
+    assert.doesNotMatch(resumed, /call `ask_user`/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -88,10 +107,15 @@ test("codeModeInstructions splices in the caller's repoInstructions instead of r
   // locally: only the daemon knows the `cwd`-then-repoRoot fallback).
   const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-noloommd-"));
   try {
-    const withInstructions = codeModeInstructions(dir, true, "# from the repo root fallback\n\ndo the thing");
+    const withInstructions = codeModeInstructions(
+      dir,
+      true,
+      true,
+      "# from the repo root fallback\n\ndo the thing",
+    );
     assert.match(withInstructions, /from the repo root fallback/);
 
-    const withoutInstructions = codeModeInstructions(dir, true, null);
+    const withoutInstructions = codeModeInstructions(dir, true, true, null);
     assert.doesNotMatch(withoutInstructions, /from the repo root fallback/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -326,6 +350,23 @@ const waitForFile = async (path: string, timeoutMs = 2000): Promise<string> => {
       // not written yet
     }
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
+    await delay(20);
+  }
+};
+
+/** Polls for `path` to exist (any content, including empty) — for a marker
+ *  file the fixture touches (e.g. `LOOM_TEST_INTERRUPT_MARKER_FILE`), where
+ *  `waitForFile`'s "non-empty" check would never be satisfied. */
+const waitForExists = async (path: string, timeoutMs = 500): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      // not there yet
+    }
+    if (Date.now() > deadline) return false;
     await delay(20);
   }
 };
@@ -597,6 +638,436 @@ test("Codex's item/tool/call reports an unsupported tool name as a failed (not e
     Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
     await rm(resultFile, { force: true });
   }
+});
+
+test("Codex's item/tool/call round-trips the ask_user dynamic tool through a question/answer event pair", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-askuser", authJsonPath: "/tmp/loom-codex-dyntool-askuser/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-askuser-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "ask_user", arguments: { question: "pick one", context: "because reasons" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let questionId = "";
+      for await (const ev of s.events()) {
+        if (ev.type === "question") {
+          assert.equal(ev.question, "pick one");
+          assert.equal(ev.context, "because reasons");
+          questionId = ev.id;
+          break;
+        }
+      }
+      await s.answerQuestion(questionId, "chosen answer");
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      assert.equal(result.success, true);
+      assert.equal(result.contentItems[0]?.text, "chosen answer");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("interrupt() drains a pending ask_user question instead of leaving it parked forever", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-askuser-interrupt", authJsonPath: "/tmp/loom-codex-dyntool-askuser-interrupt/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-askuser-interrupt-${process.pid}.json`);
+  try {
+    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "ask_user", arguments: { question: "?" } }));
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      for await (const ev of s.events()) {
+        if (ev.type === "question") break;
+      }
+      await s.interrupt();
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      assert.equal(result.success, true);
+      assert.equal(result.contentItems[0]?.text, "(the turn was interrupted)");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+const planDecisionCases: Array<{
+  name: string;
+  decision: PlanDecision;
+  expectText: RegExp;
+  expectMode?: "acceptEdits";
+}> = [
+  {
+    name: "discuss",
+    decision: { action: "discuss", message: "not ready yet" },
+    expectText: /not ready to implement.*not ready yet.*call exit_plan again/s,
+  },
+  {
+    name: "handoff",
+    decision: { action: "handoff" },
+    expectText: /continues in a separate session/,
+  },
+  {
+    name: "implement",
+    decision: { action: "implement" },
+    expectText: /Plan approved\. Implementing now\./,
+    expectMode: "acceptEdits",
+  },
+  {
+    name: "revise",
+    decision: { action: "revise", plan: "the revised plan" },
+    expectText: /Plan approved\. Implementing now\./,
+    expectMode: "acceptEdits",
+  },
+  {
+    name: "implement_fresh",
+    // implement_fresh's context-reset is explicitly Phase 6's job — treated
+    // like a plain `implement` here (see `respondToPlan`'s doc comment).
+    decision: { action: "implement_fresh" },
+    expectText: /Plan approved\. Implementing now\./,
+    expectMode: "acceptEdits",
+  },
+];
+
+for (const { name, decision, expectText, expectMode } of planDecisionCases) {
+  test(`Codex's exit_plan dynamic tool round-trips a "${name}" plan decision`, async () => {
+    const codexHome = {
+      dir: `/tmp/loom-codex-dyntool-exitplan-${name}`,
+      authJsonPath: `/tmp/loom-codex-dyntool-exitplan-${name}/auth.json`,
+    };
+    const resultFile = join(tmpdir(), `tool-call-result-exitplan-${name}-${process.pid}.json`);
+    try {
+      Deno.env.set(
+        "LOOM_TEST_TOOL_CALL_SPEC",
+        JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
+      );
+      Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+      const s = await CodexAppServerSession.start(
+        { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+        codexHome,
+        FAKE_CODEX,
+      );
+      try {
+        let planId = "";
+        for await (const ev of s.events()) {
+          if (ev.type === "plan_review") {
+            assert.equal(ev.plan, "do the thing");
+            planId = ev.id;
+            break;
+          }
+        }
+        await s.respondToPlan(planId, decision);
+        const raw = await waitForFile(resultFile);
+        const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+        assert.equal(result.success, true);
+        assert.match(result.contentItems[0]?.text ?? "", expectText);
+        if (expectMode) assert.equal(s.snapshot().mode, expectMode);
+        else assert.equal(s.snapshot().mode, "plan");
+      } finally {
+        await s.close();
+      }
+    } finally {
+      Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+      Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+      await rm(resultFile, { force: true });
+    }
+  });
+}
+
+test("exit_plan is refused outside plan mode instead of silently presenting a plan", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-exitplan-wrongmode", authJsonPath: "/tmp/loom-codex-dyntool-exitplan-wrongmode/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-exitplan-wrongmode-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      assert.equal(result.success, false);
+      assert.match(result.contentItems[0]?.text ?? "", /only usable in plan mode/);
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("Codex's native item/tool/requestUserInput round-trips through the same AskUserQuestion permission shape the TUI already renders", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-native-question", authJsonPath: "/tmp/loom-codex-native-question/auth.json" };
+  const resultFile = join(tmpdir(), `user-input-result-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_USER_INPUT_SPEC",
+      JSON.stringify({
+        questions: [
+          {
+            id: "q1",
+            header: "Color",
+            question: "Pick a color",
+            isOther: false,
+            isSecret: false,
+            options: [
+              { label: "red", description: "warm" },
+              { label: "blue", description: "cool" },
+            ],
+          },
+        ],
+      }),
+    );
+    Deno.env.set("LOOM_TEST_USER_INPUT_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let reqId = "";
+      let input: { questions: Array<{ question: string; header: string; options: unknown }> } | undefined;
+      for await (const ev of s.events()) {
+        if (ev.type === "permission_request" && ev.tool === "AskUserQuestion") {
+          reqId = ev.id;
+          input = ev.input as typeof input;
+          break;
+        }
+      }
+      assert.equal(input?.questions[0]?.question, "Pick a color");
+      await s.respondToPermission(reqId, {
+        behavior: "allow",
+        updatedInput: { ...input, answers: { "Pick a color": "blue" } },
+      });
+      const raw = await waitForFile(resultFile);
+      assert.deepEqual(JSON.parse(raw), { answers: { q1: { answers: ["blue"] } } });
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_USER_INPUT_SPEC");
+    Deno.env.delete("LOOM_TEST_USER_INPUT_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("interrupt() drains a pending native question with a structurally valid empty-answer response", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-native-question-interrupt", authJsonPath: "/tmp/loom-codex-native-question-interrupt/auth.json" };
+  const resultFile = join(tmpdir(), `user-input-result-interrupt-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_USER_INPUT_SPEC",
+      JSON.stringify({ questions: [{ id: "q1", header: "", question: "?", isOther: false, isSecret: false, options: null }] }),
+    );
+    Deno.env.set("LOOM_TEST_USER_INPUT_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      for await (const ev of s.events()) {
+        if (ev.type === "permission_request" && ev.tool === "AskUserQuestion") break;
+      }
+      await s.interrupt();
+      const raw = await waitForFile(resultFile);
+      assert.deepEqual(JSON.parse(raw), { answers: { q1: { answers: [""] } } });
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_USER_INPUT_SPEC");
+    Deno.env.delete("LOOM_TEST_USER_INPUT_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("a server request tagged with an unrecognized threadId is rejected, not actioned", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-unknown-thread", authJsonPath: "/tmp/loom-codex-unknown-thread/auth.json" };
+  const resultFile = join(tmpdir(), `approval-result-unknown-thread-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_APPROVAL_SPEC",
+      JSON.stringify({
+        method: "item/commandExecution/requestApproval",
+        threadId: "totally-unrecognized-thread",
+        params: { command: "echo hi" },
+      }),
+    );
+    Deno.env.set("LOOM_TEST_APPROVAL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { error?: { message: string } };
+      assert.match(result.error?.message ?? "", /unrecognized thread/);
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_APPROVAL_SPEC");
+    Deno.env.delete("LOOM_TEST_APPROVAL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("a server request tagged with an observed sub-agent's threadId is accepted and routed through the same handler", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-subagent-thread", authJsonPath: "/tmp/loom-codex-subagent-thread/auth.json" };
+  const resultFile = join(tmpdir(), `approval-result-subagent-thread-${process.pid}.json`);
+  try {
+    Deno.env.set(
+      "LOOM_TEST_PRE_NOTIFICATION",
+      JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "subAgentActivity",
+            id: "sub-item-1",
+            kind: "started",
+            agentThreadId: "sub-thread-1",
+            agentPath: "worker",
+          },
+        },
+      }),
+    );
+    Deno.env.set(
+      "LOOM_TEST_APPROVAL_SPEC",
+      JSON.stringify({
+        method: "item/commandExecution/requestApproval",
+        threadId: "sub-thread-1",
+        params: { command: "echo hi" },
+      }),
+    );
+    Deno.env.set("LOOM_TEST_APPROVAL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let reqId = "";
+      for await (const ev of s.events()) {
+        if (ev.type === "permission_request" && ev.tool === "Bash") {
+          reqId = ev.id;
+          break;
+        }
+      }
+      await s.respondToPermission(reqId, { behavior: "allow" });
+      const raw = await waitForFile(resultFile);
+      assert.deepEqual(JSON.parse(raw), { decision: "accept" });
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_PRE_NOTIFICATION");
+    Deno.env.delete("LOOM_TEST_APPROVAL_SPEC");
+    Deno.env.delete("LOOM_TEST_APPROVAL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("isNativeRestriction flags a stricter mode change on whichever native axis actually tightened", () => {
+  // One representative pair per axis, plus a same-mode no-op and a pure
+  // loosening — see `app-server.ts`'s doc comment for the full by-hand
+  // verification across all 12 ordered pairs.
+  assert.equal(isNativeRestriction("default", "plan"), true); // sandbox axis only
+  assert.equal(isNativeRestriction("acceptEdits", "default"), true); // approvalPolicy axis only
+  assert.equal(isNativeRestriction("auto", "acceptEdits"), true); // approvalsReviewer axis only
+  assert.equal(isNativeRestriction("auto", "plan"), true); // all three axes
+  assert.equal(isNativeRestriction("default", "acceptEdits"), false); // a loosening
+  assert.equal(isNativeRestriction("plan", "auto"), false); // the biggest loosening
+  assert.equal(isNativeRestriction("default", "default"), false); // no-op
+});
+
+test("setMode interrupts an active turn to enforce a native restriction instead of finishing it under the old policy", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-setmode-restrict", authJsonPath: "/tmp/loom-codex-setmode-restrict/auth.json" };
+  const markerFile = join(tmpdir(), `interrupt-marker-${process.pid}.txt`);
+  try {
+    Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+    Deno.env.set("LOOM_TEST_INTERRUPT_MARKER_FILE", markerFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "auto", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      // auto → default tightens both approvalPolicy and approvalsReviewer.
+      await s.setMode("default");
+      assert.equal(await waitForExists(markerFile), true, "expected turn/interrupt to have been called");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_INTERRUPT_MARKER_FILE");
+    await rm(markerFile, { force: true });
+  }
+});
+
+test("setMode does not interrupt an active turn when only loosening the mode", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-setmode-loosen", authJsonPath: "/tmp/loom-codex-setmode-loosen/auth.json" };
+  const markerFile = join(tmpdir(), `interrupt-marker-loosen-${process.pid}.txt`);
+  try {
+    Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+    Deno.env.set("LOOM_TEST_INTERRUPT_MARKER_FILE", markerFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      // default → auto loosens every axis; the turn should be left running.
+      await s.setMode("auto");
+      assert.equal(await waitForExists(markerFile, 300), false, "did not expect turn/interrupt to be called");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_INTERRUPT_MARKER_FILE");
+    await rm(markerFile, { force: true });
+  }
+});
+
+test("Loom's own tool policy is independent of Codex's approvals reviewer — auto_review can never approve a Loom tool request on its behalf", () => {
+  // The dynamic-tool dispatcher (`tool-dispatch.ts`) gates purely on
+  // `@loom/runtime/policy`'s `policy()`, never on `approvalsReviewerFor` —
+  // asserting both here as a single fact keeps that independence from
+  // silently drifting apart as either side changes.
+  for (const mode of ["default", "plan", "acceptEdits"] as const) {
+    assert.equal(approvalsReviewerFor(mode), "user");
+    assert.equal(policy(mode, "commit"), "ask");
+  }
+  assert.equal(approvalsReviewerFor("auto"), "auto_review");
+  assert.equal(policy("auto", "commit"), "allow");
 });
 
 /** A minimal stand-in for `ChildProcessWithoutNullStreams`: real stdout/stderr

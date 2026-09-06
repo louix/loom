@@ -22,6 +22,23 @@
  * `CodexAppServerSession#toolCall`'s real request/response path instead of
  * calling its private method directly. The client's response is written to
  * the result file as JSON for the test to poll.
+ * `LOOM_TEST_USER_INPUT_SPEC` (JSON `{questions}`), when set alongside
+ * `LOOM_TEST_USER_INPUT_RESULT_FILE`, fires a genuine `item/tool/
+ * requestUserInput` request the same way, for the native-question path.
+ * `LOOM_TEST_PRE_NOTIFICATION` (JSON `{method, params}`), when set, sends one
+ * plain notification (no id) right after `thread/start`'s reply, before any
+ * of the above — used to simulate a `subAgentActivity` item establishing a
+ * known sub-agent thread id before an approval request claims it.
+ * `LOOM_TEST_APPROVAL_SPEC` (JSON `{method, threadId, params}`), when set
+ * alongside `LOOM_TEST_APPROVAL_RESULT_FILE`, fires an arbitrary
+ * approval-shaped server request (any method, any `threadId`) — used to
+ * exercise `#serverRequest`'s unrecognized-thread rejection and a known
+ * sub-agent thread's acceptance.
+ * `LOOM_TEST_HOLD_TURN=1` skips `turn/start`'s automatic `turn/completed`
+ * notification, so a test can call `setMode` while a turn is genuinely still
+ * open. `LOOM_TEST_INTERRUPT_MARKER_FILE`, when set, is written on receiving
+ * `turn/interrupt`, so a test can assert whether (or that) an interrupt
+ * actually happened.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -96,20 +113,34 @@ const handle = (req) => {
     }
     const started = fixture("thread-start");
     send({ jsonrpc: "2.0", id, result: started });
+
+    // Deferred (setTimeout, not sent synchronously alongside the thread/start
+    // reply above): the client's `await` that assigns `this.#threadId` from
+    // that reply is a queued microtask, not something that's run yet by the
+    // time a synchronously-sent follow-up message would be parsed — a
+    // message these particular mechanisms need `this.#threadId` to already
+    // be set to test correctly (unlike LOOM_TEST_TOOL_CALL_SPEC below, which
+    // predates that guard and doesn't depend on it). A macrotask tick is
+    // enough to let it run first.
+    const preNotification = process.env["LOOM_TEST_PRE_NOTIFICATION"];
+    if (preNotification) {
+      const { method, params } = JSON.parse(preNotification);
+      setTimeout(() => send({ jsonrpc: "2.0", method, params }), 0);
+    }
+
+    const capture = (resultFile) => (response) => {
+      try {
+        writeFileSync(resultFile, JSON.stringify(response.result ?? { error: response.error }));
+      } catch {
+        // best effort — a missing/unwritable result file shouldn't crash the fixture
+      }
+    };
+
     const spec = process.env["LOOM_TEST_TOOL_CALL_SPEC"];
     if (spec) {
       const { tool, arguments: toolArgs } = JSON.parse(spec);
       const reqId = nextOutgoingId++;
-      pendingOutgoing.set(reqId, (response) => {
-        try {
-          writeFileSync(
-            process.env["LOOM_TEST_TOOL_CALL_RESULT_FILE"],
-            JSON.stringify(response.result ?? { error: response.error }),
-          );
-        } catch {
-          // best effort — a missing/unwritable result file shouldn't crash the fixture
-        }
-      });
+      pendingOutgoing.set(reqId, capture(process.env["LOOM_TEST_TOOL_CALL_RESULT_FILE"]));
       send({
         jsonrpc: "2.0",
         id: reqId,
@@ -123,6 +154,56 @@ const handle = (req) => {
           arguments: toolArgs ?? {},
         },
       });
+    }
+
+    const userInputSpec = process.env["LOOM_TEST_USER_INPUT_SPEC"];
+    if (userInputSpec) {
+      const { questions } = JSON.parse(userInputSpec);
+      const reqId = nextOutgoingId++;
+      pendingOutgoing.set(reqId, capture(process.env["LOOM_TEST_USER_INPUT_RESULT_FILE"]));
+      setTimeout(
+        () =>
+          send({
+            jsonrpc: "2.0",
+            id: reqId,
+            method: "item/tool/requestUserInput",
+            params: {
+              threadId: started.thread.id,
+              turnId: "fake-turn-1",
+              itemId: "fake-item-1",
+              questions: questions ?? [],
+              isBlocking: true,
+              autoResolutionMs: null,
+            },
+          }),
+        0,
+      );
+    }
+
+    const approvalSpec = process.env["LOOM_TEST_APPROVAL_SPEC"];
+    if (approvalSpec) {
+      const { method, threadId, params: approvalParams } = JSON.parse(approvalSpec);
+      const reqId = nextOutgoingId++;
+      pendingOutgoing.set(reqId, capture(process.env["LOOM_TEST_APPROVAL_RESULT_FILE"]));
+      // Deferred an extra tick relative to the pre-notification above so a
+      // subagent-thread test's `subAgentActivity` notification is guaranteed
+      // to be processed (and recorded into `#subagentThreadIds`) first.
+      setTimeout(
+        () =>
+          send({
+            jsonrpc: "2.0",
+            id: reqId,
+            method,
+            params: {
+              threadId: threadId ?? started.thread.id,
+              turnId: "fake-turn-1",
+              itemId: "fake-approval-item-1",
+              startedAtMs: Date.now(),
+              ...approvalParams,
+            },
+          }),
+        10,
+      );
     }
     return;
   }
@@ -142,17 +223,32 @@ const handle = (req) => {
   if (method === "turn/start") {
     send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
     // A real turn finishes asynchronously via a notification, not the reply.
-    setTimeout(() => {
-      send({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: { turn: { id: "fake-turn-1", status: "completed" } },
-      });
-    }, 0);
+    // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
+    // `setMode`) while the turn is still genuinely open.
+    if (!process.env["LOOM_TEST_HOLD_TURN"]) {
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: "fake-turn-1", status: "completed" } },
+        });
+      }, 0);
+    }
+    return;
+  }
+  if (method === "turn/interrupt") {
+    const marker = process.env["LOOM_TEST_INTERRUPT_MARKER_FILE"];
+    if (marker) {
+      try {
+        writeFileSync(marker, "");
+      } catch {
+        // best effort
+      }
+    }
+    send({ jsonrpc: "2.0", id, result: {} });
     return;
   }
   if (
-    method === "turn/interrupt" ||
     method === "turn/steer" ||
     method === "thread/settings/update" ||
     method === "turn/settings/update" ||

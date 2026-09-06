@@ -32,12 +32,12 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
   ]);
 
 /**
- * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`, see
- * `app-server.ts`) are a strict subset of the full Claude/aisdk loom tool set
- * — no `ask_user` yet (Phase 5 wires up Codex's own answer path first). The
- * daemon's `systemPromptAppend` is written assuming the full set, so it would
- * tell the model about tools that don't exist here; recompute the tool-steer
- * for what's actually mounted instead of forwarding it verbatim.
+ * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`/
+ * `ask_user`/`exit_plan`, see `app-server.ts`) are Loom's own; the daemon's
+ * `systemPromptAppend` is written assuming Claude/aisdk's full loom-mcp/tool
+ * set (a superset with different naming), so it would tell the model about
+ * tools shaped differently than what's actually mounted here — recompute the
+ * tool-steer for what's actually mounted instead of forwarding it verbatim.
  *
  * `repoInstructions` is the daemon's own pre-resolved `.loom/LOOM.md` text
  * (`repoInstructionsFor` in `backend/daemon/src/daemon/prompt.ts`, already
@@ -48,14 +48,35 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
  * kept distinct from the provider's own `cwd` (where Codex's process and
  * sandbox actually run), even though the daemon passes the same value for
  * both today.
+ *
+ * `askUserMounted` is deliberately **separate** from `mountsLoomTools`: a
+ * resumed thread never gets its `dynamicTools` re-sent (no such field on
+ * `thread/resume` — see `app-server.ts#resume`'s comment), so a thread
+ * created before `ask_user` existed (pre-Phase-5) genuinely doesn't have it
+ * registered. `commit`/`status` are safe to describe on every resumed
+ * session (mounted unconditionally since Phase 4, and every currently-
+ * resumable Codex thread postdates that); `ask_user` is not, so
+ * `resumeSession` below always passes `askUserMounted: false` regardless of
+ * `mountsLoomTools` — under-claiming a tool a newer thread might genuinely
+ * have is safe, over-claiming one an older thread doesn't have is not (the
+ * model's call would just error). A session that needs `ask_user` after a
+ * daemon restart has to be started fresh; Phase 6's forced-restart-on-demand
+ * is the eventual real fix. `exit_plan` needs no equivalent guard: its usage
+ * guidance lives entirely in the tool's own `description`, visible only if
+ * Codex actually has it registered — there's nothing here to over-claim.
  */
 export const codeModeInstructions = (
   workspaceRoot: string,
   mountsLoomTools: boolean,
+  askUserMounted: boolean,
   repoInstructions: string | null,
 ): string =>
   [
-    toolSteer(workspaceRoot, { askUser: false, commit: mountsLoomTools, status: mountsLoomTools }),
+    toolSteer(workspaceRoot, {
+      askUser: askUserMounted,
+      commit: mountsLoomTools,
+      status: mountsLoomTools,
+    }),
     repoInstructions,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -118,12 +139,16 @@ class ChatGPTProvider implements AgentProvider {
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const workspaceRoot = opts.workspaceRoot ?? opts.cwd;
+    const mounted = opts.loomServer === true;
     return CodexAppServerSession.start(
       {
         ...opts,
+        // A fresh thread — `ask_user` really is registered whenever the
+        // rest of the loom tool set is.
         systemPromptAppend: codeModeInstructions(
           workspaceRoot,
-          opts.loomServer === true,
+          mounted,
+          mounted,
           opts.repoInstructions ?? null,
         ),
       },
@@ -142,9 +167,16 @@ class ChatGPTProvider implements AgentProvider {
       // Codex sessions always mount the loom dynamic tools on resume (the
       // daemon always resumes with `loomServer` semantics equivalent to
       // `true` for this provider — `SessionRef` has no `loomServer` field).
+      // `askUserMounted: false` regardless — see `codeModeInstructions`'s
+      // doc comment for why resume never claims `ask_user`.
       {
         ...ref,
-        systemPromptAppend: codeModeInstructions(workspaceRoot, true, ref.repoInstructions ?? null),
+        systemPromptAppend: codeModeInstructions(
+          workspaceRoot,
+          true,
+          false,
+          ref.repoInstructions ?? null,
+        ),
       },
       this.#codexHome,
       this.#codexCliPath,
