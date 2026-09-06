@@ -2139,11 +2139,31 @@ test("a permission carries its tool + input; leaving awaiting_input clears it", 
   assert.deepEqual(pendingFor(s, "a"), {});
 });
 
-test("queue entries are pruned when their session disappears", () => {
+test("a queue outlives its session here, for the drain to strand and report", () => {
   let s = reduce(initialState(), fleet([snap({ id: "a", status: "running" })]));
   s = reduce(s, { t: "enqueue", sessionId: "a", text: "later" });
   s = reduce(s, fleet([]));
+  // Deliberately kept: dropping a message the user typed without a word about
+  // it is the bug, not the tidy-up. `drainQueues` clears it and says so — see
+  // "a queued session proven gone is reported once" in tui-render.
+  assert.deepEqual(queueFor(s, "a"), ["later"]);
+  s = reduce(s, { t: "clearQueue", sessionId: "a" });
   assert.deepEqual(queueFor(s, "a"), []);
+});
+
+test("a held send is per session, survives its snapshots, and is released once", () => {
+  let s = reduce(initialState(), fleet([snap({ id: "a", status: "idle" })]));
+  s = reduce(s, { t: "holdSend", sessionId: "a", text: "did this land?" });
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
+  assert.equal(s.heldSend["a"], "did this land?", "a snapshot doesn't clear the hold");
+  s = reduce(s, { t: "holdSend", sessionId: "a", text: null });
+  assert.equal(s.heldSend["a"], undefined, "opening the prompt releases it");
+
+  // A session that has gone takes its held text with it — there is no longer a
+  // prompt to restore it into.
+  s = reduce(s, { t: "holdSend", sessionId: "a", text: "did this land?" });
+  s = reduce(s, fleet([]));
+  assert.equal(s.heldSend["a"], undefined);
 });
 
 test("confirm open / run / close", () => {

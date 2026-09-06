@@ -16,9 +16,15 @@ import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
 import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
-import type { LoomClient } from "@loom/client";
+import type { ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
-import type { DoctorReport, HistoryPage, SessionSnapshot } from "@loom/core/wire";
+import type {
+  DaemonInfo,
+  DoctorReport,
+  HistoryPage,
+  PushFrame,
+  SessionSnapshot,
+} from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
@@ -294,8 +300,31 @@ export interface FleetHandle {
   readonly effectStart: () => () => void;
 }
 
+/**
+ * The slice of the `LoomClient` surface the handle actually drives. Named as its own
+ * contract so a test can hand over a stand-in it controls — snapshots, pushes
+ * and each RPC's settlement — without casting a half-built object to the whole
+ * client. `LoomClient` satisfies it structurally; nothing implements it twice.
+ */
+export interface FleetClient {
+  readonly clientId: string;
+  readonly daemonInfo: DaemonInfo | null;
+  readonly request: <T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs?: number,
+  ) => Promise<T>;
+  readonly subscribe: (fn: (state: ClientState) => void) => () => void;
+  readonly onPush: (fn: (frame: PushFrame) => void) => () => void;
+  readonly on: (
+    event: "disconnect" | "reconnect" | "resync" | "close",
+    fn: () => void,
+  ) => () => void;
+  readonly close: () => Promise<void>;
+}
+
 export interface MkFleetHandleInput {
-  readonly client: LoomClient;
+  readonly client: FleetClient;
   readonly term: Term;
   /** Daemon + TUI log paths for the "view logs" command; absent in tests. */
   readonly logs?: { readonly daemon: string; readonly tui: string };
@@ -444,6 +473,26 @@ const deriveView = (
   };
 };
 
+/**
+ * The authoritative session list, or `null` when there is no snapshot to read
+ * one from. {@link fleetSessions} answers `[]` for both "no sessions" and "no
+ * connection", and a *fresh* `[]` each call — comparing those to decide whether
+ * the fleet changed fires on every dispatch and reads a dropped connection as
+ * an emptied fleet. Compare this instead; `null !== null` is false.
+ */
+const sessionsRef = (s: TuiState): readonly SessionSnapshot[] | null =>
+  s.fleet.tag === "data" ? s.fleet.value.sessions : null;
+
+/**
+ * The reply never came back, so whether the daemon ran the request is unknown
+ * from here — a dropped connection and a timeout are the same fact. Nothing
+ * that mutates a session may be retried on one of these.
+ */
+const isAmbiguousFailure = (e: unknown): boolean => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "disconnected" || code === "timeout";
+};
+
 export const mkFleetHandle = ({
   client,
   term,
@@ -498,6 +547,7 @@ export const mkFleetHandle = ({
   // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
   const forgetDeadSessions = (): void => {
+    if (state.fleet.tag !== "data") return; // an unknown fleet proves nothing dead
     const live = new Set(fleetSessions(state).map((s) => s.id));
     for (const id of draining) if (!live.has(id)) draining.delete(id);
     for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
@@ -561,14 +611,25 @@ export const mkFleetHandle = ({
    * than lost between the two sources.
    */
   const loadHistory = (): void => {
+    // No connection, no fetch: the caches were dropped when it went, and asking
+    // now would only spend a request on a socket that isn't there. Regaining a
+    // snapshot is one of the three things that calls this.
+    if (state.fleet.tag !== "data") return;
     const id = state.selectedId;
     if (!id) return;
-    if (transcriptFor(state, id).head.tag !== "idle") return;
+    const head = transcriptFor(state, id).head;
+    // `error` retries. This runs only on a selection change, a cache reset or a
+    // regained snapshot — never on a render or an arbitrary snapshot — so a
+    // failed head is retried by leaving and coming back, and cannot loop.
+    if (head.tag === "pending" || head.tag === "data") return;
     const gen = state.transcriptGen;
     dispatch({ t: "historyStart", sessionId: id, older: false, gen });
     client
       .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE })
-      .then((page) => dispatch({ t: "historyPage", sessionId: id, page, older: false, gen }))
+      .then((page) => {
+        if (gen !== state.transcriptGen) return;
+        dispatch({ t: "historyPage", sessionId: id, page, older: false, gen });
+      })
       .catch((e: unknown) => {
         dispatch({
           t: "historyFailed",
@@ -586,6 +647,7 @@ export const mkFleetHandle = ({
    * re-points the cursor at whatever it evicted rather than clearing it.
    */
   const loadOlderHistory = (): void => {
+    if (state.fleet.tag !== "data") return;
     const id = state.selectedId;
     if (!id) return;
     const t = transcriptFor(state, id);
@@ -604,9 +666,13 @@ export const mkFleetHandle = ({
     client
       .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE, cursor })
       .then((got) => {
-        const onSame = state.selectedId === id;
+        // The generation this page was asked under is gone — a reconnect or a
+        // resync re-read the transcript from scratch. The reducer already
+        // refuses its entries; `beforeRows` and `wasPinnedTop` describe a
+        // viewport that no longer exists, so nothing below may run either.
+        if (gen !== state.transcriptGen || state.selectedId !== id) return;
         dispatch({ t: "historyPage", sessionId: id, page: got, older: true, gen });
-        const grew = onSame ? shownLogRows() - beforeRows : 0;
+        const grew = shownLogRows() - beforeRows;
         if (grew > 0) {
           if (wasPinnedTop) {
             logScroll = Math.max(0, shownLogRows() - page); // stay pinned at the new top
@@ -630,19 +696,28 @@ export const mkFleetHandle = ({
   };
 
   const drainQueues = (): void => {
+    // An unknown fleet is not an empty fleet. Without this a dropped connection
+    // reads as "every queued session is gone" and strands every queue.
+    if (state.fleet.tag !== "data") return;
     // A queue on a session that won't return to idle (done / error / gone) is
     // stranded — say so and drop it. An `interrupted` session is left alone
     // until the next `send` revives it.
-    for (const [id, q] of Object.entries(state.queue)) {
+    for (const id of Object.keys(state.queue)) {
+      // Re-read per iteration: `note` and `clearQueue` below both dispatch,
+      // and dispatch re-enters this function.
+      const q = state.queue[id];
       if (!q || q.length === 0) continue;
       const s = fleetSessions(state).find((x) => x.id === id);
       if (!s || s.status.kind === "done" || s.status.kind === "error") {
+        // Clear BEFORE saying so. `note` dispatches, that dispatch re-enters
+        // this drain, and it would find the very same stranded queue — one
+        // notice per recursion until the stack runs out.
+        dispatch({ t: "clearQueue", sessionId: id });
+        lastDrainTurn.delete(id);
         note(
           `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status.kind : "gone"}`,
           "bad",
         );
-        dispatch({ t: "clearQueue", sessionId: id });
-        lastDrainTurn.delete(id);
       }
     }
     for (const s of fleetSessions(state)) {
@@ -670,7 +745,22 @@ export const mkFleetHandle = ({
             lastDrainTurn.set(s.id, fresh); // only gate the next one after a success
             dispatch({ t: "dequeue", sessionId: s.id }); // daemon emits the user_message echo
           })
-          .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad")) // no gate update → retries
+          .catch((e: unknown) => {
+            if (isAmbiguousFailure(e)) {
+              // The daemon may well have received and run this text. Leaving it
+              // queued would send it a second time on the next drain, so take it
+              // off the queue and hold it where the user can read, edit and
+              // decide about it. Gate the next one behind a real turn too — if
+              // the send did land, a turn is starting.
+              const fresh = fleetSessions(state).find((x) => x.id === s.id)?.turns ?? s.turns;
+              lastDrainTurn.set(s.id, fresh);
+              dispatch({ t: "dequeue", sessionId: s.id });
+              dispatch({ t: "holdSend", sessionId: s.id, text: head });
+              note("queued message may already have been sent — ⏎ to review it", "bad");
+              return;
+            }
+            note(e instanceof Error ? e.message : String(e), "bad"); // no gate update → retries
+          })
           .finally(() => draining.delete(s.id));
       }
     }
@@ -734,15 +824,22 @@ export const mkFleetHandle = ({
       if (themeState) persistTheme(themeState, state.theme);
     }
     publish();
-    // Also on a cache reset: the reset put every `head` back to `idle`, so the
-    // selected session refetches its newest page and the rest wait to be picked.
-    if (state.selectedId !== prev.selectedId || state.transcriptGen !== prev.transcriptGen) {
+    // Three transitions want the selected session's newest page, and only
+    // these three: a different session, a cache reset (which put every `head`
+    // back to `idle`), and regaining a snapshot after losing one. The reset a
+    // dropped connection performs deliberately does *not* refetch — there is
+    // nothing to ask — which is why regaining data has to be its own trigger.
+    if (
+      state.selectedId !== prev.selectedId ||
+      state.transcriptGen !== prev.transcriptGen ||
+      (prev.fleet.tag !== "data" && state.fleet.tag === "data")
+    ) {
       loadHistory();
     }
-    if (fleetSessions(state) !== fleetSessions(prev)) forgetDeadSessions();
+    if (sessionsRef(state) !== sessionsRef(prev)) forgetDeadSessions();
     // A compaction finishing (or being cancelled) lifts the drain hold added for
     // compacting sessions, and it now rides the snapshot like everything else.
-    if (fleetSessions(state) !== fleetSessions(prev) || state.queue !== prev.queue) drainQueues();
+    if (sessionsRef(state) !== sessionsRef(prev) || state.queue !== prev.queue) drainQueues();
   };
 
   // ---- helpers ----------------------------------------------------
@@ -999,16 +1096,24 @@ export const mkFleetHandle = ({
         }
         return note("no question pending", "dim");
       }
-      case "send":
+      case "send": {
+        // A send held back because its reply never came is this session's text
+        // and outranks the global cancelled-prompt draft. Opening the prompt is
+        // the explicit action that releases it — it is editable from here, and
+        // is not re-sent unless the user submits it.
+        const held = state.heldSend[s.id];
+        if (held !== undefined) dispatch({ t: "holdSend", sessionId: s.id, text: null });
+        const text = held ?? state.lastDraft;
         return void dispatch({
           t: "openPrompt",
           prompt: makePrompt({
             kind: "send",
             sessionId: s.id,
             label: "send",
-            ...(state.lastDraft ? { text: state.lastDraft } : {}),
+            ...(text ? { text } : {}),
           }),
         });
+      }
       case "title":
         return void dispatch({
           t: "openPrompt",
@@ -2587,10 +2692,14 @@ export const mkFleetHandle = ({
     void reconcileVersion();
 
     const offs = [
+      // Live entries first: `subscribe` fires synchronously with the current
+      // state, which is what starts the selected session's head fetch. An entry
+      // landing between that fetch going out and this listener being installed
+      // would belong to neither source and simply be missing.
+      client.onPush((frame) => dispatch({ t: "push", frame })),
       // The one authoritative feed: every fleet change arrives as a complete
       // snapshot, so there is nothing to reconcile, merge or refetch.
       client.subscribe((s) => dispatch({ t: "state", state: s })),
-      client.onPush((frame) => dispatch({ t: "push", frame })),
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
         // The caches were cleared and the generation bumped when the connection

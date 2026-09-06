@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: step 0 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-1 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -84,27 +84,27 @@ the behavior actually belongs to the reducer.
 
 ### Change
 
-- [ ] Gate `drainQueues`, `forgetDeadSessions`, and history requests on
+- [x] Gate `drainQueues`, `forgetDeadSessions`, and history requests on
       `state.fleet.tag === "data"`. An unknown fleet is not an empty fleet.
-- [ ] On disconnect, preserve selection, drafts and unsent queue entries;
+- [x] On disconnect, preserve selection, drafts and unsent queue entries;
       invalidate history requests, clear transcript caches and reset scroll.
       **Do not start a replacement history request yet.**
-- [ ] On transition from non-data to data, fetch the selected session's latest
+- [x] On transition from non-data to data, fetch the selected session's latest
       page. Also fetch on selection change and an explicit cache reset while data.
-- [ ] Register live transcript listening before starting that initial fetch.
-- [ ] Allow a failed initial history fetch to be retried by leaving and
+- [x] Register live transcript listening before starting that initial fetch.
+- [x] Allow a failed initial history fetch to be retried by leaving and
       reselecting the session, as well as by reconnecting. Do not automatically loop
       retries on every snapshot or render.
-- [ ] Check the captured transcript generation before _all_ page callback work,
+- [x] Check the captured transcript generation before _all_ page callback work,
       including scroll adjustments outside the reducer. A stale response must have
       no viewport side effects.
-- [ ] If a current snapshot proves a queued session is gone/done/error, clear
+- [x] If a current snapshot proves a queued session is gone/done/error, clear
       that queue before dispatching its notice. Reentrant dispatch must not observe
       the same stranded queue again.
-- [ ] Stop using fresh fallback arrays as change signals. Compare narrowed
+- [x] Stop using fresh fallback arrays as change signals. Compare narrowed
       authoritative snapshot references or use a stable empty display value.
       This supports the data guard; it does not replace it.
-- [ ] Do not resubmit a send whose RPC was disconnected or timed out. Remove
+- [x] Do not resubmit a send whose RPC was disconnected or timed out. Remove
       that ambiguous head from automatic draining, preserve its text in an editable
       local draft, and show that it may already have been sent. Preserve genuinely
       unsent entries. Resending the ambiguous text requires an explicit user action;
@@ -127,6 +127,67 @@ the behavior actually belongs to the reducer.
 
 Done: the reproduced `Maximum call stack size exceeded` and stuck history-error
 cases fail before the fix and pass afterward. No extra connection flags exist.
+
+**Done.** All six regressions were written first and all six failed, each for
+its stated reason — regression 1 with the reproduced
+`RangeError: Maximum call stack size exceeded` thrown out of the snapshot
+delivery through `note → dispatch → drainQueues → note`.
+
+The root cause of most of it was one expression: `fleetSessions(state)` answers
+a _fresh_ `[]` both for "no sessions" and for "no connection". Comparing that to
+the previous one was true on every dispatch, so `drainQueues` and
+`forgetDeadSessions` ran constantly and, while disconnected, read the empty
+fallback as proof that every queued session was gone. `sessionsRef` now returns
+the authoritative array or `null`, and the three effect functions each refuse to
+run without a snapshot. No `connected` or `hasSnapshot` flag was added; every
+decision narrows the existing `ClientState`.
+
+Rather than list the checkboxes back, the parts worth knowing:
+
+- **The recursion** was fixed by clearing the stranded queue before announcing
+  it, and by re-reading `state.queue[id]` inside the loop instead of trusting
+  the entries captured before the first reentrant dispatch.
+- **Stranding is now the drain's job alone.** `applyClientState` used to
+  `pruneByLive` the queue, which silently dropped a message the user had typed
+  the moment its session went. That prune is gone; the reducer keeps the queue
+  and `drainQueues` clears it _and_ says so.
+- **A disconnect no longer refetches.** The cache reset on disconnect leaves
+  every `head` at `idle`, which used to fire a request at a dead socket
+  immediately. `loadHistory` returns without a snapshot, so the fetch now waits
+  for the `non-data → data` edge, which is a third trigger beside a selection
+  change and a cache reset.
+- **A failed head retries only on an explicit action.** `loadHistory` proceeds
+  from `idle` _or_ `error`, which is safe precisely because it is called from
+  three discrete transitions and never from a render or an arbitrary snapshot.
+- **`loadOlderHistory`'s callback returns early on a stale generation.** The
+  reducer already refused the entries; what leaked was the viewport. Regression 3
+  fails without this by scrolling to row 57 of a log the user never scrolled.
+- **A disconnected or timed-out `session.send` is no longer re-drained.** Both
+  mean the same thing — the reply never came back, so whether the daemon ran it
+  is unknowable here. The head leaves the queue for a per-session `heldSend`
+  slot, the notice says it may already have been sent, and opening that
+  session's `send` prompt restores it as editable text. Nothing resends without
+  the user pressing Enter.
+
+Two changes outside the two files this step named:
+
+- `client/src/client.ts`: the timeout rejection is now tagged `code: "timeout"`,
+  beside the existing `code: "disconnected"`. The alternative was matching on
+  the message string from the TUI.
+- `frontend/tui/src/fleet-handle.ts` exports `FleetClient`, the seven-member
+  slice of `LoomClient` the handle drives, and takes that instead of the class.
+  A real daemon cannot hold a response open or deliver `pending` on cue, so the
+  regressions need a stand-in; naming the dependency is how they get one without
+  a cast.
+
+Reducer coverage moved with the behaviour: the old
+"queue entries are pruned when their session disappears" asserted the prune this
+step deleted, so it now asserts the queue survives for the drain to strand, and
+a new case covers `holdSend`.
+
+Verified: `deno task typecheck`, `deno task lint` and `deno task format:check`
+clean; `deno task test` 624 passed (112 steps) / 0 failed, up from the 622 / 106
+baseline.
 
 ## 2. Fix mode application/publication ordering
 

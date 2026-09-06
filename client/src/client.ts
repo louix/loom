@@ -212,7 +212,13 @@ export class LoomClient {
       const timer =
         limit > 0
           ? setTimeout(() => {
-              if (this.#pending.delete(id)) reject(new Error(`request timed out: ${method}`));
+              // Tagged like the disconnect rejection below and for the same
+              // reason: the daemon may have run this to completion, so a caller
+              // that mutates state must not retry on it.
+              if (this.#pending.delete(id))
+                reject(
+                  Object.assign(new Error(`request timed out: ${method}`), { code: "timeout" }),
+                );
             }, limit)
           : null;
       this.#pending.set(id, {

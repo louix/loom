@@ -577,6 +577,14 @@ export interface TuiState {
   resolved: Record<string, readonly string[]>;
   /** Follow-up messages typed at a still-running session, awaiting its next idle. */
   queue: Record<string, string[]>;
+  /**
+   * Per session, the text of one drained queue entry whose `session.send` never
+   * came back — the connection dropped or the request timed out, so whether the
+   * daemon ran it is unknowable from here. It has left {@link queue} (draining
+   * it again would be a second send) and waits here until the user opens that
+   * session's `send` prompt, which restores it as editable text.
+   */
+  heldSend: Record<string, string>;
   notice: Notice | null;
   mode: UiMode;
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
@@ -639,6 +647,7 @@ export const initialState = (): TuiState => {
     logFilter: "everything",
     resolved: {},
     queue: {},
+    heldSend: {},
     notice: null,
     mode: "browse",
     doctor: null,
@@ -705,6 +714,8 @@ export type Action =
   | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "echo"; line: LogLine }
   | { t: "enqueue"; sessionId: string; text: string }
+  /** `null` releases the hold — the text is now in an open prompt. */
+  | { t: "holdSend"; sessionId: string; text: string | null }
   | { t: "dequeue"; sessionId: string }
   | { t: "clearQueue"; sessionId: string }
   | { t: "openPlan"; sessionId: string; requestId: string; text: string }
@@ -1040,6 +1051,15 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, queue: { ...s.queue, [a.sessionId]: [...(s.queue[a.sessionId] ?? []), t] } };
     }
 
+    case "holdSend":
+      return {
+        ...s,
+        heldSend:
+          a.text === null
+            ? without(s.heldSend, a.sessionId)
+            : { ...s.heldSend, [a.sessionId]: a.text },
+      };
+
     case "dequeue": {
       const cur = s.queue[a.sessionId];
       if (!cur || cur.length === 0) return s;
@@ -1228,7 +1248,11 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-    queue: pruneByLive(s.queue, sessions),
+    // `queue` is deliberately NOT pruned here. A queue whose session has gone
+    // is stranded, and stranding it is news — silently dropping it loses a
+    // message the user typed with no word about it. `drainQueues` clears it and
+    // says so, in the same dispatch this snapshot triggers.
+    heldSend: pruneByLive(s.heldSend, sessions),
     modeDraft: pruneByLive(s.modeDraft, sessions),
     transcripts: pruneByLive(s.transcripts, sessions),
     resolved: pruneResolved(pruneByLive(s.resolved, sessions), sessions),

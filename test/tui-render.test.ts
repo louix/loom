@@ -9,7 +9,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { ClientState } from "@loom/client";
+import { loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
+import { stateIdle, stateRunning } from "@loom/core/session-state";
+import { LOOM_VERSION } from "@loom/core/version";
+import type { DaemonInfo, HistoryCursor, HistoryPage, SessionSnapshot } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
 import {
   askQuestionLines,
@@ -21,8 +25,20 @@ import {
   RequestPanel,
   requestPanelRows,
 } from "@loom/tui/components";
-import { mkFleetHandle } from "@loom/tui/fleet-handle";
-import { initialState, makePrompt, reduce, sessionLog } from "@loom/tui/model";
+import {
+  mkFleetHandle,
+  type FleetClient,
+  type FleetHandle,
+  type Term,
+} from "@loom/tui/fleet-handle";
+import {
+  initialState,
+  makePrompt,
+  queueFor,
+  reduce,
+  sessionLog,
+  transcriptFor,
+} from "@loom/tui/model";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -2078,6 +2094,351 @@ model    = "gpt-5"
       app.unmount();
       await client.close();
       await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The handle's daemon-feed effects, driven against a client the test controls.
+//
+// These are about *when* the handle acts, not what it draws: a dropped
+// connection is not an empty fleet, a page in flight belongs to the generation
+// that asked for it, and a queued message whose send never came back is not
+// re-sent on its own. A real daemon cannot hold a response open or deliver
+// `pending` on cue, so these drive `mkFleetHandle` directly.
+// ---------------------------------------------------------------------------
+
+interface FakeCall {
+  readonly method: string;
+  readonly params: Record<string, unknown>;
+  readonly resolve: (v: unknown) => void;
+  readonly reject: (e: unknown) => void;
+}
+
+/** A {@link FleetClient} whose snapshots and RPC settlements are the test's to
+ *  drive. Every request parks in `calls` until answered by hand. */
+const mkFakeClient = () => {
+  const snapshotFns = new Set<(s: ClientState) => void>();
+  const calls: FakeCall[] = [];
+  let current: ClientState = loadableIdle;
+
+  const client: FleetClient = {
+    clientId: "test-client",
+    daemonInfo: null,
+    request: <T>(method: string, params?: unknown): Promise<T> => {
+      let resolve!: (v: unknown) => void;
+      let reject!: (e: unknown) => void;
+      const p = new Promise<unknown>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      calls.push({ method, params: (params ?? {}) as Record<string, unknown>, resolve, reject });
+      return p as Promise<T>;
+    },
+    subscribe: (fn) => {
+      snapshotFns.add(fn);
+      fn(current);
+      return () => snapshotFns.delete(fn);
+    },
+    onPush: () => () => {},
+    on: () => () => {},
+    close: () => Promise.resolve(),
+  };
+
+  const events = (): FakeCall[] => calls.filter((c) => c.method === "session.events");
+  return {
+    client,
+    calls,
+    /** Publish a new authoritative state, exactly as the real client would. */
+    deliver: (s: ClientState): void => {
+      current = s;
+      for (const fn of snapshotFns) fn(s);
+    },
+    of: (method: string): FakeCall[] => calls.filter((c) => c.method === method),
+    /** Newest-page fetches and scroll-back fetches, told apart by the cursor. */
+    heads: (): FakeCall[] => events().filter((c) => c.params["cursor"] === undefined),
+    olders: (): FakeCall[] => events().filter((c) => c.params["cursor"] !== undefined),
+  };
+};
+
+const fakeTerm: Term = {
+  exit: () => {},
+  suspendTerminal: () => Promise.resolve(),
+  write: () => {},
+  isTTY: true,
+  getSize: () => ({ cols: 120, rows: 40 }),
+  onResize: () => () => {},
+};
+
+const testDaemon: DaemonInfo = {
+  pid: 1,
+  version: LOOM_VERSION,
+  repoRoot: "/tmp/fake-repo",
+  startedAt: 0,
+  epoch: "e1",
+};
+
+const testSession = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
+  id: "a",
+  parentId: null,
+  forkTurn: null,
+  provider: "fake",
+  model: null,
+  effort: null,
+  mode: "default",
+  status: stateRunning,
+  title: "a task",
+  comment: null,
+  worktree: null,
+  branch: null,
+  baseBranch: null,
+  inPlace: false,
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextUsed: 0,
+  contextLimit: 0,
+  costUsd: 0,
+  costSource: "none",
+  turns: 0,
+  requests: [],
+  subagents: [],
+  backgroundTasks: [],
+  rateLimits: {},
+  cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
+  keepWarm: false,
+  canRewind: true,
+  resumable: true,
+  git: null,
+  createdAt: 1,
+  updatedAt: 1,
+  ...over,
+});
+
+const fleetOf = (...sessions: SessionSnapshot[]): ClientState =>
+  loadableLoaded({ daemon: testDaemon, providers: [], sessions });
+
+/** One page of `n` durable entries ending at `lastId`, oldest first. */
+const pageOf = (
+  lastId: number,
+  n: number,
+  olderCursor: HistoryCursor | null,
+  sessionId = "a",
+): HistoryPage => ({
+  items: Array.from({ length: n }, (_, i) => {
+    const id = lastId - n + 1 + i;
+    return {
+      id,
+      event: { sessionId, ts: 1000 + id, type: "assistant_text" as const, text: `line-${id}` },
+    };
+  }),
+  olderCursor,
+});
+
+/** Open `send` on the selected row, type `text`, and ⌥⏎ it into the queue. */
+const queueFollowUp = (handle: FleetHandle, text: string): void => {
+  handle.handleKey("", { return: true } as Key);
+  for (const ch of text) handle.handleKey(ch, {} as Key);
+  handle.handleKey("", { meta: true, return: true } as Key);
+};
+
+describe("tui fleet-handle effects", () => {
+  test("a dropped connection is not an empty fleet: no exception, no RPCs, queue kept", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      assert.equal(handle.getView().state.selectedId, "a");
+      assert.equal(fake.heads().length, 1, "the selected session fetched its head");
+
+      queueFollowUp(handle, "follow up");
+      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+
+      const before = fake.calls.length;
+      // The connection drops. The fleet is unknown, not empty — nothing about
+      // it justifies stranding the queue or asking a dead socket for history.
+      fake.deliver(loadablePending);
+
+      assert.equal(fake.calls.length, before, "no RPC is issued while the fleet is unknown");
+      const s = handle.getView().state;
+      assert.deepEqual(queueFor(s, "a"), ["follow up"], "the queued follow-up survives");
+      assert.equal(s.selectedId, "a", "the selection survives");
+      assert.doesNotMatch(
+        s.notice?.text ?? "",
+        /not sent/,
+        "and nothing about a merely unknown fleet strands it",
+      );
+
+      // Back to data: exactly one replacement head fetch, and the queue is
+      // still governed by the ordinary turn-end rules (this session is running).
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      assert.equal(fake.heads().length, 2, "one replacement head fetch");
+      assert.equal(fake.of("session.send").length, 0, "a running session is not drained");
+      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("history reloads across a reconnect for the same selected session", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      assert.equal(fake.heads().length, 1);
+      fake.heads()[0]?.resolve(pageOf(3, 3, null));
+      await delay(0);
+      assert.equal(transcriptFor(handle.getView().state, "a").head.tag, "data");
+
+      fake.deliver(loadablePending);
+      assert.equal(fake.heads().length, 1, "no replacement fetch while the fleet is unknown");
+      assert.equal(
+        transcriptFor(handle.getView().state, "a").head.tag,
+        "idle",
+        "the cache was invalidated, not left claiming data",
+      );
+
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      assert.equal(fake.heads().length, 2, "data refetches the head, once");
+      fake.heads()[1]?.resolve(pageOf(6, 3, null));
+      await delay(0);
+      assert.equal(transcriptFor(handle.getView().state, "a").head.tag, "data");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("an older page released after a reset moves neither entries, cursor nor viewport", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm, historyPageSize: 40 });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      fake.heads()[0]?.resolve(pageOf(100, 40, { olderThan: 61 }));
+      await delay(0);
+
+      // Scroll to the top of the log, which asks for the next older page.
+      handle.handleKey("", { pageUp: true } as Key);
+      const stale = fake.olders()[0];
+      assert.ok(stale, "scrolling near the top asked for an older page");
+      assert.ok(handle.getView().logScroll > 0, "and left the viewport pinned at the top");
+
+      // The connection drops and returns before that page lands. The new
+      // generation reads its own, longer head page.
+      fake.deliver(loadablePending);
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      assert.equal(fake.heads().length, 2, "the new generation fetched its own head");
+      fake.heads()[1]?.resolve(pageOf(200, 80, { olderThan: 121 }));
+      await delay(0);
+
+      const before = handle.getView();
+      const idsBefore = transcriptFor(before.state, "a").lines.map((l) => l.id);
+      assert.equal(before.logScroll, 0, "the reset re-anchored the viewport at the live tail");
+
+      stale.resolve(pageOf(60, 40, { olderThan: 21 }));
+      await delay(0);
+
+      const after = handle.getView();
+      assert.deepEqual(
+        transcriptFor(after.state, "a").lines.map((l) => l.id),
+        idsBefore,
+        "the obsolete page adds no entries",
+      );
+      assert.deepEqual(
+        transcriptFor(after.state, "a").olderCursor,
+        { olderThan: 121 },
+        "and cannot move the cursor back to its own generation's",
+      );
+      assert.equal(after.logScroll, 0, "and moves no viewport");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a failed head fetch is retried by leaving and reselecting the session", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(
+        fleetOf(
+          testSession({ id: "a", status: stateIdle, updatedAt: 9 }),
+          testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
+        ),
+      );
+      const sel = handle.getView().state.selectedId;
+      assert.ok(sel);
+      fake.heads()[0]?.reject(new Error("history unavailable"));
+      await delay(0);
+      assert.equal(transcriptFor(handle.getView().state, sel).head.tag, "error");
+      assert.equal(fake.heads().length, 1, "and nothing retries it on its own");
+
+      // Move away and come back — an explicit user action, not a render.
+      handle.handleKey("", { downArrow: true } as Key);
+      assert.notEqual(handle.getView().state.selectedId, sel);
+      handle.handleKey("", { upArrow: true } as Key);
+      assert.equal(handle.getView().state.selectedId, sel);
+
+      const retry = fake.heads().filter((c) => c.params["id"] === sel);
+      assert.equal(retry.length, 2, "reselecting retries the failed head fetch");
+      retry[1]?.resolve(pageOf(2, 2, null, sel));
+      await delay(0);
+      assert.equal(transcriptFor(handle.getView().state, sel).head.tag, "data");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a queued session proven gone is reported once, with its queue cleared first", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      queueFollowUp(handle, "follow up");
+      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+
+      // Another client removed the session, and this snapshot proves it. Clear
+      // the queue before saying so, or the notice's own dispatch re-enters the
+      // drain and finds the same stranded queue again, forever.
+      fake.deliver(fleetOf(testSession({ id: "b", status: stateIdle })));
+      const s = handle.getView().state;
+      assert.deepEqual(queueFor(s, "a"), [], "the stranded queue is cleared");
+      assert.match(s.notice?.text ?? "", /not sent/);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a send whose reply never came back is held for review, not sent again", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      queueFollowUp(handle, "follow up");
+
+      // The turn ends, so the queue drains.
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 1 })));
+      const send = fake.of("session.send");
+      assert.equal(send.length, 1, "the queue drained once");
+
+      // The connection dropped before the daemon replied — it may well have run.
+      send[0]?.reject(Object.assign(new Error("connection dropped"), { code: "disconnected" }));
+      await delay(0);
+
+      // No later snapshot may put it back on the wire.
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 2 })));
+      assert.equal(fake.of("session.send").length, 1, "no automatic second send");
+      const s = handle.getView().state;
+      assert.deepEqual(queueFor(s, "a"), [], "the ambiguous head left the drain queue");
+      assert.match(s.notice?.text ?? "", /may already have been sent/);
+
+      // The text is not lost: opening `send` on that session brings it back.
+      handle.handleKey("", { return: true } as Key);
+      assert.equal(handle.getView().state.prompt?.buffer.text, "follow up");
+    } finally {
+      teardown();
     }
   });
 });
