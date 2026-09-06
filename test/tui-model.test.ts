@@ -25,7 +25,7 @@ import {
   defaultModelOf,
   defaultProviderId,
   effortPickItems,
-  escapeTarget,
+  escapePicker,
   fleetHits,
   focusedChildOf,
   footerHints,
@@ -33,13 +33,10 @@ import {
   groupsOf,
   initialState,
   liveQNav,
-  makePicker,
   newSettings,
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
-  pickerCurrent,
-  pickerVisible,
   providerColorOf,
   providerPickItems,
   versionMismatchAction,
@@ -74,13 +71,28 @@ import {
 } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
+  discussPrompt,
+  heldPlan,
+  makePicker,
   newPrompt,
+  openPrompt,
+  pickerCurrent,
+  pickerVisible,
   promptKind,
   questionsPrompt,
   sessionPrompt,
   type NewSessionSettings,
+  type Overlay,
+  type Picker,
+  type PickerDest,
+  type PlanReview,
 } from "@loom/tui/overlay";
 import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
+
+const promptOf = (s: TuiState) => openPrompt(s.overlay);
+const planOf = (s: TuiState) => (s.overlay.t === "plan" ? s.overlay.plan : null);
+const pickerOf = (s: TuiState) => (s.overlay.t === "picker" ? s.overlay.picker : null);
+const confirmOf = (s: TuiState) => (s.overlay.t === "confirm" ? s.overlay.confirm : null);
 
 /** A `new` prompt's creation settings, as a fresh state produces them. */
 const settings: NewSessionSettings = { mode: "default", provider: null, model: null, effort: null };
@@ -1365,8 +1377,8 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   let s = reduce(initialState(), fleet([blocked([q("q1")]), snap({ id: "b", status: "idle" })]));
   s = { ...s, lastDraft: "an unrelated half-typed message" };
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: questionsPrompt("a", "q1", "answer"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: questionsPrompt("a", "q1", "answer") },
   });
   s = reduce(s, {
     t: "qnavSet",
@@ -1376,8 +1388,8 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   // Another client answers q1 and the agent asks something new.
   s = reduce(s, fleet([blocked([q("q2")]), snap({ id: "b", status: "idle" })]));
 
-  assert.equal(s.prompt, null, "the prompt for a request that is gone closes");
-  assert.equal(s.mode, "browse");
+  assert.equal(promptOf(s), null, "the prompt for a request that is gone closes");
+  assert.equal(s.overlay.t, "browse");
   assert.equal(s.qnav, null, "and so does the navigation through its questions");
   assert.match(s.notice?.text ?? "", /resolved elsewhere/);
   assert.equal(s.lastDraft, "an unrelated half-typed message", "an unrelated draft is untouched");
@@ -1393,17 +1405,17 @@ test("a send or title prompt is not closed because some request was resolved", (
     snap({ id: "a", status: "awaiting_input", awaitReason: "permission", requests });
   let s = reduce(initialState(), fleet([blocked([perm])]));
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send", "half typed"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "half typed") },
   });
 
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
   assert.equal(
-    s.prompt && promptKind(s.prompt),
+    promptOf(s) && promptKind(promptOf(s)!),
     "send",
     "a prompt with no request id has nothing to reconcile",
   );
-  assert.equal(s.prompt?.buffer.text, "half typed");
+  assert.equal(promptOf(s)?.buffer.text, "half typed");
 });
 
 test("liveQNav gates on session + request id", () => {
@@ -1431,8 +1443,16 @@ test("a question carries its text and context, and goes when the snapshot drops 
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(activeRequest(s, "a"), null);
 });
+/** A plan review as the `a` / `planreview` action opens one. */
+const review = (requestId: string, text: string): PlanReview => ({
+  sessionId: "a",
+  requestId,
+  text,
+  mode: "acceptEdits",
+  impl: null,
+});
 
-test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
+test("a plan_review stashes the plan text; the plan overlay carries its own mode", () => {
   const a = snap({
     id: "a",
     status: "awaiting_input",
@@ -1444,75 +1464,71 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   assert.equal(active?.id, "pr1");
   assert.equal(active?.kind === "plan_review" ? active.plan : "", "step one\nstep two");
 
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
-  assert.equal(s.mode, "plan");
-  assert.equal(s.plan?.requestId, "pr1");
-  assert.equal(s.plan?.mode, "acceptEdits");
+  s = reduce(s, {
+    t: "overlay",
+    overlay: { t: "plan", plan: review("pr1", "step one\nstep two") },
+  });
+  assert.equal(s.overlay.t, "plan");
+  assert.equal(planOf(s)?.requestId, "pr1");
+  assert.equal(planOf(s)?.mode, "acceptEdits");
 
   // ⇧⇥ cycles the implement mode — manual → acceptEdits → auto → manual.
   s = reduce(s, { t: "cyclePlanMode" });
-  assert.equal(s.plan?.mode, "auto");
+  assert.equal(planOf(s)?.mode, "auto");
   s = reduce(s, { t: "cyclePlanMode" });
-  assert.equal(s.plan?.mode, "default");
+  assert.equal(planOf(s)?.mode, "default");
   s = reduce(s, { t: "cyclePlanMode" });
-  assert.equal(s.plan?.mode, "acceptEdits");
-
-  // reopening the same review (esc out of the discuss prompt) keeps the cycled
-  // mode; a different review starts fresh at acceptEdits.
-  s = reduce(s, { t: "cyclePlanMode" }); // → auto
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "step one\nstep two" });
-  assert.equal(s.plan?.mode, "auto");
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr2", text: "next plan" });
-  assert.equal(s.plan?.mode, "acceptEdits");
+  assert.equal(planOf(s)?.mode, "acceptEdits");
 
   // the session moving on closes the overlay and clears pending
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
-  assert.equal(s.plan, null);
-  assert.equal(s.mode, "browse");
+  assert.equal(planOf(s), null);
+  assert.equal(s.overlay.t, "browse");
   assert.equal(activeRequest(s, "a"), null);
 });
 
-test("⌥p stages an implement-fresh retarget onto the plan overlay", () => {
+test("a detour off the plan review carries it, so backing out restores it exactly", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
   let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "the plan" });
-  s = reduce(s, { t: "cyclePlanMode" }); // → auto, must survive the wizard
+  s = reduce(s, { t: "overlay", overlay: { t: "plan", plan: review("pr1", "the plan") } });
+  s = reduce(s, { t: "cyclePlanMode" }); // → auto, must survive the detour
+  const cycled = planOf(s)!;
 
-  // The `⌥p` wizard opens over the review — `plan` rides through, unlike the
-  // `new` / find pickers which clear it.
-  const wiz = makePicker({
-    kind: "model",
-    title: "retarget · model · claude",
-    items: [{ id: "m1", label: "m1" }],
-    ctx: { planStage: true, provider: "claude" },
+  // The `⌥p` retarget wizard opens over the review, holding it as its
+  // destination — there is no second slot for the review to sit in.
+  s = reduce(s, {
+    t: "overlay",
+    overlay: {
+      t: "picker",
+      picker: makePicker({
+        step: "model",
+        title: "retarget · model · claude",
+        items: [{ id: "m1", label: "m1" }],
+        dest: { t: "planImpl", plan: cycled },
+        chosen: { provider: "claude", model: null },
+      }),
+    },
   });
-  s = reduce(s, { t: "openPicker", picker: wiz });
-  assert.equal(s.mode, "picker");
-  assert.equal(s.plan?.requestId, "pr1");
-  assert.equal(s.plan?.mode, "auto");
+  assert.equal(s.overlay.t, "picker");
+  assert.equal(heldPlan(s.overlay)?.requestId, "pr1");
+  assert.equal(heldPlan(s.overlay)?.mode, "auto");
 
-  // Esc out of a plan-stage step returns to the overlay, nothing staged.
-  const openWiz = s.picker ?? wiz;
-  assert.deepEqual(escapeTarget(openWiz, s), { t: "closePicker" });
-  s = reduce(s, { t: "closePicker" });
-  assert.equal(s.mode, "plan");
-  assert.equal(s.plan?.impl, undefined);
+  // Esc out of the wizard's first step returns the review untouched.
+  const back = escapePicker(pickerOf(s)!, s);
+  assert.deepEqual(back, { t: "plan", plan: cycled });
 
-  // Picking through the wizard stages provider / model / effort and reopens
-  // the overlay with the cycled mode intact.
-  s = reduce(s, { t: "openPicker", picker: wiz });
-  s = reduce(s, { t: "stagePlanImpl", provider: "openai", model: "gpt-x", effort: "high" });
-  assert.equal(s.mode, "plan");
-  assert.equal(s.picker, null);
-  assert.deepEqual(s.plan?.impl, { provider: "openai", model: "gpt-x", effort: "high" });
-  assert.equal(s.plan?.mode, "auto");
-
-  // Reopening the same review (esc out of discuss) keeps the staged retarget.
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "the plan" });
-  assert.deepEqual(s.plan?.impl, { provider: "openai", model: "gpt-x", effort: "high" });
-  // A different review starts clean.
-  s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr2", text: "another" });
-  assert.equal(s.plan?.impl, undefined);
+  // A discuss prompt carries it the same way, so Esc puts it back with the
+  // cycled mode and anything staged.
+  const staged: PlanReview = {
+    ...cycled,
+    impl: { provider: "openai", model: "gpt-x", effort: "high" },
+  };
+  s = reduce(s, { t: "overlay", overlay: { t: "prompt", prompt: discussPrompt(staged) } });
+  assert.equal(promptOf(s)?.t, "discuss");
+  s = reduce(s, { t: "closePrompt", saveDraft: false });
+  assert.equal(s.overlay.t, "plan");
+  assert.deepEqual(planOf(s)?.impl, { provider: "openai", model: "gpt-x", effort: "high" });
+  assert.equal(planOf(s)?.mode, "auto");
 });
 
 test("makePicker clamps its initial index into range", () => {
@@ -1520,10 +1536,18 @@ test("makePicker clamps its initial index into range", () => {
     { id: "a", label: "a" },
     { id: "b", label: "b" },
   ];
-  assert.equal(makePicker({ kind: "model", title: "t", items, index: 1 }).index, 1);
-  assert.equal(makePicker({ kind: "model", title: "t", items, index: 9 }).index, 1);
-  assert.equal(makePicker({ kind: "model", title: "t", items, index: -1 }).index, 0);
-  assert.equal(makePicker({ kind: "model", title: "t", items }).index, 0);
+  const p = (index?: number) =>
+    makePicker({
+      step: "model",
+      title: "t",
+      items,
+      dest: { t: "command" },
+      ...(index !== undefined ? { index } : {}),
+    });
+  assert.equal(p(1).index, 1);
+  assert.equal(p(9).index, 1);
+  assert.equal(p(-1).index, 0);
+  assert.equal(p().index, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -1598,33 +1622,43 @@ test("footerHints gives every overlay its own fixed key set", () => {
     }),
     selectedId: "s1",
   };
-  const keysFor = (mode: TuiState["mode"]) => footerHints({ ...base, mode }).map((h) => h.label);
+  const keysFor = (overlay: Overlay) => footerHints({ ...base, overlay }).map((h) => h.label);
 
-  assert.deepEqual(footerHints({ ...base, mode: "prompt" }), []); // editor draws itself
-  assert.deepEqual(keysFor("picker"), ["move", "pick", "cancel"]);
-  assert.deepEqual(keysFor("confirm"), ["confirm", "cancel"]);
-  // a delete confirm that carries a branch gets the extra toggle
+  // the editor draws itself
+  assert.deepEqual(keysFor({ t: "prompt", prompt: sessionPrompt("send", "s1", "send") }), []);
   assert.deepEqual(
-    footerHints({
-      ...base,
-      mode: "confirm",
-      confirm: {
-        title: "x",
-        danger: true,
-        action: "deleteSession",
-        sessionId: "s1",
-        branchName: "loom/x",
-      },
-    }).map((h) => h.label),
-    ["confirm", "+ branch", "cancel"],
+    keysFor({
+      t: "picker",
+      picker: makePicker({ step: "command", title: "t", items: [], dest: { t: "command" } }),
+    }),
+    ["move", "pick", "cancel"],
   );
-  assert.deepEqual(keysFor("plan"), ["implement", "fresh", "edit", "discuss", "view"]);
-  assert.deepEqual(keysFor("help"), ["close help"]);
+  const confirmOverlay = (branchName?: string): Overlay => ({
+    t: "confirm",
+    confirm: {
+      title: "x",
+      danger: true,
+      action: "deleteSession",
+      sessionId: "s1",
+      ...(branchName ? { branchName } : {}),
+    },
+  });
+  assert.deepEqual(keysFor(confirmOverlay()), ["confirm", "cancel"]);
+  // a delete confirm that carries a branch gets the extra toggle
+  assert.deepEqual(keysFor(confirmOverlay("loom/x")), ["confirm", "+ branch", "cancel"]);
+  assert.deepEqual(keysFor({ t: "plan", plan: review("pr1", "p") }), [
+    "implement",
+    "fresh",
+    "edit",
+    "discuss",
+    "view",
+  ]);
+  assert.deepEqual(keysFor({ t: "help" }), ["close help"]);
   // browse delegates to the selected session's contextual actions
-  assert.ok(keysFor("browse").includes("send"));
+  assert.ok(keysFor({ t: "browse" }).includes("send"));
   // …trimmed to the footer subset, then the palette pointer
-  assert.equal(keysFor("browse").at(-1), "more");
-  assert.ok(!keysFor("browse").includes("rename"), "second-tier verbs stay off the footer");
+  assert.equal(keysFor({ t: "browse" }).at(-1), "more");
+  assert.ok(!keysFor({ t: "browse" }).includes("rename"), "second-tier verbs stay off the footer");
 });
 
 test("commandsFor lists every action valid now — session verbs plus the app commands", () => {
@@ -2130,22 +2164,22 @@ test("tilth_write's batch `files` renders one block per file, and the one-liner 
 
 test("prompt open / edit / close transitions", () => {
   let s = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
   });
-  assert.equal(s.mode, "prompt");
+  assert.equal(s.overlay.t, "prompt");
   s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
-  assert.equal(s.prompt?.buffer.text, "hello");
+  assert.equal(promptOf(s)?.buffer.text, "hello");
   s = reduce(s, { t: "closePrompt" });
-  assert.equal(s.mode, "browse");
-  assert.equal(s.prompt, null);
+  assert.equal(s.overlay.t, "browse");
+  assert.equal(promptOf(s), null);
 });
 
 test("Esc on a new/send prompt stashes the draft; either prompt can restore it; submitting clears it", () => {
   // cancelling a `new` prompt saves the draft
   let s = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: newPrompt(settings),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: newPrompt(settings) },
   });
   s = reduce(s, { t: "promptSet", buffer: buffer("fix the bug") });
   s = reduce(s, { t: "closePrompt", saveDraft: true });
@@ -2153,10 +2187,10 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
 
   // ...and a `send` prompt opened afterwards picks it up
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send", s.lastDraft),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", s.lastDraft) },
   });
-  assert.equal(s.prompt?.buffer.text, "fix the bug");
+  assert.equal(promptOf(s)?.buffer.text, "fix the bug");
 
   // cancelling without saveDraft (e.g. a plain closePrompt) leaves it untouched
   let untouched = reduce(s, { t: "closePrompt" });
@@ -2167,8 +2201,8 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   assert.equal(withDraft.lastDraft, "");
   withDraft = { ...withDraft, lastDraft: "fix the bug" };
   withDraft = reduce(withDraft, {
-    t: "openPrompt",
-    prompt: sessionPrompt("title", "a", "rename", "old title"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("title", "a", "rename", "old title") },
   });
   withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
   withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
@@ -2180,8 +2214,8 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
 
   // submitting (closePrompt without saveDraft) consumes the draft
   let sent = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send", "fix the bug"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "fix the bug") },
   });
   sent = { ...sent, lastDraft: "fix the bug" };
   sent = reduce(sent, { t: "closePrompt" });
@@ -2190,10 +2224,13 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
 
 test("promptCycleMode only cycles for a `new` prompt", () => {
   let s = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: newPrompt(settings),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: newPrompt(settings) },
   });
-  const mode = (x: TuiState) => (x.prompt?.t === "new" ? x.prompt.settings.mode : null);
+  const mode = (x: TuiState) => {
+    const p = promptOf(x);
+    return p?.t === "new" ? p.settings.mode : null;
+  };
   assert.equal(mode(s), "default", "a fresh new-prompt starts on the daemon's default mode");
   s = reduce(s, { t: "promptCycleMode" });
   assert.equal(mode(s), "plan");
@@ -2201,11 +2238,11 @@ test("promptCycleMode only cycles for a `new` prompt", () => {
   assert.equal(mode(s), "acceptEdits");
 
   let t = reduce(initialState(), {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
   });
   t = reduce(t, { t: "promptCycleMode" });
-  assert.equal(t.prompt?.t, "session", "a send prompt has no mode to cycle");
+  assert.equal(promptOf(t)?.t, "session", "a send prompt has no mode to cycle");
 });
 
 test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav walks it", () => {
@@ -2214,55 +2251,55 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
   assert.deepEqual(s.promptHistory, ["two", "one", "three"]);
 
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send", "live"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "live") },
   });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(s.prompt?.buffer.text, "three");
+  assert.equal(promptOf(s)?.buffer.text, "three");
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(s.prompt?.buffer.text, "one");
+  assert.equal(promptOf(s)?.buffer.text, "one");
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
-  assert.equal(s.prompt?.buffer.text, "live", "returns to the stashed live draft at index 0");
+  assert.equal(promptOf(s)?.buffer.text, "live", "returns to the stashed live draft at index 0");
 });
 
 test("editing a recalled history entry detaches it from the walk", () => {
   let s = initialState();
   s = reduce(s, { t: "pushHistory", text: "hi" });
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
   });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(s.prompt?.buffer.text, "hi");
-  assert.equal(s.prompt?.histIdx, 1);
+  assert.equal(promptOf(s)?.buffer.text, "hi");
+  assert.equal(promptOf(s)?.histIdx, 1);
 
   // A cursor-only move (same text) does not detach.
   s = reduce(s, { t: "promptSet", buffer: buffer("hi", 0) });
-  assert.equal(s.prompt?.histIdx, 1);
+  assert.equal(promptOf(s)?.histIdx, 1);
 
   // Editing the recalled entry makes it the live buffer: ↓ is a no-op, ↑
   // restarts the walk from the newest entry.
   s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
-  assert.equal(s.prompt?.histIdx, 0);
+  assert.equal(promptOf(s)?.histIdx, 0);
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
-  assert.equal(s.prompt?.buffer.text, "hello", "↓ at the live buffer keeps the edit");
+  assert.equal(promptOf(s)?.buffer.text, "hello", "↓ at the live buffer keeps the edit");
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(s.prompt?.buffer.text, "hi", "↑ restarts the walk from the newest entry");
+  assert.equal(promptOf(s)?.buffer.text, "hi", "↑ restarts the walk from the newest entry");
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
-  assert.equal(s.prompt?.buffer.text, "hello", "↓ returns to the detached edit");
+  assert.equal(promptOf(s)?.buffer.text, "hello", "↓ returns to the detached edit");
 });
 
 test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   let s = initialState();
   s = reduce(s, { t: "pushHistory", text: "old" });
   s = reduce(s, {
-    t: "openPrompt",
-    prompt: sessionPrompt("send", "a", "send"),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
   });
   s = reduce(s, { t: "promptSet", buffer: buffer("typed") });
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
-  assert.equal(s.prompt?.buffer.text, "typed", "↓ is a no-op at the live buffer");
+  assert.equal(promptOf(s)?.buffer.text, "typed", "↓ is a no-op at the live buffer");
 });
 
 test("echoes are kept apart from the durable transcript and render after it", () => {
@@ -2368,50 +2405,59 @@ test("a held send is per session, survives its snapshots, and is released once",
 
 test("confirm open / run / close", () => {
   let s = reduce(initialState(), {
-    t: "openConfirm",
-    confirm: { title: "Restart the daemon?", danger: false, action: "restart" },
+    t: "overlay",
+    overlay: {
+      t: "confirm",
+      confirm: { title: "Restart the daemon?", danger: false, action: "restart" },
+    },
   });
-  assert.equal(s.mode, "confirm");
-  assert.equal(s.confirm?.action, "restart");
-  s = reduce(s, { t: "closeConfirm" });
-  assert.equal(s.mode, "browse");
-  assert.equal(s.confirm, null);
+  assert.equal(s.overlay.t, "confirm");
+  assert.equal(confirmOf(s)?.action, "restart");
+  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
+  assert.equal(s.overlay.t, "browse");
+  assert.equal(confirmOf(s), null);
 });
 
 test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", () => {
   let s = reduce(initialState(), {
-    t: "openConfirm",
-    confirm: {
-      title: "Delete?",
-      danger: true,
-      action: "deleteSession",
-      sessionId: "s1",
-      branchName: "loom/x",
-      deleteBranch: false,
+    t: "overlay",
+    overlay: {
+      t: "confirm",
+      confirm: {
+        title: "Delete?",
+        danger: true,
+        action: "deleteSession",
+        sessionId: "s1",
+        branchName: "loom/x",
+        deleteBranch: false,
+      },
     },
   });
   s = reduce(s, { t: "toggleConfirmBranch" });
-  assert.equal(s.confirm?.deleteBranch, true);
+  assert.equal(confirmOf(s)?.deleteBranch, true);
   s = reduce(s, { t: "toggleConfirmBranch" });
-  assert.equal(s.confirm?.deleteBranch, false);
+  assert.equal(confirmOf(s)?.deleteBranch, false);
 
   // no branchName (in-place / gc'd session) → the toggle is inert
   let t = reduce(initialState(), {
-    t: "openConfirm",
-    confirm: { title: "Delete?", danger: true, action: "deleteSession", sessionId: "s2" },
+    t: "overlay",
+    overlay: {
+      t: "confirm",
+      confirm: { title: "Delete?", danger: true, action: "deleteSession", sessionId: "s2" },
+    },
   });
   t = reduce(t, { t: "toggleConfirmBranch" });
-  assert.equal(t.confirm?.deleteBranch, undefined);
+  assert.equal(confirmOf(t)?.deleteBranch, undefined);
 });
 
 test("help toggles the mode without disturbing the rest of the state", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "help", value: true });
-  assert.equal(s.mode, "help");
+  s = reduce(s, { t: "overlay", overlay: { t: "help" } });
+  assert.equal(s.overlay.t, "help");
   assert.equal(s.selectedId, "a");
-  s = reduce(s, { t: "help", value: false });
-  assert.equal(s.mode, "browse");
+  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
+  assert.equal(s.overlay.t, "browse");
 });
 
 test("doctor: open sets the mode, doctorLoaded caches the report, close returns to browse", () => {
@@ -2419,8 +2465,8 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
   let s = reduce(initialState(), fleet([a]));
   assert.equal(s.doctor, null);
 
-  s = reduce(s, { t: "doctor", value: true });
-  assert.equal(s.mode, "doctor");
+  s = reduce(s, { t: "overlay", overlay: { t: "doctor" } });
+  assert.equal(s.overlay.t, "doctor");
   assert.equal(s.selectedId, "a");
 
   const report = {
@@ -2459,10 +2505,10 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
   };
   s = reduce(s, { t: "doctorLoaded", report });
   assert.equal(s.doctor?.mcp[0]?.name, "tilth");
-  assert.equal(s.mode, "doctor");
+  assert.equal(s.overlay.t, "doctor");
 
-  s = reduce(s, { t: "doctor", value: false });
-  assert.equal(s.mode, "browse");
+  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
+  assert.equal(s.overlay.t, "browse");
   // the cached report survives a close so a reopen paints immediately
   assert.equal(s.doctor?.daemon.pid, 1);
 });
@@ -2716,27 +2762,31 @@ test("versionMismatchAction: bounce only when alone, otherwise prompt then nag",
 
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {
   let s = reduce(withProviders(), {
-    t: "openPicker",
-    picker: makePicker({
-      kind: "model",
-      title: "model",
-      items: modelPickItems(withProviders(), "openai"),
-    }),
+    t: "overlay",
+    overlay: {
+      t: "picker",
+      picker: makePicker({
+        step: "model",
+        title: "model",
+        items: modelPickItems(withProviders(), "openai"),
+        dest: { t: "newSession", settings, draft: "" },
+      }),
+    },
   });
-  assert.equal(s.mode, "picker");
-  assert.equal(pickerVisible(s.picker!).length, 3);
+  assert.equal(s.overlay.t, "picker");
+  assert.equal(pickerVisible(pickerOf(s)!).length, 3);
 
   s = reduce(s, { t: "pickerMove", delta: 5 });
-  assert.equal(s.picker!.index, 2); // clamped to last
+  assert.equal(pickerOf(s)!.index, 2); // clamped to last
 
   s = reduce(s, { t: "pickerFilter", buffer: buffer("mini") });
-  assert.equal(pickerVisible(s.picker!).length, 1);
-  assert.equal(s.picker!.index, 0); // reset on filter
-  assert.equal(pickerCurrent(s.picker!)?.id, "gpt-5-mini");
+  assert.equal(pickerVisible(pickerOf(s)!).length, 1);
+  assert.equal(pickerOf(s)!.index, 0); // reset on filter
+  assert.equal(pickerCurrent(pickerOf(s)!)?.id, "gpt-5-mini");
 
-  s = reduce(s, { t: "closePicker" });
-  assert.equal(s.mode, "browse");
-  assert.equal(s.picker, null);
+  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
+  assert.equal(s.overlay.t, "browse");
+  assert.equal(pickerOf(s), null);
 });
 
 test("the fleet filter matches title + log text and rides the selection", () => {
@@ -2782,138 +2832,174 @@ test("the fleet filter matches title + log text and rides the selection", () => 
   assert.equal(s.find, null);
   assert.equal(s.selectedId, "bbb");
 });
-
 test("a live model picker closes if its session is removed", () => {
   let s = reduce(
     withProviders(),
     fleet([snap({ id: "live", status: "running", provider: "openai" })]),
   );
   s = reduce(s, {
-    t: "openPicker",
-    picker: makePicker({
-      kind: "model",
-      title: "model",
-      items: modelPickItems(s, "openai"),
-      ctx: { provider: "openai", liveSessionId: "live" },
-    }),
+    t: "overlay",
+    overlay: {
+      t: "picker",
+      picker: makePicker({
+        step: "model",
+        title: "model",
+        items: modelPickItems(s, "openai"),
+        dest: { t: "session", sessionId: "live", back: null },
+        chosen: { provider: "openai", model: null },
+      }),
+    },
   });
   // A snapshot the session has dropped out of closes the picker aimed at it.
   s = reduce(s, fleet([]));
-  assert.equal(s.picker, null);
-  assert.equal(s.mode, "browse");
+  assert.equal(pickerOf(s), null);
+  assert.equal(s.overlay.t, "browse");
 });
 
-test("escapeTarget: an effort step reached via the model wizard steps back to it; a bare ⌥t doesn't", () => {
+/** A wizard step, as `pickerStep` builds one. `from` is where the wizard opened. */
+const step = (o: {
+  step: "provider" | "model" | "effort";
+  dest: PickerDest;
+  from: "provider" | "model" | "effort";
+  provider?: string;
+  model?: string;
+}): Picker =>
+  makePicker({
+    step: o.step,
+    title: o.step,
+    items: [],
+    dest: o.dest,
+    from: o.from,
+    chosen: { provider: o.provider ?? null, model: o.model ?? null },
+  });
+
+test("escapePicker: an effort step opened after a model step steps back to it; a bare ⌥t doesn't", () => {
   const s = withProviders(); // claude/claude-opus-5 has supportsEffort: true
+  const live: PickerDest = { t: "session", sessionId: "s1", back: null };
 
   // Reached by picking a model that takes one (⌥p wizard, or ⌥m onto such a
   // model) — Esc steps back to the model list, live switch or not.
-  const viaWizard = makePicker({
-    kind: "effort",
-    title: "effort",
-    items: [],
-    ctx: { provider: "claude", model: "claude-opus-5", viaModelStep: true },
-  });
-  const backToModel = escapeTarget(viaWizard, s);
-  assert.equal(backToModel.t, "openPicker");
-  assert.equal(backToModel.t === "openPicker" && backToModel.picker.kind, "model");
+  const backToModel = escapePicker(
+    step({ step: "effort", dest: live, from: "model", provider: "claude", model: "claude-opus-5" }),
+    s,
+  );
+  assert.equal(backToModel.t, "picker");
+  assert.equal(backToModel.t === "picker" && backToModel.picker.step, "model");
 
-  // A bare ⌥t on a live session skipped the model step entirely — Esc must
-  // not invent one to go back to; with nothing else to return to, it closes.
-  const bareLive = makePicker({
-    kind: "effort",
-    title: "effort",
-    items: [],
-    ctx: { provider: "claude", model: "claude-opus-5", liveSessionId: "s1" },
-  });
-  assert.deepEqual(escapeTarget(bareLive, s), { t: "closePicker" });
+  // A bare ⌥t on a live session skipped the model step entirely — Esc must not
+  // invent one to go back to; with nothing else to return to, it closes.
+  assert.deepEqual(
+    escapePicker(
+      step({
+        step: "effort",
+        dest: live,
+        from: "effort",
+        provider: "claude",
+        model: "claude-opus-5",
+      }),
+      s,
+    ),
+    { t: "browse" },
+  );
 
   // A bare ⌥t from inside a `send` prompt — no model step, but reopens that
   // prompt with the draft, same as a bare ⌥m would.
-  const bareSend = makePicker({
-    kind: "effort",
-    title: "effort",
-    items: [],
-    ctx: {
+  const reopened = escapePicker(
+    step({
+      step: "effort",
+      dest: { t: "session", sessionId: "s1", back: "half-typed" },
+      from: "effort",
       provider: "claude",
       model: "claude-opus-5",
-      liveSessionId: "s1",
-      reopenSend: "s1",
-      draft: "half-typed",
-    },
-  });
-  const reopened = escapeTarget(bareSend, s);
-  assert.equal(reopened.t, "openPrompt");
-  assert.equal(reopened.t === "openPrompt" && promptKind(reopened.prompt), "send");
-  assert.equal(reopened.t === "openPrompt" && reopened.prompt.buffer.text, "half-typed");
+    }),
+    s,
+  );
+  assert.equal(reopened.t, "prompt");
+  assert.equal(reopened.t === "prompt" && promptKind(reopened.prompt), "send");
+  assert.equal(reopened.t === "prompt" && reopened.prompt.buffer.text, "half-typed");
 
-  // A bare ⌥t from the `new` prompt — restores it with the draft and provider.
-  const bareNew = makePicker({
-    kind: "effort",
-    title: "effort",
-    items: [],
-    ctx: { provider: "claude", model: "claude-opus-5", draft: "hi" },
-  });
-  const restored = escapeTarget(bareNew, s);
-  assert.equal(restored.t, "openPrompt");
-  assert.equal(restored.t === "openPrompt" && promptKind(restored.prompt), "new");
+  // A bare ⌥t from the `new` prompt — restores it with its settings and draft.
+  const restored = escapePicker(
+    step({
+      step: "effort",
+      dest: {
+        t: "newSession",
+        settings: { ...settings, provider: "claude" },
+        draft: "hi",
+      },
+      from: "effort",
+      provider: "claude",
+      model: "claude-opus-5",
+    }),
+    s,
+  );
+  assert.equal(restored.t, "prompt");
+  assert.equal(restored.t === "prompt" && promptKind(restored.prompt), "new");
   assert.equal(
-    restored.t === "openPrompt" && restored.prompt.t === "new" && restored.prompt.settings.provider,
+    restored.t === "prompt" && restored.prompt.t === "new" && restored.prompt.settings.provider,
     "claude",
   );
-  assert.equal(restored.t === "openPrompt" && restored.prompt.buffer.text, "hi");
+  assert.equal(restored.t === "prompt" && restored.prompt.buffer.text, "hi");
 });
 
-test("escapeTarget: the live ⌥p provider wizard steps back through its own trail", () => {
+test("escapePicker: a wizard steps back only as far as the step it opened at", () => {
   const s = withProviders();
 
-  // Provider step of a live switch opened from a send prompt — Esc restores that
-  // prompt with the draft (there is no `new` prompt to fall into).
-  const fromSend = makePicker({
-    kind: "provider",
-    title: "provider",
-    items: providerPickItems(s),
-    ctx: { liveSessionId: "s1", reopenSend: "s1", draft: "wip" },
-  });
-  const back1 = escapeTarget(fromSend, s);
-  assert.equal(back1.t, "openPrompt");
-  assert.equal(back1.t === "openPrompt" && promptKind(back1.prompt), "send");
-  assert.equal(back1.t === "openPrompt" && back1.prompt.buffer.text, "wip");
+  // Provider step of a live switch opened from a send prompt — Esc restores
+  // that prompt with the draft (there is no `new` prompt to fall into).
+  const back1 = escapePicker(
+    step({
+      step: "provider",
+      dest: { t: "session", sessionId: "s1", back: "wip" },
+      from: "provider",
+    }),
+    s,
+  );
+  assert.equal(back1.t, "prompt");
+  assert.equal(back1.t === "prompt" && promptKind(back1.prompt), "send");
+  assert.equal(back1.t === "prompt" && back1.prompt.buffer.text, "wip");
 
   // Provider step of a live switch from the fleet view (nothing behind it) —
   // Esc just closes.
-  const fromFleet = makePicker({
-    kind: "provider",
-    title: "provider",
-    items: providerPickItems(s),
-    ctx: { liveSessionId: "s1" },
-  });
-  assert.deepEqual(escapeTarget(fromFleet, s), { t: "closePicker" });
+  assert.deepEqual(
+    escapePicker(
+      step({
+        step: "provider",
+        dest: { t: "session", sessionId: "s1", back: null },
+        from: "provider",
+      }),
+      s,
+    ),
+    { t: "browse" },
+  );
 
   // Model step reached from that live provider step — Esc steps back to the
   // provider list rather than closing.
-  const modelStep = makePicker({
-    kind: "model",
-    title: "model · openai",
-    items: modelPickItems(s, "openai"),
-    ctx: { provider: "openai", liveSessionId: "s1", viaProviderStep: true },
-  });
-  const back3 = escapeTarget(modelStep, s);
-  assert.equal(back3.t, "openPicker");
-  assert.equal(back3.t === "openPicker" && back3.picker.kind, "provider");
+  const back3 = escapePicker(
+    step({
+      step: "model",
+      dest: { t: "session", sessionId: "s1", back: null },
+      from: "provider",
+      provider: "openai",
+    }),
+    s,
+  );
+  assert.equal(back3.t, "picker");
+  assert.equal(back3.t === "picker" && back3.picker.step, "provider");
 
   // Regression: the non-live ⌥p new-session wizard still falls back to a `new`
   // prompt, not a live send.
-  const newWizard = makePicker({
-    kind: "provider",
-    title: "provider",
-    items: providerPickItems(s),
-    ctx: { draft: "idea" },
-  });
-  const back4 = escapeTarget(newWizard, s);
-  assert.equal(back4.t, "openPrompt");
-  assert.equal(back4.t === "openPrompt" && promptKind(back4.prompt), "new");
-  assert.equal(back4.t === "openPrompt" && back4.prompt.buffer.text, "idea");
+  const back4 = escapePicker(
+    step({
+      step: "provider",
+      dest: { t: "newSession", settings, draft: "idea" },
+      from: "provider",
+    }),
+    s,
+  );
+  assert.equal(back4.t, "prompt");
+  assert.equal(back4.t === "prompt" && promptKind(back4.prompt), "new");
+  assert.equal(back4.t === "prompt" && back4.prompt.buffer.text, "idea");
 });
 
 test("newSettings folds the ⌃P chooser's provider + model into the new prompt", () => {
@@ -2992,8 +3078,8 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
   assert.equal(promptRows(noted, 100), 3);
   // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
   const prompted = reduce(noted, {
-    t: "openPrompt",
-    prompt: newPrompt(settings),
+    t: "overlay",
+    overlay: { t: "prompt", prompt: newPrompt(settings) },
   });
   assert.equal(promptRows(prompted, 100), 3);
 });
@@ -3001,8 +3087,8 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
 test("promptRows counts word-wrapped editor rows at the terminal's width", () => {
   const open = (text: string) =>
     reduce(initialState(), {
-      t: "openPrompt",
-      prompt: newPrompt(settings, text),
+      t: "overlay",
+      overlay: { t: "prompt", prompt: newPrompt(settings, text) },
     });
   // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
   const wide = open("one two three");
@@ -3016,8 +3102,8 @@ test("promptRows counts word-wrapped editor rows at the terminal's width", () =>
 test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => {
   const open = (text: string) =>
     reduce(initialState(), {
-      t: "openPrompt",
-      prompt: sessionPrompt("send", "a", "send", text),
+      t: "overlay",
+      overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", text) },
     });
   // The footer carries only the hints row…
   assert.equal(promptRows(open(""), 100), 1);
@@ -3113,24 +3199,28 @@ test("a model picker opened while the catalog loads resolves when the fresh list
 
   // Open the model step mid-load (as the ⌥p wizard does)…
   const opened = reduce(s, {
-    t: "openPicker",
-    picker: makePicker({
-      kind: "model",
-      title: "model · claude",
-      items: modelPickItems(s, "claude"),
-      emptyText: modelPickEmptyText(s, "claude"),
-      ctx: { provider: "claude" },
-    }),
+    t: "overlay",
+    overlay: {
+      t: "picker",
+      picker: makePicker({
+        step: "model",
+        title: "model · claude",
+        items: modelPickItems(s, "claude"),
+        emptyText: modelPickEmptyText(s, "claude"),
+        dest: { t: "newSession", settings, draft: "" },
+        chosen: { provider: "claude", model: null },
+      }),
+    },
   });
-  assert.equal(opened.picker?.items.length, 0);
+  assert.equal(pickerOf(opened)?.items.length, 0);
 
   // …then the daemon's settle push lands — the same picker fills in.
   const settled = reduce(opened, fleet([], PROVIDERS));
   assert.deepEqual(
-    settled.picker?.items.map((i) => i.id),
+    pickerOf(settled)?.items.map((i) => i.id),
     ["claude-opus-5", "claude-sonnet-5"],
   );
-  assert.equal(settled.picker?.emptyText, undefined);
+  assert.equal(pickerOf(settled)?.emptyText, null);
 });
 
 test("logRowCount tracks the resolved child through drill and drain", () => {

@@ -48,7 +48,7 @@ import {
   TRANSCRIPT_CAP,
   transcriptFor,
 } from "@loom/tui/model";
-import { questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
+import { openPrompt, questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -849,7 +849,7 @@ models   = ["m1", "m2"]
         await delay(30);
       }
       const view = handle.getView();
-      const paneWidth = view.body === "split" ? view.rightW : view.cols;
+      const paneWidth = view.body.t === "split" ? view.rightW : view.cols;
       const top = Math.max(0, logRowCount(view.state, paneWidth) - view.logPage);
       assert.equal(view.logScroll, top, "the viewport reaches the log's top");
 
@@ -1879,8 +1879,11 @@ model    = "gpt-5"
     // extra physical line that overdraws the frame budget. At width 40 the room
     // is 34: this 36-x word hard-breaks into a full row plus "xx tail".
     const state = reduce(initialState(), {
-      t: "openPrompt",
-      prompt: sessionPrompt("send", "a", "send", `${"x".repeat(36)} tail`),
+      t: "overlay",
+      overlay: {
+        t: "prompt",
+        prompt: sessionPrompt("send", "a", "send", `${"x".repeat(36)} tail`),
+      },
     });
     const out = stripAnsi(renderToString(createElement(PromptPane, { state, width: 40 })));
     assert.ok(!out.includes("…"), "the editor must never ellipsize its own text");
@@ -1981,8 +1984,8 @@ model    = "gpt-5"
 
   test("the answer footer says esc steps back to the panel, not cancel", () => {
     const state = reduce(initialState(), {
-      t: "openPrompt",
-      prompt: questionsPrompt("a", "p1", "answer 1/2: Auth"),
+      t: "overlay",
+      overlay: { t: "prompt", prompt: questionsPrompt("a", "p1", "answer 1/2: Auth") },
     });
     const out = stripAnsi(renderToString(createElement(FooterArea, { state, width: 120 })));
     assert.match(out, /esc back/);
@@ -2472,7 +2475,7 @@ describe("tui fleet-handle effects", () => {
 
       // The text is not lost: opening `send` on that session brings it back.
       handle.handleKey("", { return: true } as Key);
-      assert.equal(handle.getView().state.prompt?.buffer.text, "follow up");
+      assert.equal(openPrompt(handle.getView().state.overlay)?.buffer.text, "follow up");
     } finally {
       teardown();
     }

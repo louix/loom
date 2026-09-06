@@ -52,24 +52,21 @@ import {
   cycleLogFilter,
   defaultModelOf,
   defaultProviderId,
-  effortPickItems,
-  escapeTarget,
+  escapePicker,
   fleetHits,
   anyCompacting,
   compactingFor,
   initialState,
   liveQNav,
   newSettings,
-  makePicker,
   transcriptFor,
-  modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
+  pickerStep,
+  type WizardStep,
   parseAskUserQuestions,
-  pickerCurrent,
   providerAccountOf,
   providerInfo,
-  providerPickItems,
   queueFor,
   reduce,
   selectedSession,
@@ -79,20 +76,32 @@ import {
   type ActName,
   type Action,
   type AskUserQuestionItem,
-  type ConfirmState,
   type FleetHit,
   type LogLine,
-  type PickerState,
   type QNav,
   type TuiState,
 } from "./model.ts";
 import {
+  browse,
+  discussPrompt,
+  heldPlan,
   newPrompt,
+  openPrompt,
+  pickerCurrent,
+  makePicker,
   promptKind,
   promptOnPane,
   questionsPrompt,
   requestPrompt,
   sessionPrompt,
+  unwind,
+  type Confirm,
+  type Overlay,
+  type NewSessionSettings,
+  type Picker,
+  type PickerDest,
+  type PickerStep,
+  type PlanReview,
   type Prompt,
   type RequestPromptKind,
   type SessionPromptKind,
@@ -186,8 +195,8 @@ const tailFileSync = (path: string, maxBytes: number): string => {
 const nextMode = (m: SessionMode): SessionMode =>
   SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
 
-/** Modes that arm the batched-input latch ({@link overlayActed}). */
-const OVERLAY_MODES = new Set<TuiState["mode"]>(["confirm", "plan", "picker"]);
+/** Overlays that arm the batched-input latch ({@link overlayActed}). */
+const LATCHED_OVERLAYS = new Set<Overlay["t"]>(["confirm", "plan", "picker"]);
 
 /**
  * The C0 control bytes behind the prompt's readline motions: ⌃a ⌃b ⌃e ⌃f ⌃k
@@ -254,18 +263,19 @@ export const NARROW_COLS = 80;
  */
 export type LayoutView = "overview" | "session";
 
-/** Which body the layout draws — the overlay modes each own the screen.
+/** Which body the layout draws — each overlay owns the screen, and carries what
+ *  it draws, so the renderer never has to guard a payload against a mode.
  *  `fleetOnly` is the narrow `overview` (the fleet list alone); `sessionPane`
  *  is the `session` view at any width, and `split` the wide `overview`. */
 export type BodyKind =
-  | "help"
-  | "doctor"
-  | "confirm"
-  | "plan"
-  | "picker"
-  | "split"
-  | "fleetOnly"
-  | "sessionPane";
+  | { t: "help" }
+  | { t: "doctor" }
+  | { t: "confirm"; confirm: Confirm }
+  | { t: "plan"; plan: PlanReview }
+  | { t: "picker"; picker: Picker }
+  | { t: "split" }
+  | { t: "fleetOnly" }
+  | { t: "sessionPane" };
 
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
@@ -366,7 +376,7 @@ const deriveView = (
   // The approve / answer / plan panel sits full-width just above the footer in
   // both layout views; every overlay owns the screen.
   const showRequest =
-    (state.mode === "browse" || state.mode === "prompt") &&
+    (state.overlay.t === "browse" || state.overlay.t === "prompt") &&
     sel?.status.kind === "awaiting_input" &&
     request !== null;
 
@@ -389,14 +399,15 @@ const deriveView = (
   // detail + events panes wait for `⇥`.
   const narrow = cols < NARROW_COLS;
 
-  let body: BodyKind = "split"; // wide `overview`
-  if (state.mode === "help") body = "help";
-  else if (state.mode === "doctor") body = "doctor";
-  else if (state.mode === "confirm" && state.confirm) body = "confirm";
-  else if (state.mode === "plan" && state.plan) body = "plan";
-  else if (state.mode === "picker" && state.picker) body = "picker";
-  else if (layoutView === "session") body = "sessionPane";
-  else if (narrow) body = "fleetOnly";
+  const bodyFor = (): BodyKind => {
+    const o = state.overlay;
+    // Every overlay but the prompt owns the screen; a prompt draws over the
+    // ordinary body (in the footer, or on its session's events pane).
+    if (o.t !== "browse" && o.t !== "prompt") return o;
+    if (layoutView === "session") return { t: "sessionPane" };
+    return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
+  };
+  const body = bodyFor();
 
   const bodyH = Math.max(1, rows - 1 - footerH - requestH);
   // Fleet column: 32-col floor where the terminal affords it, yielding below
@@ -418,7 +429,7 @@ const deriveView = (
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.
-  const eventsW = body === "sessionPane" ? cols : rightW;
+  const eventsW = body.t === "sessionPane" ? cols : rightW;
   // A session-targeted prompt draws its input group under the EVENTS log (its
   // label + editor rows) — budget them against the log's height.
   const paneH = promptPaneRows(state, eventsW);
@@ -430,7 +441,7 @@ const deriveView = (
   // fleet list past `bodyH + 1`.
   const hits: FleetHit[] = [];
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
-  if (body === "split") {
+  if (body.t === "split") {
     hits.push(...fleetHits(state, { ...fleetGeom, listW: leftW }));
     const chip = modeChipHit(sel, {
       originX: leftW + 2,
@@ -439,9 +450,9 @@ const deriveView = (
       account: detailAccount,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
-  } else if (body === "fleetOnly") {
+  } else if (body.t === "fleetOnly") {
     hits.push(...fleetHits(state, { ...fleetGeom, listW: cols }));
-  } else if (body === "sessionPane") {
+  } else if (body.t === "sessionPane") {
     const chip = modeChipHit(sel, {
       originX: 1,
       originY: 2,
@@ -587,7 +598,7 @@ export const mkFleetHandle = ({
   // column.
   const logPaneWidth = (): number => {
     const v = store.get();
-    return v.body === "split" ? v.rightW : v.cols;
+    return v.body.t === "split" ? v.rightW : v.cols;
   };
   // Physical (wrapped) rows in the log pane as currently rendered — narrowed to
   // the focused child while drilled in. This — not the logical line count,
@@ -837,18 +848,18 @@ export const mkFleetHandle = ({
     }
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
-    if (state.plan?.requestId !== prev.plan?.requestId) planScroll = 0;
+    if (heldPlan(state.overlay)?.requestId !== heldPlan(prev.overlay)?.requestId) planScroll = 0;
     // Narrow layout: opening a reply to a session pulls the events pane into
     // view (its input renders there) — from `overview` there's no room for it.
     if (
-      promptOnPane(state.prompt) &&
-      !promptOnPane(prev.prompt) &&
+      promptOnPane(openPrompt(state.overlay)) &&
+      !promptOnPane(openPrompt(prev.overlay)) &&
       layoutView === "overview" &&
       dims.cols < NARROW_COLS
     )
       layoutView = "session";
     // Was `useEffect(() => { if (!overlay) overlayActed.current = null }, [mode])`.
-    if (!OVERLAY_MODES.has(state.mode)) overlayActed = null;
+    if (!LATCHED_OVERLAYS.has(state.overlay.t)) overlayActed = null;
     if (state.theme !== prev.theme) {
       setThemeMode(state.theme);
       // Remember the choice for the next launch — best-effort, like the log.
@@ -873,9 +884,19 @@ export const mkFleetHandle = ({
     if (sessionsRef(state) !== sessionsRef(prev) || state.queue !== prev.queue) drainQueues();
   };
 
-  // ---- helpers ----------------------------------------------------
   const note = (text: string, tone: "good" | "bad" | "dim" | "accent" = "good"): void =>
     dispatch({ t: "notice", text, tone });
+
+  /** A fresh review overlay for a session's pending `plan_review`, if it has one. */
+  const planReviewFor = (sessionId: string): PlanReview | null => {
+    const r = requestsFor(state, sessionId).find((x) => x.kind === "plan_review");
+    return r?.kind === "plan_review"
+      ? { sessionId, requestId: r.id, text: r.plan, mode: "acceptEdits", impl: null }
+      : null;
+  };
+
+  /** Put an overlay up, or take one down (`browse`). */
+  const show = (overlay: Overlay): void => void dispatch({ t: "overlay", overlay });
 
   const quitTui = (): void => {
     client.close().catch(() => {});
@@ -920,9 +941,8 @@ export const mkFleetHandle = ({
 
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
   const editPrompt = async (): Promise<void> => {
-    if (state.mode !== "prompt" || !state.prompt)
-      return note("open a prompt first — press o to view the log", "dim");
-    const p = state.prompt;
+    const p = openPrompt(state.overlay);
+    if (!p) return note("open a prompt first — press o to view the log", "dim");
     const next = await openEditor(p.buffer.text, {
       ext: p.t === "new" ? "md" : "txt",
       aside: { name: "events.log", body: logText() },
@@ -966,8 +986,8 @@ export const mkFleetHandle = ({
   /** Command palette: toggle the doctor overlay, refetching `daemon.doctor`
    *  each time it opens (the last snapshot stays painted until the reply lands). */
   const openDoctor = (): void => {
-    const opening = state.mode !== "doctor";
-    dispatch({ t: "doctor", value: opening });
+    const opening = state.overlay.t !== "doctor";
+    show(opening ? { t: "doctor" } : browse);
     if (!opening) return;
     client
       .request<DoctorReport>("daemon.doctor")
@@ -1005,15 +1025,15 @@ export const mkFleetHandle = ({
   ): void => {
     const { nav, prompt } = questionPromptFor(sessionId, requestId, qs, answers, idx);
     dispatch({ t: "qnavSet", nav });
-    dispatch({ t: "openPrompt", prompt });
+    show({ t: "prompt", prompt });
   };
 
   const act = (name: DelegatedAct): void => {
     const s = selectedSession(state);
     const by = client.clientId;
     if (name === "new") {
-      return void dispatch({
-        t: "openPrompt",
+      return void show({
+        t: "prompt",
         prompt: newPrompt(newSettings(state, null, null, null), state.lastDraft),
       });
     }
@@ -1025,7 +1045,7 @@ export const mkFleetHandle = ({
       // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
       return void dispatch({ t: state.find ? "closeFind" : "openFind" });
     }
-    if (name === "help") return void dispatch({ t: "help", value: state.mode !== "help" });
+    if (name === "help") return void show(state.overlay.t === "help" ? browse : { t: "help" });
     if (name === "quit") return quitTui();
     if (!s) return;
     if (name === "undo") {
@@ -1054,13 +1074,13 @@ export const mkFleetHandle = ({
           if (items.length === 0) {
             return void dispatch({ t: "notice", text: "nothing to undo yet", tone: "dim" });
           }
-          dispatch({
-            t: "openPicker",
+          show({
+            t: "picker",
             picker: makePicker({
-              kind: "undo",
+              step: "undo",
               title: `undo · ${shortId(sid)}`,
               items,
-              ctx: { liveSessionId: sid },
+              dest: { t: "undo", sessionId: sid },
             }),
           });
         })
@@ -1097,18 +1117,15 @@ export const mkFleetHandle = ({
         if (r === null || (r.kind !== "permission" && r.kind !== "user_question")) {
           return note("no permission request pending", "dim");
         }
-        return void dispatch({
-          t: "openPrompt",
+        return void show({
+          t: "prompt",
           prompt: requestPrompt("deny", s.id, r.id, `deny ${r.id}`),
         });
       }
       case "answer": {
         const r = activeRequest(state, s.id);
         if (r?.kind === "question") {
-          return void dispatch({
-            t: "openPrompt",
-            prompt: requestPrompt("answer", s.id, r.id, "answer"),
-          });
+          return void show({ t: "prompt", prompt: requestPrompt("answer", s.id, r.id, "answer") });
         }
         if (r?.kind === "user_question") {
           const q = questionState(state, s.id);
@@ -1131,29 +1148,30 @@ export const mkFleetHandle = ({
         const held = state.heldSend[s.id];
         if (held !== undefined) dispatch({ t: "holdSend", sessionId: s.id, text: null });
         const text = held ?? state.lastDraft;
-        return void dispatch({
-          t: "openPrompt",
-          prompt: sessionPrompt("send", s.id, "send", text),
-        });
+        return void show({ t: "prompt", prompt: sessionPrompt("send", s.id, "send", text) });
       }
       case "title":
-        return void dispatch({
-          t: "openPrompt",
+        return void show({
+          t: "prompt",
           prompt: sessionPrompt("title", s.id, "rename", s.title ?? ""),
         });
       case "comment":
-        return void dispatch({
-          t: "openPrompt",
+        return void show({
+          t: "prompt",
           prompt: sessionPrompt("comment", s.id, "comment", s.comment ?? ""),
         });
       case "planreview": {
         const plan = requestsFor(state, s.id).find((r) => r.kind === "plan_review");
         if (!plan) return note("no plan pending", "dim");
-        return void dispatch({
-          t: "openPlan",
-          sessionId: s.id,
-          requestId: plan.id,
-          text: plan.plan,
+        return void show({
+          t: "plan",
+          plan: {
+            sessionId: s.id,
+            requestId: plan.id,
+            text: plan.plan,
+            mode: "acceptEdits",
+            impl: null,
+          },
         });
       }
       case "interrupt":
@@ -1162,8 +1180,8 @@ export const mkFleetHandle = ({
           return "interrupted";
         });
       case "compact":
-        return void dispatch({
-          t: "openPrompt",
+        return void show({
+          t: "prompt",
           prompt: sessionPrompt("compact", s.id, "compact — steer summary (blank = best effort)"),
         });
       case "keepwarm": {
@@ -1178,8 +1196,8 @@ export const mkFleetHandle = ({
         // uncommitted changes discarded, so make that an explicit confirm
         // (mirrors delete). Clean trees archive straight away.
         if (s.git?.dirty === true) {
-          return void dispatch({
-            t: "openConfirm",
+          return void show({
+            t: "confirm",
             confirm: {
               title: `Archive session ${shortId(s.id)}?`,
               body:
@@ -1237,267 +1255,202 @@ export const mkFleetHandle = ({
     }
   };
 
-  /** Provider chosen → always show a model step. `carry` threads the wizard's
-   *  context — a half-typed `new`-prompt `draft`, or a live switch's
-   *  `liveSessionId` / `reopenSend` / `draft` / `viaProviderStep` — through the
-   *  detour unchanged. (`model` is never set this early, so it isn't carried.) */
-  const openModelStep = (providerId: string, label: string, carry: PickerState["ctx"] = {}): void =>
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "model",
-        title: `model · ${label}`,
-        items: modelPickItems(state, providerId),
-        emptyText: modelPickEmptyText(state, providerId),
-        ctx: { ...carry, provider: providerId },
-      }),
-    });
+  // --- the provider → model → effort wizard ---------------------------------
+  // One set of steps, three destinations: a `new` session being composed, a
+  // live session (`⌥m` / `⌥p` / `⌥t`), or an open plan review's `f` retarget
+  // (`⌥p` there). The destination travels inside the picker, so no step has to
+  // ask where it came from, and unwinding restores exactly what it interrupted.
 
-  /** Model chosen, and it takes a thinking-effort level → one more step before
-   *  the wizard resolves. Carries the rest of `ctx` (live session / draft /
-   *  reopenSend) through unchanged. */
-  const openEffortStep = (
-    providerId: string,
-    modelId: string,
-    label: string,
-    ctx: PickerState["ctx"] = {},
-  ): void =>
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "effort",
-        title: `effort · ${label}`,
-        items: effortPickItems(state, providerId, modelId),
-        ctx: { ...ctx, provider: providerId, model: modelId },
-      }),
-    });
+  /** Open `step` of the wizard. `pick` pre-selects an id in the new list. */
+  const openStep = (
+    step: WizardStep,
+    dest: PickerDest,
+    chosen: { provider: string | null; model: string | null },
+    from: PickerStep,
+    pick?: string | null,
+  ): void => show(pickerStep(state, step, { dest, chosen, from, ...(pick ? { pick } : {}) }));
 
-  // --- `⌥p` from the plan review: retarget the `f` (implement fresh) run ------
-  // A self-contained provider → model → (effort) wizard that resolves by
-  // staging onto `state.plan.impl` (not a live switch or a `new` prompt). Each
-  // step pre-selects the session's current value; a staged provider that
-  // differs from the session's forks a fresh session when `f` fires.
+  /** The session an open plan review belongs to, for the retarget wizard's
+   *  "current value" pre-selection. */
+  const sessionOf = (id: string): SessionSnapshot | undefined =>
+    fleetSessions(state).find((x) => x.id === id);
 
-  const planSession = (): SessionSnapshot | undefined => {
-    const pl = state.plan;
-    return pl ? fleetSessions(state).find((x) => x.id === pl.sessionId) : undefined;
-  };
-
-  const openPlanModelStep = (provider: string): void => {
-    const items = modelPickItems(state, provider);
-    const ps = planSession();
-    const cur = state.plan?.impl?.model ?? (provider === ps?.provider ? ps?.model : undefined);
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "model",
-        title: `retarget · model · ${provider}`,
-        items,
-        emptyText: modelPickEmptyText(state, provider),
-        ctx: { planStage: true, provider },
-        index: cur ? items.findIndex((i) => i.id === cur) : 0,
-      }),
-    });
-  };
-
-  const openPlanEffortStep = (provider: string, model: string): void => {
-    const items = effortPickItems(state, provider, model);
-    const ps = planSession();
-    const cur =
-      state.plan?.impl?.effort ??
-      (provider === ps?.provider && model === ps?.model ? ps?.effort : undefined);
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "effort",
-        title: `retarget · effort · ${provider}`,
-        items,
-        ctx: { planStage: true, provider, model },
-        index: cur ? items.findIndex((i) => i.id === cur) : 0,
-      }),
-    });
-  };
-
-  const openPlanRetarget = (): void => {
-    if (!state.plan) return;
-    const ps = planSession();
+  /** `⌥p` from the plan review: retarget the `f` (implement fresh) run. Each
+   *  step pre-selects what the review would use today — a staged choice if
+   *  there is one, else the plan session's own. A staged provider that differs
+   *  from the session's forks a fresh session when `f` fires. */
+  const openPlanRetarget = (plan: PlanReview): void => {
+    const ps = sessionOf(plan.sessionId);
+    const dest: PickerDest = { t: "planImpl", plan };
     if (fleetProviders(state).length > 1) {
-      const items = providerPickItems(state);
-      const cur = state.plan.impl?.provider ?? ps?.provider;
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({
-          kind: "provider",
-          title: "retarget · provider",
-          items,
-          ctx: { planStage: true },
-          index: cur ? items.findIndex((i) => i.id === cur) : 0,
-        }),
+      return openStep(
+        "provider",
+        dest,
+        { provider: null, model: null },
+        "provider",
+        plan.impl?.provider ?? ps?.provider,
+      );
+    }
+    const provider = fleetProviders(state)[0]?.id ?? ps?.provider ?? "claude";
+    openStep(
+      "model",
+      dest,
+      { provider, model: null },
+      "model",
+      plan.impl?.model ?? (provider === ps?.provider ? ps?.model : null),
+    );
+  };
+
+  /** Stage the wizard's choices onto the review it was opened over and put the
+   *  review back up. Whatever isn't chosen the daemon fills from the target
+   *  provider's defaults. */
+  const stagePlanImpl = (
+    plan: PlanReview,
+    provider: string,
+    model: string | null,
+    effort: string | null,
+  ): void => show({ t: "plan", plan: { ...plan, impl: { provider, model, effort } } });
+
+  /**
+   * Finalize a model (+ optional effort) chosen through the wizard: a live
+   * switch on an existing session, or folding the choice into the `new`-session
+   * prompt waiting behind it.
+   */
+  const finalizeModelChoice = (
+    dest: PickerDest,
+    chosen: { provider: string | null; model: string | null },
+    model: string,
+    effort?: string,
+  ): void => {
+    if (dest.t === "newSession") {
+      return show({
+        t: "prompt",
+        prompt: newPrompt(
+          newSettings(state, chosen.provider, model || null, effort ?? null),
+          dest.draft,
+        ),
       });
     }
-    openPlanModelStep(fleetProviders(state)[0]?.id ?? ps?.provider ?? "claude");
-  };
-
-  /** Finalize a model (+ optional effort) chosen through the wizard: either a
-   *  live switch on an existing session, or folding the choice into the
-   *  `new`-session prompt. */
-  const finalizeModelChoice = (ctx: PickerState["ctx"], model: string, effort?: string): void => {
-    if (ctx?.liveSessionId) {
-      const id = ctx.liveSessionId;
-      const back = ctx.reopenSend;
-      const draft = ctx.draft;
-      dispatch({ t: "closePicker" });
-      // Came from a `send` prompt (⌥m/⌥t mid-message) → drop the user back into
-      // it with the half-typed text intact once the switch is away.
-      if (back !== undefined) {
-        dispatch({
-          t: "openPrompt",
-          prompt: sessionPrompt("send", back, "send", draft ?? ""),
-        });
-      }
-      const sess = fleetSessions(state).find((x) => x.id === id);
-      const toProvider =
-        ctx.provider !== undefined && sess !== undefined && ctx.provider !== sess.provider
-          ? ctx.provider
-          : null;
-      const req = toProvider
-        ? client.request("session.setProvider", {
-            id,
-            provider: toProvider,
-            model,
-            ...(effort ? { effort } : {}),
-            by: client.clientId,
-          })
-        : client.request("session.setModel", { id, model, by: client.clientId });
-      req
-        .then(() => {
-          if (toProvider) {
-            dispatch({
-              t: "notice",
-              text: `provider → ${toProvider} · ${model}${effort ? ` · ${effort}` : ""}`,
-              tone: "good",
-            });
-            return undefined;
-          }
-          if (!effort) {
-            dispatch({ t: "notice", text: `model → ${model} · next turn`, tone: "good" });
-            return undefined;
-          }
-          return client.request("session.setEffort", { id, effort, by: client.clientId }).then(
-            () =>
-              void dispatch({
-                t: "notice",
-                text: `model → ${model} · effort → ${effort} · next turn`,
-                tone: "good",
-              }),
-          );
+    if (dest.t !== "session")
+      return show(
+        unwind({
+          t: "picker",
+          picker: state.overlay.t === "picker" ? state.overlay.picker : ({} as Picker),
+        }),
+      );
+    const id = dest.sessionId;
+    // Came from a `send` prompt (⌥m/⌥t mid-message) → drop the user back into
+    // it with the half-typed text intact once the switch is away.
+    show(
+      dest.back !== null
+        ? { t: "prompt", prompt: sessionPrompt("send", id, "send", dest.back) }
+        : browse,
+    );
+    const sess = sessionOf(id);
+    const toProvider =
+      chosen.provider !== null && sess !== undefined && chosen.provider !== sess.provider
+        ? chosen.provider
+        : null;
+    const req = toProvider
+      ? client.request("session.setProvider", {
+          id,
+          provider: toProvider,
+          model,
+          ...(effort ? { effort } : {}),
+          by: client.clientId,
         })
-        .catch((e: unknown) =>
+      : client.request("session.setModel", { id, model, by: client.clientId });
+    req
+      .then(() => {
+        if (toProvider) {
           dispatch({
             t: "notice",
-            text: `${toProvider ? "provider" : "model"} switch failed: ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-            tone: "bad",
-          }),
+            text: `provider → ${toProvider} · ${model}${effort ? ` · ${effort}` : ""}`,
+            tone: "good",
+          });
+          return undefined;
+        }
+        if (!effort) {
+          dispatch({ t: "notice", text: `model → ${model} · next turn`, tone: "good" });
+          return undefined;
+        }
+        return client.request("session.setEffort", { id, effort, by: client.clientId }).then(
+          () =>
+            void dispatch({
+              t: "notice",
+              text: `model → ${model} · effort → ${effort} · next turn`,
+              tone: "good",
+            }),
         );
-      return;
-    }
-    dispatch({
-      t: "openPrompt",
-      prompt: newPrompt(
-        newSettings(state, ctx?.provider ?? null, model, effort ?? null),
-        ctx?.draft ?? "",
-      ),
-    });
+      })
+      .catch((e: unknown) =>
+        dispatch({
+          t: "notice",
+          text: `${toProvider ? "provider" : "model"} switch failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+          tone: "bad",
+        }),
+      );
   };
 
-  /** Resolve the open picker's highlighted item by its kind. */
+  /** Resolve the open picker's highlighted item by its step. */
   const choosePicked = (): void => {
-    const p = state.picker;
-    if (!p || overlayActed === p) return;
+    if (state.overlay.t !== "picker") return;
+    const p = state.overlay.picker;
+    if (overlayActed === p) return;
     overlayActed = p;
     const cur = pickerCurrent(p);
+    const dest = p.dest;
+    const provider = cur && p.step === "provider" ? cur.id : p.chosen.provider;
+    const model = cur && p.step === "model" ? cur.id : p.chosen.model;
 
-    // Empty model / effort step: enter continues without picking one (the
-    // daemon falls back to the provider's default model; a model with no
+    // An empty model / effort step: Enter continues without picking one. The
+    // daemon falls back to the target provider's defaults (a model with no
     // enumerated effort levels never reaches an empty effort step).
-    if (!cur) {
-      if (p.ctx?.planStage) {
-        // Stage what's chosen so far; the daemon fills the rest from the target
-        // provider's defaults.
-        const provider = p.ctx.provider ?? planSession()?.provider ?? "claude";
-        if (p.kind === "effort") {
-          return void dispatch({
-            t: "stagePlanImpl",
-            provider,
-            ...(p.ctx.model ? { model: p.ctx.model } : {}),
-          });
-        }
-        if (p.kind === "model") return void dispatch({ t: "stagePlanImpl", provider });
-        return void dispatch({ t: "closePicker" });
+    if (!cur && p.step !== "undo" && p.step !== "command") {
+      if (dest.t === "planImpl") {
+        return provider === null
+          ? show({ t: "plan", plan: dest.plan })
+          : stagePlanImpl(dest.plan, provider, model, null);
       }
-      if (p.kind === "model" && !p.ctx?.liveSessionId) {
-        return void dispatch({
-          t: "openPrompt",
-          prompt: newPrompt(
-            newSettings(state, p.ctx?.provider ?? null, null, null),
-            p.ctx?.draft ?? "",
-          ),
+      if (p.step === "effort") return finalizeModelChoice(dest, p.chosen, p.chosen.model ?? "");
+      if (dest.t === "newSession") {
+        return show({
+          t: "prompt",
+          prompt: newPrompt(newSettings(state, provider, model, null), dest.draft),
         });
       }
-      if (p.kind === "effort") {
-        return void finalizeModelChoice(p.ctx, p.ctx?.model ?? "");
-      }
-      return void dispatch({ t: "closePicker" });
+      return show(unwind({ t: "picker", picker: p }));
     }
 
-    // The `⌥p` retarget wizard resolves onto `state.plan.impl`, not a live
-    // switch or a `new` prompt.
-    if (p.ctx?.planStage) {
-      if (p.kind === "provider") return void openPlanModelStep(cur.id);
-      if (p.kind === "model") {
-        const provider = p.ctx.provider ?? planSession()?.provider ?? "claude";
-        if (modelSupportsEffort(state, provider, cur.id)) {
-          return void openPlanEffortStep(provider, cur.id);
-        }
-        return void dispatch({ t: "stagePlanImpl", provider, model: cur.id });
-      }
-      if (p.kind === "effort") {
-        return void dispatch({
-          t: "stagePlanImpl",
-          provider: p.ctx.provider ?? planSession()?.provider ?? "claude",
-          ...(p.ctx.model ? { model: p.ctx.model } : {}),
-          effort: cur.id,
-        });
-      }
-    }
-
-    switch (p.kind) {
+    switch (p.step) {
       case "provider":
-        return void openModelStep(
-          cur.id,
-          cur.label,
-          p.ctx?.liveSessionId ? { ...p.ctx, viaProviderStep: true } : p.ctx,
-        );
+        // Provider chosen → always a model step.
+        return openStep("model", dest, { provider, model: null }, p.from);
 
       case "model": {
-        const providerId = p.ctx?.provider ?? "claude";
-        if (modelSupportsEffort(state, providerId, cur.id)) {
-          const label = providerInfo(state, providerId)?.tag ?? providerId;
-          return void openEffortStep(providerId, cur.id, label, { ...p.ctx, viaModelStep: true });
+        const pid = provider ?? "claude";
+        if (model !== null && modelSupportsEffort(state, pid, model)) {
+          return openStep("effort", dest, { provider: pid, model }, p.from);
         }
-        return void finalizeModelChoice(p.ctx, cur.id);
+        if (dest.t === "planImpl") return stagePlanImpl(dest.plan, pid, model, null);
+        return finalizeModelChoice(dest, { provider: pid, model }, model ?? "");
       }
 
-      case "effort":
-        return void finalizeModelChoice(p.ctx, p.ctx?.model ?? "", cur.id);
+      case "effort": {
+        const effort = cur?.id ?? null;
+        if (dest.t === "planImpl") {
+          return stagePlanImpl(dest.plan, provider ?? "claude", model, effort);
+        }
+        return finalizeModelChoice(dest, p.chosen, model ?? "", effort ?? undefined);
+      }
 
       case "undo": {
-        const id = p.ctx?.liveSessionId;
-        const undoTurn = Number(cur.id);
-        const prefill = cur.blob ?? "";
-        dispatch({ t: "closePicker" });
+        const undoTurn = Number(cur?.id);
+        const prefill = cur?.blob ?? "";
+        const id = dest.t === "undo" ? dest.sessionId : null;
+        show(browse);
         if (!id || !Number.isInteger(undoTurn)) return;
         client
           // `toTurn` is turns-to-keep: undoing turn T keeps T-1.
@@ -1506,10 +1459,7 @@ export const mkFleetHandle = ({
             dispatch({ t: "notice", text: `undid turn ${undoTurn}`, tone: "good" });
             // Reopen the compose prompt with that turn's message pre-filled, as
             // if you'd pressed Enter on the session — edit and re-send, or Esc.
-            dispatch({
-              t: "openPrompt",
-              prompt: sessionPrompt("send", id, "send", prefill),
-            });
+            show({ t: "prompt", prompt: sessionPrompt("send", id, "send", prefill) });
           })
           .catch((e: unknown) =>
             dispatch({
@@ -1526,125 +1476,100 @@ export const mkFleetHandle = ({
         return;
 
       default:
-        return absurd(p.kind);
+        return absurd(p.step);
     }
   };
 
   /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
    *  only one), then the model, then land back on the prompt. */
-  const pickProviderModel = (draft: string): void => {
+  const pickProviderModel = (settings: NewSessionSettings, draft: string): void => {
+    const dest: PickerDest = { t: "newSession", settings, draft };
     const provs = fleetProviders(state);
     if (provs.length > 1) {
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({
-          kind: "provider",
-          title: "provider",
-          items: providerPickItems(state),
-          ctx: { draft },
-        }),
-      });
+      return openStep(
+        "provider",
+        dest,
+        { provider: null, model: null },
+        "provider",
+        settings.provider,
+      );
     }
-    const only = provs[0]?.id ?? "claude";
-    openModelStep(only, provs[0]?.tag || only, { draft });
+    const only = provs[0]?.id ?? settings.provider ?? "claude";
+    openStep("model", dest, { provider: only, model: null }, "model", settings.model);
   };
 
-  /** `Esc` inside a picker — the step-back logic is pure (see
-   *  {@link escapeTarget}); this just dispatches its result. */
-  const escapePicker = (p: PickerState): void => dispatch(escapeTarget(p, state));
+  /** The session a live `⌥m` / `⌥p` / `⌥t` acts on: an explicit id, or the
+   *  selected row. */
+  const switchTarget = (sessionId?: string): SessionSnapshot | null => {
+    const s = sessionId ? sessionOf(sessionId) : selectedSession(state);
+    if (!s) note("no session selected", "dim");
+    return s ?? null;
+  };
 
-  /** Open a live model switcher (`⌥m`): the selected session, or an explicit
-   *  one. From a `send` prompt, pass `draft` so the picker drops you back. */
+  /** Open a live model switcher (`⌥m`). From a `send` prompt, pass `draft` so
+   *  the picker drops you back into it with the message intact. */
   const switchModel = (sessionId?: string, draft?: string): void => {
-    const s = sessionId
-      ? fleetSessions(state).find((x) => x.id === sessionId)
-      : selectedSession(state);
-    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-    const models = modelPickItems(state, s.provider);
+    const s = switchTarget(sessionId);
+    if (!s) return;
     // Mid-probe the list is empty but coming — open the picker anyway; the
     // settle push fills it in (see rederiveOpenPicker).
-    if (models.length === 0 && !providerInfo(state, s.provider)?.modelsLoading) {
-      return void dispatch({
-        t: "notice",
-        text: `${s.provider} has no alternate models`,
-        tone: "dim",
-      });
+    if (
+      modelPickItems(state, s.provider).length === 0 &&
+      !providerInfo(state, s.provider)?.modelsLoading
+    ) {
+      return note(`${s.provider} has no alternate models`, "dim");
     }
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "model",
-        title: `model · ${s.provider}`,
-        items: models,
-        ctx: {
-          provider: s.provider,
-          liveSessionId: s.id,
-          ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
-        },
-      }),
-    });
+    openStep(
+      "model",
+      { t: "session", sessionId: s.id, back: draft ?? null },
+      { provider: s.provider, model: null },
+      "model",
+    );
   };
 
   /** Open the provider → model → effort wizard for a *live* session (`⌥p`
-   *  mid-chat): pre-select its current provider, thread `liveSessionId`
-   *  (+ `reopenSend` / `draft` from a send prompt) so the choice finalizes as a
+   *  mid-chat): pre-select its current provider, so the choice finalizes as a
    *  `session.setProvider`. Falls back to the model switcher when there's only
    *  one provider to pick from. */
   const pickProviderModelForSession = (sessionId?: string, draft?: string): void => {
-    const s = sessionId
-      ? fleetSessions(state).find((x) => x.id === sessionId)
-      : selectedSession(state);
-    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+    const s = switchTarget(sessionId);
+    if (!s) return;
     if (
       s.status.kind === "running" ||
       s.status.kind === "starting" ||
       s.status.kind === "working_background" ||
       s.status.kind === "awaiting_input"
     ) {
-      return void dispatch({
-        t: "notice",
-        text: "interrupt the turn before switching provider",
-        tone: "dim",
-      });
+      return note("interrupt the turn before switching provider", "dim");
     }
-    if (fleetProviders(state).length <= 1) return void switchModel(s.id, draft);
-    const items = providerPickItems(state);
-    dispatch({
-      t: "openPicker",
-      picker: makePicker({
-        kind: "provider",
-        title: "provider",
-        items,
-        ctx: {
-          liveSessionId: s.id,
-          ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
-        },
-        index: Math.max(
-          0,
-          items.findIndex((x) => x.id === s.provider),
-        ),
-      }),
-    });
+    if (fleetProviders(state).length <= 1) return switchModel(s.id, draft);
+    openStep(
+      "provider",
+      { t: "session", sessionId: s.id, back: draft ?? null },
+      { provider: null, model: null },
+      "provider",
+      s.provider,
+    );
   };
 
-  /** Open a live thinking-effort switcher (`⌥t`): the selected session, or an
-   *  explicit one. Only offered when its current model takes an effort level. */
+  /** Open a live thinking-effort switcher (`⌥t`) — only when the session's
+   *  current model takes an effort level. There is no model list behind it, so
+   *  `Esc` unwinds rather than stepping back. */
   const switchEffort = (sessionId?: string, draft?: string): void => {
-    const s = sessionId
-      ? fleetSessions(state).find((x) => x.id === sessionId)
-      : selectedSession(state);
-    if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+    const s = switchTarget(sessionId);
+    if (!s) return;
     if (!s.model || !modelSupportsEffort(state, s.provider, s.model)) {
-      return void dispatch({
-        t: "notice",
-        text: `${s.provider}${s.model ? `/${s.model}` : ""} has no thinking-effort control`,
-        tone: "dim",
-      });
+      return note(
+        `${s.provider}${s.model ? `/${s.model}` : ""} has no thinking-effort control`,
+        "dim",
+      );
     }
-    openEffortStep(s.provider, s.model, s.provider, {
-      liveSessionId: s.id,
-      ...(draft !== undefined ? { reopenSend: s.id, draft } : {}),
-    });
+    openStep(
+      "effort",
+      { t: "session", sessionId: s.id, back: draft ?? null },
+      { provider: s.provider, model: s.model },
+      "effort",
+    );
   };
 
   /**
@@ -1690,10 +1615,8 @@ export const mkFleetHandle = ({
             // snaps the chip back to the `plan` the snapshot still reports;
             // open the review so there's no impossible "chip says X, the live
             // session is still parked on a plan" state to land in.
-            const plan = requestsFor(state, sessionId).find((r) => r.kind === "plan_review");
-            if (plan) {
-              dispatch({ t: "openPlan", sessionId, requestId: plan.id, text: plan.plan });
-            }
+            const review = planReviewFor(sessionId);
+            if (review) show({ t: "plan", plan: review });
             dispatch({
               t: "notice",
               text: "a plan review is pending — resolve it first",
@@ -1720,7 +1643,7 @@ export const mkFleetHandle = ({
   };
 
   const submitPrompt = (): void => {
-    const p = state.prompt;
+    const p = openPrompt(state.overlay);
     if (!p) return;
     const text = p.buffer.text.trim();
     const by = client.clientId;
@@ -1742,10 +1665,7 @@ export const mkFleetHandle = ({
     }
 
     const reopen = (): void =>
-      dispatch({
-        t: "openPrompt",
-        prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" },
-      });
+      show({ t: "prompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
 
     dispatch({ t: "closePrompt" });
 
@@ -1790,17 +1710,6 @@ export const mkFleetHandle = ({
       requestId: string,
     ): Promise<string> => {
       switch (k) {
-        case "discuss": {
-          const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
-            id: sessionId,
-            requestId,
-            action: "discuss",
-            message: text,
-            by,
-          });
-          dispatch({ t: "closePlan" });
-          return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
-        }
         case "answer": {
           const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
             id: sessionId,
@@ -1899,6 +1808,18 @@ export const mkFleetHandle = ({
           return runRequest(p.kind, p.sessionId, p.requestId);
         case "questions":
           return runQuestions(p.sessionId, p.requestId);
+        case "discuss": {
+          const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
+            id: p.plan.sessionId,
+            requestId: p.plan.requestId,
+            action: "discuss",
+            message: text,
+            by,
+          });
+          // Answered — the review the prompt was holding open goes with it.
+          show(browse);
+          return r.alreadyResolved ? "plan already resolved" : "sent to the agent";
+        }
         default:
           return absurd(p);
       }
@@ -1945,12 +1866,11 @@ export const mkFleetHandle = ({
     note(why, "dim");
   };
 
-  /** Resolve the open plan review with `params` (an `action` plus any payload). */
-  const respondPlan = (params: Record<string, unknown>, label: string): void => {
-    const pl = state.plan;
-    if (!pl || overlayActed === pl) return;
+  /** Resolve `pl` with `params` (an `action` plus any payload). */
+  const respondPlan = (pl: PlanReview, params: Record<string, unknown>, label: string): void => {
+    if (overlayActed === pl) return;
     overlayActed = pl;
-    dispatch({ t: "closePlan" });
+    show(browse);
     client
       .request<{ alreadyResolved: boolean }>("session.respondPlan", {
         id: pl.sessionId,
@@ -1963,12 +1883,7 @@ export const mkFleetHandle = ({
         note(`${e instanceof Error ? e.message : String(e)} — reopening the plan`, "bad");
         // The daemon is still blocked on the decision; put the overlay back
         // (fresh object, so the latch passes) so it can be retried.
-        dispatch({
-          t: "openPlan",
-          sessionId: pl.sessionId,
-          requestId: pl.requestId,
-          text: pl.text,
-        });
+        show({ t: "plan", plan: { ...pl } });
       });
   };
 
@@ -1976,21 +1891,20 @@ export const mkFleetHandle = ({
    *  Same provider (or none staged): the model / effort ride on the decision.
    *  A different provider: the daemon forks a fresh session on it and hands
    *  back its snapshot; select that and don't reopen the overlay. */
-  const implementFresh = (): void => {
-    const pl = state.plan;
-    if (!pl || overlayActed === pl) return;
+  const implementFresh = (pl: PlanReview): void => {
+    if (overlayActed === pl) return;
     const impl = pl.impl;
-    const forking = impl !== undefined && impl.provider !== planSession()?.provider;
+    const forking = impl !== null && impl.provider !== sessionOf(pl.sessionId)?.provider;
     const params: Record<string, unknown> = {
       action: "implement_fresh",
       mode: pl.mode,
       ...(impl?.model ? { model: impl.model } : {}),
       ...(impl?.effort ? { effort: impl.effort } : {}),
-      ...(forking ? { provider: impl.provider, plan: pl.text } : {}),
+      ...(forking && impl ? { provider: impl.provider, plan: pl.text } : {}),
     };
-    if (!forking) return respondPlan(params, "compacting, then implementing");
+    if (!forking) return respondPlan(pl, params, "compacting, then implementing");
     overlayActed = pl;
-    dispatch({ t: "closePlan" });
+    show(browse);
     client
       .request<SessionSnapshot>("session.respondPlan", {
         id: pl.sessionId,
@@ -2004,35 +1918,21 @@ export const mkFleetHandle = ({
       })
       .catch((e: unknown) => {
         note(`${e instanceof Error ? e.message : String(e)} — reopening the plan`, "bad");
-        dispatch({
-          t: "openPlan",
-          sessionId: pl.sessionId,
-          requestId: pl.requestId,
-          text: pl.text,
-        });
+        show({ t: "plan", plan: { ...pl } });
       });
   };
 
   /** `e` in the plan overlay — edit the plan in $EDITOR, then implement it. */
-  const editPlan = async (): Promise<void> => {
-    const pl = state.plan;
-    if (!pl) return;
+  const editPlan = async (pl: PlanReview): Promise<void> => {
     const edited = await openEditor(pl.text, { ext: "md" });
     const plan = edited?.trim();
     // No save, or quit-without-changes (`:q`) — don't kick off an implement.
     if (!plan || plan === pl.text.trim()) return note("plan unchanged — nothing sent", "dim");
-    respondPlan({ action: "revise", plan, mode: pl.mode }, "implementing your edited plan");
-  };
-
-  /** `o` / `⌥o` in the plan overlay — view the plan in $EDITOR, read-only. */
-  const viewPlan = async (): Promise<void> => {
-    const pl = state.plan;
-    if (!pl) return;
-    await openEditor(pl.text, { ext: "md" });
+    respondPlan(pl, { action: "revise", plan, mode: pl.mode }, "implementing your edited plan");
   };
 
   // ---- daemon lifecycle ---------------------------------------
-  const confirmFor = (action: "restart" | "quitAll"): ConfirmState => {
+  const confirmFor = (action: "restart" | "quitAll"): Confirm => {
     const liveCount = fleetSessions(state).filter((s) => isLiveState(s.status)).length;
     return {
       title: action === "restart" ? "Restart the daemon?" : "Quit the UI and stop the daemon?",
@@ -2044,7 +1944,7 @@ export const mkFleetHandle = ({
     };
   };
 
-  const confirmForDelete = (s: SessionSnapshot): ConfirmState => {
+  const confirmForDelete = (s: SessionSnapshot): Confirm => {
     const name = `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}”`;
     const canBranch = !s.inPlace && !!s.branch;
     const dirty = s.git?.dirty === true;
@@ -2065,10 +1965,11 @@ export const mkFleetHandle = ({
   };
 
   const runConfirm = (): void => {
-    const c = state.confirm;
-    if (!c || overlayActed === c) return;
+    if (state.overlay.t !== "confirm") return;
+    const c = state.overlay.confirm;
+    if (overlayActed === c) return;
     overlayActed = c;
-    dispatch({ t: "closeConfirm" });
+    show(browse);
     if (c.action === "deleteSession" && c.sessionId) {
       const id = c.sessionId;
       const alsoBranch = c.deleteBranch === true;
@@ -2151,9 +2052,9 @@ export const mkFleetHandle = ({
       case "theme":
         return void dispatch({ t: "toggleTheme" });
       case "restart":
-        return void dispatch({ t: "openConfirm", confirm: confirmFor("restart") });
+        return void show({ t: "confirm", confirm: confirmFor("restart") });
       case "quitall":
-        return void dispatch({ t: "openConfirm", confirm: confirmFor("quitAll") });
+        return void show({ t: "confirm", confirm: confirmFor("quitAll") });
       case "gc": {
         // A bulk sweep — every done session's worktree goes (branches and rows
         // stay). Behind a confirm like `X`, since it deletes directories.
@@ -2164,8 +2065,8 @@ export const mkFleetHandle = ({
             text: "nothing to gc — no done sessions with worktrees",
             tone: "dim",
           });
-        return void dispatch({
-          t: "openConfirm",
+        return void show({
+          t: "confirm",
           confirm: {
             title: "Run gc?",
             body: `The worktrees of ${targets.length} done session${targets.length === 1 ? "" : "s"} go away — session rows and branches are kept.`,
@@ -2175,9 +2076,7 @@ export const mkFleetHandle = ({
         });
       }
       case "delete":
-        return void (sel
-          ? dispatch({ t: "openConfirm", confirm: confirmForDelete(sel) })
-          : undefined);
+        return void (sel ? show({ t: "confirm", confirm: confirmForDelete(sel) }) : undefined);
       case "copybranch": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
         const nm =
@@ -2269,7 +2168,8 @@ export const mkFleetHandle = ({
     // input line is actually taking the motions — the prompt, a picker filter,
     // the fleet filter. The replayed presses are length-1, so this never
     // re-enters.
-    const onInputLine = state.mode === "prompt" || state.mode === "picker" || !!state.find;
+    const onInputLine =
+      state.overlay.t === "prompt" || state.overlay.t === "picker" || !!state.find;
     if (
       onInputLine &&
       input.length > 1 &&
@@ -2294,7 +2194,7 @@ export const mkFleetHandle = ({
       const col = Number(mouse[2]);
       const row = Number(mouse[3]);
       const base = rawBtn & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
-      if (state.mode === "plan") {
+      if (state.overlay.t === "plan") {
         if (base === 64) return planScrollBy(-3); // wheel up → toward the top
         if (base === 65) return planScrollBy(3); // wheel down → toward the end
         return;
@@ -2308,7 +2208,7 @@ export const mkFleetHandle = ({
       }
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
       // or the mode chip. Only in browse — overlays own the screen.
-      if (base === 0 && mouse[4] === "M" && (rawBtn & 32) === 0 && state.mode === "browse") {
+      if (base === 0 && mouse[4] === "M" && (rawBtn & 32) === 0 && state.overlay.t === "browse") {
         const hit = store.get().hits.find((h) => row === h.y && col >= h.x0 && col <= h.x1);
         if (!hit) return;
         if (hit.kind === "session") return void dispatch({ t: "select", id: hit.id });
@@ -2324,8 +2224,9 @@ export const mkFleetHandle = ({
       return; // release / middle / right / drag / horizontal wheel — ignore
     }
 
-    if (state.mode === "prompt" && state.prompt) {
-      const p = state.prompt;
+    const openP = openPrompt(state.overlay);
+    if (openP) {
+      const p = openP;
       // The live session a `send` prompt is composing at — the only prompt whose
       // ⌥ actions retarget an existing session rather than the one being made.
       const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;
@@ -2352,8 +2253,13 @@ export const mkFleetHandle = ({
       if (key.meta && input === "m") {
         if (p.t === "new") {
           const pid = p.settings.provider ?? defaultProviderId(state);
-          const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
-          return void openModelStep(pid, tag, { draft: p.buffer.text });
+          return void openStep(
+            "model",
+            { t: "newSession", settings: p.settings, draft: p.buffer.text },
+            { provider: pid, model: null },
+            "model",
+            p.settings.model,
+          );
         }
         if (sendTo) return void switchModel(sendTo, p.buffer.text);
         return;
@@ -2364,20 +2270,21 @@ export const mkFleetHandle = ({
           const pid = p.settings.provider ?? defaultProviderId(state);
           const mid = p.settings.model || defaultModelOf(state, pid);
           if (!mid || !modelSupportsEffort(state, pid, mid)) {
-            return void dispatch({
-              t: "notice",
-              text: "this model has no thinking-effort control",
-              tone: "dim",
-            });
+            return void note("this model has no thinking-effort control", "dim");
           }
-          const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
-          return void openEffortStep(pid, mid, tag, { draft: p.buffer.text });
+          return void openStep(
+            "effort",
+            { t: "newSession", settings: p.settings, draft: p.buffer.text },
+            { provider: pid, model: mid },
+            "effort",
+            p.settings.effort,
+          );
         }
         if (sendTo) return void switchEffort(sendTo, p.buffer.text);
         return;
       }
       if (key.meta && input === "p") {
-        if (p.t === "new") return void pickProviderModel(p.buffer.text);
+        if (p.t === "new") return void pickProviderModel(p.settings, p.buffer.text);
         if (sendTo) return void pickProviderModelForSession(sendTo, p.buffer.text);
         return;
       }
@@ -2401,16 +2308,6 @@ export const mkFleetHandle = ({
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
-          // Backing out of the plan "discuss" sub-prompt returns to the plan
-          // overlay — the daemon is still blocked on the decision.
-          if (p.t === "request" && p.kind === "discuss" && state.plan) {
-            return void dispatch({
-              t: "openPlan",
-              sessionId: p.sessionId,
-              requestId: p.requestId,
-              text: state.plan.text,
-            });
-          }
           // Esc on an AskUserQuestion answer drops back to the request panel
           // (the daemon stays blocked) rather than abandoning the whole call:
           // answers gathered so far — including whatever is typed now — stay in
@@ -2443,8 +2340,8 @@ export const mkFleetHandle = ({
           return absurd(res);
       }
     }
-
-    if (state.mode === "plan") {
+    if (state.overlay.t === "plan") {
+      const pl = state.overlay.plan;
       // PgUp/PgDn scroll the plan body (a page ≈ the visible window less a row);
       // the mouse wheel is handled up top, `o` still opens it in $EDITOR.
       if (key.pageDown) return void planScrollBy(15);
@@ -2452,64 +2349,59 @@ export const mkFleetHandle = ({
       // ⇧⇥ cycles the mode the implementation will run in.
       if (key.tab && key.shift) return void dispatch({ t: "cyclePlanMode" });
       // ⌥p retargets model / effort / provider for `f` (implement fresh).
-      if (key.meta && input === "p") return void openPlanRetarget();
+      if (key.meta && input === "p") return void openPlanRetarget(pl);
       // i / f / e implement in the overlay's chosen mode; `d` (discuss) only
       // sends a note back, so it carries none.
-      const pl = state.plan;
-      const withMode = (params: Record<string, unknown>): Record<string, unknown> =>
-        pl ? { ...params, mode: pl.mode } : params;
-      if (input === "i")
-        return respondPlan(withMode({ action: "implement" }), "implementing the plan");
-      if (input === "f") return void implementFresh();
-      if (input === "e") return void editPlan();
-      if (input === "o" || (key.meta && input === "o")) return void viewPlan();
-      if (input === "d") {
-        const pl = state.plan;
-        if (!pl) return;
-        return void dispatch({
-          t: "openPrompt",
-          prompt: requestPrompt("discuss", pl.sessionId, pl.requestId, "discuss plan"),
-        });
+      if (input === "i") {
+        return respondPlan(pl, { action: "implement", mode: pl.mode }, "implementing the plan");
       }
+      if (input === "f") return void implementFresh(pl);
+      if (input === "e") return void editPlan(pl);
+      // `o` / `⌥o` — view the plan in $EDITOR, read-only.
+      if (input === "o" || (key.meta && input === "o")) {
+        return void openEditor(pl.text, { ext: "md" });
+      }
+      // The discuss prompt carries the review, so Esc out of it puts this exact
+      // overlay back — cycled mode and staged retarget included.
+      if (input === "d") return void show({ t: "prompt", prompt: discussPrompt(pl) });
       // esc backs out to the fleet without answering — the daemon stays blocked
-      // on the decision, `pend.plan` keeps the request panel's prompt, and `a`
-      // re-opens the overlay.
-      if (key.escape) return void dispatch({ t: "closePlan" });
+      // on the decision, the request panel keeps its prompt, and `a` re-opens.
+      if (key.escape) return void show(browse);
       return; // everything else: a plan review must still be answered
     }
 
-    if (state.mode === "confirm") {
+    if (state.overlay.t === "confirm") {
       if (key.return) return runConfirm();
-      if (input === "b" && state.confirm?.branchName) {
+      if (input === "b" && state.overlay.confirm.branchName) {
         return void dispatch({ t: "toggleConfirmBranch" });
       }
-      if (key.escape || input === "q" || input === "n") return void dispatch({ t: "closeConfirm" });
+      if (key.escape || input === "q" || input === "n") return void show(browse);
       return;
     }
 
-    if (state.mode === "help") {
-      if (input === "?" || input === "q" || key.escape) dispatch({ t: "help", value: false });
+    if (state.overlay.t === "help") {
+      if (input === "?" || input === "q" || key.escape) show(browse);
       return;
     }
 
-    if (state.mode === "doctor") {
-      if (input === "q" || key.escape) dispatch({ t: "doctor", value: false });
+    if (state.overlay.t === "doctor") {
+      if (input === "q" || key.escape) show(browse);
       return;
     }
 
-    if (state.mode === "picker" && state.picker) {
-      const p = state.picker;
-      if (key.escape) return void escapePicker(p);
+    if (state.overlay.t === "picker") {
+      const p = state.overlay.picker;
+      if (key.escape) return void show(escapePicker(p, state));
       if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
       if (key.return) {
         // The command palette runs an action through the shared dispatcher; the
-        // provider / model / undo pickers resolve by kind in choosePicked.
-        if (p.kind === "command") {
+        // provider / model / undo pickers resolve by step in choosePicked.
+        if (p.step === "command") {
           if (overlayActed === p) return; // batched double-Enter guard
           overlayActed = p;
           const cur = pickerCurrent(p);
-          dispatch({ t: "closePicker" });
+          show(browse);
           if (cur) runAct(cur.id as ActName);
           return;
         }
@@ -2643,9 +2535,14 @@ export const mkFleetHandle = ({
 
     // Space → the command palette.
     if (input === " ") {
-      return void dispatch({
-        t: "openPicker",
-        picker: makePicker({ kind: "command", title: "commands", items: commandsFor(state) }),
+      return void show({
+        t: "picker",
+        picker: makePicker({
+          step: "command",
+          title: "commands",
+          items: commandsFor(state),
+          dest: { t: "command" },
+        }),
       });
     }
 
@@ -2806,8 +2703,8 @@ export const mkFleetHandle = ({
       ]
         .filter(Boolean)
         .join(" and ");
-      dispatch({
-        t: "openConfirm",
+      show({
+        t: "confirm",
         confirm: {
           title: `Daemon is v${dv}, this UI is v${LOOM_VERSION}`,
           body: `${who} attached — restarting interrupts them. Esc keeps the old daemon (this UI may misbehave); press R to restart later.`,

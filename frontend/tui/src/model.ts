@@ -32,10 +32,19 @@ import {
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
-  newPrompt,
-  promptTarget,
-  sessionPrompt,
+  browse,
+  makePicker,
+  openPrompt,
+  pickerCurrent,
+  pickerVisible,
+  reconcileOverlay,
+  unwind,
   type NewSessionSettings,
+  type Overlay,
+  type PickItem,
+  type Picker,
+  type PickerDest,
+  type PickerStep,
   type Prompt,
 } from "./overlay.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
@@ -88,7 +97,6 @@ export const fleetDaemon = (s: TuiState): DaemonInfo | null =>
  *  wins over the snapshot until the debounced RPC settles. */
 export const sessionMode = (s: TuiState, session: SessionSnapshot): string =>
   s.modeDraft[session.id] ?? session.mode;
-export type UiMode = "browse" | "prompt" | "help" | "doctor" | "confirm" | "plan" | "picker";
 /**
  * Keybinding grammar (see docs/keybindings.md):
  *   • bare key  → act on the selected session, or move
@@ -223,120 +231,6 @@ export interface Notice {
 
 const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
 
-// ---------------------------------------------------------------------------
-// picker overlay — provider choice, model choice, undo, the command palette
-// ---------------------------------------------------------------------------
-
-export interface PickItem {
-  id: string;
-  label: string;
-  hint?: string;
-  /** Extra text folded into the fuzzy match (a turn's user text for `undo`). */
-  blob?: string;
-}
-
-export interface PickerState {
-  kind: "provider" | "model" | "effort" | "undo" | "command";
-  title: string;
-  items: PickItem[];
-  /** Shown when `items` is empty (e.g. no models detected for a provider). */
-  emptyText?: string;
-  /** Live filter text, as an editor buffer — the readline motions work on it. */
-  filter: Buffer;
-  /** Highlight into the *filtered* list. */
-  index: number;
-  /** Carried context: provider id from the provider step; `model` id from the
-   *  model step, for an `effort` step that follows it; `liveSessionId` for a
-   *  live `⌥m` / `⌥t` switch; `draft` restores a half-typed prompt after the
-   *  detour; `reopenSend` returns to that session's send prompt afterwards.
-   *  `viaModelStep` marks an `effort` step reached by picking a model that
-   *  takes one (⌥p wizard, or ⌥m onto such a model) — `Esc` there steps back
-   *  to that model list. A bare ⌥t skips straight to `effort` with no model
-   *  step to return to, so `Esc` closes (or restores the prompt) instead. */
-  ctx?: {
-    provider?: string;
-    model?: string;
-    liveSessionId?: string;
-    draft?: string;
-    reopenSend?: string;
-    viaModelStep?: boolean;
-    /** The provider→model→effort wizard was opened from the plan-review overlay
-     *  (`⌥p`); each step resolves by staging onto `state.plan.impl`, not a live
-     *  switch or a `new` prompt, and `Esc` returns to the overlay. */
-    planStage?: true;
-    /** The `model` step was reached from a live provider step (`⌥p` mid-chat)
-     *  — `Esc` there steps back to the provider list rather than closing. */
-    viaProviderStep?: boolean;
-  };
-}
-
-export const makePicker = (init: {
-  kind: PickerState["kind"];
-  title: string;
-  items: PickItem[];
-  emptyText?: string;
-  ctx?: PickerState["ctx"];
-  /** Initial highlight into `items`; clamped, defaults to 0. Used to pre-select
-   *  the session's current provider / model / effort in the `⌥p` wizard. */
-  index?: number;
-}): PickerState => {
-  return {
-    kind: init.kind,
-    title: init.title,
-    items: init.items,
-    filter: buffer(),
-    index: init.index !== undefined ? Math.max(0, Math.min(init.index, init.items.length - 1)) : 0,
-    ...(init.emptyText ? { emptyText: init.emptyText } : {}),
-    ...(init.ctx ? { ctx: init.ctx } : {}),
-  };
-};
-
-/**
- * Case-insensitive subsequence match — every char of `q` appears in order.
- * The command palette's matcher over short labels; the fleet filter ranks
- * instead (see `searchSessions`).
- */
-const fuzzyMatch = (hay: string, q: string): boolean => {
-  if (q === "") return true;
-  const h = hay.toLowerCase();
-  let i = 0;
-  for (const ch of q.toLowerCase()) {
-    i = h.indexOf(ch, i);
-    if (i === -1) return false;
-    i += 1;
-  }
-  return true;
-};
-
-/** The picker's items narrowed to the current filter (label + blob). */
-export const pickerVisible = (p: PickerState): PickItem[] => {
-  const q = p.filter.text;
-  if (q === "") return p.items;
-  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, q));
-};
-
-/** The currently-highlighted item, honouring the filter. */
-export const pickerCurrent = (p: PickerState): PickItem | null => {
-  const vis = pickerVisible(p);
-  return vis[Math.max(0, Math.min(vis.length - 1, p.index))] ?? null;
-};
-
-export interface ConfirmState {
-  title: string;
-  body?: string;
-  danger: boolean;
-  action: "restart" | "quitAll" | "deleteSession" | "archiveSession" | "gc";
-  /** Target session for `deleteSession` / `archiveSession`. */
-  sessionId?: string;
-  /** `deleteSession`: the session's branch, when it has one — `b` toggles
-   *  whether it's deleted along with the row + worktree. */
-  branchName?: string;
-  deleteBranch?: boolean;
-  /** `deleteSession`: the worktree had uncommitted changes — confirming the
-   *  delete also discards those, so the request passes `force`. */
-  force?: boolean;
-}
-
 /** One question from an `AskUserQuestion` tool call, narrowed for display. */
 export interface AskUserQuestionItem {
   question: string;
@@ -458,27 +352,14 @@ export interface TuiState {
    */
   heldSend: Record<string, string>;
   notice: Notice | null;
-  mode: UiMode;
+  /**
+   * What is open over the fleet, with its payload inside it — see
+   * {@link Overlay}. `browse` is the fleet itself.
+   */
+  overlay: Overlay;
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
    *  on open; kept between opens so a reopen paints immediately. */
   doctor: DoctorReport | null;
-  prompt: Prompt | null;
-  confirm: ConfirmState | null;
-  /**
-   * An open plan-review overlay: the plan text + the ids to resolve it with,
-   * plus the permission mode the implementation will run in (`⇧⇥` cycles it).
-   * `impl` is the `f` (implement fresh) retarget staged by `⌥p` — absent until
-   * the user picks one; a differing `provider` forks a fresh session.
-   */
-  plan: {
-    sessionId: string;
-    requestId: string;
-    text: string;
-    mode: SessionMode;
-    impl?: { provider: string; model?: string; effort?: string };
-  } | null;
-  /** An open picker overlay (provider / model / undo, or the command palette). */
-  picker: PickerState | null;
   /**
    * The fleet filter (`/`) — a single-line query that narrows the FLEET list
    * in place and ranks it: title hits first, then your messages, then the
@@ -520,12 +401,8 @@ export const initialState = (): TuiState => {
     queue: {},
     heldSend: {},
     notice: null,
-    mode: "browse",
+    overlay: browse,
     doctor: null,
-    prompt: null,
-    confirm: null,
-    plan: null,
-    picker: null,
     find: null,
     qnav: null,
     promptHistory: [],
@@ -579,11 +456,15 @@ export type Action =
   | { t: "logFilter"; value: LogFilter }
   | { t: "notice"; text: string; tone: Tone }
   | { t: "expireNotice"; now: number; ttlMs?: number }
-  | { t: "openPrompt"; prompt: Prompt }
+  /** Put an overlay on screen, or take one off (`browse`). One action for
+   *  every open/close: with the payload inside the overlay there is nothing
+   *  left to null out alongside it. */
+  | { t: "overlay"; overlay: Overlay }
   | { t: "promptSet"; buffer: Buffer }
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
+  /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "echo"; line: LogLine }
   | { t: "enqueue"; sessionId: string; text: string }
@@ -591,23 +472,14 @@ export type Action =
   | { t: "holdSend"; sessionId: string; text: string | null }
   | { t: "dequeue"; sessionId: string }
   | { t: "clearQueue"; sessionId: string }
-  | { t: "openPlan"; sessionId: string; requestId: string; text: string }
-  | { t: "closePlan" }
   | { t: "cyclePlanMode" }
-  | { t: "stagePlanImpl"; provider: string; model?: string; effort?: string }
-  | { t: "openConfirm"; confirm: ConfirmState }
   | { t: "toggleConfirmBranch" }
-  | { t: "closeConfirm" }
-  | { t: "openPicker"; picker: PickerState }
   | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
-  | { t: "closePicker" }
   | { t: "openFind" }
   | { t: "findSet"; buffer: Buffer }
   | { t: "closeFind" }
   | { t: "qnavSet"; nav: QNav | null }
-  | { t: "help"; value: boolean }
-  | { t: "doctor"; value: boolean }
   | { t: "doctorLoaded"; report: DoctorReport };
 
 /**
@@ -763,6 +635,11 @@ const pageLines = (page: HistoryPage): LogLine[] => {
   }
   return out;
 };
+
+/** Replace the prompt of an open prompt overlay, keeping everything the
+ *  variant carries (a discuss prompt keeps its review). */
+const withPrompt = (s: TuiState, prompt: Prompt): TuiState =>
+  s.overlay.t === "prompt" ? { ...s, overlay: { t: "prompt", prompt } } : s;
 
 export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
@@ -923,32 +800,32 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       if (!s.notice) return s;
       return a.now - s.notice.at >= (a.ttlMs ?? 4000) ? { ...s, notice: null } : s;
 
-    case "openPrompt":
-      return { ...s, mode: "prompt", prompt: a.prompt, confirm: null };
+    case "overlay":
+      return { ...s, overlay: a.overlay };
 
     case "promptSet": {
-      const p = s.prompt;
+      const p = openPrompt(s.overlay);
       if (!p) return s;
       // Editing a recalled history entry detaches it from the walk: the text
       // becomes the live buffer (histIdx 0) — ↓ can't yank it back to the
       // stashed draft, and ↑ restarts from the newest entry. A cursor-only
       // move (same text) keeps the walk position.
       const histIdx = a.buffer.text !== p.buffer.text ? 0 : p.histIdx;
-      return { ...s, prompt: { ...p, buffer: a.buffer, histIdx } };
+      return withPrompt(s, { ...p, buffer: a.buffer, histIdx });
     }
 
     case "promptCycleMode": {
-      const p = s.prompt;
+      const p = openPrompt(s.overlay);
       if (p?.t !== "new") return s;
       const next =
         SESSION_MODES[(SESSION_MODES.indexOf(p.settings.mode) + 1) % SESSION_MODES.length] ??
         "default";
-      return { ...s, prompt: { ...p, settings: { ...p.settings, mode: next } } };
+      return withPrompt(s, { ...p, settings: { ...p.settings, mode: next } });
     }
 
     case "promptHistoryNav": {
-      if (!s.prompt || s.promptHistory.length === 0) return s;
-      const p = s.prompt;
+      const p = openPrompt(s.overlay);
+      if (!p || s.promptHistory.length === 0) return s;
       // At the live buffer there is nothing newer — ↓ must not clobber it
       // with the stashed draft.
       if (p.histIdx === 0 && a.dir === 1) return s;
@@ -958,7 +835,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
       );
       const text = idx === 0 ? draft : (s.promptHistory[s.promptHistory.length - idx] ?? "");
-      return { ...s, prompt: { ...p, histIdx: idx, draft, buffer: buffer(text) } };
+      return withPrompt(s, { ...p, histIdx: idx, draft, buffer: buffer(text) });
     }
 
     case "pushHistory": {
@@ -971,11 +848,14 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     }
 
     case "closePrompt": {
-      const p = s.prompt;
+      const p = openPrompt(s.overlay);
+      // A discuss prompt drops back to the review it was opened over; every
+      // other prompt to the fleet.
+      const overlay = p ? unwind(s.overlay) : s.overlay;
       // Only the two free-text prompts leave a recoverable draft behind.
       const draftable = p?.t === "new" || (p?.t === "session" && p.kind === "send");
-      if (!draftable) return { ...s, mode: "browse", prompt: null };
-      return { ...s, mode: "browse", prompt: null, lastDraft: a.saveDraft ? p.buffer.text : "" };
+      if (!draftable) return { ...s, overlay };
+      return { ...s, overlay, lastDraft: a.saveDraft ? p.buffer.text : "" };
     }
 
     case "echo": {
@@ -1014,88 +894,37 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "clearQueue":
       return a.sessionId in s.queue ? { ...s, queue: without(s.queue, a.sessionId) } : s;
 
-    case "openPlan": {
-      // A reopen of the same review (esc out of the discuss prompt) keeps the
-      // permission mode already cycled to and the `⌥p` retarget already staged,
-      // rather than resetting them.
-      const sameReview =
-        s.plan && s.plan.sessionId === a.sessionId && s.plan.requestId === a.requestId
-          ? s.plan
-          : null;
+    case "cyclePlanMode": {
+      if (s.overlay.t !== "plan") return s;
+      // The modes an implementation can run in — `plan` itself is excluded.
+      const order: readonly SessionMode[] = ["default", "acceptEdits", "auto"];
+      const mode = order[(order.indexOf(s.overlay.plan.mode) + 1) % order.length] ?? "acceptEdits";
+      return { ...s, overlay: { t: "plan", plan: { ...s.overlay.plan, mode } } };
+    }
+
+    case "toggleConfirmBranch": {
+      const c = s.overlay.t === "confirm" ? s.overlay.confirm : null;
+      if (!c?.branchName) return s;
+      return { ...s, overlay: { t: "confirm", confirm: { ...c, deleteBranch: !c.deleteBranch } } };
+    }
+
+    case "pickerFilter": {
+      if (s.overlay.t !== "picker") return s;
       return {
         ...s,
-        mode: "plan",
-        plan: {
-          sessionId: a.sessionId,
-          requestId: a.requestId,
-          text: a.text,
-          mode: sameReview ? sameReview.mode : "acceptEdits",
-          ...(sameReview?.impl ? { impl: sameReview.impl } : {}),
-        },
-        prompt: null,
+        overlay: { t: "picker", picker: { ...s.overlay.picker, filter: a.buffer, index: 0 } },
       };
     }
 
-    case "closePlan":
-      return { ...s, mode: s.mode === "plan" ? "browse" : s.mode, plan: null };
-
-    case "stagePlanImpl":
-      return s.plan
-        ? {
-            ...s,
-            mode: "plan",
-            picker: null,
-            plan: {
-              ...s.plan,
-              impl: {
-                provider: a.provider,
-                ...(a.model ? { model: a.model } : {}),
-                ...(a.effort ? { effort: a.effort } : {}),
-              },
-            },
-          }
-        : s;
-
-    case "cyclePlanMode": {
-      if (!s.plan) return s;
-      // The modes an implementation can run in — `plan` itself is excluded.
-      const order: readonly SessionMode[] = ["default", "acceptEdits", "auto"];
-      const mode = order[(order.indexOf(s.plan.mode) + 1) % order.length] ?? "acceptEdits";
-      return { ...s, plan: { ...s.plan, mode } };
-    }
-
-    case "openConfirm":
-      return { ...s, mode: "confirm", confirm: a.confirm };
-
-    case "toggleConfirmBranch":
-      return s.confirm && s.confirm.branchName
-        ? { ...s, confirm: { ...s.confirm, deleteBranch: !s.confirm.deleteBranch } }
-        : s;
-
-    case "closeConfirm":
-      return { ...s, mode: "browse", confirm: null };
-
-    case "openPicker":
-      // `plan` rides through: the `⌥p` retarget wizard opens over an open plan
-      // review and `closePicker` / `stagePlanImpl` return to it.
-      return { ...s, mode: "picker", picker: a.picker, prompt: null, confirm: null };
-
-    case "pickerFilter":
-      return s.picker ? { ...s, picker: { ...s.picker, filter: a.buffer, index: 0 } } : s;
-
     case "pickerMove": {
-      if (!s.picker) return s;
-      const n = pickerVisible(s.picker).length;
+      if (s.overlay.t !== "picker") return s;
+      const p = s.overlay.picker;
+      const n = pickerVisible(p).length;
       if (n === 0) return s;
-      const next = Math.max(0, Math.min(n - 1, s.picker.index + a.delta));
-      return next === s.picker.index ? s : { ...s, picker: { ...s.picker, index: next } };
-    }
-
-    case "closePicker": {
-      // An `⌥p` wizard cancelled with `Esc` drops back to the plan review it
-      // opened over, not to browse.
-      const back: UiMode = s.plan ? "plan" : "browse";
-      return { ...s, mode: s.mode === "picker" ? back : s.mode, picker: null };
+      const next = Math.max(0, Math.min(n - 1, p.index + a.delta));
+      return next === p.index
+        ? s
+        : { ...s, overlay: { t: "picker", picker: { ...p, index: next } } };
     }
 
     case "openFind":
@@ -1121,12 +950,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "qnavSet":
       return { ...s, qnav: a.nav };
-
-    case "help":
-      return { ...s, mode: a.value ? "help" : "browse" };
-
-    case "doctor":
-      return { ...s, mode: a.value ? "doctor" : "browse" };
 
     case "doctorLoaded":
       return { ...s, doctor: a.report };
@@ -1165,29 +988,20 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
   // are unique within a session, not across the fleet.
   const open = new Set<string>();
   for (const x of sessions) for (const r of x.requests) open.add(`${x.id} ${r.id}`);
-  /**
-   * Anything bound to a *specific* request survives only while that exact
-   * request is still outstanding. Answered here, answered in another window, or
-   * the turn moved on — all three read the same way in a snapshot, and all
-   * three mean the thing on screen can no longer be acted on. Whatever replaced
-   * it is a different request, and nothing typed for one is re-aimed at it.
-   */
-  const goneFor = (sid: string | null | undefined, rid: string | null | undefined): boolean =>
-    sid != null && rid != null && !open.has(`${sid} ${rid}`);
-  const planGone = s.plan !== null && goneFor(s.plan.sessionId, s.plan.requestId);
-  // A send / answer / title / compact prompt or a picker aimed at a session
-  // another client just removed would loop on submit (RPC error → reopen). A
-  // request-bound prompt also goes when its request does; a `send` or `title`
-  // prompt carries no request id, so resolving one never closes it.
-  const promptAt = s.prompt ? promptTarget(s.prompt) : null;
-  const promptGone =
-    promptAt !== null &&
-    ((promptAt.sessionId !== null && !live.has(promptAt.sessionId)) ||
-      goneFor(promptAt.sessionId, promptAt.requestId));
-  const qnavGone = s.qnav !== null && goneFor(s.qnav.sessionId, s.qnav.requestId);
-  const pickerSession = s.picker?.ctx?.liveSessionId;
-  const pickerGone = pickerSession != null && !live.has(pickerSession);
-  const picker = pickerGone ? null : rederiveOpenPicker({ ...s, fleet });
+  const isLive = (sid: string): boolean => live.has(sid);
+  const outstanding = (sid: string, rid: string): boolean => open.has(`${sid} ${rid}`);
+  // One pass over the open overlay: a prompt, plan review or picker aimed at a
+  // session another client removed would loop on submit (RPC error → reopen),
+  // and anything bound to a specific request goes when that request does.
+  const { overlay, notice } = reconcileOverlay(
+    // A picker opened before the start-up model probes settled holds a stale
+    // copy of the loading state — refresh its items off the new snapshot so it
+    // fills in rather than sitting empty until reopened.
+    rederiveOpenPicker({ ...s, fleet }),
+    isLive,
+    outstanding,
+  );
+  const qnavGone = s.qnav !== null && !outstanding(s.qnav.sessionId, s.qnav.requestId);
   return {
     ...s,
     fleet,
@@ -1202,35 +1016,9 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     heldSend: pruneByLive(s.heldSend, sessions),
     modeDraft: pruneByLive(s.modeDraft, sessions),
     transcripts: pruneByLive(s.transcripts, sessions),
-    ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
-    ...(promptGone
-      ? {
-          prompt: null,
-          mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode,
-          // Say why it vanished, but only when the session is still there —
-          // a removed session already reports itself.
-          ...(promptAt?.requestId != null && live.has(promptAt.sessionId ?? "")
-            ? { notice: mkNotice("that request was resolved elsewhere", "dim") }
-            : {}),
-        }
-      : {}),
-    ...pickerPatch(s, pickerGone, picker),
+    overlay,
+    ...(notice ? { notice: mkNotice(notice, "dim") } : {}),
   };
-};
-
-/**
- * A provider/model picker opened before the start-up model probes settled holds
- * a stale copy of the loading state — re-derive it off the new snapshot so it
- * fills in without being closed and reopened. A picker whose session is gone
- * closes instead.
- */
-const pickerPatch = (
-  s: TuiState,
-  gone: boolean,
-  rederived: PickerState | null,
-): Partial<TuiState> => {
-  if (gone) return { picker: null, mode: s.mode === "picker" ? "browse" : s.mode };
-  return rederived ? { picker: rederived } : {};
 };
 
 const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
@@ -1894,24 +1682,22 @@ export const modelPickEmptyText = (s: TuiState, providerId: string): string => {
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };
 
-/** A snapshot landed while a provider/model picker is open: rebuild
- *  its items from the fresh list — one opened while the daemon was still
- *  detecting models resolves here instead of sitting empty until reopened.
- *  The highlight follows its id when it survives. Null when the open picker
- *  doesn't depend on the provider list. */
-export const rederiveOpenPicker = (s: TuiState): PickerState | null => {
-  const p = s.picker;
-  if (!p || (p.kind !== "model" && p.kind !== "provider")) return null;
-  const providerId = p.ctx?.provider ?? "";
-  const items = p.kind === "model" ? modelPickItems(s, providerId) : providerPickItems(s);
+/** A snapshot landed while a provider/model picker is open: rebuild its items
+ *  from the fresh list — one opened while the daemon was still detecting models
+ *  resolves here instead of sitting empty until reopened. The highlight follows
+ *  its id when it survives. Any other overlay passes straight through. */
+export const rederiveOpenPicker = (s: TuiState): Overlay => {
+  if (s.overlay.t !== "picker") return s.overlay;
+  const p = s.overlay.picker;
+  if (p.step !== "model" && p.step !== "provider") return s.overlay;
+  const providerId = p.chosen.provider ?? "";
+  const items = p.step === "model" ? modelPickItems(s, providerId) : providerPickItems(s);
   const cur = pickerCurrent(p)?.id;
   const at = cur ? items.findIndex((it) => it.id === cur) : -1;
-  const out: PickerState = { ...p, items, index: at >= 0 ? at : 0 };
-  if (p.kind === "model") {
-    if (items.length === 0) out.emptyText = modelPickEmptyText(s, providerId);
-    else delete out.emptyText; // the list loaded — the empty-state note is dead
-  }
-  return out;
+  // The list loaded — the empty-state note is dead.
+  const emptyText =
+    p.step === "model" && items.length === 0 ? modelPickEmptyText(s, providerId) : null;
+  return { t: "picker", picker: { ...p, items, index: at >= 0 ? at : 0, emptyText } };
 };
 
 /** The default effort levels offered when a model supports effort but doesn't
@@ -1939,112 +1725,87 @@ export const effortPickItems = (s: TuiState, providerId: string, modelId: string
   }));
 };
 
+/** The items one wizard step offers, off the current snapshot. */
+const stepItems = (
+  s: TuiState,
+  step: WizardStep,
+  chosen: { provider: string | null; model: string | null },
+): PickItem[] => {
+  if (step === "provider") return providerPickItems(s);
+  if (step === "model") return modelPickItems(s, chosen.provider ?? "");
+  return effortPickItems(s, chosen.provider ?? "", chosen.model ?? "");
+};
+
+/** The steps of the provider → model → effort wizard, in order. */
+export type WizardStep = "provider" | "model" | "effort";
+
+/**
+ * One step of the provider → model → effort wizard, built off the current
+ * snapshot: `dest` says where the choices land and what to restore when the
+ * wizard unwinds, `chosen` what earlier steps settled, `from` the step this
+ * wizard opened at, and `pick` the id to highlight (the session's current
+ * value, or the one being stepped back to).
+ */
+export const pickerStep = (
+  s: TuiState,
+  step: WizardStep,
+  o: {
+    dest: PickerDest;
+    chosen: { provider: string | null; model: string | null };
+    from: PickerStep;
+    pick?: string | null;
+  },
+): Overlay => {
+  const pid = o.chosen.provider ?? "";
+  const tag = providerInfo(s, pid)?.tag || pid;
+  // The ⌥p retarget wizard says so in its title — it stages onto the plan
+  // review rather than switching anything live.
+  const lead = o.dest.t === "planImpl" ? "retarget · " : "";
+  const items = stepItems(s, step, o.chosen);
+  const at = o.pick ? items.findIndex((it) => it.id === o.pick) : -1;
+  return {
+    t: "picker",
+    picker: makePicker({
+      step,
+      title: step === "provider" ? `${lead}provider` : `${lead}${step} · ${tag}`,
+      items,
+      dest: o.dest,
+      chosen: o.chosen,
+      from: o.from,
+      ...(step === "model" && items.length === 0 ? { emptyText: modelPickEmptyText(s, pid) } : {}),
+      index: Math.max(0, at),
+    }),
+  };
+};
+
 /**
  * `Esc` inside a picker: step back one level of the provider → model →
- * (optional) effort → prompt wizard instead of discarding the whole detour
- * (and any draft text typed before it). Kinds with no "back" step — `undo`,
- * `command`, or a bare live `⌥m` / `⌥t` switch with nothing to
- * return to — just close.
+ * (optional) effort wizard rather than discarding the whole detour and any
+ * draft typed before it. `from` bounds how far back it can go — a bare `⌥t`
+ * opens straight at `effort`, so there is no model list behind it.
  *
- * An `effort` step reached by picking a model that takes one (⌥p wizard, or
- * ⌥m onto such a model — `ctx.viaModelStep`) steps back to that model list,
- * regardless of whether it's also a live switch. A bare `⌥t` skips straight
- * to `effort` with no model step behind it, so it falls back to the same
- * `reopenSend` / close / restore-the-prompt handling `model` uses for a bare
- * `⌥m`.
+ * Past the first step the picker unwinds to whatever it was opened over: the
+ * plan review it was retargeting, the send prompt with its half-typed message,
+ * the `new` prompt with its settings, or the fleet.
  */
-export const escapeTarget = (p: PickerState, s: TuiState): Action => {
-  // The `⌥p` retarget wizard has no "back" — any step just returns to the plan
-  // review, leaving whatever was staged before untouched.
-  if (p.ctx?.planStage) return { t: "closePicker" };
-  if (p.kind === "provider") {
-    // A live provider switch (⌥p mid-chat) has no `new` prompt to fall into:
-    // step back to the send prompt we came from, else just close.
-    if (p.ctx?.liveSessionId) {
-      return p.ctx.reopenSend !== undefined
-        ? {
-            t: "openPrompt",
-            prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
-          }
-        : { t: "closePicker" };
-    }
-    return {
-      t: "openPrompt",
-      prompt: newPrompt(newSettings(s, null, null, null), p.ctx?.draft ?? ""),
-    };
+export const escapePicker = (p: Picker, s: TuiState): Overlay => {
+  if (p.step === "effort" && p.from !== "effort") {
+    return pickerStep(s, "model", {
+      dest: p.dest,
+      chosen: { provider: p.chosen.provider, model: null },
+      from: p.from,
+      pick: p.chosen.model,
+    });
   }
-  // Live ⌥p wizard: Esc from the model list steps back to the provider list.
-  if (p.kind === "model" && p.ctx?.viaProviderStep && p.ctx.liveSessionId) {
-    const back: PickerState["ctx"] = {
-      liveSessionId: p.ctx.liveSessionId,
-      ...(p.ctx.reopenSend !== undefined ? { reopenSend: p.ctx.reopenSend } : {}),
-      ...(p.ctx.draft !== undefined ? { draft: p.ctx.draft } : {}),
-    };
-    return {
-      t: "openPicker",
-      picker: makePicker({
-        kind: "provider",
-        title: "provider",
-        items: providerPickItems(s),
-        ctx: back,
-        index: Math.max(
-          0,
-          providerPickItems(s).findIndex((it) => it.id === p.ctx?.provider),
-        ),
-      }),
-    };
+  if (p.step === "model" && p.from === "provider") {
+    return pickerStep(s, "provider", {
+      dest: p.dest,
+      chosen: { provider: null, model: null },
+      from: p.from,
+      pick: p.chosen.provider,
+    });
   }
-  if (p.kind === "model" && !p.ctx?.liveSessionId) {
-    const draft = p.ctx?.draft ?? "";
-    if (fleetProviders(s).length > 1) {
-      return {
-        t: "openPicker",
-        picker: makePicker({
-          kind: "provider",
-          title: "provider",
-          items: providerPickItems(s),
-          ctx: { draft },
-        }),
-      };
-    }
-    return {
-      t: "openPrompt",
-      prompt: newPrompt(newSettings(s, null, null, null), draft),
-    };
-  }
-  if (p.kind === "model" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
-    return {
-      t: "openPrompt",
-      prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
-    };
-  }
-  if (p.kind === "effort" && p.ctx?.viaModelStep) {
-    const providerId = p.ctx?.provider ?? "claude";
-    const label = providerInfo(s, providerId)?.tag ?? providerId;
-    return {
-      t: "openPicker",
-      picker: makePicker({
-        kind: "model",
-        title: `model · ${label}`,
-        items: modelPickItems(s, providerId),
-        emptyText: modelPickEmptyText(s, providerId),
-        ctx: { ...p.ctx, provider: providerId },
-      }),
-    };
-  }
-  if (p.kind === "effort" && p.ctx?.liveSessionId && p.ctx.reopenSend !== undefined) {
-    return {
-      t: "openPrompt",
-      prompt: sessionPrompt("send", p.ctx.reopenSend, "send", p.ctx.draft ?? ""),
-    };
-  }
-  if (p.kind === "effort" && !p.ctx?.liveSessionId) {
-    return {
-      t: "openPrompt",
-      prompt: newPrompt(newSettings(s, p.ctx?.provider ?? null, null, null), p.ctx?.draft ?? ""),
-    };
-  }
-  return { t: "closePicker" };
+  return unwind({ t: "picker", picker: p });
 };
 
 export interface Group {
@@ -2449,7 +2210,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
  * accept. `prompt` returns `[]` — {@link FooterArea} draws the editor there.
  */
 export const footerHints = (s: TuiState): Array<{ keys: string; label: string }> => {
-  switch (s.mode) {
+  switch (s.overlay.t) {
     case "prompt":
       return [];
     case "picker":
@@ -2461,8 +2222,8 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
     case "confirm":
       return [
         { keys: "enter", label: "confirm" },
-        ...(s.confirm?.branchName
-          ? [{ keys: "b", label: s.confirm.deleteBranch ? "keep branch" : "+ branch" }]
+        ...(s.overlay.t === "confirm" && s.overlay.confirm.branchName
+          ? [{ keys: "b", label: s.overlay.confirm.deleteBranch ? "keep branch" : "+ branch" }]
           : []),
         { keys: "esc", label: "cancel" },
       ];
@@ -2492,7 +2253,7 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
       return tail;
     }
     default:
-      return absurd(s.mode);
+      return absurd(s.overlay);
   }
 };
 

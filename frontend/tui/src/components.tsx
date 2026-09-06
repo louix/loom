@@ -26,7 +26,6 @@ import {
   footerHints,
   logFilterTag,
   parseAskUserQuestions,
-  pickerVisible,
   providerInfo,
   queueFor,
   selectedSession,
@@ -34,13 +33,19 @@ import {
   type AskUserQuestionItem,
   type CacheStatus,
   type Connection,
-  type ConfirmState,
   type FleetChild,
   type LogLine,
-  type PickerState,
   type TuiState,
 } from "./model.ts";
-import { promptKind, type Prompt, type PromptKind } from "./overlay.ts";
+import {
+  openPrompt,
+  pickerVisible,
+  promptKind,
+  type Confirm as ConfirmState,
+  type Picker as PickerState,
+  type Prompt,
+  type PromptKind,
+} from "./overlay.ts";
 import {
   bar,
   C,
@@ -1151,7 +1156,7 @@ const noticeGlyph = (tone: Tone): string => {
 };
 
 export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  const p = state.mode === "prompt" ? state.prompt : null;
+  const p = openPrompt(state.overlay);
   if (p && p.t !== "new") {
     // A reply to a session — the input lives on that session's EVENTS pane
     // (`PromptPane`, under the log); the footer keeps only the hints row.
@@ -1243,7 +1248,7 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
  *  while it's up, or Ink's repaints drift and the top bar slides off the
  *  alt screen. */
 export const promptRows = (state: TuiState, cols: number): number => {
-  const p = state.mode === "prompt" ? state.prompt : null;
+  const p = openPrompt(state.overlay);
   if (!p) return 2 + (state.notice ? 1 : 0);
   // A reply prompt's input is budgeted on the EVENTS pane (promptPaneRows);
   // the footer carries just its hints row.
@@ -1260,7 +1265,7 @@ const paneRoom = (width: number): number => Math.max(8, width - 6);
  *  the label row plus the word-wrapped editor, capped like the footer editor.
  *  Keep in sync with {@link PromptPane}'s room. */
 export const promptPaneRows = (state: TuiState, width: number): number => {
-  const p = state.prompt;
+  const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return 0;
   const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, paneRoom(width)).rows.length);
   return 1 /* label */ + editor;
@@ -1270,7 +1275,7 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
  *  chip, then the editor — drawn under that session's EVENTS log: you're
  *  replying to this agent, so the input sits with its transcript. */
 export const PromptPane = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  const p = state.prompt;
+  const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return null;
   const sess =
     p.t === "session" && p.kind === "send"

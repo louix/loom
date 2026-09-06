@@ -10,7 +10,7 @@ import { absurd } from "@loom/core/absurd";
 import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
-import { promptOnPane } from "./overlay.ts";
+import { openPrompt, promptOnPane } from "./overlay.ts";
 import {
   compactingFor,
   fleetSessions,
@@ -87,7 +87,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
   const { state, sel, cols, bodyH, leftW, rightW, splitLogH } = view;
 
   let body: ReactNode;
-  switch (view.body) {
+  switch (view.body.t) {
     case "help":
       body = (
         <Box paddingX={1} paddingTop={1}>
@@ -105,20 +105,17 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
     case "confirm":
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          {state.confirm ? (
-            <Confirm confirm={state.confirm} width={Math.min(cols - 4, 64)} />
-          ) : null}
+          <Confirm confirm={view.body.confirm} width={Math.min(cols - 4, 64)} />
         </Box>
       );
       break;
     case "plan": {
-      const ps = state.plan
-        ? fleetSessions(state).find((s) => s.id === state.plan?.sessionId)
-        : undefined;
+      const plan = view.body.plan;
+      const ps = fleetSessions(state).find((s) => s.id === plan.sessionId);
       // The provider whose model an `f` (implement fresh) would run on: a staged
       // ⌥p retarget if any, else the plan session's own — resolved to its fleet
       // tag + colour so the overlay can paint it like the rest of the UI.
-      const tgtProv = state.plan?.impl?.provider ?? ps?.provider;
+      const tgtProv = plan.impl?.provider ?? ps?.provider;
       const tgt = tgtProv
         ? {
             tag: providerInfo(state, tgtProv)?.tag ?? tgtProv,
@@ -127,20 +124,24 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
         : undefined;
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          {state.plan ? (
-            <PlanReview
-              plan={state.plan}
-              width={Math.min(cols - 4, 96)}
-              height={Math.max(8, bodyH - 2)}
-              scroll={view.planScroll}
-              {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
-              {...(state.plan.impl ? { impl: state.plan.impl } : {})}
-              {...(ps
-                ? { cur: { provider: ps.provider, model: ps.model, effort: ps.effort } }
-                : {})}
-              {...(tgt ? { target: tgt } : {})}
-            />
-          ) : null}
+          <PlanReview
+            plan={plan}
+            width={Math.min(cols - 4, 96)}
+            height={Math.max(8, bodyH - 2)}
+            scroll={view.planScroll}
+            {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
+            {...(plan.impl
+              ? {
+                  impl: {
+                    provider: plan.impl.provider,
+                    ...(plan.impl.model ? { model: plan.impl.model } : {}),
+                    ...(plan.impl.effort ? { effort: plan.impl.effort } : {}),
+                  },
+                }
+              : {})}
+            {...(ps ? { cur: { provider: ps.provider, model: ps.model, effort: ps.effort } } : {})}
+            {...(tgt ? { target: tgt } : {})}
+          />
         </Box>
       );
       break;
@@ -148,13 +149,11 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
     case "picker":
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          {state.picker ? (
-            <Picker
-              picker={state.picker}
-              width={Math.min(cols - 4, 64)}
-              height={Math.max(6, bodyH - 2)}
-            />
-          ) : null}
+          <Picker
+            picker={view.body.picker}
+            width={Math.min(cols - 4, 64)}
+            height={Math.max(6, bodyH - 2)}
+          />
         </Box>
       );
       break;
@@ -181,7 +180,9 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               scroll={view.logScroll}
               tick={view.tick}
             />
-            {promptOnPane(state.prompt) ? <PromptPane state={state} width={rightW} /> : null}
+            {promptOnPane(openPrompt(state.overlay)) ? (
+              <PromptPane state={state} width={rightW} />
+            ) : null}
           </Box>
         </Box>
       );
@@ -215,7 +216,9 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
             scroll={view.logScroll}
             tick={view.tick}
           />
-          {promptOnPane(state.prompt) ? <PromptPane state={state} width={cols} /> : null}
+          {promptOnPane(openPrompt(state.overlay)) ? (
+            <PromptPane state={state} width={cols} />
+          ) : null}
         </Box>
       );
       break;
