@@ -56,34 +56,36 @@ test("migrations bring an empty db to head and are idempotent", () => {
   }
 });
 
-test("a corrective migration reclassifies history_backend for a db that already ran the original (provider-name-based) migration 20, without touching explicit 'codex' rows", () => {
+test("a corrective migration reclassifies history_backend for a db that already ran the original (provider-name-based) migration 21, without touching explicit 'codex' rows", () => {
   // Migrations are append-only: a database that already advanced to schema
-  // version 20 keeps whatever migration 20's SQL happened to be *when it
+  // version 21 keeps whatever migration 21's SQL happened to be *when it
   // ran*, forever — the runner only ever executes steps at or past the
-  // database's current version, so a later edit to migration 20's own text
+  // database's current version, so a later edit to migration 21's own text
   // (which is what an earlier draft of this fix did, before review caught
   // it) never reaches such a database. Simulate exactly that: hand-apply the
-  // *original*, naming-based migration 20 SQL (reproduced here verbatim,
+  // *original*, naming-based migration 21 SQL (reproduced here verbatim,
   // since the current migrations.ts no longer contains it — rewriting it in
   // place doesn't help a database that already ran it), then open normally
-  // and confirm migration 21 alone — not a re-run of 20 — fixes it.
+  // and confirm migration 22 alone — not a re-run of 21 — fixes it.
+  // (Migration 21, not 20: this branch rebased onto `main`'s own unrelated
+  // migration 20, shifting everything from here on by one.)
   const { path, cleanup } = tmpDb();
   try {
     const db = new DatabaseSync(path);
     db.exec("PRAGMA foreign_keys = ON");
-    for (let v = 0; v < 19; v++) db.exec(MIGRATIONS[v]!); // migrations 1-19, verbatim
+    for (let v = 0; v < 20; v++) db.exec(MIGRATIONS[v]!); // migrations 1-20, verbatim
     db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     const setVersion = (v: number): void => {
       db.prepare(
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       ).run(String(v));
     };
-    setVersion(19);
+    setVersion(20);
     db.exec(`
       ALTER TABLE sessions ADD COLUMN history_backend TEXT NOT NULL DEFAULT '';
       UPDATE sessions SET history_backend = 'aisdk' WHERE provider = 'chatgpt';
     `);
-    setVersion(20);
+    setVersion(21);
 
     const now = Date.now();
     const insertSession = (id: string, provider: string): void => {
@@ -114,7 +116,7 @@ test("a corrective migration reclassifies history_backend for a db that already 
     db.prepare("UPDATE sessions SET history_backend = 'codex' WHERE id = ?").run("s-explicit-codex");
     db.close();
 
-    const reopened = openDb(path); // runs every migration from 20 onward for real
+    const reopened = openDb(path); // runs every migration from 21 onward for real
     const backendOf = (id: string): string =>
       (
         reopened.prepare("SELECT history_backend FROM sessions WHERE id = ?").get(id) as {
