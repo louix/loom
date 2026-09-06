@@ -89,6 +89,8 @@ import {
 } from "@loom/tui/overlay";
 import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
 
+/** Put an overlay up — the action every open/close goes through. */
+const open = (overlay: Overlay): Action => ({ t: "overlay", overlay });
 const promptOf = (s: TuiState) => openPrompt(s.overlay);
 const planOf = (s: TuiState) => (s.overlay.t === "plan" ? s.overlay.plan : null);
 const pickerOf = (s: TuiState) => (s.overlay.t === "picker" ? s.overlay.picker : null);
@@ -1376,10 +1378,7 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   // Typing an answer to q1, with an unrelated cancelled send draft beside it.
   let s = reduce(initialState(), fleet([blocked([q("q1")]), snap({ id: "b", status: "idle" })]));
   s = { ...s, lastDraft: "an unrelated half-typed message" };
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: questionsPrompt("a", "q1", "answer") },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: questionsPrompt("a", "q1", "answer") }));
   s = reduce(s, {
     t: "qnavSet",
     nav: { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } },
@@ -1404,10 +1403,7 @@ test("a send or title prompt is not closed because some request was resolved", (
   const blocked = (requests: SessionInteraction[]) =>
     snap({ id: "a", status: "awaiting_input", awaitReason: "permission", requests });
   let s = reduce(initialState(), fleet([blocked([perm])]));
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "half typed") },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", "half typed") }));
 
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
   assert.equal(
@@ -1464,10 +1460,7 @@ test("a plan_review stashes the plan text; the plan overlay carries its own mode
   assert.equal(active?.id, "pr1");
   assert.equal(active?.kind === "plan_review" ? active.plan : "", "step one\nstep two");
 
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "plan", plan: review("pr1", "step one\nstep two") },
-  });
+  s = reduce(s, open({ t: "plan", plan: review("pr1", "step one\nstep two") }));
   assert.equal(s.overlay.t, "plan");
   assert.equal(planOf(s)?.requestId, "pr1");
   assert.equal(planOf(s)?.mode, "acceptEdits");
@@ -1496,9 +1489,9 @@ test("a detour off the plan review carries it, so backing out restores it exactl
 
   // The `⌥p` retarget wizard opens over the review, holding it as its
   // destination — there is no second slot for the review to sit in.
-  s = reduce(s, {
-    t: "overlay",
-    overlay: {
+  s = reduce(
+    s,
+    open({
       t: "picker",
       picker: makePicker({
         step: "model",
@@ -1507,8 +1500,8 @@ test("a detour off the plan review carries it, so backing out restores it exactl
         dest: { t: "planImpl", plan: cycled },
         chosen: { provider: "claude", model: null },
       }),
-    },
-  });
+    }),
+  );
   assert.equal(s.overlay.t, "picker");
   assert.equal(heldPlan(s.overlay)?.requestId, "pr1");
   assert.equal(heldPlan(s.overlay)?.mode, "auto");
@@ -2163,10 +2156,7 @@ test("tilth_write's batch `files` renders one block per file, and the one-liner 
 });
 
 test("prompt open / edit / close transitions", () => {
-  let s = reduce(initialState(), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
-  });
+  let s = reduce(initialState(), open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   assert.equal(s.overlay.t, "prompt");
   s = reduce(s, { t: "promptSet", buffer: buffer("hello") });
   assert.equal(promptOf(s)?.buffer.text, "hello");
@@ -2177,19 +2167,13 @@ test("prompt open / edit / close transitions", () => {
 
 test("Esc on a new/send prompt stashes the draft; either prompt can restore it; submitting clears it", () => {
   // cancelling a `new` prompt saves the draft
-  let s = reduce(initialState(), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: newPrompt(settings) },
-  });
+  let s = reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings) }));
   s = reduce(s, { t: "promptSet", buffer: buffer("fix the bug") });
   s = reduce(s, { t: "closePrompt", saveDraft: true });
   assert.equal(s.lastDraft, "fix the bug");
 
   // ...and a `send` prompt opened afterwards picks it up
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", s.lastDraft) },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", s.lastDraft) }));
   assert.equal(promptOf(s)?.buffer.text, "fix the bug");
 
   // cancelling without saveDraft (e.g. a plain closePrompt) leaves it untouched
@@ -2200,10 +2184,10 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   let withDraft = reduce(initialState(), { t: "closePrompt", saveDraft: true }); // no prompt open: no-op
   assert.equal(withDraft.lastDraft, "");
   withDraft = { ...withDraft, lastDraft: "fix the bug" };
-  withDraft = reduce(withDraft, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("title", "a", "rename", "old title") },
-  });
+  withDraft = reduce(
+    withDraft,
+    open({ t: "prompt", prompt: sessionPrompt("title", "a", "rename", "old title") }),
+  );
   withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
   withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
   assert.equal(
@@ -2213,20 +2197,17 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   );
 
   // submitting (closePrompt without saveDraft) consumes the draft
-  let sent = reduce(initialState(), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "fix the bug") },
-  });
+  let sent = reduce(
+    initialState(),
+    open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", "fix the bug") }),
+  );
   sent = { ...sent, lastDraft: "fix the bug" };
   sent = reduce(sent, { t: "closePrompt" });
   assert.equal(sent.lastDraft, "", "a sent message shouldn't linger as a restorable draft");
 });
 
 test("promptCycleMode only cycles for a `new` prompt", () => {
-  let s = reduce(initialState(), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: newPrompt(settings) },
-  });
+  let s = reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings) }));
   const mode = (x: TuiState) => {
     const p = promptOf(x);
     return p?.t === "new" ? p.settings.mode : null;
@@ -2237,10 +2218,7 @@ test("promptCycleMode only cycles for a `new` prompt", () => {
   s = reduce(s, { t: "promptCycleMode" });
   assert.equal(mode(s), "acceptEdits");
 
-  let t = reduce(initialState(), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
-  });
+  let t = reduce(initialState(), open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   t = reduce(t, { t: "promptCycleMode" });
   assert.equal(promptOf(t)?.t, "session", "a send prompt has no mode to cycle");
 });
@@ -2250,10 +2228,7 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
   for (const x of ["one", "two", "one", "three"]) s = reduce(s, { t: "pushHistory", text: x });
   assert.deepEqual(s.promptHistory, ["two", "one", "three"]);
 
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", "live") },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", "live") }));
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(promptOf(s)?.buffer.text, "three");
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
@@ -2266,10 +2241,7 @@ test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav w
 test("editing a recalled history entry detaches it from the walk", () => {
   let s = initialState();
   s = reduce(s, { t: "pushHistory", text: "hi" });
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(promptOf(s)?.buffer.text, "hi");
   assert.equal(promptOf(s)?.histIdx, 1);
@@ -2293,10 +2265,7 @@ test("editing a recalled history entry detaches it from the walk", () => {
 test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   let s = initialState();
   s = reduce(s, { t: "pushHistory", text: "old" });
-  s = reduce(s, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send") },
-  });
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   s = reduce(s, { t: "promptSet", buffer: buffer("typed") });
   s = reduce(s, { t: "promptHistoryNav", dir: 1 });
   assert.equal(promptOf(s)?.buffer.text, "typed", "↓ is a no-op at the live buffer");
@@ -2404,24 +2373,24 @@ test("a held send is per session, survives its snapshots, and is released once",
 });
 
 test("confirm open / run / close", () => {
-  let s = reduce(initialState(), {
-    t: "overlay",
-    overlay: {
+  let s = reduce(
+    initialState(),
+    open({
       t: "confirm",
       confirm: { title: "Restart the daemon?", danger: false, action: "restart" },
-    },
-  });
+    }),
+  );
   assert.equal(s.overlay.t, "confirm");
   assert.equal(confirmOf(s)?.action, "restart");
-  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
+  s = reduce(s, open({ t: "browse" }));
   assert.equal(s.overlay.t, "browse");
   assert.equal(confirmOf(s), null);
 });
 
 test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", () => {
-  let s = reduce(initialState(), {
-    t: "overlay",
-    overlay: {
+  let s = reduce(
+    initialState(),
+    open({
       t: "confirm",
       confirm: {
         title: "Delete?",
@@ -2431,21 +2400,21 @@ test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", ()
         branchName: "loom/x",
         deleteBranch: false,
       },
-    },
-  });
+    }),
+  );
   s = reduce(s, { t: "toggleConfirmBranch" });
   assert.equal(confirmOf(s)?.deleteBranch, true);
   s = reduce(s, { t: "toggleConfirmBranch" });
   assert.equal(confirmOf(s)?.deleteBranch, false);
 
   // no branchName (in-place / gc'd session) → the toggle is inert
-  let t = reduce(initialState(), {
-    t: "overlay",
-    overlay: {
+  let t = reduce(
+    initialState(),
+    open({
       t: "confirm",
       confirm: { title: "Delete?", danger: true, action: "deleteSession", sessionId: "s2" },
-    },
-  });
+    }),
+  );
   t = reduce(t, { t: "toggleConfirmBranch" });
   assert.equal(confirmOf(t)?.deleteBranch, undefined);
 });
@@ -2761,9 +2730,9 @@ test("versionMismatchAction: bounce only when alone, otherwise prompt then nag",
 });
 
 test("picker: open, filter narrows the list, move clamps to the filtered set", () => {
-  let s = reduce(withProviders(), {
-    t: "overlay",
-    overlay: {
+  let s = reduce(
+    withProviders(),
+    open({
       t: "picker",
       picker: makePicker({
         step: "model",
@@ -2771,8 +2740,8 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
         items: modelPickItems(withProviders(), "openai"),
         dest: { t: "newSession", settings, draft: "" },
       }),
-    },
-  });
+    }),
+  );
   assert.equal(s.overlay.t, "picker");
   assert.equal(pickerVisible(pickerOf(s)!).length, 3);
 
@@ -2837,9 +2806,9 @@ test("a live model picker closes if its session is removed", () => {
     withProviders(),
     fleet([snap({ id: "live", status: "running", provider: "openai" })]),
   );
-  s = reduce(s, {
-    t: "overlay",
-    overlay: {
+  s = reduce(
+    s,
+    open({
       t: "picker",
       picker: makePicker({
         step: "model",
@@ -2848,8 +2817,8 @@ test("a live model picker closes if its session is removed", () => {
         dest: { t: "session", sessionId: "live", back: null },
         chosen: { provider: "openai", model: null },
       }),
-    },
-  });
+    }),
+  );
   // A snapshot the session has dropped out of closes the picker aimed at it.
   s = reduce(s, fleet([]));
   assert.equal(pickerOf(s), null);
@@ -3077,39 +3046,30 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
   const noted = reduce(initialState(), { t: "notice", text: "sent", tone: "good" });
   assert.equal(promptRows(noted, 100), 3);
   // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
-  const prompted = reduce(noted, {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: newPrompt(settings) },
-  });
+  const prompted = reduce(noted, open({ t: "prompt", prompt: newPrompt(settings) }));
   assert.equal(promptRows(prompted, 100), 3);
 });
 
 test("promptRows counts word-wrapped editor rows at the terminal's width", () => {
-  const open = (text: string) =>
-    reduce(initialState(), {
-      t: "overlay",
-      overlay: { t: "prompt", prompt: newPrompt(settings, text) },
-    });
+  const withText = (text: string) =>
+    reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings, text) }));
   // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
-  const wide = open("one two three");
+  const wide = withText("one two three");
   assert.equal(promptRows(wide, 80), 3);
   assert.equal(promptRows(wide, 12), 4);
   // The budget never exceeds MAX_EDITOR_ROWS, however long the text wraps.
-  const flood = open("word ".repeat(40));
+  const flood = withText("word ".repeat(40));
   assert.equal(promptRows(flood, 12), 10);
 });
 
 test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => {
-  const open = (text: string) =>
-    reduce(initialState(), {
-      t: "overlay",
-      overlay: { t: "prompt", prompt: sessionPrompt("send", "a", "send", text) },
-    });
+  const withText = (text: string) =>
+    reduce(initialState(), open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", text) }));
   // The footer carries only the hints row…
-  assert.equal(promptRows(open(""), 100), 1);
+  assert.equal(promptRows(withText(""), 100), 1);
   // …and the pane carries label + wrapped editor, capped at MAX_EDITOR_ROWS.
-  assert.equal(promptPaneRows(open("one two three"), 100), 2);
-  assert.equal(promptPaneRows(open("word ".repeat(40)), 12), 9);
+  assert.equal(promptPaneRows(withText("one two three"), 100), 2);
+  assert.equal(promptPaneRows(withText("word ".repeat(40)), 12), 9);
 });
 
 // keep a reference to TuiState so the import is load-bearing for type checks
@@ -3198,9 +3158,9 @@ test("a model picker opened while the catalog loads resolves when the fresh list
   assert.deepEqual(modelPickItems(s, "claude"), []);
 
   // Open the model step mid-load (as the ⌥p wizard does)…
-  const opened = reduce(s, {
-    t: "overlay",
-    overlay: {
+  const opened = reduce(
+    s,
+    open({
       t: "picker",
       picker: makePicker({
         step: "model",
@@ -3210,8 +3170,8 @@ test("a model picker opened while the catalog loads resolves when the fresh list
         dest: { t: "newSession", settings, draft: "" },
         chosen: { provider: "claude", model: null },
       }),
-    },
-  });
+    }),
+  );
   assert.equal(pickerOf(opened)?.items.length, 0);
 
   // …then the daemon's settle push lands — the same picker fills in.
