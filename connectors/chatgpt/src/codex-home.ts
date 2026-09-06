@@ -28,9 +28,7 @@ export const resolveCodexHome = (opts: {
   const authPath = opts.authPath?.trim() || undefined;
 
   if (authPath && basename(authPath) !== "auth.json") {
-    throw new Error(
-      `auth_path must name an auth.json file, got ${JSON.stringify(authPath)}`,
-    );
+    throw new Error(`auth_path must name an auth.json file, got ${JSON.stringify(authPath)}`);
   }
   const authPathDir = authPath ? dirname(authPath) : undefined;
 

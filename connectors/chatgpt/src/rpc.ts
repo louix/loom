@@ -164,7 +164,8 @@ export class CodexRpcClient {
       if (!pending) return;
       this.#requests.delete(Number(msg.id));
       clearTimeout(pending.timer);
-      if (msg.error) pending.reject(new Error(msg.error.message ?? "codex app-server request failed"));
+      if (msg.error)
+        pending.reject(new Error(msg.error.message ?? "codex app-server request failed"));
       else pending.resolve(msg.result);
       return;
     }

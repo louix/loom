@@ -553,7 +553,11 @@ test("setEffort rejects a value the CLI's live flag settings don't support, with
   assert.deepEqual(applied, { effortLevel: "high" });
 
   await assert.rejects(() => s.setEffort("minimal"), /does not support live effort changes/);
-  assert.deepEqual(applied, { effortLevel: "high" }, "the unsupported value must never reach the CLI");
+  assert.deepEqual(
+    applied,
+    { effortLevel: "high" },
+    "the unsupported value must never reach the CLI",
+  );
 
   await s.close();
 });

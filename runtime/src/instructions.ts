@@ -42,7 +42,9 @@ export const toolSteer = (cwd: string, mounted: MountedLoomTools): string =>
     "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
     `- All of this session's work stays inside the worktree at ${cwd}. Build every file path — Read, Edit, Write, tilth's \`root\`, \`cd\` targets — from there, not from memory of where the repo "usually" lives. A path outside it, such as a parent checkout of the same repo, is a *different* working tree: reads come back stale and writes never reach your branch.${mounted.status ? " The `status` tool reprints this root." : ""}`,
     ...(mounted.commit
-      ? ["- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git."]
+      ? [
+          "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
+        ]
       : []),
     ...(mounted.askUser
       ? [

@@ -22,14 +22,23 @@ import {
   CodexAppServerSession,
   mcpConfig,
 } from "@loom/connector-chatgpt/app-server";
-import { spawnCodex, type CodexLaunchSpec, type CodexLauncher } from "@loom/connector-chatgpt/launch";
+import {
+  spawnCodex,
+  type CodexLaunchSpec,
+  type CodexLauncher,
+} from "@loom/connector-chatgpt/launch";
 import { localToolDispatcher } from "@loom/connector-chatgpt/tool-dispatch";
 
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
-const repo = (): { root: string; git: (...a: string[]) => string; cleanup: () => Promise<void> } => {
+const repo = (): {
+  root: string;
+  git: (...a: string[]) => string;
+  cleanup: () => Promise<void>;
+} => {
   const root = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
-  const git = (...a: string[]) => execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
+  const git = (...a: string[]) =>
+    execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
   execFileSync("git", ["init", "-q", "-b", "main", root]);
   git("config", "user.email", "loom+chatgpt@localhost");
   git("config", "user.name", "Loom (chatgpt)");
@@ -168,10 +177,10 @@ test("resolveCodexHome: config_dir, then auth_path's parent, then CODEX_HOME, th
     dir: "/custom",
     authJsonPath: "/custom/auth.json",
   });
-  assert.deepEqual(
-    resolveCodexHome({ configDir: "/explicit", env: { CODEX_HOME: "/ignored" } }),
-    { dir: "/explicit", authJsonPath: "/explicit/auth.json" },
-  );
+  assert.deepEqual(resolveCodexHome({ configDir: "/explicit", env: { CODEX_HOME: "/ignored" } }), {
+    dir: "/explicit",
+    authJsonPath: "/explicit/auth.json",
+  });
   // Agreeing config_dir + auth_path is fine.
   assert.deepEqual(resolveCodexHome({ configDir: "/same", authPath: "/same/auth.json", env: {} }), {
     dir: "/same",
@@ -223,7 +232,10 @@ test("CodexRpcClient answers an unclaimed server request with an explicit unsupp
 });
 
 test("discoverCodexModels paginates model/list, keeping the account's hidden flag on each row", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-home-test", authJsonPath: "/tmp/loom-codex-home-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-home-test",
+    authJsonPath: "/tmp/loom-codex-home-test/auth.json",
+  };
   const models = await discoverCodexModels({ cliPath: FAKE_CODEX, codexHome });
   assert.deepEqual(models, [
     {
@@ -306,10 +318,18 @@ test("CodexAppServerSession.start/.resume and discoverCodexModels launch through
 });
 
 test("resume() forwards the ref's systemPromptAppend as developerInstructions on thread/resume", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-resume-test", authJsonPath: "/tmp/loom-codex-resume-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-resume-test",
+    authJsonPath: "/tmp/loom-codex-resume-test/auth.json",
+  };
 
   const withInstructions = await CodexAppServerSession.resume(
-    { sessionId: "s1", providerRef: "fake-thread-1", cwd: "/tmp", systemPromptAppend: "resumed-instructions-marker" },
+    {
+      sessionId: "s1",
+      providerRef: "fake-thread-1",
+      cwd: "/tmp",
+      systemPromptAppend: "resumed-instructions-marker",
+    },
     codexHome,
     FAKE_CODEX,
   );
@@ -373,7 +393,10 @@ const waitForExists = async (path: string, timeoutMs = 500): Promise<boolean> =>
 
 test("a failed thread/start closes the app-server process instead of leaking it", async () => {
   const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
-  const codexHome = { dir: "/tmp/loom-codex-fail-test", authJsonPath: "/tmp/loom-codex-fail-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-fail-test",
+    authJsonPath: "/tmp/loom-codex-fail-test/auth.json",
+  };
   try {
     Deno.env.set("LOOM_TEST_FAIL_STARTUP", "1");
     Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
@@ -386,7 +409,11 @@ test("a failed thread/start closes the app-server process instead of leaking it"
         ),
       /forced thread\/start failure/,
     );
-    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+    assert.equal(
+      (await waitForMarker(markerDir)).length,
+      1,
+      "the spawned process should have exited",
+    );
   } finally {
     Deno.env.delete("LOOM_TEST_FAIL_STARTUP");
     Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
@@ -396,7 +423,10 @@ test("a failed thread/start closes the app-server process instead of leaking it"
 
 test("a failed thread/resume closes the app-server process instead of leaking it", async () => {
   const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
-  const codexHome = { dir: "/tmp/loom-codex-fail-test", authJsonPath: "/tmp/loom-codex-fail-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-fail-test",
+    authJsonPath: "/tmp/loom-codex-fail-test/auth.json",
+  };
   try {
     Deno.env.set("LOOM_TEST_FAIL_STARTUP", "1");
     Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
@@ -409,7 +439,11 @@ test("a failed thread/resume closes the app-server process instead of leaking it
         ),
       /forced thread\/resume failure/,
     );
-    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+    assert.equal(
+      (await waitForMarker(markerDir)).length,
+      1,
+      "the spawned process should have exited",
+    );
   } finally {
     Deno.env.delete("LOOM_TEST_FAIL_STARTUP");
     Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
@@ -419,7 +453,10 @@ test("a failed thread/resume closes the app-server process instead of leaking it
 
 test("a non-ChatGPT authenticated account is rejected without leaking the process", async () => {
   const markerDir = await mkdtemp(join(tmpdir(), "loom-codex-exit-"));
-  const codexHome = { dir: "/tmp/loom-codex-account-test", authJsonPath: "/tmp/loom-codex-account-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-account-test",
+    authJsonPath: "/tmp/loom-codex-account-test/auth.json",
+  };
   try {
     Deno.env.set("LOOM_TEST_ACCOUNT_TYPE", "apiKey");
     Deno.env.set("LOOM_TEST_EXIT_MARKER_DIR", markerDir);
@@ -432,7 +469,11 @@ test("a non-ChatGPT authenticated account is rejected without leaking the proces
         ),
       /not authenticated with a ChatGPT subscription account.*apiKey/,
     );
-    assert.equal((await waitForMarker(markerDir)).length, 1, "the spawned process should have exited");
+    assert.equal(
+      (await waitForMarker(markerDir)).length,
+      1,
+      "the spawned process should have exited",
+    );
   } finally {
     Deno.env.delete("LOOM_TEST_ACCOUNT_TYPE");
     Deno.env.delete("LOOM_TEST_EXIT_MARKER_DIR");
@@ -441,14 +482,20 @@ test("a non-ChatGPT authenticated account is rejected without leaking the proces
 });
 
 test("Code Mode compact() rejects custom instructions instead of silently running plain compaction", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-compact-test", authJsonPath: "/tmp/loom-codex-compact-test/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-compact-test",
+    authJsonPath: "/tmp/loom-codex-compact-test/auth.json",
+  };
   const s = await CodexAppServerSession.start(
     { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
     codexHome,
     FAKE_CODEX,
   );
   try {
-    await assert.rejects(() => s.compact("keep the plan verbatim"), /does not support custom instructions/);
+    await assert.rejects(
+      () => s.compact("keep the plan verbatim"),
+      /does not support custom instructions/,
+    );
     await s.compact(); // plain compaction still works
     await s.compact("   "); // blank instructions are the same as none
   } finally {
@@ -458,7 +505,10 @@ test("Code Mode compact() rejects custom instructions instead of silently runnin
 
 test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on the envelope id (auto mode allows it)", async () => {
   const { root, git, cleanup } = repo();
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-commit", authJsonPath: "/tmp/loom-codex-dyntool-commit/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-commit",
+    authJsonPath: "/tmp/loom-codex-dyntool-commit/auth.json",
+  };
   const resultFile = join(root, "..", `tool-call-result-${process.pid}.json`);
   try {
     await writeFile(join(root, "a.txt"), "hello\n");
@@ -474,7 +524,10 @@ test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on t
     );
     try {
       const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ type: string; text: string }>; success: boolean };
+      const result = JSON.parse(raw) as {
+        contentItems: Array<{ type: string; text: string }>;
+        success: boolean;
+      };
       assert.equal(result.success, true);
       assert.equal(result.contentItems[0]?.type, "inputText");
       assert.match(result.contentItems[0]?.text ?? "", /^committed [0-9a-f]{7,} Add a\.txt/);
@@ -526,11 +579,18 @@ test("CodexAppServerSession.start runs the injected dispatcher instead of commit
     );
     try {
       const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ type: string; text: string }>; success: boolean };
+      const result = JSON.parse(raw) as {
+        contentItems: Array<{ type: string; text: string }>;
+        success: boolean;
+      };
       assert.equal(result.success, true);
       assert.equal(result.contentItems[0]?.text, "handled by the injected dispatcher, not git");
       assert.deepEqual(calls, [{ tool: "commit", args: { message: "Add a.txt" } }]);
-      assert.equal(git("rev-parse", "HEAD"), headBefore, "the injected dispatcher ran, not a real commit");
+      assert.equal(
+        git("rev-parse", "HEAD"),
+        headBefore,
+        "the injected dispatcher ran, not a real commit",
+      );
     } finally {
       await s.close();
     }
@@ -578,7 +638,10 @@ for (const mode of ["default", "plan", "acceptEdits"] as const) {
         }
         await s.respondToPermission(reqId, { behavior: "deny", message: "not now" });
         const raw = await waitForFile(resultFile);
-        const result = JSON.parse(raw) as { success: boolean; contentItems: Array<{ text: string }> };
+        const result = JSON.parse(raw) as {
+          success: boolean;
+          contentItems: Array<{ text: string }>;
+        };
         assert.equal(result.success, false);
         assert.equal(result.contentItems[0]?.text, "not now");
         assert.equal(git("rev-parse", "HEAD"), headBefore, "no commit should have been made");
@@ -596,7 +659,10 @@ for (const mode of ["default", "plan", "acceptEdits"] as const) {
 
 test("respondToPermission(allow) on a pending commit approval actually runs the commit", async () => {
   const { root, git, cleanup } = repo();
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-approve-commit", authJsonPath: "/tmp/loom-codex-dyntool-approve-commit/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-approve-commit",
+    authJsonPath: "/tmp/loom-codex-dyntool-approve-commit/auth.json",
+  };
   const resultFile = join(root, "..", `tool-call-result-approve-commit-${process.pid}.json`);
   try {
     await writeFile(join(root, "a.txt"), "hello\n");
@@ -606,7 +672,14 @@ test("respondToPermission(allow) on a pending commit approval actually runs the 
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: root, prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: root,
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -637,7 +710,10 @@ test("respondToPermission(allow) on a pending commit approval actually runs the 
 
 test("interrupt() drains a pending commit approval instead of leaving it parked, and never runs the commit", async () => {
   const { root, git, cleanup } = repo();
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-interrupt-commit", authJsonPath: "/tmp/loom-codex-dyntool-interrupt-commit/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-interrupt-commit",
+    authJsonPath: "/tmp/loom-codex-dyntool-interrupt-commit/auth.json",
+  };
   const resultFile = join(root, "..", `tool-call-result-interrupt-commit-${process.pid}.json`);
   try {
     await writeFile(join(root, "a.txt"), "hello\n");
@@ -648,7 +724,14 @@ test("interrupt() drains a pending commit approval instead of leaving it parked,
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: root, prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: root,
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -674,7 +757,10 @@ test("interrupt() drains a pending commit approval instead of leaving it parked,
 
 test("Codex's item/tool/call always allows status, regardless of mode", async () => {
   const { root, cleanup } = repo();
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-status", authJsonPath: "/tmp/loom-codex-dyntool-status/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-status",
+    authJsonPath: "/tmp/loom-codex-dyntool-status/auth.json",
+  };
   const resultFile = join(root, "..", `tool-call-result-status-${process.pid}.json`);
   try {
     Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "status", arguments: {} }));
@@ -700,13 +786,26 @@ test("Codex's item/tool/call always allows status, regardless of mode", async ()
 });
 
 test("Codex's item/tool/call reports an unsupported tool name as a failed (not errored) call", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-unknown", authJsonPath: "/tmp/loom-codex-dyntool-unknown/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-unknown",
+    authJsonPath: "/tmp/loom-codex-dyntool-unknown/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-unknown-${process.pid}.json`);
   try {
-    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "nonexistent", arguments: {} }));
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "nonexistent", arguments: {} }),
+    );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -725,16 +824,29 @@ test("Codex's item/tool/call reports an unsupported tool name as a failed (not e
 });
 
 test("Codex's item/tool/call round-trips the ask_user dynamic tool through a question/answer event pair", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-askuser", authJsonPath: "/tmp/loom-codex-dyntool-askuser/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-askuser",
+    authJsonPath: "/tmp/loom-codex-dyntool-askuser/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-askuser-${process.pid}.json`);
   try {
     Deno.env.set(
       "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "ask_user", arguments: { question: "pick one", context: "because reasons" } }),
+      JSON.stringify({
+        tool: "ask_user",
+        arguments: { question: "pick one", context: "because reasons" },
+      }),
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -764,13 +876,26 @@ test("Codex's item/tool/call round-trips the ask_user dynamic tool through a que
 });
 
 test("interrupt() drains a pending ask_user question instead of leaving it parked forever", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-askuser-interrupt", authJsonPath: "/tmp/loom-codex-dyntool-askuser-interrupt/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-askuser-interrupt",
+    authJsonPath: "/tmp/loom-codex-dyntool-askuser-interrupt/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-askuser-interrupt-${process.pid}.json`);
   try {
-    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "ask_user", arguments: { question: "?" } }));
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "ask_user", arguments: { question: "?" } }),
+    );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -845,7 +970,14 @@ for (const { name, decision, expectText, expectMode } of planDecisionCases) {
       );
       Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
       const s = await CodexAppServerSession.start(
-        { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+        {
+          sessionId: "s1",
+          cwd: "/tmp",
+          prompt: "go",
+          mode: "plan",
+          mcpServers: [],
+          loomServer: true,
+        },
         codexHome,
         FAKE_CODEX,
       );
@@ -860,7 +992,10 @@ for (const { name, decision, expectText, expectMode } of planDecisionCases) {
         }
         await s.respondToPlan(planId, decision);
         const raw = await waitForFile(resultFile);
-        const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+        const result = JSON.parse(raw) as {
+          contentItems: Array<{ text: string }>;
+          success: boolean;
+        };
         assert.equal(result.success, true);
         assert.match(result.contentItems[0]?.text ?? "", expectText);
         if (expectMode) assert.equal(s.snapshot().mode, expectMode);
@@ -877,7 +1012,10 @@ for (const { name, decision, expectText, expectMode } of planDecisionCases) {
 }
 
 test("exit_plan is refused outside plan mode instead of silently presenting a plan", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-dyntool-exitplan-wrongmode", authJsonPath: "/tmp/loom-codex-dyntool-exitplan-wrongmode/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-dyntool-exitplan-wrongmode",
+    authJsonPath: "/tmp/loom-codex-dyntool-exitplan-wrongmode/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-exitplan-wrongmode-${process.pid}.json`);
   try {
     Deno.env.set(
@@ -886,7 +1024,14 @@ test("exit_plan is refused outside plan mode instead of silently presenting a pl
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -906,7 +1051,10 @@ test("exit_plan is refused outside plan mode instead of silently presenting a pl
 });
 
 test("Codex's native item/tool/requestUserInput round-trips through the same AskUserQuestion permission shape the TUI already renders", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-native-question", authJsonPath: "/tmp/loom-codex-native-question/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-native-question",
+    authJsonPath: "/tmp/loom-codex-native-question/auth.json",
+  };
   const resultFile = join(tmpdir(), `user-input-result-${process.pid}.json`);
   try {
     Deno.env.set(
@@ -935,7 +1083,9 @@ test("Codex's native item/tool/requestUserInput round-trips through the same Ask
     );
     try {
       let reqId = "";
-      let input: { questions: Array<{ question: string; header: string; options: unknown }> } | undefined;
+      let input:
+        | { questions: Array<{ question: string; header: string; options: unknown }> }
+        | undefined;
       for await (const ev of s.events()) {
         if (ev.type === "permission_request" && ev.tool === "AskUserQuestion") {
           reqId = ev.id;
@@ -961,12 +1111,19 @@ test("Codex's native item/tool/requestUserInput round-trips through the same Ask
 });
 
 test("interrupt() drains a pending native question with a structurally valid empty-answer response", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-native-question-interrupt", authJsonPath: "/tmp/loom-codex-native-question-interrupt/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-native-question-interrupt",
+    authJsonPath: "/tmp/loom-codex-native-question-interrupt/auth.json",
+  };
   const resultFile = join(tmpdir(), `user-input-result-interrupt-${process.pid}.json`);
   try {
     Deno.env.set(
       "LOOM_TEST_USER_INPUT_SPEC",
-      JSON.stringify({ questions: [{ id: "q1", header: "", question: "?", isOther: false, isSecret: false, options: null }] }),
+      JSON.stringify({
+        questions: [
+          { id: "q1", header: "", question: "?", isOther: false, isSecret: false, options: null },
+        ],
+      }),
     );
     Deno.env.set("LOOM_TEST_USER_INPUT_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
@@ -992,7 +1149,10 @@ test("interrupt() drains a pending native question with a structurally valid emp
 });
 
 test("a server request tagged with an unrecognized threadId is rejected, not actioned", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-unknown-thread", authJsonPath: "/tmp/loom-codex-unknown-thread/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-unknown-thread",
+    authJsonPath: "/tmp/loom-codex-unknown-thread/auth.json",
+  };
   const resultFile = join(tmpdir(), `approval-result-unknown-thread-${process.pid}.json`);
   try {
     Deno.env.set(
@@ -1024,7 +1184,10 @@ test("a server request tagged with an unrecognized threadId is rejected, not act
 });
 
 test("a server request tagged with an observed sub-agent's threadId is accepted and routed through the same handler", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-subagent-thread", authJsonPath: "/tmp/loom-codex-subagent-thread/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-subagent-thread",
+    authJsonPath: "/tmp/loom-codex-subagent-thread/auth.json",
+  };
   const resultFile = join(tmpdir(), `approval-result-subagent-thread-${process.pid}.json`);
   try {
     Deno.env.set(
@@ -1099,7 +1262,11 @@ for (const [from, to, label] of [
       );
       try {
         await s.setMode(to);
-        assert.equal(await waitForExists(markerFile), true, "expected turn/interrupt to have been called");
+        assert.equal(
+          await waitForExists(markerFile),
+          true,
+          "expected turn/interrupt to have been called",
+        );
       } finally {
         await s.close();
       }
@@ -1112,7 +1279,10 @@ for (const [from, to, label] of [
 }
 
 test("setMode does not interrupt when the mode isn't actually changing", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-setmode-noop", authJsonPath: "/tmp/loom-codex-setmode-noop/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-setmode-noop",
+    authJsonPath: "/tmp/loom-codex-setmode-noop/auth.json",
+  };
   const markerFile = join(tmpdir(), `interrupt-marker-noop-${process.pid}.txt`);
   try {
     Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
@@ -1124,7 +1294,11 @@ test("setMode does not interrupt when the mode isn't actually changing", async (
     );
     try {
       await s.setMode("default");
-      assert.equal(await waitForExists(markerFile, 300), false, "did not expect turn/interrupt to be called");
+      assert.equal(
+        await waitForExists(markerFile, 300),
+        false,
+        "did not expect turn/interrupt to be called",
+      );
     } finally {
       await s.close();
     }
@@ -1136,15 +1310,28 @@ test("setMode does not interrupt when the mode isn't actually changing", async (
 });
 
 test("interrupt() still drains pending interactions and goes idle even when the turn/interrupt RPC itself fails", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-interrupt-rpc-fails", authJsonPath: "/tmp/loom-codex-interrupt-rpc-fails/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-interrupt-rpc-fails",
+    authJsonPath: "/tmp/loom-codex-interrupt-rpc-fails/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-interrupt-fails-${process.pid}.json`);
   try {
     Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
     Deno.env.set("LOOM_TEST_FAIL_TURN_INTERRUPT", "1");
-    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "ask_user", arguments: { question: "?" } }));
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "ask_user", arguments: { question: "?" } }),
+    );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1174,7 +1361,10 @@ test("interrupt() still drains pending interactions and goes idle even when the 
 });
 
 test("a dynamic tool call arriving for an already-interrupted turn is rejected instead of starting new work", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-stale-turn-toolcall", authJsonPath: "/tmp/loom-codex-stale-turn-toolcall/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-stale-turn-toolcall",
+    authJsonPath: "/tmp/loom-codex-stale-turn-toolcall/auth.json",
+  };
   const resultFile = join(tmpdir(), `approval-result-stale-turn-${process.pid}.json`);
   try {
     // The fixture fires this ask_user call only after being told to
@@ -1187,7 +1377,14 @@ test("a dynamic tool call arriving for an already-interrupted turn is rejected i
     );
     Deno.env.set("LOOM_TEST_APPROVAL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1208,7 +1405,10 @@ test("a dynamic tool call arriving for an already-interrupted turn is rejected i
 });
 
 test("exit_plan's plan_review event id matches the dynamic tool call's own callId, for replay correlation", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-exitplan-id-correlation", authJsonPath: "/tmp/loom-codex-exitplan-id-correlation/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-exitplan-id-correlation",
+    authJsonPath: "/tmp/loom-codex-exitplan-id-correlation/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-exitplan-idcheck-${process.pid}.json`);
   const callId = "fake-call-1"; // the fixture's hardcoded item/tool/call callId
   try {
@@ -1218,7 +1418,14 @@ test("exit_plan's plan_review event id matches the dynamic tool call's own callI
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "plan",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1248,7 +1455,10 @@ test("exit_plan's plan_review event id matches the dynamic tool call's own callI
 });
 
 test("respondToPlan never tells the model 'approved' when the mode/turn transition itself fails", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-exitplan-transition-fails", authJsonPath: "/tmp/loom-codex-exitplan-transition-fails/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-exitplan-transition-fails",
+    authJsonPath: "/tmp/loom-codex-exitplan-transition-fails/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-exitplan-failtransition-${process.pid}.json`);
   try {
     Deno.env.set("LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE", "1");
@@ -1258,7 +1468,14 @@ test("respondToPlan never tells the model 'approved' when the mode/turn transiti
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "plan",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1292,8 +1509,14 @@ test("respondToPlan never tells the model 'approved' when the mode/turn transiti
 });
 
 test("an external interrupt() while a plan's settings update is still in flight prevents the transition from restarting implementation afterward", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-exitplan-cancel-settings", authJsonPath: "/tmp/loom-codex-exitplan-cancel-settings/auth.json" };
-  const resultFile = join(tmpdir(), `tool-call-result-exitplan-cancel-settings-${process.pid}.json`);
+  const codexHome = {
+    dir: "/tmp/loom-codex-exitplan-cancel-settings",
+    authJsonPath: "/tmp/loom-codex-exitplan-cancel-settings/auth.json",
+  };
+  const resultFile = join(
+    tmpdir(),
+    `tool-call-result-exitplan-cancel-settings-${process.pid}.json`,
+  );
   const holdBase = join(tmpdir(), `hold-settings-update-${process.pid}`);
   try {
     Deno.env.set("LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE", holdBase);
@@ -1303,7 +1526,14 @@ test("an external interrupt() while a plan's settings update is still in flight 
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "plan",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1355,8 +1585,14 @@ test("an external interrupt() while a plan's settings update is still in flight 
 });
 
 test("an external interrupt() while a plan's fresh implementation turn is starting also prevents reporting approval", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-exitplan-cancel-turnstart", authJsonPath: "/tmp/loom-codex-exitplan-cancel-turnstart/auth.json" };
-  const resultFile = join(tmpdir(), `tool-call-result-exitplan-cancel-turnstart-${process.pid}.json`);
+  const codexHome = {
+    dir: "/tmp/loom-codex-exitplan-cancel-turnstart",
+    authJsonPath: "/tmp/loom-codex-exitplan-cancel-turnstart/auth.json",
+  };
+  const resultFile = join(
+    tmpdir(),
+    `tool-call-result-exitplan-cancel-turnstart-${process.pid}.json`,
+  );
   const holdBase = join(tmpdir(), `hold-turn-start-${process.pid}`);
   try {
     // Call #1 is the initial "go" turn (needed just to get the exit_plan
@@ -1370,7 +1606,14 @@ test("an external interrupt() while a plan's fresh implementation turn is starti
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "plan",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
     );
@@ -1417,7 +1660,10 @@ test("an external interrupt() while a plan's fresh implementation turn is starti
 });
 
 test("interrupt() invalidates an in-flight dispatch's askUser callback instead of letting it park a new question after the turn is gone", async () => {
-  const codexHome = { dir: "/tmp/loom-codex-cancel-inflight-dispatch", authJsonPath: "/tmp/loom-codex-cancel-inflight-dispatch/auth.json" };
+  const codexHome = {
+    dir: "/tmp/loom-codex-cancel-inflight-dispatch",
+    authJsonPath: "/tmp/loom-codex-cancel-inflight-dispatch/auth.json",
+  };
   const resultFile = join(tmpdir(), `tool-call-result-cancel-inflight-${process.pid}.json`);
   let releaseGate!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -1430,7 +1676,14 @@ test("interrupt() invalidates an in-flight dispatch's askUser callback instead o
     Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "whatever", arguments: {} }));
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      {
+        sessionId: "s1",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
       codexHome,
       FAKE_CODEX,
       undefined,
@@ -1468,15 +1721,19 @@ test("localToolDispatcher never calls askUser once the turn's signal is already 
   const controller = new AbortController();
   controller.abort();
   let askUserCalled = false;
-  const result = await localToolDispatcher("ask_user", { question: "still relevant?" }, {
-    mode: "default",
-    cwd: "/tmp",
-    signal: controller.signal,
-    askUser: async () => {
-      askUserCalled = true;
-      return "should never be reached";
+  const result = await localToolDispatcher(
+    "ask_user",
+    { question: "still relevant?" },
+    {
+      mode: "default",
+      cwd: "/tmp",
+      signal: controller.signal,
+      askUser: async () => {
+        askUserCalled = true;
+        return "should never be reached";
+      },
     },
-  });
+  );
   assert.equal(askUserCalled, false);
   assert.equal(result.ok, false);
 });
@@ -1487,18 +1744,22 @@ test("localToolDispatcher rechecks cancellation after an approval wait, before r
   try {
     await writeFile(join(root, "a.txt"), "hello\n");
     const headBefore = git("rev-parse", "HEAD");
-    const result = await localToolDispatcher("commit", { message: "should not land" }, {
-      mode: "default",
-      cwd: root,
-      signal: controller.signal,
-      requestApproval: async () => {
-        // The turn gets interrupted while the human's "yes" is in flight —
-        // by the time this dispatcher sees the (still affirmative) decision,
-        // the signal already says the turn is gone.
-        controller.abort();
-        return { behavior: "allow" };
+    const result = await localToolDispatcher(
+      "commit",
+      { message: "should not land" },
+      {
+        mode: "default",
+        cwd: root,
+        signal: controller.signal,
+        requestApproval: async () => {
+          // The turn gets interrupted while the human's "yes" is in flight —
+          // by the time this dispatcher sees the (still affirmative) decision,
+          // the signal already says the turn is gone.
+          controller.abort();
+          return { behavior: "allow" };
+        },
       },
-    });
+    );
     assert.equal(result.ok, false);
     assert.equal(git("rev-parse", "HEAD"), headBefore, "no commit should have run");
   } finally {

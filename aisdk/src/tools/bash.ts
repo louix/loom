@@ -280,4 +280,3 @@ export const bashTool = (shell: BashShell) => {
     },
   });
 };
-

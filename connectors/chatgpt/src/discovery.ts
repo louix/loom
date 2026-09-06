@@ -73,7 +73,9 @@ export const discoverCodexModels = async (opts: {
             ? {
                 supportsEffort: true,
                 effortLevels: efforts,
-                ...(row.defaultReasoningEffort ? { defaultEffort: row.defaultReasoningEffort } : {}),
+                ...(row.defaultReasoningEffort
+                  ? { defaultEffort: row.defaultReasoningEffort }
+                  : {}),
               }
             : {}),
         });

@@ -113,7 +113,9 @@ test("a corrective migration reclassifies history_backend for a db that already 
     // Explicitly recorded by `Daemon#startSession` after the Phase 4 cutover
     // — must never be overwritten by a heuristic migration.
     insertSession("s-explicit-codex", "chatgpt");
-    db.prepare("UPDATE sessions SET history_backend = 'codex' WHERE id = ?").run("s-explicit-codex");
+    db.prepare("UPDATE sessions SET history_backend = 'codex' WHERE id = ?").run(
+      "s-explicit-codex",
+    );
     db.close();
 
     const reopened = openDb(path); // runs every migration from 21 onward for real
@@ -123,10 +125,22 @@ test("a corrective migration reclassifies history_backend for a db that already 
           history_backend: string;
         }
       ).history_backend;
-    assert.equal(backendOf("s-false-positive"), "", "a real Codex thread wrongly marked 'aisdk' is corrected back to native");
+    assert.equal(
+      backendOf("s-false-positive"),
+      "",
+      "a real Codex thread wrongly marked 'aisdk' is corrected back to native",
+    );
     assert.equal(backendOf("s-true-positive"), "aisdk", "a genuinely legacy row stays 'aisdk'");
-    assert.equal(backendOf("s-missed-custom"), "aisdk", "a custom sdk=chatgpt profile's legacy row, missed by the naming-based migration, is now caught");
-    assert.equal(backendOf("s-explicit-codex"), "codex", "an explicitly-recorded codex row is never overwritten by the corrective migration");
+    assert.equal(
+      backendOf("s-missed-custom"),
+      "aisdk",
+      "a custom sdk=chatgpt profile's legacy row, missed by the naming-based migration, is now caught",
+    );
+    assert.equal(
+      backendOf("s-explicit-codex"),
+      "codex",
+      "an explicitly-recorded codex row is never overwritten by the corrective migration",
+    );
     reopened.close();
   } finally {
     cleanup();

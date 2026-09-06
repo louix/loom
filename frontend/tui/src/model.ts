@@ -2590,7 +2590,10 @@ const formatAskUserQuestionResult = (raw: string): string | null => {
     end = ASK_USER_QUESTION_PAIR.lastIndex;
   }
   if (pairs.length === 0) return null;
-  const note = rest.slice(end).replace(/^\.\s*/, "").trim();
+  const note = rest
+    .slice(end)
+    .replace(/^\.\s*/, "")
+    .trim();
   const blocks = pairs.map((p, i) => {
     const n = pairs.length > 1 ? String(i + 1) : "";
     return `Q${n}: ${p.q}\nA${n}: ${p.a}`;

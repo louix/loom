@@ -31,11 +31,11 @@ in Rust. Its open-source local agent engine is distinct from both its terminal
 UI and OpenAI's remote inference backend. App-server exposes that engine for
 embedding in other products; Loom does not need to run the TUI.
 
-| Approach | Benefit | Cost / constraint |
-| --- | --- | --- |
-| Codex app-server (chosen) | Reuses upstream subscription authentication, token refresh, model protocols and native conversation handling. | Loom integrates another agent engine: native tools, approvals, cancellation and persistence must fit Loom's abstractions. Requires a compatible executable; does not itself establish isolation. |
-| Direct TypeScript / AI SDK subscription adapter | Loom owns the agent loop, tool surface, history and execution placement; potentially simpler tool control and isolation. | Loom must maintain subscription-backend compatibility, token refresh coordination, model-specific tool protocols, streaming and conversation continuity. Not necessarily a small wrapper. |
-| Standard public API adapter | Uses the documented model API without embedding Codex's agent engine. | API credentials and usage-based billing do not meet this plan's subscription-authentication requirement; not an implicit fallback. |
+| Approach                                        | Benefit                                                                                                                  | Cost / constraint                                                                                                                                                                                |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Codex app-server (chosen)                       | Reuses upstream subscription authentication, token refresh, model protocols and native conversation handling.            | Loom integrates another agent engine: native tools, approvals, cancellation and persistence must fit Loom's abstractions. Requires a compatible executable; does not itself establish isolation. |
+| Direct TypeScript / AI SDK subscription adapter | Loom owns the agent loop, tool surface, history and execution placement; potentially simpler tool control and isolation. | Loom must maintain subscription-backend compatibility, token refresh coordination, model-specific tool protocols, streaming and conversation continuity. Not necessarily a small wrapper.        |
+| Standard public API adapter                     | Uses the documented model API without embedding Codex's agent engine.                                                    | API credentials and usage-based billing do not meet this plan's subscription-authentication requirement; not an implicit fallback.                                                               |
 
 The previous direct OAuth/Responses adapter demonstrates the second approach's
 shape, not complete model compatibility. In particular, its shell-only bridge

@@ -66,10 +66,14 @@ console.log(`wall ${fmtMs(wallMs)} · Σ(files) ${fmtMs(total)}`);
 console.log(`files ${files.length} · cases ${pass} pass / ${fail} fail`);
 console.log("slowest files:");
 for (const [i, f] of ranked.slice(0, 12).entries()) {
-  console.log(`${String(i + 1).padStart(3)}. ${fmtMs(f.ms).padStart(8)}  ${f.name}${f.failed ? "  ✖" : ""}`);
+  console.log(
+    `${String(i + 1).padStart(3)}. ${fmtMs(f.ms).padStart(8)}  ${f.name}${f.failed ? "  ✖" : ""}`,
+  );
 }
 if (rest.length > 0) {
-  console.log(`     … ${rest.length} more files, ${fmtMs(rest.reduce((acc, f) => acc + f.ms, 0))} combined`);
+  console.log(
+    `     … ${rest.length} more files, ${fmtMs(rest.reduce((acc, f) => acc + f.ms, 0))} combined`,
+  );
 }
 console.log("");
 

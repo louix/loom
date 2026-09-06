@@ -455,7 +455,10 @@ export class AisdkSession implements AgentSession {
    * stops awaiting and the turn can unwind. Used by `interrupt()` and `close()`.
    */
   #failPendingGates(why: string): void {
-    this.#pending.failAll({ allow: false, message: why }, `(${why})`, { action: "discuss", message: why });
+    this.#pending.failAll({ allow: false, message: why }, `(${why})`, {
+      action: "discuss",
+      message: why,
+    });
   }
 
   /**

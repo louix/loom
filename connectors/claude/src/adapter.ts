@@ -566,11 +566,10 @@ class ClaudeSession implements AgentSession {
 
   /** Resolve every outstanding permission / question / plan promise. */
   #rejectPending(reason: string): void {
-    this.#pending.failAll(
-      { behavior: "deny", message: reason },
-      `(${reason})`,
-      { behavior: "deny", message: reason },
-    );
+    this.#pending.failAll({ behavior: "deny", message: reason }, `(${reason})`, {
+      behavior: "deny",
+      message: reason,
+    });
     // An in-flight compaction is pending on the same process: interrupt /
     // stream-end / close all abandon it. The error event is what clients use
     // to clear the "compacting…" indicator (trackCompacting in the TUI model).
@@ -696,7 +695,10 @@ class ClaudeSession implements AgentSession {
         ...(decision.updatedInput ? { updatedInput: decision.updatedInput } : {}),
       });
     } else {
-      this.#pending.resolvePermission(id, { behavior: "deny", message: decision.message ?? "denied by user" });
+      this.#pending.resolvePermission(id, {
+        behavior: "deny",
+        message: decision.message ?? "denied by user",
+      });
     }
   }
 
@@ -757,7 +759,10 @@ class ClaudeSession implements AgentSession {
       return;
     }
 
-    this.#pending.resolvePlan(id, { behavior: "deny", message: "Plan accepted — implementing now." });
+    this.#pending.resolvePlan(id, {
+      behavior: "deny",
+      message: "Plan accepted — implementing now.",
+    });
     if (decision.action === "implement_fresh") {
       void this.#implementFresh(decision);
       return;
@@ -767,7 +772,9 @@ class ClaudeSession implements AgentSession {
     await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
   }
 
-  async #implementFresh(decision: Extract<PlanDecision, { action: "implement_fresh" }>): Promise<void> {
+  async #implementFresh(
+    decision: Extract<PlanDecision, { action: "implement_fresh" }>,
+  ): Promise<void> {
     try {
       if (decision.model) await this.setModel(decision.model);
       if (decision.effort) await this.setEffort(decision.effort);
@@ -781,7 +788,13 @@ class ClaudeSession implements AgentSession {
       const message = err instanceof Error ? err.message : String(err);
       this.#log.warn("plan compaction failed", { err: message });
       if (!this.#closing)
-        this.#outbox.push({ type: "error", sessionId: this.id, ts: Date.now(), message, fatal: false });
+        this.#outbox.push({
+          type: "error",
+          sessionId: this.id,
+          ts: Date.now(),
+          message,
+          fatal: false,
+        });
     }
   }
 

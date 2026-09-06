@@ -8,14 +8,14 @@ VM smoke tests during parity development validate interfaces, not isolation.
 
 The end state: one trusted host daemon; one smolvm per session worktree; isolated connector and Kagi workers; all host Git operations exposed through session-scoped tools.
 
-| Component | Execution environment | Authority |
-|---|---|---|
-| TUI | Existing host process | Daemon IPC; no credentials supplied |
-| Daemon | Existing trusted host process | Config, credentials, session database, host Git, worker and VM lifecycle |
-| JS/TS connector | Separate Deno process per session | Its provider endpoints, its credential, private state; no workspace, subprocesses or FFI |
-| Native connector | One smolvm per provider account/profile; separate process and broker connection per session | That profile's endpoints, credentials and provider state; no worktree mounts |
-| Workspace tools | One smolvm per session | Worktree RW, private scratch/cache; no credentials; network disabled by default |
-| Kagi client | Separate Deno process | Kagi endpoint and credential only; receives search/extract arguments |
+| Component        | Execution environment                                                                       | Authority                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| TUI              | Existing host process                                                                       | Daemon IPC; no credentials supplied                                                      |
+| Daemon           | Existing trusted host process                                                               | Config, credentials, session database, host Git, worker and VM lifecycle                 |
+| JS/TS connector  | Separate Deno process per session                                                           | Its provider endpoints, its credential, private state; no workspace, subprocesses or FFI |
+| Native connector | One smolvm per provider account/profile; separate process and broker connection per session | That profile's endpoints, credentials and provider state; no worktree mounts             |
+| Workspace tools  | One smolvm per session                                                                      | Worktree RW, private scratch/cache; no credentials; network disabled by default          |
+| Kagi client      | Separate Deno process                                                                       | Kagi endpoint and credential only; receives search/extract arguments                     |
 
 The daemon requires no direct internet calls, but remains trusted with ordinary host-process permissions. Deno restrictions apply to workers, not the daemon.
 

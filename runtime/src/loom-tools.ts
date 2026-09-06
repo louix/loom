@@ -49,11 +49,15 @@ export const askUserShape = {
 };
 
 export const commitShape = {
-  message: z.string().describe("Commit message. First line is the subject; keep it under ~72 chars."),
+  message: z
+    .string()
+    .describe("Commit message. First line is the subject; keep it under ~72 chars."),
   stage_all: z
     .boolean()
     .optional()
-    .describe("Stage all changes first (git add -A). Default true; set false to commit only what is already staged."),
+    .describe(
+      "Stage all changes first (git add -A). Default true; set false to commit only what is already staged.",
+    ),
 };
 
 export const statusShape = {

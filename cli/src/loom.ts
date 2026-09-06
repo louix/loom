@@ -324,9 +324,7 @@ const main = async (): Promise<void> => {
         if (values.json) writeOut(JSON.stringify(r, null, 2) + "\n");
         else if (r.warnings.length === 0) writeOut("config looks good\n");
         else {
-          writeOut(
-            `${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`,
-          );
+          writeOut(`${r.warnings.length} warning${r.warnings.length === 1 ? "" : "s"}:\n`);
           for (const line of r.warnings) writeOut(`  ! ${line}\n`);
           Deno.exitCode = 1;
         }
@@ -363,9 +361,7 @@ const main = async (): Promise<void> => {
           ...(worktree !== undefined ? { worktree } : {}),
         });
         const where = r.inPlace ? "  in-place" : "";
-        writeOut(
-          `started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`,
-        );
+        writeOut(`started ${r.id}  provider=${r.provider}  status=${r.status}${where}\n`);
         break;
       }
       case "send": {
@@ -452,9 +448,7 @@ const main = async (): Promise<void> => {
         // The permission mode the implementation runs in (ignored by discuss).
         if (values.mode) params["mode"] = values.mode;
         const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", params);
-        writeOut(
-          r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`,
-        );
+        writeOut(r.alreadyResolved ? `${reqId} was already resolved\n` : `${reqId} ${what}\n`);
         break;
       }
       case "mode": {
@@ -498,9 +492,7 @@ const main = async (): Promise<void> => {
             ...(values["force"] ? { force: true } : {}),
           },
         );
-        writeOut(
-          `removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`,
-        );
+        writeOut(`removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`);
         break;
       }
       case "gc": {
@@ -519,9 +511,7 @@ const main = async (): Promise<void> => {
         const t0 = performance.now();
         const r = await client.request<{ uptimeMs: number }>("ping", { nonce: t0 });
         const rtt = (performance.now() - t0).toFixed(1);
-        writeOut(
-          `pong  rtt=${rtt}ms  daemon-uptime=${(r.uptimeMs / 1000).toFixed(1)}s\n`,
-        );
+        writeOut(`pong  rtt=${rtt}ms  daemon-uptime=${(r.uptimeMs / 1000).toFixed(1)}s\n`);
         break;
       }
       case "stub": {
@@ -637,8 +627,7 @@ const printSessions = (rows: SessionSnapshot[]): void => {
         g.dirty ? "dirty" : "clean",
       ].filter(Boolean);
       writeOut(`            ${bits.join(" · ")}\n`);
-      if (g.lastCommitSubject)
-        writeOut(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
+      if (g.lastCommitSubject) writeOut(`            “${g.lastCommitSubject.slice(0, 60)}”\n`);
     }
   }
 };
@@ -648,9 +637,7 @@ const runTail = async (client: LoomClient): Promise<void> => {
   client.on("reconnect", (i) =>
     writeOut(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
   );
-  client.on("resync", (i) =>
-    writeOut(`[resync: ${(i as { reason: string }).reason}]\n`),
-  );
+  client.on("resync", (i) => writeOut(`[resync: ${(i as { reason: string }).reason}]\n`));
   client.on("close", () => {
     writeOut("[connection closed]\n");
     Deno.exit(0);
@@ -658,9 +645,7 @@ const runTail = async (client: LoomClient): Promise<void> => {
   client.onPush((f: PushFrame) => {
     if (f.type === "event") {
       const e = f.event;
-      writeOut(
-        `#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`,
-      );
+      writeOut(`#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`);
     } else if (f.type === "session_updated") {
       writeOut(
         `#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`,

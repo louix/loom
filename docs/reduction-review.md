@@ -19,15 +19,15 @@ and resist adding a separate architecture programme around it.
 
 Static inventory of the reviewed branch:
 
-| Area | Size |
-| --- | ---: |
-| Production `src` TypeScript/TSX, including harness/mock infrastructure | 97 files / 28,539 lines |
-| Test files | 37 / 19,076 lines |
-| Literal `test(...)` calls | 706; not an executed test count |
-| TUI model tests | 115 calls / 3,154 lines |
-| TUI render tests | 77 calls / 2,130 lines |
-| `daemon.ts` | 3,118 lines |
-| `model.ts` / `fleet-handle.ts` / `components.tsx` | 2,904 / 2,773 / 1,977 lines |
+| Area                                                                   |                            Size |
+| ---------------------------------------------------------------------- | ------------------------------: |
+| Production `src` TypeScript/TSX, including harness/mock infrastructure |         97 files / 28,539 lines |
+| Test files                                                             |               37 / 19,076 lines |
+| Literal `test(...)` calls                                              | 706; not an executed test count |
+| TUI model tests                                                        |         115 calls / 3,154 lines |
+| TUI render tests                                                       |          77 calls / 2,130 lines |
+| `daemon.ts`                                                            |                     3,118 lines |
+| `model.ts` / `fleet-handle.ts` / `components.tsx`                      |     2,904 / 2,773 / 1,977 lines |
 
 These counts do not establish poor quality. The sampled tests mostly assert
 real behavior. The costly pattern is testing a small behavior through a large
@@ -233,17 +233,17 @@ backend discriminator are progress, not work to throw away.
 
 ## Tests: a concrete disposition
 
-| Test/group in reviewed worktree | Recommendation |
-| --- | --- |
-| `test/tui-model.test.ts:2707`, `makePrompt carries provider + model...` | Immediate low-value deletion candidate: asserts two fields were copied. Constructor use in workflow tests can cover this. |
-| `tui-model.test.ts:1940`, prompt open/edit/close; `:2166`, confirm open/close | After the screen union, remove assertions that exist only to maintain mode/payload agreement. Preserve meaningful transitions, drafts and target behavior in workflow tests. |
-| `tui-model.test.ts:1394`, `focusedPending`; `tui-render.test.ts:1073`, stale plan masking permission | Delete with the removed reconciliation helper. Replace the behavioral guarantee with complete-snapshot/two-client interaction coverage. |
-| `tui-model.test.ts:642`, epoch collision; `:818`, timestamp-sorted backfill | Replace the transcript implementation tests with durable-ID overlap/order tests. Preserve epoch/seq tests for raw replay where still used. |
-| `tui-render.test.ts:418`, restart confirmation; `:517`, palette selection; `:1013`, rename command; picker navigation cases | Move decision/command assertions to handle tests using supplied snapshots and a recording client. Keep actual Ink key decoding and geometry tests. |
-| `test/aisdk-tools.test.ts:202` through name-classification cases | Delete when name-based authorization is removed. Replace with a compact explicit-effect policy table and execution-time enforcement cases. |
-| `test/channel.test.ts:66`, drop-oldest contract | Change with the queue contract. Verify overflow cannot silently lose a control event; do not just remove the test. |
-| `test/runtime.test.ts` | Keep resolve-once/drain behavior; add the duplicate-registration regression. Small and valuable. |
-| `test/status-machine.test.ts`, editor, Git safety, store transactions, protocol parsing, shutdown/interrupt tests | Keep behavior coverage. Pure functions and typed states do not prove correct transitions, parsing, filesystem effects or temporal ordering. |
+| Test/group in reviewed worktree                                                                                             | Recommendation                                                                                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/tui-model.test.ts:2707`, `makePrompt carries provider + model...`                                                     | Immediate low-value deletion candidate: asserts two fields were copied. Constructor use in workflow tests can cover this.                                                    |
+| `tui-model.test.ts:1940`, prompt open/edit/close; `:2166`, confirm open/close                                               | After the screen union, remove assertions that exist only to maintain mode/payload agreement. Preserve meaningful transitions, drafts and target behavior in workflow tests. |
+| `tui-model.test.ts:1394`, `focusedPending`; `tui-render.test.ts:1073`, stale plan masking permission                        | Delete with the removed reconciliation helper. Replace the behavioral guarantee with complete-snapshot/two-client interaction coverage.                                      |
+| `tui-model.test.ts:642`, epoch collision; `:818`, timestamp-sorted backfill                                                 | Replace the transcript implementation tests with durable-ID overlap/order tests. Preserve epoch/seq tests for raw replay where still used.                                   |
+| `tui-render.test.ts:418`, restart confirmation; `:517`, palette selection; `:1013`, rename command; picker navigation cases | Move decision/command assertions to handle tests using supplied snapshots and a recording client. Keep actual Ink key decoding and geometry tests.                           |
+| `test/aisdk-tools.test.ts:202` through name-classification cases                                                            | Delete when name-based authorization is removed. Replace with a compact explicit-effect policy table and execution-time enforcement cases.                                   |
+| `test/channel.test.ts:66`, drop-oldest contract                                                                             | Change with the queue contract. Verify overflow cannot silently lose a control event; do not just remove the test.                                                           |
+| `test/runtime.test.ts`                                                                                                      | Keep resolve-once/drain behavior; add the duplicate-registration regression. Small and valuable.                                                                             |
+| `test/status-machine.test.ts`, editor, Git safety, store transactions, protocol parsing, shutdown/interrupt tests           | Keep behavior coverage. Pure functions and typed states do not prove correct transitions, parsing, filesystem effects or temporal ordering.                                  |
 
 Most render integration tests construct a daemon, temporary Git repository,
 socket client and Ink instance (`tui-render.test.ts:107`). Many then wait fixed

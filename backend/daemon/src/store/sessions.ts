@@ -275,9 +275,9 @@ export class SessionStore {
     }>;
     for (const { id } of ids) this.setFields(id, { provider: to });
     for (const prefix of ["default_model:", "default_effort:"]) {
-      const row = this.#db.prepare("SELECT value FROM meta WHERE key = ?").get(`${prefix}${from}`) as
-        | { value: string }
-        | undefined;
+      const row = this.#db
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get(`${prefix}${from}`) as { value: string } | undefined;
       if (row) {
         this.#db
           .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")

@@ -134,7 +134,8 @@ export class ChatGPTCatalog {
         signal: AbortSignal.timeout(8_000),
       },
     );
-    if (!res.ok) throw new Error(`Codex model catalog fetch failed: ${res.status} ${res.statusText}`);
+    if (!res.ok)
+      throw new Error(`Codex model catalog fetch failed: ${res.status} ${res.statusText}`);
     const body = (await res.json()) as CatalogResponse;
     return (body.models ?? []).filter(
       (model) => typeof model.slug === "string" && model.slug !== "",

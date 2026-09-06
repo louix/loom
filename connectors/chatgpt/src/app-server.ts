@@ -507,15 +507,24 @@ export class CodexAppServerSession implements AgentSession {
     id: string,
     signal: AbortSignal | undefined,
   ): Promise<PermissionDecision> {
-    if (signal?.aborted) return Promise.resolve({ behavior: "deny", message: "the turn was interrupted" });
+    if (signal?.aborted)
+      return Promise.resolve({ behavior: "deny", message: "the turn was interrupted" });
     const decision = this.#pending.requestPermission(id);
-    this.#events.push({ type: "permission_request", sessionId: this.id, ts: now(), id, tool, input: args });
+    this.#events.push({
+      type: "permission_request",
+      sessionId: this.id,
+      ts: now(),
+      id,
+      tool,
+      input: args,
+    });
     return decision;
   }
   /** loom `exit_plan` handler: emit a `plan_review` event, block until
    *  decided. `id`/`signal`: see `#askUser`'s doc comment. */
   #requestPlan(plan: string, id: string, signal: AbortSignal | undefined): Promise<PlanDecision> {
-    if (signal?.aborted) return Promise.resolve({ action: "discuss", message: "the turn was interrupted" });
+    if (signal?.aborted)
+      return Promise.resolve({ action: "discuss", message: "the turn was interrupted" });
     const decision = this.#pending.requestPlan(id);
     this.#events.push({ type: "plan_review", sessionId: this.id, ts: now(), id, plan });
     return decision;

@@ -75,7 +75,7 @@ you can see what you type.
 | —    | keep cache warm — daemon re-primes the prompt cache before its TTL lapses (Claude, pinned TTL; palette only) |
 | —    | gc — repair sweep for a done session whose worktree removal failed at archive time; branches and rows kept   |
 | `e`  | rename the session                                                                                           |
-| —    | add / edit a comment — a user-authored note on the session, meta, not part of the event log (palette only)  |
+| —    | add / edit a comment — a user-authored note on the session, meta, not part of the event log (palette only)   |
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
 | `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |

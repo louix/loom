@@ -18,8 +18,7 @@ export const onPath = (
     }
   };
   if (cmd.includes("/") || cmd.includes("\\")) return runnable(cmd);
-  const exts =
-    Deno.build.os === "windows" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  const exts = Deno.build.os === "windows" ? (env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";") : [""];
   for (const dir of (env["PATH"] ?? "").split(delimiter)) {
     if (dir && exts.some((ext) => runnable(join(dir, cmd + ext)))) return true;
   }

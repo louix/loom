@@ -1833,7 +1833,13 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
     t: "push",
     frame: push(
       1,
-      ev({ type: "tool_call", id: "r1", name: "Read", input: { file_path: "a.ts" }, sessionId: "a" }),
+      ev({
+        type: "tool_call",
+        id: "r1",
+        name: "Read",
+        input: { file_path: "a.ts" },
+        sessionId: "a",
+      }),
     ),
   });
   s = reduce(s, {

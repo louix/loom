@@ -143,7 +143,11 @@ const handle = (req) => {
   }
   if (method === "thread/start") {
     if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
-      send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/start failure" } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: "fake app-server: forced thread/start failure" },
+      });
       return;
     }
     const started = fixture("thread-start");
@@ -237,14 +241,20 @@ const handle = (req) => {
   }
   if (method === "thread/resume") {
     if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
-      send({ jsonrpc: "2.0", id, error: { code: -32000, message: "fake app-server: forced thread/resume failure" } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: "fake app-server: forced thread/resume failure" },
+      });
       return;
     }
     const base = fixture("thread-resume");
     // Echo whether developerInstructions arrived, in the thread id, so tests
     // can assert on it through `CodexAppServerSession.resume()`'s public
     // `providerRef` without a new test-only hook into production code.
-    const id_ = params?.developerInstructions ? `${base.thread.id}-with-instructions` : base.thread.id;
+    const id_ = params?.developerInstructions
+      ? `${base.thread.id}-with-instructions`
+      : base.thread.id;
     send({ jsonrpc: "2.0", id, result: { thread: { id: id_ } } });
     return;
   }
@@ -342,7 +352,10 @@ const handle = (req) => {
         send({
           jsonrpc: "2.0",
           id,
-          error: { code: -32000, message: "fake app-server: forced thread/settings/update failure" },
+          error: {
+            code: -32000,
+            message: "fake app-server: forced thread/settings/update failure",
+          },
         });
       } else {
         send({ jsonrpc: "2.0", id, result: {} });
@@ -381,7 +394,8 @@ const handle = (req) => {
     return;
   }
   if (method === "model/list") {
-    const page = params?.cursor === "page2" ? fixture("model-list-page2") : fixture("model-list-page1");
+    const page =
+      params?.cursor === "page2" ? fixture("model-list-page2") : fixture("model-list-page1");
     send({ jsonrpc: "2.0", id, result: page });
     return;
   }

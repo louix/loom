@@ -1048,7 +1048,11 @@ export class Daemon {
       try {
         const r = await this.#sessions.setMode(id, rowMode);
         if (!r.ok) {
-          this.#log.warn("could not apply a mode clicked during creation", { id, mode: rowMode, reason: r.reason });
+          this.#log.warn("could not apply a mode clicked during creation", {
+            id,
+            mode: rowMode,
+            reason: r.reason,
+          });
         }
       } catch (err) {
         // The run died between attach and here — its own teardown settles the
@@ -1115,7 +1119,9 @@ export class Daemon {
       );
     }
     if (!this.#providers.has(row.provider)) {
-      const owners = isClaudeId(row.provider) ? findClaudeOwner(this.config.claudeProfiles, providerRef) : [];
+      const owners = isClaudeId(row.provider)
+        ? findClaudeOwner(this.config.claudeProfiles, providerRef)
+        : [];
       if (owners.length === 1) {
         const newId = claudeProfileId(owners[0]!);
         this.#registry.setFields(id, { provider: newId });
@@ -2276,7 +2282,12 @@ export class Daemon {
           cwd: wt.path,
           mode,
           mcpServers: mcpHandles,
-          systemPromptAppend: systemPromptAppendFor(true, mcpHandles.length > 0, wt.path, this.repoRoot),
+          systemPromptAppend: systemPromptAppendFor(
+            true,
+            mcpHandles.length > 0,
+            wt.path,
+            this.repoRoot,
+          ),
           ...(parent.model ? { model: parent.model } : {}),
           ...(parent.effort ? { effort: parent.effort } : {}),
         });

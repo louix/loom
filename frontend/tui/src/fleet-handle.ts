@@ -1599,7 +1599,8 @@ export const mkFleetHandle = ({
       client
         .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
         .catch((e: unknown) => {
-          const code = e instanceof Error && "code" in e ? (e as { code?: unknown }).code : undefined;
+          const code =
+            e instanceof Error && "code" in e ? (e as { code?: unknown }).code : undefined;
           if (code === "plan_pending") {
             // The mode never actually left `plan` — a pending `ExitPlanMode`
             // review has to be resolved through the real plan-review UI, not
@@ -1609,9 +1610,18 @@ export const mkFleetHandle = ({
             dispatch({ t: "modeOptimistic", sessionId, mode: "plan" });
             const pend = pendingFor(state, sessionId);
             if (pend.plan) {
-              dispatch({ t: "openPlan", sessionId, requestId: pend.plan, text: pend.planText ?? "" });
+              dispatch({
+                t: "openPlan",
+                sessionId,
+                requestId: pend.plan,
+                text: pend.planText ?? "",
+              });
             }
-            dispatch({ t: "notice", text: "a plan review is pending — resolve it first", tone: "bad" });
+            dispatch({
+              t: "notice",
+              text: "a plan review is pending — resolve it first",
+              tone: "bad",
+            });
             return;
           }
           dispatch({

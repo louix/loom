@@ -22,7 +22,7 @@ import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
  *  read or a slow network hanging inside it must not stall model discovery
  *  indefinitely. */
 const CATALOG_TIMEOUT_MS = 8_000;
-const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
   Promise.race([
     p,
     new Promise<never>((_, reject) => {
@@ -223,12 +223,17 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     // not block model discovery or session creation.
     const [discovered, restCatalog] = await Promise.all([
       discoverCodexModels({ cliPath: codexCliPath, codexHome, launch }),
-      withTimeout(catalog.list(), CATALOG_TIMEOUT_MS, "chatgpt model catalog fetch").catch((err) => {
-        ctx.logger.warn("chatgpt model catalog fetch failed — context-window sizes may be unavailable", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return [];
-      }),
+      withTimeout(catalog.list(), CATALOG_TIMEOUT_MS, "chatgpt model catalog fetch").catch(
+        (err) => {
+          ctx.logger.warn(
+            "chatgpt model catalog fetch failed — context-window sizes may be unavailable",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+          return [];
+        },
+      ),
     ]);
     const contextById = new Map(
       restCatalog.map((m) => [m.slug, m.max_context_window ?? m.context_window] as const),
