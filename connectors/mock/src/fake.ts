@@ -216,6 +216,10 @@ export class FakeSession implements AgentSession {
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     this.planResponses.push({ id, decision });
+    // Approving a plan is how a live session leaves plan mode: the decision
+    // carries the permission mode the implementation runs in, and the adapter
+    // applies it to itself rather than routing back through `setMode`.
+    if ("mode" in decision && decision.mode) this.#snap.mode = decision.mode;
     this.#snap.status = stateRunning;
   }
 

@@ -1653,7 +1653,11 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
       },
       onOverlay: () => {},
       onProviderRef: () => {},
-      onMode: (_id, mode) => modes.push(mode),
+      // The notification carries no value — the mode is read back off the
+      // manager when it fires, which is the contract the daemon relies on.
+      onMode: (id) => {
+        modes.push(mgr.snapshot(id)?.mode ?? "gone");
+      },
       log: makeLogger("test"),
     });
 
@@ -1748,7 +1752,11 @@ test("setMode refuses to leave `plan` while a review is pending, instead of sile
       },
       onOverlay: () => {},
       onProviderRef: () => {},
-      onMode: (_id, mode) => modes.push(mode),
+      // The notification carries no value — the mode is read back off the
+      // manager when it fires, which is the contract the daemon relies on.
+      onMode: (id) => {
+        modes.push(mgr.snapshot(id)?.mode ?? "gone");
+      },
       log: makeLogger("test"),
     });
 

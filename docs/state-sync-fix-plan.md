@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-1 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-2 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -197,19 +197,19 @@ Tests: `test/daemon.test.ts` with controlled adapter promises.
 
 ### Change
 
-- [ ] Keep end-to-end serialization for explicit mode/model/effort commands.
-- [ ] Change the manager's mode-change notification into “this live session's
+- [x] Keep end-to-end serialization for explicit mode/model/effort commands.
+- [x] Change the manager's mode-change notification into “this live session's
       mode changed,” rather than a delayed assignment of a captured mode value.
-- [ ] In its queued daemon handler, recheck session existence and read the
+- [x] In its queued daemon handler, recheck session existence and read the
       current live adapter snapshot's mode **when the handler runs**. Publish that
       value. If there is no live adapter, do not write an old observation into the
       stored session. A replacement adapter must not inherit an old captured mode.
-- [ ] Skip a no-op registry mutation/publication when the applied mode already
+- [x] Skip a no-op registry mutation/publication when the applied mode already
       agrees. Keep provider-default behavior consistent with existing explicit
       settings commands; do not invent a new defaults policy in this fix.
-- [ ] Handle failures from the fire-and-forget queue promise; do not introduce
+- [x] Handle failures from the fire-and-forget queue promise; do not introduce
       an unhandled rejection during teardown.
-- [ ] Preserve approval and interrupt preemption. Do not solve ordering by
+- [x] Preserve approval and interrupt preemption. Do not solve ordering by
       placing approvals behind a turn that is waiting for approval.
 
 ### Required regression
@@ -228,6 +228,49 @@ the ordering.
 
 Done: the reproduced adapter=`default`, registry=`acceptEdits` disagreement is
 gone; the notification no longer carries stale state to install later.
+
+**Done.** Both regressions were written first and both failed with exactly the
+reported disagreement — `actual 'acceptEdits' / expected 'default'` on the
+registry row while the adapter sat on `default`.
+
+The cause was the notification's shape. `respondToPlan` read
+`run.session.snapshot().mode` at the moment of the decision and handed that
+_value_ to `onMode`, whose handler is serialized behind the session's other
+commands. A `session.setMode` parked inside the adapter therefore finished
+after the decision but was published before it, and the queued notification
+then wrote a mode the adapter had already left.
+
+`onMode(sessionId)` now takes no mode. It means "this live session's mode
+changed"; the queued handler answers "to what?" itself, from
+`SessionManager.snapshot(id)`, when it runs. Three consequences fall out of
+that rather than being coded separately:
+
+- a value from before the command that overtook it can no longer be installed;
+- no live adapter means no answer, so nothing is written — a replacement
+  adapter cannot inherit an observation of the one it replaced;
+- when the row and the adapter already agree there is nothing to write, so the
+  no-op registry mutation and its publication are skipped.
+
+The queue promise is fire-and-forget by design (the manager raises this from
+inside `respondToPlan`, and awaiting a queue an approval doesn't otherwise
+touch would park the approval behind an unrelated configuration command), so it
+now carries a `.catch` that logs rather than leaving an unhandled rejection
+during teardown. Approval and interrupt preemption are untouched:
+`session.respondPlan` is still not queued.
+
+Test-fidelity change: `FakeSession.respondToPlan` now applies the decision's
+mode to its own snapshot. A real adapter leaves plan mode by applying the
+approved mode to itself, and without that the fake could not express the state
+the bug needs. `test/aisdk.test.ts`'s two `onMode` hooks read the mode back off
+the manager instead of off the callback argument, which is the new contract.
+
+Kept as they were: the two-explicit-mode-change test, the mounting-adapter test,
+the revive-race test and the plan-guard rejection test all still pass unchanged.
+No timing sleeps — the ordering is staged with `blockMode` and the `ping`
+barrier, and the queue is drained through a later queued `session.setModel`.
+
+Verified: typecheck, lint, format:check clean; `deno task test` 626 passed
+(112 steps) / 0 failed.
 
 ## 3. Complete the transport and startup contract
 

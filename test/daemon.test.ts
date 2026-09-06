@@ -2219,3 +2219,137 @@ test("transcript pagination is stable across a daemon restart", async () => {
     await hh.cleanup();
   }
 });
+
+// --- §2: mode application vs. publication ordering -------------------------
+
+test("a mode command still at the adapter outlives a plan decision that overtook it", async () => {
+  const hh = await makeHarness();
+  const a = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  const b = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given — a live planning session whose adapter `setMode` can be parked
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await a.request<SessionSnapshot>("session.create", {
+      prompt: "plan-overlap",
+      provider: "fake",
+      mode: "plan",
+    });
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+
+    // when — (1) a mode change validates (no review is pending yet) and parks
+    // inside the adapter
+    const release = fake.blockMode();
+    const setting = a.request<SessionSnapshot>("session.setMode", {
+      id: s.id,
+      mode: "default",
+      by: "a",
+    });
+    await barrier(a);
+    assert.deepEqual(fake.modeChanges, [], "the command is at the adapter, not through it");
+
+    // (2, 3) a plan review is raised and approved to run in `acceptEdits`,
+    // which the adapter applies at once — an approval deliberately does not
+    // queue behind a configuration command, or it could never resolve one.
+    fake.emit({ type: "plan_review", id: "p1", plan: "the plan" });
+    await waitFor(() => (pushed(b, s.id)?.requests ?? []).some((r) => r.kind === "plan_review"));
+    await b.request("session.respondPlan", {
+      id: s.id,
+      requestId: "p1",
+      action: "implement",
+      mode: "acceptEdits",
+      by: "b",
+    });
+    assert.equal(fake.snapshot().mode, "acceptEdits", "the decision reached the adapter first");
+
+    // (4) release: the parked call applies `default`, so that is where the
+    // adapter actually is when everything has settled.
+    release();
+    await setting;
+    assert.equal(fake.snapshot().mode, "default");
+
+    // (5) drain the queue through a later queued configuration command — the
+    // plan decision's own queued notification is ahead of it in the chain.
+    await a.request("session.setModel", { id: s.id, model: "fake-model" });
+
+    // then — nothing installs the mode the plan decision happened to observe.
+    // The notification says "this session's mode changed", and by the time it
+    // runs the answer to "to what?" is `default`.
+    assert.deepEqual(fake.modeChanges, ["default"]);
+    assert.equal(fake.snapshot().mode, "default", "the adapter never moved again");
+    const rows = await a.request<SessionSnapshot[]>("session.list", {});
+    assert.equal(rows.find((r) => r.id === s.id)?.mode, "default");
+    assert.equal(pushed(a, s.id)?.mode, "default");
+    await waitFor(() => pushed(b, s.id)?.mode === "default");
+  } finally {
+    await a.close();
+    await b.close();
+    await hh.cleanup();
+  }
+});
+
+test("a mode notification for a session with no live adapter writes nothing", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "plan-teardown",
+      provider: "fake",
+      mode: "plan",
+    });
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+
+    // given — the queue chain is [setMode (parked at the adapter), markDone],
+    // and the plan decision then adds its notification behind both
+    const release = fake.blockMode();
+    const setting = c.request<SessionSnapshot>("session.setMode", {
+      id: s.id,
+      mode: "default",
+      by: "t",
+    });
+    await barrier(c);
+    fake.emit({ type: "plan_review", id: "p1", plan: "the plan" });
+    await waitFor(() => (pushed(c, s.id)?.requests ?? []).some((r) => r.kind === "plan_review"));
+    const archiving = c.request<SessionSnapshot>("session.markDone", { id: s.id });
+    await barrier(c);
+
+    // when — the plan is approved into `acceptEdits` while both are queued
+    await c.request("session.respondPlan", {
+      id: s.id,
+      requestId: "p1",
+      action: "implement",
+      mode: "acceptEdits",
+      by: "t",
+    });
+    release();
+    await setting;
+    await archiving;
+    await barrier(c);
+
+    // then — `markDone` closed the adapter, so by the time the notification
+    // runs there is no live session to read a mode off. It writes nothing
+    // rather than installing what the adapter reported before it was torn down.
+    assert.equal(hh.daemon.sessions.has(s.id), false);
+    const rows = await c.request<SessionSnapshot[]>("session.list", {});
+    const row = rows.find((r) => r.id === s.id);
+    assert.equal(row?.mode, "default", "the archived row keeps the last applied mode");
+    assert.equal(row?.status.kind, "done");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});

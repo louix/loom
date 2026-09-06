@@ -329,21 +329,36 @@ export class Daemon {
         if (this.#stopping) return;
         this.#registry.setFields(id, { providerRef: ref });
       },
-      onMode: (id, mode) => {
+      onMode: (id) => {
         if (this.#stopping) return;
-        // The adapter reporting where it actually landed (a plan decision, or
-        // its own mid-turn switch). Queued rather than written straight
-        // through: unordered against an in-flight `session.setMode` it could
-        // land after that command's registry write and leave the row
-        // describing a mode the adapter has since left. Fire-and-forget on
-        // purpose — the manager calls this from inside `respondToPlan`, and
-        // awaiting a queue an approval doesn't otherwise touch would park the
-        // approval behind whatever configuration command happens to be running.
-        void this.#queue.run(id, async () => {
-          if (this.#stopping || !this.#registry.get(id)) return;
-          const snap = this.#registry.setFields(id, { mode });
-          this.#publishState(snap.id);
-        });
+        // The adapter landed somewhere new (a plan decision, or its own
+        // mid-turn switch). Queued rather than written straight through:
+        // unordered against an in-flight `session.setMode` it could land after
+        // that command's registry write and leave the row describing a mode the
+        // adapter has since left. Fire-and-forget on purpose — the manager
+        // calls this from inside `respondToPlan`, and awaiting a queue an
+        // approval doesn't otherwise touch would park the approval behind
+        // whatever configuration command happens to be running.
+        void this.#queue
+          .run(id, async () => {
+            if (this.#stopping) return;
+            const row = this.#registry.get(id);
+            // Read the mode where it lives, at the moment this runs. A value
+            // captured when the notification was raised describes the session
+            // before whatever overtook this in the queue — publishing it is how
+            // the adapter and the row came to disagree. No live adapter (closed,
+            // archived, or swapped for another) means there is nothing to
+            // report, and certainly nothing to hand a replacement adapter.
+            const live = this.#sessions.snapshot(id);
+            if (!row || !live || row.mode === live.mode) return;
+            const snap = this.#registry.setFields(id, { mode: live.mode });
+            this.#publishState(snap.id);
+          })
+          .catch((err: unknown) => {
+            // Nothing awaits this, so a rejection here (a teardown racing the
+            // registry write) would otherwise surface as an unhandled one.
+            this.#log.warn("mode notification failed", { id, error: String(err) });
+          });
       },
       log: this.#log.child("sessions"),
     });

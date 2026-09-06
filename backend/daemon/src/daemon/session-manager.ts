@@ -53,8 +53,15 @@ export interface ManagerHooks {
   onOverlay(sessionId: string): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
-  /** The adapter's own mode changed outside of an explicit `session.setMode` call. */
-  onMode(sessionId: string, mode: SessionMode): void;
+  /**
+   * This live session's mode changed outside an explicit `session.setMode`
+   * call — a plan decision, or the adapter's own mid-turn switch. Carries no
+   * value on purpose: the handler may run long after the notification (it is
+   * serialized behind the session's other commands), by which time a command
+   * that overtook this one may have moved the mode again. Ask
+   * {@link SessionManager.snapshot} when you handle it.
+   */
+  onMode(sessionId: string): void;
   log: Logger;
 }
 
@@ -702,7 +709,7 @@ export class SessionManager {
     // Every branch of respondToPlan either leaves plan mode or (for `discuss`)
     // stays in it deliberately; either way, push whatever the adapter landed
     // on into the registry so clients stop seeing a stale "plan" chip.
-    this.#hooks.onMode(id, run.session.snapshot().mode);
+    this.#hooks.onMode(id);
     this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
   }
