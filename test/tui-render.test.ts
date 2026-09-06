@@ -22,7 +22,7 @@ import {
   requestPanelRows,
 } from "@loom/tui/components";
 import { mkFleetHandle } from "@loom/tui/fleet-handle";
-import { initialState, makePrompt, reduce } from "@loom/tui/model";
+import { initialState, makePrompt, reduce, sessionLog } from "@loom/tui/model";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -840,19 +840,19 @@ models   = ["m1", "m2"]
     const teardown = handle.effectStart();
     try {
       const pressPgUp = (): void => handle.handleKey("", { pageUp: true } as Key);
-      const oldest = (): string => handle.getView().state.log[0]?.text ?? "";
+      const oldest = (): string => sessionLog(handle.getView().state)[0]?.text ?? "";
       // Gate on the log COUNT: the fold dispatches land in the view's state
       // synchronously, while rendered-output checks race ink's delivery.
       const climbTo = async (): Promise<void> => {
         const deadline = Date.now() + 30_000;
-        while (handle.getView().state.log.length < 9 && Date.now() < deadline) {
+        while (sessionLog(handle.getView().state).length < 9 && Date.now() < deadline) {
           pressPgUp(); // pins the top and pulls the next-older page
           await delay(100);
         }
       };
 
       await climbTo();
-      assert.equal(handle.getView().state.log.length, 9, "every page folded in");
+      assert.equal(sessionLog(handle.getView().state).length, 9, "every page folded in");
       assert.match(oldest(), /^page1-head/, "the climb reaches the very first event");
       // Keep climbing: the viewport must be able to reach the log's top. (The
       // original bug clamped `logScroll` against the *logical* line count, which
@@ -870,7 +870,7 @@ models   = ["m1", "m2"]
       // Past the start the done latch fires: further PgUp neither moves nor churns.
       pressPgUp();
       pressPgUp();
-      assert.equal(handle.getView().state.log.length, 9, "no churn past the start");
+      assert.equal(sessionLog(handle.getView().state).length, 9, "no churn past the start");
       assert.equal(handle.getView().logScroll, top, "still pinned at the log's top");
     } finally {
       teardown();
@@ -1040,25 +1040,22 @@ models   = ["m1", "m2"]
   });
 
   test("the pending permission is spelled out in a panel", async () => {
-    const { connect, cleanup } = await harness();
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
-    const s = await client.request<SessionSnapshot>("session.createStub", {
+    const s = await client.request<SessionSnapshot>("session.create", {
       prompt: "needs approval",
-      status: "awaiting_input",
-      reason: "permission",
       provider: "fake",
     });
+    const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
+    const fs = fake.session(s.id);
     const { stdout, app } = mount(client);
     try {
       await delay(150);
-      await client.request("dev.emit", {
-        event: {
-          sessionId: s.id,
-          type: "permission_request",
-          id: "p1",
-          tool: "Bash",
-          input: { command: "npm publish" },
-        },
+      fs?.emit({
+        type: "permission_request",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "npm publish" },
       });
       await delay(200);
       assert.match(stdout.last, /PERMISSION — Bash/);
@@ -1070,50 +1067,40 @@ models   = ["m1", "m2"]
     }
   });
 
-  test("a stale plan in pending never masks the permission the session is parked on", async () => {
-    // The regression from the fleet: a plan that was approved while this client
-    // was detached leaves an unresolvable `pending.plan` behind (nothing in the
-    // event stream marks a plan resolved — here the tool_result carries an
-    // unrelated id, as recorded by older daemons). When the session then parks
-    // on a bash permission, the panel must describe the bash command — the
-    // daemon's `status.on` names the parked request, the reconstruction only
-    // feeds it.
-    const { connect, cleanup } = await harness();
+  test("an answered plan still in the transcript never masks the request the session is parked on", async () => {
+    // The regression from the fleet: an answered plan used to leave an
+    // unresolvable `pending.plan` behind, because the client reconstructed the
+    // request set from the event stream and nothing in that stream marks a plan
+    // resolved. The request set is the daemon's now — the plan_review stays in
+    // the transcript, where it belongs, and stops being something to answer.
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
-    const s = await client.request<SessionSnapshot>("session.createStub", {
+    const s = await client.request<SessionSnapshot>("session.create", {
       prompt: "stale plan",
-      status: "awaiting_input",
-      reason: "permission",
       provider: "fake",
     });
+    const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
+    const fs = fake.session(s.id);
     const { stdout, app } = mount(client);
     try {
       await delay(150);
-      await client.request("dev.emit", {
-        event: {
-          sessionId: s.id,
-          type: "plan_review",
-          id: "pr-old",
-          plan: "1. long-approved step",
-        },
+      fs?.emit({ type: "plan_review", id: "pr-old", plan: "1. long-approved step" });
+      await delay(150);
+      await client.request("session.respondPlan", {
+        id: s.id,
+        requestId: "pr-old",
+        action: "implement",
       });
-      await client.request("dev.emit", {
-        event: { sessionId: s.id, type: "tool_result", id: "unrelated", ok: true, output: "" },
-      });
-      await client.request("dev.emit", {
-        event: {
-          sessionId: s.id,
-          type: "permission_request",
-          id: "p1",
-          tool: "Bash",
-          input: { command: "npm publish" },
-        },
+      fs?.emit({
+        type: "permission_request",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "npm publish" },
       });
       await delay(250);
       assert.match(stdout.last, /PERMISSION — Bash/);
       assert.match(stdout.last, /npm publish/);
       assert.doesNotMatch(stdout.last, /PLAN REVIEW/);
-      assert.doesNotMatch(stdout.last, /long-approved step/);
     } finally {
       app.unmount();
       await client.close();

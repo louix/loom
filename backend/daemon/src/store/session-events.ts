@@ -1,19 +1,26 @@
 /**
- * Durable per-session event history. The cross-session in-memory `EventLog`
- * ring (`../daemon/event-log.ts`) only covers a live client's reconnect gap —
- * it's shared by every session and doesn't survive a restart. This table is
- * the record a client backfills from when a session's own history has fallen
- * out of that ring (or the daemon restarted since).
+ * Durable per-session transcript. The cross-session in-memory `EventLog` ring
+ * (`../daemon/event-log.ts`) only covers a live client's reconnect gap — it is
+ * shared by every session and doesn't survive a restart. This table is the
+ * record `session.events` pages over.
+ *
+ * A row's `id` is its identity everywhere: it is what the live push carries,
+ * what a page returns, and what the next page's cursor is expressed in. Being
+ * the rowid it is assigned by the insert, so it is monotonic within a session
+ * across any number of daemon restarts — unlike the event timestamps, which
+ * tie inside a millisecond and can arrive out of order.
  */
 import type { HarnessEvent } from "@loom/core/events";
-import type { EventPush } from "@loom/core/wire";
+import type { HistoryPage, TranscriptEntry, TranscriptId } from "@loom/core/wire";
 import type { Db } from "./db.ts";
 
 interface Row {
-  seq: number;
-  epoch: string;
+  id: number;
   payload: string;
 }
+
+/** Rows per page when the caller doesn't say. Matches the daemon's RPC default. */
+const DEFAULT_LIMIT = 500;
 
 export class SessionEventStore {
   #db: Db;
@@ -22,68 +29,46 @@ export class SessionEventStore {
     this.#db = db;
   }
 
-  /** Record one event. `seq` is the daemon's global `EventLog` frame seq, so a
-   *  replayed row dedupes identically to a live push on the client — provided
-   *  the frame's `epoch` rides along too: the seq counter restarts with every
-   *  daemon, so (epoch, seq) is the real identity. */
-  append(sessionId: string, seq: number, epoch: string, event: HarnessEvent): void {
-    this.#db
-      .prepare(
-        "INSERT INTO session_events (session_id, seq, epoch, type, payload, ts) VALUES (?, ?, ?, ?, ?, ?)",
-      )
-      .run(sessionId, seq, epoch, event.type, JSON.stringify(event), event.ts);
+  /** Record one event and return the durable id the insert assigned it. */
+  append(sessionId: string, event: HarnessEvent): TranscriptId {
+    const info = this.#db
+      .prepare("INSERT INTO session_events (session_id, type, payload, ts) VALUES (?, ?, ?, ?)")
+      .run(sessionId, event.type, JSON.stringify(event), event.ts);
+    return Number(info.lastInsertRowid);
   }
 
-  /** The session's persisted history as push frames, oldest first, capped to
-   *  the most recent `limit` (default 500 — see the daemon's RPC handler).
+  /**
+   * One page of `sessionId`'s transcript, oldest-first, ending at the newest
+   * row (or at `olderThan`, exclusive, when paging backwards). Both queries
+   * ride the `(session_id, id)` index.
    *
-   *  `before` pages backwards for scroll-back: pass the (epoch, seq) of the
-   *  earliest frame the client holds and this returns the `limit` rows strictly
-   *  older than it. `id` (insertion order) is the only key that stays monotonic
-   *  across daemon epochs — `seq` restarts per process — so the cursor frame's
-   *  rowid is resolved first. The paging query itself rides the
-   *  `(session_id, id)` index; only the cursor lookup isn't covered past
-   *  `session_id`, and it runs once per manual scroll-back, never on the hot
-   *  path. Legacy rows written before epoch tracking all share `epoch = ''`, so
-   *  that lookup takes the newest `id` among any duplicates; `id < beforeId`
-   *  can then hand back older duplicates sharing the cursor's (epoch, seq) —
-   *  the client reads a page that doesn't move the cursor as "nothing older"
-   *  and stops, trading a premature stop at a legacy process boundary for
-   *  guaranteed termination. A short page means there is nothing older. */
-  list(
-    sessionId: string,
-    opts: { limit?: number; before?: { epoch: string; seq: number } } = {},
-  ): EventPush[] {
-    const limit = opts.limit ?? 500;
-    let beforeId: number | null = null;
-    if (opts.before) {
-      const row = this.#db
-        .prepare(
-          "SELECT id FROM session_events WHERE session_id = ? AND epoch = ? AND seq = ? ORDER BY id DESC LIMIT 1",
-        )
-        .get(sessionId, opts.before.epoch, opts.before.seq) as { id: number } | undefined;
-      // Unknown cursor (stale epoch, bad param) — report "nothing older" rather
-      // than silently handing back the newest page again.
-      if (!row) return [];
-      beforeId = row.id;
-    }
-    const rows = (beforeId === null
+   * `limit + 1` rows are read so exhaustion is *observed* rather than inferred
+   * from a short page: a page that happens to end exactly on the oldest row
+   * would otherwise be indistinguishable from one with more behind it, and the
+   * client would either stop early or ask forever.
+   */
+  page(sessionId: string, opts: { limit?: number; olderThan?: TranscriptId } = {}): HistoryPage {
+    const limit = opts.limit ?? DEFAULT_LIMIT;
+    const rows = (opts.olderThan === undefined
       ? this.#db
           .prepare(
-            "SELECT seq, epoch, payload FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT id, payload FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
           )
-          .all(sessionId, limit)
+          .all(sessionId, limit + 1)
       : this.#db
           .prepare(
-            "SELECT seq, epoch, payload FROM session_events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+            "SELECT id, payload FROM session_events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
           )
-          .all(sessionId, beforeId, limit)) as unknown as Row[];
-    return rows.reverse().map((r) => ({
-      kind: "push",
-      type: "event",
-      seq: r.seq,
-      epoch: r.epoch,
-      event: JSON.parse(r.payload) as HarnessEvent,
-    }));
+          .all(sessionId, opts.olderThan, limit + 1)) as unknown as Row[];
+    const hasOlder = rows.length > limit;
+    const kept = hasOlder ? rows.slice(0, limit) : rows;
+    const items: TranscriptEntry[] = kept
+      .reverse()
+      .map((r) => ({ id: r.id, event: JSON.parse(r.payload) as HarnessEvent }));
+    const oldest = items[0];
+    return {
+      items,
+      olderCursor: hasOlder && oldest ? { olderThan: oldest.id } : null,
+    };
   }
 }

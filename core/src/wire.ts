@@ -61,6 +61,52 @@ export interface WireError {
 }
 
 // ---------------------------------------------------------------------------
+// Transcript
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable identity of one transcript entry: the daemon's `session_events`
+ * rowid. Assigned by the insert, so it is stable across daemon restarts and
+ * totally ordered within a session — which event timestamps are not, since a
+ * burst shares one millisecond and a provider can report them out of order.
+ * The same id rides the live {@link EventPush} and the {@link HistoryPage}
+ * that carry the entry, so a client merges the two by identity rather than by
+ * guessing from timestamps.
+ */
+export type TranscriptId = number;
+
+/** Could the daemon have issued `v` as a {@link TranscriptId}? Guards the
+ *  cursor a client hands back, which is otherwise arbitrary JSON. */
+export const isTranscriptId = (v: unknown): v is TranscriptId => {
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+};
+
+export interface TranscriptEntry {
+  readonly id: TranscriptId;
+  readonly event: HarnessEvent;
+}
+
+/** Where the next older {@link HistoryPage} starts. Opaque to the client —
+ *  read it off a page and hand it back verbatim. */
+export interface HistoryCursor {
+  readonly olderThan: TranscriptId;
+}
+
+/**
+ * One page of a session's durable transcript, oldest-first *within the page*.
+ * Pages walk backwards: each carries the cursor for the page before it.
+ *
+ * `olderCursor === null` means this page reaches the start of the session's
+ * history — actual exhaustion, and only that. A client that has dropped pages
+ * to stay inside a memory budget must keep a cursor pointing at what it
+ * dropped, never conclude the daemon has nothing more.
+ */
+export interface HistoryPage {
+  readonly items: readonly TranscriptEntry[];
+  readonly olderCursor: HistoryCursor | null;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client push stream
 // ---------------------------------------------------------------------------
 
@@ -77,6 +123,14 @@ export interface EventPush {
   epoch: string;
   type: "event";
   event: HarnessEvent;
+  /**
+   * The entry's durable {@link TranscriptId} — the same id `session.events`
+   * returns for it, so a live frame and a history page dedupe against each
+   * other. Absent iff the daemon did not persist this event: status and
+   * compaction heartbeats have no durable row, and nothing downstream may
+   * manufacture one for them.
+   */
+  id?: TranscriptId;
 }
 
 /**

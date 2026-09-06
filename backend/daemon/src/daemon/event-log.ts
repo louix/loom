@@ -3,9 +3,6 @@ import type { PushFrame } from "@loom/core/wire";
 /** A push frame before it has been assigned a sequence number and epoch. */
 export type UnsequencedPush =
   | Omit<Extract<PushFrame, { type: "event" }>, "seq" | "epoch">
-  | Omit<Extract<PushFrame, { type: "session_updated" }>, "seq">
-  | Omit<Extract<PushFrame, { type: "session_removed" }>, "seq">
-  | Omit<Extract<PushFrame, { type: "providers_updated" }>, "seq">
   | Omit<Extract<PushFrame, { type: "resync" }>, "seq">
   | Omit<Extract<PushFrame, { type: "notice" }>, "seq">;
 

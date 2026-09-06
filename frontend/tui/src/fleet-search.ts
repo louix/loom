@@ -15,16 +15,22 @@ import { shortId } from "./theme.ts";
 
 /** The slice of a log line the engine reads — the model's `LogLine` conforms. */
 interface FleetLogLine {
-  sessionId: string;
   kind: string;
   text: string;
   full?: string;
 }
 
-/** What the engine sees of the fleet: every session and its event lines. */
+/** The slice of a transcript cache the engine reads. */
+interface FleetTranscript {
+  lines: readonly FleetLogLine[];
+  echoes: readonly FleetLogLine[];
+}
+
+/** What the engine sees of the fleet: every session and its transcript, keyed
+ *  by session id — already grouped, so the doc build never has to bucket. */
 export interface FleetView {
   sessions: readonly SessionSnapshot[];
-  log: readonly FleetLogLine[];
+  transcripts: Readonly<Record<string, FleetTranscript>>;
 }
 
 /**
@@ -124,20 +130,26 @@ const SEARCH_TEXT_CAP = 2_048;
 
 const buildDocs = (fleet: FleetView): Map<string, SearchDoc> => {
   const docs = new Map<string, SearchDoc>();
-  for (const sess of fleet.sessions)
-    docs.set(sess.id, {
+  for (const sess of fleet.sessions) {
+    const doc: SearchDoc = {
       title: (sess.title ?? shortId(sess.id)).toLowerCase(),
       user: "",
       agent: "",
-    });
-  for (const l of fleet.log) {
-    const doc = docs.get(l.sessionId);
-    if (!doc) continue;
-    const text = (l.full ?? l.text).slice(0, SEARCH_TEXT_CAP);
-    if (USER_KINDS.has(l.kind)) doc.user += ` ${text}`;
-    else if (AGENT_KINDS.has(l.kind)) doc.agent += ` ${text}`;
+    };
+    const t = fleet.transcripts[sess.id];
+    if (t) {
+      for (const l of t.lines) addLine(doc, l);
+      for (const l of t.echoes) addLine(doc, l);
+    }
+    docs.set(sess.id, doc);
   }
   return docs;
+};
+
+const addLine = (doc: SearchDoc, l: FleetLogLine): void => {
+  const text = (l.full ?? l.text).slice(0, SEARCH_TEXT_CAP);
+  if (USER_KINDS.has(l.kind)) doc.user += ` ${text}`;
+  else if (AGENT_KINDS.has(l.kind)) doc.agent += ` ${text}`;
 };
 
 /** Sum over AND'd terms of each term's best weighted field score; 0 = no match. */
@@ -163,7 +175,7 @@ export interface SessionMatch {
   score: number;
 }
 
-let docsLog: readonly FleetLogLine[] | null = null;
+let docsLog: FleetView["transcripts"] | null = null;
 let docsSessions: readonly SessionSnapshot[] | null = null;
 let docCache: Map<string, SearchDoc> = new Map();
 const resultCache = new Map<string, SessionMatch[]>();
@@ -178,8 +190,8 @@ const resultCache = new Map<string, SessionMatch[]>();
  * the render share one computation.
  */
 export const searchSessions = (fleet: FleetView, q: string): SessionMatch[] => {
-  if (fleet.log !== docsLog || fleet.sessions !== docsSessions) {
-    docsLog = fleet.log;
+  if (fleet.transcripts !== docsLog || fleet.sessions !== docsSessions) {
+    docsLog = fleet.transcripts;
     docsSessions = fleet.sessions;
     docCache = buildDocs(fleet);
     resultCache.clear();

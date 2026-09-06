@@ -18,7 +18,7 @@ import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import type { LoomClient } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
-import type { DoctorReport, EventPush, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, HistoryPage, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
@@ -39,7 +39,6 @@ import {
   fleetSessions,
   sessionMode,
   allowedActs,
-  backfillAdds,
   commandsFor,
   cycleLogFilter,
   defaultModeOf,
@@ -49,11 +48,13 @@ import {
   escapeTarget,
   firstPerm,
   fleetHits,
+  anyCompacting,
+  compactingFor,
   focusedPending,
   initialState,
   liveQNav,
-  LOG_CAP,
   makePicker,
+  transcriptFor,
   makePrompt,
   modelPickEmptyText,
   modelPickItems,
@@ -382,7 +383,7 @@ const deriveView = (
   const detailAccount = sel ? providerAccountOf(state, sel.provider) : "";
   const detailH = detailRows(sel, {
     account: detailAccount,
-    compacting: sel ? (state.compacting[sel.id] ?? null) : null,
+    compacting: compactingFor(state, sel?.id ?? null),
     queued: sel ? queueFor(state, sel.id) : [],
   });
   // The `session` view gives Detail + events the whole terminal; the wide
@@ -470,7 +471,6 @@ export const mkFleetHandle = ({
   // Was `useRef` in the component — plain closure state here.
   let restarting = false;
   let versionRestartTried = false;
-  let echoSeq = 0;
   // Synchronous latch: Ink invokes the key handler once per byte of a stdin
   // chunk before the view updates, so a batched "aa" would resolve an overlay
   // twice. Holds the overlay object already acted on — a fresh overlay has a
@@ -545,99 +545,67 @@ export const mkFleetHandle = ({
     publish();
   };
 
-  // Per-session scroll-back cursor into the daemon's durable history. `oldest`
-  // is the (epoch, seq) of the earliest frame we hold; the next page asks for
-  // everything strictly older. `done` latches when paging on cannot make
-  // progress: a short page (nothing older), a page that doesn't move the cursor
-  // older (an old daemon ignoring `before`), or a page the LOG_CAP-trimmed log
-  // cannot absorb (it would evict the fold-in as fast as it lands). A resync /
-  // reconnect clears the map (the epoch, and thus history identity, may differ
-  // across the gap), which also lets a capped session try again.
-  interface HistoryCursor {
-    oldest?: { epoch: string; seq: number };
-    done: boolean;
-    loading: boolean;
-  }
-  const history = new Map<string, HistoryCursor>();
-
   // Rows per page. The first pull matches the daemon's own default so a session
-  // that fits in one page behaves exactly as before; scroll-back adds more.
+  // that fits in one page arrives whole; scroll-back adds more.
   const HISTORY_PAGE = historyPageSize ?? 500;
 
-  // The RPC returns frames oldest-first, so `frames[0]` is the earliest.
-  const earliestCursor = (frames: readonly EventPush[]): HistoryCursor["oldest"] => {
-    const f = frames[0];
-    return f ? { epoch: f.epoch ?? "", seq: f.seq } : undefined;
-  };
-
-  const backfillHistory = (): void => {
+  /**
+   * Fetch the selected session's newest page, once. Whether a page is wanted,
+   * in flight, or already loaded is the transcript's own `head` Loadable — no
+   * second bookkeeping map to keep in step with it, and clearing the caches on
+   * a reconnect is therefore all it takes to make every session fetch again.
+   *
+   * Live frames are already arriving for every session before this runs (the
+   * push subscription is established at start-up, not at selection), so an
+   * entry landing while the page is in flight is merged by durable id rather
+   * than lost between the two sources.
+   */
+  const loadHistory = (): void => {
     const id = state.selectedId;
-    if (!id || history.has(id)) return;
-    const cursor: HistoryCursor = { done: false, loading: true };
-    history.set(id, cursor);
+    if (!id) return;
+    if (transcriptFor(state, id).head.tag !== "idle") return;
+    const gen = state.transcriptGen;
+    dispatch({ t: "historyStart", sessionId: id, older: false, gen });
     client
-      .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE })
-      .then((frames) => {
-        // The reducer dedupes by (epoch, seq) against the log and re-sorts by
-        // `ts`, so the durable history (every epoch) interleaves correctly with
-        // whatever the `hello` ring replay already seeded (current epoch only) —
-        // rather than a pre-daemon-restart turn landing below the newer frames.
-        // Transcript, not live state: no notice flashes (U2).
-        dispatch({ t: "backfill", frames });
-        cursor.loading = false;
-        if (frames.length < HISTORY_PAGE) cursor.done = true;
-        const oldest = earliestCursor(frames);
-        if (oldest) cursor.oldest = oldest;
-      })
-      .catch(() => {
-        history.delete(id); // an error / older daemon — allow a retry
+      .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE })
+      .then((page) => dispatch({ t: "historyPage", sessionId: id, page, older: false, gen }))
+      .catch((e: unknown) => {
+        dispatch({
+          t: "historyFailed",
+          sessionId: id,
+          older: false,
+          gen,
+          error: e instanceof Error ? e.message : String(e),
+        });
       });
   };
 
-  // Pull the next older page when the log is scrolled near its top. The reducer
-  // folds the page in by (epoch, seq) and re-sorts, so this is idempotent —
-  // overlapping the ring replay or a double fire both collapse to the same log.
-  // No-op once `done` latches or a fetch is already in flight.
+  /**
+   * Pull the next older page when the log is scrolled near its top. `null`
+   * cursor means the daemon has nothing older — and only that, since retention
+   * re-points the cursor at whatever it evicted rather than clearing it.
+   */
   const loadOlderHistory = (): void => {
     const id = state.selectedId;
     if (!id) return;
-    const cursor = history.get(id);
-    if (!cursor || cursor.done || cursor.loading || !cursor.oldest) return;
-    cursor.loading = true;
+    const t = transcriptFor(state, id);
+    if (t.head.tag !== "data" || t.older.tag === "pending" || t.olderCursor === null) return;
+    const gen = state.transcriptGen;
+    const cursor = t.olderCursor;
+    dispatch({ t: "historyStart", sessionId: id, older: true, gen });
+    const page = store.get().logPage;
+    // Was the viewport showing the top of the log before the fold-in? Only then
+    // does `logScroll` need touching: rows land above the viewport and the
+    // render's `end = rows.length - off` grows by the same amount, so any other
+    // view stays anchored on its own rows. A top-pinned view must follow the
+    // new top — otherwise the older page lands above it unseen.
+    const beforeRows = shownLogRows();
+    const wasPinnedTop = logScroll >= Math.max(0, beforeRows - page);
     client
-      .request<EventPush[]>("session.events", { id, limit: HISTORY_PAGE, before: cursor.oldest })
-      .then((frames) => {
+      .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE, cursor })
+      .then((got) => {
         const onSame = state.selectedId === id;
-        const page = store.get().logPage;
-        // Was the viewport showing the top of the log before the fold-in? Only
-        // then does `logScroll` need touching: rows land above the viewport and
-        // the render's `end = rows.length - off` grows by the same amount, so
-        // any other view stays anchored on its own rows. A top-pinned view must
-        // follow the new top — otherwise the older page lands above it unseen.
-        const beforeRows = onSame ? shownLogRows() : 0;
-        const wasPinnedTop = onSame && logScroll >= Math.max(0, beforeRows - page);
-        const sent = cursor.oldest;
-        // What the fold-in actually adds (transcript kinds not already held): a
-        // full page of ring-replayed duplicates still moves the cursor toward
-        // older rows, so it must not read as "nothing older" below.
-        const fresh = backfillAdds(state.log, frames).length;
-        const logBefore = state.log.length;
-        dispatch({ t: "backfill", frames });
-        cursor.loading = false;
-        const next = earliestCursor(frames);
-        const moved =
-          next !== undefined &&
-          sent !== undefined &&
-          (next.epoch !== sent.epoch || next.seq < sent.seq);
-        if (
-          frames.length < HISTORY_PAGE || // the daemon holds nothing older
-          !moved || // the cursor didn't move — an old daemon ignoring `before`
-          logBefore + fresh > LOG_CAP // the cap trimmed the fold-in as it landed
-        ) {
-          cursor.done = true;
-        } else if (next) {
-          cursor.oldest = next;
-        }
+        dispatch({ t: "historyPage", sessionId: id, page: got, older: true, gen });
         const grew = onSame ? shownLogRows() - beforeRows : 0;
         if (grew > 0) {
           if (wasPinnedTop) {
@@ -650,8 +618,14 @@ export const mkFleetHandle = ({
           publish();
         }
       })
-      .catch(() => {
-        cursor.loading = false; // allow a retry on the next scroll
+      .catch((e: unknown) => {
+        dispatch({
+          t: "historyFailed",
+          sessionId: id,
+          older: true,
+          gen,
+          error: e instanceof Error ? e.message : String(e),
+        });
       });
   };
 
@@ -677,8 +651,8 @@ export const mkFleetHandle = ({
         s.status.kind === "idle" &&
         // A session compacting while otherwise idle would have its queue
         // drained straight into the daemon's `busy` gate. Hold until the
-        // `compact` boundary clears `state.compacting[id]`.
-        !state.compacting[s.id] &&
+        // snapshot stops reporting a compaction.
+        s.compacting === undefined &&
         q &&
         q.length > 0 &&
         !draining.has(s.id) &&
@@ -712,10 +686,17 @@ export const mkFleetHandle = ({
     if (
       state.selectedId !== prev.selectedId ||
       state.logFilter !== prev.logFilter ||
-      state.selectedChild !== prev.selectedChild
+      state.selectedChild !== prev.selectedChild ||
+      // A cache reset (a dropped connection, a rolled push stream) took the rows
+      // the viewport was anchored to with it — go back to the live tail.
+      state.transcriptGen !== prev.transcriptGen
     ) {
       logScroll = 0;
-    } else if (a.t === "push" && logScroll > 0 && state.log !== prev.log) {
+    } else if (
+      a.t === "push" &&
+      logScroll > 0 &&
+      transcriptFor(state, state.selectedId) !== transcriptFor(prev, prev.selectedId)
+    ) {
       // Scrolled back through history (the pane border shows the accent) and a
       // live frame just landed at the tail: pin the viewport to the lines
       // you're reading instead of letting the new rows shove your view older.
@@ -723,7 +704,7 @@ export const mkFleetHandle = ({
       // however many rows the log gained — `end = total - logScroll` (see
       // EventLog) then holds still and the same window renders. Clamp to the
       // top the way `scrollUp` does; a LOG_CAP trim (net rows <= 0) is a no-op.
-      // Only `push` (tail append): `backfill` rows land *above* the viewport,
+      // Only `push` (tail append): an older page lands *above* the viewport,
       // where a tail-anchored offset already keeps your place, and
       // `loadOlderHistory` owns the top-pinned case.
       const width = logPaneWidth();
@@ -753,17 +734,15 @@ export const mkFleetHandle = ({
       if (themeState) persistTheme(themeState, state.theme);
     }
     publish();
-    if (state.selectedId !== prev.selectedId) backfillHistory();
+    // Also on a cache reset: the reset put every `head` back to `idle`, so the
+    // selected session refetches its newest page and the rest wait to be picked.
+    if (state.selectedId !== prev.selectedId || state.transcriptGen !== prev.transcriptGen) {
+      loadHistory();
+    }
     if (fleetSessions(state) !== fleetSessions(prev)) forgetDeadSessions();
-    if (
-      fleetSessions(state) !== fleetSessions(prev) ||
-      state.queue !== prev.queue ||
-      // A compaction finishing (or being cancelled) lifts the drain hold added
-      // for compacting sessions — it may not touch `sessions` (an aisdk manual
-      // compact emits no `result`).
-      state.compacting !== prev.compacting
-    )
-      drainQueues();
+    // A compaction finishing (or being cancelled) lifts the drain hold added for
+    // compacting sessions, and it now rides the snapshot like everything else.
+    if (fleetSessions(state) !== fleetSessions(prev) || state.queue !== prev.queue) drainQueues();
   };
 
   // ---- helpers ----------------------------------------------------
@@ -776,8 +755,7 @@ export const mkFleetHandle = ({
   };
 
   const echoLine = (sessionId: string, text: string): LogLine => ({
-    seq: (echoSeq -= 1),
-    epoch: "", // locally synthesised — daemon epochs are UUIDs, never ""
+    id: null, // locally synthesised — there is no durable row behind it
     sessionId,
     kind: "echo",
     glyph: "›",
@@ -1664,9 +1642,9 @@ export const mkFleetHandle = ({
     // A send typed while the target session is compacting: the daemon holds the
     // op gate for the whole (multi-minute) summarise and would reject with
     // `code:"busy"`. Reuse the outgoing queue instead — `drainQueues` releases
-    // it on the first update after the `compact` boundary clears
-    // `state.compacting[id]`. (`code:"busy"` is still caught below for a race.)
-    if (p.kind === "send" && p.sessionId && text && state.compacting[p.sessionId]) {
+    // it on the first update after the snapshot stops reporting a compaction.
+    // (`code:"busy"` is still caught below for a race.)
+    if (p.kind === "send" && p.sessionId && text && compactingFor(state, p.sessionId)) {
       queueSend(p.sessionId, text, "queued until compaction finishes");
       return;
     }
@@ -2614,12 +2592,10 @@ export const mkFleetHandle = ({
       client.onPush((frame) => dispatch({ t: "push", frame })),
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
-        // Transcript history is a separate resource and the epoch may have
-        // changed across the gap; the snapshot says nothing about it, so
-        // re-pull it here. The reducer folds durable history back in by
-        // (epoch, seq) and re-sorts, so this is idempotent.
-        history.clear();
-        backfillHistory();
+        // The caches were cleared and the generation bumped when the connection
+        // dropped (see `applyClientState`); the refetch of the selected
+        // session's newest page and the scroll reset both follow from that in
+        // `dispatch`, so there is nothing about history to do here.
         if (restarting) {
           restarting = false;
           dispatch({ t: "notice", text: "daemon restarted", tone: "good" });
@@ -2628,8 +2604,10 @@ export const mkFleetHandle = ({
       }),
       client.on("resync", () => {
         log?.info("resync");
-        history.clear();
-        backfillHistory();
+        // The stream rolled past our seq without the connection dropping, so
+        // nothing else resets the caches: entries in the gap never arrived and
+        // the transcript would hold a hole it cannot see.
+        dispatch({ t: "transcriptReset" });
       }),
       term.onResize(() => {
         dims = term.getSize();
@@ -2643,7 +2621,7 @@ export const mkFleetHandle = ({
       // otherwise re-renders ~8×/s for nothing.
       const animating =
         state.notice !== null ||
-        Object.keys(state.compacting).length > 0 ||
+        anyCompacting(state) ||
         fleetSessions(state).some(
           (s) =>
             s.status.kind === "running" ||
@@ -2651,7 +2629,7 @@ export const mkFleetHandle = ({
             s.status.kind === "working_background",
         );
       if (!animating) return;
-      if (state.log.length > 3) tick = (tick + 1) % 100000;
+      if (transcriptFor(state, state.selectedId).lines.length > 3) tick = (tick + 1) % 100000;
       dispatch({ t: "expireNotice", now: Date.now() });
       publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
     }, 120);

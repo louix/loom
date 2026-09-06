@@ -30,17 +30,18 @@ import {
   stateIdle,
 } from "@loom/core/session-state";
 import {
+  isTranscriptId,
   PROTOCOL_VERSION,
   type DaemonInfo,
   type DoctorMcpServer,
   type DoctorReport,
-  type EventPush,
   type HelloParams,
   type HelloResult,
   type ModelChoice,
   type ProviderInfo,
   type SessionSnapshot,
   type StatePush,
+  type TranscriptId,
 } from "@loom/core/wire";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
 import {
@@ -536,15 +537,25 @@ export class Daemon {
 
   emitEvent(event: HarnessEvent): number {
     if (this.#stopping) return this.#events.head;
-    const frame = this.#events.append({ kind: "push", type: "event", event });
+    // Persist *before* the frame goes out. The push carries the row's durable
+    // id, so a client that reacts to it — by paging, or by merging it against a
+    // page already in flight — has to be able to read that row back the moment
+    // it sees the id.
+    //
     // `status_changed` is redundant with `status_history`; `compact_progress`
     // is a heartbeat the TUI never renders (see `applyPush` in the frontend
-    // model) — skip both so the durable log only holds what a client would
-    // ever actually backfill.
-    if (event.type !== "status_changed" && event.type !== "compact_progress") {
-      const { seq, epoch } = frame as EventPush;
-      this.#sessionEvents.append(event.sessionId, seq, epoch, event);
-    }
+    // model). Neither is transcript, so neither gets a row — and therefore
+    // neither gets an id. Nothing downstream may invent one for them.
+    const durable =
+      event.type === "status_changed" || event.type === "compact_progress"
+        ? null
+        : this.#sessionEvents.append(event.sessionId, event);
+    const frame = this.#events.append({
+      kind: "push",
+      type: "event",
+      event,
+      ...(durable === null ? {} : { id: durable }),
+    });
     this.#server.broadcast(frame);
     return frame.seq;
   }
@@ -1930,18 +1941,26 @@ export class Daemon {
       // history in one frame; non-integer = a datatype throw).
       const rawLimit = typeof p["limit"] === "number" ? Math.trunc(p["limit"]) : 500;
       const limit = Number.isFinite(rawLimit) ? Math.min(5000, Math.max(1, rawLimit)) : 500;
-      // Optional scroll-back cursor: page strictly older than this (epoch, seq).
-      // A present-but-malformed cursor is a client bug — reject it rather than
-      // silently handing back the newest page (which stalls scroll-back).
-      let before: { epoch: string; seq: number } | undefined;
-      if (p["before"] !== undefined) {
-        const b = isObj(p["before"]) ? (p["before"] as Record<string, unknown>) : null;
-        if (!b || typeof b["epoch"] !== "string" || typeof b["seq"] !== "number") {
-          throw new RpcError("bad_request", "before must be { epoch: string, seq: number }");
+      // Optional scroll-back cursor, read off an earlier page. Rejecting a
+      // malformed one keeps "you asked wrongly" distinct from the page's own
+      // `olderCursor: null`, which means the session has no older history —
+      // conflating them is what stalls a scroll-back loop silently.
+      let olderThan: TranscriptId | undefined;
+      const rawCursor = p["cursor"];
+      if (rawCursor !== undefined && rawCursor !== null) {
+        const c = isObj(rawCursor) ? (rawCursor as Record<string, unknown>) : null;
+        if (!c || !isTranscriptId(c["olderThan"])) {
+          throw new RpcError(
+            "bad_request",
+            "cursor must be the { olderThan } object from an earlier page's olderCursor",
+          );
         }
-        before = { epoch: b["epoch"], seq: b["seq"] };
+        olderThan = c["olderThan"];
       }
-      return this.#sessionEvents.list(id, { limit, ...(before ? { before } : {}) });
+      return this.#sessionEvents.page(id, {
+        limit,
+        ...(olderThan === undefined ? {} : { olderThan }),
+      });
     });
 
     // --- session control (Claude adapter, milestone 2) --------------------

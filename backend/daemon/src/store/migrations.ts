@@ -329,4 +329,15 @@ export const MIGRATIONS: string[] = [
     WHERE history_backend = 'aisdk'
       AND NOT EXISTS (SELECT 1 FROM provider_messages WHERE provider_messages.session_id = sessions.id);
   `,
+  // 23 — `seq` / `epoch` existed to make (epoch, seq) the transcript's identity,
+  // because the ring's frame seq was the only id a client ever saw. The row's
+  // own `id` is a better one: assigned by the insert, monotonic within a
+  // session across restarts, and now carried on the live push as well as in
+  // page results, so pages and live frames merge by it directly. Nothing reads
+  // either column any more, and `seq NOT NULL` would force the writer to invent
+  // a value it no longer has.
+  /* sql */ `
+  ALTER TABLE session_events DROP COLUMN seq;
+  ALTER TABLE session_events DROP COLUMN epoch;
+  `,
 ];

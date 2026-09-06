@@ -308,30 +308,30 @@ Primary files: `backend/daemon/src/store/{session-events,migrations}.ts`,
 `backend/daemon/src/daemon/daemon.ts`, `core/src/wire.ts`,
 `client/src/client.ts`, `frontend/tui/src/{model,fleet-handle}.ts`.
 
-- [ ] Give durable transcript entries a stable identity and ordering shared by
+- [x] Give durable transcript entries a stable identity and ordering shared by
       page results and live transcript pushes. Prefer the existing
       `session_events.id` (`INTEGER PRIMARY KEY AUTOINCREMENT`); expose a safe wire
       representation instead of introducing a second counter or rebuilding history.
-- [ ] Persist before broadcasting a durable entry so a pushed ID is immediately
+- [x] Persist before broadcasting a durable entry so a pushed ID is immediately
       readable. Keep transient raw events/notices separate; do not manufacture
       durable IDs for heartbeats.
-- [ ] Return `HistoryPage` from `session.events`, oldest-first within each page.
+- [x] Return `HistoryPage` from `session.events`, oldest-first within each page.
       Page backwards using the durable ID and existing `(session_id, id)` index.
       Return an explicit older cursor (query one extra row if needed); `null` means
       actual exhaustion. Reject malformed/invalid cursors distinctly from exhaustion.
-- [ ] Keep per-session transcript caches. Model initial loading and older-page
+- [x] Keep per-session transcript caches. Model initial loading and older-page
       loading with `Loadable`; preserve loaded entries while fetching older ones.
       Deduplicate by durable ID and order by durable order, not event timestamps.
-- [ ] Establish live transcript listening before fetching the latest page.
+- [x] Establish live transcript listening before fetching the latest page.
       Merge overlapping page/live entries by ID so entries arriving during a fetch
       are neither lost nor duplicated. Keep local echoes identifiable separately.
-- [ ] On reconnect, clear transcript caches, reset scroll to the live tail, and
+- [x] On reconnect, clear transcript caches, reset scroll to the live tail, and
       fetch the selected session's newest page. Ignore pre-reset fetch responses;
       other sessions fetch lazily when selected. Preserve drafts/selection.
-- [ ] Remove `trackPending` and `trackCompacting` from TUI event/backfill paths,
+- [x] Remove `trackPending` and `trackCompacting` from TUI event/backfill paths,
       along with history-based pruning/recovery helpers made obsolete by snapshots.
       Raw live events may create transient notices; history pages must not.
-- [ ] Remove `(epoch, seq)` transcript cursor translation and the global
+- [x] Remove `(epoch, seq)` transcript cursor translation and the global
       timestamp-sorted log merge. A client memory cap must not mean "server history
       exhausted." Use bounded page retention that permits refetching evicted pages;
       keep viewport behavior predictable within a connection.
@@ -340,6 +340,67 @@ Acceptance: scrolling old history never changes current requests or compaction.
 Paging works across daemon restarts, including equal or nonmonotonic timestamps.
 Live events overlapping a page appear once. Reconnect returns to a complete latest
 page with no obsolete fetch reinstalling old cache state.
+
+**Done.** Notes:
+
+- `session_events.id` is now the transcript's identity everywhere. It rides the
+  live push as `EventPush.id` and comes back on every `TranscriptEntry`, so a page
+  and the live stream merge by the same key. Absent iff the daemon didn't persist
+  the event — status transitions and compaction beats have no row, and now nothing
+  downstream can invent one for them. Migration 23 drops the vestigial
+  `seq` / `epoch` columns: they existed only to make `(epoch, seq)` the identity,
+  and leaving `seq NOT NULL` would force the writer to fabricate a value it no
+  longer has. `EventPush` keeps its `seq` / `epoch` for the raw `loom tail` stream.
+- `emitEvent` persists _before_ it appends to the ring and broadcasts, so a pushed
+  id is readable the moment a client sees it.
+- `session.events` returns `HistoryPage { items, olderCursor }`, oldest-first within
+  the page, paging backwards on `id < ?` over the existing `(session_id, id)` index.
+  The store reads `limit + 1` rows so exhaustion is _observed_ rather than inferred
+  from a short page — the old code could not tell a page ending exactly on the
+  oldest row from one with more behind it. A malformed cursor is `bad_request`,
+  which is a different thing from `olderCursor: null`; the old `(epoch, seq)` lookup
+  answered both with `[]`, so a paging loop stalled with no way to tell why.
+- The TUI's single global `log` becomes `transcripts: Record<string, Transcript>`,
+  each with `lines` (durable, id-ordered, id-deduplicated), `head` / `older`
+  `Loadable`s, an `olderCursor`, and `echoes` kept separately — a queued-send marker
+  has no durable row, so it is not something to deduplicate, order or page. Loaded
+  entries stay on screen while an older page loads.
+- Retention is per session now (the old single cap let a busy session evict a quiet
+  one's transcript — its own comment said so). Eviction re-points `olderCursor` at
+  what it dropped, so the evicted span is refetchable and `olderCursor === null`
+  keeps meaning "the daemon has nothing older" and only that. A page the user
+  deliberately scrolled back for is never evicted.
+- The ts-sorted whole-log merge is gone. It existed because `(epoch, seq)` couldn't
+  order across a restart, and it got the boundary wrong whenever timestamps tied or
+  arrived out of order. Durable ids order the transcript; timestamps only render.
+- `trackPending` and `trackCompacting` are gone, and with them `pruneSettledPending`
+  and `rebaseCompacting`. `pendingFor` now _projects_ the snapshot's `requests`, so
+  scrolling into old history cannot resurrect a settled request and another client
+  answering one makes it disappear here with no local bookkeeping. The optimistic
+  hide when you answer is a `resolved` overlay beside the snapshot (the same shape
+  as §3's `modeDraft`), retired when the snapshot stops carrying the id.
+  `compactingFor` reads the snapshot's `compacting` directly.
+- Reconnect: `applyClientState` clears the caches and bumps `transcriptGen` the
+  moment the client leaves `data`, so a fetch already in flight cannot land
+  afterwards and reinstate what the reset discarded — the reducer drops any page
+  carrying a stale generation. Every `head` is back to `idle`, which is what makes
+  the selected session refetch and the others wait to be picked. The scroll resets
+  to the live tail off the same generation change. Drafts and selection survive.
+  A `resync` (the stream rolled without the connection dropping) takes the same
+  path: nothing else would reset the caches, and the transcript would otherwise
+  hold a hole it cannot see.
+- `fleet-search` now takes the per-session transcripts rather than one flat log,
+  so its doc build no longer has to bucket by session id.
+
+Validation: `deno check .`, `deno task test:silent`, `deno task lint`,
+`deno task format:check` all clean. Rewritten `store.test.ts` transcript tests
+(ordering under equal timestamps, backwards paging, observed exhaustion at an exact
+page boundary, per-session cursor scoping); `daemon.test.ts` gains cursor paging,
+malformed-cursor rejection and a cross-restart pagination case; `tui-model.test.ts`
+gains durable-order/dedupe, the retention cursor re-point, page/live merge, older-page
+loading, stale-generation rejection, snapshot-derived requests and compaction, and
+echo separation. The two render tests that reconstructed requests from injected
+events now drive a real session so the daemon's own request set is what is asserted.
 
 ## 5. Remove superseded paths and validate
 

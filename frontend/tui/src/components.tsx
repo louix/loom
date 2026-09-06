@@ -204,7 +204,11 @@ export const Fleet = ({
 }): ReactNode => {
   const iw = inside(width);
   const pcolor = new Map(fleetProviders(state).map((p) => [p.id, p.color]));
-  const compactingIds = new Set(Object.keys(state.compacting));
+  const compactingIds = new Set(
+    fleetSessions(state)
+      .filter((x) => x.compacting !== undefined)
+      .map((x) => x.id),
+  );
   // Drilled in? The focus only ever applies to the selected session's rows.
   const focused = focusedChildOf(state);
   const childKeyOf = (s: SessionSnapshot): string | null =>
@@ -283,7 +287,7 @@ export const Fleet = ({
   } else if (state.find) {
     const query = state.find.buffer.text;
     const matched = searchSessions(
-      { sessions: fleetSessions(state), log: state.log },
+      { sessions: fleetSessions(state), transcripts: state.transcripts },
       query,
     ).length;
     title = `FLEET · ${matched}/${fleetSessions(state).length} match${matched === 1 ? "" : "es"}`;
@@ -934,9 +938,9 @@ const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] =>
       const hi = Math.min(segs.length, to - off);
       for (let i = lo; i < hi; i++) {
         out.push({
-          // Epoch-qualified: seqs restart on a daemon restart, so a bare seq can
-          // repeat across epochs within one long-lived TUI's log.
-          key: `${l.epoch}:${l.seq}-${l.ts}-${i}`,
+          // The durable id is unique within a session and stable across daemon
+          // restarts; a local echo has none, so it falls back to its timestamp.
+          key: `${l.id ?? `e${l.ts}`}-${i}`,
           first: i === 0,
           ts,
           indent,

@@ -8,7 +8,13 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import { PROTOCOL_VERSION } from "@loom/core/wire";
-import type { DoctorReport, HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import type {
+  DoctorReport,
+  HelloResult,
+  HistoryPage,
+  PushFrame,
+  SessionSnapshot,
+} from "@loom/core/wire";
 import { loomPaths } from "@loom/core/paths";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
@@ -171,31 +177,27 @@ test("session.events returns a session's durable history, oldest first, excludin
     },
   });
 
-  const events = await c.request<
-    Array<{ seq: number; type: string; event: { text?: string; type: string } }>
-  >("session.events", { id: stub.id });
+  const page = await c.request<HistoryPage>("session.events", { id: stub.id });
   assert.deepEqual(
-    events.map((f) => f.event.text),
+    page.items.map((e) => (e.event as { text?: string }).text),
     ["one", "two"],
   );
-  assert.ok(events.every((f) => f.type === "event"));
-  assert.ok(events[0]!.seq < events[1]!.seq);
+  assert.equal(page.olderCursor, null, "two rows is the whole history");
+  assert.ok(page.items[0]!.id < page.items[1]!.id, "durable ids ascend with the transcript");
 
   // a capped fetch keeps the most recent N, still oldest-first
-  const capped = await c.request<Array<{ event: { text?: string } }>>("session.events", {
-    id: stub.id,
-    limit: 1,
-  });
+  const capped = await c.request<HistoryPage>("session.events", { id: stub.id, limit: 1 });
   assert.deepEqual(
-    capped.map((f) => f.event.text),
+    capped.items.map((e) => (e.event as { text?: string }).text),
     ["two"],
   );
+  assert.deepEqual(capped.olderCursor, { olderThan: page.items[1]!.id });
 
   await assert.rejects(c.request("session.events", { id: "no-such-session" }));
   await c.close();
 });
 
-test("session.events: `before` cursor pages older rows; limit is clamped; malformed cursor rejected", async () => {
+test("session.events: the cursor pages older rows; limit is clamped; a malformed cursor is rejected", async () => {
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", { prompt: "x" });
   for (let i = 1; i <= 5; i++) {
@@ -203,35 +205,52 @@ test("session.events: `before` cursor pages older rows; limit is clamped; malfor
       event: { sessionId: stub.id, type: "assistant_text", text: `line ${i}` },
     });
   }
-  type Ev = { seq: number; epoch: string; event: { text?: string } };
+  const texts = (p: HistoryPage): Array<string | undefined> =>
+    p.items.map((e) => (e.event as { text?: string }).text);
 
-  const newest = await c.request<Ev[]>("session.events", { id: stub.id, limit: 2 });
-  assert.deepEqual(
-    newest.map((f) => f.event.text),
-    ["line 4", "line 5"],
-  );
+  const newest = await c.request<HistoryPage>("session.events", { id: stub.id, limit: 2 });
+  assert.deepEqual(texts(newest), ["line 4", "line 5"]);
 
-  const older = await c.request<Ev[]>("session.events", {
+  const older = await c.request<HistoryPage>("session.events", {
     id: stub.id,
     limit: 2,
-    before: { epoch: newest[0]!.epoch, seq: newest[0]!.seq },
+    cursor: newest.olderCursor,
   });
-  assert.deepEqual(
-    older.map((f) => f.event.text),
-    ["line 2", "line 3"],
-  );
+  assert.deepEqual(texts(older), ["line 2", "line 3"]);
+
+  // The last page is exactly one row, and the daemon says so rather than
+  // leaving the client to infer it from the length.
+  const last = await c.request<HistoryPage>("session.events", {
+    id: stub.id,
+    limit: 2,
+    cursor: older.olderCursor,
+  });
+  assert.deepEqual(texts(last), ["line 1"]);
+  assert.equal(last.olderCursor, null);
 
   // negative / fractional limit must not reach `LIMIT ?` — clamped to ≥ 1, not
   // thrown, not "return everything".
-  const clamped = await c.request<Ev[]>("session.events", { id: stub.id, limit: -1 });
-  assert.equal(clamped.length, 1); // clamped to 1, not all 5, no datatype throw
+  const clamped = await c.request<HistoryPage>("session.events", { id: stub.id, limit: -1 });
+  assert.equal(clamped.items.length, 1); // clamped to 1, not all 5, no datatype throw
+  assert.deepEqual(clamped.olderCursor, { olderThan: newest.items[1]!.id });
   await assert.doesNotReject(c.request("session.events", { id: stub.id, limit: 2.5 }));
 
-  // a present-but-malformed cursor is a client bug, not a silent newest-page.
-  await assert.rejects(c.request("session.events", { id: stub.id, before: { epoch: "x" } }));
-  await assert.rejects(
-    c.request("session.events", { id: stub.id, before: { epoch: 1, seq: "2" } }),
-  );
+  // A malformed cursor is a client bug and must read differently from
+  // exhaustion — otherwise a paging loop stalls with no way to tell why.
+  for (const bad of [{ olderThan: "2" }, { olderThan: 0 }, { olderThan: 1.5 }, { seq: 2 }, 7]) {
+    await assert.rejects(
+      c.request("session.events", { id: stub.id, cursor: bad }),
+      /cursor must be/,
+      `cursor ${JSON.stringify(bad)} should be rejected`,
+    );
+  }
+  // An explicit null cursor is "the newest page", the same as omitting it.
+  const nulled = await c.request<HistoryPage>("session.events", {
+    id: stub.id,
+    limit: 2,
+    cursor: null,
+  });
+  assert.deepEqual(texts(nulled), ["line 4", "line 5"]);
   await c.close();
 });
 
@@ -2133,6 +2152,67 @@ test("a rejected mode change leaves the existing mode and the plan review intact
     assert.deepEqual(
       (pushed(c, s.id)?.requests ?? []).map((r) => r.id),
       ["p1"],
+    );
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("transcript pagination is stable across a daemon restart", async () => {
+  const hh = await makeHarness();
+  let c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given — three entries, all stamped with the *same* timestamp, so nothing
+    // but the durable id can order them
+    const s = await c.request<SessionSnapshot>("session.createStub", { prompt: "pager" });
+    for (const n of [1, 2, 3]) {
+      await c.request("dev.emit", {
+        event: { sessionId: s.id, type: "assistant_text", text: `before ${n}` },
+      });
+    }
+    const first = await c.request<HistoryPage>("session.events", { id: s.id, limit: 2 });
+    const cursor = first.olderCursor;
+    assert.ok(cursor, "there is a page behind the newest two");
+
+    // when — the daemon restarts (a new epoch, a seq counter back at 1) and the
+    // session picks up more entries, then the *pre-restart* cursor is used
+    await c.close();
+    await hh.restart();
+    c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    for (const n of [4, 5]) {
+      await c.request("dev.emit", {
+        event: { sessionId: s.id, type: "assistant_text", text: `after ${n}` },
+      });
+    }
+
+    // then — the cursor still means what it meant, because it is a row id and
+    // not a position in a per-process sequence
+    const older = await c.request<HistoryPage>("session.events", { id: s.id, limit: 10, cursor });
+    assert.deepEqual(
+      older.items.map((e) => (e.event as { text?: string }).text),
+      ["before 1"],
+    );
+    assert.equal(older.olderCursor, null, "and the end of the history is explicit");
+
+    // ...and the whole transcript reads in one order across the restart
+    const all = await c.request<HistoryPage>("session.events", { id: s.id, limit: 50 });
+    assert.deepEqual(
+      all.items.map((e) => (e.event as { text?: string }).text),
+      ["before 1", "before 2", "before 3", "after 4", "after 5"],
+    );
+    assert.deepEqual(
+      all.items.map((e) => e.id),
+      [...all.items].sort((x, y) => x.id - y.id).map((e) => e.id),
+      "ids ascend with the transcript, restart or no restart",
     );
   } finally {
     await c.close();

@@ -458,7 +458,7 @@ test("CheckpointStore records / lists / truncates; setTurns resets the counter",
   }
 });
 
-test("SessionEventStore: append/list preserves order, respects limit, cascades on session delete", () => {
+test("SessionEventStore.page: preserves order, respects limit, cascades on session delete", () => {
   const { path, cleanup } = tmpDb();
   try {
     const db = openDb(path);
@@ -466,48 +466,44 @@ test("SessionEventStore: append/list preserves order, respects limit, cascades o
     sessions.create({ id: "s1", provider: "claude" });
 
     const events = new SessionEventStore(db);
-    events.append("s1", 10, "epoch-a", {
+    const first = events.append("s1", {
       type: "assistant_text",
       sessionId: "s1",
       ts: 1,
       text: "one",
     });
-    events.append("s1", 11, "epoch-a", {
+    // Equal timestamps: insertion order is the only order there is, which is
+    // exactly why the durable id and not `ts` is the transcript's ordering.
+    const second = events.append("s1", {
       type: "assistant_text",
       sessionId: "s1",
-      ts: 2,
+      ts: 1,
       text: "two",
     });
-    // The seq counter restarts with the daemon; the row's epoch is what makes
-    // (seq 10, pre-restart) and (seq 10, post-restart) distinct on replay.
-    events.append("s1", 10, "epoch-b", {
+    const third = events.append("s1", {
       type: "user_message",
       sessionId: "s1",
-      ts: 3,
-      text: "after restart",
+      ts: 1,
+      text: "three",
       injected: false,
     });
+    assert.ok(first < second && second < third, "ids are assigned in insertion order");
 
-    const all = events.list("s1");
+    const all = events.page("s1");
+    assert.deepEqual(texts(all.items), ["one", "two", "three"]);
     assert.deepEqual(
-      all.map((f) => [f.seq, f.epoch, (f.event as { text: string }).text]),
-      [
-        [10, "epoch-a", "one"],
-        [11, "epoch-a", "two"],
-        [10, "epoch-b", "after restart"],
-      ],
+      all.items.map((e) => e.id),
+      [first, second, third],
     );
-    assert.ok(all.every((f) => f.kind === "push" && f.type === "event"));
+    assert.equal(all.olderCursor, null, "the whole history fits — nothing older");
 
-    // limit keeps the most recent N, still oldest-first
-    const capped = events.list("s1", { limit: 2 });
-    assert.deepEqual(
-      capped.map((f) => (f.event as { text: string }).text),
-      ["two", "after restart"],
-    );
+    // limit keeps the most recent N, still oldest-first, and says so
+    const capped = events.page("s1", { limit: 2 });
+    assert.deepEqual(texts(capped.items), ["two", "three"]);
+    assert.deepEqual(capped.olderCursor, { olderThan: second });
 
     sessions.delete("s1");
-    assert.deepEqual(events.list("s1"), []);
+    assert.deepEqual(events.page("s1"), { items: [], olderCursor: null });
 
     db.close();
   } finally {
@@ -515,65 +511,36 @@ test("SessionEventStore: append/list preserves order, respects limit, cascades o
   }
 });
 
-test("SessionEventStore: `before` cursor pages strictly older rows, across epochs", () => {
+test("SessionEventStore.page: walks backwards by cursor and reports real exhaustion", () => {
   const { path, cleanup } = tmpDb();
   try {
     const db = openDb(path);
     new SessionStore(db).create({ id: "s1", provider: "claude" });
     const events = new SessionEventStore(db);
 
-    // Six rows: seq 1-3 under epoch-a, then seq 1-3 again under epoch-b (a
-    // daemon restart resets the counter). Insertion order is the true order.
-    for (const [epoch, seq, ts] of [
-      ["epoch-a", 1, 1],
-      ["epoch-a", 2, 2],
-      ["epoch-a", 3, 3],
-      ["epoch-b", 1, 4],
-      ["epoch-b", 2, 5],
-      ["epoch-b", 3, 6],
-    ] as const) {
-      events.append("s1", seq, epoch, {
-        type: "assistant_text",
-        sessionId: "s1",
-        ts,
-        text: `${epoch}#${seq}`,
-      });
-    }
+    // Six rows on one timestamp — no `ts` ordering to lean on at all.
+    const ids: number[] = [1, 2, 3, 4, 5, 6].map((n) =>
+      events.append("s1", { type: "assistant_text", sessionId: "s1", ts: 7, text: `e${n}` }),
+    );
+    const oldestId = ids[0] ?? 0;
 
-    // Page back from the newest: last 2, then the 2 before that, then the rest.
-    const p1 = events.list("s1", { limit: 2 });
-    assert.deepEqual(texts(p1), ["epoch-b#2", "epoch-b#3"]);
+    const p1 = events.page("s1", { limit: 2 });
+    assert.deepEqual(texts(p1.items), ["e5", "e6"]);
+    assert.deepEqual(p1.olderCursor, { olderThan: ids[4] as number });
 
-    const p2 = events.list("s1", { limit: 2, before: { epoch: "epoch-b", seq: 2 } });
-    assert.deepEqual(texts(p2), ["epoch-a#3", "epoch-b#1"]);
+    const p2 = events.page("s1", { limit: 2, olderThan: p1.olderCursor!.olderThan });
+    assert.deepEqual(texts(p2.items), ["e3", "e4"]);
 
-    // Cursor straddles the epoch boundary — `seq` alone would be ambiguous here.
-    const p3 = events.list("s1", { limit: 10, before: { epoch: "epoch-a", seq: 3 } });
-    assert.deepEqual(texts(p3), ["epoch-a#1", "epoch-a#2"]);
+    // The last page lands exactly on the page boundary: `items.length === limit`
+    // and yet there is nothing older. Inferring exhaustion from a short page
+    // would have the client ask one more time and be told nothing, forever.
+    const p3 = events.page("s1", { limit: 2, olderThan: p2.olderCursor!.olderThan });
+    assert.deepEqual(texts(p3.items), ["e1", "e2"]);
+    assert.equal(p3.items.length, 2);
+    assert.equal(p3.olderCursor, null);
 
-    // `before` at the very newest row → every older row, still oldest-first.
-    const fromNewest = events.list("s1", { before: { epoch: "epoch-b", seq: 3 } });
-    assert.deepEqual(texts(fromNewest), [
-      "epoch-a#1",
-      "epoch-a#2",
-      "epoch-a#3",
-      "epoch-b#1",
-      "epoch-b#2",
-    ]);
-
-    // Exact-page-multiple boundary: a full page, then the next cursor yields [].
-    const full = events.list("s1", { limit: 3 });
-    assert.deepEqual(texts(full), ["epoch-b#1", "epoch-b#2", "epoch-b#3"]);
-    assert.equal(full.length, 3); // == limit, so the client keeps paging
-    const past = events.list("s1", { limit: 3, before: { epoch: "epoch-b", seq: 1 } });
-    assert.deepEqual(texts(past), ["epoch-a#1", "epoch-a#2", "epoch-a#3"]);
-    assert.deepEqual(events.list("s1", { limit: 3, before: { epoch: "epoch-a", seq: 1 } }), []);
-
-    // Oldest row: nothing is strictly older.
-    assert.deepEqual(events.list("s1", { before: { epoch: "epoch-a", seq: 1 } }), []);
-
-    // Unknown cursor reports "nothing older" rather than the newest page again.
-    assert.deepEqual(events.list("s1", { before: { epoch: "ghost", seq: 9 } }), []);
+    // A cursor at the very oldest row: an empty page, and exhausted.
+    assert.deepEqual(events.page("s1", { olderThan: oldestId }), { items: [], olderCursor: null });
 
     db.close();
   } finally {
@@ -581,7 +548,7 @@ test("SessionEventStore: `before` cursor pages strictly older rows, across epoch
   }
 });
 
-test("SessionEventStore: `before` cursor is scoped to the session, and to the newest dup", () => {
+test("SessionEventStore.page: a cursor is scoped to its own session", () => {
   const { path, cleanup } = tmpDb();
   try {
     const db = openDb(path);
@@ -590,25 +557,21 @@ test("SessionEventStore: `before` cursor is scoped to the session, and to the ne
     sessions.create({ id: "s2", provider: "claude" });
     const events = new SessionEventStore(db);
 
-    // Both sessions carry a row with the same (epoch, seq).
-    events.append("s1", 1, "e", { type: "assistant_text", sessionId: "s1", ts: 1, text: "s1-a" });
-    events.append("s2", 1, "e", { type: "assistant_text", sessionId: "s2", ts: 2, text: "s2-a" });
-    events.append("s1", 2, "e", { type: "assistant_text", sessionId: "s1", ts: 3, text: "s1-b" });
+    // Interleaved inserts, so s2's ids fall between s1's.
+    events.append("s1", { type: "assistant_text", sessionId: "s1", ts: 1, text: "s1-a" });
+    events.append("s2", { type: "assistant_text", sessionId: "s2", ts: 2, text: "s2-a" });
+    const s1b = events.append("s1", {
+      type: "assistant_text",
+      sessionId: "s1",
+      ts: 3,
+      text: "s1-b",
+    });
+    events.append("s2", { type: "assistant_text", sessionId: "s2", ts: 4, text: "s2-b" });
 
-    // The cursor lookup for s1 must not resolve s2's rowid.
-    assert.deepEqual(texts(events.list("s1", { before: { epoch: "e", seq: 2 } })), ["s1-a"]);
-
-    // Legacy rows all share epoch '': two rows with ('', 1), a later ('', 2).
-    // The cursor picks the newest ('', 1), so paging before it never skips a
-    // genuinely-older row (no gap); it may re-emit the older ('', 1) dup, which
-    // the client dedupes.
-    events.append("s2", 1, "", { type: "assistant_text", sessionId: "s2", ts: 4, text: "old-1a" });
-    events.append("s2", 1, "", { type: "assistant_text", sessionId: "s2", ts: 5, text: "old-1b" });
-    events.append("s2", 2, "", { type: "assistant_text", sessionId: "s2", ts: 6, text: "old-2" });
-    const older = texts(events.list("s2", { before: { epoch: "", seq: 1 } }));
-    assert.ok(older.includes("s2-a"), "keeps rows genuinely older than the cursor");
-    assert.ok(!older.includes("old-1b"), "excludes the cursor row itself");
-    assert.ok(!older.includes("old-2"), "excludes newer rows");
+    assert.deepEqual(texts(events.page("s1", { olderThan: s1b }).items), ["s1-a"]);
+    // s1's id used against s2 is still a plain bound — it can never surface
+    // another session's rows, because `session_id` is in the WHERE.
+    assert.deepEqual(texts(events.page("s2", { olderThan: s1b }).items), ["s2-a"]);
 
     db.close();
   } finally {
@@ -616,9 +579,8 @@ test("SessionEventStore: `before` cursor is scoped to the session, and to the ne
   }
 });
 
-const texts = (frames: { event: unknown }[]): string[] =>
-  frames.map((f) => (f.event as { text: string }).text);
-
+const texts = (items: readonly { event: unknown }[]): string[] =>
+  items.map((e) => (e.event as { text: string }).text);
 test("addModelUsage splits spend by model and reports a cache hit rate", () => {
   const { path, cleanup } = tmpDb();
   try {

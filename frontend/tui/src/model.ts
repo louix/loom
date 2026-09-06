@@ -17,13 +17,22 @@ import type {
   DaemonInfo,
   DaemonSnapshot,
   DoctorReport,
-  EventPush,
+  HistoryCursor,
+  HistoryPage,
   ProviderInfo,
   PushFrame,
   SessionSnapshot,
+  TranscriptId,
 } from "@loom/core/wire";
 import type { ClientState, ConnectionError } from "@loom/client";
-import { foldLoadable, loadableIdle } from "@loom/core/loadable";
+import {
+  foldLoadable,
+  loadableFailed,
+  loadableIdle,
+  loadableLoaded,
+  loadablePending,
+  type Loadable,
+} from "@loom/core/loadable";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
@@ -60,7 +69,10 @@ export const fleetSessions = (s: TuiState): SessionSnapshot[] =>
   s.fleet.tag === "data" ? s.fleet.value.sessions : [];
 
 /** What the fleet search engine sees — sessions plus their event lines. */
-const fleetView = (s: TuiState): FleetView => ({ sessions: fleetSessions(s), log: s.log });
+const fleetView = (s: TuiState): FleetView => ({
+  sessions: fleetSessions(s),
+  transcripts: s.transcripts,
+});
 
 /** Configured providers from the current snapshot, or empty while pending. */
 export const fleetProviders = (s: TuiState): ProviderInfo[] =>
@@ -129,13 +141,13 @@ export const logFilterTag = (f: LogFilter): string => {
 };
 
 export interface LogLine {
-  seq: number;
   /**
-   * The daemon epoch that issued {@link seq} — seq resets on every daemon
-   * restart, so (epoch, seq) is the real frame identity and the dedupe key.
-   * `""` for locally synthesised lines (echoes).
+   * The entry's durable {@link TranscriptId}: the id the daemon's live push and
+   * its history pages both carry, so the two merge by identity rather than by
+   * guessing from timestamps. `null` for a locally synthesised line, which has
+   * no durable counterpart and lives in {@link Transcript.echoes}.
    */
-  epoch: string;
+  id: TranscriptId | null;
   sessionId: string;
   /** The event kind, so `chat` view can collapse tool / thinking runs. */
   kind: HarnessEvent["type"] | "echo";
@@ -155,6 +167,37 @@ export interface LogLine {
   toolDescription?: string;
   tone: Tone;
   ts: number;
+}
+
+/**
+ * One session's transcript cache.
+ *
+ * Entries are keyed and ordered by their durable id, never by timestamp: a
+ * burst of events shares one millisecond and a provider can report them out of
+ * order, so a timestamp-sorted merge stitches history back together wrongly at
+ * exactly the boundaries that matter — a daemon restart, a tool storm.
+ */
+export interface Transcript {
+  /** Durable entries, ascending by id and deduplicated by it. */
+  lines: readonly LogLine[];
+  /** The newest page. `idle` until the session is first selected. */
+  head: Loadable<string, null>;
+  /** The next older page. Loaded entries stay put while this runs. */
+  older: Loadable<string, null>;
+  /**
+   * Where the next older page starts; `null` iff {@link lines} reaches the
+   * oldest entry the daemon holds. Retention re-points this at the new front
+   * rather than clearing it, so running out of room here can never be mistaken
+   * for the daemon running out of history.
+   */
+  olderCursor: HistoryCursor | null;
+  /**
+   * Locally synthesised lines with no durable counterpart — the "queued: …"
+   * marker for a follow-up waiting on the current turn. Rendered after
+   * {@link lines}; never deduplicated, ordered or paged, because there is no
+   * server-side entry to reconcile them against.
+   */
+  echoes: readonly LogLine[];
 }
 
 export interface Notice {
@@ -514,17 +557,26 @@ export interface TuiState {
    * and whenever churn empties the child list (`clampChild`).
    */
   selectedChild: string | null;
-  /** Every event across every session, oldest first — never truncated: the
-   *  daemon has the durable copy, but this is what's actually rendered, so a
-   *  cap here would silently cut off history (a busy session evicting a quiet
-   *  one's transcript). */
-  log: LogLine[];
+  /** Per-session transcript caches, keyed by session id. Absent = never seen. */
+  transcripts: Record<string, Transcript>;
+  /**
+   * Bumped every time the caches are cleared (a dropped connection). A fetch
+   * carries the generation it was issued under, so a response that was already
+   * in flight when the connection went cannot reinstate cache state belonging
+   * to a history the next connection re-reads from scratch.
+   */
+  transcriptGen: number;
   logFilter: LogFilter;
-  pending: Record<string, Pending>;
+  /**
+   * Requests this client has answered but whose absence the snapshot has yet to
+   * report, per session. A local overlay beside the authoritative request list,
+   * never a write into it: it exists so answering the first of three queued
+   * permissions moves straight to the second instead of stalling for a round
+   * trip. Entries retire when the snapshot stops carrying the id.
+   */
+  resolved: Record<string, readonly string[]>;
   /** Follow-up messages typed at a still-running session, awaiting its next idle. */
   queue: Record<string, string[]>;
-  /** Sessions with a compaction in flight → when it started (for a live "compacting… Ns"). */
-  compacting: Record<string, { startedAt: number; generated: number; before: number }>;
   notice: Notice | null;
   mode: UiMode;
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
@@ -582,11 +634,11 @@ export const initialState = (): TuiState => {
     modeDraft: {},
     selectedId: null,
     selectedChild: null,
-    log: [],
+    transcripts: {},
+    transcriptGen: 0,
     logFilter: "everything",
-    pending: {},
+    resolved: {},
     queue: {},
-    compacting: {},
     notice: null,
     mode: "browse",
     doctor: null,
@@ -631,7 +683,10 @@ export type Action =
   | { t: "state"; state: ClientState }
   | { t: "modeDraft"; sessionId: string; mode: SessionMode | null }
   | { t: "push"; frame: PushFrame; replay?: boolean }
-  | { t: "backfill"; frames: readonly EventPush[] }
+  | { t: "historyStart"; sessionId: string; older: boolean; gen: number }
+  | { t: "historyPage"; sessionId: string; page: HistoryPage; older: boolean; gen: number }
+  | { t: "historyFailed"; sessionId: string; older: boolean; error: string; gen: number }
+  | { t: "transcriptReset" }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
@@ -673,19 +728,103 @@ export type Action =
   | { t: "doctorLoaded"; report: DoctorReport };
 
 /**
- * Ceiling on `state.log`. It accumulates every echo / notice / event line for
- * the whole session and is never otherwise pruned. The event pane measures and
- * renders a window of the wrapped rows (never the whole list), so the cap is a
- * memory bound — roughly 20MB of retained event text per 10k lines in a
- * tool-heavy session — not a scroll limit: paging back reaches the start of
- * anything below it.
+ * Retained durable lines per session — roughly 20MB of event text per 10k lines
+ * in a tool-heavy session.
+ *
+ * A bound on *unattended* growth only. Live entries arriving at the tail can
+ * evict the front, and that is safe because eviction re-points `olderCursor` at
+ * the new front, so the evicted span is refetchable and `olderCursor === null`
+ * keeps meaning "the daemon has nothing older" and nothing else. A page the
+ * user deliberately scrolled back for is never evicted — the bound there is how
+ * far they scrolled, which is finite and theirs to choose.
  */
-export const LOG_CAP = 100_000;
+export const TRANSCRIPT_CAP = 10_000;
 
-/** Append one line to the log, trimming the oldest once past {@link LOG_CAP}. */
-const appendLog = (log: readonly LogLine[], line: LogLine): LogLine[] => {
-  const next = [...log, line];
-  return next.length > LOG_CAP ? next.slice(next.length - LOG_CAP) : next;
+const EMPTY_TRANSCRIPT: Transcript = {
+  lines: [],
+  head: loadableIdle,
+  older: loadableIdle,
+  olderCursor: null,
+  echoes: [],
+};
+
+const transcriptOf = (s: TuiState, sessionId: string): Transcript =>
+  s.transcripts[sessionId] ?? EMPTY_TRANSCRIPT;
+
+/**
+ * Drop every transcript cache and move to a new generation, so a fetch already
+ * in flight cannot land afterwards and reinstate what this discarded. Every
+ * `head` is back to `idle`, which is what makes the selected session refetch.
+ */
+const resetTranscripts = (s: TuiState): TuiState => {
+  if (Object.keys(s.transcripts).length === 0) return s;
+  return { ...s, transcripts: {}, transcriptGen: s.transcriptGen + 1 };
+};
+
+const withTranscript = (
+  s: TuiState,
+  sessionId: string,
+  t: Transcript,
+): Record<string, Transcript> => ({ ...s.transcripts, [sessionId]: t });
+
+/** Merge `add` into `have` by durable id, keeping id order. Entries already
+ *  held win, so a page overlapping the live stream re-uses the objects the
+ *  renderer has already measured instead of replacing them. */
+const mergeById = (have: readonly LogLine[], add: readonly LogLine[]): LogLine[] => {
+  if (add.length === 0) return [...have];
+  const byId = new Map<TranscriptId, LogLine>();
+  for (const l of have) if (l.id !== null) byId.set(l.id, l);
+  for (const l of add) if (l.id !== null && !byId.has(l.id)) byId.set(l.id, l);
+  return [...byId.values()].sort((x, y) => (x.id ?? 0) - (y.id ?? 0));
+};
+
+/**
+ * Fold one live entry in. Almost always a plain append — its id is newer than
+ * anything held — so that case avoids building a map per event. Applies the
+ * retention cap, re-pointing `olderCursor` at whatever survives.
+ */
+const appendLive = (t: Transcript, line: LogLine): Transcript => {
+  const last = t.lines[t.lines.length - 1];
+  if (last !== undefined && last.id !== null && line.id !== null && line.id <= last.id) {
+    // Out of order or a repeat of something already held: the page/live merge
+    // path handles both, and neither can push us over the cap.
+    return { ...t, lines: mergeById(t.lines, [line]) };
+  }
+  const grown = [...t.lines, line];
+  if (grown.length <= TRANSCRIPT_CAP) return { ...t, lines: grown };
+  const kept = grown.slice(grown.length - TRANSCRIPT_CAP);
+  const front = kept[0];
+  return {
+    ...t,
+    lines: kept,
+    olderCursor: front?.id != null ? { olderThan: front.id } : t.olderCursor,
+  };
+};
+
+/** Fold a fetched page in. The page's own cursor is authoritative for where the
+ *  next older page starts — a page is contiguous with what we hold, so its
+ *  front is the transcript's front. */
+const foldPage = (t: Transcript, page: HistoryPage, lines: readonly LogLine[]): Transcript => ({
+  ...t,
+  lines: mergeById(t.lines, lines),
+  olderCursor: page.olderCursor,
+});
+
+/** The lines a page contributes, in page order. Non-transcript kinds are
+ *  dropped exactly as the live path drops them. */
+const pageLines = (page: HistoryPage): LogLine[] => {
+  // Per-page only: a call/result pair split across two pages falls back to
+  // generic formatting, a fine default for history that old.
+  const toolNames: Record<string, string> = {};
+  const out: LogLine[] = [];
+  for (const entry of page.items) {
+    const ev = entry.event;
+    if (NON_TRANSCRIPT.has(ev.type)) continue;
+    if (ev.type === "tool_call") toolNames[ev.id] = ev.name;
+    const toolName = ev.type === "tool_result" ? toolNames[ev.id] : undefined;
+    out.push(toLogLine(entry.id, ev, toolName));
+  }
+  return out;
 };
 
 export const reduce = (s: TuiState, a: Action): TuiState => {
@@ -708,8 +847,42 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "push":
       return applyPush(s, a.frame, a.replay === true);
 
-    case "backfill":
-      return applyBackfill(s, a.frames);
+    case "transcriptReset":
+      return resetTranscripts(s);
+
+    case "historyStart": {
+      if (a.gen !== s.transcriptGen) return s;
+      const t = transcriptOf(s, a.sessionId);
+      const next: Transcript = a.older
+        ? { ...t, older: loadablePending }
+        : { ...t, head: loadablePending };
+      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
+    }
+
+    case "historyPage": {
+      // Issued against a connection we no longer have: its entries and its
+      // cursor describe a history the current connection has re-read from
+      // scratch, so installing them would resurrect exactly what the reset
+      // discarded.
+      if (a.gen !== s.transcriptGen) return s;
+      const t = transcriptOf(s, a.sessionId);
+      const folded = foldPage(t, a.page, pageLines(a.page));
+      const next: Transcript = a.older
+        ? { ...folded, older: loadableLoaded(null) }
+        : { ...folded, head: loadableLoaded(null) };
+      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
+    }
+
+    case "historyFailed": {
+      if (a.gen !== s.transcriptGen) return s;
+      const t = transcriptOf(s, a.sessionId);
+      // Entries already loaded stay put: a failed older-page fetch loses the
+      // page, not the transcript the reader is looking at.
+      const next: Transcript = a.older
+        ? { ...t, older: loadableFailed(a.error) }
+        : { ...t, head: loadableFailed(a.error) };
+      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
+    }
 
     case "toggleTheme":
       return { ...s, theme: nextThemeMode(s.theme) };
@@ -853,8 +1026,13 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, mode: "browse", prompt: null, lastDraft };
     }
 
-    case "echo":
-      return { ...s, log: appendLog(s.log, a.line) };
+    case "echo": {
+      const t = transcriptOf(s, a.line.sessionId);
+      return {
+        ...s,
+        transcripts: withTranscript(s, a.line.sessionId, { ...t, echoes: [...t.echoes, a.line] }),
+      };
+    }
 
     case "enqueue": {
       const t = a.text.trim();
@@ -982,18 +1160,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "resolvePerm": {
       const qnav = liveQNav(s.qnav, a.sessionId, a.id) ? null : s.qnav;
-      const cur = s.pending[a.sessionId];
-      if (!cur?.permissions) return qnav === s.qnav ? s : { ...s, qnav };
-      const rest = cur.permissions.filter((p) => p.id !== a.id);
-      const { permissions: _drop, ...others } = cur;
-      return {
-        ...s,
-        qnav,
-        pending: {
-          ...s.pending,
-          [a.sessionId]: rest.length ? { ...others, permissions: rest } : others,
-        },
-      };
+      const held = s.resolved[a.sessionId] ?? [];
+      if (held.includes(a.id)) return qnav === s.qnav ? s : { ...s, qnav };
+      return { ...s, qnav, resolved: { ...s.resolved, [a.sessionId]: [...held, a.id] } };
     }
 
     case "qnavSet":
@@ -1026,7 +1195,15 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
  * are left alone for the next snapshot to settle.
  */
 const applyClientState = (s: TuiState, state: ClientState): TuiState => {
-  if (state.tag !== "data") return { ...s, fleet: state };
+  if (state.tag !== "data") {
+    // No connection means no transcript we can trust: entries were appended
+    // while we were away and our cursors are positions in a history the next
+    // connection re-reads from scratch. Drop the caches with the fleet and bump
+    // the generation, so a fetch already in flight cannot land afterwards and
+    // reinstate what this just discarded. Drafts and selection are ours, not
+    // the daemon's, and survive.
+    return { ...resetTranscripts(s), fleet: state };
+  }
   const sessions = sortSessions(state.value.sessions);
   const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
   const live = new Set(sessions.map((x) => x.id));
@@ -1051,10 +1228,10 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-    pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
     queue: pruneByLive(s.queue, sessions),
-    compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
     modeDraft: pruneByLive(s.modeDraft, sessions),
+    transcripts: pruneByLive(s.transcripts, sessions),
+    resolved: pruneResolved(pruneByLive(s.resolved, sessions), sessions),
     ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
     ...(promptGone
       ? { prompt: null, mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode }
@@ -1082,38 +1259,17 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
   switch (frame.type) {
     case "event": {
       const ev = frame.event;
-      // A frame may arrive twice around startup (history backfill overlapping
-      // the live stream) — (epoch, seq) is authoritative, so drop the repeat
-      // whole.
-      const epoch = frame.epoch ?? "";
-      // Live path: an O(n) log scan to drop a frame that arrived twice (history
-      // backfill overlapping the live stream). A `replay` frame skips it — the
-      // backfill caller has already filtered against the log by (epoch, seq),
-      // so this would be O(N·log) for nothing (U1).
-      if (!replay && frame.seq > 0 && s.log.some((l) => l.seq === frame.seq && l.epoch === epoch)) {
-        return s;
-      }
-      const pending = trackPending(s.pending, ev);
-      const compacting = trackCompacting(s.compacting, ev);
-      // A backfilled frame is *transcript*, not a live event (U2): re-running
+      // A replayed frame is *transcript*, not news (U2): re-running
       // `noticeForEvent` would flash a long-settled "Bash needs approval" /
-      // "error: …" on the notice line for 4s. `pending` / `compacting` still
-      // track (a genuinely-outstanding permission must still show on reopen —
-      // a settled one is pruned when the session snapshot lands, see the
-      // `hello` / `sessions` reducers).
+      // "error: …" on the notice line for 4s.
       const notice = replay ? s.notice : (noticeForEvent(s, ev) ?? s.notice);
-      // `status_changed` is already shown live in the detail / fleet panes;
-      // keep it out of the log so the log reads as a transcript. `compact_progress`
-      // is a bare heartbeat — it drives the "compacting…" indicator, nothing more.
-      if (ev.type === "status_changed") return { ...s, pending, compacting, notice };
-      if (ev.type === "compact_progress") return { ...s, compacting, notice };
-      // The live background-task set — surfaced via the session status (the
-      // `working_background` group) and the fleet's nested task rows, not the
-      // transcript. REPLACE-semantics level signal, not a conversational entry.
-      if (ev.type === "background_tasks") return { ...s, pending, compacting, notice };
-      // Account-plan usage — surfaced live via the session snapshot's
-      // `rateLimits`, not the transcript; it isn't a conversational entry.
-      if (ev.type === "rate_limit") return { ...s, pending, compacting, notice };
+      // No durable id means the daemon did not persist this event, which is its
+      // way of saying "not transcript": status transitions and compaction beats
+      // are read off the session snapshot instead. They can still raise a
+      // transient notice, which is what the live stream is for.
+      if (frame.id === undefined || NON_TRANSCRIPT.has(ev.type)) {
+        return notice === s.notice ? s : { ...s, notice };
+      }
       // Remember each tool_call's name by id so its later tool_result can be
       // formatted tool-aware (an Edit's diff needs no lookup — its own event
       // already carries the name — but a Read's terse result does).
@@ -1125,15 +1281,20 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
         toolName = toolNames[ev.id];
         if (toolName !== undefined) toolNames = without(toolNames, ev.id);
       }
-      const log = appendLog(s.log, toLogLine(frame.seq, epoch, ev, toolName));
-      return { ...s, log, pending, compacting, notice, toolNames };
+      const t = appendLive(transcriptOf(s, ev.sessionId), toLogLine(frame.id, ev, toolName));
+      return {
+        ...s,
+        transcripts: withTranscript(s, ev.sessionId, t),
+        notice,
+        toolNames,
+      };
     }
     case "resync":
-      // The event stream rolled past our seq. Drop the compacting indicators —
-      // the heartbeats that feed them were in the frames we missed; the
-      // snapshot the daemon pushes on the re-handshake re-seeds any still-live
-      // compaction from its own `compacting` overlay (rebaseCompacting).
-      return { ...s, compacting: {} };
+      // The push stream rolled past our seq, so entries in the gap never
+      // arrived and the cache would have a hole in it with nothing on screen to
+      // say so. Everything describing *current* state comes whole in the next
+      // snapshot; the transcript is the one thing that has to be re-read.
+      return resetTranscripts(s);
 
     case "notice":
       // A daemon-level advisory (config reload). Transient — same channel as a
@@ -1152,21 +1313,6 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
   }
 };
 
-/**
- * Fold a session's durable history (the `session.events` fetch) into the log.
- *
- * On startup the TUI stitches two history sources together: the daemon's
- * in-memory push ring (replayed via `hello`, but only the *current* daemon
- * epoch) and this durable table (every epoch a session ever ran under). They
- * cover different spans, so dispatching the durable frames as plain appends
- * drops a pre-daemon-restart turn *below* the newer frames the ring already
- * seeded — the transcript stops reading chronologically at the restart
- * boundary (see the `2c991027` report). Instead: dedupe by `(epoch, seq)` —
- * the real frame identity — against what's already logged, then re-sort the
- * whole log by `ts` (stable, so exact ties keep insertion order). Like a
- * `replay` push, `pending` / `compacting` still track but no notice flashes:
- * this is transcript, not a live event.
- */
 /** The non-transcript event kinds — surfaced via the session snapshot /
  *  indicators, never the conversation (`applyPush` filters the same list). */
 const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
@@ -1176,183 +1322,33 @@ const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
   "rate_limit",
 ]);
 
-/**
- * Which of `frames` would add a line to `log`: the transcript kinds, deduped by
- * `(epoch, seq)` — the real frame identity — against what's already held (and
- * within the batch). {@link applyBackfill} folds exactly these; the scrollback
- * handler counts them to tell a page that made progress from one the log
- * couldn't absorb.
- */
-export const backfillAdds = (log: readonly LogLine[], frames: readonly EventPush[]): LogLine[] => {
-  const have = new Set(log.map((l) => `${l.epoch}:${l.seq}`));
-  // Per-batch only (see the TuiState `toolNames` map for the live-push path) —
-  // a call/result pair split across two backfill pages falls back to generic
-  // formatting, which is a fine default for history this old.
-  const toolNames: Record<string, string> = {};
-  const added: LogLine[] = [];
-  for (const frame of frames) {
-    const event = frame.event;
-    if (NON_TRANSCRIPT.has(event.type)) continue;
-    const key = `${frame.epoch ?? ""}:${frame.seq}`;
-    if (have.has(key)) continue;
-    have.add(key);
-    if (event.type === "tool_call") toolNames[event.id] = event.name;
-    const toolName = event.type === "tool_result" ? toolNames[event.id] : undefined;
-    added.push(toLogLine(frame.seq, frame.epoch ?? "", event, toolName));
-  }
-  return added;
-};
-
-const applyBackfill = (s: TuiState, frames: readonly EventPush[]): TuiState => {
-  let pending = s.pending;
-  let compacting = s.compacting;
-  for (const frame of frames) {
-    pending = trackPending(pending, frame.event);
-    compacting = trackCompacting(compacting, frame.event);
-  }
-  const added = backfillAdds(s.log, frames);
-  if (added.length === 0 && pending === s.pending && compacting === s.compacting) return s;
-  let log = s.log;
-  if (added.length > 0) {
-    // Tie-break equal-millisecond timestamps by seq: the fold's frames are
-    // strictly older than everything held (the daemon's `before` cursor), but
-    // a burst of events can share one millisecond — a stable ts-only sort then
-    // keeps the existing (newer) lines ahead of the just-folded older ones and
-    // the transcript stitches out of order.
-    const merged = [...s.log, ...added].sort((a, b) => a.ts - b.ts || a.seq - b.seq);
-    log = merged.length > LOG_CAP ? merged.slice(merged.length - LOG_CAP) : merged;
-  }
-  return { ...s, log, pending, compacting };
-};
-
-const trackPending = (
-  pending: Record<string, Pending>,
-  ev: HarnessEvent,
-): Record<string, Pending> => {
-  if (ev.type === "permission_request") {
-    const cur = pending[ev.sessionId] ?? {};
-    const perms = cur.permissions ?? [];
-    if (perms.some((x) => x.id === ev.id)) return pending; // history replay
-    return {
-      ...pending,
-      [ev.sessionId]: {
-        ...cur,
-        permissions: [...perms, { id: ev.id, tool: ev.tool, input: ev.input }],
-      },
-    };
-  }
-  if (ev.type === "question") {
-    return {
-      ...pending,
-      [ev.sessionId]: {
-        ...pending[ev.sessionId],
-        question: ev.id,
-        questionText: ev.question,
-        ...(ev.context ? { questionContext: ev.context } : {}),
-      },
-    };
-  }
-  if (ev.type === "plan_review") {
-    return {
-      ...pending,
-      [ev.sessionId]: { ...pending[ev.sessionId], plan: ev.id, planText: ev.plan },
-    };
-  }
-  if (ev.type === "answer") {
-    const cur = pending[ev.sessionId];
-    if (!cur) return pending;
-    const { question: _q, questionText: _qt, questionContext: _qc, ...rest } = cur;
-    return { ...pending, [ev.sessionId]: rest };
-  }
-  if (ev.type === "tool_result") {
-    // Mirrors the daemon's own `#trackPerms`: no event marks a permission
-    // resolved (aisdk emits `tool_call` *before* the gate; Claude the other
-    // way round), so the matching `tool_result` is the only reliable signal.
-    // Without this a replayed/reconnected history leaves long-since-approved
-    // requests stuck in `permissions`, and `firstPerm` — the oldest one —
-    // never advances to whatever's genuinely still pending. A plan resolves
-    // the same way: the `plan_review` is keyed on the ExitPlanMode /
-    // exit_plan tool-call id, so its `tool_result` is the only durable mark
-    // that the plan was decided (the daemon clears its own map in
-    // `respondToPlan`, but that never reaches the event log).
-    const cur = pending[ev.sessionId];
-    if (!cur) return pending;
-    const keptPerms = cur.permissions?.filter((p) => p.id !== ev.id);
-    const permsChanged =
-      cur.permissions !== undefined &&
-      keptPerms !== undefined &&
-      keptPerms.length !== cur.permissions.length;
-    const planCleared = cur.plan === ev.id;
-    if (!permsChanged && !planCleared) return pending;
-    const next: Pending = { ...cur };
-    if (permsChanged) {
-      if (keptPerms && keptPerms.length > 0) next.permissions = keptPerms;
-      else delete next.permissions;
-    }
-    if (planCleared) {
-      delete next.plan;
-      delete next.planText;
-    }
-    return { ...pending, [ev.sessionId]: next };
-  }
-  // Any leftovers are also wiped wholesale when the session leaves
-  // awaiting_input — see the `session_updated` case.
-  return pending;
-};
-
-/** Start/refresh a "compacting…" entry on each heartbeat; clear it when the
- *  compaction lands (`compact`) or the session reports an error — the provider
- *  emits a non-fatal `error` if the summariser times out or fails. */
-const trackCompacting = (cur: TuiState["compacting"], ev: HarnessEvent): TuiState["compacting"] => {
-  if (ev.type === "compact_progress") {
-    return {
-      ...cur,
-      [ev.sessionId]: {
-        startedAt: ev.ts - ev.elapsedMs,
-        generated: ev.generated,
-        before: ev.before,
-      },
-    };
-  }
-  if (ev.type === "compact" || ev.type === "error") {
-    return without(cur, ev.sessionId);
-  }
-  return cur;
-};
-
-/**
- * Rebase the "compacting…" map onto snapshot-reported state for exactly these
- * sessions (others untouched). `compact_progress` beats are deliberately not
- * persisted, so a client that attaches mid-compaction (reopened TUI, second
- * window) learns about it from the snapshot's `compacting` overlay: seed an
- * entry when the daemon reports one and no live entry exists yet (beats carry
- * fresher data once they arrive), drop it when the daemon says the gate has
- * released. Without the seed the session reads as idle and a queued send would
- * race the daemon's `busy` gate; without the drop a stale entry would pin
- * "compacting…" forever.
- */
-const rebaseCompacting = (
-  cur: TuiState["compacting"],
-  sessions: readonly SessionSnapshot[],
-): TuiState["compacting"] => {
-  let out = cur;
-  for (const s of sessions) {
-    const flag = s.compacting;
-    if (flag) {
-      if (!out[s.id]) {
-        out = { ...out, [s.id]: { startedAt: flag.startedAt, generated: 0, before: flag.before } };
-      }
-    } else if (out[s.id]) {
-      out = without(out, s.id);
-    }
-  }
-  return out;
-};
-
 const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {
   if (!(key in rec)) return rec;
   const { [key]: _drop, ...rest } = rec;
   return rest;
+};
+
+/**
+ * Retire optimistically-hidden request ids the snapshot no longer carries — the
+ * daemon has caught up, so the overlay has done its job. Anything still
+ * outstanding stays hidden until it does.
+ */
+const pruneResolved = (
+  resolved: Record<string, readonly string[]>,
+  sessions: readonly SessionSnapshot[],
+): Record<string, readonly string[]> => {
+  let changed = false;
+  const out: Record<string, readonly string[]> = {};
+  for (const [id, ids] of Object.entries(resolved)) {
+    const open = new Set(sessions.find((x) => x.id === id)?.requests.map((r) => r.id) ?? []);
+    const kept = ids.filter((x) => open.has(x));
+    if (kept.length === ids.length) out[id] = ids;
+    else {
+      changed = true;
+      if (kept.length > 0) out[id] = kept;
+    }
+  }
+  return changed ? out : resolved;
 };
 
 /** Drop entries keyed by a session that no longer exists. */
@@ -1368,28 +1364,6 @@ const pruneByLive = <T>(
     else changed = true;
   }
   return changed ? out : rec;
-};
-
-/**
- * Drop `pending` for any session the fresh snapshot says is not blocked. A
- * backfill / buffered replay can re-add a long-answered `permission_request`
- * to the map (its own dedup only sees the current map, cleared when the
- * session settled); the authoritative `status` is the snapshot's (U2).
- */
-const pruneSettledPending = (
-  pending: Record<string, Pending>,
-  sessions: readonly SessionSnapshot[],
-): Record<string, Pending> => {
-  const blocked = new Set(
-    sessions.filter((x) => x.status.kind === "awaiting_input").map((x) => x.id),
-  );
-  let changed = false;
-  const out: Record<string, Pending> = {};
-  for (const [id, v] of Object.entries(pending)) {
-    if (blocked.has(id)) out[id] = v;
-    else changed = true;
-  }
-  return changed ? out : pending;
 };
 
 // ---------------------------------------------------------------------------
@@ -1515,8 +1489,60 @@ export const focusedChildOf = (s: TuiState): FleetChild | null => {
   return childrenOf(sel).find((k) => k.key === s.selectedChild) ?? null;
 };
 
+/**
+ * The session's outstanding requests, projected into the shape the prompts
+ * read. Derived from the snapshot's authoritative `requests` list rather than
+ * accumulated from the event stream: a request is outstanding exactly while the
+ * daemon says it is, so a history page can never resurrect a settled one and
+ * another client answering one makes it disappear here with no local
+ * bookkeeping. Ids this client has just answered are hidden until the snapshot
+ * agrees (see {@link TuiState.resolved}).
+ */
 export const pendingFor = (s: TuiState, id: string | null): Pending => {
-  return (id && s.pending[id]) || {};
+  if (!id) return {};
+  const session = fleetSessions(s).find((x) => x.id === id);
+  if (!session) return {};
+  const hidden = new Set(s.resolved[id] ?? []);
+  const out: Pending = {};
+  const permissions: PendingPerm[] = [];
+  for (const r of session.requests) {
+    if (hidden.has(r.id)) continue;
+    switch (r.kind) {
+      // `AskUserQuestion` arrives as a permission request whose tool happens to
+      // be a multiple-choice prompt — same resolve path, so same bucket.
+      case "permission":
+      case "user_question":
+        permissions.push({ id: r.id, tool: r.tool, input: r.input });
+        break;
+      case "question":
+        out.question = r.id;
+        out.questionText = r.question;
+        if (r.context !== undefined) out.questionContext = r.context;
+        break;
+      case "plan_review":
+        out.plan = r.id;
+        out.planText = r.plan;
+        break;
+      default:
+        return absurd(r);
+    }
+  }
+  if (permissions.length > 0) out.permissions = permissions;
+  return out;
+};
+
+/** A compaction the daemon reports in flight for `id`, or null. */
+export const compactingFor = (
+  s: TuiState,
+  id: string | null,
+): { startedAt: number; before: number; generated: number } | null => {
+  if (!id) return null;
+  return fleetSessions(s).find((x) => x.id === id)?.compacting ?? null;
+};
+
+/** Is any session compacting? Drives the spinner tick. */
+export const anyCompacting = (s: TuiState): boolean => {
+  return fleetSessions(s).some((x) => x.compacting !== undefined);
 };
 
 export const queueFor = (s: TuiState, id: string | null): string[] => {
@@ -1575,10 +1601,16 @@ export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
   return "expiring";
 };
 
-/** The selected session's log lines, oldest first. */
+/** The selected session's transcript cache. */
+export const transcriptFor = (s: TuiState, id: string | null): Transcript => {
+  return (id && s.transcripts[id]) || EMPTY_TRANSCRIPT;
+};
+
+/** The selected session's log lines, oldest first: durable entries in durable
+ *  order, then the local echoes, which have no place in that order. */
 export const sessionLog = (s: TuiState): LogLine[] => {
-  if (!s.selectedId) return [];
-  return s.log.filter((l) => l.sessionId === s.selectedId);
+  const t = transcriptFor(s, s.selectedId);
+  return t.echoes.length === 0 ? [...t.lines] : [...t.lines, ...t.echoes];
 };
 
 /**
@@ -1615,8 +1647,7 @@ const collapseThinking = (lines: readonly LogLine[], i: number): [LogLine, numbe
   const secs = Math.round((last.ts - first.ts) / 1000);
   return [
     {
-      seq: first.seq,
-      epoch: first.epoch,
+      id: first.id,
       sessionId: first.sessionId,
       kind: "thinking",
       ...(first.agentId ? { agentId: first.agentId } : {}),
@@ -1658,8 +1689,7 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
       const flushPending = () => {
         if (!pending) return;
         out.push({
-          seq: pending.seq,
-          epoch: pending.epoch,
+          id: pending.id,
           sessionId: pending.sessionId,
           kind: "tool_call",
           ...(pending.agentId ? { agentId: pending.agentId } : {}),
@@ -1680,8 +1710,7 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
           if (line.toolDescription) {
             flushPending();
             out.push({
-              seq: line.seq,
-              epoch: line.epoch,
+              id: line.id,
               sessionId: line.sessionId,
               kind: "tool_call",
               ...(line.agentId ? { agentId: line.agentId } : {}),
@@ -2509,15 +2538,13 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
 // ---------------------------------------------------------------------------
 
 export const toLogLine = (
-  seq: number,
-  epoch: string,
+  id: TranscriptId | null,
   ev: HarnessEvent,
   toolName?: string,
 ): LogLine => {
   const f = formatEvent(ev, toolName);
   return {
-    seq,
-    epoch,
+    id,
     sessionId: ev.sessionId,
     kind: ev.type,
     ...(ev.agentId ? { agentId: ev.agentId } : {}),

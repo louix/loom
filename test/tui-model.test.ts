@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
+import type { SessionInteraction } from "@loom/core/interaction";
 import {
   type SessionState,
   type SessionStateKind,
@@ -11,8 +12,8 @@ import {
   stateIdle,
 } from "@loom/core/session-state";
 import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
-import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
-import type { EventPush } from "@loom/core/wire";
+import { loadableFailed, loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
+import type { EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
 import {
   actionsFor,
   allowedActs,
@@ -46,11 +47,14 @@ import {
   versionMismatchAction,
   queueFor,
   condenseLog,
+  anyCompacting,
+  compactingFor,
   firstPerm,
-  LOG_CAP,
   reduce,
   selectedSession,
   sessionLog,
+  TRANSCRIPT_CAP,
+  transcriptFor,
   sortSessions,
   toLogLine,
   transcriptText,
@@ -156,9 +160,31 @@ const ev = (over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): Harne
   return { sessionId: "s1", ts: 5_000, ...(over as object) } as HarnessEvent;
 };
 
-const push = (seq: number, event: HarnessEvent, epoch = "e1"): EventPush => {
-  return { kind: "push", seq, epoch, type: "event", event };
+/**
+ * A live push for an event the daemon persisted: `id` is its durable transcript
+ * identity, the same one `session.events` returns for it. `seq` is the ring's
+ * own counter and no longer identifies anything in the transcript.
+ */
+const push = (id: number, event: HarnessEvent): EventPush => {
+  return { kind: "push", seq: id, epoch: "e1", type: "event", event, id };
 };
+
+/** A live push the daemon did not persist — a heartbeat, with no durable id. */
+const transient = (event: HarnessEvent): EventPush => {
+  return { kind: "push", seq: 1, epoch: "e1", type: "event", event };
+};
+
+/** Every line the reducer holds for a session: durable entries, then echoes. */
+const lines = (s: TuiState, sessionId = "s1"): LogLine[] => {
+  const t = s.transcripts[sessionId];
+  return t ? [...t.lines, ...t.echoes] : [];
+};
+
+/** A `session.events` response carrying `entries` as one page. */
+const historyPage = (
+  entries: ReadonlyArray<{ id: number; event: HarnessEvent }>,
+  olderCursor: HistoryCursor | null = null,
+): HistoryPage => ({ items: entries.map((e) => ({ id: e.id, event: e.event })), olderCursor });
 
 const daemon: DaemonInfo = {
   pid: 1,
@@ -574,87 +600,25 @@ test("a snapshot's providers become the new-session defaults", () => {
 // event log
 // ---------------------------------------------------------------------------
 
-test("event pushes append log lines and never truncate", () => {
+test("event pushes append transcript lines in durable order", () => {
   let s = initialState();
-  for (let i = 0; i < 5; i++) {
+  for (const id of [11, 12, 13]) {
     s = reduce(s, {
       t: "push",
-      frame: push(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
+      frame: push(id, ev({ type: "assistant_text", text: `line ${id}`, sessionId: "s1" })),
     });
   }
-  assert.equal(s.log.length, 5);
   assert.deepEqual(
-    s.log.map((l) => l.seq),
-    [0, 1, 2, 3, 4],
+    lines(s).map((l) => l.id),
+    [11, 12, 13],
   );
 });
 
-test("state.log is capped — a marathon session drops the oldest lines, keeps the newest", () => {
-  // Built directly: driving 100k lines through `reduce` would be O(n²) (each
-  // push copies the log). One extra push over the cap still exercises the trim.
-  const backlog: LogLine[] = [];
-  for (let i = 0; i < LOG_CAP + 50; i++) {
-    backlog.push(
-      toLogLine(i, "e1", ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })),
-    );
-  }
-  let s: TuiState = { ...initialState(), log: backlog };
-  s = reduce(s, {
-    t: "push",
-    frame: push(LOG_CAP + 50, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })),
-  });
-  assert.equal(s.log.length, LOG_CAP);
-  assert.equal(s.log[0]?.seq, 51, "oldest lines were trimmed (50 backlog + the push)");
-  assert.equal(s.log.at(-1)?.seq, LOG_CAP + 50, "newest line retained");
-});
-
-test("a seq that collides across daemon epochs is a new line, not a dropped dupe", () => {
-  // The daemon restarts mid-session and its seq counter resets to 1. Every
-  // post-restart frame reuses seqs the log already holds from the previous
-  // epoch — keying dedupe on seq alone silently swallowed the whole new epoch
-  // (the user's messages vanished while the agent kept responding to them).
+test("a push with no durable id is a heartbeat, never a transcript line", () => {
   let s = initialState();
   s = reduce(s, {
     t: "push",
-    frame: push(464, ev({ type: "tool_call", id: "t1", name: "bash", input: {}, sessionId: "s1" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      464,
-      ev({
-        type: "user_message",
-        text: "So how did we get on with the context status?",
-        sessionId: "s1",
-      }),
-      "e2", // a different daemon epoch — same seq, different event
-    ),
-  });
-  assert.equal(s.log.length, 2, "post-restart frame must not collide with a pre-restart seq");
-  assert.equal(s.log[1]?.kind, "user_message");
-
-  // Within one epoch a repeated seq is still the startup overlap dupe → dropped.
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      464,
-      ev({
-        type: "user_message",
-        text: "So how did we get on with the context status?",
-        sessionId: "s1",
-      }),
-      "e2",
-    ),
-  });
-  assert.equal(s.log.length, 2);
-});
-
-test("compact_progress drives the compacting indicator without hitting the log", () => {
-  let s = initialState();
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
+    frame: transient(
       ev({
         type: "compact_progress",
         sessionId: "s1",
@@ -665,27 +629,28 @@ test("compact_progress drives the compacting indicator without hitting the log",
       }),
     ),
   });
-  assert.equal(s.log.length, 0, "heartbeat is not a transcript line");
-  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+  assert.deepEqual(lines(s), [], "the daemon didn't persist it, so it isn't transcript");
 
-  // a later beat refreshes it
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      2,
-      ev({
-        type: "compact_progress",
-        sessionId: "s1",
-        ts: 12_000,
-        elapsedMs: 6_000,
-        generated: 400,
-        before: 90_000,
+  // The compaction the beat reports is read off the snapshot instead, so a
+  // client that attached mid-compaction sees exactly what everyone else does.
+  s = reduce(
+    s,
+    fleet([
+      snap({
+        id: "s1",
+        status: "running",
+        compacting: { startedAt: 6_000, before: 90_000, generated: 128 },
       }),
-    ),
+    ]),
+  );
+  assert.deepEqual(compactingFor(s, "s1"), {
+    startedAt: 6_000,
+    before: 90_000,
+    generated: 128,
   });
-  assert.equal(s.compacting["s1"]?.generated, 400);
 
-  // the boundary clears it and *is* logged
+  // ...and it stops when the daemon stops reporting it, with no local
+  // bookkeeping to get out of step. The landing `compact` event *is* transcript.
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -693,56 +658,86 @@ test("compact_progress drives the compacting indicator without hitting the log",
       ev({ type: "compact", sessionId: "s1", trigger: "manual", before: 90_000, after: 12_000 }),
     ),
   });
-  assert.equal(s.compacting["s1"], undefined);
-  assert.equal(s.log.length, 1);
-  assert.match(s.log[0]?.text ?? "", /context compacted/);
+  s = reduce(s, fleet([snap({ id: "s1", status: "idle" })]));
+  assert.equal(compactingFor(s, "s1"), null);
+  assert.equal(lines(s).length, 1);
+  assert.match(lines(s)[0]?.text ?? "", /context compacted/);
 });
 
-test("an error (fatal or not) abandons the compacting indicator", () => {
-  for (const fatal of [true, false]) {
-    let s = initialState();
-    s = reduce(s, {
-      t: "push",
-      frame: push(
-        1,
-        ev({
-          type: "compact_progress",
-          sessionId: "s1",
-          ts: 10_000,
-          elapsedMs: 0,
-          generated: 0,
-          before: 50_000,
-        }),
-      ),
-    });
-    assert.ok(s.compacting["s1"]);
-    s = reduce(s, {
-      t: "push",
-      frame: push(2, ev({ type: "error", message: "boom", fatal, sessionId: "s1" })),
-    });
-    assert.equal(s.compacting["s1"], undefined, `fatal=${fatal}`);
-  }
-});
-
-test("resync drops all compacting indicators", () => {
+test("a repeated durable id folds once, and ids order the transcript, not timestamps", () => {
   let s = initialState();
+  // Deliberately out of timestamp order: the provider reported the second entry
+  // with an *earlier* clock than the first, and a burst shares a millisecond.
+  s = reduce(s, {
+    t: "push",
+    frame: push(1, ev({ type: "assistant_text", text: "first", sessionId: "s1", ts: 9_000 })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
+  });
+  s = reduce(s, {
+    t: "push",
+    frame: push(3, ev({ type: "assistant_text", text: "third", sessionId: "s1", ts: 1_000 })),
+  });
+  assert.deepEqual(
+    lines(s).map((l) => l.text),
+    ["first", "second", "third"],
+    "durable order, not clock order",
+  );
+
+  // The same entry again — the ring replaying across a reconnect, or a page
+  // overlapping the live stream. One entry, and the reducer says nothing moved.
+  const before = s;
+  s = reduce(s, {
+    t: "push",
+    frame: push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
+  });
+  assert.deepEqual(
+    lines(s).map((l) => l.text),
+    ["first", "second", "third"],
+  );
+  assert.equal(lines(s).length, lines(before).length);
+});
+
+test("the per-session cap evicts the oldest lines and points the older cursor at them", () => {
+  // Built directly: driving the cap through `reduce` would be O(n²).
+  const backlog: LogLine[] = [];
+  for (let i = 1; i <= TRANSCRIPT_CAP; i++) {
+    backlog.push(toLogLine(i, ev({ type: "assistant_text", text: `line ${i}`, sessionId: "s1" })));
+  }
+  let s: TuiState = {
+    ...initialState(),
+    transcripts: {
+      s1: {
+        lines: backlog,
+        head: loadableLoaded(null),
+        older: loadableIdle,
+        // The client has read all the way back: nothing older exists.
+        olderCursor: null,
+        echoes: [],
+      },
+    },
+  };
   s = reduce(s, {
     t: "push",
     frame: push(
-      1,
-      ev({
-        type: "compact_progress",
-        sessionId: "s1",
-        ts: 10_000,
-        elapsedMs: 0,
-        generated: 0,
-        before: 50_000,
-      }),
+      TRANSCRIPT_CAP + 1,
+      ev({ type: "assistant_text", text: "the newest", sessionId: "s1" }),
     ),
   });
-  assert.ok(s.compacting["s1"]);
-  s = reduce(s, { t: "push", frame: { kind: "push", seq: 2, type: "resync", reason: "rolled" } });
-  assert.deepEqual(s.compacting, {});
+
+  const t = transcriptFor(s, "s1");
+  assert.equal(t.lines.length, TRANSCRIPT_CAP);
+  assert.equal(t.lines[0]?.id, 2, "the oldest line was evicted");
+  assert.equal(t.lines.at(-1)?.text, "the newest");
+  // The point of the whole exercise: running out of room here must never read
+  // as the daemon running out of history, or scroll-back stops at the cap.
+  assert.deepEqual(
+    t.olderCursor,
+    { olderThan: 2 },
+    "eviction re-points the cursor at what it dropped, so the page is refetchable",
+  );
 });
 
 test("permission / question / fatal-error events raise a notice", () => {
@@ -779,94 +774,235 @@ test("a replayed (backfilled) event never raises a notice — it's transcript, n
   assert.equal(s.notice, null, "no notice flashed from replayed history");
   // …but the frame still lands in the log.
   assert.ok(
-    s.log.some((l) => l.seq === 1) && s.log.some((l) => l.seq === 2),
+    lines(s).some((l) => l.id === 1) && lines(s).some((l) => l.id === 2),
     "replayed frames are still logged",
   );
 });
 
-test("backfill stitches durable history in by (epoch, seq) and re-sorts by ts (cross-restart order)", () => {
+test("a history page and the live stream merge by durable id, one entry each", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "select", id: "a" });
 
-  // The `hello` ring replay only carries the current epoch ("e2") — the turn
-  // taken after a daemon restart. These land as ordinary appends.
-  const seed = (seq: number, e: Parameters<typeof ev>[0], ts: number) =>
-    (s = reduce(s, {
-      t: "push",
-      replay: true,
-      frame: push(seq, { ...ev(e), sessionId: "a", ts }, "e2"),
-    }));
-  seed(2, { type: "user_message", text: "follow up", injected: false }, 2_000);
-  seed(3, { type: "assistant_text", text: "on it" }, 2_100);
+  // Live frames arrive first — the push subscription is up before any fetch —
+  // and their ids overlap the page that is still in flight.
+  const live = (id: number, e: Parameters<typeof ev>[0], ts: number) =>
+    (s = reduce(s, { t: "push", frame: push(id, { ...ev(e), sessionId: "a", ts }) }));
+  live(20, { type: "user_message", text: "follow up", injected: false }, 2_000);
+  live(21, { type: "assistant_text", text: "on it" }, 2_100);
 
-  // `session.events` returns the whole history: the pre-restart turn ("e1")
-  // ahead of what the ring already held ("e2").
+  // The page covers older history *and* the two entries already held. Note the
+  // timestamps: the older turn ran before a daemon restart and its clock is not
+  // ordered against the newer one — only the durable ids are.
   s = reduce(s, {
-    t: "backfill",
-    frames: [
-      push(
-        18,
+    t: "historyPage",
+    sessionId: "a",
+    older: false,
+    gen: s.transcriptGen,
+    page: historyPage(
+      [
         {
-          ...ev({ type: "user_message", text: "original task", injected: false }),
-          sessionId: "a",
-          ts: 1_000,
+          id: 18,
+          event: {
+            ...ev({ type: "user_message", text: "original task", injected: false }),
+            sessionId: "a",
+            ts: 9_000,
+          },
         },
-        "e1",
-      ),
-      push(
-        19,
-        { ...ev({ type: "assistant_text", text: "first answer" }), sessionId: "a", ts: 1_100 },
-        "e1",
-      ),
-      push(
-        2,
         {
-          ...ev({ type: "user_message", text: "follow up", injected: false }),
-          sessionId: "a",
-          ts: 2_000,
+          id: 19,
+          event: {
+            ...ev({ type: "assistant_text", text: "first answer" }),
+            sessionId: "a",
+            ts: 100,
+          },
         },
-        "e2",
-      ),
-      push(
-        3,
-        { ...ev({ type: "assistant_text", text: "on it" }), sessionId: "a", ts: 2_100 },
-        "e2",
-      ),
-    ],
+        {
+          id: 20,
+          event: {
+            ...ev({ type: "user_message", text: "follow up", injected: false }),
+            sessionId: "a",
+            ts: 2_000,
+          },
+        },
+        {
+          id: 21,
+          event: { ...ev({ type: "assistant_text", text: "on it" }), sessionId: "a", ts: 2_100 },
+        },
+      ],
+      { olderThan: 18 },
+    ),
   });
 
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
     ["original task", "first answer", "follow up", "on it"],
-    "the pre-restart turn is ordered ahead of the newer frames, not appended below them",
+    "the older turn sorts ahead by id, whatever its clock says",
   );
   assert.equal(
     sessionLog(s).filter((l) => l.text === "follow up").length,
     1,
-    "frames already logged by (epoch, seq) aren't duplicated",
+    "an entry the live stream already delivered is not duplicated by the page",
   );
-
-  // A second backfill with nothing new is a no-op (same state ref → no re-render).
-  assert.equal(reduce(s, { t: "backfill", frames: [] }), s);
+  const t = transcriptFor(s, "a");
+  assert.equal(t.head.tag, "data");
+  assert.deepEqual(t.olderCursor, { olderThan: 18 }, "the page says where the next one starts");
 });
 
-test("a sessions/hello snapshot drops pending for a session it says is no longer blocked (U2)", () => {
-  const blocked = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), fleet([blocked]));
+test("an older page preserves the loaded entries while it is in flight, and prepends when it lands", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), fleet([a]));
+  s = reduce(s, { t: "select", id: "a" });
   s = reduce(s, {
-    t: "push",
-    replay: true,
-    frame: push(
-      1,
-      ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" }),
+    t: "historyPage",
+    sessionId: "a",
+    older: false,
+    gen: s.transcriptGen,
+    page: historyPage(
+      [{ id: 9, event: { ...ev({ type: "assistant_text", text: "newest" }), sessionId: "a" } }],
+      { olderThan: 9 },
     ),
   });
-  assert.ok(s.pending["a"]?.permissions?.length, "replayed request tracked while still blocked");
 
-  // The daemon's snapshot now shows the session idle — the pending is stale.
+  s = reduce(s, { t: "historyStart", sessionId: "a", older: true, gen: s.transcriptGen });
+  assert.equal(transcriptFor(s, "a").older.tag, "pending");
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["newest"],
+    "what is already loaded stays on screen while the older page loads",
+  );
+
+  s = reduce(s, {
+    t: "historyPage",
+    sessionId: "a",
+    older: true,
+    gen: s.transcriptGen,
+    page: historyPage([
+      { id: 7, event: { ...ev({ type: "assistant_text", text: "older" }), sessionId: "a" } },
+    ]),
+  });
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["older", "newest"],
+  );
+  assert.equal(
+    transcriptFor(s, "a").olderCursor,
+    null,
+    "the page reached the start of the history and said so",
+  );
+});
+
+test("a page issued on a dropped connection cannot reinstate the cache it was reset with", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), fleet([a]));
+  s = reduce(s, { t: "select", id: "a" });
+  const stale = s.transcriptGen;
+  s = reduce(s, { t: "historyStart", sessionId: "a", older: false, gen: stale });
+
+  // The connection drops mid-fetch. Caches go, and with them the cursors, which
+  // are positions in a history the next connection re-reads from scratch.
+  s = reduce(s, { t: "state", state: loadablePending });
+  assert.deepEqual(s.transcripts, {});
+  assert.notEqual(s.transcriptGen, stale);
+
+  // The in-flight response finally lands. It describes the old connection.
+  s = reduce(s, {
+    t: "historyPage",
+    sessionId: "a",
+    older: false,
+    gen: stale,
+    page: historyPage([
+      { id: 4, event: { ...ev({ type: "assistant_text", text: "from before" }), sessionId: "a" } },
+    ]),
+  });
+  assert.deepEqual(s.transcripts, {}, "ignored — it belongs to a connection we no longer have");
+
+  // The selection and the draft survived the reset; only the transcript went.
+  assert.equal(s.selectedId, "a");
+  s = reduce(s, fleet([a]));
+  assert.equal(transcriptFor(s, "a").head.tag, "idle", "so the handle refetches the newest page");
+});
+
+test("an outstanding request is read off the snapshot, so old history cannot resurrect a settled one", () => {
+  const req = {
+    kind: "permission" as const,
+    id: "p1",
+    tool: "bash",
+    input: {},
+    at: 1,
+  };
+  const blocked = snap({
+    id: "a",
+    status: "awaiting_input",
+    awaitReason: "permission",
+    requests: [req],
+  });
+  let s = reduce(initialState(), fleet([blocked]));
+  assert.deepEqual(firstPerm(pendingFor(s, "a")), { id: "p1", tool: "bash", input: {} });
+
+  // Scrolling back through history delivers the *original* permission_request
+  // event. It is transcript and nothing more — the request set does not move.
+  s = reduce(s, {
+    t: "historyPage",
+    sessionId: "a",
+    older: true,
+    gen: s.transcriptGen,
+    page: historyPage([
+      {
+        id: 1,
+        event: ev({
+          type: "permission_request",
+          id: "ancient",
+          tool: "rm",
+          input: {},
+          sessionId: "a",
+        }),
+      },
+    ]),
+  });
+  assert.deepEqual(
+    pendingFor(s, "a").permissions?.map((p) => p.id),
+    ["p1"],
+    "a long-answered request in old history is not offered for answering again",
+  );
+
+  // The daemon says the session is no longer blocked: the request set is empty
+  // and so is the projection, with no pruning pass to remember to run.
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.equal(s.pending["a"], undefined, "settled pending pruned by the snapshot");
+  assert.deepEqual(pendingFor(s, "a"), {});
+});
+
+test("answering a request hides it until the snapshot agrees, then stops overriding", () => {
+  const perm = (id: string) => ({
+    kind: "permission" as const,
+    id,
+    tool: "bash",
+    input: {},
+    at: 1,
+  });
+  const blocked = (ids: string[]) =>
+    snap({
+      id: "a",
+      status: "awaiting_input",
+      awaitReason: "permission",
+      requests: ids.map(perm),
+    });
+  let s = reduce(initialState(), fleet([blocked(["p1", "p2"])]));
+
+  // Answer the first. The prompt must move straight to the second rather than
+  // stall for a round trip — but nothing is written into the request list.
+  s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
+  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
+  assert.deepEqual(
+    fleetSessions(s)[0]?.requests.map((r) => r.id),
+    ["p1", "p2"],
+    "the authoritative list is untouched",
+  );
+
+  // The daemon catches up and drops p1. The overlay has done its job and goes.
+  s = reduce(s, fleet([blocked(["p2"])]));
+  assert.deepEqual(s.resolved, {});
+  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
 });
 
 test("expireNotice clears the notice only once its ttl has elapsed", () => {
@@ -974,20 +1110,20 @@ test("chat view: tool calls with an input `description` get their own line; thos
 
 test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {
   const L = [
-    toLogLine(1, "e1", {
+    toLogLine(1, {
       ...ev({ type: "user_message", text: "do the thing", injected: false }),
       ts: 5000,
     }),
-    toLogLine(2, "e1", { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
-    toLogLine(3, "e1", {
+    toLogLine(2, { ...ev({ type: "assistant_text", text: "on it" }), ts: 6000 }),
+    toLogLine(3, {
       ...ev({ type: "tool_call", id: "t", name: "Bash", input: { command: "ls -la" } }),
       ts: 7000,
     }),
-    toLogLine(4, "e1", {
+    toLogLine(4, {
       ...ev({ type: "tool_result", id: "t", ok: true, output: { text: "a\nb" } }),
       ts: 8000,
     }),
-    toLogLine(5, "e1", {
+    toLogLine(5, {
       ...ev({
         type: "usage",
         tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
@@ -996,7 +1132,7 @@ test("transcriptText renders [time] role + body, skips metadata, no raw JSON", (
       }),
       ts: 8500,
     }),
-    toLogLine(6, "e1", { ...ev({ type: "result", kind: "ok" }), ts: 9000 }),
+    toLogLine(6, { ...ev({ type: "result", kind: "ok" }), ts: 9000 }),
   ];
   const t = transcriptText(L);
   assert.match(t, /^\[\d\d:\d\d:\d\d\]  you\ndo the thing\n\n\[\d\d:\d\d:\d\d\]  agent\non it/);
@@ -1008,8 +1144,7 @@ test("transcriptText renders [time] role + body, skips metadata, no raw JSON", (
 
 test("condenseLog: a lone thinking / tool line still collapses; other kinds pass through", () => {
   const mk = (kind: LogLine["kind"], ts: number): LogLine => ({
-    seq: ts,
-    epoch: "e1",
+    id: ts + 1,
     sessionId: "a",
     kind,
     glyph: "x",
@@ -1028,35 +1163,18 @@ test("condenseLog: a lone thinking / tool line still collapses; other kinds pass
 // pending round-trips
 // ---------------------------------------------------------------------------
 
-test("parallel permission requests queue; each resolvePerm advances; session_updated clears", () => {
-  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({
-        type: "permission_request",
-        id: "p1",
-        tool: "bash",
-        input: { command: "ls" },
-        sessionId: "a",
-      }),
-    ),
+test("parallel permission requests queue in the snapshot's order; each resolvePerm advances", () => {
+  const perm = (id: string, command: string) => ({
+    kind: "permission" as const,
+    id,
+    tool: "bash",
+    input: { command },
+    at: 1,
   });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      2,
-      ev({
-        type: "permission_request",
-        id: "p2",
-        tool: "bash",
-        input: { command: "pwd" },
-        sessionId: "a",
-      }),
-    ),
-  });
+  const blocked = (requests: SessionInteraction[]) =>
+    snap({ id: "a", status: "awaiting_input", awaitReason: "permission", requests });
+  let s = reduce(initialState(), fleet([blocked([perm("p1", "ls"), perm("p2", "pwd")])]));
+
   assert.deepEqual(firstPerm(pendingFor(s, "a")), {
     id: "p1",
     tool: "bash",
@@ -1064,31 +1182,22 @@ test("parallel permission requests queue; each resolvePerm advances; session_upd
   });
   assert.equal(pendingFor(s, "a").permissions?.length, 2);
 
-  // a replayed request isn't double-counted
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      3,
-      ev({ type: "permission_request", id: "p1", tool: "bash", input: {}, sessionId: "a" }),
-    ),
-  });
-  assert.equal(pendingFor(s, "a").permissions?.length, 2);
-
   s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p1" });
   assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
-
   s = reduce(s, { t: "resolvePerm", sessionId: "a", id: "p2" });
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
   assert.equal(pendingFor(s, "a").permissions, undefined);
 
-  // and a session moving on wipes any leftover
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      4,
-      ev({ type: "permission_request", id: "p3", tool: "bash", input: {}, sessionId: "a" }),
-    ),
-  });
+  // Another client answered one of them: it simply stops being in the snapshot,
+  // and exactly that one disappears here.
+  s = reduce(initialState(), fleet([blocked([perm("p1", "ls"), perm("p2", "pwd")])]));
+  s = reduce(s, fleet([blocked([perm("p2", "pwd")])]));
+  assert.deepEqual(
+    pendingFor(s, "a").permissions?.map((p) => p.id),
+    ["p2"],
+  );
+
+  // And a session moving on leaves nothing to answer.
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 });
@@ -1110,84 +1219,34 @@ test("qnav: liveQNav gates on session + request id, and resolvePerm clears a mat
   assert.equal(s.qnav, null);
 });
 
-test("a permission's matching tool_result clears it, even mid-replay with the session still awaiting_input", () => {
-  // Reconnect/history-replay: the daemon has long since resolved p1 (no
-  // dedicated event marks that — only the `tool_result` does, per the
-  // daemon's own `#trackPerms`), but the session is genuinely awaiting_input
-  // again for p2. Without tracking `tool_result`, p1 would sit in
-  // `permissions` forever and `firstPerm` would keep surfacing it instead of
-  // the real, current request.
-  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({
-        type: "permission_request",
-        id: "p1",
-        tool: "bash",
-        input: { command: "ls" },
-        sessionId: "a",
-      }),
-    ),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "tool_result", id: "p1", ok: true, output: "", sessionId: "a" })),
-  });
-  assert.equal(firstPerm(pendingFor(s, "a")), undefined);
-
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      3,
-      ev({
-        type: "permission_request",
-        id: "p2",
-        tool: "bash",
-        input: { command: "pwd" },
-        sessionId: "a",
-      }),
-    ),
-  });
-  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
-
-  // a tool_result for an unrelated id is a no-op
-  s = reduce(s, {
-    t: "push",
-    frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })),
-  });
-  assert.equal(firstPerm(pendingFor(s, "a"))?.id, "p2");
-});
-
-test("pending question is cleared by the matching answer event", () => {
+test("a question carries its text and context, and goes when the snapshot drops it", () => {
+  const q: SessionInteraction = {
+    kind: "question",
+    id: "q1",
+    question: "which store?",
+    context: "for the cache",
+    at: 1,
+  };
   let s = reduce(
     initialState(),
-    fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "question" })]),
+    fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "question", requests: [q] })]),
   );
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "question", id: "q1", question: "?", sessionId: "a" })),
-  });
   assert.equal(pendingFor(s, "a").question, "q1");
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "answer", id: "q1", text: "sqlite", sessionId: "a" })),
-  });
+  assert.equal(pendingFor(s, "a").questionText, "which store?");
+  assert.equal(pendingFor(s, "a").questionContext, "for the cache");
+
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(pendingFor(s, "a").question, undefined);
 });
 
 test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
-  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({ type: "plan_review", id: "pr1", plan: "step one\nstep two", sessionId: "a" }),
-    ),
+  const a = snap({
+    id: "a",
+    status: "awaiting_input",
+    awaitReason: "plan_review",
+    requests: [{ kind: "plan_review", id: "pr1", plan: "step one\nstep two", at: 1 }],
   });
+  let s = reduce(initialState(), fleet([a]));
   assert.equal(pendingFor(s, "a").plan, "pr1");
   assert.equal(pendingFor(s, "a").planText, "step one\nstep two");
 
@@ -1271,64 +1330,6 @@ test("makePicker clamps its initial index into range", () => {
   assert.equal(makePicker({ kind: "model", title: "t", items, index: 9 }).index, 1);
   assert.equal(makePicker({ kind: "model", title: "t", items, index: -1 }).index, 0);
   assert.equal(makePicker({ kind: "model", title: "t", items }).index, 0);
-});
-
-test("a plan is cleared by its matching tool_result once the decision lands", () => {
-  // The plan_review is keyed on the ExitPlanMode / exit_plan tool-call id, so
-  // its `tool_result` is the only durable mark that the plan was decided —
-  // the daemon clears its own map in `respondToPlan`, but that never reaches
-  // the event log a client backfills from.
-  let s = reduce(
-    initialState(),
-    fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" })]),
-  );
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "plan_review", id: "p1", plan: "the plan", sessionId: "a" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      2,
-      ev({ type: "tool_result", id: "p1", ok: true, output: "Plan approved.", sessionId: "a" }),
-    ),
-  });
-  assert.equal(pendingFor(s, "a").plan, undefined);
-
-  // an unrelated tool_result leaves the plan alone
-  s = reduce(s, {
-    t: "push",
-    frame: push(3, ev({ type: "plan_review", id: "p2", plan: "next plan", sessionId: "a" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(4, ev({ type: "tool_result", id: "other", ok: true, output: "", sessionId: "a" })),
-  });
-  assert.equal(pendingFor(s, "a").plan, "p2");
-});
-
-test("a replayed plan_review can't resurrect a plan the session already moved past", () => {
-  // Reconnect/history-backfill: the plan was approved while the client
-  // watched live, `session_updated` settled pending — then a selection
-  // change replays the durable history, which still holds the plan_review
-  // (nothing in the event stream marks a plan resolved). Re-applying it
-  // would pin the request panel on the stale plan text while the session
-  // is genuinely parked on something else.
-  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "old plan", sessionId: "a" })),
-  });
-  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
-  assert.equal(pendingFor(s, "a").plan, undefined);
-
-  // the backfill re-dispatches the same (seq, epoch) frame — a duplicate
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "old plan", sessionId: "a" })),
-  });
-  assert.equal(pendingFor(s, "a").plan, undefined);
 });
 
 test("focusedPending keeps only the surface the daemon says the session is parked on", () => {
@@ -1751,8 +1752,8 @@ test("formatEvent keeps the full body for long / multi-line events", () => {
   assert.doesNotMatch(multi.text, /\n/);
 
   // a short event doesn't carry a redundant `full` on the stored LogLine
-  assert.equal(toLogLine(1, "e1", ev({ type: "assistant_text", text: "hi" })).full, undefined);
-  assert.equal(toLogLine(2, "e1", ev({ type: "assistant_text", text: long })).full, long);
+  assert.equal(toLogLine(1, ev({ type: "assistant_text", text: "hi" })).full, undefined);
+  assert.equal(toLogLine(2, ev({ type: "assistant_text", text: long })).full, long);
 });
 
 test("Read tool calls show path + range; their tool_result drops the raw file dump", () => {
@@ -2032,11 +2033,12 @@ test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   assert.equal(s.prompt?.buffer.text, "typed", "↓ is a no-op at the live buffer");
 });
 
-test("echo appends a local log line and never truncates", () => {
-  let s = initialState();
-  const echo = (seq: number, text: string, ts: number): LogLine => ({
-    seq,
-    epoch: "",
+test("echoes are kept apart from the durable transcript and render after it", () => {
+  const a = snap({ id: "a", status: "running" });
+  let s = reduce(initialState(), fleet([a]));
+  s = reduce(s, { t: "select", id: "a" });
+  const echo = (text: string, ts: number): LogLine => ({
+    id: null, // no durable row behind it — that is what makes it an echo
     sessionId: "a",
     kind: "echo",
     glyph: "›",
@@ -2044,12 +2046,27 @@ test("echo appends a local log line and never truncates", () => {
     tone: "accent",
     ts,
   });
-  s = reduce(s, { t: "echo", line: echo(-1, "hi", 1) });
-  s = reduce(s, { t: "echo", line: echo(-2, "there", 2) });
-  s = reduce(s, { t: "echo", line: echo(-3, "again", 3) });
+  s = reduce(s, { t: "echo", line: echo("hi", 1) });
+  s = reduce(s, { t: "echo", line: echo("there", 2) });
+  s = reduce(s, {
+    t: "push",
+    frame: push(5, { ...ev({ type: "assistant_text", text: "from the daemon" }), sessionId: "a" }),
+  });
+
+  const t = transcriptFor(s, "a");
   assert.deepEqual(
-    s.log.map((l) => l.text),
-    ["hi", "there", "again"],
+    t.lines.map((l) => l.text),
+    ["from the daemon"],
+    "echoes never enter the durable list, so they cannot be deduplicated or paged",
+  );
+  assert.deepEqual(
+    t.echoes.map((l) => l.text),
+    ["hi", "there"],
+  );
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["from the daemon", "hi", "there"],
+    "a queued send belongs at the bottom — it is about to happen, not part of the record",
   );
 });
 
@@ -2070,21 +2087,19 @@ test("enqueue / dequeue / clearQueue and queueFor", () => {
   assert.deepEqual(queueFor(s, "b"), []);
 });
 
-test("a permission_request stashes the tool + input; leaving awaiting_input clears it", () => {
-  let s = reduce(initialState(), fleet([snap({ id: "a", status: "awaiting_input" })]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({
-        type: "permission_request",
-        id: "p1",
-        tool: "Bash",
-        input: { command: "rm -rf x" },
-        sessionId: "a",
+test("a permission carries its tool + input; leaving awaiting_input clears it", () => {
+  let s = reduce(
+    initialState(),
+    fleet([
+      snap({
+        id: "a",
+        status: "awaiting_input",
+        requests: [
+          { kind: "permission", id: "p1", tool: "Bash", input: { command: "rm -rf x" }, at: 1 },
+        ],
       }),
-    ),
-  });
+    ]),
+  );
   assert.deepEqual(firstPerm(pendingFor(s, "a")), {
     id: "p1",
     tool: "Bash",
@@ -2317,11 +2332,11 @@ test("status_changed events stay out of the log; result is a terse marker", () =
     frame: push(3, ev({ type: "result", kind: "ok", summary: "here is the answer" })),
   });
   assert.deepEqual(
-    s.log.map((l) => l.glyph),
+    lines(s).map((l) => l.glyph),
     ["▪", "■"],
     "no ◈ status line; result kept but terse",
   );
-  assert.equal(s.log.at(-1)?.text, "turn complete");
+  assert.equal(lines(s).at(-1)?.text, "turn complete");
 });
 
 test("selectedSession returns the highlighted row or null", () => {
@@ -2770,73 +2785,64 @@ void _typecheck;
 
 // --- snapshot-backed compacting (survives a reopen / second client) ---------
 
-test("a snapshot's compacting overlay seeds the indicator across a reopen", () => {
-  // hello: a session already mid-compaction at attach time shows "compacting…".
+test("the compacting indicator is whatever the snapshot says, for every client alike", () => {
+  // A session already mid-compaction at attach time shows "compacting…" without
+  // the client ever having seen a heartbeat: the beats are not persisted, so
+  // this is the only thing a second window or a reopened TUI can read it from.
   const mid = snap({
     id: "a",
     status: "idle",
     compacting: { startedAt: 9_000, before: 120_000, generated: 0 },
   });
   let s = reduce(initialState(), fleet([mid]));
-  assert.deepEqual(s.compacting["a"], { startedAt: 9_000, generated: 0, before: 120_000 });
-
-  // The gate released — a snapshot without the flag clears the entry (the
-  // daemon only clears it after the boundary has already been broadcast).
-  s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 99 })]));
-  assert.equal(s.compacting["a"], undefined);
-});
-
-test("a snapshot seeds the compacting overlay mid-flight and never clobbers live beats", () => {
-  let s = reduce(initialState(), fleet([snap({ id: "s1" })]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({
-        type: "compact_progress",
-        sessionId: "s1",
-        ts: 10_000,
-        elapsedMs: 4_000,
-        generated: 128,
-        before: 90_000,
-      }),
-    ),
+  assert.deepEqual(compactingFor(s, "a"), {
+    startedAt: 9_000,
+    generated: 0,
+    before: 120_000,
   });
-  // A live beat-driven entry is fresher than any snapshot — the seed skips it.
+  assert.ok(anyCompacting(s));
+
+  // Progress rides the snapshot too, so every client shows the same number.
   s = reduce(
     s,
     fleet([
       snap({
-        id: "s1",
+        id: "a",
         status: "idle",
-        compacting: { startedAt: 1, before: 1, generated: 0 },
+        compacting: { startedAt: 9_000, before: 120_000, generated: 400 },
         updatedAt: 50,
       }),
     ]),
   );
-  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+  assert.equal(compactingFor(s, "a")?.generated, 400);
 
-  // A second session's compaction seeds off the same snapshot without touching
-  // the first — every snapshot carries the whole fleet, so both are present.
-  s = reduce(
-    s,
+  // The gate released — a snapshot without the flag ends it. There is no local
+  // entry that could survive the release and pin "compacting…" forever.
+  s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 99 })]));
+  assert.equal(compactingFor(s, "a"), null);
+  assert.equal(anyCompacting(s), false);
+});
+
+test("every session's compaction rides the same snapshot", () => {
+  const s = reduce(
+    initialState(),
     fleet([
       snap({
         id: "s1",
         status: "idle",
-        compacting: { startedAt: 1, before: 1, generated: 0 },
-        updatedAt: 50,
+        compacting: { startedAt: 6_000, before: 90_000, generated: 128 },
       }),
       snap({
         id: "s2",
         status: "idle",
         compacting: { startedAt: 42_000, before: 77_000, generated: 0 },
-        updatedAt: 51,
       }),
+      snap({ id: "s3", status: "idle" }),
     ]),
   );
-  assert.deepEqual(s.compacting["s2"], { startedAt: 42_000, generated: 0, before: 77_000 });
-  assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
+  assert.equal(compactingFor(s, "s1")?.generated, 128);
+  assert.equal(compactingFor(s, "s2")?.startedAt, 42_000);
+  assert.equal(compactingFor(s, "s3"), null);
 });
 
 test("a model picker opened while the catalog loads resolves when the fresh list lands", () => {
@@ -2935,10 +2941,12 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
 
 // The search engine reads a `FleetView`, not the whole UI state — hand it
 // exactly that rather than a TuiState that happens to satisfy it structurally.
-const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): FleetView => ({
-  sessions,
-  log,
-});
+const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): FleetView => {
+  const transcripts: Record<string, { lines: LogLine[]; echoes: LogLine[] }> = {};
+  for (const s of sessions) transcripts[s.id] = { lines: [], echoes: [] };
+  for (const l of log) transcripts[l.sessionId]?.lines.push(l);
+  return { sessions, transcripts };
+};
 
 test("fleet search: a 'term is a literal substring, case-insensitive", () => {
   const s = searchState([
@@ -2975,7 +2983,6 @@ test("fleet search: title beats your messages beats the agent's", () => {
     [
       toLogLine(
         1,
-        "e1",
         ev({
           type: "user_message",
           text: "start the mobile work",
@@ -2985,7 +2992,6 @@ test("fleet search: title beats your messages beats the agent's", () => {
       ),
       toLogLine(
         2,
-        "e1",
         ev({ type: "assistant_text", text: "the mobile plan is ready", sessionId: "theirs" }),
       ),
     ],
@@ -3003,7 +3009,6 @@ test("fleet search: tool traffic and thinking are invisible", () => {
     [
       toLogLine(
         1,
-        "e1",
         ev({
           type: "tool_call",
           id: "c1",
@@ -3014,10 +3019,9 @@ test("fleet search: tool traffic and thinking are invisible", () => {
       ),
       toLogLine(
         2,
-        "e1",
         ev({ type: "tool_result", id: "c1", ok: true, output: { text: "mobile" }, sessionId: "x" }),
       ),
-      toLogLine(3, "e1", ev({ type: "thinking", text: "they said mobile, so…", sessionId: "x" })),
+      toLogLine(3, ev({ type: "thinking", text: "they said mobile, so…", sessionId: "x" })),
     ],
   );
   assert.deepEqual(searchSessions(s, "mobile"), []);
@@ -3028,9 +3032,10 @@ test("fleet search: message bodies beyond the one-line summary are searched", ()
   const a = snap({ id: "a", title: "chat" });
   const s = searchState(
     [a],
-    [toLogLine(1, "e1", ev({ type: "user_message", text: long, injected: false, sessionId: "a" }))],
+    [toLogLine(1, ev({ type: "user_message", text: long, injected: false, sessionId: "a" }))],
   );
-  const line = s.log[0]!;
+  const line = s.transcripts["a"]?.lines[0];
+  assert.ok(line);
   assert.ok(
     (line.full?.length ?? 0) > line.text.length,
     "fixture: the log line's summary is truncated",
@@ -3046,7 +3051,9 @@ test("fleet search: equal scores keep the fleet's order (newest first)", () => {
   const newer = snap({ id: "newer", title: "zebra run", updatedAt: 99 });
   const s = reduce(initialState(), fleet([older, newer]));
   assert.deepEqual(
-    searchSessions({ sessions: fleetSessions(s), log: s.log }, "'zebra").map((m) => m.session.id),
+    searchSessions({ sessions: fleetSessions(s), transcripts: s.transcripts }, "'zebra").map(
+      (m) => m.session.id,
+    ),
     ["newer", "older"],
   );
 });

@@ -11,6 +11,7 @@ import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
 import {
+  compactingFor,
   fleetSessions,
   providerAccountOf,
   providerColorOf,
@@ -171,7 +172,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               now={Date.now()}
               engineColor={sel ? providerColorOf(state, sel.provider) : ""}
               account={sel ? providerAccountOf(state, sel.provider) : ""}
-              compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+              compacting={compactingFor(state, sel?.id ?? null)}
             />
             <EventLog
               state={state}
@@ -205,7 +206,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
             now={Date.now()}
             engineColor={sel ? providerColorOf(state, sel.provider) : ""}
             account={sel ? providerAccountOf(state, sel.provider) : ""}
-            compacting={sel ? (state.compacting[sel.id] ?? null) : null}
+            compacting={compactingFor(state, sel?.id ?? null)}
           />
           <EventLog
             state={state}
