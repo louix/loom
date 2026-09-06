@@ -73,3 +73,45 @@ TUI total **9044**. Plus `client/src/client.ts` 767, `core/src/wire.ts` 525,
 Tests: `tui-model.test.ts` 3279, `tui-render.test.ts` 2608, `tui-editor.test.ts`
 217, `client-state.test.ts` 834, `connection.test.ts` 364, `daemon.test.ts` 2355,
 `session-queue.test.ts` 124 — total **9781**.
+
+## Step 1 — `incrementalRendering: true`
+
+Enabled in `run.tsx`; `alternateScreen` and Ink's default 30fps cap unchanged.
+React render counts are identical either way — this is terminal traffic only.
+
+| scenario                      | bytes before | bytes after | writes           |
+| ----------------------------- | ------------ | ----------- | ---------------- |
+| stream (60 events)            | 494,344      | 138,793     | 225 (unchanged)  |
+| scroll (12×PgUp + End)        | 195,285      | 33,448      | 90 (unchanged)   |
+| typing + mode while streaming | 1,112,974    | 255,820     | ~530 (unchanged) |
+
+`deno run -A scripts/tui-bench.ts --micro` isolates the two shapes of change:
+
+| change                        | bytes/write before | bytes/write after |
+| ----------------------------- | ------------------ | ----------------- |
+| spinner-only tick             | 2,160              | 139               |
+| one appended transcript event | 2,164              | 138               |
+
+Key-to-visible-feedback improved as a side effect — typing p50 under a
+streaming load fell from 36.5ms to 2.8ms, and the browse-mode mode notice from
+37ms to 2.3ms — because a smaller write clears the stream sooner.
+
+### Interaction pass
+
+`deno run -A scripts/tui-bench.ts --exercise` replays Ink's incremental
+escape vocabulary into a reconstructed screen (a stale row Ink forgot to erase
+is invisible to a "newest write contains X" check, but not to this) and asserts
+across: initial fleet, help open/close, new-session prompt open/close, 5×PgUp,
+End, resize to 60×20 / 200×50 / back to 120×40, `$EDITOR` handoff and return,
+and unmount. No stale content and no content regressions.
+
+Two height findings, both **identical with the option off** (`--exercise --full`),
+so neither is caused by incremental rendering:
+
+- the help overlay renders ~55 rows into a 40-row terminal;
+- at 60×20 the layout renders 20–21 non-blank rows, one over the viewport.
+
+Ink can fall back to a full repaint when a frame overflows the viewport, so the
+help overlay does not benefit from the option at 40 rows. That is a pre-existing
+layout bug, recorded here rather than fixed in this step. No blocker found: the
+option is kept.

@@ -78,14 +78,14 @@ record what a simulated TTY establishes and leave visible flicker/latency unveri
 
 Files: `frontend/tui/src/run.tsx`. Installed baseline: Ink 7.1.1.
 
-- [ ] Enable `incrementalRendering: true` in the existing render options.
+- [x] Enable `incrementalRendering: true` in the existing render options.
       Keep alternate-screen support and the current frame limit initially.
-- [ ] Compare emitted bytes for a spinner-only change and an appended event.
+- [x] Compare emitted bytes for a spinner-only change and an appended event.
       React rendering and terminal writing are different measurements.
-- [ ] Exercise resize, narrow/wide layouts, long wrapped rows, overlays, scroll,
+- [x] Exercise resize, narrow/wide layouts, long wrapped rows, overlays, scroll,
       `$EDITOR` return, and exit. Check that output stays within terminal height;
       overflowing the viewport can force a full clear despite incremental mode.
-- [ ] If this reveals an Ink defect, record the reproducer and defer the option;
+- [x] If this reveals an Ink defect, record the reproducer and defer the option;
       do not build an ANSI diff engine or silently accept rendering corruption.
 
 Done: changed-line output works with existing interactions, or a concrete blocker

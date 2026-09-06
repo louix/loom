@@ -140,7 +140,7 @@ const arg = (flag: string): string | undefined => {
 const incremental = args.has("--incremental");
 const label = arg("--label") ?? (incremental ? "after" : "before");
 
-const mount = (client: LoomClient, historyPageSize?: number) => {
+const mount = (client: LoomClient, historyPageSize?: number, inc = incremental) => {
   const out = new BenchOut();
   const input = new BenchIn();
   const renders = new Renders();
@@ -157,7 +157,7 @@ const mount = (client: LoomClient, historyPageSize?: number) => {
       // Force interactive so Ink emits the erase/cursor sequences a real
       // terminal would receive; `debug: true` would make bytes meaningless.
       interactive: true,
-      incrementalRendering: incremental,
+      incrementalRendering: inc,
       onRender: (m) => {
         renders.n += 1;
         renders.ms += m.renderTime;
@@ -437,22 +437,359 @@ const summarize = (xs: number[]): Record<string, number> | null => {
   };
 };
 
-await idleScenario();
-await streamScenario();
-await scrollScenario();
-await typeModeScenario();
+const runScenarios = async (): Promise<void> => {
+  await idleScenario();
+  await streamScenario();
+  await scrollScenario();
+  await typeModeScenario();
 
-const report = {
-  label,
-  head: new TextDecoder()
-    .decode(new Deno.Command("git", { args: ["rev-parse", "HEAD"] }).outputSync().stdout)
-    .trim(),
-  incrementalRendering: incremental,
-  terminal: { columns: COLUMNS, rows: ROWS },
-  scenarios,
+  const report = {
+    label,
+    head: new TextDecoder()
+      .decode(new Deno.Command("git", { args: ["rev-parse", "HEAD"] }).outputSync().stdout)
+      .trim(),
+    incrementalRendering: incremental,
+    terminal: { columns: COLUMNS, rows: ROWS },
+    scenarios,
+  };
+  const path = arg("--out") ?? `references/tui-bench-${label}.json`;
+  await Deno.mkdir("references", { recursive: true }).catch(() => {});
+  await Deno.writeTextFile(path, JSON.stringify(report, null, 2) + "\n");
+  console.log(JSON.stringify(report, null, 2));
+  console.log(`\nwrote ${path}`);
 };
-const out = arg("--out") ?? `references/tui-bench-${label}.json`;
-await Deno.mkdir("references", { recursive: true }).catch(() => {});
-await Deno.writeTextFile(out, JSON.stringify(report, null, 2) + "\n");
-console.log(JSON.stringify(report, null, 2));
-console.log(`\nwrote ${out}`);
+
+/* ------------------------------------------------------------------ *
+ * `--exercise`: correctness pass for incremental rendering (plan §1).
+ *
+ * Ink's incremental writer emits only the lines that changed, addressed by
+ * relative cursor motion. A stale row it forgets to erase is invisible to a
+ * "does the newest write contain X" check, so this mode replays Ink's own
+ * escape vocabulary — cursorUp/NextLine/To, eraseEndLine/Line/Down — into a
+ * plain-text screen and asserts against that reconstruction instead.
+ * ------------------------------------------------------------------ */
+
+/** The subset of ANSI Ink's `log-update` writer emits, replayed into rows. */
+class Screen {
+  rows: string[] = [];
+  row = 0;
+  col = 0;
+  feed(chunk: string): void {
+    for (let i = 0; i < chunk.length;) {
+      const ch = chunk[i]!;
+      if (ch === "\x1b" && chunk[i + 1] === "[") {
+        // oxlint-disable-next-line no-control-regex
+        const m = /^\u001B\[([?0-9;]*)([A-Za-z])/.exec(chunk.slice(i));
+        if (m) {
+          this.#csi(m[1] ?? "", m[2] ?? "");
+          i += m[0].length;
+          continue;
+        }
+      }
+      if (ch === "\x1b") {
+        // OSC / other escapes: skip to the terminator, they don't move the cursor.
+        const end = chunk.indexOf("\x07", i);
+        i = end === -1 ? i + 1 : end + 1;
+        continue;
+      }
+      if (ch === "\n") {
+        this.row += 1;
+        this.col = 0;
+      } else if (ch === "\r") {
+        this.col = 0;
+      } else {
+        this.#put(ch);
+      }
+      i += 1;
+    }
+  }
+  #line(r: number): string {
+    while (this.rows.length <= r) this.rows.push("");
+    return this.rows[r]!;
+  }
+  #set(r: number, s: string): void {
+    this.#line(r);
+    this.rows[r] = s;
+  }
+  #put(ch: string): void {
+    const line = this.#line(this.row).padEnd(this.col, " ");
+    this.#set(this.row, line.slice(0, this.col) + ch + line.slice(this.col + 1));
+    this.col += 1;
+  }
+  #csi(params: string, final: string): void {
+    const n = Number.parseInt(params, 10);
+    const arg = Number.isNaN(n) ? 1 : n;
+    switch (final) {
+      case "A":
+        this.row = Math.max(0, this.row - arg);
+        return;
+      case "B":
+        this.row += arg;
+        return;
+      case "C":
+        this.col += arg;
+        return;
+      case "D":
+        this.col = Math.max(0, this.col - arg);
+        return;
+      case "E":
+        this.row += arg;
+        this.col = 0;
+        return;
+      case "F":
+        this.row = Math.max(0, this.row - arg);
+        this.col = 0;
+        return;
+      case "G":
+        this.col = Math.max(0, arg - 1);
+        return;
+      case "H":
+      case "f": {
+        const [r, c] = params.split(";").map((x) => Number.parseInt(x, 10) || 1);
+        this.row = Math.max(0, (r ?? 1) - 1);
+        this.col = Math.max(0, (c ?? 1) - 1);
+        return;
+      }
+      case "K": {
+        const line = this.#line(this.row);
+        if (params === "2") this.#set(this.row, "");
+        else if (params === "1") this.#set(this.row, " ".repeat(this.col) + line.slice(this.col));
+        else this.#set(this.row, line.slice(0, this.col));
+        return;
+      }
+      case "J":
+        if (params === "" || params === "0") this.rows = this.rows.slice(0, this.row + 1);
+        else this.rows = [];
+        return;
+      default:
+        return; // SGR, cursor show/hide, mouse/paste modes — no layout effect
+    }
+  }
+  get text(): string {
+    return this.rows.join("\n").replace(/[ \t]+$/gm, "");
+  }
+  get height(): number {
+    // Trailing blank rows are cursor parking, not content.
+    let last = this.rows.length;
+    while (last > 0 && (this.rows[last - 1] ?? "").trim() === "") last -= 1;
+    return last;
+  }
+}
+
+const exercise = async (): Promise<void> => {
+  const failures: string[] = [];
+  const h = await makeHarness();
+  const connect = () =>
+    LoomClient.connect({
+      repoRoot: h.repoRoot,
+      sockPath: h.sockPath,
+      autospawn: false,
+      reconnect: true,
+    });
+  const first = await connect();
+  const snap = await first.request<SessionSnapshot>("session.createStub", {
+    prompt: "a session with a long back-history",
+    status: "running",
+    provider: "fake",
+  });
+  await first.request("session.createStub", {
+    prompt: "second session",
+    status: "idle",
+    provider: "fake",
+  });
+  for (let i = 1; i <= 60; i++) {
+    await first.request("dev.emit", {
+      event: {
+        sessionId: snap.id,
+        type: "assistant_text",
+        text: `history line ${i} — deliberately long so that it wraps at narrow widths and exercises the wrapped-row path in the transcript renderer`,
+      },
+    });
+  }
+  await delay(200);
+  await first.close();
+
+  const client = await connect();
+  const screen = new Screen();
+  const editorCalls: string[] = [];
+  const out = new BenchOut();
+  const input = new BenchIn();
+  const realWrite = out.write;
+  out.write = (s: string): boolean => {
+    screen.feed(s);
+    return realWrite(s);
+  };
+  const app = render(
+    createElement(App, {
+      client,
+      logs: { daemon: "/dev/null", tui: "/dev/null" },
+      openEditor: async (text: string) => {
+        editorCalls.push(text);
+        await delay(50);
+        return null;
+      },
+    }),
+    {
+      stdout: out as unknown as NodeJS.WriteStream,
+      stdin: input as unknown as NodeJS.ReadStream,
+      exitOnCtrlC: false,
+      patchConsole: false,
+      interactive: true,
+      incrementalRendering: !args.has("--full"),
+    },
+  );
+
+  const check = (name: string, want: RegExp[], notWant: RegExp[] = []): void => {
+    const t = screen.text;
+    for (const re of want) {
+      if (!re.test(t)) failures.push(`${name}: expected ${re} on the reconstructed screen`);
+    }
+    for (const re of notWant) {
+      if (re.test(t)) failures.push(`${name}: stale ${re} left on the reconstructed screen`);
+    }
+    if (screen.height > out.rows) {
+      const stripped = (s: string) =>
+        s
+          // oxlint-disable-next-line no-control-regex
+          .replace(/\x1b\[[?0-9;]*[A-Za-z]/g, "")
+          .split("\n")
+          .filter((l) => l.trim() !== "").length;
+      const raw = Math.max(0, ...out.writes.slice(-6).map((w) => stripped(w.text)));
+      failures.push(
+        `${name}: ${screen.height} rows rendered into a ${out.rows}-row terminal (last write held ${raw} non-blank lines)`,
+      );
+    }
+  };
+  const resize = async (columns: number, rows: number): Promise<void> => {
+    out.columns = columns;
+    out.rows = rows;
+    out.emit("resize");
+    await delay(400);
+  };
+
+  try {
+    await waitFor(out, /history line 60/);
+    await delay(300);
+    check("initial", [/loom/, /history line 60/, /second session/]);
+
+    input.feed("?");
+    await delay(300);
+    check("help overlay", [/loom — keys/]);
+    input.feed(ESC);
+    await delay(300);
+    check("help closed", [/second session/], [/loom — keys/]);
+
+    input.feed("n");
+    await delay(300);
+    check("new-session prompt", [/new session/]);
+    input.feed(ESC);
+    await delay(300);
+    check("prompt closed", [/second session/], [/new session/]);
+
+    for (let i = 0; i < 5; i++) {
+      input.feed(PGUP);
+      await delay(180);
+    }
+    check("scrolled back", [/history line/]);
+    input.feed(END);
+    await delay(600);
+    check("back to the tail", [/history line 60/]);
+
+    await resize(60, 20);
+    check("narrow 60x20", [/loom/]);
+    await resize(200, 50);
+    check("wide 200x50", [/loom/]);
+    await resize(120, 40);
+    check("back to 120x40", [/loom/, /history line/]);
+
+    input.feed(" ");
+    await delay(250);
+    input.feed("view logs");
+    await delay(200);
+    input.feed("\r");
+    await delay(600);
+    if (editorCalls.length === 0) failures.push("editor handoff: openEditor was never called");
+    check("after $EDITOR return", [/loom/], [/view logs/]);
+  } finally {
+    app.unmount();
+    await delay(200);
+    await client.close();
+    await h.cleanup();
+  }
+
+  console.log(`\nincremental-rendering exercise: ${failures.length} failure(s)`);
+  for (const f of failures) console.log(`  ✗ ${f}`);
+  if (failures.length > 0) Deno.exitCode = 1;
+};
+/**
+ * `--micro`: the plan's spinner-only vs appended-event byte comparison, run
+ * once with incremental rendering off and once with it on. Phase A is pure
+ * animation (the 120ms tick, no daemon traffic); phase B adds one transcript
+ * event every 250ms on top of that same animation, so B's own cost is the
+ * excess over A's rate.
+ */
+const microScenario = async (inc: boolean): Promise<Record<string, unknown>> => {
+  const h = await makeHarness();
+  const client = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+    reconnect: true,
+  });
+  const snap = await client.request<SessionSnapshot>("session.create", {
+    prompt: "spinner subject",
+    provider: "fake",
+  });
+  const fake = (await h.daemon.providers.get("fake")) as FakeProvider;
+  const fs = fake.session(snap.id);
+  for (let i = 0; i < 6; i++) fs?.emit({ type: "assistant_text", text: `warmup line ${i}` });
+  const { out, app, renders } = mount(client, undefined, inc);
+  try {
+    await waitFor(out, /spinner subject/);
+    await delay(400);
+
+    const aFrom = renders.mark();
+    const aWrite = out.writes.length;
+    const aSince = performance.now();
+    await delay(2000);
+    const a = windowSince(out, renders, aFrom, aWrite, aSince);
+    const aMs = performance.now() - aSince;
+
+    const bFrom = renders.mark();
+    const bWrite = out.writes.length;
+    const bSince = performance.now();
+    for (let i = 0; i < 10; i++) {
+      fs?.emit({ type: "assistant_text", text: `appended event ${i}` });
+      await delay(250);
+    }
+    const b = windowSince(out, renders, bFrom, bWrite, bSince);
+    const bMs = performance.now() - bSince;
+
+    const spinnerRate = a.bytes / aMs;
+    return {
+      incrementalRendering: inc,
+      spinnerOnly: {
+        ...a,
+        ms: +aMs.toFixed(0),
+        bytesPerWrite: Math.round(a.bytes / (a.writes || 1)),
+      },
+      withAppendedEvents: {
+        ...b,
+        ms: +bMs.toFixed(0),
+        events: 10,
+        bytesPerWrite: Math.round(b.bytes / (b.writes || 1)),
+        bytesAboveSpinnerBaseline: Math.round(b.bytes - spinnerRate * bMs),
+      },
+    };
+  } finally {
+    app.unmount();
+    await client.close();
+    await h.cleanup();
+  }
+};
+
+if (args.has("--micro")) {
+  const micro = [await microScenario(false), await microScenario(true)];
+  console.log(JSON.stringify(micro, null, 2));
+} else if (args.has("--exercise")) await exercise();
+else await runScenarios();
