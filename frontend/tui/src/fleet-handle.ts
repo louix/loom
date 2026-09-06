@@ -195,6 +195,14 @@ const tailFileSync = (path: string, maxBytes: number): string => {
 const nextMode = (m: SessionMode): SessionMode =>
   SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
 
+/**
+ * Actions that touch nothing but this process, so they stay live while the
+ * connection is down: reading the UI, changing how it looks, viewing the log
+ * files, leaving. Everything else needs a daemon, and is gated once in
+ * `runAct` on ClientState's discriminant rather than failing per-RPC.
+ */
+const OFFLINE_ACTS = new Set<ActName>(["help", "theme", "filter", "viewlog", "logs", "quit"]);
+
 /** Overlays that arm the batched-input latch ({@link overlayActed}). */
 const LATCHED_OVERLAYS = new Set<Overlay["t"]>(["confirm", "plan", "picker"]);
 
@@ -522,6 +530,9 @@ export const mkFleetHandle = ({
   const savedTheme = themeState ? loadPersistedTheme(themeState) : null;
   if (savedTheme) setThemeMode(savedTheme);
   let state = initialState();
+  /** Whether the daemon has given us a snapshot to act on. The single source
+   *  for "is this UI connected" — see {@link connectionOf}. */
+  const connected = (): boolean => state.fleet.tag === "data";
   let tick = 0;
   let logScroll = 0;
   let planScroll = 0;
@@ -581,7 +592,6 @@ export const mkFleetHandle = ({
   // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
   const forgetDeadSessions = (): void => {
-    if (state.fleet.tag !== "data") return; // an unknown fleet proves nothing dead
     const live = new Set(fleetSessions(state).map((s) => s.id));
     for (const id of draining) if (!live.has(id)) draining.delete(id);
     for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
@@ -645,10 +655,6 @@ export const mkFleetHandle = ({
    * than lost between the two sources.
    */
   const loadHistory = (): void => {
-    // No connection, no fetch: the caches were dropped when it went, and asking
-    // now would only spend a request on a socket that isn't there. Regaining a
-    // snapshot is one of the three things that calls this.
-    if (state.fleet.tag !== "data") return;
     const id = state.selectedId;
     if (!id) return;
     const head = transcriptFor(state, id).head;
@@ -681,7 +687,7 @@ export const mkFleetHandle = ({
    * re-points the cursor at whatever it evicted rather than clearing it.
    */
   const loadOlderHistory = (): void => {
-    if (state.fleet.tag !== "data") return;
+    if (!connected()) return;
     const id = state.selectedId;
     if (!id) return;
     const t = transcriptFor(state, id);
@@ -738,9 +744,6 @@ export const mkFleetHandle = ({
   };
 
   const drainQueues = (): void => {
-    // An unknown fleet is not an empty fleet. Without this a dropped connection
-    // reads as "every queued session is gone" and strands every queue.
-    if (state.fleet.tag !== "data") return;
     // A queue on a session that won't return to idle (done / error / gone) is
     // stranded — say so and drop it. An `interrupted` session is left alone
     // until the next `send` revives it.
@@ -866,6 +869,12 @@ export const mkFleetHandle = ({
       if (themeState) persistTheme(themeState, state.theme);
     }
     publish();
+    // One gate for every daemon-dependent effect, read off ClientState's
+    // discriminant rather than a flag beside it. Without a snapshot there is
+    // nothing to fetch (the caches were dropped when the connection went), no
+    // session proven dead, and no queue that can be drained — an unknown fleet
+    // is not an empty fleet, and treating it as one strands every queue.
+    if (!connected()) return;
     // Three transitions want the selected session's newest page, and only
     // these three: a different session, a cache reset (which put every `head`
     // back to `idle`), and regaining a snapshot after losing one. The reset a
@@ -874,7 +883,7 @@ export const mkFleetHandle = ({
     if (
       state.selectedId !== prev.selectedId ||
       state.transcriptGen !== prev.transcriptGen ||
-      (prev.fleet.tag !== "data" && state.fleet.tag === "data")
+      prev.fleet.tag !== "data"
     ) {
       loadHistory();
     }
@@ -1645,6 +1654,12 @@ export const mkFleetHandle = ({
   const submitPrompt = (): void => {
     const p = openPrompt(state.overlay);
     if (!p) return;
+    // Nothing typed is submitted while the connection is down — including text
+    // an `$EDITOR` handoff started before the drop just handed back. The prompt
+    // stays open with it, to be sent (or abandoned) once the daemon answers.
+    if (!connected()) {
+      return note("not connected — your message is kept, press enter again once it is", "dim");
+    }
     const text = p.buffer.text.trim();
     const by = client.clientId;
     const kind = promptKind(p);
@@ -2034,6 +2049,9 @@ export const mkFleetHandle = ({
    * through {@link act}; the app / view / structural commands are handled here.
    */
   const runAct = (name: ActName): void => {
+    if (!connected() && !OFFLINE_ACTS.has(name)) {
+      return note("not connected — nothing to act on until the daemon answers", "dim");
+    }
     const sel = selectedSession(state);
     const allowed = allowedActs(sel);
     switch (name) {

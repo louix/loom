@@ -222,9 +222,17 @@ export const Fleet = ({
   const budget = fleetRowBudget(height, state.find != null);
   const { visible, offset, total } = fleetLayout(state, budget);
   const truncated = total > visible.length;
-
   let blocks: ReactNode[];
-  if (total === 0) {
+  if (state.fleet.tag !== "data") {
+    // No snapshot: the fleet is unknown, not empty. Saying "no sessions yet"
+    // here would invite starting a second one for work already running.
+    blocks = [
+      <Text key="conn" color={C.dim} wrap="truncate-end">
+        {lampFor(connectionOf(state)).text}
+        {" — the daemon's sessions are unknown until it answers"}
+      </Text>,
+    ];
+  } else if (total === 0) {
     blocks = [
       state.find ? (
         <Text key="empty" color={C.dim} wrap="truncate-end">

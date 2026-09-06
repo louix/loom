@@ -2318,6 +2318,45 @@ describe("tui fleet-handle effects", () => {
     }
   });
 
+  test("a message typed before the drop is kept, not sent, until the daemon answers", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      // Daemon-dependent input is gated once, on ClientState's discriminant,
+      // rather than each action discovering the dead socket for itself.
+      fake.deliver(loadablePending);
+      handle.handleKey("n", {} as Key);
+      assert.equal(handle.getView().state.overlay.t, "browse", "no new-session prompt opens");
+      assert.match(handle.getView().state.notice?.text ?? "", /not connected/);
+
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+      handle.handleKey("", { return: true } as Key); // open the send prompt
+      for (const ch of "half typed") handle.handleKey(ch, {} as Key);
+
+      // The connection drops with the message half-written (an `$EDITOR`
+      // handoff returning after the drop lands the same way).
+      fake.deliver(loadablePending);
+      handle.handleKey("", { return: true } as Key);
+      assert.equal(fake.of("session.send").length, 0, "nothing is sent to a socket that is gone");
+      assert.equal(
+        openPrompt(handle.getView().state.overlay)?.buffer.text,
+        "half typed",
+        "the prompt keeps what was typed",
+      );
+      assert.match(handle.getView().state.notice?.text ?? "", /not connected/);
+
+      // Reconnected: the same keypress sends the same text, once.
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+      handle.handleKey("", { return: true } as Key);
+      const sent = fake.of("session.send");
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0]?.params["text"], "half typed");
+    } finally {
+      teardown();
+    }
+  });
+
   test("history reloads across a reconnect for the same selected session", async () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });

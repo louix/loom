@@ -96,30 +96,30 @@ is documented. No new permanent suite solely asserting the option is `true`.
 Files: `frontend/tui/src/model.ts`, `fleet-handle.ts`, `app.tsx`, `components.tsx`.
 Introduce `frontend/tui/src/overlay.ts` for pure overlay types/transitions.
 
-- [ ] Replace independent UI mode plus nullable overlay payloads with one union:
+- [x] Replace independent UI mode plus nullable overlay payloads with one union:
       browse, help, doctor, prompt, confirmation, plan review, or picker. Each
       payload lives in its owning variant. Render with an exhaustive switch/fold.
-- [ ] Replace `PromptKind` plus optional fields with purpose-specific variants.
+- [x] Replace `PromptKind` plus optional fields with purpose-specific variants.
       New-session prompts have creation settings; session prompts require a session;
       request answers require the exact request identity; multi-question answers
       require their questions and answer progress. Factor only genuinely shared
       editor fields. Do not use `Partial<Prompt>` constructors or broad casts.
-- [ ] Model picker destinations explicitly: new session, existing session, or
+- [x] Model picker destinations explicitly: new session, existing session, or
       plan implementation. Replace `planStage`, `reopenSend`, and navigation flags
       with the actual return destination and required continuation data.
-- [ ] Preserve temporarily suspended input: opening the provider/model picker
+- [x] Preserve temporarily suspended input: opening the provider/model picker
       from a send prompt or plan review must carry the return payload inside that
       flow. A single active overlay does not mean discarding the underlying draft.
-- [ ] Reconcile request-bound UI by session + request ID in one pure function.
+- [x] Reconcile request-bound UI by session + request ID in one pure function.
       Close stale request UI without retargeting typed answers; leave unrelated
       send/title drafts alone. Unknown fleet state is not proof of removal.
-- [ ] Gate the connected layout and daemon-dependent input once at the root using
+- [x] Gate the connected layout and daemon-dependent input once at the root using
       ClientState's discriminant. On disconnect, dispose connected feature effects
       and show the connection view. Preserve draft/queue values separately from
       those effects; do not add a second `connected` flag or offline session copy.
       Existing editor handoffs may finish; retain returned text without submitting
       it until connected. Reconnect revalidates targets before enabling actions.
-- [ ] Delete old fields, constructors, null guards, and patch helpers whose sole
+- [x] Delete old fields, constructors, null guards, and patch helpers whose sole
       purpose was making the independent values agree. No compatibility getters
       recreating the old mutable representation.
 
