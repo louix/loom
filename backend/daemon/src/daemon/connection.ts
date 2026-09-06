@@ -1,5 +1,11 @@
 import { makeLogger } from "@loom/core/logger";
-import { MAX_FRAME_BYTES, type Frame, type PushFrame, type ResponseFrame } from "@loom/core/wire";
+import {
+  MAX_FRAME_BYTES,
+  type Frame,
+  type PushFrame,
+  type ResponseFrame,
+  type StatePush,
+} from "@loom/core/wire";
 
 const log = makeLogger("conn");
 
@@ -140,6 +146,17 @@ export class Connection {
   }
 
   respond(frame: ResponseFrame): void {
+    this.#write(frame);
+  }
+
+  /**
+   * A complete state snapshot. Unlike {@link push} this is not subject to the
+   * backlog ceiling — a client behind on state is exactly the client that needs
+   * the current snapshot, and each one supersedes the last, so the queue can
+   * never grow past the frames already counted against `#backlogBytes`.
+   */
+  pushState(frame: StatePush): void {
+    if (!this.subscribed || this.#closed) return;
     this.#write(frame);
   }
 

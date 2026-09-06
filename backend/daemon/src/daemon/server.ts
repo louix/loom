@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { makeLogger } from "@loom/core/logger";
-import type { Frame, PushFrame } from "@loom/core/wire";
+import type { Frame, PushFrame, StatePush } from "@loom/core/wire";
 import { Connection } from "./connection.ts";
 import type { RpcDispatcher } from "./rpc.ts";
 
@@ -103,6 +103,11 @@ export class SocketServer {
 
   broadcast(frame: PushFrame): void {
     for (const conn of this.#conns) conn.push(frame);
+  }
+
+  /** Fan a complete state snapshot out to every subscribed connection. */
+  broadcastState(frame: StatePush): void {
+    for (const conn of this.#conns) conn.pushState(frame);
   }
 
   /** Push-subscribed client count. */

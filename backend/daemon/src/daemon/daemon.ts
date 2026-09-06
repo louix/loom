@@ -31,6 +31,7 @@ import {
 } from "@loom/core/session-state";
 import {
   PROTOCOL_VERSION,
+  type DaemonInfo,
   type DoctorMcpServer,
   type DoctorReport,
   type EventPush,
@@ -39,6 +40,7 @@ import {
   type ModelChoice,
   type ProviderInfo,
   type SessionSnapshot,
+  type StatePush,
 } from "@loom/core/wire";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
 import {
@@ -531,6 +533,9 @@ export class Daemon {
     return frame.seq;
   }
 
+  // The per-session / per-provider pushes below are superseded by the whole-
+  // fleet `state` snapshot and go away with their last consumer; until then
+  // each one also publishes state, so both families describe the same fleet.
   #emitSessionUpdated(session: SessionSnapshot, by?: string, opts: { git?: boolean } = {}): void {
     if (this.#stopping) return;
     const frame = this.#events.append({
@@ -541,12 +546,16 @@ export class Daemon {
       ...(by !== undefined ? { by } : {}),
     });
     this.#server.broadcast(frame);
+    // `#enrich` above already re-probed when `git` wasn't false, so the
+    // snapshot reads the fresh facts straight out of the cache.
+    this.#publishState();
   }
 
   #emitSessionRemoved(id: string): void {
     if (this.#stopping) return;
     const frame = this.#events.append({ kind: "push", type: "session_removed", sessionId: id });
     this.#server.broadcast(frame);
+    this.#publishState();
   }
 
   /** The remembered new-session defaults changed — push the fresh provider
@@ -561,6 +570,56 @@ export class Daemon {
       providers: this.#providerList(),
     });
     this.#server.broadcast(frame);
+    this.#publishState();
+  }
+
+  /**
+   * The one place a complete state snapshot is built. Reads current
+   * authoritative values at publication time — never a value carried over from
+   * whatever mutation prompted the call, so two changes racing to publish both
+   * end up describing the same final state rather than one of them reinstating
+   * a stale read.
+   *
+   * `refreshGitFor` re-probes exactly one session's worktree; every other
+   * session uses the facts `#sweepGitFacts` maintains. Publishing happens per
+   * tool call and per usage tick, so probing the whole fleet here would be a
+   * `git` shell-out per session per token.
+   */
+  #stateFrame(refreshGitFor?: string | "all"): StatePush {
+    if (refreshGitFor === "all") for (const s of this.#registry.list()) this.#refreshGitFacts(s.id);
+    else if (refreshGitFor !== undefined) this.#refreshGitFacts(refreshGitFor);
+    return {
+      kind: "push",
+      type: "state",
+      state: {
+        daemon: this.#daemonInfo(),
+        providers: this.#providerList(),
+        sessions: this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+      },
+    };
+  }
+
+  #publishState(refreshGitFor?: string): void {
+    if (this.#stopping) return;
+    this.#server.broadcastState(this.#stateFrame(refreshGitFor));
+  }
+
+  #daemonInfo(): DaemonInfo {
+    return {
+      pid: Deno.pid,
+      version: LOOM_VERSION,
+      startedAt: this.startedAt,
+      repoRoot: this.repoRoot,
+      epoch: this.epoch,
+    };
+  }
+
+  /** Re-probe one session's worktree so the next snapshot carries fresh facts. */
+  #refreshGitFacts(id: string): void {
+    const s = this.#registry.get(id);
+    if (!s) return;
+    const gitPath = s.worktree ?? (s.inPlace ? this.repoRoot : null);
+    if (gitPath) this.#worktrees.facts(gitPath, s.baseBranch);
   }
 
   /** A daemon-level advisory for the operator (config reload feedback). */
@@ -2965,8 +3024,12 @@ export class Daemon {
     }
     ctx.conn.clientId = typeof p.clientId === "string" ? p.clientId : `anon-${ctx.conn.id}`;
 
-    // Subscribe synchronously so no frame appended from here on is missed.
+    // Subscribe and enqueue the opening snapshot as one synchronous operation:
+    // any state change from here on is published *after* this frame, so the
+    // client cannot miss one in the gap and cannot install an older baseline
+    // over a newer push. The hello *result* carries handshake metadata only.
     this.#server.subscribe(ctx.conn);
+    ctx.conn.pushState(this.#stateFrame("all"));
 
     const sinceSeq = typeof p.sinceSeq === "number" ? p.sinceSeq : undefined;
     const head = this.#events.head;

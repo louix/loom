@@ -132,6 +132,22 @@ export interface NoticePush {
   tone: "info" | "warn";
 }
 
+/**
+ * The daemon's complete authoritative state. Every push carries the whole
+ * thing and *replaces* the client's copy — there are no deltas, no versions and
+ * no replay, so a client that has just attached and one that has been
+ * connected for hours converge on exactly the same value.
+ *
+ * Deliberately outside the `seq`-stamped push stream and its replay ring: a
+ * snapshot is only ever interesting when it's the current one, so buffering old
+ * ones to replay after a reconnect would cost memory to deliver staleness.
+ */
+export interface StatePush {
+  kind: "push";
+  type: "state";
+  state: DaemonSnapshot;
+}
+
 export type PushFrame =
   | EventPush
   | SessionUpdatedPush
@@ -140,7 +156,7 @@ export type PushFrame =
   | ResyncPush
   | NoticePush;
 
-export type Frame = RequestFrame | ResponseFrame | PushFrame;
+export type Frame = RequestFrame | ResponseFrame | PushFrame | StatePush;
 
 // ---------------------------------------------------------------------------
 // Snapshots
@@ -153,6 +169,23 @@ export interface GitFacts {
   behindBase: number;
   dirty: boolean;
   lastCommitSubject: string | null;
+}
+
+/** Daemon vitals fixed for the life of the process. */
+export interface DaemonInfo {
+  pid: number;
+  version: string;
+  startedAt: number;
+  repoRoot: string;
+  /** Per-process id. A change across a reconnect means the daemon restarted. */
+  epoch: string;
+}
+
+/** Everything a client needs to render the fleet. See {@link StatePush}. */
+export interface DaemonSnapshot {
+  daemon: DaemonInfo;
+  providers: ProviderInfo[];
+  sessions: SessionSnapshot[];
 }
 
 export interface SessionSnapshot {
@@ -452,15 +485,7 @@ export interface DoctorReport {
 
 export interface HelloResult {
   protocolVersion: number;
-  daemon: {
-    pid: number;
-    version: string;
-    startedAt: number;
-    repoRoot: string;
-    /** Per-process id. A change across a reconnect means the daemon restarted
-     *  — the client must discard its seq / version view and re-baseline. */
-    epoch: string;
-  };
+  daemon: DaemonInfo;
   /** Authoritative session list at handshake time. */
   sessions: SessionSnapshot[];
   /** Current head of the push stream. Frames after this arrive live. */

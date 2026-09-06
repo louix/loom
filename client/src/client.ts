@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
+  DaemonSnapshot,
   EventPush,
   Frame,
   HelloResult,
@@ -9,8 +10,16 @@ import type {
   RequestFrame,
   ResponseFrame,
   SessionSnapshot,
+  StatePush,
 } from "@loom/core/wire";
 import { MAX_FRAME_BYTES, PROTOCOL_VERSION } from "@loom/core/wire";
+import {
+  loadableFailed,
+  loadableIdle,
+  loadableLoaded,
+  loadablePending,
+  type Loadable,
+} from "@loom/core/loadable";
 
 export interface ConnectOptions {
   repoRoot: string;
@@ -36,6 +45,28 @@ export interface ConnectOptions {
 
 type PushListener = (frame: PushFrame) => void;
 type StateListener = (info?: unknown) => void;
+type SnapshotListener = (state: ClientState) => void;
+
+/**
+ * Why the client holds no current snapshot and won't get one by waiting. Both
+ * are terminal: the transport gave up, or the two ends can't speak to each
+ * other at all.
+ */
+export type ConnectionError =
+  | { readonly kind: "protocol_mismatch"; readonly daemon: number; readonly client: number }
+  | { readonly kind: "connect_failed"; readonly message: string };
+
+export const showConnectionError = (e: ConnectionError): string =>
+  e.kind === "protocol_mismatch"
+    ? `daemon speaks wire protocol v${e.daemon}, this client is v${e.client} — upgrade`
+    : e.message;
+
+/**
+ * The client's view of daemon state. `idle` before {@link LoomClient.connect}
+ * runs, `pending` while connecting or reconnecting, `data` for as long as a
+ * snapshot is current, `error` when no amount of waiting will produce one.
+ */
+export type ClientState = Loadable<ConnectionError, DaemonSnapshot>;
 
 const encoder = new TextEncoder();
 
@@ -82,7 +113,7 @@ export class LoomClient {
    */
   #writeChain: Promise<void> = Promise.resolve();
   #helloDone = false;
-  #preHelloQueue: PushFrame[] = [];
+  #preHelloQueue: Array<PushFrame | StatePush> = [];
   /** The daemon epoch from the last hello — a change means it restarted. */
   #daemonEpoch: string | null = null;
   /** Bounded ring of every event frame seen — lets a late subscriber backfill. */
@@ -91,6 +122,9 @@ export class LoomClient {
 
   sessions: SessionSnapshot[] = [];
   daemonInfo: HelloResult["daemon"] | null = null;
+
+  #state: ClientState = loadableIdle;
+  #snapshotListeners = new Set<SnapshotListener>();
 
   private constructor(opts: ConnectOptions) {
     this.clientId = opts.clientId ?? `cli-${Deno.pid}-${randomUUID().slice(0, 8)}`;
@@ -106,8 +140,23 @@ export class LoomClient {
 
   static async connect(opts: ConnectOptions): Promise<LoomClient> {
     const c = new LoomClient(opts);
-    await c.#dial(opts.autospawn ?? true);
-    await c.#handshake(c.#opts.replayHistory ? 0 : undefined);
+    c.#setState(loadablePending);
+    try {
+      await c.#dial(opts.autospawn ?? true);
+      await c.#handshake(c.#opts.replayHistory ? 0 : undefined);
+    } catch (err) {
+      // `#handshake` already installed the precise error for a protocol
+      // mismatch; anything else is the transport failing to come up at all.
+      if (c.#state.tag !== "error") {
+        c.#setState(
+          loadableFailed({
+            kind: "connect_failed",
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+      throw err;
+    }
     return c;
   }
 
@@ -169,6 +218,32 @@ export class LoomClient {
     this.#writeChain = this.#writeChain.then(() =>
       this.#sock === sock ? writeAll(sock, bytes).catch(() => {}) : undefined,
     );
+  }
+
+  /** The current authoritative daemon state. */
+  getState(): ClientState {
+    return this.#state;
+  }
+
+  /**
+   * Observe {@link getState}. Fires immediately with the current value, then on
+   * every change. Returns an unsubscribe.
+   */
+  subscribe(fn: SnapshotListener): () => void {
+    this.#snapshotListeners.add(fn);
+    fn(this.#state);
+    return () => this.#snapshotListeners.delete(fn);
+  }
+
+  #setState(next: ClientState): void {
+    this.#state = next;
+    for (const l of this.#snapshotListeners) {
+      try {
+        l(next);
+      } catch {
+        /* listener errors are their own problem */
+      }
+    }
   }
 
   onPush(fn: PushListener): () => void {
@@ -336,9 +411,19 @@ export class LoomClient {
         if (this.#preHelloQueue.length < 20_000) this.#preHelloQueue.push(frame);
         return;
       }
-      this.#deliverPush(frame);
+      this.#route(frame);
     }
     // "req" frames from the daemon are not part of the M1 protocol; ignore.
+  }
+
+  #route(frame: PushFrame | StatePush): void {
+    // A snapshot lives outside the seq-stamped stream: no gap detection, no
+    // replay, no merge — it simply replaces whatever we held.
+    if (frame.type === "state") {
+      this.#setState(loadableLoaded(frame.state));
+      return;
+    }
+    this.#deliverPush(frame);
   }
 
   #settle(frame: ResponseFrame): void {
@@ -393,9 +478,15 @@ export class LoomClient {
     // The daemon rejects a mismatched request version, but a future lenient
     // daemon on a changed frame shape would slip through — check both ways.
     if (result.protocolVersion !== PROTOCOL_VERSION) {
-      throw new Error(
-        `daemon speaks wire protocol v${result.protocolVersion}, this client is v${PROTOCOL_VERSION} — upgrade`,
-      );
+      // Terminal: reconnecting cannot make two incompatible builds agree, so
+      // this is an `error` the UI must surface rather than a `pending` spinner.
+      const mismatch: ConnectionError = {
+        kind: "protocol_mismatch",
+        daemon: result.protocolVersion,
+        client: PROTOCOL_VERSION,
+      };
+      this.#setState(loadableFailed(mismatch));
+      throw new Error(showConnectionError(mismatch));
     }
     // A different epoch across a reconnect ⇒ the daemon restarted: its seq and
     // in-memory version counters reset, so any replay it offered against our
@@ -413,8 +504,8 @@ export class LoomClient {
     this.#preHelloQueue = [];
     // On a restart, drop any "replayed" frames from the old seq space.
     for (const f of queued) {
-      if (restarted && f.seq <= result.seq) continue;
-      this.#deliverPush(f);
+      if (restarted && f.type !== "state" && f.seq <= result.seq) continue;
+      this.#route(f);
     }
     if (restarted) this.#fire("resync", { reason: "daemon restarted" });
   }
@@ -441,9 +532,19 @@ export class LoomClient {
     }
     this.#pending.clear();
     if (this.#closed || !this.#opts.reconnect) {
+      // A deliberate close is not a failure — nothing is being asked for any
+      // more, so the state goes back to `idle`. A drop with reconnect off is,
+      // since no snapshot will ever arrive.
+      this.#setState(
+        this.#closed
+          ? loadableIdle
+          : loadableFailed({ kind: "connect_failed", message: "connection dropped" }),
+      );
       this.#fire("close");
       return;
     }
+    // The snapshot we hold describes a daemon we are no longer talking to.
+    this.#setState(loadablePending);
     this.#fire("disconnect");
     void this.#reconnectLoop();
   }
