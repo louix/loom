@@ -24,6 +24,43 @@ backend. Old direct-backend sessions remain readable but cannot resume; preserve
 their worktrees and stored history. No history migration or compatibility engine
 is required.
 
+## Architecture alternatives and trade-offs
+
+Using Codex is a compatibility choice, not a requirement to write the connector
+in Rust. Its open-source local agent engine is distinct from both its terminal
+UI and OpenAI's remote inference backend. App-server exposes that engine for
+embedding in other products; Loom does not need to run the TUI.
+
+| Approach | Benefit | Cost / constraint |
+| --- | --- | --- |
+| Codex app-server (chosen) | Reuses upstream subscription authentication, token refresh, model protocols and native conversation handling. | Loom integrates another agent engine: native tools, approvals, cancellation and persistence must fit Loom's abstractions. Requires a compatible executable; does not itself establish isolation. |
+| Direct TypeScript / AI SDK subscription adapter | Loom owns the agent loop, tool surface, history and execution placement; potentially simpler tool control and isolation. | Loom must maintain subscription-backend compatibility, token refresh coordination, model-specific tool protocols, streaming and conversation continuity. Not necessarily a small wrapper. |
+| Standard public API adapter | Uses the documented model API without embedding Codex's agent engine. | API credentials and usage-based billing do not meet this plan's subscription-authentication requirement; not an implicit fallback. |
+
+The previous direct OAuth/Responses adapter demonstrates the second approach's
+shape, not complete model compatibility. In particular, its shell-only bridge
+for `tool_mode: code_mode_only` was an adapter limitation. Code mode orchestrates
+tools through model-generated JavaScript in a restricted runtime with brokered
+tool access; it does not mean "shell only" or require a Rust implementation.
+Reimplementing it entails tool descriptions, isolated execution, asynchronous
+calls, yielding and result handling. The client honoring model metadata is not
+proof that the backend rejects every alternative tool arrangement.
+
+Finish parity on app-server; do not reopen the direct backend or implement two
+engines in these phases. A future direct-adapter investigation should validate
+subscription access and representative model/tool protocols end-to-end before
+changing that decision. Requiring the executable is separate from installation
+UX: shipping a pinned runtime with Loom could avoid a manual install, but would
+add packaging and update responsibilities and is not part of this work.
+
+References: [app-server integration](https://learn.chatgpt.com/docs/app-server),
+[subscription versus API authentication](https://learn.chatgpt.com/docs/auth).
+Source inspection on 2026-09-06 used upstream Codex commit
+`ac192cd7937b0d73edc6dffe009940ae53782dd4`: `codex-rs/tui/src/lib.rs`,
+`codex-rs/core/src/tools/mod.rs`, `codex-rs/core/src/tools/spec_plan.rs` and
+`codex-rs/code-mode-protocol/src/description.rs`. These implementation details
+are version-specific, not a stable backend contract.
+
 ## Phase 1: Make capabilities and history ownership explicit
 
 - Distinguish Loom-owned transcripts from provider-managed threads.
