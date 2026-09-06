@@ -25,18 +25,17 @@ import {
   focusedChildOf,
   footerHints,
   logFilterTag,
-  parseAskUserQuestions,
   providerInfo,
   queueFor,
   selectedSession,
   visibleLog,
-  type AskUserQuestionItem,
   type CacheStatus,
   type Connection,
   type FleetChild,
   type LogLine,
   type TuiState,
 } from "./model.ts";
+import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
 import {
   openPrompt,
   pickerVisible,

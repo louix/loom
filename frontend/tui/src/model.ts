@@ -8,7 +8,6 @@ import { absurd } from "@loom/core/absurd";
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { SessionInteraction } from "@loom/core/interaction";
 import type {
   DaemonInfo,
   DaemonSnapshot,
@@ -47,6 +46,7 @@ import {
   type PickerStep,
   type Prompt,
 } from "./overlay.ts";
+import type { QNav } from "./interactions.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
@@ -230,70 +230,6 @@ export interface Notice {
 }
 
 const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
-
-/** One question from an `AskUserQuestion` tool call, narrowed for display. */
-export interface AskUserQuestionItem {
-  question: string;
-  header: string;
-  options: Array<{ label: string; description?: string }>;
-}
-
-/** Parse an `AskUserQuestion` tool call's `input.questions` defensively — the
- *  shape comes from the model, not from Loom, so nothing here is guaranteed. */
-export const parseAskUserQuestions = (input: unknown): AskUserQuestionItem[] => {
-  if (!input || typeof input !== "object") return [];
-  const qs = (input as Record<string, unknown>)["questions"];
-  if (!Array.isArray(qs)) return [];
-  const out: AskUserQuestionItem[] = [];
-  for (const q of qs) {
-    if (!q || typeof q !== "object") continue;
-    const o = q as Record<string, unknown>;
-    if (typeof o["question"] !== "string" || o["question"] === "") continue;
-    const options: AskUserQuestionItem["options"] = [];
-    if (Array.isArray(o["options"])) {
-      for (const opt of o["options"]) {
-        if (!opt || typeof opt !== "object") continue;
-        const oo = opt as Record<string, unknown>;
-        if (typeof oo["label"] !== "string" || oo["label"] === "") continue;
-        options.push({
-          label: oo["label"],
-          ...(typeof oo["description"] === "string" ? { description: oo["description"] } : {}),
-        });
-      }
-    }
-    out.push({
-      question: o["question"],
-      header: typeof o["header"] === "string" ? o["header"] : "",
-      options,
-    });
-  }
-  return out;
-};
-
-/**
- * In-progress answering of a multi-question `AskUserQuestion`. Lives outside the
- * answer prompt so it survives the prompt closing: `Esc` drops back to the
- * request panel, where `←` / `→` move between questions, and `a` re-opens the
- * prompt on whichever one is shown. Answers gathered so far are kept keyed by
- * question text; the permission resolves once every question has one.
- */
-export interface QNav {
-  sessionId: string;
-  requestId: string;
-  /** Which question the panel previews and the next `a` opens. */
-  idx: number;
-  /** Answers gathered so far, keyed by question text. */
-  answers: Record<string, string>;
-}
-
-/** `nav`, but only if it still describes the request `sid` / `rid` is parked
- *  on — a stale nav (resolved request, or a different session) reads as none. */
-export const liveQNav = (
-  nav: QNav | null | undefined,
-  sid: string | null | undefined,
-  rid: string | null | undefined,
-): QNav | null =>
-  nav && sid && rid && nav.sessionId === sid && nav.requestId === rid ? nav : null;
 
 export interface TuiState {
   theme: ThemeMode;
@@ -1232,39 +1168,6 @@ export const focusedChildOf = (s: TuiState): FleetChild | null => {
   const sel = selectedSession(s);
   if (!sel || s.selectedChild == null) return null;
   return childrenOf(sel).find((k) => k.key === s.selectedChild) ?? null;
-};
-
-/**
- * The session's outstanding requests, projected into the shape the prompts
- * read. Derived from the snapshot's authoritative `requests` list rather than
- * accumulated from the event stream: a request is outstanding exactly while the
- * daemon says it is, so a history page can never resurrect a settled one and
- * another client answering one makes it disappear here with no local
- * bookkeeping. Ids this client has just answered are hidden until the snapshot
- * agrees (see {@link TuiState.resolved}).
- */
-const NO_REQUESTS: readonly SessionInteraction[] = [];
-
-/** Everything the session is parked on, in the daemon's order — oldest first,
- *  which is the order parallel permissions must be answered in. */
-export const requestsFor = (s: TuiState, id: string | null): readonly SessionInteraction[] =>
-  (id ? fleetSessions(s).find((x) => x.id === id)?.requests : undefined) ?? NO_REQUESTS;
-
-/**
- * The one request the panel shows and the keys act on.
- *
- * `awaiting_input`'s reason is the daemon's own answer to "what is this turn
- * blocked on", so prefer the first request of that kind; a session that reports
- * no reason, or one nothing matches, falls back to the first request it has.
- * Selecting never discards the rest — {@link requestsFor} still has them, in
- * order, and the panel says how many are queued behind this one.
- */
-export const activeRequest = (s: TuiState, id: string | null): SessionInteraction | null => {
-  const requests = requestsFor(s, id);
-  if (requests.length === 0) return null;
-  const status = fleetSessions(s).find((x) => x.id === id)?.status;
-  const on = status?.kind === "awaiting_input" ? status.on : null;
-  return (on ? requests.find((r) => r.kind === on) : undefined) ?? requests[0] ?? null;
 };
 
 /** A compaction the daemon reports in flight for `id`, or null. */

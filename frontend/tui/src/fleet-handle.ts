@@ -17,7 +17,7 @@ import { absurd } from "@loom/core/absurd";
 import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
-import type { ClientState } from "@loom/client";
+import { isAmbiguousFailure, type ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type {
   DaemonInfo,
@@ -42,10 +42,8 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
-  activeRequest,
   fleetProviders,
   fleetSessions,
-  requestsFor,
   sessionMode,
   allowedActs,
   commandsFor,
@@ -57,14 +55,12 @@ import {
   anyCompacting,
   compactingFor,
   initialState,
-  liveQNav,
   newSettings,
   transcriptFor,
   modelPickItems,
   modelSupportsEffort,
   pickerStep,
   type WizardStep,
-  parseAskUserQuestions,
   providerAccountOf,
   providerInfo,
   queueFor,
@@ -75,10 +71,8 @@ import {
   versionMismatchAction,
   type ActName,
   type Action,
-  type AskUserQuestionItem,
   type FleetHit,
   type LogLine,
-  type QNav,
   type TuiState,
 } from "./model.ts";
 import {
@@ -91,7 +85,6 @@ import {
   makePicker,
   promptKind,
   promptOnPane,
-  questionsPrompt,
   requestPrompt,
   sessionPrompt,
   unwind,
@@ -102,72 +95,21 @@ import {
   type PickerDest,
   type PickerStep,
   type PlanReview,
-  type Prompt,
   type RequestPromptKind,
   type SessionPromptKind,
 } from "./overlay.ts";
-
-/** Footer label for the `answerQuestion` prompt: the current question's short
- *  `header` chip, plus `N/total` progress when the `AskUserQuestion` call asked
- *  more than one question. `idx` is the 0-based position in `all`. */
-const questionPromptLabel = (all: AskUserQuestionItem[], idx: number): string => {
-  const tag = all[idx]?.header || "answer";
-  return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
-};
-/** Where an `AskUserQuestion` answer prompt should be parked and what it should
- *  start from: question `idx` (clamped) and whatever has been answered so far.
- *  Both live in {@link QNav}, which outlives the prompt, so this pairs the two
- *  dispatches that put them there and open the editor on them. */
-const questionPromptFor = (
-  sessionId: string,
-  requestId: string,
-  qs: AskUserQuestionItem[],
-  answers: Record<string, string>,
-  idx: number,
-): { nav: QNav; prompt: Prompt } => {
-  const at = Math.max(0, Math.min(qs.length - 1, idx));
-  return {
-    nav: { sessionId, requestId, idx: at, answers },
-    prompt: questionsPrompt(
-      sessionId,
-      requestId,
-      questionPromptLabel(qs, at),
-      answers[qs[at]!.question] ?? "",
-    ),
-  };
-};
-
-/** The `AskUserQuestion` a session is parked on, if any — its request id and
- *  parsed questions, plus the live {@link QNav} for it (answers gathered so
- *  far, which question is in view). */
-const questionState = (
-  state: TuiState,
-  sessionId: string | null | undefined,
-): { requestId: string; qs: AskUserQuestionItem[]; nav: QNav | null } | null => {
-  if (!sessionId) return null;
-  const r = activeRequest(state, sessionId);
-  if (r?.kind !== "user_question") return null;
-  const qs = parseAskUserQuestions(r.input);
-  if (qs.length === 0) return null;
-  return { requestId: r.id, qs, nav: liveQNav(state.qnav, sessionId, r.id) };
-};
-
-/** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
- *  editor view — each question numbered when there's more than one, its options
- *  lettered `a) … b) …` with descriptions, mirroring the request panel. Beats
- *  dumping the raw tool JSON. */
-const formatQuestionsForEditor = (qs: AskUserQuestionItem[]): string =>
-  qs
-    .map((q, qi) => {
-      const head = qs.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
-      const opts = q.options.map((o, oi) => {
-        const letter = String.fromCharCode(97 + oi);
-        return `   ${letter}) ${o.label}${o.description ? ` — ${o.description}` : ""}`;
-      });
-      return [head, ...opts].join("\n");
-    })
-    .join("\n\n")
-    .concat("\n");
+import {
+  activeRequest,
+  formatQuestionsForEditor,
+  liveQNav,
+  mkInteractions,
+  nextUnanswered,
+  parseAskUserQuestions,
+  questionPromptFor,
+  questionState,
+  requestsFor,
+  type AskUserQuestionItem,
+} from "./interactions.ts";
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -377,8 +319,8 @@ const deriveView = (
   // The panel shows what the turn is parked on, straight off the snapshot: the
   // request's id, kind and payload travel together from here to the screen and
   // back to the RPC that answers it.
-  const request = sel ? activeRequest(state, sel.id) : null;
-  const requestCount = sel ? requestsFor(state, sel.id).length : 0;
+  const request = sel ? activeRequest(fleetSessions(state), sel.id) : null;
+  const requestCount = sel ? requestsFor(fleetSessions(state), sel.id).length : 0;
   const allowed = allowedActs(sel);
 
   // The approve / answer / plan panel sits full-width just above the footer in
@@ -504,16 +446,6 @@ const deriveView = (
 const sessionsRef = (s: TuiState): readonly SessionSnapshot[] | null =>
   s.fleet.tag === "data" ? s.fleet.value.sessions : null;
 
-/**
- * The reply never came back, so whether the daemon ran the request is unknown
- * from here — a dropped connection and a timeout are the same fact. Nothing
- * that mutates a session may be retried on one of these.
- */
-const isAmbiguousFailure = (e: unknown): boolean => {
-  const code = (e as { code?: unknown } | null)?.code;
-  return code === "disconnected" || code === "timeout";
-};
-
 export const mkFleetHandle = ({
   client,
   term,
@@ -549,27 +481,15 @@ export const mkFleetHandle = ({
   // twice. Holds the overlay object already acted on — a fresh overlay has a
   // new identity and passes.
   let overlayActed: object | null = null;
-  // The same latch for request keys. Ink hands a batched stdin chunk to the key
-  // handler one byte at a time, before the view updates — so "aa" would issue
-  // two `respondPermission` calls for the same request. Holds the id already
-  // submitted; the next request has a different id and passes.
-  //
-  // It is a duplicate-keystroke guard and nothing else. What is outstanding is
-  // the snapshot's to say, and an answer whose outcome is uncertain is never
-  // re-sent: only a call that *failed* clears the latch, and only for a retry
-  // the user asks for.
-  let requestActed: string | null = null;
-  const claimRequest = (requestId: string): boolean => {
-    if (requestActed === requestId) return false;
-    requestActed = requestId;
-    return true;
-  };
-  const releaseRequest = (requestId: string, err: unknown): void => {
-    // A dropped or timed-out reply means the daemon may well have applied it.
-    // Keep the latch: retrying would answer the same request twice.
-    if (isAmbiguousFailure(err)) return;
-    if (requestActed === requestId) requestActed = null;
-  };
+  // Deciding on a request goes through the interaction handle, which holds one
+  // guard per request: Ink hands a batched stdin chunk to the key handler one
+  // byte at a time, before the view updates, so "aa" would otherwise issue two
+  // `respondPermission` calls for the same request.
+  const interactions = mkInteractions({
+    request: (method, params) => client.request(method, params),
+    by: client.clientId,
+    fleet: () => fleetSessions(state),
+  });
   // Ink delivers a batched stdin chunk one byte at a time before the view
   // updates. A second `\r` right after `submitPrompt` closed the prompt would
   // otherwise be handled in `browse` mode and fire `runAct("send"|"answer")` on
@@ -887,7 +807,10 @@ export const mkFleetHandle = ({
     ) {
       loadHistory();
     }
-    if (sessionsRef(state) !== sessionsRef(prev)) forgetDeadSessions();
+    if (sessionsRef(state) !== sessionsRef(prev)) {
+      forgetDeadSessions();
+      interactions.settle();
+    }
     // A compaction finishing (or being cancelled) lifts the drain hold added for
     // compacting sessions, and it now rides the snapshot like everything else.
     if (sessionsRef(state) !== sessionsRef(prev) || state.queue !== prev.queue) drainQueues();
@@ -898,7 +821,7 @@ export const mkFleetHandle = ({
 
   /** A fresh review overlay for a session's pending `plan_review`, if it has one. */
   const planReviewFor = (sessionId: string): PlanReview | null => {
-    const r = requestsFor(state, sessionId).find((x) => x.kind === "plan_review");
+    const r = requestsFor(fleetSessions(state), sessionId).find((x) => x.kind === "plan_review");
     return r?.kind === "plan_review"
       ? { sessionId, requestId: r.id, text: r.plan, mode: "acceptEdits", impl: null }
       : null;
@@ -962,7 +885,7 @@ export const mkFleetHandle = ({
   /** `o` / `⌥o` — open the pending request, or the event log, in `$EDITOR` read-only. */
   const viewInEditor = async (): Promise<void> => {
     const s = selectedSession(state);
-    const r = s ? activeRequest(state, s.id) : null;
+    const r = s ? activeRequest(fleetSessions(state), s.id) : null;
     if (r === null) {
       await openEditor(logText(), { ext: "log" });
       return;
@@ -1100,29 +1023,14 @@ export const mkFleetHandle = ({
     }
     switch (name) {
       case "approve": {
-        const r = activeRequest(state, s.id);
+        const r = activeRequest(fleetSessions(state), s.id);
         if (r === null || (r.kind !== "permission" && r.kind !== "user_question")) {
           return note("no permission request pending", "dim");
         }
-        const requestId = r.id;
-        if (!claimRequest(requestId)) return;
-        return perform(async () => {
-          const res = await client
-            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
-              id: s.id,
-              requestId,
-              decision: "allow",
-              by,
-            })
-            .catch((e: unknown) => {
-              releaseRequest(requestId, e);
-              throw e;
-            });
-          return res.alreadyResolved ? `${requestId} already resolved` : `approved ${requestId}`;
-        });
+        return perform(() => interactions.respond(s.id, r.id, { t: "allow" }));
       }
       case "deny": {
-        const r = activeRequest(state, s.id);
+        const r = activeRequest(fleetSessions(state), s.id);
         if (r === null || (r.kind !== "permission" && r.kind !== "user_question")) {
           return note("no permission request pending", "dim");
         }
@@ -1132,12 +1040,12 @@ export const mkFleetHandle = ({
         });
       }
       case "answer": {
-        const r = activeRequest(state, s.id);
+        const r = activeRequest(fleetSessions(state), s.id);
         if (r?.kind === "question") {
           return void show({ t: "prompt", prompt: requestPrompt("answer", s.id, r.id, "answer") });
         }
         if (r?.kind === "user_question") {
-          const q = questionState(state, s.id);
+          const q = questionState(fleetSessions(state), state.qnav, s.id);
           if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
           return void openQuestionPrompt(
             s.id,
@@ -1170,7 +1078,7 @@ export const mkFleetHandle = ({
           prompt: sessionPrompt("comment", s.id, "comment", s.comment ?? ""),
         });
       case "planreview": {
-        const plan = requestsFor(state, s.id).find((r) => r.kind === "plan_review");
+        const plan = requestsFor(fleetSessions(state), s.id).find((r) => r.kind === "plan_review");
         if (!plan) return note("no plan pending", "dim");
         return void show({
           t: "plan",
@@ -1719,85 +1627,37 @@ export const mkFleetHandle = ({
       }
     };
 
-    const runRequest = async (
+    const runRequest = (
       k: RequestPromptKind,
       sessionId: string,
       requestId: string,
-    ): Promise<string> => {
-      switch (k) {
-        case "answer": {
-          const r = await client.request<{ alreadyResolved: boolean }>("session.answer", {
-            id: sessionId,
-            requestId,
-            text,
-            by,
-          });
-          return r.alreadyResolved ? "already answered" : "answered";
-        }
-        case "deny": {
-          if (!claimRequest(requestId)) return "";
-          const r = await client
-            .request<{ alreadyResolved: boolean }>("session.respondPermission", {
-              id: sessionId,
-              requestId,
-              decision: "deny",
-              by,
-              ...(text ? { message: text } : {}),
-            })
-            .catch((e: unknown) => {
-              releaseRequest(requestId, e);
-              throw e;
-            });
-          return r.alreadyResolved ? `${requestId} already resolved` : `denied ${requestId}`;
-        }
-        default:
-          return absurd(k);
-      }
-    };
+    ): Promise<string> =>
+      interactions.respond(
+        sessionId,
+        requestId,
+        k === "answer" ? { t: "answer", text } : { t: "deny", message: text },
+      );
 
     /** Record this answer, then either move to the next unanswered question or
      *  resolve the whole `AskUserQuestion`. The questions come from the request
      *  itself and the progress from `qnav` — the prompt holds neither, so there
      *  is no stale copy to reconcile. */
     const runQuestions = async (sessionId: string, requestId: string): Promise<string> => {
-      const q = questionState(state, sessionId);
+      const fleet = fleetSessions(state);
+      const q = questionState(fleet, state.qnav, sessionId);
       if (!q || q.requestId !== requestId) return "";
       const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
       const answers = { ...q.nav?.answers, [q.qs[idx]!.question]: text };
-      // Every question needs a non-blank answer before the permission resolves.
-      // Jump to the next one still missing, wrapping past the end.
-      let missing = -1;
-      for (let k = 1; k < q.qs.length; k++) {
-        const j = (idx + k) % q.qs.length;
-        if ((answers[q.qs[j]!.question] ?? "").trim() === "") {
-          missing = j;
-          break;
-        }
-      }
+      const missing = nextUnanswered(q.qs, answers, idx);
       if (missing !== -1) {
         openQuestionPrompt(sessionId, requestId, q.qs, answers, missing);
         return "";
       }
-      // The tool call's own input, so the answers ride back on the shape the
-      // SDK sent — read off the request being answered, by id.
-      const target = requestsFor(state, sessionId).find((r) => r.id === requestId);
-      const rawInput = target?.kind === "user_question" ? target.input : undefined;
-      const baseInput =
-        rawInput && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
-      if (!claimRequest(requestId)) return "";
-      const r = await client
-        .request<{ alreadyResolved: boolean }>("session.respondPermission", {
-          id: sessionId,
-          requestId,
-          decision: "allow",
-          updatedInput: { ...baseInput, answers },
-          by,
-        })
-        .catch((e: unknown) => {
-          releaseRequest(requestId, e);
-          throw e;
-        });
-      return r.alreadyResolved ? ` already resolved` : "answered";
+      return interactions.respond(sessionId, requestId, {
+        t: "answers",
+        request: requestsFor(fleet, sessionId).find((r) => r.id === requestId),
+        answers,
+      });
     };
 
     const run = async (): Promise<string> => {
@@ -2332,7 +2192,7 @@ export const mkFleetHandle = ({
           // `qnav`, so ← / → can move to another question and `a` resumes where
           // you left off.
           if (p.t === "questions") {
-            const q = questionState(state, p.sessionId);
+            const q = questionState(fleetSessions(state), state.qnav, p.sessionId);
             if (q && q.requestId === p.requestId) {
               const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
               const answers = { ...q.nav?.answers };
@@ -2483,7 +2343,7 @@ export const mkFleetHandle = ({
     // previews whichever is selected; `a` answers it). Only while parked on a
     // multi-question call — otherwise the arrows drill into children, below.
     if (key.leftArrow || key.rightArrow) {
-      const q = questionState(state, sel?.id);
+      const q = questionState(fleetSessions(state), state.qnav, sel?.id);
       if (q && q.qs.length > 1) {
         const cur = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
         const idx = (cur + (key.leftArrow ? q.qs.length - 1 : 1)) % q.qs.length;

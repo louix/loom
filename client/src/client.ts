@@ -96,6 +96,16 @@ const daemonVersionOf = (err: unknown): number => {
  */
 export type ClientState = Loadable<ConnectionError, DaemonSnapshot>;
 
+/**
+ * The reply never came back, so whether the daemon ran the request is unknown
+ * from here — a dropped connection and a timeout are the same fact. Nothing
+ * that mutates a session may be retried on one of these.
+ */
+export const isAmbiguousFailure = (e: unknown): boolean => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "disconnected" || code === "timeout";
+};
+
 const encoder = new TextEncoder();
 
 /** Write every byte of `data`, looping on the partial writes `Deno.Conn`'s

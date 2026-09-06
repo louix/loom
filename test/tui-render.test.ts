@@ -41,14 +41,15 @@ import {
 } from "@loom/tui/fleet-handle";
 import {
   initialState,
+  fleetSessions,
   queueFor,
   reduce,
-  requestsFor,
   sessionLog,
   TRANSCRIPT_CAP,
   transcriptFor,
 } from "@loom/tui/model";
 import { openPrompt, questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
+import { requestsFor } from "@loom/tui/interactions";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -2611,7 +2612,7 @@ describe("tui interaction actions through the handle", () => {
       // The authoritative list is untouched: nothing local hides p1, and the
       // panel keeps showing it until the daemon says otherwise.
       assert.deepEqual(
-        requestsFor(handle.getView().state, "a").map((r) => r.id),
+        requestsFor(fleetSessions(handle.getView().state), "a").map((r) => r.id),
         ["p1", "p2"],
       );
       assert.equal(handle.getView().request?.id, "p1");
@@ -2654,7 +2655,7 @@ describe("tui interaction actions through the handle", () => {
 
       // A long-answered request in old history is transcript and nothing more.
       assert.deepEqual(
-        requestsFor(handle.getView().state, "a").map((r) => r.id),
+        requestsFor(fleetSessions(handle.getView().state), "a").map((r) => r.id),
         ["p1"],
       );
       assert.equal(handle.getView().request?.id, "p1");
