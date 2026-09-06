@@ -54,9 +54,16 @@ export class Connection {
   #onFrame: (frame: Frame, conn: Connection) => void;
   #onClose: (conn: Connection) => void;
   #closed = false;
-  /** Bytes handed to `write()` whose promise hasn't resolved yet — the
-   *  Deno-side analogue of Node's `socket.writableLength`. */
+  /** Bytes queued or handed to `write()` but not yet written — the Deno-side
+   *  analogue of Node's `socket.writableLength`. */
   #backlogBytes = 0;
+  /**
+   * Serializes writes on this socket. `writeAll` can return after a *partial*
+   * write, so two concurrent calls would interleave their halves and corrupt
+   * both frames on the wire. Every frame chains on the previous one, which is
+   * also what makes `#backlogBytes` mean "not yet on the socket".
+   */
+  #writeChain: Promise<void> = Promise.resolve();
 
   constructor(
     conn: FramedConn,
@@ -115,9 +122,17 @@ export class Connection {
     if (this.#closed) return;
     const bytes = this.#encoder.encode(JSON.stringify(obj) + "\n");
     this.#backlogBytes += bytes.length;
-    writeAll(this.conn, bytes)
+    // The `catch` before the `finally` keeps the chain resolved, so one failed
+    // frame doesn't reject every frame queued behind it.
+    this.#writeChain = this.#writeChain
+      .then(() => (this.#closed ? undefined : writeAll(this.conn, bytes)))
       .catch((err: unknown) => {
-        log.debug("write failed", { conn: this.id, err: String(err) });
+        // A failed write means this connection has already lost bytes: whatever
+        // the client has is a prefix of the truth and nothing will tell it so.
+        // Drop the socket rather than keep pushing onto a stream we know is
+        // broken — the client reconnects and re-baselines from a fresh snapshot.
+        log.debug("write failed, dropping connection", { conn: this.id, err: String(err) });
+        this.close();
       })
       .finally(() => {
         this.#backlogBytes -= bytes.length;

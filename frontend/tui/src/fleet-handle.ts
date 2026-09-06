@@ -40,7 +40,7 @@ import {
   loadableLoaded,
   loadablePending,
   type Loadable,
-} from "./loadable.ts";
+} from "@loom/core/loadable";
 import {
   allowedActs,
   backfillAdds,

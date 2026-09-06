@@ -7,10 +7,10 @@ import { Connection, type FramedConn } from "@loom/daemon/daemon/connection";
 setLogLevel("error");
 
 /** Resolve on the next microtask — enough hops for a `Connection#push`'s
- *  fire-and-forget `write()` chain (encode → write → backlog decrement) to
+ *  fire-and-forget `write()` chain (queue → write → backlog decrement) to
  *  settle before a test asserts on it. */
 const flush = async (): Promise<void> => {
-  for (let i = 0; i < 4; i++) await Promise.resolve();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
 };
 
 /** A `FramedConn` stand-in: records writes, lets a test hold a write's
@@ -135,8 +135,95 @@ test("frames the dispatcher hands back still reach a healthy socket", async () =
   );
   const res: Frame = { kind: "res", id: 1, ok: true, result: null };
   c.respond(res);
+  // Writes are queued on the connection's chain, so the `write()` this frame
+  // triggers isn't in flight until the chain has been given a turn.
+  await flush();
   conn.releaseWrite();
   await flush();
   assert.equal(conn.writes.length, 1);
   assert.match(conn.writes[0]!, /"id":1/);
+});
+
+/**
+ * A `FramedConn` that accepts at most `chunkBytes` per `write()` — the partial
+ * write every `Deno.Writer` is allowed to do, and the one real sockets actually
+ * do under pressure. Records the raw byte stream so a test can check frames
+ * arrived whole and in order rather than interleaved.
+ */
+const partialWriteConn = (chunkBytes: number) => {
+  let resolveRead: (n: number | null) => void = () => {};
+  const readGate = new Promise<number | null>((r) => {
+    resolveRead = r;
+  });
+  const decoder = new TextDecoder();
+  return {
+    stream: "",
+    inFlight: 0,
+    destroyed: false,
+    read: (_p: Uint8Array): Promise<number | null> => readGate,
+    async write(p: Uint8Array): Promise<number> {
+      this.inFlight += 1;
+      // Yield, so an unchained caller gets the chance to start a second write
+      // between this one's halves — which is exactly the corruption we're
+      // asserting cannot happen.
+      await Promise.resolve();
+      if (this.inFlight > 1) throw new Error("overlapping write on one socket");
+      const n = Math.min(chunkBytes, p.length);
+      this.stream += decoder.decode(p.subarray(0, n));
+      this.inFlight -= 1;
+      return n;
+    },
+    close(): void {
+      this.destroyed = true;
+      resolveRead(null);
+    },
+  };
+};
+
+test("frames written back to back arrive whole and in order despite partial writes", async () => {
+  const conn = partialWriteConn(7);
+  const c = new Connection(
+    conn as unknown as FramedConn,
+    () => {},
+    () => {},
+  );
+  c.subscribed = true;
+
+  const frames: PushFrame[] = ["alpha", "bravo", "charlie"].map((text, i) => ({
+    kind: "push",
+    seq: i + 1,
+    epoch: "e1",
+    type: "event",
+    event: { type: "assistant_text", sessionId: "s1", ts: 0, text },
+  }));
+  for (const f of frames) c.push(f);
+  for (let i = 0; i < 200; i++) await Promise.resolve();
+
+  const lines = conn.stream.split("\n").filter((l) => l !== "");
+  assert.equal(lines.length, 3, "every frame arrived exactly once");
+  assert.deepEqual(
+    lines.map((l) => (JSON.parse(l) as PushFrame & { event: { text: string } }).event.text),
+    ["alpha", "bravo", "charlie"],
+    "in the order they were pushed, each one parseable on its own line",
+  );
+});
+
+test("a write that fails drops the connection rather than losing frames silently", async () => {
+  const conn = fakeConn();
+  let closedCount = 0;
+  const c = new Connection(
+    conn as unknown as FramedConn,
+    () => {},
+    () => {
+      closedCount += 1;
+    },
+  );
+  c.subscribed = true;
+  conn.write = () => Promise.reject(new Error("EPIPE"));
+
+  c.push(pushFrame);
+  await flush();
+
+  assert.equal(conn.destroyed, true, "the connection was dropped");
+  assert.equal(closedCount, 1, "onClose fired");
 });

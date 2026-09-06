@@ -67,6 +67,20 @@ export class LoomClient {
   #stateListeners = new Map<string, Set<StateListener>>();
   #lastSeq = 0;
   #closed = false;
+  /**
+   * Bumped on every `#attach`. Every socket callback carries the generation it
+   * was started under and no-ops when it no longer matches, so a read, a close
+   * or a response from a socket the reconnect loop has already superseded
+   * cannot touch current state. Lifecycle bookkeeping, not a wire revision.
+   */
+  #generation = 0;
+  /**
+   * Serializes writes on the current socket — `writeAll` can return after a
+   * *partial* write, so two concurrent requests would interleave their halves
+   * and corrupt both frames. Reset per socket in `#attach`, so a write queued
+   * against a dead socket can't hold up the new one.
+   */
+  #writeChain: Promise<void> = Promise.resolve();
   #helloDone = false;
   #preHelloQueue: PushFrame[] = [];
   /** The daemon epoch from the last hello — a change means it restarted. */
@@ -141,12 +155,20 @@ export class LoomClient {
         },
       });
     });
-    const bytes = encoder.encode(JSON.stringify(frame) + "\n");
-    // Fire-and-forget, same as the old `socket.write()`: a failure here just
-    // means the connection is dying, which the read loop is already about to
-    // discover and route through `#onSocketClose`.
-    writeAll(this.#sock, bytes).catch(() => {});
+    this.#send(frame);
     return p as Promise<T>;
+  }
+
+  /** Queue one frame on the current socket's write chain. Fire-and-forget: a
+   *  failure means the connection is dying, which the read loop is already
+   *  about to discover and route through `#onSocketClose`. */
+  #send(frame: RequestFrame): void {
+    const sock = this.#sock;
+    if (!sock) return;
+    const bytes = encoder.encode(JSON.stringify(frame) + "\n");
+    this.#writeChain = this.#writeChain.then(() =>
+      this.#sock === sock ? writeAll(sock, bytes).catch(() => {}) : undefined,
+    );
   }
 
   onPush(fn: PushListener): () => void {
@@ -250,25 +272,31 @@ export class LoomClient {
     this.#preHelloQueue = [];
     this.#buf = "";
     this.#decoder = new TextDecoder();
-    this.#readLoop = this.#runReadLoop(sock);
+    this.#writeChain = Promise.resolve();
+    this.#readLoop = this.#runReadLoop(sock, ++this.#generation);
   }
 
-  async #runReadLoop(sock: Deno.Conn): Promise<void> {
+  async #runReadLoop(sock: Deno.Conn, gen: number): Promise<void> {
     const buf = new Uint8Array(64 * 1024);
     try {
       for (;;) {
         const n = await sock.read(buf);
         if (n === null) break; // remote closed cleanly (EOF)
-        this.#ingest(this.#decoder.decode(buf.subarray(0, n), { stream: true }));
+        // A read that lands after the reconnect loop moved on belongs to a
+        // socket whose state has already been re-baselined — decoding it into
+        // the live buffer would splice a dead connection's bytes into the new
+        // one's frame stream.
+        if (gen !== this.#generation) return;
+        this.#ingest(sock, this.#decoder.decode(buf.subarray(0, n), { stream: true }));
       }
     } catch {
       // surfaced via close, same as the old socket 'error' no-op handler
     } finally {
-      this.#onSocketClose();
+      this.#onSocketClose(gen);
     }
   }
 
-  #ingest(chunk: string): void {
+  #ingest(sock: Deno.Conn, chunk: string): void {
     this.#buf += chunk;
     // Symmetric with the daemon's `Connection.#ingest`: a frame (or a stream
     // with no newline) past the cap means a daemon bug or a corrupt stream —
@@ -277,7 +305,7 @@ export class LoomClient {
     if (this.#buf.length > MAX_FRAME_BYTES) {
       this.#buf = "";
       try {
-        this.#sock?.close();
+        sock.close();
       } catch {
         // already gone
       }
@@ -391,7 +419,11 @@ export class LoomClient {
     if (restarted) this.#fire("resync", { reason: "daemon restarted" });
   }
 
-  #onSocketClose(): void {
+  #onSocketClose(gen: number): void {
+    // A superseded socket closing is expected bookkeeping, not a disconnect:
+    // firing the reconnect path again here would tear down the live socket the
+    // reconnect loop just installed.
+    if (gen !== this.#generation) return;
     this.#sock = null;
     // The daemon may still run an in-flight `session.create` / `session.compact`
     // to completion — the caller can't know. Tag the rejection so it can choose

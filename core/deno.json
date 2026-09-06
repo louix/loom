@@ -5,6 +5,7 @@
     "./events": "./src/events.ts",
     "./session-state": "./src/session-state.ts",
     "./interaction": "./src/interaction.ts",
+    "./loadable": "./src/loadable.ts",
     "./wire": "./src/wire.ts",
     "./cache": "./src/cache.ts",
     "./types": "./src/types.ts",
