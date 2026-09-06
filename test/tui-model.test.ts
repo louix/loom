@@ -1380,7 +1380,7 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
 
   // Typing an answer to q1, with an unrelated cancelled send draft beside it.
   let s = reduce(initialState(), fleet([blocked([q("q1")]), snap({ id: "b", status: "idle" })]));
-  s = { ...s, lastDraft: "an unrelated half-typed message" };
+  s = { ...s, drafts: { ...s.drafts, last: "an unrelated half-typed message" } };
   s = reduce(s, open({ t: "prompt", prompt: questionsPrompt("a", "q1", "answer") }));
   s = reduce(s, {
     t: "qnavSet",
@@ -1394,7 +1394,7 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   assert.equal(s.overlay.t, "browse");
   assert.equal(s.qnav, null, "and so does the navigation through its questions");
   assert.match(s.notice?.text ?? "", /resolved elsewhere/);
-  assert.equal(s.lastDraft, "an unrelated half-typed message", "an unrelated draft is untouched");
+  assert.equal(s.drafts.last, "an unrelated half-typed message", "an unrelated draft is untouched");
 
   // Nothing typed for q1 is re-aimed at q2: opening its prompt starts clean.
   assert.equal(shown(s, "a")?.id, "q2");
@@ -2173,20 +2173,20 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   let s = reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings) }));
   s = reduce(s, { t: "promptSet", buffer: buffer("fix the bug") });
   s = reduce(s, { t: "closePrompt", saveDraft: true });
-  assert.equal(s.lastDraft, "fix the bug");
+  assert.equal(s.drafts.last, "fix the bug");
 
   // ...and a `send` prompt opened afterwards picks it up
-  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", s.lastDraft) }));
+  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", s.drafts.last) }));
   assert.equal(promptOf(s)?.buffer.text, "fix the bug");
 
   // cancelling without saveDraft (e.g. a plain closePrompt) leaves it untouched
   let untouched = reduce(s, { t: "closePrompt" });
-  assert.equal(untouched.lastDraft, "");
+  assert.equal(untouched.drafts.last, "");
 
   // cancelling a `title` prompt never touches the shared draft
   let withDraft = reduce(initialState(), { t: "closePrompt", saveDraft: true }); // no prompt open: no-op
-  assert.equal(withDraft.lastDraft, "");
-  withDraft = { ...withDraft, lastDraft: "fix the bug" };
+  assert.equal(withDraft.drafts.last, "");
+  withDraft = { ...withDraft, drafts: { ...withDraft.drafts, last: "fix the bug" } };
   withDraft = reduce(
     withDraft,
     open({ t: "prompt", prompt: sessionPrompt("title", "a", "rename", "old title") }),
@@ -2194,7 +2194,7 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
   withDraft = reduce(withDraft, { t: "promptSet", buffer: buffer("new title") });
   withDraft = reduce(withDraft, { t: "closePrompt", saveDraft: true });
   assert.equal(
-    withDraft.lastDraft,
+    withDraft.drafts.last,
     "fix the bug",
     "renaming doesn't clobber the send/new draft slot",
   );
@@ -2204,9 +2204,9 @@ test("Esc on a new/send prompt stashes the draft; either prompt can restore it; 
     initialState(),
     open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", "fix the bug") }),
   );
-  sent = { ...sent, lastDraft: "fix the bug" };
+  sent = { ...sent, drafts: { ...sent.drafts, last: "fix the bug" } };
   sent = reduce(sent, { t: "closePrompt" });
-  assert.equal(sent.lastDraft, "", "a sent message shouldn't linger as a restorable draft");
+  assert.equal(sent.drafts.last, "", "a sent message shouldn't linger as a restorable draft");
 });
 
 test("promptCycleMode only cycles for a `new` prompt", () => {
@@ -2229,7 +2229,7 @@ test("promptCycleMode only cycles for a `new` prompt", () => {
 test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav walks it", () => {
   let s = initialState();
   for (const x of ["one", "two", "one", "three"]) s = reduce(s, { t: "pushHistory", text: x });
-  assert.deepEqual(s.promptHistory, ["two", "one", "three"]);
+  assert.deepEqual(s.drafts.history, ["two", "one", "three"]);
 
   s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", "live") }));
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });

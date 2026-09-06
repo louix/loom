@@ -183,3 +183,37 @@ export const mkComposer = ({ send, fleet, boxes, commit, note }: ComposerDeps): 
 
   return { advance };
 };
+
+// ---- drafts ----------------------------------------------------------------
+
+/**
+ * Unsent text with no session behind it yet: the last cancelled `new` / `send`
+ * buffer, and the submitted messages `↑` / `↓` walk back through. Both are
+ * global rather than per-session on purpose — a message typed at `new` and
+ * abandoned should come back at `send`, because the user's next move is often
+ * the other prompt.
+ */
+export interface Drafts {
+  /** The last unsubmitted `new` / `send` buffer; "" = nothing stashed. */
+  last: string;
+  /** Submitted `new` / `send` prompts, oldest last, capped. */
+  history: readonly string[];
+}
+
+export const noDrafts: Drafts = { last: "", history: [] };
+
+const HISTORY_CAP = 50;
+
+/** Remember a submitted message: newest last, one entry per distinct text, so
+ *  re-sending something old moves it to the front of the walk rather than
+ *  filling the history with repeats. */
+export const recorded = (d: Drafts, raw: string): Drafts => {
+  const text = raw.trim();
+  if (!text) return d;
+  const history = d.history.filter((x) => x !== text).concat(text);
+  return { ...d, history: history.slice(-HISTORY_CAP) };
+};
+
+/** `idx` steps back from the newest — the walk counts up from the live buffer,
+ *  the history counts up from the oldest, and this is where they meet. */
+export const recalled = (d: Drafts, idx: number): string => d.history[d.history.length - idx] ?? "";

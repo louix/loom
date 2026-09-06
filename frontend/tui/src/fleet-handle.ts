@@ -904,7 +904,7 @@ export const mkFleetHandle = ({
     if (name === "new") {
       return void show({
         t: "prompt",
-        prompt: newPrompt(newSettings(state, null, null, null), state.lastDraft),
+        prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
       });
     }
     if (name === "filter") {
@@ -1003,7 +1003,7 @@ export const mkFleetHandle = ({
         // it starts moving again.
         const held = release(outboxOf(state.outbox, s.id));
         if (held) dispatch({ t: "outbox", sessionId: s.id, box: held.box });
-        const text = held?.text ?? state.lastDraft;
+        const text = held?.text ?? state.drafts.last;
         return void show({ t: "prompt", prompt: sessionPrompt("send", s.id, "send", text) });
       }
       case "title":

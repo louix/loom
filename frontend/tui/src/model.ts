@@ -47,7 +47,16 @@ import {
   type Prompt,
 } from "./overlay.ts";
 import type { QNav } from "./interactions.ts";
-import { outboxOf, pending, type Outbox, type Outboxes } from "./composer.ts";
+import {
+  noDrafts,
+  outboxOf,
+  pending,
+  recalled,
+  recorded,
+  type Drafts,
+  type Outbox,
+  type Outboxes,
+} from "./composer.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
@@ -301,14 +310,9 @@ export interface TuiState {
   /** In-progress answers for a multi-question `AskUserQuestion` — see
    *  {@link QNav}. Persists across the answer prompt opening and closing. */
   qnav: QNav | null;
-  /** Submitted `new` / `send` prompts, oldest first, for ↑/↓ recall. */
-  promptHistory: string[];
-  /**
-   * The last unsubmitted `new` / `send` buffer, kept after an `Esc` cancel so
-   * reopening either prompt (whichever one the user meant) restores it. Cleared
-   * once the text is actually sent.
-   */
-  lastDraft: string;
+  /** Unsent `new` / `send` text with no session behind it yet — see
+   *  {@link Drafts}. */
+  drafts: Drafts;
   /** Tool name for every in-flight `tool_call`, keyed by its id — looked up
    *  when the matching `tool_result` lands so tool-aware formatting (Read's
    *  result staying terse, an Edit rendering as a diff) doesn't need the
@@ -334,8 +338,7 @@ export const initialState = (): TuiState => {
     doctor: null,
     find: null,
     qnav: null,
-    promptHistory: [],
-    lastDraft: "",
+    drafts: noDrafts,
     toolNames: {},
   };
 };
@@ -752,27 +755,21 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "promptHistoryNav": {
       const p = openPrompt(s.overlay);
-      if (!p || s.promptHistory.length === 0) return s;
+      if (!p || s.drafts.history.length === 0) return s;
       // At the live buffer there is nothing newer — ↓ must not clobber it
       // with the stashed draft.
       if (p.histIdx === 0 && a.dir === 1) return s;
       const draft = p.histIdx === 0 ? p.buffer.text : p.draft;
       const idx = Math.max(
         0,
-        Math.min(s.promptHistory.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
+        Math.min(s.drafts.history.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
       );
-      const text = idx === 0 ? draft : (s.promptHistory[s.promptHistory.length - idx] ?? "");
+      const text = idx === 0 ? draft : recalled(s.drafts, idx);
       return withPrompt(s, { ...p, histIdx: idx, draft, buffer: buffer(text) });
     }
 
-    case "pushHistory": {
-      const t = a.text.trim();
-      if (!t) return s;
-      const hist = s.promptHistory.filter((x) => x !== t);
-      hist.push(t);
-      if (hist.length > 50) hist.splice(0, hist.length - 50);
-      return { ...s, promptHistory: hist };
-    }
+    case "pushHistory":
+      return { ...s, drafts: recorded(s.drafts, a.text) };
 
     case "closePrompt": {
       const p = openPrompt(s.overlay);
@@ -782,7 +779,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // Only the two free-text prompts leave a recoverable draft behind.
       const draftable = p?.t === "new" || (p?.t === "session" && p.kind === "send");
       if (!draftable) return { ...s, overlay };
-      return { ...s, overlay, lastDraft: a.saveDraft ? p.buffer.text : "" };
+      return { ...s, overlay, drafts: { ...s.drafts, last: a.saveDraft ? p.buffer.text : "" } };
     }
 
     case "echo": {
