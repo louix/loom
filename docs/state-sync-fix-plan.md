@@ -1,7 +1,7 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-5 done. Later steps are planned; their checkboxes are not implemented.
+Status: steps 0-6 done. Later steps are planned; their checkboxes are not implemented.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -596,18 +596,18 @@ Verified: typecheck, lint and format:check clean; `deno task test` 645 passed
 Files: `backend/daemon/src/daemon/session-manager.ts`,
 `backend/daemon/src/daemon/daemon.ts`. Tests: manager/daemon suites.
 
-- [ ] Update request/progress/background/rate-limit state and derive status
+- [x] Update request/progress/background/rate-limit state and derive status
       before publishing the snapshot for that event.
-- [ ] Stop publishing halfway through result handling from `onUsage` and then
+- [x] Stop publishing halfway through result handling from `onUsage` and then
       again from the status hook. Separate mutation from publication within this
       existing event path; no timed batching or new event-bus layer.
-- [ ] Ensure a rate-limit-only event publishes its changed snapshot even when
+- [x] Ensure a rate-limit-only event publishes its changed snapshot even when
       there is no status/usage change. Existing tests that fetch `session.get` do not
       prove that subscribers received an update.
-- [ ] Preserve checkpoint/titling ordering: a completed turn's usage/turn count
+- [x] Preserve checkpoint/titling ordering: a completed turn's usage/turn count
       must be recorded before its checkpoint. Keep asynchronous title completion as
       a separate later transition.
-- [ ] Do not let a failed transcript/broadcast hook skip all subsequent
+- [x] Do not let a failed transcript/broadcast hook skip all subsequent
       in-memory event bookkeeping. Handle that failure explicitly and log it; do
       not silently pretend persistence succeeded.
 
@@ -618,6 +618,48 @@ Hold a failing hook to prove state bookkeeping is not accidentally skipped.
 
 Done: comments claiming a complete/once-per-event publication match the actual
 callback order. No snapshot advertises half of one synchronous transition.
+
+**Done.** All four regressions were written first. Three failed:
+
+- `a completed turn publishes one consistent state, never half of it` — the
+  first snapshot carrying the new turn count reported the _previous_ status,
+  because `#trackUsage` called `onUsage`, which published, before
+  `#applyStatus` derived the settled state and published again. Two
+  publications for one event, the first of them half-applied.
+- `a rate-limit-only event reaches every attached client` — `#trackRateLimit`
+  returned `void`, so a `rate_limit` event joined nothing that decided to
+  publish. Worth recording how this one nearly passed for the wrong reason: the
+  first version of the test emitted a `result` shortly before, and the
+  _auto-titler_ finishing published a snapshot that happened to carry the new
+  rate-limit window. Letting the turn settle first, and asserting against what
+  subscribers were handed rather than `session.get`, made it fail properly —
+  which is exactly the trap this step's brief warns about.
+- `a failing emitEvent does not stop the session's state advancing` — the
+  persist/broadcast hook sat inside the same `try` as every tracker, so one
+  throw skipped the whole event: no request set, no status, nothing published,
+  while the agent carried on. Driven against a bare `SessionManager`, since a
+  real daemon's store does not fail on demand.
+
+`resolving one parallel request publishes the rest, with no status change`
+passed on arrival and is kept as regression cover.
+
+The fix is a shape, not a set of guards: `#drain` now persists the event in its
+own `try`, then applies everything the event changes — requests, compaction
+progress, sub-agents, background tasks, rate-limit windows, usage — derives the
+status from that, and only then publishes. `#trackRateLimit` and `#trackUsage`
+report whether they changed anything instead of returning `void`, so they join
+the same decision as every other tracker. `onUsage` accumulates and no longer
+publishes; its doc says so. `onOverlay`'s doc now names the full set of things
+it publishes for, which is what makes "once per event, after everything" a
+claim a reader can check rather than take on trust.
+
+Ordering preserved deliberately: usage and the turn count are recorded before
+`onResult` takes the checkpoint, so the checkpoint belongs to the turn that
+produced them, and the auto-titler stays asynchronous — a later transition of
+its own, not part of this one.
+
+Verified: typecheck, lint and format:check clean; `deno task test` 646 passed
+(118 steps) / 0 failed.
 
 ## 7. Close the cutover and verify the reductions
 

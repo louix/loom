@@ -9,6 +9,9 @@ import { cacheHitRate } from "@loom/core/cache";
 import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
+import { FakeProvider as FakeProviderClass } from "@loom/connector-mock";
+import { SessionManager } from "@loom/daemon/daemon/session-manager";
+import { makeLogger } from "@loom/core/logger";
 
 // Every test runs against its own harness (daemon + temp git repo) so tests
 // can overlap; the active harness rides AsyncLocalStorage, which keeps the
@@ -1394,6 +1397,108 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  // --- §6: one publication per complete event transition -------------------
+
+  /** Every snapshot of `id` a client is handed, in delivery order. */
+  const snapshotsOf = (c: LoomClient, id: string): SessionSnapshot[] => {
+    const seen: SessionSnapshot[] = [];
+    c.subscribe((st) => {
+      if (st.tag !== "data") return;
+      const s = st.value.sessions.find((x) => x.id === id);
+      if (s) seen.push(s);
+    });
+    return seen;
+  };
+
+  test("a completed turn publishes one consistent state, never half of it", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "assistant_text", text: "working" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+
+    const seen = snapshotsOf(c, id);
+    const turnsBefore = (await c.request<SessionSnapshot>("session.get", { id })).turns;
+
+    // The turn ends: its usage lands, its turn count goes up, and the status
+    // settles to idle. Those are one transition, and no subscriber may be shown
+    // a snapshot from the middle of it.
+    fs.emit({
+      type: "usage",
+      tokens: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 },
+      contextUsed: 120,
+      contextLimit: 200_000,
+    });
+    fs.emit({ type: "result", kind: "ok", summary: "done" });
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+
+    const firstWithTurn = seen.find((s) => s.turns > turnsBefore);
+    assert.ok(firstWithTurn, "the completed turn was published");
+    assert.equal(
+      firstWithTurn.status.kind,
+      "idle",
+      "the first snapshot carrying the new turn count already carries the settled status",
+    );
+    await c.close();
+  });
+
+  test("a rate-limit-only event reaches every attached client", async () => {
+    const a = await client();
+    const b = await client();
+    const { id, fs } = await createFake(a);
+    fs.emit({ type: "result", kind: "ok", summary: "done" });
+    await waitFor(async () => (await statusOf(a, id)) === "idle");
+    // Let everything that turn set off (the auto-titler) settle, so the only
+    // thing that can publish from here is the event under test.
+    await delay(400);
+    const seenA = snapshotsOf(a, id);
+    const seenB = snapshotsOf(b, id);
+
+    // Nothing about this event moves the status or the usage totals. It still
+    // changes the snapshot, so it still has to be published — a client that
+    // never calls `session.get` would otherwise never learn about it.
+    fs.emit({
+      type: "rate_limit",
+      window: "five_hour",
+      status: "allowed_warning",
+      utilization: 0.82,
+    });
+
+    const utilOf = (seen: SessionSnapshot[]): number | undefined =>
+      seen.at(-1)?.rateLimits["five_hour"]?.utilization;
+    await waitFor(() => utilOf(seenA) === 0.82 && utilOf(seenB) === 0.82, 3000);
+    assert.ok(seenA.length > 0 && seenB.length > 0, "the event published to both clients");
+    await a.close();
+    await b.close();
+  });
+
+  test("resolving one parallel request publishes the rest, with no status change", async () => {
+    const a = await client();
+    const b = await client();
+    const { id, fs } = await createFake(a);
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    fs.emit({ type: "permission_request", id: "p2", tool: "Write", input: {} });
+    const requestsSeenBy = (c: LoomClient): string[] => {
+      const st = c.getState();
+      if (st.tag !== "data") return [];
+      return (st.value.sessions.find((x) => x.id === id)?.requests ?? []).map((r) => r.id);
+    };
+    await waitFor(() => requestsSeenBy(b).length === 2, 3000);
+
+    await a.request("session.respondPermission", {
+      id,
+      requestId: "p1",
+      decision: "allow",
+      by: "a",
+    });
+
+    // The session is still blocked on p2, so nothing about its *status*
+    // changed — and the remaining set still has to reach both clients.
+    await waitFor(() => requestsSeenBy(a).join() === "p2" && requestsSeenBy(b).join() === "p2");
+    assert.equal(await statusOf(a, id), "awaiting_input");
+    await a.close();
+    await b.close();
+  });
+
   test("an interrupt clears the outstanding requests off the snapshot", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
@@ -1405,4 +1510,63 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.deepEqual((await c.request<SessionSnapshot>("session.get", { id })).requests, []);
     await c.close();
   });
+});
+
+// A failure in the persist/broadcast hook is not the session's problem: the
+// agent keeps running either way, so its in-memory state has to keep up with
+// it. Driven against a bare `SessionManager` — a real daemon's store does not
+// fail on demand.
+nodeTest("a failing emitEvent does not stop the session's state advancing", async () => {
+  const provider = new FakeProviderClass();
+  const emitFailures: string[] = [];
+  const logged: string[] = [];
+  const states: string[] = [];
+  const mgr = new SessionManager({
+    emitEvent: (ev) => {
+      emitFailures.push(ev.type);
+      throw new Error("transcript store is down");
+    },
+    onStatus: (_id, state) => {
+      states.push(state.kind);
+    },
+    onUsage: () => {},
+    onResult: () => {},
+    onOverlay: () => {},
+    onProviderRef: () => {},
+    onMode: () => {},
+    log: {
+      ...makeLogger("test"),
+      error: (msg: string) => {
+        logged.push(msg);
+      },
+    },
+  });
+
+  await mgr.create(provider, {
+    sessionId: "s1",
+    cwd: "/tmp",
+    prompt: "keep going",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const fs = provider.session("s1");
+  assert.ok(fs);
+
+  fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+  await waitFor(() => mgr.requestsOf("s1").length === 1, 2000);
+
+  assert.deepEqual(
+    mgr.requestsOf("s1").map((r) => r.id),
+    ["p1"],
+    "the request set advanced even though nothing could be persisted",
+  );
+  assert.ok(states.includes("awaiting_input"), "and so did the turn state");
+  assert.ok(emitFailures.length > 0, "the hook really did throw");
+  assert.ok(
+    logged.some((m) => /persist|broadcast/i.test(m)),
+    `the failure is logged, not swallowed: ${logged.join(" | ")}`,
+  );
+
+  await mgr.shutdown();
 });

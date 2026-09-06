@@ -303,7 +303,8 @@ export class Daemon {
         // session and a session can switch models, so its totals blend them.
         this.#registry.store.addModelUsage(id, snap.provider, snap.model ?? "", priced);
         this.#noteCacheTtlDrift(snap, delta.lastCacheTtlMinutes);
-        this.#publishState();
+        // No publish here. The manager publishes once per event, after it has
+        // derived the status this usage belongs to.
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;

@@ -39,15 +39,23 @@ export interface ManagerHooks {
   emitEvent(ev: HarnessEvent): void;
   /** A turn-state transition, with an optional audit breadcrumb for it. */
   onStatus(sessionId: string, state: SessionState, note?: string): void;
-  /** A usage delta to accumulate. */
+  /**
+   * A usage delta to accumulate. Mutation only: publication for the event that
+   * produced it happens once, after its status has been derived — a snapshot
+   * from between the two would carry a turn count and the previous turn's
+   * status at the same time.
+   */
   onUsage(sessionId: string, delta: UsageDelta): void;
   /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
   onResult(sessionId: string, ok: boolean): void;
   /**
-   * A runtime-only overlay on the session's snapshot changed and no status
-   * transition already carried it: the outstanding-request set, the sub-agent
-   * set, the live background-task set, the restructuring gate, or compaction
-   * progress. The daemon republishes the session snapshot, reading current
+   * Publish the session's snapshot: something about it changed and no status
+   * transition carried it out. That covers the outstanding-request set, the
+   * sub-agent set, the live background-task set, the restructuring gate,
+   * compaction progress, a rate-limit window, and a usage rollup mid-turn.
+   *
+   * Called at most once per drained event, and only after everything that
+   * event changed has been applied — see `#drain`. The daemon reads current
    * authoritative values rather than anything passed in here.
    */
   onOverlay(sessionId: string): void;
@@ -251,29 +259,49 @@ export class SessionManager {
         if (ev.type === "error" && ev.fatal) {
           this.#hooks.log.warn("session error", { id, message: ev.message });
         }
+        // Persisting and broadcasting the raw event is its own concern, and its
+        // own failure. It runs first (the transcript should carry the event
+        // before anything derived from it is published) but it must not take
+        // the bookkeeping below with it: a store write hiccup would otherwise
+        // freeze this session's state while the agent kept running, and no
+        // client would be told. Log it — never pretend it succeeded.
+        try {
+          this.#hooks.emitEvent(ev);
+        } catch (err) {
+          this.#hooks.log.error("event persist/broadcast failed; state still advancing", {
+            id,
+            evType: ev.type,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
         // A transient failure in a downstream hook (a store write hiccup inside
         // onStatus / onUsage) must not end the drain and tear down a live agent
         // session — log it and keep consuming the stream.
         try {
-          this.#hooks.emitEvent(ev);
-          // Overlay bookkeeping first, so whatever publishes below reads the
-          // set this event produced — then exactly one publication per event:
-          // a status transition already carries the fresh overlays in its own
-          // snapshot, so only an overlay change *without* one needs its own.
+          // One event, one transition, one publication. Everything the event
+          // changes is applied first — requests, compaction progress,
+          // sub-agents, background tasks, rate-limit windows, usage — then the
+          // status is derived from the result, and only then does anything go
+          // out. None of these hooks publishes; a subscriber that saw a
+          // snapshot from the middle of this would be shown, say, a turn count
+          // that has gone up beside the status of the turn that produced it.
           // Every tracker runs — `||` would short-circuit and skip the rest.
-          const changes = [
+          const changed = [
             this.#trackPending(run, ev),
             this.#trackCompaction(run, ev),
             this.#trackSubagents(run, ev),
             this.#trackBackgroundTasks(run, ev),
-          ];
-          const overlayChanged = changes.some((c) => c);
-          this.#trackRateLimit(run, ev);
-          this.#trackUsage(id, ev);
-          if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
+            this.#trackRateLimit(run, ev),
+            this.#trackUsage(id, ev),
+          ].some((c) => c);
           this.#trackRef(id, run);
+          // Publishes when it fires, carrying everything applied above.
           const transitioned = this.#applyStatus(id, run, ev);
-          if (overlayChanged && !transitioned) this.#hooks.onOverlay(id);
+          if (changed && !transitioned) this.#hooks.onOverlay(id);
+          // Last, and only now: the turn's usage and turn count are recorded,
+          // so the checkpoint is taken against the turn that produced them.
+          // Titling is deliberately asynchronous — a later transition of its own.
+          if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -419,13 +447,16 @@ export class SessionManager {
     return this.#running.get(id)?.backgroundTasks ?? [];
   }
 
-  #trackRateLimit(run: Running, ev: HarnessEvent): void {
-    if (ev.type !== "rate_limit") return;
+  /** Returns whether it changed the snapshot — a rate-limit window moving is
+   *  the whole of some events, and nothing else would publish them. */
+  #trackRateLimit(run: Running, ev: HarnessEvent): boolean {
+    if (ev.type !== "rate_limit") return false;
     run.rateLimits.set(ev.window ?? "default", {
       status: ev.status,
       ...(ev.utilization != null ? { utilization: ev.utilization } : {}),
       ...(ev.resetsAt != null ? { resetsAt: ev.resetsAt } : {}),
     });
+    return true;
   }
 
   /** The provider's account-plan usage windows last reported for this session, keyed by window name. */
@@ -447,7 +478,9 @@ export class SessionManager {
     return out;
   }
 
-  #trackUsage(id: string, ev: HarnessEvent): void {
+  /** Returns whether it moved the session's totals. `onUsage` accumulates and
+   *  does not publish — this event's publication happens once, above. */
+  #trackUsage(id: string, ev: HarnessEvent): boolean {
     if (ev.type === "usage") {
       // A provider that computes cost as tokens×rate can hand us a NaN when the
       // rate is unknown; `?? 0` only catches null/undefined. The store guards
@@ -467,9 +500,13 @@ export class SessionManager {
         lastCacheWrite: ev.tokens.cacheWrite,
         ...(ev.cacheTtlMinutes ? { lastCacheTtlMinutes: ev.cacheTtlMinutes } : {}),
       });
-    } else if (ev.type === "result") {
-      this.#hooks.onUsage(id, { turns: 1 });
+      return true;
     }
+    if (ev.type === "result") {
+      this.#hooks.onUsage(id, { turns: 1 });
+      return true;
+    }
+    return false;
   }
 
   /** Returns whether it published a transition. */
