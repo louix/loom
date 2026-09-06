@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
 import { setLogFile, setLogStderr } from "@loom/core/logger";
-import { LoomClient } from "@loom/client";
+import { LoomClient, showConnectionError, type ConnectionError } from "@loom/client";
 import { cacheHitRate } from "@loom/core/cache";
-import type { ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
+import { foldLoadable } from "@loom/core/loadable";
+import type { DaemonSnapshot, ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
-import { sessionStateLabel } from "@loom/core/session-state";
+import { isLiveState, sessionStateLabel } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
 
 const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
@@ -646,18 +647,24 @@ const runTail = async (client: LoomClient): Promise<void> => {
     if (f.type === "event") {
       const e = f.event;
       writeOut(`#${f.seq} ${e.type.padEnd(16)} ${e.sessionId.slice(0, 8)} ${summarize(e)}\n`);
-    } else if (f.type === "session_updated") {
-      writeOut(
-        `#${f.seq} session_updated  ${f.session.id.slice(0, 8)} -> ${f.session.status} (v${f.version})\n`,
-      );
-    } else if (f.type === "session_removed") {
-      writeOut(`#${f.seq} session_removed   ${f.sessionId.slice(0, 8)}\n`);
-    } else if (f.type === "providers_updated") {
-      writeOut(`#${f.seq} providers_updated ${f.providers.length} provider(s)\n`);
     } else if (f.type === "notice") {
       writeOut(`#${f.seq} notice           ${f.tone}: ${f.text}\n`);
     }
   });
+  // State arrives as whole-fleet snapshots with no seq of their own, so report
+  // what each one *says* rather than pretending it's a position in the stream.
+  // The raw event replay above is the point of `tail`; this is context for it.
+  client.subscribe(
+    foldLoadable<ConnectionError, DaemonSnapshot, void>({
+      onIdle: () => {},
+      onPending: () => writeOut("[state: waiting for a snapshot]\n"),
+      onError: (e) => writeOut(`[state: ${showConnectionError(e)}]\n`),
+      onData: (snap) => {
+        const live = snap.sessions.filter((s) => isLiveState(s.status)).length;
+        writeOut(`[state: ${snap.sessions.length} session(s), ${live} live]\n`);
+      },
+    }),
+  );
   await new Promise<void>((resolve) => {
     Deno.addSignalListener("SIGINT", () => {
       void client.close().then(resolve);

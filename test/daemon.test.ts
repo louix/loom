@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
+import { PROTOCOL_VERSION } from "@loom/core/wire";
 import type { DoctorReport, HelloResult, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { loomPaths } from "@loom/core/paths";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
@@ -64,13 +65,15 @@ const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 1000): Promi
   }
 };
 
-test("hello handshake returns daemon info and an empty session list", async () => {
+test("hello handshake returns daemon info and an empty fleet snapshot", async () => {
   const c = await client();
   assert.equal(c.daemonInfo?.repoRoot, h.repoRoot);
   // the TUI's version-mismatch auto-respawn keys off this field — any
   // non-empty build string (git-describe, a stamp, "unknown-version") is fine
   assert.ok((c.daemonInfo?.version ?? "").length > 0);
-  assert.deepEqual(c.sessions, []);
+  const state = c.getState();
+  assert.equal(state.tag, "data", "the handshake installs a snapshot");
+  assert.deepEqual(state.tag === "data" ? state.value.sessions : null, []);
   await c.close();
 });
 
@@ -232,41 +235,37 @@ test("session.events: `before` cursor pages older rows; limit is clamped; malfor
   await c.close();
 });
 
-test("setStatus broadcasts a session_updated with a bumped version and attribution", async () => {
+test("setStatus publishes a snapshot carrying the new status", async () => {
   const c = await client();
   const stub = await c.request<SessionSnapshot>("session.createStub", {
     prompt: "x",
     status: "running",
   });
 
-  const updates: Array<{ version: number; by?: string; status: string }> = [];
-  c.onPush((f) => {
-    if (f.type === "session_updated" && f.session.id === stub.id) {
-      updates.push({
-        version: f.version,
-        status: f.session.status.kind,
-        ...(f.by ? { by: f.by } : {}),
-      });
-    }
+  const statuses: string[] = [];
+  c.subscribe((s) => {
+    if (s.tag !== "data") return;
+    const found = s.value.sessions.find((x) => x.id === stub.id);
+    if (found) statuses.push(found.status.kind);
   });
 
   await c.request("session.setStatus", { id: stub.id, status: "idle", by: "tester" });
   await delay(20);
 
-  assert.ok(updates.length >= 1);
-  const last = updates.at(-1)!;
-  assert.equal(last.status, "idle");
-  assert.equal(last.by, "tester");
-  assert.ok(last.version >= 2);
+  assert.equal(statuses.at(-1), "idle");
   await c.close();
 });
 
-test("a fresh client (no sinceSeq) is told replaying:false and gets the snapshot", async () => {
+test("a fresh client (no sinceSeq) is told replaying:false", async () => {
   const c = await client();
-  const raw = await c.request<HelloResult>("hello", { protocolVersion: 1, clientId: "probe" });
+  const raw = await c.request<HelloResult>("hello", {
+    protocolVersion: PROTOCOL_VERSION,
+    clientId: "probe",
+  });
   assert.equal(raw.replaying, false);
   assert.equal(typeof raw.seq, "number");
-  assert.ok(Array.isArray(raw.sessions));
+  // The fleet rides the `state` push the handler enqueues, not this result.
+  assert.equal("sessions" in raw, false);
   await c.close();
 });
 
@@ -322,7 +321,11 @@ test("hello with a stale high sinceSeq triggers a resync push", async () => {
     resynced = true;
   });
   // Ask to replay from a seq far beyond head.
-  await c.request("hello", { protocolVersion: 1, clientId: "stale", sinceSeq: 999_999 });
+  await c.request("hello", {
+    protocolVersion: PROTOCOL_VERSION,
+    clientId: "stale",
+    sinceSeq: 999_999,
+  });
   await delay(30);
   assert.equal(resynced, true);
   await c.close();
@@ -369,49 +372,62 @@ test("a reconnect onto a restarted daemon (new epoch) forces a resync", async ()
   }
 });
 
-test("S6: session_updated version does not regress across a daemon restart", async () => {
+test("a client re-baselines its whole fleet from the snapshot after a daemon restart", async () => {
   const hh = await makeHarness();
   try {
     const c = await LoomClient.connect({
       repoRoot: hh.repoRoot,
       sockPath: hh.sockPath,
       autospawn: false,
+      reconnect: true,
     });
     const stub = await c.request<SessionSnapshot>("session.createStub", {
       prompt: "v",
       status: "running",
     });
-    // Bump it a few times pre-restart so its version is well above 1.
     for (let i = 0; i < 5; i++) {
       await c.request("session.setStatus", { id: stub.id, status: i % 2 ? "idle" : "running" });
     }
-    let preVersion = 0;
-    c.onPush((f) => {
-      if (f.type === "session_updated" && f.session.id === stub.id) preVersion = f.version;
-    });
-    await c.request("session.setStatus", { id: stub.id, status: "idle" });
     await delay(20);
-    assert.ok(preVersion > 1, `expected a climbed version, got ${preVersion}`);
-    await c.close();
+    const before = c.getState();
+    assert.equal(
+      before.tag === "data" ? before.value.sessions.find((x) => x.id === stub.id)?.status.kind : "",
+      "running",
+    );
 
+    // The restart resets the daemon's epoch and its seq counter. Nothing in the
+    // snapshot is keyed on either, so the first one after reconnect is simply
+    // the current truth — there is no version to regress (S6).
+    const tags: string[] = [];
+    c.subscribe((s) => tags.push(s.tag));
     await hh.restart();
 
-    const c2 = await LoomClient.connect({
-      repoRoot: hh.repoRoot,
-      sockPath: hh.sockPath,
-      autospawn: false,
-    });
-    let postVersion = 0;
-    c2.onPush((f) => {
-      if (f.type === "session_updated" && f.session.id === stub.id) postVersion = f.version;
-    });
-    await c2.request("session.setStatus", { id: stub.id, status: "running" });
-    await delay(20);
-    assert.ok(
-      postVersion > preVersion,
-      `version regressed across restart: pre ${preVersion}, post ${postVersion}`,
+    // Wait for the drop to be observed and a fresh snapshot to land, rather
+    // than for the stale `data` we are still holding at this instant.
+    for (let i = 0; i < 400; i++) {
+      if (tags.includes("pending") && c.getState().tag === "data") break;
+      await delay(10);
+    }
+    assert.ok(tags.includes("pending"), `expected a pending state; saw ${tags.join(",")}`);
+
+    await c.request("session.setStatus", { id: stub.id, status: "idle" });
+    for (let i = 0; i < 200; i++) {
+      const s = c.getState();
+      if (
+        s.tag === "data" &&
+        s.value.sessions.find((x) => x.id === stub.id)?.status.kind === "idle"
+      )
+        break;
+      await delay(10);
+    }
+    const after = c.getState();
+    assert.equal(after.tag, "data");
+    assert.equal(
+      after.tag === "data" ? after.value.sessions.find((x) => x.id === stub.id)?.status.kind : "",
+      "idle",
+      "post-restart changes reach the client",
     );
-    await c2.close();
+    await c.close();
   } finally {
     await hh.cleanup();
   }
@@ -673,9 +689,6 @@ models   = ["pin-a", "pin-b"]
       sockPath: hh.sockPath,
       autospawn: false,
     });
-    const pushes: PushFrame[] = [];
-    c.onPush((f) => pushes.push(f));
-
     const s = await c.request<{ id: string }>("session.createStub", {
       prompt: "x",
       provider: "local",
@@ -685,11 +698,11 @@ models   = ["pin-a", "pin-b"]
     await c.request("session.setEffort", { id: s.id, effort: "high", by: "t" });
 
     await delay(20);
-    const updates = pushes.filter((f) => f.type === "providers_updated");
-    assert.ok(updates.length >= 2, "setModel and setEffort each push a providers_updated");
-    const last = updates.at(-1)!;
-    if (last.type !== "providers_updated") return assert.fail("unreachable");
-    const local = last.providers.find((p) => p.id === "local");
+    // Providers ride the same snapshot as sessions, so a remembered default
+    // reaches clients without its own push type.
+    const state = c.getState();
+    const local =
+      state.tag === "data" ? state.value.providers.find((p) => p.id === "local") : undefined;
     assert.equal(local?.defaultModel, "pin-b");
     assert.equal(local?.defaultEffort, "high");
 
@@ -1751,13 +1764,24 @@ base_url = "${srv.base}"
     // immediately (the TUI spawning the daemon) fetches providers.list with
     // the empty pin fallback and no modelChoices. The daemon must not leave
     // it there: the resolved list is pushed the moment the probes land.
-    const updates = hh.daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
-    assert.equal(updates.length, 1, "one bring-up push when the probe resolved models");
-    const last = updates.at(-1);
-    if (last?.type !== "providers_updated") return assert.fail("unreachable");
-    const local = last.providers.find((p) => p.id === "local");
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    // Whether the probe settled before or after this client attached, the
+    // resolved catalog reaches it — either in the opening snapshot or in the
+    // one the settle publishes. An open picker's loader resolves either way.
+    let local: { models?: string[]; modelChoices?: unknown } | undefined;
+    for (let i = 0; i < 200; i++) {
+      const st = c.getState();
+      local = st.tag === "data" ? st.value.providers.find((p) => p.id === "local") : undefined;
+      if (local?.models?.length) break;
+      await delay(10);
+    }
     assert.deepEqual(local?.models, ["det-a", "det-b"]);
-    assert.ok(local?.modelChoices, "the push carries the picker metadata too");
+    assert.ok(local?.modelChoices, "the snapshot carries the picker metadata too");
+    await c.close();
   } finally {
     srv.close();
     await hh.cleanup();
@@ -1775,8 +1799,17 @@ models   = ["pin-a"]
 `,
   });
   try {
-    const updates = hh.daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
-    assert.equal(updates.length, 0, "nothing resolved → nothing to push");
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const st = c.getState();
+    const local = st.tag === "data" ? st.value.providers.find((p) => p.id === "local") : undefined;
+    // Nothing to resolve — the pinned list is what the opening snapshot says.
+    assert.deepEqual(local?.models, ["pin-a"]);
+    assert.equal(local?.modelsLoading, undefined);
+    await c.close();
   } finally {
     await hh.cleanup();
   }
@@ -1821,21 +1854,15 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
     const claude = list.find((p) => p.id === "claude");
     assert.deepEqual(claude?.models, []); // no fabricated single-pin list
     assert.equal(claude?.modelsLoading, undefined); // the probe settled (failed fast here)
-    await c.close();
 
-    // The settle flip alone is worth a push: clients that fetched the loading
-    // state mid-probe are told the list is final.
-    const updates = daemon.events.since(0).frames.filter((f) => f.type === "providers_updated");
-    assert.equal(
-      updates.length,
-      1,
-      "the loading→settled flip pushes even though models stayed empty",
-    );
-    const last = updates.at(-1);
-    if (last?.type !== "providers_updated") return assert.fail("unreachable");
-    const pushed = last.providers.find((p) => p.id === "claude");
+    // The settle flip reaches clients even though the list stayed empty — a
+    // picker opened mid-probe has to stop showing its loader.
+    const st = c.getState();
+    const pushed =
+      st.tag === "data" ? st.value.providers.find((p) => p.id === "claude") : undefined;
     assert.deepEqual(pushed?.models, []);
     assert.equal(pushed?.modelsLoading, undefined);
+    await c.close();
   } finally {
     await daemon?.stop("test").catch(() => {});
     process.env["XDG_CONFIG_HOME"] = realXdg;

@@ -22,12 +22,10 @@ const GROUP_RANK: Record<SessionStateKind, number> = {
 
 /**
  * Owns session state: a thin, write-through layer over SessionStore that adds
- * the per-session version counter (for `session_updated` de-duplication) and
- * the fleet-view sort. Adapters will attach live run state here in milestone 2.
+ * the fleet-view sort. Adapters attach live run state here.
  */
 export class Registry {
   #store: SessionStore;
-  #versions = new Map<string, number>();
 
   constructor(db: Db) {
     this.#store = new SessionStore(db);
@@ -39,7 +37,6 @@ export class Registry {
 
   create(s: NewSession): SessionSnapshot {
     this.#store.create(s);
-    this.#seedVersion(s.id); // updatedAt-based, like every other first touch
     return this.mustGet(s.id);
   }
 
@@ -64,65 +61,37 @@ export class Registry {
 
   setStatus(id: string, state: SessionState, note: string | null = null): SessionSnapshot {
     this.#store.setStatus(id, state, note);
-    return this.#bump(id);
+    return this.mustGet(id);
   }
 
   addUsage(id: string, d: UsageDelta): SessionSnapshot {
     this.#store.addUsage(id, d);
-    return this.#bump(id);
+    return this.mustGet(id);
   }
 
   setFields(id: string, fields: Parameters<SessionStore["setFields"]>[1]): SessionSnapshot {
     this.#store.setFields(id, fields);
-    return this.#bump(id);
+    return this.mustGet(id);
   }
 
   relinkProvider(from: string, to: string): number {
     return this.#store.relinkProvider(from, to);
   }
 
-  /** Set the turn counter directly (undo) and bump the version so a
-   *  version-tracking client doesn't keep a stale count. */
+  /** Set the turn counter directly (undo). */
   setTurns(id: string, turns: number): SessionSnapshot {
     this.#store.setTurns(id, turns);
-    return this.#bump(id);
+    return this.mustGet(id);
   }
 
   markMidRunInterrupted(): MidRunSession[] {
-    const rows = this.#store.markMidRunInterrupted();
-    for (const { id } of rows) this.#bump(id);
-    return rows;
+    return this.#store.markMidRunInterrupted();
   }
 
   /** Delete the row for good. Child tables cascade; a child session's
-   *  `parent_id` is nulled (see the schema). The version counter is dropped. */
+   *  `parent_id` is nulled (see the schema). */
   remove(id: string): void {
     this.#store.delete(id);
-    this.#versions.delete(id);
-  }
-
-  version(id: string): number {
-    return this.#versions.get(id) ?? this.#seedVersion(id);
-  }
-
-  /**
-   * First-touch version for a session the counter doesn't know yet — seeded
-   * from the row's `updatedAt` (monotonic ms) rather than 1. The counter is
-   * in-memory and resets on restart; without this, a client that reconnects
-   * holding a pre-restart version would suppress every fresh `session_updated`
-   * until the from-1 counter climbed back past it (S6). `updatedAt` only ever
-   * increases, so a post-restart bump lands above whatever the client held.
-   */
-  #seedVersion(id: string): number {
-    const seed = Math.floor(this.#store.get(id)?.updatedAt ?? 0);
-    this.#versions.set(id, seed);
-    return seed;
-  }
-
-  #bump(id: string): SessionSnapshot {
-    const next = (this.#versions.get(id) ?? this.#seedVersion(id)) + 1;
-    this.#versions.set(id, next);
-    return this.mustGet(id);
   }
 }
 

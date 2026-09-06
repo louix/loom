@@ -11,6 +11,7 @@ import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
 import {
+  fleetSessions,
   providerAccountOf,
   providerColorOf,
   providerInfo,
@@ -111,7 +112,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       break;
     case "plan": {
       const ps = state.plan
-        ? state.sessions.find((s) => s.id === state.plan?.sessionId)
+        ? fleetSessions(state).find((s) => s.id === state.plan?.sessionId)
         : undefined;
       // The provider whose model an `f` (implement fresh) would run on: a staged
       // ⌥p retarget if any, else the plan session's own — resolved to its fleet

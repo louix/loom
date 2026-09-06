@@ -10,7 +10,8 @@ import {
   stateAwaitingInput,
   stateIdle,
 } from "@loom/core/session-state";
-import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import type { EventPush } from "@loom/core/wire";
 import {
   actionsFor,
@@ -55,7 +56,11 @@ import {
   transcriptText,
   visibleLog,
   type LogLine,
+  type Action,
   type TuiState,
+  connectionOf,
+  fleetDaemon,
+  fleetSessions,
 } from "@loom/tui/model";
 import {
   detailRows,
@@ -65,7 +70,7 @@ import {
   promptRows,
 } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
-import { searchSessions } from "@loom/tui/fleet-search";
+import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
 import {
   bar,
   humanTokens,
@@ -155,7 +160,24 @@ const push = (seq: number, event: HarnessEvent, epoch = "e1"): EventPush => {
   return { kind: "push", seq, epoch, type: "event", event };
 };
 
-const daemon = { pid: 1, version: "0.0.1", repoRoot: "/tmp/demo" };
+const daemon: DaemonInfo = {
+  pid: 1,
+  version: "0.0.1",
+  repoRoot: "/tmp/demo",
+  startedAt: 0,
+  epoch: "e1",
+};
+
+/**
+ * A complete-replacement snapshot action — the only way fleet state reaches the
+ * reducer. Tests that used to push a single `session_updated` now hand over the
+ * whole fleet as it stands after the change, which is exactly what the daemon
+ * does.
+ */
+const fleet = (sessions: SessionSnapshot[], providers: ProviderInfo[] = []): Action => ({
+  t: "state",
+  state: loadableLoaded({ daemon, providers, sessions }),
+});
 
 // ---------------------------------------------------------------------------
 // hello / selection / ordering
@@ -164,11 +186,11 @@ const daemon = { pid: 1, version: "0.0.1", repoRoot: "/tmp/demo" };
 test("hello seeds the daemon, sorts sessions, and selects the first", () => {
   const a = snap({ id: "a", status: "idle" });
   const b = snap({ id: "b", status: "running" });
-  const s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
-  assert.equal(s.connection, "live");
-  assert.deepEqual(s.daemon, daemon);
+  const s = reduce(initialState(), fleet([a, b]));
+  assert.equal(connectionOf(s), "live");
+  assert.deepEqual(fleetDaemon(s), daemon);
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["b", "a"], // running sorts ahead of idle
   );
   assert.equal(s.selectedId, "b");
@@ -177,9 +199,9 @@ test("hello seeds the daemon, sorts sessions, and selects the first", () => {
 test("hello keeps the current selection when that session is still present", () => {
   const a = snap({ id: "a", status: "running" });
   const b = snap({ id: "b", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  let s = reduce(initialState(), fleet([a, b]));
   s = reduce(s, { t: "select", id: "b" });
-  s = reduce(s, { t: "hello", daemon, sessions: [b, a] });
+  s = reduce(s, fleet([b, a]));
   assert.equal(s.selectedId, "b");
 });
 
@@ -203,50 +225,27 @@ test("sortSessions: starting never outranks running, even when more recent", () 
   );
 });
 
-test("an optimistic select survives an unrelated session_updated until its row arrives (U4)", () => {
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "running" }), snap({ id: "b", status: "idle" })],
-  });
+test("an optimistic select survives an unrelated snapshot until its row arrives (U4)", () => {
+  const b = snap({ id: "b", status: "idle" });
+  let s = reduce(initialState(), fleet([snap({ id: "a", status: "running" }), b]));
   // User creates session "new1"; its row hasn't landed yet.
   s = reduce(s, { t: "select", id: "new1" });
   assert.equal(s.selectedId, "new1");
   assert.equal(s.pendingSelectId, "new1");
 
-  // An unrelated session ticks out a session_updated.
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 1,
-      type: "session_updated",
-      session: snap({ id: "a", status: "idle" }),
-      version: 2,
-    },
-  });
+  // An unrelated session changes; the snapshot still has no "new1".
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" }), b]));
   assert.equal(s.selectedId, "new1", "not bounced to the fleet head");
 
   // "new1" finally arrives — the hold is released.
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 2,
-      type: "session_updated",
-      session: snap({ id: "new1", status: "starting" }),
-      version: 1,
-    },
-  });
+  const created = snap({ id: "new1", status: "starting" });
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" }), b, created]));
   assert.equal(s.selectedId, "new1");
   assert.equal(s.pendingSelectId, undefined);
 
-  // A later unrelated update with "new1" gone from a stale list won't drop it now
-  // that it's real, and if "new1" is removed the hold is not resurrected.
-  s = reduce(s, {
-    t: "push",
-    frame: { kind: "push", seq: 3, type: "session_removed", sessionId: "new1" },
-  });
+  // Once it's real, a snapshot without it means it was removed — and the hold
+  // is not resurrected.
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" }), b]));
   assert.notEqual(s.selectedId, "new1");
   assert.equal(s.pendingSelectId, undefined);
 });
@@ -257,7 +256,7 @@ test("move clamps at both ends of the sorted list", () => {
     snap({ id: "b", status: "running" }),
     snap({ id: "c", status: "idle" }),
   ];
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: list });
+  let s = reduce(initialState(), fleet(list));
   assert.equal(s.selectedId, "a");
   s = reduce(s, { t: "move", delta: -1 });
   assert.equal(s.selectedId, "a", "cannot move above the top");
@@ -294,7 +293,7 @@ test("childrenOf lists live background tasks then active sub-agents", () => {
 });
 
 test("childEnter lands on the first child; childMove clamps within the list", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  let s = reduce(initialState(), fleet([fanout]));
   assert.equal(s.selectedChild, null);
   s = reduce(s, { t: "childEnter" });
   assert.equal(s.selectedChild, "bg:task1");
@@ -308,7 +307,7 @@ test("childEnter lands on the first child; childMove clamps within the list", ()
 });
 
 test("childEnter while focused keeps the current child; after an exit it restarts", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  let s = reduce(initialState(), fleet([fanout]));
   s = reduce(s, { t: "childEnter" });
   s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
   s = reduce(s, { t: "childEnter" });
@@ -320,32 +319,26 @@ test("childEnter while focused keeps the current child; after an exit it restart
 });
 
 test("childEnter on a session with no live children is a no-op", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a" })] });
+  let s = reduce(initialState(), fleet([snap({ id: "a" })]));
   s = reduce(s, { t: "childEnter" });
   assert.equal(s.selectedChild, null);
 });
 
 test("a drained child snaps to a survivor; an emptied list exits focus", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  let s = reduce(initialState(), fleet([fanout]));
   s = reduce(s, { t: "childEnter" });
   s = reduce(s, { t: "childMove", delta: 1 }); // → bg:task2
   // Membership churn: the background tasks drained → snap to the first survivor.
-  s = reduce(s, {
-    t: "sessions",
-    sessions: [{ ...fanout, backgroundTasks: [] }],
-  });
+  s = reduce(s, fleet([{ ...fanout, backgroundTasks: [] }]));
   assert.equal(s.selectedChild, "sub:t1");
   // Everything drains → the drill-down exits rather than pointing at nothing.
-  s = reduce(s, {
-    t: "sessions",
-    sessions: [{ ...fanout, backgroundTasks: [], subagents: [] }],
-  });
+  s = reduce(s, fleet([{ ...fanout, backgroundTasks: [], subagents: [] }]));
   assert.equal(s.selectedChild, null);
 });
 
 test("changing the session selection clears the child focus", () => {
   const other = snap({ id: "other", status: "idle" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout, other] });
+  let s = reduce(initialState(), fleet([fanout, other]));
   s = reduce(s, { t: "childEnter" });
   assert.equal(s.selectedChild, "bg:task1");
   s = reduce(s, { t: "select", id: "other" });
@@ -358,11 +351,7 @@ test("changing the session selection clears the child focus", () => {
 });
 
 test("selectChild selects the session and focuses the child; stale/unknown fall back", () => {
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "idle" }), fanout],
-  });
+  let s = reduce(initialState(), fleet([snap({ id: "a", status: "idle" }), fanout]));
   s = reduce(s, { t: "selectChild", sessionId: "fan", key: "sub:t1" });
   assert.equal(s.selectedId, "fan");
   assert.equal(s.selectedChild, "sub:t1");
@@ -381,7 +370,7 @@ test("selectChild selects the session and focuses the child; stale/unknown fall 
 test("fleetHits maps every FLEET entry to its screen row", () => {
   const a = snap({ id: "a", status: "idle" });
   const b = snap({ id: "b", status: "idle" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b, fanout] });
+  let s = reduce(initialState(), fleet([a, b, fanout]));
   const geom = { originX: 1, listW: 40, originY: 2, maxY: 100 };
 
   const flat = fleetHits(s, geom);
@@ -432,7 +421,7 @@ test("fleetHits maps every FLEET entry to its screen row", () => {
 
 test("fleetHits shifts every row down when the filter box is open", () => {
   const a = snap({ id: "a", status: "idle", title: "alpha" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   const geom = { originX: 1, listW: 40, originY: 2, maxY: 100 };
   const before = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
   s = reduce(s, { t: "openFind" });
@@ -459,7 +448,7 @@ test("modeChipHit points at the Detail status row's chip cell", () => {
 });
 
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  let s = reduce(initialState(), fleet([fanout]));
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
@@ -497,107 +486,86 @@ test("visibleLog: the main view hides child-tagged frames; a focused child narro
 });
 
 test("footerHints advertises the drill-down and the way back out", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [fanout] });
+  let s = reduce(initialState(), fleet([fanout]));
   const keys = (st: TuiState) => footerHints(st).map((h) => h.keys);
   assert.ok(keys(s).includes("→"), "sessions with live children offer →");
   s = reduce(s, { t: "childEnter" });
   assert.equal(keys(s)[0], "←", "← leads while drilled in");
   assert.ok(!keys(s).includes("→"), "→ is redundant once focused");
-  const bare = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "a" })] });
+  const bare = reduce(initialState(), fleet([snap({ id: "a" })]));
   assert.ok(!keys(bare).includes("→"), "childless sessions don't offer the drill-down");
 });
 
-test("session_updated upserts, re-sorts, and preserves selection", () => {
+test("a snapshot re-sorts the fleet and preserves selection", () => {
   const a = snap({ id: "a", status: "running", updatedAt: 1 });
   const b = snap({ id: "b", status: "running", updatedAt: 2 });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  let s = reduce(initialState(), fleet([a, b]));
   s = reduce(s, { t: "select", id: "a" });
   // a finishes its turn — should drop below b (idle group) but stay selected
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 1,
-      type: "session_updated",
-      session: snap({ id: "a", status: "idle", updatedAt: 9 }),
-      version: 2,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 9 }), b]));
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["b", "a"],
   );
   assert.equal(s.selectedId, "a");
 });
 
-test("session_removed drops the row and reselects the head", () => {
+test("a session missing from the snapshot drops out and reselects the head", () => {
   const a = snap({ id: "a", status: "awaiting_input" });
   const b = snap({ id: "b", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  let s = reduce(initialState(), fleet([a, b]));
   s = reduce(s, { t: "select", id: "b" });
-  s = reduce(s, {
-    t: "push",
-    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "b" },
-  });
+  s = reduce(s, fleet([a]));
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["a"],
   );
   assert.equal(s.selectedId, "a");
 });
 
-test("session_removed selects the row above, not the fleet head", () => {
+test("a removed session selects the row above, not the fleet head", () => {
   const a = snap({ id: "a", status: "awaiting_input" });
   const b = snap({ id: "b", status: "running" });
   const c = snap({ id: "c", status: "idle" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b, c] });
+  let s = reduce(initialState(), fleet([a, b, c]));
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["a", "b", "c"],
   );
   s = reduce(s, { t: "select", id: "b" });
-  s = reduce(s, {
-    t: "push",
-    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "b" },
-  });
+  s = reduce(s, fleet([a, c]));
   // b sat between a and c — losing it should land on a (the row above), not
   // snap back to the fleet head.
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["a", "c"],
   );
   assert.equal(s.selectedId, "a");
 });
 
-test("session_removed falls back to the new head when the removed row was already on top", () => {
+test("a removed session falls back to the new head when it was already on top", () => {
   const a = snap({ id: "a", status: "awaiting_input" });
   const b = snap({ id: "b", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  let s = reduce(initialState(), fleet([a, b]));
   s = reduce(s, { t: "select", id: "a" });
-  s = reduce(s, {
-    t: "push",
-    frame: { kind: "push", seq: 1, type: "session_removed", sessionId: "a" },
-  });
+  s = reduce(s, fleet([b]));
   // Nothing was above a — the only sensible landing spot is the new head.
   assert.deepEqual(
-    s.sessions.map((x) => x.id),
+    fleetSessions(s).map((x) => x.id),
     ["b"],
   );
   assert.equal(s.selectedId, "b");
 });
 
-test("providers_updated adopts the pushed list as the new-session defaults", () => {
+test("a snapshot's providers become the new-session defaults", () => {
   let s = withProviders();
-  // The daemon remembered a different last-used provider / model — the push
-  // replaces the connect-time snapshot wholesale.
+  // The daemon remembered a different last-used provider / model — the next
+  // snapshot replaces the connect-time list wholesale.
   const fresh: ProviderInfo[] = [
     { ...PROVIDERS[1]!, isDefault: true, defaultModel: "gpt-5-mini" },
     { ...PROVIDERS[0]!, isDefault: false },
   ];
-  s = reduce(s, {
-    t: "push",
-    frame: { kind: "push", seq: 2, type: "providers_updated", providers: fresh },
-  });
+  s = reduce(s, fleet(fleetSessions(s), fresh));
   assert.equal(defaultProviderId(s), "openai");
   assert.equal(defaultModelOf(s, "openai"), "gpt-5-mini");
 });
@@ -818,7 +786,7 @@ test("a replayed (backfilled) event never raises a notice — it's transcript, n
 
 test("backfill stitches durable history in by (epoch, seq) and re-sorts by ts (cross-restart order)", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "select", id: "a" });
 
   // The `hello` ring replay only carries the current epoch ("e2") — the turn
@@ -885,7 +853,7 @@ test("backfill stitches durable history in by (epoch, seq) and re-sorts by ts (c
 
 test("a sessions/hello snapshot drops pending for a session it says is no longer blocked (U2)", () => {
   const blocked = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [blocked] });
+  let s = reduce(initialState(), fleet([blocked]));
   s = reduce(s, {
     t: "push",
     replay: true,
@@ -897,7 +865,7 @@ test("a sessions/hello snapshot drops pending for a session it says is no longer
   assert.ok(s.pending["a"]?.permissions?.length, "replayed request tracked while still blocked");
 
   // The daemon's snapshot now shows the session idle — the pending is stale.
-  s = reduce(s, { t: "sessions", sessions: [snap({ id: "a", status: "idle" })] });
+  s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
   assert.equal(s.pending["a"], undefined, "settled pending pruned by the snapshot");
 });
 
@@ -913,7 +881,7 @@ test("expireNotice clears the notice only once its ttl has elapsed", () => {
 test("the event log always shows just the selected session", () => {
   const a = snap({ id: "a", status: "running" });
   const b = snap({ id: "b", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a, b] });
+  let s = reduce(initialState(), fleet([a, b]));
   s = reduce(s, { t: "select", id: "a" });
   s = reduce(s, {
     t: "push",
@@ -935,7 +903,7 @@ test("the event log always shows just the selected session", () => {
 
 test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls but drops results; everything keeps it all", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "select", id: "a" });
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
     (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
@@ -975,7 +943,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 
 test("chat view: tool calls with an input `description` get their own line; those without still collapse to a count", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "select", id: "a" });
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
     (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
@@ -1062,7 +1030,7 @@ test("condenseLog: a lone thinking / tool line still collapses; other kinds pass
 
 test("parallel permission requests queue; each resolvePerm advances; session_updated clears", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -1121,16 +1089,7 @@ test("parallel permission requests queue; each resolvePerm advances; session_upd
       ev({ type: "permission_request", id: "p3", tool: "bash", input: {}, sessionId: "a" }),
     ),
   });
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 5,
-      type: "session_updated",
-      session: snap({ id: "a", status: "running" }),
-      version: 3,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(firstPerm(pendingFor(s, "a")), undefined);
 });
 
@@ -1159,7 +1118,7 @@ test("a permission's matching tool_result clears it, even mid-replay with the se
   // `permissions` forever and `firstPerm` would keep surfacing it instead of
   // the real, current request.
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -1203,11 +1162,10 @@ test("a permission's matching tool_result clears it, even mid-replay with the se
 });
 
 test("pending question is cleared by the matching answer event", () => {
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "question" })],
-  });
+  let s = reduce(
+    initialState(),
+    fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "question" })]),
+  );
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "question", id: "q1", question: "?", sessionId: "a" })),
@@ -1222,7 +1180,7 @@ test("pending question is cleared by the matching answer event", () => {
 
 test("a plan_review stashes the plan text; openPlan / closePlan drive the overlay", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -1255,16 +1213,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
   assert.equal(s.plan?.mode, "acceptEdits");
 
   // the session moving on closes the overlay and clears pending
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 2,
-      type: "session_updated",
-      session: snap({ id: "a", status: "running" }),
-      version: 3,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(s.plan, null);
   assert.equal(s.mode, "browse");
   assert.equal(pendingFor(s, "a").plan, undefined);
@@ -1272,7 +1221,7 @@ test("a plan_review stashes the plan text; openPlan / closePlan drive the overla
 
 test("⌥p stages an implement-fresh retarget onto the plan overlay", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "openPlan", sessionId: "a", requestId: "pr1", text: "the plan" });
   s = reduce(s, { t: "cyclePlanMode" }); // → auto, must survive the wizard
 
@@ -1329,11 +1278,10 @@ test("a plan is cleared by its matching tool_result once the decision lands", ()
   // its `tool_result` is the only durable mark that the plan was decided —
   // the daemon clears its own map in `respondToPlan`, but that never reaches
   // the event log a client backfills from.
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" })],
-  });
+  let s = reduce(
+    initialState(),
+    fleet([snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" })]),
+  );
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "plan_review", id: "p1", plan: "the plan", sessionId: "a" })),
@@ -1367,21 +1315,12 @@ test("a replayed plan_review can't resurrect a plan the session already moved pa
   // would pin the request panel on the stale plan text while the session
   // is genuinely parked on something else.
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "permission" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "plan_review", id: "pr1", plan: "old plan", sessionId: "a" })),
   });
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 2,
-      type: "session_updated",
-      session: snap({ id: "a", status: "running" }),
-      version: 3,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(pendingFor(s, "a").plan, undefined);
 
   // the backfill re-dispatches the same (seq, epoch) frame — a duplicate
@@ -1477,7 +1416,11 @@ test("actionsFor keeps the salient action first", () => {
 test("footerHints gives every overlay its own fixed key set", () => {
   const base: TuiState = {
     ...initialState(),
-    sessions: [snap({ id: "s1", status: "idle" })],
+    fleet: loadableLoaded({
+      daemon,
+      providers: [],
+      sessions: [snap({ id: "s1", status: "idle" })],
+    }),
     selectedId: "s1",
   };
   const keysFor = (mode: TuiState["mode"]) => footerHints({ ...base, mode }).map((h) => h.label);
@@ -1512,7 +1455,11 @@ test("footerHints gives every overlay its own fixed key set", () => {
 test("commandsFor lists every action valid now — session verbs plus the app commands", () => {
   const base: TuiState = {
     ...initialState(),
-    sessions: [snap({ id: "s1", status: "idle", provider: "openai", turns: 3 })],
+    fleet: loadableLoaded({
+      daemon,
+      providers: [],
+      sessions: [snap({ id: "s1", status: "idle", provider: "openai", turns: 3 })],
+    }),
     selectedId: "s1",
   };
   const ids = commandsFor(base).map((c) => c.id);
@@ -1531,13 +1478,13 @@ test("commandsFor lists every action valid now — session verbs plus the app co
 
   // gc only shows when a done session actually has a worktree to collect
   assert.ok(!commandsFor(base).some((c) => c.id === "gc"));
-  const withDoneTree: TuiState = {
-    ...base,
-    sessions: [
-      ...base.sessions,
+  const withDoneTree = reduce(
+    base,
+    fleet([
+      ...fleetSessions(base),
       snap({ id: "s2", status: "done", provider: "openai", worktree: "/tmp/gc-tree" }),
-    ],
-  };
+    ]),
+  );
   assert.ok(commandsFor(withDoneTree).some((c) => c.id === "gc"));
 
   // clearqueue only shows when the selected session actually has a queue
@@ -1548,26 +1495,27 @@ test("commandsFor lists every action valid now — session verbs plus the app co
   // rebase needs a worktree, but is offered regardless of the (lag-prone)
   // behindBase count — the RPC is a harmless no-op when there's nothing to do
   assert.ok(!commandsFor(base).some((c) => c.id === "rebase"));
-  const mkWt = (behindBase: number): TuiState => ({
-    ...base,
-    sessions: [
-      snap({
-        id: "s1",
-        status: "idle",
-        provider: "openai",
-        turns: 3,
-        worktree: "/tmp/wt",
-        git: {
-          branch: "loom/s1",
-          commits: 1,
-          aheadOfBase: 0,
-          behindBase,
-          dirty: false,
-          lastCommitSubject: null,
-        },
-      }),
-    ],
-  });
+  const mkWt = (behindBase: number): TuiState =>
+    reduce(
+      base,
+      fleet([
+        snap({
+          id: "s1",
+          status: "idle",
+          provider: "openai",
+          turns: 3,
+          worktree: "/tmp/wt",
+          git: {
+            branch: "loom/s1",
+            commits: 1,
+            aheadOfBase: 0,
+            behindBase,
+            dirty: false,
+            lastCommitSubject: null,
+          },
+        }),
+      ]),
+    );
   const behind = mkWt(2);
   assert.ok(commandsFor(behind).some((c) => c.id === "rebase"));
   assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.hint, "r");
@@ -1828,7 +1776,7 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
   // — the whole file — is dropped: the call line already says enough, and the
   // user can see the file themselves.
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "select", id: "a" });
   s = reduce(s, {
     t: "push",
@@ -2123,11 +2071,7 @@ test("enqueue / dequeue / clearQueue and queueFor", () => {
 });
 
 test("a permission_request stashes the tool + input; leaving awaiting_input clears it", () => {
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "awaiting_input" })],
-  });
+  let s = reduce(initialState(), fleet([snap({ id: "a", status: "awaiting_input" })]));
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -2146,27 +2090,14 @@ test("a permission_request stashes the tool + input; leaving awaiting_input clea
     tool: "Bash",
     input: { command: "rm -rf x" },
   });
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 2,
-      type: "session_updated",
-      session: snap({ id: "a", status: "running" }),
-      version: 2,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.deepEqual(pendingFor(s, "a"), {});
 });
 
 test("queue entries are pruned when their session disappears", () => {
-  let s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "a", status: "running" })],
-  });
+  let s = reduce(initialState(), fleet([snap({ id: "a", status: "running" })]));
   s = reduce(s, { t: "enqueue", sessionId: "a", text: "later" });
-  s = reduce(s, { t: "sessions", sessions: [] });
+  s = reduce(s, fleet([]));
   assert.deepEqual(queueFor(s, "a"), []);
 });
 
@@ -2210,7 +2141,7 @@ test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", ()
 
 test("help toggles the mode without disturbing the rest of the state", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   s = reduce(s, { t: "help", value: true });
   assert.equal(s.mode, "help");
   assert.equal(s.selectedId, "a");
@@ -2220,7 +2151,7 @@ test("help toggles the mode without disturbing the rest of the state", () => {
 
 test("doctor: open sets the mode, doctorLoaded caches the report, close returns to browse", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [a] });
+  let s = reduce(initialState(), fleet([a]));
   assert.equal(s.doctor, null);
 
   s = reduce(s, { t: "doctor", value: true });
@@ -2272,15 +2203,31 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
 });
 
 test("commandsFor lists doctor in the Space palette", () => {
-  const s = reduce(initialState(), { t: "hello", daemon, sessions: [] });
+  const s = reduce(initialState(), fleet([]));
   assert.ok(commandsFor(s).some((it) => it.id === "doctor"));
 });
 
-test("connection action drives the header lamp state", () => {
-  let s = reduce(initialState(), { t: "connection", value: "reconnecting" });
-  assert.equal(s.connection, "reconnecting");
-  s = reduce(s, { t: "connection", value: "live" });
-  assert.equal(s.connection, "live");
+test("the header lamp is derived from the snapshot's loadable state", () => {
+  // No second source of truth: idle before the first connect, pending while
+  // reconnecting, live once a snapshot lands, closed on a terminal failure.
+  assert.equal(connectionOf(initialState()), "connecting");
+
+  let s = reduce(initialState(), { t: "state", state: loadablePending });
+  assert.equal(connectionOf(s), "reconnecting");
+
+  s = reduce(s, fleet([snap({ id: "a" })]));
+  assert.equal(connectionOf(s), "live");
+  assert.equal(fleetSessions(s).length, 1);
+
+  s = reduce(s, { t: "state", state: loadablePending });
+  assert.equal(connectionOf(s), "reconnecting");
+  assert.deepEqual(fleetSessions(s), [], "a pending client has no fleet to show");
+
+  s = reduce(s, {
+    t: "state",
+    state: loadableFailed({ kind: "connect_failed", message: "gone" }),
+  });
+  assert.equal(connectionOf(s), "closed");
 });
 
 test("toggleTheme cycles dark → light → argonext, defaulting to dark", () => {
@@ -2379,11 +2326,7 @@ test("status_changed events stay out of the log; result is a terse marker", () =
 
 test("selectedSession returns the highlighted row or null", () => {
   assert.equal(selectedSession(initialState()), null);
-  const s = reduce(initialState(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "z", status: "running" })],
-  });
+  const s = reduce(initialState(), fleet([snap({ id: "z", status: "running" })]));
   assert.equal(selectedSession(s)?.id, "z");
 });
 
@@ -2435,11 +2378,9 @@ const PROVIDERS: ProviderInfo[] = [
   },
 ];
 
-const withProviders = (): TuiState => {
-  return reduce(initialState(), { t: "providers", list: PROVIDERS });
-};
+const withProviders = (): TuiState => reduce(initialState(), fleet([], PROVIDERS));
 
-test("providers action populates state and the derived helpers", () => {
+test("a snapshot's providers populate state and the derived helpers", () => {
   const s = withProviders();
   assert.equal(defaultProviderId(s), "claude");
   assert.equal(providerColorOf(s, "openai"), "cyan");
@@ -2534,14 +2475,13 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
 });
 
 test("the fleet filter matches title + log text and rides the selection", () => {
-  let s = reduce(withProviders(), {
-    t: "hello",
-    daemon,
-    sessions: [
+  let s = reduce(
+    withProviders(),
+    fleet([
       snap({ id: "aaa", status: "running", title: "renovate the deck" }),
       snap({ id: "bbb", status: "idle", title: "refactor the parser" }),
-    ],
-  });
+    ]),
+  );
   s = reduce(s, {
     t: "push",
     frame: {
@@ -2579,11 +2519,10 @@ test("the fleet filter matches title + log text and rides the selection", () => 
 });
 
 test("a live model picker closes if its session is removed", () => {
-  let s = reduce(withProviders(), {
-    t: "hello",
-    daemon,
-    sessions: [snap({ id: "live", status: "running", provider: "openai" })],
-  });
+  let s = reduce(
+    withProviders(),
+    fleet([snap({ id: "live", status: "running", provider: "openai" })]),
+  );
   s = reduce(s, {
     t: "openPicker",
     picker: makePicker({
@@ -2593,10 +2532,8 @@ test("a live model picker closes if its session is removed", () => {
       ctx: { provider: "openai", liveSessionId: "live" },
     }),
   });
-  s = reduce(s, {
-    t: "push",
-    frame: { type: "session_removed", seq: 2, sessionId: "live" },
-  } as never);
+  // A snapshot the session has dropped out of closes the picker aimed at it.
+  s = reduce(s, fleet([]));
   assert.equal(s.picker, null);
   assert.equal(s.mode, "browse");
 });
@@ -2732,10 +2669,13 @@ test("defaultModelOf reads the provider's advertised default model", () => {
 
 test("defaultModeOf reads the daemon's remembered mode, not per-provider", () => {
   assert.equal(defaultModeOf(initialState()), "default");
-  const s = reduce(initialState(), {
-    t: "providers",
-    list: PROVIDERS.map((p) => ({ ...p, defaultMode: "acceptEdits" })),
-  });
+  const s = reduce(
+    initialState(),
+    fleet(
+      [],
+      PROVIDERS.map((p) => ({ ...p, defaultMode: "acceptEdits" as const })),
+    ),
+  );
   assert.equal(defaultModeOf(s), "acceptEdits");
 });
 
@@ -2837,26 +2777,17 @@ test("a snapshot's compacting overlay seeds the indicator across a reopen", () =
     status: "idle",
     compacting: { startedAt: 9_000, before: 120_000, generated: 0 },
   });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [mid] });
+  let s = reduce(initialState(), fleet([mid]));
   assert.deepEqual(s.compacting["a"], { startedAt: 9_000, generated: 0, before: 120_000 });
 
   // The gate released — a snapshot without the flag clears the entry (the
   // daemon only clears it after the boundary has already been broadcast).
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 1,
-      type: "session_updated",
-      session: snap({ id: "a", status: "idle", updatedAt: 99 }),
-      version: 2,
-    },
-  });
+  s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 99 })]));
   assert.equal(s.compacting["a"], undefined);
 });
 
-test("session_updated seeds the overlay mid-flight and never clobbers live beats", () => {
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [snap({ id: "s1" })] });
+test("a snapshot seeds the compacting overlay mid-flight and never clobbers live beats", () => {
+  let s = reduce(initialState(), fleet([snap({ id: "s1" })]));
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -2872,40 +2803,38 @@ test("session_updated seeds the overlay mid-flight and never clobbers live beats
     ),
   });
   // A live beat-driven entry is fresher than any snapshot — the seed skips it.
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 2,
-      type: "session_updated",
-      session: snap({
+  s = reduce(
+    s,
+    fleet([
+      snap({
         id: "s1",
         status: "idle",
         compacting: { startedAt: 1, before: 1, generated: 0 },
         updatedAt: 50,
       }),
-      version: 3,
-    },
-  });
+    ]),
+  );
   assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
 
-  // Another session's compaction seeds on its own session_updated without
-  // touching the first.
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 3,
-      type: "session_updated",
-      session: snap({
+  // A second session's compaction seeds off the same snapshot without touching
+  // the first — every snapshot carries the whole fleet, so both are present.
+  s = reduce(
+    s,
+    fleet([
+      snap({
+        id: "s1",
+        status: "idle",
+        compacting: { startedAt: 1, before: 1, generated: 0 },
+        updatedAt: 50,
+      }),
+      snap({
         id: "s2",
         status: "idle",
         compacting: { startedAt: 42_000, before: 77_000, generated: 0 },
         updatedAt: 51,
       }),
-      version: 4,
-    },
-  });
+    ]),
+  );
   assert.deepEqual(s.compacting["s2"], { startedAt: 42_000, generated: 0, before: 77_000 });
   assert.deepEqual(s.compacting["s1"], { startedAt: 6_000, generated: 128, before: 90_000 });
 });
@@ -2925,7 +2854,7 @@ test("a model picker opened while the catalog loads resolves when the fresh list
     },
     ...PROVIDERS.slice(1),
   ];
-  const s = reduce(initialState(), { t: "providers", list: loading });
+  const s = reduce(initialState(), fleet([], loading));
   assert.match(modelPickEmptyText(s, "claude"), /loading/i);
   assert.deepEqual(modelPickItems(s, "claude"), []);
 
@@ -2943,10 +2872,7 @@ test("a model picker opened while the catalog loads resolves when the fresh list
   assert.equal(opened.picker?.items.length, 0);
 
   // …then the daemon's settle push lands — the same picker fills in.
-  const settled = reduce(opened, {
-    t: "push",
-    frame: { kind: "push", seq: 1, type: "providers_updated", providers: PROVIDERS },
-  });
+  const settled = reduce(opened, fleet([], PROVIDERS));
   assert.deepEqual(
     settled.picker?.items.map((i) => i.id),
     ["claude-opus-5", "claude-sonnet-5"],
@@ -2956,7 +2882,7 @@ test("a model picker opened while the catalog loads resolves when the fresh list
 
 test("logRowCount tracks the resolved child through drill and drain", () => {
   const seed = (sessions: SessionSnapshot[]): TuiState => {
-    let t = reduce(initialState(), { t: "hello", daemon, sessions });
+    let t = reduce(initialState(), fleet(sessions));
     t = reduce(t, {
       t: "push",
       frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
@@ -2984,30 +2910,32 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
   const narrowed = logRowCount(s, 60);
   assert.ok(narrowed > 0 && narrowed !== full, "the narrowed pane measures its own stream");
 
-  // The child drains: a session_updated retires it WITHOUT clamping
-  // `selectedChild`, so focusedChildOf resolves to null (whole-session view)
-  // while the raw selection is unchanged — the measurement must follow the
-  // resolved child, not the raw selection.
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      kind: "push",
-      seq: 3,
-      type: "session_updated",
-      session: { ...fanout, subagents: [{ id: "t1", name: "reviewer", active: false }] },
-      version: 2,
-    },
-  });
+  // Every child drains at once: the snapshot leaves nothing to focus, so
+  // `focusedChildOf` resolves to null and the pane un-narrows. The measurement
+  // has to follow the *resolved* child, not the raw selection.
+  s = reduce(s, fleet([{ ...fanout, backgroundTasks: [], subagents: [] }]));
   assert.equal(focusedChildOf(s), null);
   assert.equal(logRowCount(s, 60), full, "un-narrowed pane measures the full log again");
+
+  // A partial drain instead lands the focus on a surviving sibling rather than
+  // leaving it dangling — snapshots reconcile the selection, they don't strand it.
+  let partial = seed([fanout]);
+  partial = reduce(partial, { t: "childEnter" });
+  partial = reduce(partial, { t: "childMove", delta: 2 }); // → sub:t1
+  partial = reduce(
+    partial,
+    fleet([{ ...fanout, subagents: [{ id: "t1", name: "reviewer", active: false }] }]),
+  );
+  assert.equal(focusedChildOf(partial)?.key, "bg:task1");
 });
 
 // ---------------------------------------------------------------------------
 // fleet search (`/`) — matching, ranking, exclusions
 // ---------------------------------------------------------------------------
 
-const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): TuiState => ({
-  ...initialState(),
+// The search engine reads a `FleetView`, not the whole UI state — hand it
+// exactly that rather than a TuiState that happens to satisfy it structurally.
+const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): FleetView => ({
   sessions,
   log,
 });
@@ -3116,9 +3044,9 @@ test("fleet search: message bodies beyond the one-line summary are searched", ()
 test("fleet search: equal scores keep the fleet's order (newest first)", () => {
   const older = snap({ id: "older", title: "zebra run", updatedAt: 10 });
   const newer = snap({ id: "newer", title: "zebra run", updatedAt: 99 });
-  const s = reduce(initialState(), { t: "hello", daemon, sessions: [older, newer] });
+  const s = reduce(initialState(), fleet([older, newer]));
   assert.deepEqual(
-    searchSessions(s, "'zebra").map((m) => m.session.id),
+    searchSessions({ sessions: fleetSessions(s), log: s.log }, "'zebra").map((m) => m.session.id),
     ["newer", "older"],
   );
 });
@@ -3143,7 +3071,7 @@ test("fleet search: findSet rides onto the best-ranked match; ↑↓ walk it", (
   const weak = snap({ id: "weak", title: "another chat" });
   const best = snap({ id: "best", title: "mobile access" });
   const head = snap({ id: "head", title: "unrelated chatter" });
-  let s = reduce(initialState(), { t: "hello", daemon, sessions: [weak, best, head] });
+  let s = reduce(initialState(), fleet([weak, best, head]));
   s = reduce(s, {
     t: "push",
     frame: push(

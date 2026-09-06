@@ -12,7 +12,12 @@ import type { SessionMode } from "./types.ts";
  * Every frame is a single JSON object on its own line. `kind` discriminates.
  */
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * v2 replaced the per-session `session_updated` / `session_removed` /
+ * `providers_updated` pushes with one whole-fleet `state` snapshot. A v1 client
+ * would sit with an empty fleet forever, so the mismatch has to be loud.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
@@ -74,26 +79,6 @@ export interface EventPush {
   event: HarnessEvent;
 }
 
-/** A session's authoritative fields changed (status/mode/model/usage/git). */
-export interface SessionUpdatedPush {
-  kind: "push";
-  seq: number;
-  type: "session_updated";
-  session: SessionSnapshot;
-  /** Bumped on every authoritative change; clients ignore older versions. */
-  version: number;
-  /** Who caused the change, when a client did. */
-  by?: string;
-}
-
-/** A session row disappeared (gc). */
-export interface SessionRemovedPush {
-  kind: "push";
-  seq: number;
-  type: "session_removed";
-  sessionId: string;
-}
-
 /**
  * The daemon could not replay the client's requested `sinceSeq` because the
  * ring buffer had already rolled past it. The client must discard local state
@@ -104,20 +89,6 @@ export interface ResyncPush {
   seq: number;
   type: "resync";
   reason: string;
-}
-
-/**
- * The remembered new-session defaults changed — a session was created, or a
- * live session switched its model / thinking-effort / permission mode — or the
- * start-up model probes resolved a catalog after clients had already fetched
- * the pin fallback. Carries a fresh `providers.list` so clients re-seed
- * new-session prompts without a refetch round trip.
- */
-export interface ProvidersUpdatedPush {
-  kind: "push";
-  seq: number;
-  type: "providers_updated";
-  providers: ProviderInfo[];
 }
 
 /**
@@ -148,13 +119,12 @@ export interface StatePush {
   state: DaemonSnapshot;
 }
 
-export type PushFrame =
-  | EventPush
-  | SessionUpdatedPush
-  | SessionRemovedPush
-  | ProvidersUpdatedPush
-  | ResyncPush
-  | NoticePush;
+/**
+ * The `seq`-stamped stream: raw adapter events plus the two advisories that
+ * ride alongside them. Authoritative *state* does not travel here — it is a
+ * whole-fleet {@link StatePush}, outside the seq space and its replay ring.
+ */
+export type PushFrame = EventPush | ResyncPush | NoticePush;
 
 export type Frame = RequestFrame | ResponseFrame | PushFrame | StatePush;
 
@@ -486,8 +456,6 @@ export interface DoctorReport {
 export interface HelloResult {
   protocolVersion: number;
   daemon: DaemonInfo;
-  /** Authoritative session list at handshake time. */
-  sessions: SessionSnapshot[];
   /** Current head of the push stream. Frames after this arrive live. */
   seq: number;
   /**

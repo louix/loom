@@ -100,10 +100,8 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(created.title, "stream me");
 
     fs.emit({ type: "assistant_text", text: "working" });
-    await waitFor(
-      () =>
-        (c.sessions ?? []).length >= 0 &&
-        frames.some((f) => f.type === "event" && f.event.type === "assistant_text"),
+    await waitFor(() =>
+      frames.some((f) => f.type === "event" && f.event.type === "assistant_text"),
     );
     await waitFor(
       async () =>
@@ -1035,15 +1033,10 @@ describe("session-manager", { concurrency: 4 }, () => {
     fs.finishTurn({ contextUsed: 50_000 });
     await waitFor(async () => (await statusOf(c, id)) === "idle");
 
-    const frames: PushFrame[] = [];
-    c.onPush((f) => frames.push(f));
-    const latestCompacting = () =>
-      [...frames]
-        .reverse()
-        .find(
-          (f): f is Extract<PushFrame, { type: "session_updated" }> =>
-            f.type === "session_updated" && f.session.id === id,
-        )?.session.compacting;
+    const latestCompacting = () => {
+      const st = c.getState();
+      return st.tag === "data" ? st.value.sessions.find((x) => x.id === id)?.compacting : undefined;
+    };
 
     const release = fs.blockCompact();
     const compacting = c.request("session.compact", { id }); // held on the gate
@@ -1277,8 +1270,10 @@ describe("session-manager", { concurrency: 4 }, () => {
     const { id, fs } = await createFake(c);
     const c2 = await client();
     const seen: SessionSnapshot[] = [];
-    c2.onPush((f) => {
-      if (f.type === "session_updated" && f.session.id === id) seen.push(f.session);
+    c2.subscribe((s) => {
+      if (s.tag !== "data") return;
+      const found = s.value.sessions.find((x) => x.id === id);
+      if (found) seen.push(found);
     });
 
     for (const p of ["p1", "p2", "p3"]) {

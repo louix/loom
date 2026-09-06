@@ -213,9 +213,10 @@ test("session.remove deletes the row + worktree, keeps the branch, pushes sessio
   const tree = s.worktree as string;
   assert.ok(existsSync(tree));
 
-  const removed: string[] = [];
-  c.onPush((f) => {
-    if (f.type === "session_removed") removed.push(f.sessionId);
+  // A removal reaches clients as a snapshot that no longer names the session.
+  let gone = false;
+  c.subscribe((st) => {
+    if (st.tag === "data" && !st.value.sessions.some((x) => x.id === s.id)) gone = true;
   });
 
   const r = await c.request<{ removed: string }>("session.remove", { id: s.id });
@@ -227,7 +228,7 @@ test("session.remove deletes the row + worktree, keeps the branch, pushes sessio
   assert.ok(!list.some((x) => x.id === s.id), "row is gone from the fleet");
 
   await new Promise((res) => setTimeout(res, 50));
-  assert.deepEqual(removed, [s.id], "clients got a session_removed frame");
+  assert.ok(gone, "clients got a snapshot without the removed session");
 
   // branch survives the delete, like gc
   const branch = `loom/${s.id.slice(0, 8)}`;

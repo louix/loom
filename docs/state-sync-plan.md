@@ -128,39 +128,39 @@ Primary files: `core/src/wire.ts`, `core/deno.json`,
 `frontend/tui/src/{model,fleet-handle}.ts`,
 `frontend/tui/src/{components,app,run}.tsx`.
 
-- [ ] Move `Loadable` and its existing helpers to `core`, export it, and update
+- [x] Move `Loadable` and its existing helpers to `core`, export it, and update
       imports. The client must not depend on the TUI package.
-- [ ] Add a complete snapshot push. After protocol validation, subscribe and
+- [x] Add a complete snapshot push. After protocol validation, subscribe and
       enqueue the initial snapshot as one synchronous operation. Handshake RPC
       results carry handshake metadata, not a second installable state baseline.
-- [ ] Route authoritative session additions, changes, removals, provider/default
+- [x] Route authoritative session additions, changes, removals, provider/default
       changes, and relevant runtime changes through one snapshot publisher. Read
       current authoritative values at publication; do not reuse an old mutation
       result. Build without asynchronous gaps and avoid new git subprocess calls
       across the fleet on every usage/progress update; use maintained facts.
-- [ ] Deliver snapshots directly to current subscribers. Do not retain complete
+- [x] Deliver snapshots directly to current subscribers. Do not retain complete
       fleet snapshots in the reconnect replay ring. Straight publication is the
       starting point; add no batching/delta protocol without measured need.
-- [ ] Guarantee serialized frame writes on each socket in both directions,
+- [x] Guarantee serialized frame writes on each socket in both directions,
       including partial writes. Preserve frame/backlog limits; a malformed frame or
       write failure must terminate that connection rather than silently lose state.
-- [ ] Expose a stable client `getState`/`subscribe` API. Use `idle` before start,
+- [x] Expose a stable client `getState`/`subscribe` API. Use `idle` before start,
       `pending` while connecting/reconnecting, `data` on snapshot, and `error` for a
       terminal connection/protocol failure. Existing connect callers that require
       initial state must wait for the first snapshot.
-- [ ] Guard socket callbacks with a local connection generation or identity.
+- [x] Guard socket callbacks with a local connection generation or identity.
       Close, read, and response callbacks from a superseded socket cannot change
       current state or install an obsolete snapshot. This is lifecycle bookkeeping,
       not a wire revision system.
-- [ ] Have the TUI consume this one client snapshot. Remove its boot-time and
+- [x] Have the TUI consume this one client snapshot. Remove its boot-time and
       reconnect `session.list`/`providers.list` reconciliation, timestamp merging,
       and independent authoritative session/provider caches. Read-only RPCs can
       remain for CLI callers; their results must not feed this subscription.
-- [ ] Render connection/loading states with `foldLoadable`. Preserve drafts and
+- [x] Render connection/loading states with `foldLoadable`. Preserve drafts and
       selection intent while pending; disable commands that require current daemon
       state. Reconcile selected IDs and open request overlays against new snapshots,
       including closing an overlay whose exact request ID disappeared.
-- [ ] Keep ordinary command responses for acknowledgment, local feedback, and
+- [x] Keep ordinary command responses for acknowledgment, local feedback, and
       returned IDs (create/fork selection). Never install returned session values
       into the authoritative client snapshot.
 
@@ -168,6 +168,50 @@ Acceptance: updates and removals reach two TUIs through snapshots alone. A
 disconnect produces `pending`; reconnect supplies the complete current fleet,
 including changes made while disconnected. Delayed old callbacks cannot regress
 it. No polling or state replay is needed.
+
+**Done.** Notes:
+
+- `StatePush` carries a whole `DaemonSnapshot` (daemon info, providers,
+  sessions) and sits _outside_ the seq-stamped stream and its replay ring — a
+  snapshot is only interesting when it is the current one, so buffering old ones
+  would spend memory to deliver staleness. `PushFrame` shrank to
+  `EventPush | ResyncPush | NoticePush`; `session_updated`, `session_removed`
+  and `providers_updated` are gone, and `PROTOCOL_VERSION` is 2 (a v1 client
+  would sit with an empty fleet forever, so the mismatch has to be loud).
+- `#stateFrame` is the one place a snapshot is built, reading current
+  authoritative values at publication. `refreshGitFor` re-probes one session's
+  worktree; every other session reads the facts `#sweepGitFacts` maintains, so
+  publishing per tool call doesn't become a `git` shell-out per session per
+  token. `hello` subscribes and enqueues the opening snapshot as one synchronous
+  operation and its result is handshake metadata only.
+- Both ends chain socket writes: `writeAll` can return after a _partial_ write,
+  so two concurrent frames interleaved their halves and corrupted both. A failed
+  daemon-side write now drops the connection rather than leave a client holding
+  a prefix of the truth. The client stamps each socket with a generation, so a
+  read/close/response from a superseded socket cannot touch current state.
+- `TuiState` lost `sessions` / `providers` / `daemon` / `connection` for one
+  `fleet: ClientState`. `connectionOf` derives the header lamp from the loadable
+  tag rather than tracking it beside the data, and while `pending` there is
+  genuinely no fleet to show rather than a stale one the user might act on.
+  Snapshot install reconciles the selection, child focus, and any prompt /
+  picker / plan overlay whose session or exact request id is gone.
+- `modeOptimistic` wrote a cycled permission mode straight into the session
+  list. It is now `modeDraft`, a local overlay beside the snapshot that the
+  debounced RPC clears either way — so a rejected change falls back to what the
+  daemon reports instead of leaving the chip lying.
+- Removed with their last consumer: the registry's per-session version counter
+  and its `updatedAt` seeding (S6 cannot exist without a version), the TUI's
+  `boot` Loadable and `refetch`, and `LoomClient.sessions`. `loom tail` keeps
+  its raw-event replay and reports fleet size from the snapshot instead.
+
+Validation: new `test/client-state.test.ts` (six cases: opening snapshot,
+subscribe semantics, two clients seeing an add and a removal, disconnect →
+`pending` → reconnect with changes made while away, no post-reconnect snapshot
+repopulating the pre-drop fleet, close → `idle`), plus a `Connection` regression
+test for frame interleaving that fails against the old unchained write (frames
+arrive spliced, 1 line instead of 3) and one for write-failure teardown. Tests
+asserting the removed push types were rewritten against snapshots. All four
+repository checks are clean.
 
 ## 3. Serialize conflicting configuration commands
 

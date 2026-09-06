@@ -18,7 +18,7 @@ import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import type { LoomClient } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
-import type { DoctorReport, EventPush, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, EventPush, SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
@@ -35,13 +35,9 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import {
-  loadableFailed,
-  loadableIdle,
-  loadableLoaded,
-  loadablePending,
-  type Loadable,
-} from "@loom/core/loadable";
-import {
+  fleetProviders,
+  fleetSessions,
+  sessionMode,
   allowedActs,
   backfillAdds,
   commandsFor,
@@ -261,9 +257,6 @@ export type BodyKind =
 /** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
 export interface FleetView {
   readonly state: TuiState;
-  /** The initial `session.list` + `providers.list` reconcile — `error` once it
-   *  has failed and not yet succeeded on a reconnect. */
-  readonly boot: Loadable<string, void>;
   readonly tick: number;
   /** Viewport offset into the event log, in physical (wrapped) rows up from the
    *  live tail — `EventLog` pins the viewport at `rows - capacity`, the top. */
@@ -317,7 +310,6 @@ export interface MkFleetHandleInput {
 
 const deriveView = (
   state: TuiState,
-  boot: Loadable<string, void>,
   tick: number,
   logScroll: number,
   planScroll: number,
@@ -430,7 +422,6 @@ const deriveView = (
 
   return {
     state,
-    boot,
     tick,
     logScroll,
     planScroll,
@@ -468,7 +459,6 @@ export const mkFleetHandle = ({
   const savedTheme = themeState ? loadPersistedTheme(themeState) : null;
   if (savedTheme) setThemeMode(savedTheme);
   let state = initialState();
-  let boot: Loadable<string, void> = loadableIdle;
   let tick = 0;
   let logScroll = 0;
   let planScroll = 0;
@@ -503,16 +493,16 @@ export const mkFleetHandle = ({
   // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
   const forgetDeadSessions = (): void => {
-    const live = new Set(state.sessions.map((s) => s.id));
+    const live = new Set(fleetSessions(state).map((s) => s.id));
     for (const id of draining) if (!live.has(id)) draining.delete(id);
     for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
   };
 
   const store = mkStore<FleetView>(
-    deriveView(state, boot, tick, logScroll, planScroll, layoutView, dims),
+    deriveView(state, tick, logScroll, planScroll, layoutView, dims),
   );
   const publish = (): void =>
-    store.set(deriveView(state, boot, tick, logScroll, planScroll, layoutView, dims));
+    store.set(deriveView(state, tick, logScroll, planScroll, layoutView, dims));
 
   // Width the log pane renders at for the current body (see app.tsx): the zoomed
   // and session views give it the whole terminal, the overview split its right
@@ -666,7 +656,7 @@ export const mkFleetHandle = ({
     // until the next `send` revives it.
     for (const [id, q] of Object.entries(state.queue)) {
       if (!q || q.length === 0) continue;
-      const s = state.sessions.find((x) => x.id === id);
+      const s = fleetSessions(state).find((x) => x.id === id);
       if (!s || s.status.kind === "done" || s.status.kind === "error") {
         note(
           `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status.kind : "gone"}`,
@@ -676,7 +666,7 @@ export const mkFleetHandle = ({
         lastDrainTurn.delete(id);
       }
     }
-    for (const s of state.sessions) {
+    for (const s of fleetSessions(state)) {
       const q = state.queue[s.id];
       if (
         s.status.kind === "idle" &&
@@ -697,7 +687,7 @@ export const mkFleetHandle = ({
             // Re-read `turns` now, not the closure's pre-send snapshot (U11) —
             // a manual send that interleaved could otherwise leave the gate
             // below its true value and drain the next queued message mid-turn.
-            const fresh = state.sessions.find((x) => x.id === s.id)?.turns ?? s.turns;
+            const fresh = fleetSessions(state).find((x) => x.id === s.id)?.turns ?? s.turns;
             lastDrainTurn.set(s.id, fresh); // only gate the next one after a success
             dispatch({ t: "dequeue", sessionId: s.id }); // daemon emits the user_message echo
           })
@@ -759,9 +749,9 @@ export const mkFleetHandle = ({
     }
     publish();
     if (state.selectedId !== prev.selectedId) backfillHistory();
-    if (state.sessions !== prev.sessions) forgetDeadSessions();
+    if (fleetSessions(state) !== fleetSessions(prev)) forgetDeadSessions();
     if (
-      state.sessions !== prev.sessions ||
+      fleetSessions(state) !== fleetSessions(prev) ||
       state.queue !== prev.queue ||
       // A compaction finishing (or being cancelled) lifts the drain hold added
       // for compacting sessions — it may not touch `sessions` (an aisdk manual
@@ -1194,7 +1184,7 @@ export const mkFleetHandle = ({
 
   const planSession = (): SessionSnapshot | undefined => {
     const pl = state.plan;
-    return pl ? state.sessions.find((x) => x.id === pl.sessionId) : undefined;
+    return pl ? fleetSessions(state).find((x) => x.id === pl.sessionId) : undefined;
   };
 
   const openPlanModelStep = (provider: string): void => {
@@ -1235,7 +1225,7 @@ export const mkFleetHandle = ({
   const openPlanRetarget = (): void => {
     if (!state.plan) return;
     const ps = planSession();
-    if (state.providers.length > 1) {
+    if (fleetProviders(state).length > 1) {
       const items = providerPickItems(state);
       const cur = state.plan.impl?.provider ?? ps?.provider;
       return void dispatch({
@@ -1249,7 +1239,7 @@ export const mkFleetHandle = ({
         }),
       });
     }
-    openPlanModelStep(state.providers[0]?.id ?? ps?.provider ?? "claude");
+    openPlanModelStep(fleetProviders(state)[0]?.id ?? ps?.provider ?? "claude");
   };
 
   /** Finalize a model (+ optional effort) chosen through the wizard: either a
@@ -1274,7 +1264,7 @@ export const mkFleetHandle = ({
           }),
         });
       }
-      const sess = state.sessions.find((x) => x.id === id);
+      const sess = fleetSessions(state).find((x) => x.id === id);
       const toProvider =
         ctx.provider !== undefined && sess !== undefined && ctx.provider !== sess.provider
           ? ctx.provider
@@ -1465,7 +1455,7 @@ export const mkFleetHandle = ({
   /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
    *  only one), then the model, then land back on the prompt. */
   const pickProviderModel = (draft: string): void => {
-    const provs = state.providers;
+    const provs = fleetProviders(state);
     if (provs.length > 1) {
       return void dispatch({
         t: "openPicker",
@@ -1488,7 +1478,9 @@ export const mkFleetHandle = ({
   /** Open a live model switcher (`⌥m`): the selected session, or an explicit
    *  one. From a `send` prompt, pass `draft` so the picker drops you back. */
   const switchModel = (sessionId?: string, draft?: string): void => {
-    const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+    const s = sessionId
+      ? fleetSessions(state).find((x) => x.id === sessionId)
+      : selectedSession(state);
     if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
     const models = modelPickItems(state, s.provider);
     // Mid-probe the list is empty but coming — open the picker anyway; the
@@ -1521,7 +1513,9 @@ export const mkFleetHandle = ({
    *  `session.setProvider`. Falls back to the model switcher when there's only
    *  one provider to pick from. */
   const pickProviderModelForSession = (sessionId?: string, draft?: string): void => {
-    const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+    const s = sessionId
+      ? fleetSessions(state).find((x) => x.id === sessionId)
+      : selectedSession(state);
     if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
     if (
       s.status.kind === "running" ||
@@ -1535,7 +1529,7 @@ export const mkFleetHandle = ({
         tone: "dim",
       });
     }
-    if (state.providers.length <= 1) return void switchModel(s.id, draft);
+    if (fleetProviders(state).length <= 1) return void switchModel(s.id, draft);
     const items = providerPickItems(state);
     dispatch({
       t: "openPicker",
@@ -1558,7 +1552,9 @@ export const mkFleetHandle = ({
   /** Open a live thinking-effort switcher (`⌥t`): the selected session, or an
    *  explicit one. Only offered when its current model takes an effort level. */
   const switchEffort = (sessionId?: string, draft?: string): void => {
-    const s = sessionId ? state.sessions.find((x) => x.id === sessionId) : selectedSession(state);
+    const s = sessionId
+      ? fleetSessions(state).find((x) => x.id === sessionId)
+      : selectedSession(state);
     if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
     if (!s.model || !modelSupportsEffort(state, s.provider, s.model)) {
       return void dispatch({
@@ -1575,27 +1571,31 @@ export const mkFleetHandle = ({
 
   /**
    * `⇧⇥` cycles a live session's permission mode — from the fleet row or from
-   * inside a `send` prompt. The chip updates immediately on every press
-   * (optimistic, local-only) so cycling feels responsive regardless of
-   * round-trip time; the `session.setMode` RPC is debounced behind it, so only
-   * the mode presses settle on once they stop for a beat actually reaches the
-   * connector. Without that, a fast cycle through to `auto` would still
-   * briefly apply `plan` as an intermediate stop — and unlike the other three
-   * modes, `plan` has real side effects once it's actually live (it flips the
-   * SDK session into plan mode, tools and all), not just a permission level.
+   * inside a `send` prompt. The chip updates immediately on every press so
+   * cycling feels responsive regardless of round-trip time, but it moves a
+   * *local draft* beside the snapshot, never the snapshot itself: the draft is
+   * dropped once the RPC settles, so a rejected change falls back to whatever
+   * the daemon actually reports rather than leaving the chip lying.
+   *
+   * The `session.setMode` RPC is debounced behind the draft, so only the mode
+   * the presses settle on reaches the connector. Without that, a fast cycle
+   * through to `auto` would still briefly apply `plan` as an intermediate stop
+   * — and unlike the other three modes, `plan` has real side effects once it's
+   * actually live (it flips the SDK session into plan mode, tools and all),
+   * not just a permission level.
    */
   const cycleSessionMode = (sessionId: string): void => {
-    const s = state.sessions.find((x) => x.id === sessionId);
+    const s = fleetSessions(state).find((x) => x.id === sessionId);
     if (!s) return void dispatch({ t: "notice", text: "session is gone", tone: "dim" });
-    const target = nextMode(s.mode as SessionMode);
-    dispatch({ t: "modeOptimistic", sessionId, mode: target });
+    const target = nextMode(sessionMode(state, s) as SessionMode);
+    dispatch({ t: "modeDraft", sessionId, mode: target });
     dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" });
     const prevTimer = modeDebounce.get(sessionId);
     if (prevTimer) clearTimeout(prevTimer);
     const timer = setTimeout(() => {
       modeDebounce.delete(sessionId);
       // The session was removed while the debounce sat idle — nothing to apply.
-      if (!state.sessions.some((x) => x.id === sessionId)) return;
+      if (!fleetSessions(state).some((x) => x.id === sessionId)) return;
       client
         .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
         .catch((e: unknown) => {
@@ -1604,10 +1604,10 @@ export const mkFleetHandle = ({
           if (code === "plan_pending") {
             // The mode never actually left `plan` — a pending `ExitPlanMode`
             // review has to be resolved through the real plan-review UI, not
-            // silently answered by the chip. Snap the optimistic display back
-            // and open the review so there's no impossible "chip says X, the
-            // live session is still parked on a plan" state to land in.
-            dispatch({ t: "modeOptimistic", sessionId, mode: "plan" });
+            // silently answered by the chip. Dropping the draft (below) already
+            // snaps the chip back to the `plan` the snapshot still reports;
+            // open the review so there's no impossible "chip says X, the live
+            // session is still parked on a plan" state to land in.
             const pend = pendingFor(state, sessionId);
             if (pend.plan) {
               dispatch({
@@ -1629,7 +1629,10 @@ export const mkFleetHandle = ({
             text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
             tone: "bad",
           });
-        });
+        })
+        // Settled either way: the snapshot is now the truth about this
+        // session's mode, so the local draft has done its job.
+        .finally(() => dispatch({ t: "modeDraft", sessionId, mode: null }));
     }, 300);
     modeDebounce.set(sessionId, timer);
   };
@@ -1941,7 +1944,7 @@ export const mkFleetHandle = ({
 
   // ---- daemon lifecycle ---------------------------------------
   const confirmFor = (action: "restart" | "quitAll"): ConfirmState => {
-    const liveCount = state.sessions.filter((s) => isLiveState(s.status)).length;
+    const liveCount = fleetSessions(state).filter((s) => isLiveState(s.status)).length;
     return {
       title: action === "restart" ? "Restart the daemon?" : "Quit the UI and stop the daemon?",
       ...(liveCount > 0
@@ -2020,7 +2023,6 @@ export const mkFleetHandle = ({
     }
     if (c.action === "restart") {
       restarting = true;
-      dispatch({ t: "connection", value: "reconnecting" });
       note("restarting daemon…", "dim");
       client.request("daemon.shutdown").catch(() => {}); // reconnect+autospawn bring a fresh one up
     } else {
@@ -2066,7 +2068,7 @@ export const mkFleetHandle = ({
       case "gc": {
         // A bulk sweep — every done session's worktree goes (branches and rows
         // stay). Behind a confirm like `X`, since it deletes directories.
-        const targets = state.sessions.filter((s) => s.status.kind === "done" && s.worktree);
+        const targets = fleetSessions(state).filter((s) => s.status.kind === "done" && s.worktree);
         if (targets.length === 0)
           return void dispatch({
             t: "notice",
@@ -2258,7 +2260,7 @@ export const mkFleetHandle = ({
       if (key.meta && input === "m") {
         if (p.kind === "new") {
           const pid = p.provider ?? defaultProviderId(state);
-          const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
+          const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
           return void openModelStep(pid, tag, { draft: p.buffer.text });
         }
         if (p.kind === "send" && p.sessionId) return void switchModel(p.sessionId, p.buffer.text);
@@ -2276,7 +2278,7 @@ export const mkFleetHandle = ({
               tone: "dim",
             });
           }
-          const tag = state.providers.find((x) => x.id === pid)?.tag ?? pid;
+          const tag = fleetProviders(state).find((x) => x.id === pid)?.tag ?? pid;
           return void openEffortStep(pid, mid, tag, { draft: p.buffer.text });
         }
         if (p.kind === "send" && p.sessionId) return void switchEffort(p.sessionId, p.buffer.text);
@@ -2294,7 +2296,7 @@ export const mkFleetHandle = ({
       // ⌥⏎ while the target is still working queues for turn end instead of its
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
       if (key.meta && key.return && p.kind === "send" && p.sessionId) {
-        const target = state.sessions.find((x) => x.id === p.sessionId);
+        const target = fleetSessions(state).find((x) => x.id === p.sessionId);
         if (
           target &&
           (target.status.kind === "running" ||
@@ -2589,28 +2591,20 @@ export const mkFleetHandle = ({
       daemon: client.daemonInfo?.version ?? null,
       pid: client.daemonInfo?.pid ?? null,
     });
-    if (client.daemonInfo)
-      dispatch({ t: "hello", daemon: client.daemonInfo, sessions: client.sessions });
-    refetch();
     void reconcileVersion();
 
     const offs = [
+      // The one authoritative feed: every fleet change arrives as a complete
+      // snapshot, so there is nothing to reconcile, merge or refetch.
+      client.subscribe((s) => dispatch({ t: "state", state: s })),
       client.onPush((frame) => dispatch({ t: "push", frame })),
-      client.on("disconnect", () => {
-        log?.warn("daemon disconnected");
-        dispatch({ t: "connection", value: "reconnecting" });
-      }),
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
-        dispatch({ t: "connection", value: "live" });
-        // Epoch / history may differ across the gap. Clearing the latch alone
-        // only *permits* a re-pull — `selectedId` doesn't change, so nothing
-        // re-triggers it and the selected session's log keeps a stale tail
-        // (worse: a daemon restart's new epoch never gets stitched in). Re-pull
-        // it now; the reducer folds the durable history back in by (epoch, seq)
-        // and re-sorts, so this is idempotent.
+        // Transcript history is a separate resource and the epoch may have
+        // changed across the gap; the snapshot says nothing about it, so
+        // re-pull it here. The reducer folds durable history back in by
+        // (epoch, seq) and re-sorts, so this is idempotent.
         history.clear();
-        refetch();
         backfillHistory();
         if (restarting) {
           restarting = false;
@@ -2621,12 +2615,7 @@ export const mkFleetHandle = ({
       client.on("resync", () => {
         log?.info("resync");
         history.clear();
-        refetch();
         backfillHistory();
-      }),
-      client.on("close", () => {
-        log?.warn("connection closed");
-        dispatch({ t: "connection", value: "closed" });
       }),
       term.onResize(() => {
         dims = term.getSize();
@@ -2641,7 +2630,7 @@ export const mkFleetHandle = ({
       const animating =
         state.notice !== null ||
         Object.keys(state.compacting).length > 0 ||
-        state.sessions.some(
+        fleetSessions(state).some(
           (s) =>
             s.status.kind === "running" ||
             s.status.kind === "starting" ||
@@ -2663,35 +2652,6 @@ export const mkFleetHandle = ({
       clearInterval(iv);
       for (const off of offs) off();
     };
-  };
-
-  const refetch = (): void => {
-    if (boot.tag !== "data") {
-      boot = loadablePending;
-      publish();
-    }
-    Promise.all([
-      client
-        .request<SessionSnapshot[]>("session.list")
-        .then((sessions) => dispatch({ t: "sessions", sessions })),
-      client
-        .request<ProviderInfo[]>("providers.list")
-        .then((list) => dispatch({ t: "providers", list })),
-    ]).then(
-      () => {
-        boot = loadableLoaded(undefined);
-        publish();
-      },
-      (e: unknown) => {
-        // Was a silent `.catch(() => {})` per request. A reconnect re-runs this;
-        // `boot` flips back to `data` if the retry lands.
-        const msg = e instanceof Error ? e.message : String(e);
-        log?.error("boot reconcile failed", { err: msg });
-        boot = loadableFailed(msg);
-        note("couldn't reach the daemon — will retry on reconnect", "bad");
-        publish();
-      },
-    );
   };
 
   /**
@@ -2765,7 +2725,6 @@ export const mkFleetHandle = ({
     // action === "auto-restart"
     versionRestartTried = true;
     restarting = true;
-    dispatch({ t: "connection", value: "reconnecting" });
     dispatch({
       t: "notice",
       text: `daemon v${dv} ≠ ui v${LOOM_VERSION} — respawning`,

@@ -1796,7 +1796,12 @@ model    = "gpt-5"
     insCp.run(snap.id, 2, "4", "the second prompt we will redo");
     db.prepare("UPDATE usage SET turns = 2 WHERE session_id = ?").run(snap.id);
 
-    const { stdout, stdin, app } = mount(client);
+    // The rows above were written straight into the DB, behind the daemon's
+    // back — nothing published a snapshot for them. Attach the UI's client
+    // afterwards so its opening snapshot reads the seeded state (`u` is only
+    // offered on a session with turns to undo).
+    const uiClient = await connect();
+    const { stdout, stdin, app } = mount(uiClient);
     try {
       await delay(200);
       stdin.feed("u");
@@ -1827,6 +1832,7 @@ model    = "gpt-5"
       );
     } finally {
       app.unmount();
+      await uiClient.close();
       await client.close();
       await cleanup();
     }

@@ -14,15 +14,19 @@ import type {
 import { isClaudeId } from "@loom/core/provider-id";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type {
+  DaemonInfo,
+  DaemonSnapshot,
   DoctorReport,
   EventPush,
   ProviderInfo,
   PushFrame,
   SessionSnapshot,
 } from "@loom/core/wire";
+import type { ClientState, ConnectionError } from "@loom/client";
+import { foldLoadable, loadableIdle } from "@loom/core/loadable";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
-import { searchSessions } from "./fleet-search.ts";
+import { searchSessions, type FleetView } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
   clock,
@@ -36,7 +40,39 @@ import {
   type Tone,
 } from "./theme.ts";
 
+/**
+ * How the connection reads in the status line. Derived from the snapshot's
+ * `Loadable` tag rather than tracked beside it — there is no state the client
+ * can be in that this doesn't already say.
+ */
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
+
+export const connectionOf = (s: TuiState): Connection =>
+  foldLoadable<ConnectionError, DaemonSnapshot, Connection>({
+    onIdle: () => "connecting",
+    onPending: () => "reconnecting",
+    onError: () => "closed",
+    onData: () => "live",
+  })(s.fleet);
+
+/** The fleet in display order, or empty while there is no current snapshot. */
+export const fleetSessions = (s: TuiState): SessionSnapshot[] =>
+  s.fleet.tag === "data" ? s.fleet.value.sessions : [];
+
+/** What the fleet search engine sees — sessions plus their event lines. */
+const fleetView = (s: TuiState): FleetView => ({ sessions: fleetSessions(s), log: s.log });
+
+/** Configured providers from the current snapshot, or empty while pending. */
+export const fleetProviders = (s: TuiState): ProviderInfo[] =>
+  s.fleet.tag === "data" ? s.fleet.value.providers : [];
+
+export const fleetDaemon = (s: TuiState): DaemonInfo | null =>
+  s.fleet.tag === "data" ? s.fleet.value.daemon : null;
+
+/** A session's mode as the UI should show it: a local un-acknowledged cycle
+ *  wins over the snapshot until the debounced RPC settles. */
+export const sessionMode = (s: TuiState, session: SessionSnapshot): string =>
+  s.modeDraft[session.id] ?? session.mode;
 export type UiMode = "browse" | "prompt" | "help" | "doctor" | "confirm" | "plan" | "picker";
 /**
  * Keybinding grammar (see docs/keybindings.md):
@@ -91,12 +127,6 @@ export const logFilterTag = (f: LogFilter): string => {
       return "chat";
   }
 };
-
-export interface DaemonInfo {
-  pid: number;
-  version: string;
-  repoRoot: string;
-}
 
 export interface LogLine {
   seq: number;
@@ -449,19 +479,30 @@ export const liveQNav = (
   nav && sid && rid && nav.sessionId === sid && nav.requestId === rid ? nav : null;
 
 export interface TuiState {
-  connection: Connection;
   theme: ThemeMode;
-  daemon: DaemonInfo | null;
-  /** Configured providers, from `providers.list` at connect time. */
-  providers: ProviderInfo[];
-  sessions: SessionSnapshot[];
+  /**
+   * The daemon's authoritative state, exactly as the client hands it over.
+   * There is no second copy and no merging: a snapshot replaces the last one
+   * wholesale, and while it is `pending` the UI genuinely has no fleet to show
+   * rather than a stale one it might act on. Sessions are stored in display
+   * order — {@link sortSessions} runs once at install, not per read.
+   */
+  fleet: ClientState;
+  /**
+   * Permission modes cycled locally but not yet acknowledged. `session.setMode`
+   * is debounced in fleet-handle, so the chip has to move before the round trip
+   * — but it moves *here*, beside the snapshot, never inside it. Cleared when
+   * the debounced RPC settles either way, so a rejected change falls back to
+   * whatever the daemon actually reports.
+   */
+  modeDraft: Record<string, SessionMode>;
   selectedId: string | null;
   /**
    * A session just picked (create / fork / find) whose row hasn't landed in
-   * `sessions` yet — its `session_updated` push can trail the RPC response.
+   * the fleet yet — the snapshot carrying it can trail the RPC response.
    * `clampSelection` keeps `selectedId` on this id even while it's absent, so
-   * an unrelated `session_updated` in that window can't bounce the user to the
-   * fleet head (U4). Cleared once the id appears (or is removed).
+   * an unrelated snapshot in that window can't bounce the user to the fleet
+   * head (U4). Cleared once the id appears (or is removed).
    */
   pendingSelectId?: string | undefined;
   /**
@@ -534,13 +575,11 @@ export interface TuiState {
 
 export const initialState = (): TuiState => {
   return {
-    connection: "connecting",
     // The active theme — a theme restored from `.loom/tui.json` was applied
     // via `setThemeMode` before the handle built its initial state.
     theme: themeMode(),
-    daemon: null,
-    providers: [],
-    sessions: [],
+    fleet: loadableIdle,
+    modeDraft: {},
     selectedId: null,
     selectedChild: null,
     log: [],
@@ -589,12 +628,10 @@ export const versionMismatchAction = (o: {
 // ---------------------------------------------------------------------------
 
 export type Action =
-  | { t: "hello"; daemon: DaemonInfo; sessions: SessionSnapshot[] }
-  | { t: "providers"; list: ProviderInfo[] }
-  | { t: "sessions"; sessions: SessionSnapshot[] }
+  | { t: "state"; state: ClientState }
+  | { t: "modeDraft"; sessionId: string; mode: SessionMode | null }
   | { t: "push"; frame: PushFrame; replay?: boolean }
   | { t: "backfill"; frames: readonly EventPush[] }
-  | { t: "connection"; value: Connection }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
@@ -630,7 +667,6 @@ export type Action =
   | { t: "findSet"; buffer: Buffer }
   | { t: "closeFind" }
   | { t: "resolvePerm"; sessionId: string; id: string }
-  | { t: "modeOptimistic"; sessionId: string; mode: SessionMode }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "help"; value: boolean }
   | { t: "doctor"; value: boolean }
@@ -654,56 +690,26 @@ const appendLog = (log: readonly LogLine[], line: LogLine): LogLine[] => {
 
 export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
-    case "providers":
-      return { ...s, providers: a.list };
+    case "state":
+      return applyClientState(s, a.state);
 
-    case "hello": {
-      const sessions = sortSessions(a.sessions);
+    case "modeDraft":
       return {
         ...s,
-        connection: "live",
-        daemon: a.daemon,
-        sessions,
-        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
-        ...settlePendingSelect(s, sessions),
-        selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-        pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
-        queue: pruneByLive(s.queue, sessions),
-        compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
+        modeDraft:
+          a.mode === null
+            ? without(s.modeDraft, a.sessionId)
+            : {
+                ...s.modeDraft,
+                [a.sessionId]: a.mode,
+              },
       };
-    }
-
-    case "sessions": {
-      // Rebase, don't blindly replace: a `session.list` response that was in
-      // flight while a `session_updated` push landed would otherwise overwrite
-      // the newer per-session state with the older snapshot. Keep whichever
-      // row has the more recent `updatedAt`.
-      const prev = new Map(s.sessions.map((x) => [x.id, x]));
-      const merged = a.sessions.map((next) => {
-        const cur = prev.get(next.id);
-        return cur && cur.updatedAt > next.updatedAt ? cur : next;
-      });
-      const sessions = sortSessions(merged);
-      return {
-        ...s,
-        sessions,
-        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
-        ...settlePendingSelect(s, sessions),
-        selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
-        pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
-        queue: pruneByLive(s.queue, sessions),
-        compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
-      };
-    }
 
     case "push":
       return applyPush(s, a.frame, a.replay === true);
 
     case "backfill":
       return applyBackfill(s, a.frames);
-
-    case "connection":
-      return { ...s, connection: a.value };
 
     case "toggleTheme":
       return { ...s, theme: nextThemeMode(s.theme) };
@@ -714,7 +720,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // selection was filtered out), ↓ lands on the best match and ↑ on the
       // last.
       const find = s.find;
-      const list = find ? searchSessions(s, find.buffer.text).map((m) => m.session) : s.sessions;
+      const list = find
+        ? searchSessions(fleetView(s), find.buffer.text).map((m) => m.session)
+        : fleetSessions(s);
       if (list.length === 0) return s;
       let from = list.findIndex((x) => x.id === s.selectedId);
       if (from < 0) from = a.delta < 0 ? list.length : -1;
@@ -730,7 +738,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // as the pending selection so `clampSelection` holds it until it arrives.
       // A different session invalidates any child focus along with it.
       if (a.id === s.selectedId) return s;
-      const known = s.sessions.some((x) => x.id === a.id);
+      const known = fleetSessions(s).some((x) => x.id === a.id);
       return {
         ...s,
         selectedId: a.id,
@@ -745,7 +753,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // A click on a child row: select its session and focus that child. Guard
       // the key against a stale hit map — fall back to the first live sibling
       // (childEnter's semantics) if it's gone.
-      const sess = s.sessions.find((x) => x.id === a.sessionId) ?? null;
+      const sess = fleetSessions(s).find((x) => x.id === a.sessionId) ?? null;
       const kids = sess ? childrenOf(sess) : [];
       const child = kids.some((k) => k.key === a.key) ? a.key : (kids[0]?.key ?? null);
       return {
@@ -964,7 +972,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // fight ↑/↓ walking the ranked rows.
       const q = a.buffer.text;
       if (q === "") return next;
-      const matches = searchSessions(s, q);
+      const matches = searchSessions(fleetView(s), q);
       if (matches.length === 0 || matches.some((m) => m.session.id === s.selectedId)) return next;
       return { ...next, selectedId: matches[0]!.session.id, selectedChild: null };
     }
@@ -988,15 +996,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       };
     }
 
-    // Local-only, ahead of the round trip: `session.setMode` is debounced in
-    // fleet-handle, so the chip must update on its own for cycling to feel
-    // responsive. The authoritative `session_updated` push that eventually
-    // lands (settled mode, from the debounced RPC) simply overwrites this.
-    case "modeOptimistic": {
-      const sessions = s.sessions.map((x) => (x.id === a.sessionId ? { ...x, mode: a.mode } : x));
-      return { ...s, sessions };
-    }
-
     case "qnavSet":
       return { ...s, qnav: a.nav };
 
@@ -1012,6 +1011,71 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     default:
       return absurd(a);
   }
+};
+
+/**
+ * Install a client snapshot. The fleet is *replaced*, never merged — there are
+ * no versions or timestamps to reconcile, so a snapshot that arrives during an
+ * in-flight command simply wins.
+ *
+ * Local state (drafts, prompt buffers, queued follow-ups, the selection the
+ * user is holding) survives untouched; what does get reconciled is everything
+ * that names a session or a request the new snapshot no longer has — a
+ * selection, a child focus, an open plan overlay whose exact request id is
+ * gone. While pending there is nothing to reconcile *against*, so those holds
+ * are left alone for the next snapshot to settle.
+ */
+const applyClientState = (s: TuiState, state: ClientState): TuiState => {
+  if (state.tag !== "data") return { ...s, fleet: state };
+  const sessions = sortSessions(state.value.sessions);
+  const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
+  const live = new Set(sessions.map((x) => x.id));
+  // An open plan overlay survives only while its *exact* request id is still
+  // outstanding. Answered here, answered in another window, or the session
+  // moved on — all three read the same way in a snapshot, and all three mean
+  // the overlay can no longer be acted on.
+  const planGone =
+    s.plan !== null &&
+    !sessions.some(
+      (x) => x.id === s.plan?.sessionId && x.requests.some((r) => r.id === s.plan?.requestId),
+    );
+  // A send / answer / title / compact prompt or a picker aimed at a session
+  // another client just removed would loop on submit (RPC error → reopen).
+  const promptGone = s.prompt?.sessionId != null && !live.has(s.prompt.sessionId);
+  const pickerSession = s.picker?.ctx?.liveSessionId;
+  const pickerGone = pickerSession != null && !live.has(pickerSession);
+  const picker = pickerGone ? null : rederiveOpenPicker({ ...s, fleet });
+  return {
+    ...s,
+    fleet,
+    selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
+    ...settlePendingSelect(s, sessions),
+    selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
+    pending: pruneSettledPending(pruneByLive(s.pending, sessions), sessions),
+    queue: pruneByLive(s.queue, sessions),
+    compacting: rebaseCompacting(pruneByLive(s.compacting, sessions), sessions),
+    modeDraft: pruneByLive(s.modeDraft, sessions),
+    ...(planGone ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode } : {}),
+    ...(promptGone
+      ? { prompt: null, mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode }
+      : {}),
+    ...pickerPatch(s, pickerGone, picker),
+  };
+};
+
+/**
+ * A provider/model picker opened before the start-up model probes settled holds
+ * a stale copy of the loading state — re-derive it off the new snapshot so it
+ * fills in without being closed and reopened. A picker whose session is gone
+ * closes instead.
+ */
+const pickerPatch = (
+  s: TuiState,
+  gone: boolean,
+  rederived: PickerState | null,
+): Partial<TuiState> => {
+  if (gone) return { picker: null, mode: s.mode === "picker" ? "browse" : s.mode };
+  return rederived ? { picker: rederived } : {};
 };
 
 const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
@@ -1064,80 +1128,11 @@ const applyPush = (s: TuiState, frame: PushFrame, replay = false): TuiState => {
       const log = appendLog(s.log, toLogLine(frame.seq, epoch, ev, toolName));
       return { ...s, log, pending, compacting, notice, toolNames };
     }
-    case "session_updated": {
-      const rest = s.sessions.filter((x) => x.id !== frame.session.id);
-      const sessions = sortSessions([...rest, frame.session]);
-      // Any outstanding round-trip is settled once the session leaves awaiting_input.
-      const settled = frame.session.status.kind !== "awaiting_input";
-      const pending = settled ? without(s.pending, frame.session.id) : s.pending;
-      // An open plan overlay for a session that has moved on is stale — drop it.
-      const planGone = settled && s.plan?.sessionId === frame.session.id;
-      // A compaction that started before this client attached shows up on the
-      // snapshot — see rebaseCompacting (drainQueues holds queued sends on it).
-      const compacting = rebaseCompacting(s.compacting, [frame.session]);
-      return {
-        ...s,
-        sessions,
-        selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
-        ...settlePendingSelect(s, sessions),
-        pending,
-        compacting,
-        ...(planGone
-          ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
-          : {}),
-      };
-    }
-    case "providers_updated": {
-      // The daemon's remembered new-session defaults changed, or the start-up
-      // model probes settled — adopt the fresh list. A provider/model picker
-      // opened before the probes landed holds a snapshot of the loading
-      // state; re-derive it so it fills in without being closed and reopened.
-      const next = { ...s, providers: frame.providers };
-      const picker = rederiveOpenPicker(next);
-      return picker ? { ...next, picker } : next;
-    }
-
-    case "session_removed": {
-      const removedIdx = s.sessions.findIndex((x) => x.id === frame.sessionId);
-      const sessions = s.sessions.filter((x) => x.id !== frame.sessionId);
-      const planGone = s.plan?.sessionId === frame.sessionId;
-      // A send/answer/title/compact prompt aimed at a session another client
-      // just removed would loop on submit (RPC error → reopen). Close it.
-      const promptGone = s.prompt?.sessionId === frame.sessionId;
-      const pickerGone = s.picker?.ctx?.liveSessionId === frame.sessionId;
-      // The pending selection itself was removed before it ever arrived — drop
-      // the hold so the clamp falls back to the fleet head.
-      const pendingSel = s.pendingSelectId === frame.sessionId ? undefined : s.pendingSelectId;
-      // If the removed row was the selected one, land on the row that was
-      // just above it rather than snapping to the fleet head.
-      const selectedId =
-        s.selectedId === frame.sessionId && removedIdx > 0
-          ? (sessions[removedIdx - 1]?.id ?? clampSelection(sessions, s.selectedId, pendingSel))
-          : clampSelection(sessions, s.selectedId, pendingSel);
-      return {
-        ...s,
-        sessions,
-        selectedId,
-        pendingSelectId: pendingSel,
-        pending: without(s.pending, frame.sessionId),
-        queue: without(s.queue, frame.sessionId),
-        compacting: without(s.compacting, frame.sessionId),
-        ...(planGone
-          ? { plan: null, mode: s.mode === "plan" ? ("browse" as UiMode) : s.mode }
-          : {}),
-        ...(promptGone
-          ? { prompt: null, mode: s.mode === "prompt" ? ("browse" as UiMode) : s.mode }
-          : {}),
-        ...(pickerGone
-          ? { picker: null, mode: s.mode === "picker" ? ("browse" as UiMode) : s.mode }
-          : { picker: s.picker }),
-      };
-    }
     case "resync":
-      // The client refetches and dispatches a fresh `sessions` action. Drop the
-      // compacting indicators — the heartbeats that feed them were in the frames
-      // we rolled past; the refetch re-seeds any still-running compaction from
-      // the snapshot's `compacting` overlay (rebaseCompacting).
+      // The event stream rolled past our seq. Drop the compacting indicators —
+      // the heartbeats that feed them were in the frames we missed; the
+      // snapshot the daemon pushes on the re-handshake re-seeds any still-live
+      // compaction from its own `compacting` overlay (rebaseCompacting).
       return { ...s, compacting: {} };
 
     case "notice":
@@ -1510,7 +1505,7 @@ const clampChild = (
 // ---------------------------------------------------------------------------
 
 export const selectedSession = (s: TuiState): SessionSnapshot | null => {
-  return s.sessions.find((x) => x.id === s.selectedId) ?? null;
+  return fleetSessions(s).find((x) => x.id === s.selectedId) ?? null;
 };
 
 /** The focused child of the selected session, when the fleet is drilled in. */
@@ -1815,11 +1810,11 @@ export const transcriptText = (lines: readonly LogLine[]): string => {
 
 /** The Ink colour a provider's session ids render in, or "" for the default. */
 export const providerColorOf = (s: TuiState, providerId: string): string => {
-  return s.providers.find((p) => p.id === providerId)?.color ?? "";
+  return fleetProviders(s).find((p) => p.id === providerId)?.color ?? "";
 };
 
 export const providerInfo = (s: TuiState, providerId: string): ProviderInfo | null => {
-  return s.providers.find((p) => p.id === providerId) ?? null;
+  return fleetProviders(s).find((p) => p.id === providerId) ?? null;
 };
 
 /** `<login method> (<org>)` for a Claude profile, or "" when unknown. */
@@ -1831,7 +1826,7 @@ export const providerAccountOf = (s: TuiState, providerId: string): string => {
 };
 
 export const defaultProviderId = (s: TuiState): string => {
-  return s.providers.find((p) => p.isDefault)?.id ?? "claude";
+  return fleetProviders(s).find((p) => p.isDefault)?.id ?? "claude";
 };
 
 /** The model a new session on `providerId` will use unless changed — the
@@ -1843,11 +1838,11 @@ export const defaultModelOf = (s: TuiState, providerId: string): string => {
 /** The permission mode a new session will use unless changed — the daemon's
  *  remembered "last used", or `default` (manual). Not per-provider. */
 export const defaultModeOf = (s: TuiState): SessionMode => {
-  return s.providers[0]?.defaultMode ?? "default";
+  return fleetProviders(s)[0]?.defaultMode ?? "default";
 };
 
 export const providerPickItems = (s: TuiState): PickItem[] => {
-  return s.providers.map((p) => ({
+  return fleetProviders(s).map((p) => ({
     id: p.id,
     label: p.tag || p.id,
     hint: [
@@ -1993,7 +1988,7 @@ export const escapeTarget = (p: PickerState, s: TuiState): Action => {
   }
   if (p.kind === "model" && !p.ctx?.liveSessionId) {
     const draft = p.ctx?.draft ?? "";
-    if (s.providers.length > 1) {
+    if (fleetProviders(s).length > 1) {
       return {
         t: "openPicker",
         picker: makePicker({
@@ -2105,7 +2100,7 @@ export type FleetEntry =
  *  groups (see {@link groupsOf}). */
 export const fleetEntries = (state: TuiState): FleetEntry[] => {
   const query = state.find?.buffer.text ?? "";
-  const matched = searchSessions(state, query).map((m) => m.session);
+  const matched = searchSessions(fleetView(state), query).map((m) => m.session);
   const active = query.trim() !== "";
   const focused = focusedChildOf(state);
   const out: FleetEntry[] = [];
@@ -2446,7 +2441,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
     items.push({ id, label, hint: key });
   }
   // gc only when there's something to collect — done sessions with worktrees.
-  if (s.sessions.some((x) => x.status.kind === "done" && x.worktree)) {
+  if (fleetSessions(s).some((x) => x.status.kind === "done" && x.worktree)) {
     items.push({ id: "gc", label: "gc — remove worktrees of done sessions", hint: "" });
   }
   if (s.selectedId && (s.queue[s.selectedId]?.length ?? 0) > 0) {

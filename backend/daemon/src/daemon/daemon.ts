@@ -297,7 +297,7 @@ export class Daemon {
         // session and a session can switch models, so its totals blend them.
         this.#registry.store.addModelUsage(id, snap.provider, snap.model ?? "", priced);
         this.#noteCacheTtlDrift(snap, delta.lastCacheTtlMinutes);
-        this.#emitSessionUpdated(snap, undefined, { git: false }); // no git shell-out per usage tick
+        this.#publishState();
       },
       onResult: (id, ok) => {
         if (this.#stopping || !ok) return;
@@ -317,7 +317,7 @@ export class Daemon {
         // background task edge, the op gate opening) can move the worktree, and
         // they fire often enough during a turn that shelling out would be a
         // per-tool-call cost.
-        if (snap) this.#emitSessionUpdated(snap, undefined, { git: false });
+        if (snap) this.#publishState();
       },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
@@ -326,7 +326,7 @@ export class Daemon {
       onMode: (id, mode) => {
         if (this.#stopping) return;
         const snap = this.#registry.setFields(id, { mode });
-        this.#emitSessionUpdated(snap);
+        this.#publishState(snap.id);
       },
       log: this.#log.child("sessions"),
     });
@@ -398,7 +398,7 @@ export class Daemon {
     });
     // A restart that interrupted sessions must tell any reconnecting client.
     for (const { id } of this.#hygiene.interruptedSessions) {
-      this.#emitSessionUpdated(this.#registry.mustGet(id));
+      this.#publishState(id);
     }
 
     this.#watchConfig();
@@ -418,7 +418,7 @@ export class Daemon {
     const preProbe = JSON.stringify(this.#providerList());
     await this.#resolveAutoModels();
     await this.#resolveClaudeModels();
-    if (JSON.stringify(this.#providerList()) !== preProbe) this.#emitProvidersUpdated();
+    if (JSON.stringify(this.#providerList()) !== preProbe) this.#publishState();
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
@@ -531,46 +531,6 @@ export class Daemon {
     }
     this.#server.broadcast(frame);
     return frame.seq;
-  }
-
-  // The per-session / per-provider pushes below are superseded by the whole-
-  // fleet `state` snapshot and go away with their last consumer; until then
-  // each one also publishes state, so both families describe the same fleet.
-  #emitSessionUpdated(session: SessionSnapshot, by?: string, opts: { git?: boolean } = {}): void {
-    if (this.#stopping) return;
-    const frame = this.#events.append({
-      kind: "push",
-      type: "session_updated",
-      session: this.#enrich(session, opts.git ?? true),
-      version: this.#registry.version(session.id),
-      ...(by !== undefined ? { by } : {}),
-    });
-    this.#server.broadcast(frame);
-    // `#enrich` above already re-probed when `git` wasn't false, so the
-    // snapshot reads the fresh facts straight out of the cache.
-    this.#publishState();
-  }
-
-  #emitSessionRemoved(id: string): void {
-    if (this.#stopping) return;
-    const frame = this.#events.append({ kind: "push", type: "session_removed", sessionId: id });
-    this.#server.broadcast(frame);
-    this.#publishState();
-  }
-
-  /** The remembered new-session defaults changed — push the fresh provider
-   *  list so every client's `new` prompt seeds from current defaults. Also
-   *  fired once the start-up model probes resolve, for clients that fetched
-   *  the pin fallback while they were still running. */
-  #emitProvidersUpdated(): void {
-    if (this.#stopping) return;
-    const frame = this.#events.append({
-      kind: "push",
-      type: "providers_updated",
-      providers: this.#providerList(),
-    });
-    this.#server.broadcast(frame);
-    this.#publishState();
   }
 
   /**
@@ -1059,7 +1019,7 @@ export class Daemon {
     if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
     this.#providerDefaults.rememberProvider(o.providerId);
     this.#providerDefaults.rememberMode(o.mode);
-    this.#emitProvidersUpdated();
+    this.#publishState();
 
     const isClaude = isClaudeId(o.providerId);
     const isAisdk = aisdkProfile !== undefined;
@@ -1145,7 +1105,7 @@ export class Daemon {
     });
 
     const snap = this.#registry.mustGet(id);
-    this.#emitSessionUpdated(snap, o.by);
+    this.#publishState(snap.id);
     this.#onActivityChange("session-created");
     return snap;
   }
@@ -1270,7 +1230,7 @@ export class Daemon {
       if (this.#sessions.has(id)) continue; // somehow live again; not ours to re-drive
       try {
         const snap = await this.#reviveSession(id);
-        this.#emitSessionUpdated(snap);
+        this.#publishState(snap.id);
         this.#onActivityChange("session-resumed");
       } catch (err) {
         this.#log.warn("auto-resume: could not revive session", {
@@ -1316,7 +1276,7 @@ export class Daemon {
       ts: Date.now(),
       ...(note !== undefined ? { note } : {}),
     });
-    this.#emitSessionUpdated(snap);
+    this.#publishState(snap.id);
     this.#onActivityChange(`status:${state.kind}`);
 
     // A turn just ended (this hook only fires for event-stream-derived
@@ -1371,7 +1331,7 @@ export class Daemon {
           `${res.base} (+${res.behind}) → ${res.head}`,
         "info",
       );
-      this.#emitSessionUpdated(this.#registry.mustGet(id));
+      this.#publishState(id);
       return { outcome: res, nudged: false };
     }
 
@@ -1483,7 +1443,7 @@ export class Daemon {
         if (branch !== snap.branch) updated = this.#registry.setFields(id, { branch });
       }
 
-      this.#emitSessionUpdated(updated);
+      this.#publishState(updated.id);
     } catch (err) {
       this.#log.debug("auto-title failed", { id, err: String(err) });
     } finally {
@@ -1682,7 +1642,7 @@ export class Daemon {
         if (move === "skip") continue;
         if (move === "giveup") {
           this.#sessions.setKeepWarm(id, false);
-          this.#emitSessionUpdated(this.#registry.mustGet(id));
+          this.#publishState(id);
           this.#emitNotice(
             `keep-warm off for ${id.slice(0, 8)} — re-primed ${KEEP_WARM_MAX_PINGS}× with no reply`,
             "info",
@@ -1707,32 +1667,31 @@ export class Daemon {
 
   /**
    * Re-derive git facts for every worktree / in-place session and push a
-   * `session_updated` for the ones that moved. Nothing else recomputes facts
-   * for an idle session, so its branch / ahead / behind / dirty detail line
-   * otherwise goes stale the moment the base branch advances from outside Loom
-   * (a plain `git commit` on `main`), until that session next has activity.
+   * one snapshot if any of them moved. These are the maintained facts every
+   * other publication reads, so nothing else has to shell out: without the
+   * sweep an idle session's branch / ahead / behind / dirty line would go
+   * stale the moment the base branch advanced from outside Loom (a plain
+   * `git commit` on `main`) until that session next had activity.
+   *
    * Skipped when no client is attached (no point shelling out `git` for
-   * nobody); diff-only on the wire. `facts()` shells out synchronously — the
-   * sweep can't overlap itself.
+   * nobody). `facts()` shells out synchronously — the sweep can't overlap
+   * itself.
    */
   #sweepGitFacts(): void {
     if (this.#stopping || this.#server.clientCount === 0) return;
-    // `facts()` is cached per path; compute once per distinct worktree and fan
-    // the result out to every session sharing it (in-place sessions all share
-    // the repo root).
-    const moved = new Map<string, boolean>();
+    // `facts()` is cached per path; compute once per distinct worktree, since
+    // sessions share them (every in-place session shares the repo root).
+    const seen = new Set<string>();
+    let moved = false;
     for (const snap of this.#registry.list()) {
       const gitPath = snap.worktree ?? (snap.inPlace ? this.repoRoot : null);
-      if (!gitPath) continue;
-      let changed = moved.get(gitPath);
-      if (changed === undefined) {
-        const prev = this.#worktrees.cachedFacts(gitPath);
-        const next = this.#worktrees.facts(gitPath, snap.baseBranch);
-        changed = next != null && JSON.stringify(prev) !== JSON.stringify(next);
-        moved.set(gitPath, changed);
-      }
-      if (changed) this.#emitSessionUpdated(this.#registry.mustGet(snap.id));
+      if (!gitPath || seen.has(gitPath)) continue;
+      seen.add(gitPath);
+      const prev = this.#worktrees.cachedFacts(gitPath);
+      const next = this.#worktrees.facts(gitPath, snap.baseBranch);
+      if (next != null && JSON.stringify(prev) !== JSON.stringify(next)) moved = true;
     }
+    if (moved) this.#publishState();
   }
 
   // -------------------------------------------------------------------------
@@ -2068,7 +2027,7 @@ export class Daemon {
       const id = reqString(params, "id");
       if (this.#sessions.has(id)) throw new RpcError("conflict", "session is already running");
       const snap = await this.#reviveSession(id);
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState(snap.id);
       this.#onActivityChange("session-resumed");
       return snap;
     });
@@ -2084,7 +2043,7 @@ export class Daemon {
         // An archived session's revive restores a worktree and flips it off
         // `done` — push that before the turn's own updates so clients don't
         // briefly show a running session with no tree.
-        this.#emitSessionUpdated(revived, clientLabel(params));
+        this.#publishState(revived.id);
         this.#onActivityChange("session-resumed");
       }
       // A `compact` / `rewind` holds the session's op gate — a straight send
@@ -2274,7 +2233,7 @@ export class Daemon {
       const updated = this.#sessions.has(id)
         ? this.#registry.mustGet(id)
         : this.#registry.setStatus(id, stateIdle, "rewind");
-      this.#emitSessionUpdated(updated, clientLabel(params));
+      this.#publishState(updated.id);
       return { ...updated, ...(worktreeDrift ? { worktreeDrift } : {}) };
     });
 
@@ -2392,7 +2351,7 @@ export class Daemon {
         await this.#sessions.send(newId, forkPrompt);
       }
       const snap = this.#registry.mustGet(newId);
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState(snap.id);
       this.#onActivityChange("session-forked");
       return snap;
     });
@@ -2461,7 +2420,7 @@ export class Daemon {
         );
       }
       this.#sessions.setKeepWarm(id, on);
-      this.#emitSessionUpdated(this.#registry.mustGet(id), clientLabel(params));
+      this.#publishState(id);
       return this.#enrich(this.#registry.mustGet(id));
     });
 
@@ -2611,8 +2570,8 @@ export class Daemon {
       const snap = this.#registry.setFields(id, { mode });
       // A deliberate switch is also "the last mode used" for the next new session.
       this.#providerDefaults.rememberMode(mode);
-      this.#emitProvidersUpdated();
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState();
+      this.#publishState(snap.id);
       return snap;
     });
 
@@ -2630,8 +2589,8 @@ export class Daemon {
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.remember(row.provider, model);
       }
-      this.#emitProvidersUpdated();
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState();
+      this.#publishState(snap.id);
       return snap;
     });
 
@@ -2646,8 +2605,8 @@ export class Daemon {
       if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
         this.#providerDefaults.rememberEffort(row.provider, effort);
       }
-      this.#emitProvidersUpdated();
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState();
+      this.#publishState(snap.id);
       return snap;
     });
 
@@ -2695,8 +2654,8 @@ export class Daemon {
           if (model) this.#providerDefaults.remember(row.provider, model);
           if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
         }
-        this.#emitProvidersUpdated();
-        this.#emitSessionUpdated(snap, clientLabel(params));
+        this.#publishState();
+        this.#publishState(snap.id);
         return snap;
       }
 
@@ -2763,8 +2722,8 @@ export class Daemon {
         effort,
         lossy: false,
       });
-      this.#emitProvidersUpdated();
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState();
+      this.#publishState(snap.id);
       this.#onActivityChange("provider-switched");
       return snap;
     });
@@ -2776,7 +2735,7 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState(snap.id);
       return this.#enrich(snap);
     });
 
@@ -2789,7 +2748,7 @@ export class Daemon {
           : null;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       const snap = this.#registry.setFields(id, { comment });
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState(snap.id);
       return this.#enrich(snap);
     });
 
@@ -2833,7 +2792,7 @@ export class Daemon {
           ts: Date.now(),
           note: "marked_done",
         });
-        this.#emitSessionUpdated(snap, clientLabel(params));
+        this.#publishState(snap.id);
         this.#onActivityChange("marked-done");
         return this.#enrich(snap);
       });
@@ -2879,7 +2838,7 @@ export class Daemon {
               stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
               "remove_failed",
             );
-            this.#emitSessionUpdated(errSnap, clientLabel(params));
+            this.#publishState(errSnap.id);
             throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
           }
         }
@@ -2889,7 +2848,7 @@ export class Daemon {
           branchDeleted = this.#worktrees.deleteBranch(s.branch);
         }
         this.#registry.remove(id);
-        this.#emitSessionRemoved(id);
+        this.#publishState();
         this.#worktrees.prune();
         this.#onActivityChange("session-removed");
         return { removed: id, branchDeleted };
@@ -2933,7 +2892,7 @@ export class Daemon {
             if (this.#sessions.has(s.id)) await this.#sessions.close(s.id).catch(() => {});
             this.#worktrees.remove(s.worktree, { force });
             const snap = this.#registry.setFields(s.id, { worktree: null });
-            this.#emitSessionUpdated(snap, clientLabel(params));
+            this.#publishState(snap.id);
             removed.push(s.id);
           } catch (err) {
             failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) });
@@ -2973,7 +2932,7 @@ export class Daemon {
         ts: Date.now(),
         ...(detail !== null ? { note: detail } : {}),
       });
-      this.#emitSessionUpdated(snap);
+      this.#publishState(snap.id);
       this.#onActivityChange("stub-created");
       return snap;
     });
@@ -2996,7 +2955,7 @@ export class Daemon {
         ts: Date.now(),
         ...(detail !== null ? { note: detail } : {}),
       });
-      this.#emitSessionUpdated(snap, clientLabel(params));
+      this.#publishState(snap.id);
       this.#onActivityChange("set-status");
       return snap;
     });
@@ -3064,7 +3023,6 @@ export class Daemon {
         repoRoot: this.repoRoot,
         epoch: this.epoch,
       },
-      sessions: this.#enrichAll(this.#registry.listSorted()),
       seq: head,
       replaying,
     };

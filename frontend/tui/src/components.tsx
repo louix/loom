@@ -12,6 +12,10 @@ import type { SessionMode } from "@loom/core/types";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { searchSessions } from "./fleet-search.ts";
 import {
+  connectionOf,
+  fleetDaemon,
+  fleetProviders,
+  fleetSessions,
   cacheHeat,
   cacheStatus,
   clock,
@@ -137,14 +141,16 @@ const gitLineText = (s: SessionSnapshot): string => {
 // ---------------------------------------------------------------------------
 
 export const Header = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  const lamp = lampFor(state.connection);
+  const lamp = lampFor(connectionOf(state));
 
-  const repo = state.daemon ? basename(state.daemon.repoRoot) : "—";
-  const running = state.sessions.filter(
+  const daemon = fleetDaemon(state);
+  const sessions = fleetSessions(state);
+  const repo = daemon ? basename(daemon.repoRoot) : "—";
+  const running = sessions.filter(
     (s) => s.status.kind === "running" || s.status.kind === "starting",
   ).length;
-  const waiting = state.sessions.filter((s) => s.status.kind === "awaiting_input").length;
-  const bg = state.sessions.filter((s) => s.status.kind === "working_background").length;
+  const waiting = sessions.filter((s) => s.status.kind === "awaiting_input").length;
+  const bg = sessions.filter((s) => s.status.kind === "working_background").length;
 
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
@@ -153,7 +159,7 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
           {"▍ loom"}
         </Text>
         <Text color={C.dim} wrap="truncate-end">
-          {`v${state.daemon?.version ?? "?"}`}
+          {`v${daemon?.version ?? "?"}`}
         </Text>
         <Text color={C.faint}>{"·"}</Text>
         <Text color={C.text} wrap="truncate-end">
@@ -162,7 +168,7 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
       </Box>
       <Box gap={1}>
         <Text color={C.dim} wrap="truncate-end">
-          {`${state.sessions.length} sessions`}
+          {`${sessions.length} sessions`}
         </Text>
         {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
         {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
@@ -197,7 +203,7 @@ export const Fleet = ({
   now?: number;
 }): ReactNode => {
   const iw = inside(width);
-  const pcolor = new Map(state.providers.map((p) => [p.id, p.color]));
+  const pcolor = new Map(fleetProviders(state).map((p) => [p.id, p.color]));
   const compactingIds = new Set(Object.keys(state.compacting));
   // Drilled in? The focus only ever applies to the selected session's rows.
   const focused = focusedChildOf(state);
@@ -276,8 +282,11 @@ export const Fleet = ({
     )}`;
   } else if (state.find) {
     const query = state.find.buffer.text;
-    const matched = searchSessions(state, query).length;
-    title = `FLEET · ${matched}/${state.sessions.length} match${matched === 1 ? "" : "es"}`;
+    const matched = searchSessions(
+      { sessions: fleetSessions(state), log: state.log },
+      query,
+    ).length;
+    title = `FLEET · ${matched}/${fleetSessions(state).length} match${matched === 1 ? "" : "es"}`;
   }
 
   return (
@@ -1139,7 +1148,7 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
       // A reply to a session — the input lives on that session's EVENTS pane
       // (`PromptPane`, under the log); the footer keeps only the hints row.
       const mode =
-        p.kind === "send" ? state.sessions.find((x) => x.id === p.sessionId)?.mode : null;
+        p.kind === "send" ? fleetSessions(state).find((x) => x.id === p.sessionId)?.mode : null;
       return (
         <Box width={width} paddingX={1}>
           <Text color={C.faint} wrap="truncate-end">
@@ -1154,7 +1163,9 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
     // A send prompt re-modes / re-models its target with ⇧⇥ / ⌥m, so it shows
     // the session's current mode chip too.
     const sendSess =
-      p.kind === "send" && p.sessionId ? state.sessions.find((x) => x.id === p.sessionId) : null;
+      p.kind === "send" && p.sessionId
+        ? fleetSessions(state).find((x) => x.id === p.sessionId)
+        : null;
     const showModeChip = p.kind === "new" || sendSess != null;
     const chipMode = p.kind === "new" ? p.mode : sendSess?.mode;
     return (
@@ -1262,7 +1273,7 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
 export const PromptPane = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
   const p = state.prompt;
   if (!p || p.sessionId === null) return null;
-  const sess = p.kind === "send" ? state.sessions.find((x) => x.id === p.sessionId) : null;
+  const sess = p.kind === "send" ? fleetSessions(state).find((x) => x.id === p.sessionId) : null;
   return (
     <Box flexDirection="column" width={width} paddingX={2}>
       <Box gap={1}>

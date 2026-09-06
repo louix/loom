@@ -9,7 +9,6 @@ import type {
   PushFrame,
   RequestFrame,
   ResponseFrame,
-  SessionSnapshot,
   StatePush,
 } from "@loom/core/wire";
 import { MAX_FRAME_BYTES, PROTOCOL_VERSION } from "@loom/core/wire";
@@ -120,7 +119,6 @@ export class LoomClient {
   #eventLog: EventPush[] = [];
   #eventLogCap = 5000;
 
-  sessions: SessionSnapshot[] = [];
   daemonInfo: HelloResult["daemon"] | null = null;
 
   #state: ClientState = loadableIdle;
@@ -494,7 +492,6 @@ export class LoomClient {
     const restarted = this.#daemonEpoch !== null && this.#daemonEpoch !== result.daemon.epoch;
     this.#daemonEpoch = result.daemon.epoch;
     this.daemonInfo = result.daemon;
-    this.sessions = result.sessions;
     if (restarted || sinceSeq === undefined || !result.replaying) {
       this.#lastSeq = result.seq;
     }
@@ -590,18 +587,15 @@ export class LoomClient {
       });
       this.daemonInfo = result.daemon;
       this.#daemonEpoch = result.daemon.epoch; // keep it fresh so the next handshake doesn't false-detect a restart
-      this.sessions = result.sessions;
       // Monotonic: live frames delivered while this `hello` was in flight may
       // already have advanced `#lastSeq` past the fresh head — keeping the
       // higher value means the next reconnect's `sinceSeq` doesn't re-request
       // frames we already processed (there is no seq de-dupe on delivery).
       if (result.seq > this.#lastSeq) this.#lastSeq = result.seq;
+      // The daemon pushes a fresh snapshot from its `hello` handler, so state
+      // re-baselines itself — there is nothing to refetch here.
     } catch {
-      try {
-        this.sessions = await this.request<SessionSnapshot[]>("session.list");
-      } catch {
-        /* will retry on next reconnect */
-      }
+      /* the reconnect loop will try again */
     }
     this.#fire("resync", { reason });
   }
