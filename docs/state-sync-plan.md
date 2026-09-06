@@ -1,9 +1,16 @@
 # Simple daemon state sync and independent transcripts
 
-Status: ready for implementation. Work through the checkboxes in order, updating
-this document with completion notes and validation results. This records the
-user's agreed direction; do not reopen the architecture discussion or expand it
-into a general synchronization framework.
+Status: implemented. Every checkbox below is done, and each section carries a
+short note on what it changed and what covers it.
+
+A review afterwards found real defects in this work — reproduced, not
+speculative. They are fixed in `state-sync-fix-plan.md`, and each section here
+ends with what that document corrected about it, including one completion claim
+made here that was not true. Read the two together: this one records the design
+and what shipped, that one records what it got wrong.
+
+This records the user's agreed direction; do not reopen the architecture
+discussion or expand it into a general synchronization framework.
 
 ## Decisions
 
@@ -79,46 +86,30 @@ Acceptance: a second client with no downloaded transcript can display and answer
 the exact outstanding request. Resolving one permission updates both clients
 while any other permissions remain available.
 
-**Done.** Notes:
+**Done.** `SessionInteraction` (`@loom/core/interaction`) is a closed union of
+`permission` / `user_question` / `question` / `plan_review`, each carrying its
+request id and its display payload; `interactionFor(ev)` is the one place the
+"`AskUserQuestion` is a multiple-choice prompt, not a gate" rule lives.
+`SessionManager.Running.pending` holds the union, oldest first, and
+`SessionSnapshot.requests` carries it on the wire. The three `onSubagents` /
+`onBackgroundTasks` / `onRestructuring` hooks collapsed into `onOverlay`.
+Compaction rides `Running.compaction`, tracked from `compact_progress` beats so
+a provider-triggered auto-compaction is covered too.
 
-- New `core/src/interaction.ts` (`@loom/core/interaction`): `SessionInteraction`
-  is a closed union of `permission` / `user_question` / `question` /
-  `plan_review`, each carrying its request id _and_ its display payload.
-  `foldInteraction` + `absurd` for exhaustiveness; `interactionReason` maps a
-  request to its `AwaitReason` (the `kind`s are exactly those values, so the
-  reason is derived, not tracked). `interactionFor(ev)` is the single place the
-  "`AskUserQuestion` is a multiple-choice prompt, not a gate" rule lives —
-  `deriveStatus` now calls it instead of re-deciding, so `status-machine.ts`
-  lost its three duplicated cases.
-- `SessionManager`'s `Running.pending` is `Map<string, SessionInteraction>`
-  (insertion-ordered = oldest first). `requestsOf(id)` feeds the snapshot, and
-  `setMode`'s `plan_pending` guard reads the union rather than a reason string.
-- `SessionSnapshot.requests: SessionInteraction[]` on the wire; filled by the
-  daemon's `#enrich`, `[]` in the store mapper (runtime overlay, not persisted).
-- Publication: the trackers now _return_ whether they changed anything, and the
-  drain does exactly one publish per event — a status transition already carries
-  the fresh overlays, so only an overlay change without one publishes on its
-  own. `#transition` returns whether it fired so `#resumeAfterAnswer` can
-  publish when the turn stays blocked on the remaining permissions. Stream end,
-  pump failure, `interrupt` and the provider swap clear the set through
-  `#clearOverlays` and publish.
-- The three identical `onSubagents` / `onBackgroundTasks` / `onRestructuring`
-  hooks collapsed into one `onOverlay(sessionId)`, which republishes with
-  `git: false` — these fire per tool call / per compaction beat now, and none of
-  them can move the worktree.
-- Compaction: `Running.compaction` is tracked from `compact_progress` beats
-  (so a _provider-triggered_ auto-compaction, which never holds the op gate, is
-  covered too) and cleared by the landing `compact` or any `error`, mirroring
-  the TUI's `trackCompacting`. `SessionSnapshot.compacting` gained `generated`;
-  `before: 0` from the gate-only fallback is substituted with the session's
-  current context fill.
+Validation: six cases in `test/session-manager.test.ts` — a cold second client
+answering a complete permission, one of three parallel permissions resolving in
+both clients, complete question / plan / `AskUserQuestion` payloads, compaction
+from beats to the landing `compact`, and stream end / `interrupt` clearing the
+set.
 
-Validation: six new cases in `test/session-manager.test.ts` (cold second client
-answers a complete permission; one of three parallel permissions resolves and
-both clients see exactly that; question / plan / `AskUserQuestion` payloads
-complete in the snapshot; compaction progress from beats to landing `compact`;
-stream end and `interrupt` clear the set). All four repository checks are clean
-(`typecheck`, `test:silent`, `lint`, `format:check`).
+Corrected since, by `state-sync-fix-plan.md`:
+
+- This section claimed the drain "does exactly one publish per event". It did
+  not: `#trackUsage` → `onUsage` published before the status was derived, so a
+  completed turn went out twice, the first snapshot carrying the new turn count
+  beside the previous turn's status. Fixed in fix-plan §6.
+- `interactionReason` is deleted. `AwaitReason` and the interaction's `kind` are
+  the same closed set, so it was the identity written longhand (fix-plan §5).
 
 ## 2. Add one snapshot subscription and migrate state consumers
 
@@ -169,49 +160,35 @@ disconnect produces `pending`; reconnect supplies the complete current fleet,
 including changes made while disconnected. Delayed old callbacks cannot regress
 it. No polling or state replay is needed.
 
-**Done.** Notes:
+**Done.** `StatePush` carries a whole `DaemonSnapshot` and sits outside the
+seq-stamped stream and its replay ring — a snapshot is only interesting when it
+is the current one. `PushFrame` shrank to `EventPush | ResyncPush | NoticePush`;
+`session_updated`, `session_removed` and `providers_updated` are gone and
+`PROTOCOL_VERSION` is 2. `#stateFrame` is the one place a snapshot is built;
+`hello` subscribes and enqueues the opening snapshot as one synchronous
+operation and its result is handshake metadata only. Both ends chain socket
+writes (`writeAll` can return after a partial write), and the client stamps each
+socket with a generation. `TuiState` lost `sessions` / `providers` / `daemon` /
+`connection` for one `fleet: ClientState`; `modeOptimistic` became `modeDraft`, a
+local overlay the debounced RPC clears either way.
 
-- `StatePush` carries a whole `DaemonSnapshot` (daemon info, providers,
-  sessions) and sits _outside_ the seq-stamped stream and its replay ring — a
-  snapshot is only interesting when it is the current one, so buffering old ones
-  would spend memory to deliver staleness. `PushFrame` shrank to
-  `EventPush | ResyncPush | NoticePush`; `session_updated`, `session_removed`
-  and `providers_updated` are gone, and `PROTOCOL_VERSION` is 2 (a v1 client
-  would sit with an empty fleet forever, so the mismatch has to be loud).
-- `#stateFrame` is the one place a snapshot is built, reading current
-  authoritative values at publication. `refreshGitFor` re-probes one session's
-  worktree; every other session reads the facts `#sweepGitFacts` maintains, so
-  publishing per tool call doesn't become a `git` shell-out per session per
-  token. `hello` subscribes and enqueues the opening snapshot as one synchronous
-  operation and its result is handshake metadata only.
-- Both ends chain socket writes: `writeAll` can return after a _partial_ write,
-  so two concurrent frames interleaved their halves and corrupted both. A failed
-  daemon-side write now drops the connection rather than leave a client holding
-  a prefix of the truth. The client stamps each socket with a generation, so a
-  read/close/response from a superseded socket cannot touch current state.
-- `TuiState` lost `sessions` / `providers` / `daemon` / `connection` for one
-  `fleet: ClientState`. `connectionOf` derives the header lamp from the loadable
-  tag rather than tracking it beside the data, and while `pending` there is
-  genuinely no fleet to show rather than a stale one the user might act on.
-  Snapshot install reconciles the selection, child focus, and any prompt /
-  picker / plan overlay whose session or exact request id is gone.
-- `modeOptimistic` wrote a cycled permission mode straight into the session
-  list. It is now `modeDraft`, a local overlay beside the snapshot that the
-  debounced RPC clears either way — so a rejected change falls back to what the
-  daemon reports instead of leaving the chip lying.
-- Removed with their last consumer: the registry's per-session version counter
-  and its `updatedAt` seeding (S6 cannot exist without a version), the TUI's
-  `boot` Loadable and `refetch`, and `LoomClient.sessions`. `loom tail` keeps
-  its raw-event replay and reports fleet size from the snapshot instead.
+Validation: `test/client-state.test.ts` (opening snapshot, subscribe semantics,
+two clients seeing an add and a removal, disconnect → `pending` → reconnect with
+changes made while away, no post-reconnect snapshot repopulating the pre-drop
+fleet, close → `idle`), plus `Connection` regressions for frame interleaving and
+write-failure teardown.
 
-Validation: new `test/client-state.test.ts` (six cases: opening snapshot,
-subscribe semantics, two clients seeing an add and a removal, disconnect →
-`pending` → reconnect with changes made while away, no post-reconnect snapshot
-repopulating the pre-drop fleet, close → `idle`), plus a `Connection` regression
-test for frame interleaving that fails against the old unchained write (frames
-arrive spliced, 1 line instead of 3) and one for write-failure teardown. Tests
-asserting the removed push types were rewritten against snapshots. All four
-repository checks are clean.
+Corrected since, by `state-sync-fix-plan.md` §3:
+
+- `connect()` resolved on the hello response alone, so a caller could be handed
+  a client whose fleet was still `pending` — indistinguishable from "no
+  sessions". It now waits, bounded, for the first valid snapshot.
+- `pushState` was exempt from the write-backlog ceiling. Snapshots supersede
+  each other as values, not as encoded buffers already queued, so a wedged
+  client could be outrun by snapshots alone.
+- Both readers skipped a line they could not parse. They now drop the
+  connection, as does a well-formed frame with no address to answer at;
+  `core/src/wire-decode.ts` holds the shared boundary decoders.
 
 ## 3. Serialize conflicting configuration commands
 
@@ -240,67 +217,33 @@ the daemon's chosen order, finish with matching adapter/registry state, and leav
 both clients showing the final successful value. Rejection preserves existing
 values and existing plan-review safeguards.
 
-**Done.** Notes:
+**Done.** `mkSessionQueue` (`backend/daemon/src/daemon/session-queue.ts`)
+serializes each session's commands end to end under one key. The insight the old
+code missed: a mode change is validate → apply to adapter → write registry and
+provider defaults → publish, and gating only the adapter call leaves the other
+three interleaved. `setMode` / `setModel` / `setEffort` / `setProvider` now run
+whole under `#queue.run(id, …)` with their checks moved inside, so they are
+rechecked at execution time. The daemon's separate `#withLifecycleGate` folded
+into the same queue — lifecycle ops are precisely the commands that can
+invalidate a queued configuration change, so sharing one chain is what makes a
+queued command's existence recheck conclusive. The hold extends across adapter
+_construction_ (`#startSession`, `#reviveSession`), which deleted the attach-time
+mode reconciliation that used to paper over that window. Approvals, questions,
+plan responses and `interrupt` are deliberately not queued. Deadlock freedom is
+structural: the edge to the manager's turn gate is one-way.
 
-- New `backend/daemon/src/daemon/session-queue.ts` (`mkSessionQueue`) serializes
-  each session's commands end to end under one key. The insight the old code
-  missed: a mode change is validate → apply to adapter → write registry + provider
-  defaults → publish, and gating only the adapter call leaves the other three
-  interleaved. `session.setMode` / `setModel` / `setEffort` / `setProvider` now
-  run whole under `#queue.run(id, …)`, with their existence and validity checks
-  moved _inside_ so they are rechecked at execution time rather than at issue time.
-- The daemon already had this exact shape as `#withLifecycleGate` / `#lifecycleGate`
-  for `markDone` / `remove` / `gc`. Rather than stand a second one up beside it,
-  those fold into the same queue: lifecycle ops are precisely the commands that
-  can invalidate a queued configuration change, so sharing one chain is what makes
-  a queued command's existence recheck conclusive instead of a narrower race.
-  Net effect is one concept where there were two, and `#withLifecycleGate` is gone.
-- Inactive sessions are covered by the same key, and the queue is now also held
-  across adapter _construction_: `#startSession` wraps registry-create-through-attach,
-  and `#reviveSession` wraps the rebuild (`#reviveLocked`). Both build the adapter
-  from the row's mode/model/effort, so a command landing in that window used to take
-  the "session isn't running" path and write the row only — leaving the adapter on
-  its pre-command values. The attach-time mode reconciliation in `#startSession`
-  existed to paper over exactly that for mode; it is deleted, and model/effort
-  (which it never covered) are fixed by the same hold.
-- `onMode` — the adapter reporting where it actually landed, after a plan decision
-  or its own switch — goes through the queue too, so it can't land after an
-  in-flight `setMode`'s registry write and leave the row describing a mode the
-  adapter has since left. It is `void`-dispatched on purpose: the manager calls it
-  from inside `respondToPlan`, and awaiting a queue an approval doesn't otherwise
-  touch would park the approval behind whatever command happens to be running.
-- Approvals, questions, plan responses and `interrupt` are deliberately _not_
-  queued, so none of them can be held up behind a configuration command. Exact-request-id
-  resolve-once behaviour is untouched, and no conflict token or operation-id
-  subsystem was added.
-- Deadlock freedom is structural, not incidental: the edge between the two gates is
-  one-way. A queued command may take the session manager's turn gate; nothing
-  holding the turn gate ever waits on the queue (the pump's `onMode` is
-  fire-and-forget, `#maybeAutoRebase` re-enters via `#sessions.send`, not an RPC).
-  The one place the new hold could have parked on a turn-length wait —
-  `session.setProvider` waiting out a `compact` while holding the queue — now
-  fast-fails with the same `code: "busy"` `session.send` already uses.
-- `plan_pending` still refuses, and now refuses _inside_ the queue: the reject
-  happens before any registry or provider-defaults write, so a failed command
-  never publishes its requested value as applied.
-- TUI: `cycleSessionMode` already sent an explicit target (the server never
-  re-derives "next mode from current"). Fixed a draft-lifetime bug beside it — the
-  chip's local draft was retired when the _first_ `session.setMode` replied, which
-  with two overlapping cycles snapped the chip back to a snapshot a later call was
-  still on its way to change. It now survives until nothing is in flight.
-- Collapsed the `#publishState(); #publishState(snap.id);` pairs left by §2's
-  mechanical conversion — the second is a superset of the first, so these were
-  sending two whole-fleet snapshots where one was meant.
+Validation: `test/session-queue.test.ts` (5 cases) plus overlapping-mode-changes,
+mode-racing-a-revive, mode-behind-a-removal and plan-review-rejection cases in
+`test/daemon.test.ts`. Each ordering test was verified to fail against a
+pass-through queue, and their races are driven by `ping` round-trip barriers
+rather than sleeps.
 
-Validation: `deno check .`, `deno task test:silent`, `deno task lint`,
-`deno task format:check` all clean. New `test/session-queue.test.ts` (5 tests)
-covers the queue itself; `test/daemon.test.ts` gains overlapping-mode-changes,
-mode-racing-a-revive, mode-behind-a-removal and plan-review-rejection cases, and
-the existing mount-window test was reshaped (the click now queues rather than
-racing, so it asserts on the settled row instead of the create's return value).
-The four ordering tests were each verified to **fail** against a pass-through
-`mkSessionQueue`, and their races are driven by `ping` round-trip barriers
-(requests dispatch in arrival order) rather than sleeps.
+Corrected since, by `state-sync-fix-plan.md` §2: `onMode` carried the mode value
+captured when the notification was raised. Serializing it made that worse, not
+better — a `setMode` parked in the adapter finished after a plan decision but
+published before it, and the queued notification then wrote back a mode the
+adapter had already left. `onMode(sessionId)` now carries no value; the queued
+handler reads the live adapter snapshot when it runs.
 
 ## 4. Separate transcript storage, live delivery, and pagination from state
 
@@ -341,66 +284,39 @@ Paging works across daemon restarts, including equal or nonmonotonic timestamps.
 Live events overlapping a page appear once. Reconnect returns to a complete latest
 page with no obsolete fetch reinstalling old cache state.
 
-**Done.** Notes:
+**Done.** `session_events.id` is the transcript's identity everywhere: it rides
+the live push as `EventPush.id` and comes back on every `TranscriptEntry`, so a
+page and the live stream merge by the same key. Absent iff the daemon did not
+persist the event. Migration 23 drops the vestigial `seq` / `epoch` columns;
+`EventPush` keeps them for the raw `loom tail` stream. `session.events` returns
+`HistoryPage { items, olderCursor }`, paging backwards on `id < ?`, reading
+`limit + 1` rows so exhaustion is _observed_ rather than inferred from a short
+page, and answering a malformed cursor with `bad_request` — which the old
+`(epoch, seq)` lookup could not distinguish from exhaustion, so a paging loop
+stalled with no way to tell why. The TUI's single global `log` became
+`transcripts: Record<string, Transcript>`. The ts-sorted whole-log merge is gone:
+it existed because `(epoch, seq)` could not order across a restart, and it got
+the boundary wrong whenever timestamps tied. Reconnect clears the caches and
+bumps `transcriptGen`, so a fetch already in flight cannot reinstate what the
+reset discarded; drafts and selection survive.
 
-- `session_events.id` is now the transcript's identity everywhere. It rides the
-  live push as `EventPush.id` and comes back on every `TranscriptEntry`, so a page
-  and the live stream merge by the same key. Absent iff the daemon didn't persist
-  the event — status transitions and compaction beats have no row, and now nothing
-  downstream can invent one for them. Migration 23 drops the vestigial
-  `seq` / `epoch` columns: they existed only to make `(epoch, seq)` the identity,
-  and leaving `seq NOT NULL` would force the writer to fabricate a value it no
-  longer has. `EventPush` keeps its `seq` / `epoch` for the raw `loom tail` stream.
-- `emitEvent` persists _before_ it appends to the ring and broadcasts, so a pushed
-  id is readable the moment a client sees it.
-- `session.events` returns `HistoryPage { items, olderCursor }`, oldest-first within
-  the page, paging backwards on `id < ?` over the existing `(session_id, id)` index.
-  The store reads `limit + 1` rows so exhaustion is _observed_ rather than inferred
-  from a short page — the old code could not tell a page ending exactly on the
-  oldest row from one with more behind it. A malformed cursor is `bad_request`,
-  which is a different thing from `olderCursor: null`; the old `(epoch, seq)` lookup
-  answered both with `[]`, so a paging loop stalled with no way to tell why.
-- The TUI's single global `log` becomes `transcripts: Record<string, Transcript>`,
-  each with `lines` (durable, id-ordered, id-deduplicated), `head` / `older`
-  `Loadable`s, an `olderCursor`, and `echoes` kept separately — a queued-send marker
-  has no durable row, so it is not something to deduplicate, order or page. Loaded
-  entries stay on screen while an older page loads.
-- Retention is per session now (the old single cap let a busy session evict a quiet
-  one's transcript — its own comment said so). Eviction re-points `olderCursor` at
-  what it dropped, so the evicted span is refetchable and `olderCursor === null`
-  keeps meaning "the daemon has nothing older" and only that. A page the user
-  deliberately scrolled back for is never evicted.
-- The ts-sorted whole-log merge is gone. It existed because `(epoch, seq)` couldn't
-  order across a restart, and it got the boundary wrong whenever timestamps tied or
-  arrived out of order. Durable ids order the transcript; timestamps only render.
-- `trackPending` and `trackCompacting` are gone, and with them `pruneSettledPending`
-  and `rebaseCompacting`. `pendingFor` now _projects_ the snapshot's `requests`, so
-  scrolling into old history cannot resurrect a settled request and another client
-  answering one makes it disappear here with no local bookkeeping. The optimistic
-  hide when you answer is a `resolved` overlay beside the snapshot (the same shape
-  as §3's `modeDraft`), retired when the snapshot stops carrying the id.
-  `compactingFor` reads the snapshot's `compacting` directly.
-- Reconnect: `applyClientState` clears the caches and bumps `transcriptGen` the
-  moment the client leaves `data`, so a fetch already in flight cannot land
-  afterwards and reinstate what the reset discarded — the reducer drops any page
-  carrying a stale generation. Every `head` is back to `idle`, which is what makes
-  the selected session refetch and the others wait to be picked. The scroll resets
-  to the live tail off the same generation change. Drafts and selection survive.
-  A `resync` (the stream rolled without the connection dropping) takes the same
-  path: nothing else would reset the caches, and the transcript would otherwise
-  hold a hole it cannot see.
-- `fleet-search` now takes the per-session transcripts rather than one flat log,
-  so its doc build no longer has to bucket by session id.
+Validation: rewritten transcript cases in `test/store.test.ts` (ordering under
+equal timestamps, backwards paging, observed exhaustion at an exact page
+boundary, per-session cursor scoping); cursor paging, malformed-cursor rejection
+and cross-restart pagination in `test/daemon.test.ts`; durable order, dedupe,
+page/live merge and stale-generation rejection in `test/tui-model.test.ts`.
 
-Validation: `deno check .`, `deno task test:silent`, `deno task lint`,
-`deno task format:check` all clean. Rewritten `store.test.ts` transcript tests
-(ordering under equal timestamps, backwards paging, observed exhaustion at an exact
-page boundary, per-session cursor scoping); `daemon.test.ts` gains cursor paging,
-malformed-cursor rejection and a cross-restart pagination case; `tui-model.test.ts`
-gains durable-order/dedupe, the retention cursor re-point, page/live merge, older-page
-loading, stale-generation rejection, snapshot-derived requests and compaction, and
-echo separation. The two render tests that reconstructed requests from injected
-events now drive a real session so the daemon's own request set is what is asserted.
+Corrected since, by `state-sync-fix-plan.md`:
+
+- Retention was applied on the live-append path only. `foldPage` merged pages
+  with no bound at all, so three legal 5,000-entry pages retained 15,000 lines.
+  There is now one `retain` every growth goes through, the window is contiguous
+  at both ends, and `Transcript.following` says whether it still ends at the
+  live tail (fix-plan §4).
+- `pendingFor` and the `resolved` overlay are deleted. `pendingFor` was a second
+  shape for the request set and `resolved` was a second request model; consumers
+  now take `SessionInteraction` directly, and a one-slot submission latch
+  replaces the shadow set (fix-plan §5).
 
 ## 5. Remove superseded paths and validate
 
@@ -456,74 +372,39 @@ independent transcript pages, the superseded reconciliation code removed, and
 validation recorded. Report any actual environment blocker and the precise
 checks that could not run; do not mark unrun checks as passing.
 
-**Done.** Notes:
+**Done.** A protocol mismatch was not terminal: `#reconnectLoop` caught
+everything and retried, so two incompatible builds left the UI cycling between
+"reconnecting…" and the real error forever, re-spawning a daemon it could never
+talk to — and the daemon-side rejection was not recognised as a mismatch at all.
+It now latches `#fatal`, which stops the loop and keeps a later socket close from
+falling back to `pending`; the daemon reports its own version in the error's
+`data`. The pre-mount state reconstruction (`replayHistory`,
+`LoomClient.bufferedEvents` and its 5,000-frame ring, and the TUI's replay at
+mount) is gone: it was a second, worse path to the transcript — it could not
+page and was bounded by a ring shared across every session. `loom tail` was
+inspected and preserved. Comments describing the v1 push types were swept, and
+`loom run` / `loom stub` stopped printing `status=[object Object]`.
 
-- **Protocol mismatch was not terminal.** `#handshake` installed the `error` state
-  and threw, but `#reconnectLoop` caught everything and retried, so two
-  incompatible builds left the UI cycling between "reconnecting…" and the real
-  error forever — and re-spawning a daemon it could never talk to. The daemon-side
-  rejection (an `RpcError`) was not recognised as a mismatch at all, so that
-  direction never even reached the `error` state. A mismatch now latches `#fatal`,
-  which stops the loop and keeps a later socket close from falling back to
-  `pending`; the daemon reports its own version in the error's `data` rather than
-  leaving the client to parse it out of prose. Verified against a pass-through of
-  the old loop: the reconnect test fails without it.
-- **Removed the pre-mount state reconstruction** — `replayHistory`,
-  `LoomClient.bufferedEvents` and its 5000-frame ring, and the TUI's replay of them
-  at mount. It was a second, worse path to the transcript: it couldn't page, it was
-  bounded by a ring the daemon shares across every session, and §4 made the
-  `session.events` page the one way history arrives. With it went the `replay` flag
-  on the `push` action, which existed only to stop that replay flashing stale
-  notices; live pushes are now always news, and history pages never touch the
-  notice line.
-- `loom tail` inspected and preserved. Exercised against a live daemon: raw events
-  still stream with their `seq` (`#2`, `#3`), and snapshots stay out of that stream
-  — they show as a one-line `[state: N session(s), M live]` summary. Epoch/seq
-  remain on `EventPush` for exactly this, and `EventPush.epoch`'s doc now says so
-  instead of claiming to be the transcript's identity.
-- Swept the comments that still described the old protocol (`session_updated` /
-  `session_removed` / `providers_updated` / the `session.list` resync fallback) in
-  `client.ts`, `wire.ts`, `sessions.ts`, `daemon.ts`, `model.ts`, `fleet-handle.ts`
-  and four test names. The only surviving mention is the `PROTOCOL_VERSION` note
-  that documents the v1→v2 break, which is the one place it belongs.
-- Fixed a real (pre-existing) wire-consumer bug in `cli/src/loom.ts`: `loom run` and
-  `loom stub` printed `status=[object Object]`, having never been updated when
-  `status` became a `SessionState`.
+Validation: the reconnect test fails against a pass-through of the old loop. A
+scenario-to-test table and a manual run against a live daemon in a scratch repo
+covered two clients changing mode, a client attaching mid-request, one of several
+permissions resolving elsewhere, old history during a request or compaction,
+sessions added/removed while disconnected, late socket callbacks, live/page
+overlap, pagination across a daemon restart, a connection dropped mid-create, and
+partial writes / malformed frames / protocol mismatch in both directions.
 
-Focused verification — where each row is covered:
+**Not run, then or since: the two _interactive_ TUI windows.** No session in this
+line of work has had an attachable terminal, so the Ink app has never been driven
+by hand. What stands in for it: `test/tui-render.test.ts` mounts the real app
+against a real daemon over a fake stdout/stdin, and drives `mkFleetHandle`
+directly for the cases a real daemon cannot stage; the CLI, `loom tail` and the
+raw wire have been exercised against a live daemon. That is not the same check
+and is not reported as one.
 
-| Scenario                                              | Test                                                                                                    |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Two clients change mode, delayed adapter              | `daemon.test.ts` "overlapping mode changes apply in issue order…"                                       |
-| Second client attaches mid-request                    | `client-state.test.ts` "a client attaching mid-request gets the whole thing in its first snapshot"      |
-| One of several permissions resolves elsewhere         | `client-state.test.ts` "answering one of several permissions retires exactly that one, in both clients" |
-| Old history during a request or compaction            | `tui-model.test.ts` "an outstanding request is read off the snapshot…" (extended to compaction)         |
-| Session added/removed while disconnected              | `client-state.test.ts` "a disconnect goes pending…" (§2)                                                |
-| Old socket/fetch callback after reconnect             | `client-state.test.ts` (socket) + `tui-model.test.ts` "a page issued on a dropped connection…"          |
-| Live transcript overlaps a page fetch                 | `tui-model.test.ts` "a history page and the live stream merge by durable id, one entry each"            |
-| Pagination crosses a daemon restart                   | `daemon.test.ts` "transcript pagination is stable across a daemon restart"                              |
-| Connection drops during send/create                   | `client-state.test.ts` "a connection dropped mid-create does not resubmit it…"                          |
-| Partial writes / malformed frames / protocol mismatch | `connection.test.ts` (§2) + `client-state.test.ts` mismatch tests, both directions                      |
-
-Repository checks: `deno task typecheck`, `deno task test:silent`, `deno task lint`
-and `deno task format:check` all clean.
-
-Manual validation, against a real daemon in a scratch git repository (two
-`LoomClient`s standing in for two TUI windows, driven through the same RPCs the
-TUI uses; `loom tail` and the `loom` CLI run as themselves):
-
-- change mode in one window → both report `acceptEdits`
-- browse history → three pages walking backwards, cursors chaining, `olderCursor:
-null` only on the page that genuinely reaches the start
-- a malformed cursor → `bad_request`, distinguishable from exhaustion
-- restart the daemon → both clients transition `data → pending → data`, the fleet
-  re-baselines, the _pre-restart_ cursor still pages correctly, the newest page
-  returns identical ids, and the mode set before the restart survives it
-- an entry appended after the restart continues the same id ordering (…12, 13, 14)
-- `loom tail` streams raw events with their seq and reports snapshots as a summary
-  line, never as events
-
-Not run: the two _interactive_ TUI windows the plan describes. This session has no
-attachable terminal, so the Ink app could not be driven by hand. The equivalent
-paths are covered by `tui-render.test.ts`, which mounts the real app against a real
-daemon over a fake stdout/stdin, and by the manual run above at the client level.
+Corrected since, by `state-sync-fix-plan.md` §1: the TUI's own effects were
+wrong in ways no test here caught. `fleetSessions` answers a fresh `[]` for both
+"no sessions" and "no connection", so comparing it fired the queue drain on every
+dispatch and, while disconnected, read the fallback as proof that every queued
+session was gone — the stranded-queue notice then re-entered the drain and
+overflowed the stack. See that document for the full list; the summary is that a
+dropped connection must not be mistaken for an empty fleet.

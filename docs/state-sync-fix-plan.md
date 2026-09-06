@@ -1,7 +1,8 @@
 # State-sync corrective plan
 
 Baseline: local `main` at `d52117f`, reviewing the seven commits after `01ad1a60`.
-Status: steps 0-6 done. Later steps are planned; their checkboxes are not implemented.
+Status: complete. All eight steps are done; each section records what it changed,
+what covers it, and what was not verified.
 
 Goal: finish the existing state-sync contract, fix the reproduced regressions,
 and delete the obsolete client-side representations. Keep replacement snapshots,
@@ -663,23 +664,131 @@ Verified: typecheck, lint and format:check clean; `deno task test` 646 passed
 
 ## 7. Close the cutover and verify the reductions
 
-- [ ] Run the affected tests while implementing. Once the preceding steps pass,
+- [x] Run the affected tests while implementing. Once the preceding steps pass,
       run `deno task typecheck`, `deno task test:silent`, `deno task lint`, and
       `deno task format:check`. Do not report unrun/unchecked checks as passing.
-- [ ] Manually exercise two TUIs: queue a follow-up, disconnect/reconnect, browse
+- [x] Manually exercise two TUIs: queue a follow-up, disconnect/reconnect, browse
       old history, answer a request in the other window, and overlap a mode change
       with a plan decision. If interactive terminals are unavailable, name that
       missing check rather than treating a client-only test as equivalent.
-- [ ] Verify `loom tail`, CLI list/create and protocol mismatch behavior.
-- [ ] Update `docs/state-sync-plan.md`: replace inaccurate completion claims
+- [x] Verify `loom tail`, CLI list/create and protocol mismatch behavior.
+- [x] Update `docs/state-sync-plan.md`: replace inaccurate completion claims
       with the actual behavior and exact tests. Condense historical completion
       journals into brief status/validation notes.
-- [ ] Report source, tests and docs line deltas separately. The reviewed growth
+- [x] Report source, tests and docs line deltas separately. The reviewed growth
       was source/config +616, tests +1,128, docs +280. Do not count moving code or
       stripping comments as the substantive simplification.
-- [ ] The final review must identify the removed representations and helpers,
+- [x] The final review must identify the removed representations and helpers,
       not merely list added safety checks. Keep genuine boundary tests; remove
       tests that only assert the deleted machinery.
+
+**Done.**
+
+### Checks
+
+All four clean on the final tree: `deno task typecheck`, `deno task test:silent`,
+`deno task lint`, `deno task format:check`. `deno task test` reports **646
+passed (118 steps), 0 failed** — up from the 622 / 106 baseline recorded in §0.
+Every step's own regressions were run while implementing it, and each was
+verified to fail first (the exceptions are named in the sections above).
+
+### Exercised against a live daemon
+
+A scratch git repository, a real autospawned daemon, and the `loom` CLI and raw
+socket run as themselves. Removed afterwards.
+
+| Check                                      | Result                                                                                                                                                                                                           |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| autospawn + `loom ls` on an empty repo     | daemon came up, `(no sessions)`                                                                                                                                                                                  |
+| `loom run … --provider fake`               | `started <id> provider=fake status=starting` — the `status` field prints its kind, not `[object Object]`                                                                                                         |
+| `loom stub`, `loom ls`, `loom status`      | sessions listed in fleet order; counts and provider list correct                                                                                                                                                 |
+| `loom tail`                                | `[state: 2 session(s), 2 live]` summaries, then `#3 assistant_text` and `#4 status_changed` with their seqs, then `[state: 2 session(s), 1 live]` — raw events keep their seq, snapshots stay out of that stream |
+| hello v2 over a raw socket                 | `push:state -> res:ok` — the opening snapshot is written _before_ the response, which is what §3's startup wait depends on                                                                                       |
+| hello v1 over a raw socket                 | `res:err {"code":"protocol_mismatch",…,"data":{"daemon":2}}`, no snapshot and no subscription                                                                                                                    |
+| an unparseable line after a good handshake | connection dropped, no further frames                                                                                                                                                                            |
+| a `req` frame with no id                   | connection dropped                                                                                                                                                                                               |
+| `loom stop`                                | daemon shut down cleanly                                                                                                                                                                                         |
+
+The `loom tail` row also happens to confirm §6 end to end: the status change
+published a snapshot whose live count had dropped, in the same breath as the
+event.
+
+### Not run
+
+**The two interactive TUI windows.** This session has no attachable terminal, so
+the Ink app could not be driven by hand — the queue-a-follow-up,
+disconnect/reconnect, browse-old-history, answer-a-request-in-the-other-window
+and overlap-a-mode-change-with-a-plan-decision walkthrough is _not_ verified.
+What exists instead, and is not the same thing: `test/tui-render.test.ts` mounts
+the real app against a real daemon over a fake stdout/stdin, and drives
+`mkFleetHandle` directly for the cases a real daemon cannot stage (holding a page
+response open, delivering `pending` on cue, dropping a send reply). The cross-
+client halves — a request answered in another window, a mode change seen by two
+clients — are covered at the client level in `test/client-state.test.ts` and
+`test/session-manager.test.ts`, which is where the daemon-side behaviour actually
+lives.
+
+### Line deltas
+
+Measured against `ae062be`, the commit that added this document.
+
+|                 | added | deleted | net        |
+| --------------- | ----- | ------- | ---------- |
+| source + config | 975   | 459     | **+516**   |
+| tests           | 1,626 | 196     | **+1,430** |
+| docs            | 499   | 137     | **+362**   |
+
+Source, per file:
+
+| file                                           | +   | −   |
+| ---------------------------------------------- | --- | --- |
+| `core/src/wire-decode.ts` (new)                | 145 | 0   |
+| `frontend/tui/src/fleet-handle.ts`             | 264 | 112 |
+| `frontend/tui/src/model.ts`                    | 198 | 176 |
+| `client/src/client.ts`                         | 135 | 24  |
+| `frontend/tui/src/components.tsx`              | 77  | 64  |
+| `backend/daemon/src/daemon/session-manager.ts` | 68  | 24  |
+| `backend/daemon/src/daemon/connection.ts`      | 37  | 19  |
+| `backend/daemon/src/daemon/daemon.ts`          | 31  | 15  |
+| `frontend/tui/src/app.tsx`                     | 6   | 1   |
+| `backend/daemon/src/daemon/status-machine.ts`  | 5   | 2   |
+| `connectors/mock/src/fake.ts`                  | 4   | 0   |
+| `core/src/interaction.ts`                      | 1   | 19  |
+| `deno.json`, `core/deno.json`                  | 4   | 3   |
+
+Read honestly: **this work grew the source.** It is a corrective pass over seven
+commits, and six of its eight steps are fixes, not simplifications — a fix
+usually costs lines. The one step charged with reducing production code, §5, did:
+**net −55** on its own (262 added, 317 deleted). Everything else in the +516 is
+new behaviour, and the two largest single contributions are honest additions
+rather than reorganisation: `wire-decode.ts` at +145 is boundary validation that
+did not exist, and `client.ts` at +135/−24 is the startup wait, the write-failure
+teardown and the lifecycle guards.
+
+### What was removed
+
+Representations and helpers deleted, not moved:
+
+| Removed                                                        | Was                                                                                                                                                    | Replaced by                                                                                     |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `Pending`, `PendingPerm` (TUI)                                 | a second shape for the request set — the interaction union flattened into optional fields, with `permission` and `user_question` merged into one array | consumers take `SessionInteraction` directly; `RequestPanel` is an exhaustive `foldInteraction` |
+| `pendingFor`, `firstPerm`                                      | the projection that built it                                                                                                                           | `requestsFor` (the snapshot's array) and `activeRequest`                                        |
+| `focusedPending`                                               | undoing that projection's own damage: having merged everything, it narrowed the bag back down by `status.on`                                           | `activeRequest` reads `status.on` once, picks, and keeps the rest                               |
+| `TuiState.resolved`, `pruneResolved`, the `resolvePerm` action | a second request model — per-session ids the client had answered, hidden from a projection and pruned on every snapshot install                        | one closure variable holding the last request id submitted                                      |
+| `interactionReason` (core)                                     | a fold that was the identity on `kind`                                                                                                                 | `request.kind`                                                                                  |
+| `interactionLabel` (core)                                      | unused                                                                                                                                                 | —                                                                                               |
+| the reducer's `queue` prune                                    | silently dropped a message the user typed when its session went                                                                                        | `drainQueues` clears it _and_ says so                                                           |
+| `Connection`'s `pushState` backlog exemption                   | a comment arguing snapshots supersede each other, which is true of values and not of queued buffers                                                    | one `#overBacklog()` both push paths call                                                       |
+| both readers' `catch { continue; }`                            | skipping a frame that could not be parsed                                                                                                              | drop the connection; `wire-decode.ts` decides what is routable                                  |
+| `onMode`'s mode parameter                                      | a value captured before the command that overtook it                                                                                                   | the queued handler reads the live adapter snapshot                                              |
+| `#trackRateLimit` / `#trackUsage` returning `void`             | state changes nothing decided to publish                                                                                                               | both report change, and one publication follows the whole transition                            |
+
+Representations added, and what each buys: `Transcript.following` (whether the
+retained window still ends at the live tail — the one thing the old cap could not
+express, and the reason a live event could be drawn across an evicted gap);
+`TuiState.heldSend` (one text per session whose send never came back, so it is
+neither re-sent nor lost); `FleetClient` (the seven-member slice of `LoomClient`
+the handle drives, so a test can supply a stand-in without a cast).
 
 ## Separate follow-ups: do not smuggle them into the cutover
 
