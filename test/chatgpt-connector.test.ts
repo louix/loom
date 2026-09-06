@@ -23,6 +23,7 @@ import {
   mcpConfig,
 } from "@loom/connector-chatgpt/app-server";
 import { spawnCodex, type CodexLaunchSpec, type CodexLauncher } from "@loom/connector-chatgpt/launch";
+import { localToolDispatcher } from "@loom/connector-chatgpt/tool-dispatch";
 
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
@@ -1243,6 +1244,140 @@ test("exit_plan's plan_review event id matches the dynamic tool call's own callI
     Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
     Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
     await rm(resultFile, { force: true });
+  }
+});
+
+test("respondToPlan never tells the model 'approved' when the mode/turn transition itself fails", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-exitplan-transition-fails", authJsonPath: "/tmp/loom-codex-exitplan-transition-fails/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-exitplan-failtransition-${process.pid}.json`);
+  try {
+    Deno.env.set("LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE", "1");
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let planId = "";
+      for await (const ev of s.events()) {
+        if (ev.type === "plan_review") {
+          planId = ev.id;
+          break;
+        }
+      }
+      await assert.rejects(
+        () => s.respondToPlan(planId, { action: "implement" }),
+        /forced thread\/settings\/update failure/,
+      );
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      // Never "Plan approved. Implementing now." — the transition didn't happen.
+      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
+      assert.match(result.contentItems[0]?.text ?? "", /could not be implemented/);
+      assert.equal(s.snapshot().mode, "plan", "mode must not have changed either");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("interrupt() invalidates an in-flight dispatch's askUser callback instead of letting it park a new question after the turn is gone", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-cancel-inflight-dispatch", authJsonPath: "/tmp/loom-codex-cancel-inflight-dispatch/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-cancel-inflight-${process.pid}.json`);
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  try {
+    // The tool name/arguments don't matter — the injected dispatcher below
+    // ignores them entirely and just simulates a dispatch that does some
+    // async work (represented by `gate`) before ever reaching `ctx.askUser`.
+    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "whatever", arguments: {} }));
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+      undefined,
+      false,
+      undefined,
+      spawnCodex,
+      async (_tool, _args, ctx) => {
+        await gate; // paused here while interrupt() runs, below
+        const answer = await ctx.askUser!("late question", undefined);
+        return { ok: true, text: answer };
+      },
+    );
+    try {
+      // The dispatch is admitted (past the stale-turn check) and currently
+      // parked on `gate` — nothing has called `ctx.askUser` yet.
+      await s.interrupt();
+      releaseGate(); // let the dispatch proceed now that the turn is gone
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      // Resolves immediately with the same sentinel a drained question would
+      // have gotten — never actually parks (which would otherwise hang this
+      // test forever, since nothing here ever calls `answerQuestion`).
+      assert.equal(result.contentItems[0]?.text, "(the turn was interrupted)");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
+
+test("localToolDispatcher never calls askUser once the turn's signal is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let askUserCalled = false;
+  const result = await localToolDispatcher("ask_user", { question: "still relevant?" }, {
+    mode: "default",
+    cwd: "/tmp",
+    signal: controller.signal,
+    askUser: async () => {
+      askUserCalled = true;
+      return "should never be reached";
+    },
+  });
+  assert.equal(askUserCalled, false);
+  assert.equal(result.ok, false);
+});
+
+test("localToolDispatcher rechecks cancellation after an approval wait, before running the commit", async () => {
+  const controller = new AbortController();
+  const { root, git, cleanup } = repo();
+  try {
+    await writeFile(join(root, "a.txt"), "hello\n");
+    const headBefore = git("rev-parse", "HEAD");
+    const result = await localToolDispatcher("commit", { message: "should not land" }, {
+      mode: "default",
+      cwd: root,
+      signal: controller.signal,
+      requestApproval: async () => {
+        // The turn gets interrupted while the human's "yes" is in flight —
+        // by the time this dispatcher sees the (still affirmative) decision,
+        // the signal already says the turn is gone.
+        controller.abort();
+        return { behavior: "allow" };
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(git("rev-parse", "HEAD"), headBefore, "no commit should have run");
+  } finally {
+    await cleanup();
   }
 });
 

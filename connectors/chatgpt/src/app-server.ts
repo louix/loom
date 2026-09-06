@@ -230,6 +230,30 @@ export class CodexAppServerSession implements AgentSession {
    *  run — is never mistaken for stale just because `this.#turnId` isn't set
    *  yet. */
   #staleTurnIds = new Set<string>();
+  /**
+   * Aborted whenever the current turn ends — `interrupt()`, `close()`, or a
+   * natural `turn/completed` — and replaced with a fresh one the next time a
+   * turn actually starts. The stale-turn blocklist above only stops a *new*
+   * request from entering dispatch — it does nothing for a dispatch already
+   * admitted and now running (possibly paused on its own async work, e.g. a
+   * slow external call inside an injected `ToolDispatcher`) when the turn
+   * ends. `#toolCall` captures this turn's `.signal` at admission time and
+   * hands it to `#askUser`/`#requestPlan`/`#requestApproval`, so any of
+   * those — called at any point during that dispatch's execution, not just
+   * at its start — refuses to park a new, never-to-be-answered interaction
+   * once the turn is gone.
+   *
+   * Seeded here (not left `null` until `#startTurn` first runs) specifically
+   * so a dynamic tool call for the *first* turn — which can legitimately
+   * arrive before `#startTurn` itself has run, in the same startup race
+   * `#serverRequest`'s threadId guard already accounts for — still captures
+   * a real, live signal that the eventual `interrupt()`/`turn/completed`
+   * will actually abort, rather than capturing `undefined` and never
+   * observing the turn end at all. `#startTurn` only replaces it once it's
+   * already been spent (aborted) by a previous turn — never while it's
+   * still the live signal for the turn currently being started.
+   */
+  #turnAbort = new AbortController();
   #threadId: string | null = null;
   #turnId: string | null = null;
   #model: string;
@@ -429,8 +453,21 @@ export class CodexAppServerSession implements AgentSession {
    *  `id` is the dynamic tool call's own `callId` (see `#toolCall`) — not a
    *  freshly minted one — so a persisted-event-log replay can correlate this
    *  question with the same call's `tool_call`/`tool_result` pair rather
-   *  than two unrelated ids that happen to describe the same interaction. */
-  #askUser(question: string, context: string | undefined, id: string): Promise<string> {
+   *  than two unrelated ids that happen to describe the same interaction.
+   *  `signal` is the *admitting* turn's abort signal (also captured at
+   *  `#toolCall` time) — if the turn has already been interrupted by the
+   *  time a paused/async dispatcher gets around to calling this (the
+   *  stale-turn blocklist in `#serverRequest` only protects *entry* into
+   *  dispatch, not a dispatch already admitted and running), this must not
+   *  park a new, never-to-be-answered question — it resolves immediately
+   *  with the same sentinel `interrupt()`'s own drain would have produced. */
+  #askUser(
+    question: string,
+    context: string | undefined,
+    id: string,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    if (signal?.aborted) return Promise.resolve("(the turn was interrupted)");
     const answer = this.#pending.requestQuestion(id);
     this.#events.push({
       type: "question",
@@ -449,46 +486,76 @@ export class CodexAppServerSession implements AgentSession {
   /** loom `commit` handler for the case `@loom/runtime/policy`'s `policy()`
    *  says "ask" rather than "allow": raise a real `permission_request` and
    *  block on a human decision, the same as a native command/file approval,
-   *  instead of denying outright. `id` is the dynamic tool call's `callId`
-   *  (see `#askUser`'s doc comment for why). */
-  #requestApproval(tool: string, args: Record<string, unknown>, id: string): Promise<PermissionDecision> {
+   *  instead of denying outright. `id`/`signal`: see `#askUser`'s doc comment. */
+  #requestApproval(
+    tool: string,
+    args: Record<string, unknown>,
+    id: string,
+    signal: AbortSignal | undefined,
+  ): Promise<PermissionDecision> {
+    if (signal?.aborted) return Promise.resolve({ behavior: "deny", message: "the turn was interrupted" });
     const decision = this.#pending.requestPermission(id);
     this.#events.push({ type: "permission_request", sessionId: this.id, ts: now(), id, tool, input: args });
     return decision;
   }
-  /** loom `exit_plan` handler: emit a `plan_review` event, block until decided. */
-  #requestPlan(plan: string, id: string): Promise<PlanDecision> {
+  /** loom `exit_plan` handler: emit a `plan_review` event, block until
+   *  decided. `id`/`signal`: see `#askUser`'s doc comment. */
+  #requestPlan(plan: string, id: string, signal: AbortSignal | undefined): Promise<PlanDecision> {
+    if (signal?.aborted) return Promise.resolve({ action: "discuss", message: "the turn was interrupted" });
     const decision = this.#pending.requestPlan(id);
     this.#events.push({ type: "plan_review", sessionId: this.id, ts: now(), id, plan });
     return decision;
   }
   /**
    * Codex has no native tool call to resolve/deny for `exit_plan` (unlike
-   * Claude's SDK-native `ExitPlanMode`) — the dynamic tool call itself
-   * already returned its text (see `tool-dispatch.ts`'s `exit_plan` branch)
-   * once `#requestPlan`'s promise resolved. All that's left here is to
-   * re-drive the session, mirroring Claude's `respondToPlan`
-   * (`connectors/claude/src/adapter.ts`): leave mode/turn alone for
-   * `discuss`/`handoff` (the model was already told to keep planning, or
-   * that implementation continues elsewhere); for `implement`/`revise`, and
-   * — for now — `implement_fresh` too (its context-reset/compaction is
-   * explicitly Phase 6's job per the plan doc, so it's treated as a plain
-   * `implement` here rather than half-built), leave plan mode and send the
-   * plan as a fresh instruction.
+   * Claude's SDK-native `ExitPlanMode`) — the dynamic tool call's own
+   * response ("Plan approved...", see `tool-dispatch.ts`'s `exit_plan`
+   * branch) is what tells the model it can stop waiting, so it must not go
+   * out until the mode/turn transition below has actually succeeded — never
+   * resolve `#requestPlan`'s pending promise *before* attempting it. A
+   * `discuss`/`handoff` decision has no transition to make (the model was
+   * already told to keep planning, or that implementation continues
+   * elsewhere) — those resolve immediately.
    *
-   * `setMode` (below) unconditionally interrupts the still-running planning
-   * turn before this method's own `send()` runs — plan mode's turn was
-   * snapshotted read-only at its own `turn/start`, and nothing short of a
-   * fresh turn can make it writable, so a plain `turn/steer` on the old turn
-   * would leave the model trying to implement under the old restriction.
+   * For `implement`/`revise`, and — for now — `implement_fresh` too (its
+   * context-reset/compaction is explicitly Phase 6's job per the plan doc,
+   * so it's treated as a plain `implement` here rather than half-built):
+   * `setMode` unconditionally interrupts the still-running planning turn
+   * (plan mode's turn was snapshotted read-only at its own `turn/start`, and
+   * nothing short of a fresh turn can make it writable) and `send` starts a
+   * genuinely new one carrying the revised instructions — both awaited, in
+   * order, *before* the pending plan resolves. If either fails, the plan
+   * resolves as a `discuss` instead (telling the model the transition
+   * didn't happen, never "approved") and the error is rethrown so the
+   * caller (the daemon) sees the failure too, rather than this method
+   * quietly swallowing it after having already un-blocked the old turn.
+   *
+   * `detachPlan`, not `resolvePlan`, on this path: `setMode` interrupting the
+   * planning turn (above) drains every *other* currently pending interaction
+   * via `#pending.failAll` — including, if left tracked, this very plan
+   * review, racing this method's own deliberate resolution and resolving it
+   * first with a generic "the turn was interrupted" cancellation instead of
+   * the real decision. Detaching removes it from that drain's reach for the
+   * rest of this transition; the raw resolve function is invoked explicitly,
+   * once, with whatever this method itself determines the outcome to be.
    */
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
-    if (!this.#pending.hasPlan(id)) return;
-    this.#pending.resolvePlan(id, decision);
-    if (decision.action === "discuss" || decision.action === "handoff") return;
-    await this.setMode(decision.mode ?? "acceptEdits");
-    const planText = decision.action === "revise" ? decision.plan : "the plan you just presented";
-    await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
+    if (decision.action === "discuss" || decision.action === "handoff") {
+      this.#pending.resolvePlan(id, decision);
+      return;
+    }
+    const resolve = this.#pending.detachPlan(id);
+    if (!resolve) return;
+    try {
+      await this.setMode(decision.mode ?? "acceptEdits");
+      const planText = decision.action === "revise" ? decision.plan : "the plan you just presented";
+      await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
+      resolve(decision);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      resolve({ action: "discuss", message: `the plan could not be implemented — ${message}` });
+      throw err;
+    }
   }
 
   /**
@@ -498,16 +565,19 @@ export class CodexAppServerSession implements AgentSession {
    * question/plan promise (or the caller waiting on this method) hanging
    * forever just because the underlying RPC call failed. `this.#turnId` is
    * captured and cleared *before* that RPC call, and the old id is recorded
-   * in `#staleTurnIds` before anything else — so any request tagged with it
-   * that's already in flight (or arrives while the interrupt is still
-   * pending) is rejected by `#serverRequest`'s guard rather than reaching a
-   * dispatcher and starting new work under a turn Loom already considers
-   * over.
+   * in `#staleTurnIds` *and* `#turnAbort` is aborted before anything else —
+   * so any request tagged with the old turn is rejected by
+   * `#serverRequest`'s guard before it can even reach a dispatcher, and any
+   * dispatch already admitted and running sees its captured `signal` flip to
+   * aborted the moment it next calls `#askUser`/`#requestPlan`/
+   * `#requestApproval`, rather than starting new work under a turn Loom
+   * already considers over.
    */
   async interrupt(): Promise<void> {
     const turnId = this.#turnId;
     this.#turnId = null;
     if (turnId) this.#staleTurnIds.add(turnId);
+    this.#turnAbort?.abort();
     try {
       if (this.#threadId && turnId) {
         await this.#rpc.request("turn/interrupt", { threadId: this.#threadId, turnId });
@@ -586,6 +656,7 @@ export class CodexAppServerSession implements AgentSession {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#turnAbort?.abort();
     this.#pending.failAll(
       { behavior: "deny", message: "the session was closed before this was answered" },
       "(the session was closed before this was answered)",
@@ -596,6 +667,15 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   async #startTurn(input: string): Promise<void> {
+    // Replace only an already-spent controller (aborted by a *previous*
+    // turn's end) — never one that's still live, which is exactly the case
+    // for this turn's own controller when a dynamic tool call for it
+    // arrived early enough to have already captured it (see `#turnAbort`'s
+    // doc comment). A dispatch admitted under a genuinely previous turn must
+    // never observe this new turn's live signal as a reason to proceed —
+    // which "only replace once spent" also guarantees, since that previous
+    // turn's dispatch captured the now-aborted controller, not this one.
+    if (this.#turnAbort.signal.aborted) this.#turnAbort = new AbortController();
     const result = await this.#rpc.request("turn/start", {
       threadId: this.#threadId,
       input: [textInput(input)],
@@ -813,6 +893,10 @@ export class CodexAppServerSession implements AgentSession {
     // approval was resolved" from the id alone, the same way it already can
     // for `ask_user`'s own `question`/`answer` pair.
     const callId = typeof p["callId"] === "string" && p["callId"] ? p["callId"] : randomUUID();
+    // Captured now, at admission — the *this* turn's signal, not whatever
+    // turn happens to be live by the time this dispatch actually reaches
+    // `ctx.askUser`/etc. (see `#turnAbort`'s doc comment).
+    const signal = this.#turnAbort?.signal;
     const respond = (text: string, success: boolean): void => {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
@@ -820,9 +904,10 @@ export class CodexAppServerSession implements AgentSession {
       mode: this.#mode,
       cwd: this.#cwd,
       ...(this.#base ? { base: this.#base } : {}),
-      askUser: (q, c) => this.#askUser(q, c, callId),
-      requestPlan: (plan) => this.#requestPlan(plan, callId),
-      requestApproval: (t, a) => this.#requestApproval(t, a, callId),
+      ...(signal ? { signal } : {}),
+      askUser: (q, c) => this.#askUser(q, c, callId, signal),
+      requestPlan: (plan) => this.#requestPlan(plan, callId, signal),
+      requestApproval: (t, a) => this.#requestApproval(t, a, callId, signal),
     }).then(
       (res) => respond(res.text, res.ok),
       (err: unknown) => respond(err instanceof Error ? err.message : String(err), false),
@@ -856,6 +941,12 @@ export class CodexAppServerSession implements AgentSession {
       // stale.
       if (completedId && completedId !== this.#turnId) return;
       this.#turnId = null;
+      // Not added to `#staleTurnIds` (see above), but a dispatch still
+      // mid-flight for this now-completed turn (e.g. a slow `ToolDispatcher`
+      // not yet at its own `ctx.askUser` call) should still see this turn as
+      // over rather than proceed to park a new interaction nothing will ever
+      // answer — so the signal aborts here too, same as `interrupt()`.
+      this.#turnAbort.abort();
       this.#turns++;
       if (turn?.status === "failed")
         this.#events.push({

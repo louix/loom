@@ -46,6 +46,9 @@
  * request tagged with the turn being interrupted, right after replying to
  * `turn/interrupt` — simulating a request that was already in flight for
  * that turn, to exercise the client's stale-turn rejection.
+ * `LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE=1` makes `thread/settings/update`
+ * reply with a JSON-RPC error instead of `{}`, for exercising a failed
+ * `setMode` mid-transition (e.g. inside `respondToPlan`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -292,6 +295,14 @@ const handle = (req) => {
       return;
     }
     send({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
+  if (method === "thread/settings/update" && process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE"]) {
+    send({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32000, message: "fake app-server: forced thread/settings/update failure" },
+    });
     return;
   }
   if (

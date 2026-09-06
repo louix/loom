@@ -61,6 +61,28 @@ export class PendingInteractions<TPermission, TPlan> {
     return true;
   }
 
+  /**
+   * Removes `id` from tracking *without* resolving it, handing the raw
+   * resolve function to the caller to settle whenever (and with whatever)
+   * it decides — `undefined` if `id` is unknown or already resolved/detached.
+   *
+   * For a caller that must perform work *in the middle of* resolving a plan
+   * that could itself trigger {@link failAll} (a multi-step transition where
+   * an intermediate step legitimately ends the same turn the plan review
+   * belongs to) — that intermediate `failAll` must not race the plan's own,
+   * still-pending, deliberate resolution and resolve it first with a generic
+   * cancellation value. Detaching first makes the plan invisible to
+   * `failAll` for the rest of that transition; the caller resolves it
+   * explicitly once the transition's real outcome (success or failure) is
+   * known.
+   */
+  detachPlan(id: string): ((value: TPlan) => void) | undefined {
+    const resolve = this.#plans.get(id);
+    if (!resolve) return undefined;
+    this.#plans.delete(id);
+    return resolve;
+  }
+
   /** Drain every parked interaction (interrupt/close) so a gated tool call unwinds instead of hanging forever. */
   failAll(permissionValue: TPermission, questionPrefix: string, planValue: TPlan): void {
     for (const [, resolve] of this.#perms) resolve(permissionValue);

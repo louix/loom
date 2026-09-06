@@ -15,6 +15,13 @@ export interface ToolDispatchContext {
   mode: SessionMode;
   cwd: string;
   base?: string;
+  /** The admitting turn's abort signal — set once its turn ends (via
+   *  `interrupt()`/`close()`), which can happen at any point during this
+   *  dispatch's own execution, not just before it starts. A dispatcher
+   *  should check it before running a mutation, and after any `await` that
+   *  could span an interrupt (an approval/question/plan wait). Omitted only
+   *  in contexts with no turn to track (e.g. a bare unit test). */
+  signal?: AbortSignal;
   /** Round-trip a question to the user; resolves with their answer text.
    *  Supplied by `CodexAppServerSession` for the `ask_user` tool — omitted
    *  (e.g. in a test-only dispatcher) means `ask_user` isn't available. */
@@ -68,8 +75,22 @@ export type ToolDispatcher = (
  * (`@loom/runtime/policy`'s `READONLY_EXACT`), so `policy()` would always
  * return "allow" for them anyway — they just ask/present, they don't mutate
  * anything.
+ *
+ * Cancellation: checked once up front (an already-ended turn's dispatch
+ * should never even start its own tool's work) and again immediately before
+ * `commitInWorktree` — specifically *after* the `requestApproval` wait,
+ * since that's the one `await` in this function that can span an
+ * `interrupt()`. `ctx.signal` itself is what actually protects `ask_user`/
+ * `exit_plan`/`requestApproval`'s own pending-interaction parking (see
+ * `CodexAppServerSession#askUser` et al.) — the checks here are this
+ * dispatcher's *own* responsibility for the one thing it alone controls:
+ * not running the mutation after cancellation, even if some other check
+ * were ever missing or a future dispatcher forgot to wire one.
  */
 export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
+  if (ctx.signal?.aborted) {
+    return { ok: false, text: "cancelled: the turn was interrupted before this tool ran" };
+  }
   if (tool === "commit" && policy(ctx.mode, tool) !== "allow") {
     if (!ctx.requestApproval) {
       return {
@@ -85,6 +106,9 @@ export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
     }
   }
   if (tool === "commit") {
+    if (ctx.signal?.aborted) {
+      return { ok: false, text: "cancelled: the turn was interrupted before the commit ran" };
+    }
     const message = typeof args["message"] === "string" ? args["message"] : "";
     const res = commitInWorktree(ctx.cwd, message, { stageAll: args["stage_all"] !== false });
     return { text: res.text, ok: res.ok };
