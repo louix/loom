@@ -132,6 +132,7 @@ const snap = (
     costUsd: 0,
     costSource: "none",
     turns: 0,
+    requests: [],
     subagents: [],
     backgroundTasks: [],
     rateLimits: {},
@@ -2834,7 +2835,7 @@ test("a snapshot's compacting overlay seeds the indicator across a reopen", () =
   const mid = snap({
     id: "a",
     status: "idle",
-    compacting: { startedAt: 9_000, before: 120_000 },
+    compacting: { startedAt: 9_000, before: 120_000, generated: 0 },
   });
   let s = reduce(initialState(), { t: "hello", daemon, sessions: [mid] });
   assert.deepEqual(s.compacting["a"], { startedAt: 9_000, generated: 0, before: 120_000 });
@@ -2880,7 +2881,7 @@ test("session_updated seeds the overlay mid-flight and never clobbers live beats
       session: snap({
         id: "s1",
         status: "idle",
-        compacting: { startedAt: 1, before: 1 },
+        compacting: { startedAt: 1, before: 1, generated: 0 },
         updatedAt: 50,
       }),
       version: 3,
@@ -2899,7 +2900,7 @@ test("session_updated seeds the overlay mid-flight and never clobbers live beats
       session: snap({
         id: "s2",
         status: "idle",
-        compacting: { startedAt: 42_000, before: 77_000 },
+        compacting: { startedAt: 42_000, before: 77_000, generated: 0 },
         updatedAt: 51,
       }),
       version: 4,

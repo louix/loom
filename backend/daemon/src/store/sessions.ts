@@ -804,6 +804,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     costUsd: usage?.cost_usd ?? 0,
     costSource: (usage?.cost_source as SessionSnapshot["costSource"]) ?? "none",
     turns: usage?.turns ?? 0,
+    requests: [], // runtime overlay filled in by the daemon
     subagents: [], // runtime overlay filled in by the daemon
     backgroundTasks: [], // runtime overlay filled in by the daemon
     rateLimits: {}, // runtime overlay filled in by the daemon

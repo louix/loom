@@ -1,4 +1,5 @@
 import type { BackgroundTaskKind, HarnessEvent, SessionState, TokenUsage } from "./events.ts";
+import type { SessionInteraction } from "./interaction.ts";
 import type { SessionMode } from "./types.ts";
 
 /**
@@ -234,13 +235,23 @@ export interface SessionSnapshot {
    */
   resumable: boolean;
   /**
-   * A compaction is in flight and holds the session's op gate: `startedAt` is
-   * when it began (epoch ms), `before` the context fill it started from.
-   * Runtime-only, not persisted — beats aren't either, so this overlay is how
-   * a freshly attached client (reopened TUI, second window) still shows
-   * "compacting…". Absent otherwise.
+   * Blocking requests the turn is parked on, oldest first — complete enough to
+   * render and answer without any transcript. Non-empty iff
+   * `status.kind === "awaiting_input"`; `status.on` is the reason of whichever
+   * request most recently parked the turn. Parallel tool calls each raise their
+   * own permission, so this is a queue: answering one leaves the rest, and the
+   * snapshot is republished with the remainder. Runtime-only, not persisted.
    */
-  compacting?: { startedAt: number; before: number };
+  requests: SessionInteraction[];
+  /**
+   * A compaction is in flight: `startedAt` is when it began (epoch ms),
+   * `before` the context fill it started from, `generated` the chars of summary
+   * streamed so far (a liveness proxy, not a percentage). Runtime-only, not
+   * persisted — the `compact_progress` beats behind it aren't either, so this
+   * overlay is how a freshly attached client (reopened TUI, second window)
+   * still shows "compacting…". Absent otherwise.
+   */
+  compacting?: { startedAt: number; before: number; generated: number };
   git: GitFacts | null;
   createdAt: number;
   updatedAt: number;

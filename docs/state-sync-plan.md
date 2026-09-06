@@ -59,25 +59,66 @@ Primary files: `core/src/wire.ts`, `core/src/session-state.ts`,
 `backend/daemon/src/daemon/session-manager.ts`,
 `backend/daemon/src/daemon/daemon.ts`.
 
-- [ ] Replace the session manager's reason-only pending-request values with
+- [x] Replace the session manager's reason-only pending-request values with
       complete typed interactions. Derive the existing await reason from them rather
       than maintain another parallel map of payloads.
-- [ ] Expose those interactions in session snapshots, including the data needed
+- [x] Expose those interactions in session snapshots, including the data needed
       to render permission prompts, questions, and plan review without any history.
-- [ ] Make creation, resolution, cancellation, interruption, and stream end
+- [x] Make creation, resolution, cancellation, interruption, and stream end
       update the authoritative request set and notify snapshot publication. Publish
       when the set changes even if the session remains `awaiting_input` (for example,
       one of several parallel permissions was answered).
-- [ ] Include the compaction progress the UI currently derives from events in
+- [x] Include the compaction progress the UI currently derives from events in
       snapshots. Reuse existing runtime state; do not add persistence for transient
       operations solely for this refactor.
-- [ ] Use closed unions with exhaustive folds/switches and `absurd` for new
+- [x] Use closed unions with exhaustive folds/switches and `absurd` for new
       domain shapes. Keep request IDs and their payloads together. Avoid duplicating
       domain state just to retain the old TUI shape.
 
 Acceptance: a second client with no downloaded transcript can display and answer
 the exact outstanding request. Resolving one permission updates both clients
 while any other permissions remain available.
+
+**Done.** Notes:
+
+- New `core/src/interaction.ts` (`@loom/core/interaction`): `SessionInteraction`
+  is a closed union of `permission` / `user_question` / `question` /
+  `plan_review`, each carrying its request id _and_ its display payload.
+  `foldInteraction` + `absurd` for exhaustiveness; `interactionReason` maps a
+  request to its `AwaitReason` (the `kind`s are exactly those values, so the
+  reason is derived, not tracked). `interactionFor(ev)` is the single place the
+  "`AskUserQuestion` is a multiple-choice prompt, not a gate" rule lives —
+  `deriveStatus` now calls it instead of re-deciding, so `status-machine.ts`
+  lost its three duplicated cases.
+- `SessionManager`'s `Running.pending` is `Map<string, SessionInteraction>`
+  (insertion-ordered = oldest first). `requestsOf(id)` feeds the snapshot, and
+  `setMode`'s `plan_pending` guard reads the union rather than a reason string.
+- `SessionSnapshot.requests: SessionInteraction[]` on the wire; filled by the
+  daemon's `#enrich`, `[]` in the store mapper (runtime overlay, not persisted).
+- Publication: the trackers now _return_ whether they changed anything, and the
+  drain does exactly one publish per event — a status transition already carries
+  the fresh overlays, so only an overlay change without one publishes on its
+  own. `#transition` returns whether it fired so `#resumeAfterAnswer` can
+  publish when the turn stays blocked on the remaining permissions. Stream end,
+  pump failure, `interrupt` and the provider swap clear the set through
+  `#clearOverlays` and publish.
+- The three identical `onSubagents` / `onBackgroundTasks` / `onRestructuring`
+  hooks collapsed into one `onOverlay(sessionId)`, which republishes with
+  `git: false` — these fire per tool call / per compaction beat now, and none of
+  them can move the worktree.
+- Compaction: `Running.compaction` is tracked from `compact_progress` beats
+  (so a _provider-triggered_ auto-compaction, which never holds the op gate, is
+  covered too) and cleared by the landing `compact` or any `error`, mirroring
+  the TUI's `trackCompacting`. `SessionSnapshot.compacting` gained `generated`;
+  `before: 0` from the gate-only fallback is substituted with the session's
+  current context fill.
+
+Validation: six new cases in `test/session-manager.test.ts` (cold second client
+answers a complete permission; one of three parallel permissions resolves and
+both clients see exactly that; question / plan / `AskUserQuestion` payloads
+complete in the snapshot; compaction progress from beats to landing `compact`;
+stream end and `interrupt` clear the set). All four repository checks are clean
+(`typecheck`, `test:silent`, `lint`, `format:check`).
 
 ## 2. Add one snapshot subscription and migrate state consumers
 

@@ -1564,9 +1564,7 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
       onResult: () => {
         results += 1;
       },
-      onSubagents: () => {},
-      onBackgroundTasks: () => {},
-      onRestructuring: () => {},
+      onOverlay: () => {},
       onProviderRef: () => {},
       onMode: () => {},
       log: makeLogger("test"),
@@ -1653,9 +1651,7 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
       onResult: () => {
         results += 1;
       },
-      onSubagents: () => {},
-      onBackgroundTasks: () => {},
-      onRestructuring: () => {},
+      onOverlay: () => {},
       onProviderRef: () => {},
       onMode: (_id, mode) => modes.push(mode),
       log: makeLogger("test"),
@@ -1750,9 +1746,7 @@ test("setMode refuses to leave `plan` while a review is pending, instead of sile
       onResult: () => {
         results += 1;
       },
-      onSubagents: () => {},
-      onBackgroundTasks: () => {},
-      onRestructuring: () => {},
+      onOverlay: () => {},
       onProviderRef: () => {},
       onMode: (_id, mode) => modes.push(mode),
       log: makeLogger("test"),
@@ -1814,9 +1808,7 @@ test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", asy
       onResult: () => {
         results += 1;
       },
-      onSubagents: () => {},
-      onBackgroundTasks: () => {},
-      onRestructuring: () => {},
+      onOverlay: () => {},
       onProviderRef: () => {},
       onMode: () => {},
       log: makeLogger("test"),

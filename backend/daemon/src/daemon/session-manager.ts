@@ -7,7 +7,8 @@
  * per session through `#enqueue`; `interrupt` / `close` deliberately preempt
  * that chain rather than queue behind it.
  */
-import type { AwaitReason, BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
+import type { BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
+import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
 import {
   isLiveState,
   sameSessionState,
@@ -42,16 +43,18 @@ export interface ManagerHooks {
   onUsage(sessionId: string, delta: UsageDelta): void;
   /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
   onResult(sessionId: string, ok: boolean): void;
-  /** The session's set of sub-agents changed (one started or stopped). */
-  onSubagents(sessionId: string): void;
-  /** The session's set of live background tasks changed (REPLACE semantics). */
-  onBackgroundTasks(sessionId: string): void;
+  /**
+   * A runtime-only overlay on the session's snapshot changed and no status
+   * transition already carried it: the outstanding-request set, the sub-agent
+   * set, the live background-task set, the restructuring gate, or compaction
+   * progress. The daemon republishes the session snapshot, reading current
+   * authoritative values rather than anything passed in here.
+   */
+  onOverlay(sessionId: string): void;
   /** The provider's persisted id became known. */
   onProviderRef(sessionId: string, providerRef: string): void;
   /** The adapter's own mode changed outside of an explicit `session.setMode` call. */
   onMode(sessionId: string, mode: SessionMode): void;
-  /** The session's restructuring gate (compact / rewind) opened or closed. */
-  onRestructuring(sessionId: string): void;
   log: Logger;
 }
 
@@ -81,8 +84,12 @@ interface Running {
   /** The one source of truth for turn state — `deriveStatus` in, `onStatus` out. */
   state: SessionState;
   ordinal: number;
-  /** Outstanding blocking requests: request id → what it blocks on. `awaiting_input` iff non-empty. */
-  pending: Map<string, AwaitReason>;
+  /**
+   * Outstanding blocking requests, insertion-ordered: request id → the complete
+   * interaction. `awaiting_input` iff non-empty, and its `AwaitReason` is
+   * derived from these entries rather than tracked beside them.
+   */
+  pending: Map<string, SessionInteraction>;
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
   /** Live, non-ambient background tasks — last `background_tasks` event's set. */
   backgroundTasks: BackgroundTaskInfo[];
@@ -99,6 +106,15 @@ interface Running {
   restructuringSince: number | null;
   /** Set around a gated `rewind` — `interrupt` no-ops rather than clobber a fork in progress. */
   rewinding: boolean;
+  /**
+   * A compaction in flight, tracked from its `compact_progress` beats — which
+   * are neither persisted nor state-bearing, so this overlay is the only thing
+   * a client attaching mid-compaction can read it off. Covers a
+   * *provider-triggered* auto-compaction too, which never holds the op gate.
+   * Cleared by the landing `compact` event or any `error`; a gated `compact`
+   * keeps its own fallback overlay until the gate releases.
+   */
+  compaction: { startedAt: number; before: number; generated: number } | null;
 }
 
 export class SessionManager {
@@ -137,15 +153,30 @@ export class SessionManager {
   }
 
   /**
-   * The `compacting` snapshot overlay — set while a gated `compact` holds the
-   * op gate. Beats aren't persisted, so this is what a freshly attached client
-   * (reopened TUI, second window) reads instead.
+   * The `compacting` snapshot overlay: the live progress of a compaction, from
+   * its `compact_progress` beats when there are any, else the bare fact that a
+   * gated `compact` still holds the op gate. Beats are neither persisted nor
+   * state-bearing, so this is the only thing a freshly attached client
+   * (reopened TUI, second window) can read the compaction off. `before: 0`
+   * means "not reported yet" — the caller substitutes the session's current
+   * context fill.
    */
-  compacting(id: string): { startedAt: number } | null {
+  compacting(id: string): { startedAt: number; before: number; generated: number } | null {
     const run = this.#running.get(id);
-    return run !== undefined && run.restructuring === "compact" && run.restructuringSince !== null
-      ? { startedAt: run.restructuringSince }
+    if (run === undefined) return null;
+    if (run.compaction) return run.compaction;
+    return run.restructuring === "compact" && run.restructuringSince !== null
+      ? { startedAt: run.restructuringSince, before: 0, generated: 0 }
       : null;
+  }
+
+  /**
+   * The session's outstanding blocking requests, oldest first — complete enough
+   * for a client with no transcript to render and answer them.
+   */
+  requestsOf(id: string): SessionInteraction[] {
+    const run = this.#running.get(id);
+    return run === undefined ? [] : [...run.pending.values()];
   }
 
   // --- lifecycle --------------------------------------------------------
@@ -192,6 +223,7 @@ export class SessionManager {
       restructuring: null,
       restructuringSince: null,
       rewinding: false,
+      compaction: null,
     };
     this.#running.set(id, run);
     // `#drain` handles its own stream errors; this catch is for the pathological
@@ -217,14 +249,24 @@ export class SessionManager {
         // session — log it and keep consuming the stream.
         try {
           this.#hooks.emitEvent(ev);
-          this.#trackPending(run, ev);
-          this.#trackSubagents(id, run, ev);
-          this.#trackBackgroundTasks(id, run, ev);
+          // Overlay bookkeeping first, so whatever publishes below reads the
+          // set this event produced — then exactly one publication per event:
+          // a status transition already carries the fresh overlays in its own
+          // snapshot, so only an overlay change *without* one needs its own.
+          // Every tracker runs — `||` would short-circuit and skip the rest.
+          const changes = [
+            this.#trackPending(run, ev),
+            this.#trackCompaction(run, ev),
+            this.#trackSubagents(run, ev),
+            this.#trackBackgroundTasks(run, ev),
+          ];
+          const overlayChanged = changes.some((c) => c);
           this.#trackRateLimit(run, ev);
           this.#trackUsage(id, ev);
           if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
           this.#trackRef(id, run);
-          this.#applyStatus(id, run, ev);
+          const transitioned = this.#applyStatus(id, run, ev);
+          if (overlayChanged && !transitioned) this.#hooks.onOverlay(id);
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -239,22 +281,39 @@ export class SessionManager {
       // Whatever was still outstanding can no longer be answered — the adapter
       // session is gone. Drop it so a late respondTo* doesn't forward to a
       // dead session (interrupt() does the same).
-      run.pending.clear();
-      if (run.backgroundTasks.length > 0) {
-        run.backgroundTasks = [];
-        this.#hooks.onBackgroundTasks(id);
-      }
+      const cleared = this.#clearOverlays(run);
       if (isLiveState(run.state)) {
         this.#transition(id, run, stateInterrupted("stream_ended"), "stream_ended");
+      } else if (cleared) {
+        // A settled session whose stream ended still has to tell clients the
+        // requests are gone — no transition will carry it.
+        this.#hooks.onOverlay(id);
       }
     } catch (err) {
       run.ended = true;
-      run.pending.clear();
+      this.#clearOverlays(run);
       const message = err instanceof Error ? err.message : String(err);
       this.#hooks.log.warn("session pump failed", { id, err: message });
       this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
       this.#transition(id, run, stateError(message.slice(0, 120)));
     }
+  }
+
+  /**
+   * Drop every overlay a dead adapter can no longer update — outstanding
+   * requests (unanswerable now), background tasks (the process is gone) and any
+   * compaction in flight. Returns whether anything actually changed, so the
+   * caller can publish when no status transition will.
+   */
+  #clearOverlays(run: Running): boolean {
+    let changed = run.pending.size > 0 || run.compaction !== null;
+    run.pending.clear();
+    run.compaction = null;
+    if (run.backgroundTasks.length > 0) {
+      run.backgroundTasks = [];
+      changed = true;
+    }
+    return changed;
   }
 
   #trackRef(id: string, run: Running): void {
@@ -268,40 +327,64 @@ export class SessionManager {
 
   /**
    * Maintain the outstanding-request map that *is* the `awaiting_input` state.
-   * A `tool_result` clears a permission (not `tool_call`: the aisdk adapter
-   * emits the call *before* its gate's `permission_request`, so only the result
-   * reliably marks it done; Claude emits them the other way and this works
-   * too); an `answer` clears a question. Plans are cleared by `respondToPlan`.
+   * Entries are the complete interaction, not just its reason, so a client can
+   * render and answer one off a snapshot alone. A `tool_result` clears a
+   * permission (not `tool_call`: the aisdk adapter emits the call *before* its
+   * gate's `permission_request`, so only the result reliably marks it done;
+   * Claude emits them the other way and this works too); an `answer` clears a
+   * question. Plans are cleared by `respondToPlan`.
+   *
+   * Returns whether the set changed — the caller publishes a snapshot on that,
+   * so a second parallel permission arriving (or one of several being answered)
+   * reaches clients even though the session stays `awaiting_input` throughout.
    */
-  #trackPending(run: Running, ev: HarnessEvent): void {
-    switch (ev.type) {
-      case "permission_request":
-        run.pending.set(ev.id, ev.tool === "AskUserQuestion" ? "user_question" : "permission");
-        break;
-      case "question":
-        run.pending.set(ev.id, "question");
-        break;
-      case "plan_review":
-        run.pending.set(ev.id, "plan_review");
-        break;
-      case "answer":
-      case "tool_result":
-        run.pending.delete(ev.id);
-        break;
+  #trackPending(run: Running, ev: HarnessEvent): boolean {
+    const request = interactionFor(ev);
+    if (request) {
+      run.pending.set(request.id, request);
+      return true;
     }
+    if (ev.type === "answer" || ev.type === "tool_result") return run.pending.delete(ev.id);
+    return false;
   }
 
-  #trackSubagents(id: string, run: Running, ev: HarnessEvent): void {
+  /**
+   * Track a compaction from its `compact_progress` beats, so the snapshot
+   * carries the progress the UI used to piece together from the event stream.
+   * The landing `compact` clears it, and so does *any* `error` — a summariser
+   * that times out or fails reports a non-fatal one and then never sends a
+   * `compact`, so waiting for a fatal error would pin "compacting…" forever.
+   * A gated `compact` keeps its own fallback overlay until the gate releases.
+   */
+  #trackCompaction(run: Running, ev: HarnessEvent): boolean {
+    if (ev.type === "compact_progress") {
+      run.compaction = {
+        startedAt: ev.ts - ev.elapsedMs,
+        before: ev.before,
+        generated: ev.generated,
+      };
+      return true;
+    }
+    if (ev.type === "compact" || ev.type === "error") {
+      if (run.compaction === null) return false;
+      run.compaction = null;
+      return true;
+    }
+    return false;
+  }
+
+  #trackSubagents(run: Running, ev: HarnessEvent): boolean {
     if (ev.type === "subagent_started") {
       run.subagents.set(ev.subagentId, { name: ev.name, startedAt: ev.ts, active: true });
-      this.#hooks.onSubagents(id);
-    } else if (ev.type === "subagent_stopped") {
-      const cur = run.subagents.get(ev.subagentId);
-      if (cur) {
-        run.subagents.set(ev.subagentId, { ...cur, active: false });
-        this.#hooks.onSubagents(id);
-      }
+      return true;
     }
+    if (ev.type === "subagent_stopped") {
+      const cur = run.subagents.get(ev.subagentId);
+      if (!cur || !cur.active) return false;
+      run.subagents.set(ev.subagentId, { ...cur, active: false });
+      return true;
+    }
+    return false;
   }
 
   /** Sub-agents this session has spawned, oldest first. */
@@ -318,10 +401,10 @@ export class SessionManager {
    * `background_tasks` event carries the whole set (adapter already dropped
    * ambient entries and de-duped no-op repeats), so this is a straight replace.
    */
-  #trackBackgroundTasks(id: string, run: Running, ev: HarnessEvent): void {
-    if (ev.type !== "background_tasks") return;
+  #trackBackgroundTasks(run: Running, ev: HarnessEvent): boolean {
+    if (ev.type !== "background_tasks") return false;
     run.backgroundTasks = ev.tasks;
-    this.#hooks.onBackgroundTasks(id);
+    return true;
   }
 
   /** Live background tasks this session has spawned (async subagents, shells). */
@@ -382,24 +465,27 @@ export class SessionManager {
     }
   }
 
-  #applyStatus(id: string, run: Running, ev: HarnessEvent): void {
+  /** Returns whether it published a transition. */
+  #applyStatus(id: string, run: Running, ev: HarnessEvent): boolean {
     // Stickiness of `interrupted` / `error` now lives in `deriveStatus` itself
     // (it returns them unchanged for trailing events), so there is no guard
     // here that could silently swallow a live turn's events. `backgroundTasks`
     // is already updated for this event (see `#trackBackgroundTasks`), so a
     // `result` sees the current count.
-    this.#transition(
+    return this.#transition(
       id,
       run,
       deriveStatus(run.state, ev, { backgroundTasks: run.backgroundTasks.length }),
     );
   }
 
-  /** Apply a state transition. A `note` is an audit breadcrumb and always fires. */
-  #transition(id: string, run: Running, next: SessionState, note?: string): void {
-    if (sameSessionState(run.state, next) && note === undefined) return;
+  /** Apply a state transition. A `note` is an audit breadcrumb and always fires.
+   *  Returns whether it fired — the caller then knows a snapshot went out. */
+  #transition(id: string, run: Running, next: SessionState, note?: string): boolean {
+    if (sameSessionState(run.state, next) && note === undefined) return false;
     run.state = next;
     this.#hooks.onStatus(id, next, note);
+    return true;
   }
 
   // --- keep-warm -----------------------------------------------------
@@ -506,7 +592,7 @@ export class SessionManager {
       run.restructuringSince = Date.now();
       // Snapshots carry a `compacting` overlay for the whole gate hold, so a
       // client that attaches mid-compaction still shows "compacting…".
-      this.#hooks.onRestructuring(id);
+      this.#hooks.onOverlay(id);
       try {
         await run.session.compact(instructions);
         // Status is left to the event stream: `/compact` runs a turn that ends
@@ -514,7 +600,8 @@ export class SessionManager {
       } finally {
         run.restructuring = null;
         run.restructuringSince = null;
-        this.#hooks.onRestructuring(id);
+        run.compaction = null;
+        this.#hooks.onOverlay(id);
       }
     });
   }
@@ -541,14 +628,12 @@ export class SessionManager {
     // S13: an interrupt on a session that already ended cleanly (idle / error /
     // interrupted / done) must not overwrite that settled state.
     if (run.ended || !isLiveState(run.state)) return;
+    // Nothing outstanding survives the interrupt, and the SDK's interrupt kills
+    // the session's background tasks too — clear both now rather than wait for
+    // events a torn-down stream might never send. The transition below carries
+    // the cleared overlays to clients.
     run.pending.clear();
-    // The SDK's interrupt kills the session's background tasks too; clear the
-    // overlay now rather than wait for a `background_tasks` event that a
-    // torn-down stream might never send.
-    if (run.backgroundTasks.length > 0) {
-      run.backgroundTasks = [];
-      this.#hooks.onBackgroundTasks(id);
-    }
+    run.backgroundTasks = [];
     // Reflect the interrupt immediately and unconditionally — the adapter call
     // below can be slow (or, on a wedged turn, throw), and the UI must not be
     // left showing `running` either way. `interrupted` is sticky in
@@ -567,11 +652,14 @@ export class SessionManager {
   /** Move a settled `awaiting_input` session back to `running` — unless a user
    *  interrupt landed in between (the interrupt sticks), or other requests from
    *  the same turn are still open (parallel tool calls each raise their own
-   *  permission_request; the turn stays blocked until the last is answered). */
+   *  permission_request; the turn stays blocked until the last is answered).
+   *  Either way the request set just shrank, so publish a snapshot: a
+   *  transition carries it, and when the turn stays blocked the overlay hook
+   *  does — otherwise the other clients keep offering an answered request. */
   #resumeAfterAnswer(id: string, run: Running): void {
-    if (run.state.kind === "interrupted") return;
-    if (run.pending.size > 0) return;
-    this.#transition(id, run, stateRunning);
+    const resume = run.state.kind !== "interrupted" && run.pending.size === 0;
+    if (resume && this.#transition(id, run, stateRunning)) return;
+    this.#hooks.onOverlay(id);
   }
 
   async respondToPermission(
@@ -627,7 +715,7 @@ export class SessionManager {
     // way or the other by proxy. Refuse instead of guessing; the caller (the
     // daemon's `session.setMode` RPC) points the user back at the real
     // plan-review UI so they resolve it deliberately.
-    if (mode !== "plan" && [...run.pending.values()].includes("plan_review")) {
+    if (mode !== "plan" && [...run.pending.values()].some((i) => i.kind === "plan_review")) {
       return { ok: false, reason: "plan_pending" };
     }
     await run.session.setMode(mode);
@@ -669,11 +757,11 @@ export class SessionManager {
     return this.#enqueue(run, async () => {
       run.restructuring = "provider";
       run.restructuringSince = Date.now();
-      this.#hooks.onRestructuring(id);
+      this.#hooks.onOverlay(id);
       // Stop the old adapter and let its drain unwind before the swap, so its
       // stream-ended transition can't land on the freshly attached run.
       run.ended = true;
-      run.pending.clear();
+      this.#clearOverlays(run);
       try {
         await run.session.close();
       } catch {
@@ -691,7 +779,7 @@ export class SessionManager {
       } finally {
         run.restructuring = null;
         run.restructuringSince = null;
-        this.#hooks.onRestructuring(id);
+        this.#hooks.onOverlay(id);
       }
     });
   }
@@ -713,7 +801,7 @@ export class SessionManager {
     return this.#enqueue(run, async () => {
       run.restructuring = "rewind";
       run.restructuringSince = Date.now();
-      this.#hooks.onRestructuring(id);
+      this.#hooks.onOverlay(id);
       run.rewinding = true;
       try {
         await run.session.rewind(keep, at);
@@ -721,7 +809,7 @@ export class SessionManager {
       } finally {
         run.restructuring = null;
         run.restructuringSince = null;
-        this.#hooks.onRestructuring(id);
+        this.#hooks.onOverlay(id);
         run.rewinding = false;
       }
     });

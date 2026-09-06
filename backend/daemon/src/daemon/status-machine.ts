@@ -19,6 +19,7 @@
  * turn's blocking request (permission / question / plan) moves them on.
  */
 import type { HarnessEvent } from "@loom/core/events";
+import { interactionFor, interactionReason } from "@loom/core/interaction";
 import {
   type SessionState,
   stateAwaitingInput,
@@ -45,22 +46,16 @@ export const deriveStatus = (
   ev: HarnessEvent,
   ctx: StatusContext = NO_CONTEXT,
 ): SessionState => {
+  // A blocking request (permission / `ask_user` / plan review) parks the turn.
+  // The reason is *derived* from the interaction the event raises rather than
+  // re-decided here, so "the SDK's own AskUserQuestion is a multiple-choice
+  // prompt, not a yes/no gate" is encoded in exactly one place. A reason change
+  // while already blocked still transitions (the manager de-dupes on
+  // kind + payload).
+  const request = interactionFor(ev);
+  if (request) return stateAwaitingInput(interactionReason(request));
+
   switch (ev.type) {
-    case "permission_request":
-      // The SDK's own AskUserQuestion tool is a multiple-choice prompt, not a
-      // yes/no gate — flag it so the TUI offers "answer" instead of
-      // "approve/deny". A reason change while already blocked still transitions
-      // (the manager de-dupes on kind + payload).
-      return stateAwaitingInput(ev.tool === "AskUserQuestion" ? "user_question" : "permission");
-
-    case "question":
-      // The agent called `ask_user` and is blocked on a human answer.
-      return stateAwaitingInput("question");
-
-    case "plan_review":
-      // The agent presented a plan (ExitPlanMode) and is blocked on a decision.
-      return stateAwaitingInput("plan_review");
-
     case "assistant_text":
     case "thinking":
     case "tool_call":

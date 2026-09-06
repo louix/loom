@@ -306,20 +306,16 @@ export class Daemon {
         this.#titleJobs.add(job);
         void job.finally(() => this.#titleJobs.delete(job));
       },
-      onSubagents: (id) => {
+      onOverlay: (id) => {
         if (this.#stopping) return;
         const snap = this.#registry.get(id);
-        if (snap) this.#emitSessionUpdated(snap);
-      },
-      onBackgroundTasks: (id) => {
-        if (this.#stopping) return;
-        const snap = this.#registry.get(id);
-        if (snap) this.#emitSessionUpdated(snap);
-      },
-      onRestructuring: (id) => {
-        if (this.#stopping) return;
-        const snap = this.#registry.get(id);
-        if (snap) this.#emitSessionUpdated(snap);
+        // Read the authoritative row now and let `#enrich` pull the current
+        // runtime overlays off it. No git re-probe: none of these changes
+        // (a permission raised or answered, a compaction beat, a sub-agent or
+        // background task edge, the op gate opening) can move the worktree, and
+        // they fire often enough during a turn that shelling out would be a
+        // per-tool-call cost.
+        if (snap) this.#emitSessionUpdated(snap, undefined, { git: false });
       },
       onProviderRef: (id, ref) => {
         if (this.#stopping) return;
@@ -580,6 +576,10 @@ export class Daemon {
    */
   #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
+    // Outstanding requests, complete enough to answer without any transcript —
+    // this is what lets a second client act on a permission it never saw raised.
+    const requests = this.#sessions.requestsOf(s.id);
+    if (requests.length > 0) out = { ...out, requests };
     const subs = this.#sessions.subagentsOf(s.id);
     if (subs.length > 0) out = { ...out, subagents: subs };
     const bgTasks = this.#sessions.backgroundTasksOf(s.id);
@@ -593,7 +593,17 @@ export class Daemon {
     // only at the boundary / next turn.
     const compacting = this.#sessions.compacting(s.id);
     if (compacting) {
-      out = { ...out, compacting: { startedAt: compacting.startedAt, before: s.contextUsed } };
+      out = {
+        ...out,
+        compacting: {
+          startedAt: compacting.startedAt,
+          // The beats report the pre-compact fill; before any have arrived,
+          // stand in the session's current one (the mapper re-measures only at
+          // the boundary / next turn).
+          before: compacting.before || s.contextUsed,
+          generated: compacting.generated,
+        },
+      };
     }
     // Ground truth wins: once a turn has told us which ephemeral bucket the
     // provider actually wrote into, run the countdown on that. The configured

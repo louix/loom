@@ -57,6 +57,14 @@ const statusOf = async (c: LoomClient, id: string): Promise<string> => {
   return (await c.request<SessionSnapshot>("session.get", { id })).status.kind;
 };
 
+/** The session's `compacting` overlay, as the snapshot reports it. */
+const snapshotCompacting = async (
+  c: LoomClient,
+  id: string,
+): Promise<SessionSnapshot["compacting"]> => {
+  return (await c.request<SessionSnapshot>("session.get", { id })).compacting;
+};
+
 /** The `AwaitReason` a blocked session is on, or null. */
 const awaitReasonOf = async (c: LoomClient, id: string): Promise<string | null> => {
   const st = (await c.request<SessionSnapshot>("session.get", { id })).status;
@@ -1219,6 +1227,187 @@ describe("session-manager", { concurrency: 4 }, () => {
     await waitFor(async () => (await statusOf(c, id)) === "interrupted");
 
     await assert.rejects(c.request("session.setMode", { id, mode: "plan" }), /session has ended/);
+    await c.close();
+  });
+  // --- snapshot-complete outstanding requests (state-sync §1) ------------
+
+  test("a snapshot carries the complete permission — a second client answers it cold", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({
+      type: "permission_request",
+      id: "p1",
+      tool: "Bash",
+      input: { command: "ls -la" },
+      suggestions: [{ behavior: "allow" }],
+    });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+
+    // A client that attached after the request was raised, and has downloaded
+    // no transcript at all, still sees everything it needs to act.
+    const c2 = await client();
+    const s = await c2.request<SessionSnapshot>("session.get", { id });
+    assert.deepEqual(s.requests, [
+      {
+        kind: "permission",
+        id: "p1",
+        tool: "Bash",
+        input: { command: "ls -la" },
+        suggestions: [{ behavior: "allow" }],
+        at: s.requests[0]!.at,
+      },
+    ]);
+
+    const r = await c2.request<{ ok: boolean; alreadyResolved: boolean }>(
+      "session.respondPermission",
+      { id, requestId: "p1", decision: "allow" },
+    );
+    assert.deepEqual(r, { ok: true, alreadyResolved: false });
+    assert.equal(fs.permissionResponses.length, 1);
+    await waitFor(async () => {
+      const after = await c2.request<SessionSnapshot>("session.get", { id });
+      return after.requests.length === 0;
+    });
+    await c.close();
+    await c2.close();
+  });
+
+  test("answering one of several permissions leaves the rest and reaches both clients", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    const c2 = await client();
+    const seen: SessionSnapshot[] = [];
+    c2.onPush((f) => {
+      if (f.type === "session_updated" && f.session.id === id) seen.push(f.session);
+    });
+
+    for (const p of ["p1", "p2", "p3"]) {
+      fs.emit({ type: "permission_request", id: p, tool: "Bash", input: { command: p } });
+    }
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id });
+      return s.requests.length === 3;
+    });
+    const blocked = await c.request<SessionSnapshot>("session.get", { id });
+    assert.deepEqual(
+      blocked.requests.map((r) => r.id),
+      ["p1", "p2", "p3"],
+      "oldest first",
+    );
+
+    await c.request("session.respondPermission", { id, requestId: "p2", decision: "allow" });
+
+    // Exactly that request disappears; the turn stays blocked on the others,
+    // and the change is published even though the status never changed.
+    await waitFor(() =>
+      seen.some(
+        (s) =>
+          s.status.kind === "awaiting_input" &&
+          s.requests.length === 2 &&
+          s.requests.every((r) => r.id !== "p2"),
+      ),
+    );
+    const rest = await c2.request<SessionSnapshot>("session.get", { id });
+    assert.equal(rest.status.kind, "awaiting_input");
+    assert.deepEqual(
+      rest.requests.map((r) => r.id),
+      ["p1", "p3"],
+    );
+    await c.close();
+    await c2.close();
+  });
+
+  test("questions, AskUserQuestion and plan reviews are complete in the snapshot", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+
+    fs.emit({ type: "question", id: "q1", question: "which db?", context: "postgres or sqlite" });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "question");
+    assert.deepEqual(
+      (await c.request<SessionSnapshot>("session.get", { id })).requests.map((r) =>
+        r.kind === "question" ? { kind: r.kind, id: r.id, q: r.question, ctx: r.context } : r.kind,
+      ),
+      [{ kind: "question", id: "q1", q: "which db?", ctx: "postgres or sqlite" }],
+    );
+
+    fs.emit({ type: "plan_review", id: "pl1", plan: "1. do it\n2. done" });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "plan_review");
+    const withPlan = await c.request<SessionSnapshot>("session.get", { id });
+    const plan = withPlan.requests.find((r) => r.kind === "plan_review");
+    assert.deepEqual(plan && { id: plan.id, plan: plan.plan }, {
+      id: "pl1",
+      plan: "1. do it\n2. done",
+    });
+
+    // The SDK's own AskUserQuestion is a multiple-choice prompt, not a gate —
+    // it keeps the tool input so a cold client can render the choices.
+    const questions = [{ question: "pick", header: "opt", options: [{ label: "a" }] }];
+    fs.emit({
+      type: "permission_request",
+      id: "aq1",
+      tool: "AskUserQuestion",
+      input: { questions },
+    });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "user_question");
+    const withAq = await c.request<SessionSnapshot>("session.get", { id });
+    const aq = withAq.requests.find((r) => r.id === "aq1");
+    assert.equal(aq?.kind, "user_question");
+    assert.deepEqual(aq?.kind === "user_question" ? aq.input : null, { questions });
+    assert.deepEqual(
+      withAq.requests.map((r) => r.id),
+      ["q1", "pl1", "aq1"],
+    );
+    await c.close();
+  });
+
+  test("compaction progress rides the snapshot, from its beats to the landing compact", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    const at = Date.now();
+    fs.emit({ type: "compact_progress", ts: at, elapsedMs: 4_000, generated: 120, before: 90_000 });
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id });
+      return s.compacting !== undefined;
+    });
+    assert.deepEqual(await snapshotCompacting(c, id), {
+      startedAt: at - 4_000,
+      before: 90_000,
+      generated: 120,
+    });
+
+    fs.emit({ type: "compact_progress", ts: at, elapsedMs: 9_000, generated: 640, before: 90_000 });
+    await waitFor(async () => (await snapshotCompacting(c, id))?.generated === 640);
+
+    fs.emit({ type: "compact", trigger: "auto", before: 90_000, after: 20_000 });
+    await waitFor(async () => (await snapshotCompacting(c, id)) === undefined);
+    await c.close();
+  });
+
+  test("a stream that ends clears the outstanding requests off the snapshot", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    fs.emit({ type: "question", id: "q1", question: "still there?" });
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id });
+      return s.requests.length === 2;
+    });
+
+    fs.endStream();
+    await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+    assert.deepEqual((await c.request<SessionSnapshot>("session.get", { id })).requests, []);
+    await c.close();
+  });
+
+  test("an interrupt clears the outstanding requests off the snapshot", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+
+    await c.request("session.interrupt", { id });
+    await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+    assert.deepEqual((await c.request<SessionSnapshot>("session.get", { id })).requests, []);
     await c.close();
   });
 });
