@@ -17,7 +17,6 @@ import {
   providerAccountOf,
   providerColorOf,
   providerInfo,
-  queueFor,
 } from "./model.ts";
 import { C } from "./theme.ts";
 import {
@@ -167,7 +166,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
             <Detail
               session={sel}
               width={rightW}
-              queued={sel ? queueFor(state, sel.id) : []}
+              queued={view.queued}
               now={Date.now()}
               engineColor={sel ? providerColorOf(state, sel.provider) : ""}
               account={sel ? providerAccountOf(state, sel.provider) : ""}
@@ -203,7 +202,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
           <Detail
             session={sel}
             width={cols}
-            queued={sel ? queueFor(state, sel.id) : []}
+            queued={view.queued}
             now={Date.now()}
             engineColor={sel ? providerColorOf(state, sel.provider) : ""}
             account={sel ? providerAccountOf(state, sel.provider) : ""}

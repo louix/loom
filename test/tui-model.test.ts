@@ -85,6 +85,7 @@ import {
   type PlanReview,
 } from "@loom/tui/overlay";
 import { activeRequest, liveQNav, requestsFor } from "@loom/tui/interactions";
+import { cleared, enqueue, outboxOf, pending, release, type Outbox } from "@loom/tui/composer";
 import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
 
 /** Put an overlay up — the action every open/close goes through. */
@@ -1693,7 +1694,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
 
   // clearqueue only shows when the selected session actually has a queue
   assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
-  const withQueue: TuiState = { ...base, queue: { s1: ["pending note"] } };
+  const withQueue: TuiState = { ...base, outbox: { s1: enqueue(outboxOf({}, "s1"), "note") } };
   assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
 
   // rebase needs a worktree, but is offered regardless of the (lag-prone)
@@ -2310,21 +2311,22 @@ test("echoes are kept apart from the durable transcript and render after it", ()
   );
 });
 
-test("enqueue / dequeue / clearQueue and queueFor", () => {
-  let s = initialState();
-  s = reduce(s, { t: "enqueue", sessionId: "a", text: "  first  " });
-  s = reduce(s, { t: "enqueue", sessionId: "a", text: "second" });
-  s = reduce(s, { t: "enqueue", sessionId: "a", text: "   " }); // blank ignored
-  assert.deepEqual(queueFor(s, "a"), ["first", "second"]);
-  s = reduce(s, { t: "dequeue", sessionId: "a" });
-  assert.deepEqual(queueFor(s, "a"), ["second"]);
-  s = reduce(s, { t: "dequeue", sessionId: "a" });
-  assert.deepEqual(queueFor(s, "a"), []);
-  assert.equal("a" in s.queue, false, "empty queue entry is removed");
-
-  s = reduce(s, { t: "enqueue", sessionId: "b", text: "x" });
-  s = reduce(s, { t: "clearQueue", sessionId: "b" });
-  assert.deepEqual(queueFor(s, "b"), []);
+test("an outbox owns one message at a time, with the unsent tail explicit", () => {
+  let box = outboxOf({}, "a");
+  box = enqueue(box, "  first  ");
+  box = enqueue(box, "second");
+  box = enqueue(box, "   "); // blank is not a message
+  assert.equal(box.t, "queued");
+  assert.deepEqual(pending(box), ["first", "second"]);
+  // A message whose send came back uncertain is not re-sent: opening the `send`
+  // prompt releases it as editable text, and the tail behind it moves up.
+  const held: Outbox = { t: "held", text: "first", rest: ["second"], barrier: 3 };
+  const out = release(held);
+  assert.equal(out?.text, "first");
+  assert.deepEqual(pending(held), ["second"], "the tail waits rather than overtaking it");
+  assert.deepEqual(pending(out!.box), ["second"], "and moves up once the hold is released");
+  assert.equal(release(box), null, "only a held message can be released");
+  assert.deepEqual(pending(cleared(box)), []);
 });
 
 test("a permission carries its tool + input; leaving awaiting_input clears it", () => {
@@ -2347,31 +2349,29 @@ test("a permission carries its tool + input; leaving awaiting_input clears it", 
   assert.equal(shown(s, "a"), null);
 });
 
-test("a queue outlives its session here, for the drain to strand and report", () => {
+test("a queue outlives its session in the state, for the composer to strand and report", () => {
   let s = reduce(initialState(), fleet([snap({ id: "a", status: "running" })]));
-  s = reduce(s, { t: "enqueue", sessionId: "a", text: "later" });
+  const box = enqueue(outboxOf(s.outbox, "a"), "later");
+  s = reduce(s, { t: "outbox", sessionId: "a", box });
   s = reduce(s, fleet([]));
   // Deliberately kept: dropping a message the user typed without a word about
-  // it is the bug, not the tidy-up. `drainQueues` clears it and says so — see
+  // it is the bug, not the tidy-up. The composer forgets it and says so — see
   // "a queued session proven gone is reported once" in tui-render.
   assert.deepEqual(queueFor(s, "a"), ["later"]);
-  s = reduce(s, { t: "clearQueue", sessionId: "a" });
+  s = reduce(s, { t: "outbox", sessionId: "a", box: null });
   assert.deepEqual(queueFor(s, "a"), []);
 });
 
-test("a held send is per session, survives its snapshots, and is released once", () => {
+test("a held send survives its snapshots and outlives its session, like a queue", () => {
+  const held: Outbox = { t: "held", text: "did this land?", rest: [], barrier: 2 };
   let s = reduce(initialState(), fleet([snap({ id: "a", status: "idle" })]));
-  s = reduce(s, { t: "holdSend", sessionId: "a", text: "did this land?" });
+  s = reduce(s, { t: "outbox", sessionId: "a", box: held });
   s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.equal(s.heldSend["a"], "did this land?", "a snapshot doesn't clear the hold");
-  s = reduce(s, { t: "holdSend", sessionId: "a", text: null });
-  assert.equal(s.heldSend["a"], undefined, "opening the prompt releases it");
-
-  // A session that has gone takes its held text with it — there is no longer a
-  // prompt to restore it into.
-  s = reduce(s, { t: "holdSend", sessionId: "a", text: "did this land?" });
+  assert.deepEqual(s.outbox["a"], held, "a snapshot doesn't clear the hold");
+  // Nor does the session going: text the user may or may not have sent is worth
+  // a word, and the composer is what says it — see tui-render.
   s = reduce(s, fleet([]));
-  assert.equal(s.heldSend["a"], undefined);
+  assert.deepEqual(s.outbox["a"], held);
 });
 
 test("confirm open / run / close", () => {

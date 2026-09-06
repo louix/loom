@@ -17,7 +17,7 @@ import { absurd } from "@loom/core/absurd";
 import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
-import { isAmbiguousFailure, type ClientState } from "@loom/client";
+import type { ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type {
   DaemonInfo,
@@ -41,6 +41,7 @@ import {
   requestPanelRows,
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
+import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
 import {
   fleetProviders,
   fleetSessions,
@@ -244,6 +245,9 @@ export interface FleetView {
   /** How many the selected session has outstanding in total, `request` included. */
   readonly requestCount: number;
   readonly allowed: ReadonlySet<ActName>;
+  /** What the selected session still owes the daemon, oldest first — the
+   *  Detail pane shows the count and the head. */
+  readonly queued: readonly string[];
   readonly showRequest: boolean;
   /** Which `AskUserQuestion` question the request panel should show — the one
    *  the open `answerQuestion` prompt is collecting, else the first. */
@@ -371,11 +375,12 @@ const deriveView = (
   // sum to exactly bodyH — size the log against Detail's real row count
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
+  const queued = sel ? queueFor(state, sel.id) : [];
   const detailAccount = sel ? providerAccountOf(state, sel.provider) : "";
   const detailH = detailRows(sel, {
     account: detailAccount,
     compacting: compactingFor(state, sel?.id ?? null),
-    queued: sel ? queueFor(state, sel.id) : [],
+    queued,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.
@@ -421,6 +426,7 @@ const deriveView = (
     sel,
     request,
     requestCount,
+    queued,
     allowed,
     showRequest: showRequest === true,
     questionIdx,
@@ -495,10 +501,6 @@ export const mkFleetHandle = ({
   // otherwise be handled in `browse` mode and fire `runAct("send"|"answer")` on
   // the selection (U5). Suppress a fleet-row Enter for a beat after a submit.
   let promptSubmittedAt = 0;
-  // Queue-drain bookkeeping: which sessions have an in-flight release, and the
-  // `turns` value each last released at (so the next waits for a real turn).
-  const draining = new Set<string>();
-  const lastDrainTurn = new Map<string, number>();
 
   // `⇧⇥` mode cycling: the debounce window before `session.setMode` actually
   // reaches the daemon for a session (see `cycleSessionMode` below).
@@ -508,14 +510,6 @@ export const mkFleetHandle = ({
   // the chip back to a snapshot that a later call is still on its way to
   // change, so it survives until nothing is in flight.
   const modeInFlight = new Map<string, number>();
-
-  // Both are keyed by session id and never shrank on their own — one dead
-  // entry per session ever seen. Prune to the live fleet on any list change.
-  const forgetDeadSessions = (): void => {
-    const live = new Set(fleetSessions(state).map((s) => s.id));
-    for (const id of draining) if (!live.has(id)) draining.delete(id);
-    for (const id of lastDrainTurn.keys()) if (!live.has(id)) lastDrainTurn.delete(id);
-  };
 
   const store = mkStore<FleetView>(
     deriveView(state, tick, logScroll, planScroll, layoutView, dims),
@@ -663,73 +657,17 @@ export const mkFleetHandle = ({
       });
   };
 
-  const drainQueues = (): void => {
-    // A queue on a session that won't return to idle (done / error / gone) is
-    // stranded — say so and drop it. An `interrupted` session is left alone
-    // until the next `send` revives it.
-    for (const id of Object.keys(state.queue)) {
-      // Re-read per iteration: `note` and `clearQueue` below both dispatch,
-      // and dispatch re-enters this function.
-      const q = state.queue[id];
-      if (!q || q.length === 0) continue;
-      const s = fleetSessions(state).find((x) => x.id === id);
-      if (!s || s.status.kind === "done" || s.status.kind === "error") {
-        // Clear BEFORE saying so. `note` dispatches, that dispatch re-enters
-        // this drain, and it would find the very same stranded queue — one
-        // notice per recursion until the stack runs out.
-        dispatch({ t: "clearQueue", sessionId: id });
-        lastDrainTurn.delete(id);
-        note(
-          `${q.length} queued message${q.length === 1 ? "" : "s"} not sent — session ${s ? s.status.kind : "gone"}`,
-          "bad",
-        );
-      }
-    }
-    for (const s of fleetSessions(state)) {
-      const q = state.queue[s.id];
-      if (
-        s.status.kind === "idle" &&
-        // A session compacting while otherwise idle would have its queue
-        // drained straight into the daemon's `busy` gate. Hold until the
-        // snapshot stops reporting a compaction.
-        s.compacting === undefined &&
-        q &&
-        q.length > 0 &&
-        !draining.has(s.id) &&
-        s.turns > (lastDrainTurn.get(s.id) ?? -1)
-      ) {
-        const head = q[0] as string;
-        draining.add(s.id);
-        client
-          .request("session.send", { id: s.id, text: head })
-          .then(() => {
-            // Re-read `turns` now, not the closure's pre-send snapshot (U11) —
-            // a manual send that interleaved could otherwise leave the gate
-            // below its true value and drain the next queued message mid-turn.
-            const fresh = fleetSessions(state).find((x) => x.id === s.id)?.turns ?? s.turns;
-            lastDrainTurn.set(s.id, fresh); // only gate the next one after a success
-            dispatch({ t: "dequeue", sessionId: s.id }); // daemon emits the user_message echo
-          })
-          .catch((e: unknown) => {
-            if (isAmbiguousFailure(e)) {
-              // The daemon may well have received and run this text. Leaving it
-              // queued would send it a second time on the next drain, so take it
-              // off the queue and hold it where the user can read, edit and
-              // decide about it. Gate the next one behind a real turn too — if
-              // the send did land, a turn is starting.
-              const fresh = fleetSessions(state).find((x) => x.id === s.id)?.turns ?? s.turns;
-              lastDrainTurn.set(s.id, fresh);
-              dispatch({ t: "dequeue", sessionId: s.id });
-              dispatch({ t: "holdSend", sessionId: s.id, text: head });
-              note("queued message may already have been sent — ⏎ to review it", "bad");
-              return;
-            }
-            note(e instanceof Error ? e.message : String(e), "bad"); // no gate update → retries
-          })
-          .finally(() => draining.delete(s.id));
-      }
-    }
-  };
+  // Follow-ups typed at a busy session, the sends already on the wire, and
+  // anything whose reply was lost — all of it lives in `state.outbox`, and the
+  // composer is what moves a message between those. It sees the snapshots and
+  // one commit function; it does not see the rest of the app.
+  const composer = mkComposer({
+    send: (sessionId, text) => client.request("session.send", { id: sessionId, text }).then(),
+    fleet: () => fleetSessions(state),
+    boxes: () => state.outbox,
+    commit: (sessionId, box) => dispatch({ t: "outbox", sessionId, box }),
+    note: (text) => note(text, "bad"),
+  });
 
   const dispatch = (a: Action): void => {
     const prev = state;
@@ -807,13 +745,13 @@ export const mkFleetHandle = ({
     ) {
       loadHistory();
     }
-    if (sessionsRef(state) !== sessionsRef(prev)) {
-      forgetDeadSessions();
-      interactions.settle();
+    if (sessionsRef(state) !== sessionsRef(prev)) interactions.settle();
+    // A new snapshot may have taken a session idle (or ended a compaction, or
+    // killed it outright), and a newly queued message may be releasable right
+    // now — both are the composer's to work out.
+    if (sessionsRef(state) !== sessionsRef(prev) || state.outbox !== prev.outbox) {
+      composer.advance();
     }
-    // A compaction finishing (or being cancelled) lifts the drain hold added for
-    // compacting sessions, and it now rides the snapshot like everything else.
-    if (sessionsRef(state) !== sessionsRef(prev) || state.queue !== prev.queue) drainQueues();
   };
 
   const note = (text: string, tone: "good" | "bad" | "dim" | "accent" = "good"): void =>
@@ -1060,11 +998,12 @@ export const mkFleetHandle = ({
       case "send": {
         // A send held back because its reply never came is this session's text
         // and outranks the global cancelled-prompt draft. Opening the prompt is
-        // the explicit action that releases it — it is editable from here, and
-        // is not re-sent unless the user submits it.
-        const held = state.heldSend[s.id];
-        if (held !== undefined) dispatch({ t: "holdSend", sessionId: s.id, text: null });
-        const text = held ?? state.lastDraft;
+        // the explicit action that releases it — it is editable from here, is
+        // not re-sent unless the user submits it, and whatever was queued behind
+        // it starts moving again.
+        const held = release(outboxOf(state.outbox, s.id));
+        if (held) dispatch({ t: "outbox", sessionId: s.id, box: held.box });
+        const text = held?.text ?? state.lastDraft;
         return void show({ t: "prompt", prompt: sessionPrompt("send", s.id, "send", text) });
       }
       case "title":
@@ -1727,7 +1666,11 @@ export const mkFleetHandle = ({
   // send is typed during a compaction (`why` overrides the status line).
   const queueSend = (sessionId: string, text: string, why = "queued for turn end"): void => {
     dispatch({ t: "closePrompt" });
-    dispatch({ t: "enqueue", sessionId, text });
+    dispatch({
+      t: "outbox",
+      sessionId,
+      box: enqueue(outboxOf(state.outbox, sessionId), text),
+    });
     dispatch({ t: "pushHistory", text });
     dispatch({
       t: "echo",
@@ -1961,11 +1904,13 @@ export const mkFleetHandle = ({
           sel.branch ?? (sel.worktree ? (sel.worktree.split("/").pop() ?? sel.worktree) : sel.id);
         return copyToClipboard(nm, nm);
       }
-      case "clearqueue":
-        if (sel && queueFor(state, sel.id).length > 0) {
-          return void dispatch({ t: "clearQueue", sessionId: sel.id });
+      case "clearqueue": {
+        const box = sel && outboxOf(state.outbox, sel.id);
+        if (!box || pending(box).length === 0) {
+          return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
         }
-        return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
+        return void dispatch({ t: "outbox", sessionId: sel.id, box: cleared(box) });
+      }
       case "fork": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
         if (isClaudeId(sel.provider)) {
@@ -2167,7 +2112,8 @@ export const mkFleetHandle = ({
         return;
       }
       if (key.meta && input === "x" && sendTo) {
-        return void dispatch({ t: "clearQueue", sessionId: sendTo });
+        const box = outboxOf(state.outbox, sendTo);
+        return void dispatch({ t: "outbox", sessionId: sendTo, box: cleared(box) });
       }
       // ⌥⏎ while the target is still working queues for turn end instead of its
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.

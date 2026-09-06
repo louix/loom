@@ -47,6 +47,7 @@ import {
   type Prompt,
 } from "./overlay.ts";
 import type { QNav } from "./interactions.ts";
+import { outboxOf, pending, type Outbox, type Outboxes } from "./composer.ts";
 import { searchSessions, type FleetView } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
@@ -277,16 +278,9 @@ export interface TuiState {
    */
   transcriptGen: number;
   logFilter: LogFilter;
-  /** Follow-up messages typed at a still-running session, awaiting its next idle. */
-  queue: Record<string, string[]>;
-  /**
-   * Per session, the text of one drained queue entry whose `session.send` never
-   * came back — the connection dropped or the request timed out, so whether the
-   * daemon ran it is unknowable from here. It has left {@link queue} (draining
-   * it again would be a second send) and waits here until the user opens that
-   * session's `send` prompt, which restores it as editable text.
-   */
-  heldSend: Record<string, string>;
+  /** Per session, what the user has typed at it that the daemon has not
+   *  acknowledged — see {@link Outbox}. Absent = nothing outgoing, ever. */
+  outbox: Outboxes;
   notice: Notice | null;
   /**
    * What is open over the fleet, with its payload inside it — see
@@ -334,8 +328,7 @@ export const initialState = (): TuiState => {
     transcripts: {},
     transcriptGen: 0,
     logFilter: "everything",
-    queue: {},
-    heldSend: {},
+    outbox: {},
     notice: null,
     overlay: browse,
     doctor: null,
@@ -403,11 +396,9 @@ export type Action =
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "echo"; line: LogLine }
-  | { t: "enqueue"; sessionId: string; text: string }
-  /** `null` releases the hold — the text is now in an open prompt. */
-  | { t: "holdSend"; sessionId: string; text: string | null }
-  | { t: "dequeue"; sessionId: string }
-  | { t: "clearQueue"; sessionId: string }
+  /** Commit one session's outgoing text — the composer works out what it should
+   *  be, this only stores it. `null` forgets the session. */
+  | { t: "outbox"; sessionId: string; box: Outbox | null }
   | { t: "cyclePlanMode" }
   | { t: "toggleConfirmBranch" }
   | { t: "pickerFilter"; buffer: Buffer }
@@ -802,33 +793,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       };
     }
 
-    case "enqueue": {
-      const t = a.text.trim();
-      if (!t) return s;
-      return { ...s, queue: { ...s.queue, [a.sessionId]: [...(s.queue[a.sessionId] ?? []), t] } };
-    }
-
-    case "holdSend":
+    case "outbox":
       return {
         ...s,
-        heldSend:
-          a.text === null
-            ? without(s.heldSend, a.sessionId)
-            : { ...s.heldSend, [a.sessionId]: a.text },
+        outbox:
+          a.box === null ? without(s.outbox, a.sessionId) : { ...s.outbox, [a.sessionId]: a.box },
       };
-
-    case "dequeue": {
-      const cur = s.queue[a.sessionId];
-      if (!cur || cur.length === 0) return s;
-      const rest = cur.slice(1);
-      return {
-        ...s,
-        queue: rest.length ? { ...s.queue, [a.sessionId]: rest } : without(s.queue, a.sessionId),
-      };
-    }
-
-    case "clearQueue":
-      return a.sessionId in s.queue ? { ...s, queue: without(s.queue, a.sessionId) } : s;
 
     case "cyclePlanMode": {
       if (s.overlay.t !== "plan") return s;
@@ -945,11 +915,10 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
     ...(qnavGone ? { qnav: null } : {}),
-    // `queue` is deliberately NOT pruned here. A queue whose session has gone
-    // is stranded, and stranding it is news — silently dropping it loses a
-    // message the user typed with no word about it. `drainQueues` clears it and
-    // says so, in the same dispatch this snapshot triggers.
-    heldSend: pruneByLive(s.heldSend, sessions),
+    // `outbox` is deliberately NOT pruned here. Text queued at a session that
+    // has gone is stranded, and stranding it is news — silently dropping it
+    // loses a message the user typed with no word about it. The composer
+    // forgets it and says so, in the same dispatch this snapshot triggers.
     modeDraft: pruneByLive(s.modeDraft, sessions),
     transcripts: pruneByLive(s.transcripts, sessions),
     overlay,
@@ -1184,9 +1153,9 @@ export const anyCompacting = (s: TuiState): boolean => {
   return fleetSessions(s).some((x) => x.compacting !== undefined);
 };
 
-export const queueFor = (s: TuiState, id: string | null): string[] => {
-  return (id && s.queue[id]) || [];
-};
+/** What the selected session still owes the daemon, oldest first. */
+export const queueFor = (s: TuiState, id: string | null): readonly string[] =>
+  pending(outboxOf(s.outbox, id));
 
 export interface CacheStatus {
   /**
@@ -2100,7 +2069,7 @@ export const commandsFor = (s: TuiState): PickItem[] => {
   if (fleetSessions(s).some((x) => x.status.kind === "done" && x.worktree)) {
     items.push({ id: "gc", label: "gc — remove worktrees of done sessions", hint: "" });
   }
-  if (s.selectedId && (s.queue[s.selectedId]?.length ?? 0) > 0) {
+  if (s.selectedId && queueFor(s, s.selectedId).length > 0) {
     items.push({ id: "clearqueue", label: "clear the queued messages", hint: "⌥x" });
   }
   return items;

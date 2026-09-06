@@ -6,6 +6,7 @@
     "./app": "./src/app.tsx",
     "./model": "./src/model.ts",
     "./overlay": "./src/overlay.ts",
+    "./composer": "./src/composer.ts",
     "./interactions": "./src/interactions.ts",
     "./components": "./src/components.tsx",
     "./editor": "./src/editor.ts",

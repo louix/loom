@@ -498,7 +498,7 @@ export const Detail = ({
 }: {
   session: SessionSnapshot | null;
   width: number;
-  queued?: string[];
+  queued?: readonly string[];
   now?: number;
   /** Ink colour for the provider/model line; matches the Fleet id colour. */
   engineColor?: string;
