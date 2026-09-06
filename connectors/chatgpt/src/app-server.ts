@@ -254,6 +254,20 @@ export class CodexAppServerSession implements AgentSession {
    * still the live signal for the turn currently being started.
    */
   #turnAbort = new AbortController();
+  /**
+   * Bumped only by an *external* `interrupt()`/`close()` call — never by
+   * `setMode`'s own internal turn-ending step (see `#endTurn`). A multi-step
+   * transition that spans several `await`s (`respondToPlan`'s setMode-then-
+   * send sequence) snapshots this before starting and rechecks it after each
+   * await; if it has changed, something *outside* that transition decided to
+   * stop the session while it was in flight, and the transition must not
+   * finish implementing a plan (or report "approved") on the strength of
+   * work that started before that decision. `#turnAbort` alone can't
+   * distinguish this: `setMode` aborts it too, as an expected, internal part
+   * of successfully completing the very same transition — a signal that's
+   * "already aborted" doesn't say *why*.
+   */
+  #interruptGeneration = 0;
   #threadId: string | null = null;
   #turnId: string | null = null;
   #model: string;
@@ -538,6 +552,22 @@ export class CodexAppServerSession implements AgentSession {
    * the real decision. Detaching removes it from that drain's reach for the
    * rest of this transition; the raw resolve function is invoked explicitly,
    * once, with whatever this method itself determines the outcome to be.
+   *
+   * `#interruptGeneration` is checked after *each* await, not just relied on
+   * via `setMode`/`send` throwing: an external `interrupt()` (someone
+   * stopping the session for reasons unrelated to this plan — e.g. mid-flight
+   * while a held `thread/settings/update` response is still pending) doesn't
+   * make `setMode`/`send` fail — by the time the held response arrives,
+   * `this.#turnId` is already `null` (the external interrupt already ended
+   * that turn), so `setMode` sees nothing left *it* needs to interrupt, and
+   * `send` just starts a fresh turn as if nothing had happened. Without this
+   * check, that fresh turn — and the "approved" report — would go out anyway,
+   * silently overriding the very interrupt that was supposed to stop
+   * everything. `generation` deliberately snapshots `#interruptGeneration`,
+   * not `#turnAbort`'s signal: `setMode`'s own internal turn-ending step
+   * (`#endTurn`) aborts that signal too, as an expected part of *this*
+   * transition succeeding, so it can't tell "an external stop happened" from
+   * "the planning turn was interrupted right on schedule."
    */
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     if (decision.action === "discuss" || decision.action === "handoff") {
@@ -546,10 +576,22 @@ export class CodexAppServerSession implements AgentSession {
     }
     const resolve = this.#pending.detachPlan(id);
     if (!resolve) return;
+    const generation = this.#interruptGeneration;
+    const ensureNotSuperseded = async (): Promise<void> => {
+      if (generation === this.#interruptGeneration) return;
+      // Something external ended the session while this transition was in
+      // flight — clean up anything this transition itself already started
+      // (best-effort; the session is being torn down or already idle either
+      // way) and refuse to report success on its behalf.
+      if (this.#turnId && !this.#closing) await this.#endTurn().catch(() => {});
+      throw new Error("the session was interrupted before the plan could be implemented");
+    };
     try {
       await this.setMode(decision.mode ?? "acceptEdits");
+      await ensureNotSuperseded();
       const planText = decision.action === "revise" ? decision.plan : "the plan you just presented";
       await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
+      await ensureNotSuperseded();
       resolve(decision);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -559,25 +601,33 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   /**
-   * Ends the current turn and drains every parked interaction — always, even
-   * when the `turn/interrupt` RPC itself throws (a `try`/`finally`, not a
-   * bare `await`): a failed interrupt request must not leave a permission/
-   * question/plan promise (or the caller waiting on this method) hanging
-   * forever just because the underlying RPC call failed. `this.#turnId` is
-   * captured and cleared *before* that RPC call, and the old id is recorded
-   * in `#staleTurnIds` *and* `#turnAbort` is aborted before anything else —
-   * so any request tagged with the old turn is rejected by
-   * `#serverRequest`'s guard before it can even reach a dispatcher, and any
-   * dispatch already admitted and running sees its captured `signal` flip to
-   * aborted the moment it next calls `#askUser`/`#requestPlan`/
-   * `#requestApproval`, rather than starting new work under a turn Loom
-   * already considers over.
+   * The mechanical work of ending the current turn: `turn/interrupt` RPC,
+   * `#turnId`/`#staleTurnIds`/`#turnAbort` bookkeeping, and draining every
+   * parked interaction — always, even when the RPC itself throws (a
+   * `try`/`finally`, not a bare `await`): a failed interrupt request must
+   * not leave a permission/question/plan promise (or the caller waiting on
+   * this method) hanging forever just because the underlying RPC call
+   * failed. `this.#turnId` is captured and cleared *before* that RPC call,
+   * and the old id is recorded in `#staleTurnIds` *and* `#turnAbort` is
+   * aborted before anything else — so any request tagged with the old turn
+   * is rejected by `#serverRequest`'s guard before it can even reach a
+   * dispatcher, and any dispatch already admitted and running sees its
+   * captured `signal` flip to aborted the moment it next calls
+   * `#askUser`/`#requestPlan`/`#requestApproval`, rather than starting new
+   * work under a turn Loom already considers over.
+   *
+   * Deliberately **not** public, and does **not** touch
+   * `#interruptGeneration` — shared by the public `interrupt()` (an
+   * external, unrelated-to-any-transition stop) and `setMode`'s own internal
+   * turn-ending step (an expected part of successfully applying a mode
+   * change, including `respondToPlan`'s own transition). Only the former
+   * should ever invalidate an in-flight `respondToPlan` transition.
    */
-  async interrupt(): Promise<void> {
+  async #endTurn(): Promise<void> {
     const turnId = this.#turnId;
     this.#turnId = null;
     if (turnId) this.#staleTurnIds.add(turnId);
-    this.#turnAbort?.abort();
+    this.#turnAbort.abort();
     try {
       if (this.#threadId && turnId) {
         await this.#rpc.request("turn/interrupt", { threadId: this.#threadId, turnId });
@@ -590,6 +640,19 @@ export class CodexAppServerSession implements AgentSession {
       );
       this.#idle();
     }
+  }
+  /**
+   * The public, externally-triggered stop (a user hitting stop, the daemon
+   * tearing down a session) — as opposed to `setMode`'s own internal,
+   * expected turn-ending step. Bumps `#interruptGeneration` *before* doing
+   * the actual work, so an in-flight `respondToPlan` transition that
+   * snapshotted the generation earlier reliably observes the change as soon
+   * as it next checks, regardless of how long `#endTurn`'s own RPC call
+   * takes.
+   */
+  async interrupt(): Promise<void> {
+    this.#interruptGeneration++;
+    await this.#endTurn();
   }
   async rewind(): Promise<void> {
     throw new Error("Codex app-server rewind is not yet supported by Loom");
@@ -620,6 +683,12 @@ export class CodexAppServerSession implements AgentSession {
    * ends the user's in-flight turn (the session goes idle); their next
    * message (or `respondToPlan`'s own follow-up `send()`) starts a fresh one
    * under the new mode.
+   *
+   * Calls `#endTurn` directly, not the public `interrupt()` — this is an
+   * internal, expected part of applying the mode change itself, not an
+   * external stop, and must not invalidate an in-flight `respondToPlan`
+   * transition that's the very reason this call is happening (see
+   * `#interruptGeneration`'s doc comment).
    */
   async setMode(mode: SessionMode): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
@@ -631,7 +700,7 @@ export class CodexAppServerSession implements AgentSession {
       sandboxPolicy: this.#sandboxPolicyFor(mode),
     });
     this.#mode = mode;
-    if (this.#turnId && changed) await this.interrupt();
+    if (this.#turnId && changed) await this.#endTurn();
   }
   async setModel(model: string): Promise<void> {
     this.#model = model;
@@ -656,6 +725,7 @@ export class CodexAppServerSession implements AgentSession {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#interruptGeneration++; // see the doc comment on the field
     this.#turnAbort?.abort();
     this.#pending.failAll(
       { behavior: "deny", message: "the session was closed before this was answered" },

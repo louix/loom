@@ -49,8 +49,19 @@
  * `LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE=1` makes `thread/settings/update`
  * reply with a JSON-RPC error instead of `{}`, for exercising a failed
  * `setMode` mid-transition (e.g. inside `respondToPlan`).
+ * `LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE` (a base file path) holds
+ * `thread/settings/update`'s response: `${base}.received` is written the
+ * moment the request arrives (so a test knows it's genuinely in flight),
+ * and the response itself waits for `${base}.release` to exist — for
+ * exercising something else (e.g. an independent `interrupt()`) racing a
+ * slow settings RPC. `LOOM_TEST_HOLD_TURN_START_CALL` (a 1-indexed count)
+ * plus `LOOM_TEST_HOLD_TURN_START` (a base path, same `.received`/`.release`
+ * protocol) do the same for one specific numbered `turn/start` call — e.g.
+ * holding only the *second* turn a session starts, for racing an interrupt
+ * against a slow `turn/start` without also blocking the first turn a test
+ * needs just to get set up.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -88,6 +99,7 @@ let nextOutgoingId = 1_000_000; // far outside CodexRpcClient's own id space
 const pendingOutgoing = new Map();
 let startedThreadId; // set once thread/start replies, for handlers below it
 let afterInterruptFired = false; // LOOM_TEST_TOOL_CALL_AFTER_INTERRUPT_SPEC fires once
+let turnStartCount = 0; // for LOOM_TEST_HOLD_TURN_START_CALL
 
 /** Captures the client's eventual response to a fixture-initiated request
  *  (`item/tool/call`, `item/tool/requestUserInput`, an approval-shaped
@@ -237,19 +249,46 @@ const handle = (req) => {
     return;
   }
   if (method === "turn/start") {
-    send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
-    // A real turn finishes asynchronously via a notification, not the reply.
-    // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
-    // `setMode`) while the turn is still genuinely open.
-    if (!process.env["LOOM_TEST_HOLD_TURN"]) {
-      setTimeout(() => {
-        send({
-          jsonrpc: "2.0",
-          method: "turn/completed",
-          params: { turn: { id: "fake-turn-1", status: "completed" } },
-        });
-      }, 0);
+    turnStartCount++;
+    const respondToTurnStart = () => {
+      send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
+      // A real turn finishes asynchronously via a notification, not the reply.
+      // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
+      // `setMode`) while the turn is still genuinely open.
+      if (!process.env["LOOM_TEST_HOLD_TURN"]) {
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "turn/completed",
+            params: { turn: { id: "fake-turn-1", status: "completed" } },
+          });
+        }, 0);
+      }
+    };
+    // LOOM_TEST_HOLD_TURN_START_CALL names which 1-indexed turn/start call to
+    // hold (e.g. "2" holds only the *second* turn started in this session —
+    // typically the fresh turn a `respondToPlan` transition starts, leaving
+    // the first turn that actually gets the exit_plan tool call moving
+    // normally). Same `${base}.received`/`${base}.release` protocol as
+    // LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE, via LOOM_TEST_HOLD_TURN_START.
+    const holdCall = Number(process.env["LOOM_TEST_HOLD_TURN_START_CALL"] || "0");
+    const holdBase = process.env["LOOM_TEST_HOLD_TURN_START"];
+    if (holdCall && turnStartCount === holdCall && holdBase) {
+      try {
+        writeFileSync(`${holdBase}.received`, "");
+      } catch {
+        // best effort
+      }
+      const releasePath = `${holdBase}.release`;
+      const poll = setInterval(() => {
+        if (existsSync(releasePath)) {
+          clearInterval(poll);
+          respondToTurnStart();
+        }
+      }, 10);
+      return;
     }
+    respondToTurnStart();
     return;
   }
   if (method === "turn/interrupt") {
@@ -297,17 +336,44 @@ const handle = (req) => {
     send({ jsonrpc: "2.0", id, result: {} });
     return;
   }
-  if (method === "thread/settings/update" && process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE"]) {
-    send({
-      jsonrpc: "2.0",
-      id,
-      error: { code: -32000, message: "fake app-server: forced thread/settings/update failure" },
-    });
+  if (method === "thread/settings/update") {
+    const respondNow = () => {
+      if (process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE"]) {
+        send({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32000, message: "fake app-server: forced thread/settings/update failure" },
+        });
+      } else {
+        send({ jsonrpc: "2.0", id, result: {} });
+      }
+    };
+    // A test can hold this response to simulate a slow settings RPC racing
+    // against an independent interrupt()/close() — LOOM_TEST_HOLD_THREAD_
+    // SETTINGS_UPDATE names a base path; `${base}.received` is written
+    // immediately (so the test knows the request is genuinely in flight
+    // before acting), and the response waits for `${base}.release` to exist.
+    const holdBase = process.env["LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE"];
+    if (holdBase) {
+      try {
+        writeFileSync(`${holdBase}.received`, "");
+      } catch {
+        // best effort
+      }
+      const releasePath = `${holdBase}.release`;
+      const poll = setInterval(() => {
+        if (existsSync(releasePath)) {
+          clearInterval(poll);
+          respondNow();
+        }
+      }, 10);
+      return;
+    }
+    respondNow();
     return;
   }
   if (
     method === "turn/steer" ||
-    method === "thread/settings/update" ||
     method === "turn/settings/update" ||
     method === "thread/compact/start"
   ) {

@@ -1291,6 +1291,131 @@ test("respondToPlan never tells the model 'approved' when the mode/turn transiti
   }
 });
 
+test("an external interrupt() while a plan's settings update is still in flight prevents the transition from restarting implementation afterward", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-exitplan-cancel-settings", authJsonPath: "/tmp/loom-codex-exitplan-cancel-settings/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-exitplan-cancel-settings-${process.pid}.json`);
+  const holdBase = join(tmpdir(), `hold-settings-update-${process.pid}`);
+  try {
+    Deno.env.set("LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE", holdBase);
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let planId = "";
+      for await (const ev of s.events()) {
+        if (ev.type === "plan_review") {
+          planId = ev.id;
+          break;
+        }
+      }
+      // Approve the plan — respondToPlan is now awaiting setMode(), which is
+      // awaiting the (held) thread/settings/update response. Don't await
+      // respondToPlan itself yet; the whole point is to race it.
+      const responded = assert.rejects(
+        () => s.respondToPlan(planId, { action: "implement" }),
+        /the session was interrupted before the plan could be implemented/,
+      );
+      await waitForExists(`${holdBase}.received`, 2000);
+
+      // An interrupt from *outside* this transition entirely (e.g. the user
+      // hitting stop) — reproducing exactly this: "1. Approve a plan; hold
+      // the settings RPC response. 2. Call interrupt() and await it — session
+      // becomes idle. 3. Release the settings response. 4. The detached
+      // transition [used to] start a new implementation turn."
+      await s.interrupt();
+      assert.equal(s.snapshot().status.kind, "idle");
+
+      await writeFile(`${holdBase}.release`, "");
+      await responded;
+
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
+      assert.match(result.contentItems[0]?.text ?? "", /interrupted/);
+      // The transition must not have snuck a fresh turn in on the way out.
+      assert.equal(s.snapshot().status.kind, "idle");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+    await rm(`${holdBase}.received`, { force: true });
+    await rm(`${holdBase}.release`, { force: true });
+  }
+});
+
+test("an external interrupt() while a plan's fresh implementation turn is starting also prevents reporting approval", async () => {
+  const codexHome = { dir: "/tmp/loom-codex-exitplan-cancel-turnstart", authJsonPath: "/tmp/loom-codex-exitplan-cancel-turnstart/auth.json" };
+  const resultFile = join(tmpdir(), `tool-call-result-exitplan-cancel-turnstart-${process.pid}.json`);
+  const holdBase = join(tmpdir(), `hold-turn-start-${process.pid}`);
+  try {
+    // Call #1 is the initial "go" turn (needed just to get the exit_plan
+    // tool call); call #2 is the fresh turn respondToPlan starts once the
+    // plan is approved — that's the one this test holds.
+    Deno.env.set("LOOM_TEST_HOLD_TURN_START_CALL", "2");
+    Deno.env.set("LOOM_TEST_HOLD_TURN_START", holdBase);
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      let planId = "";
+      for await (const ev of s.events()) {
+        if (ev.type === "plan_review") {
+          planId = ev.id;
+          break;
+        }
+      }
+      const responded = assert.rejects(
+        () => s.respondToPlan(planId, { action: "implement" }),
+        /the session was interrupted before the plan could be implemented/,
+      );
+      // setMode's own thread/settings/update (call it doesn't hold) has
+      // already succeeded and interrupted the planning turn by the time
+      // send()'s turn/start (the held, second call) is in flight.
+      await waitForExists(`${holdBase}.received`, 2000);
+
+      await s.interrupt();
+      assert.equal(s.snapshot().status.kind, "idle");
+
+      await writeFile(`${holdBase}.release`, "");
+      await responded;
+
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
+      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
+      assert.match(result.contentItems[0]?.text ?? "", /interrupted/);
+      assert.equal(s.snapshot().status.kind, "idle");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_HOLD_TURN_START_CALL");
+    Deno.env.delete("LOOM_TEST_HOLD_TURN_START");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+    await rm(`${holdBase}.received`, { force: true });
+    await rm(`${holdBase}.release`, { force: true });
+  }
+});
+
 test("interrupt() invalidates an in-flight dispatch's askUser callback instead of letting it park a new question after the turn is gone", async () => {
   const codexHome = { dir: "/tmp/loom-codex-cancel-inflight-dispatch", authJsonPath: "/tmp/loom-codex-cancel-inflight-dispatch/auth.json" };
   const resultFile = join(tmpdir(), `tool-call-result-cancel-inflight-${process.pid}.json`);
