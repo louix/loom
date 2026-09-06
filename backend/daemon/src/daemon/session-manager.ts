@@ -146,8 +146,8 @@ export class SessionManager {
   }
 
   /** Non-null while a `compact` / `rewind` / provider swap holds the session's
-   *  op gate — the daemon `session.send` handler fast-fails with `code: "busy"`
-   *  on it. */
+   *  op gate — the daemon `session.send` and `session.setProvider` handlers
+   *  both fast-fail with `code: "busy"` on it. */
   isRestructuring(id: string): "compact" | "rewind" | "provider" | null {
     return this.#running.get(id)?.restructuring ?? null;
   }

@@ -489,6 +489,11 @@ export const mkFleetHandle = ({
   // `⇧⇥` mode cycling: the debounce window before `session.setMode` actually
   // reaches the daemon for a session (see `cycleSessionMode` below).
   const modeDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+  // How many `session.setMode` calls are still outstanding per session. The
+  // draft is what the chip shows; retiring it on the *first* reply would snap
+  // the chip back to a snapshot that a later call is still on its way to
+  // change, so it survives until nothing is in flight.
+  const modeInFlight = new Map<string, number>();
 
   // Both are keyed by session id and never shrank on their own — one dead
   // entry per session ever seen. Prune to the live fleet on any list change.
@@ -1595,7 +1600,11 @@ export const mkFleetHandle = ({
     const timer = setTimeout(() => {
       modeDebounce.delete(sessionId);
       // The session was removed while the debounce sat idle — nothing to apply.
-      if (!fleetSessions(state).some((x) => x.id === sessionId)) return;
+      if (!fleetSessions(state).some((x) => x.id === sessionId)) {
+        dispatch({ t: "modeDraft", sessionId, mode: null });
+        return;
+      }
+      modeInFlight.set(sessionId, (modeInFlight.get(sessionId) ?? 0) + 1);
       client
         .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
         .catch((e: unknown) => {
@@ -1630,9 +1639,14 @@ export const mkFleetHandle = ({
             tone: "bad",
           });
         })
-        // Settled either way: the snapshot is now the truth about this
-        // session's mode, so the local draft has done its job.
-        .finally(() => dispatch({ t: "modeDraft", sessionId, mode: null }));
+        // Settled either way: once nothing is outstanding the snapshot is the
+        // truth about this session's mode, so the local draft has done its job.
+        .finally(() => {
+          const left = (modeInFlight.get(sessionId) ?? 1) - 1;
+          if (left > 0) return void modeInFlight.set(sessionId, left);
+          modeInFlight.delete(sessionId);
+          dispatch({ t: "modeDraft", sessionId, mode: null });
+        });
     }, 300);
     modeDebounce.set(sessionId, timer);
   };

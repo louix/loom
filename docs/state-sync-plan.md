@@ -218,27 +218,89 @@ repository checks are clean.
 Primary files: `backend/daemon/src/daemon/{daemon,session-manager}.ts`,
 `frontend/tui/src/fleet-handle.ts`.
 
-- [ ] Establish per-session serialization for mode/model/effort changes,
+- [x] Establish per-session serialization for mode/model/effort changes,
       covering validation, adapter application, registry/default updates, and
       snapshot publication. Serializing only the adapter call is insufficient.
       Handle inactive sessions too.
-- [ ] Recheck session existence and command validity when executing a queued
+- [x] Recheck session existence and command validity when executing a queued
       change. Failed commands must not publish the requested value as applied.
-- [ ] Coordinate with existing provider-swap/restructuring behavior. Reuse gates
+- [x] Coordinate with existing provider-swap/restructuring behavior. Reuse gates
       where appropriate, but do not hold up interrupt or approval behind an entire
       turn waiting for user input, and do not introduce nested-gate deadlocks.
-- [ ] Preserve current mode semantics, including `plan_pending`: changing mode
+- [x] Preserve current mode semantics, including `plan_pending`: changing mode
       must not implicitly answer an outstanding plan review. Account for mode changes
       caused by plan decisions and adapter events as well as explicit `setMode`.
-- [ ] Preserve exact-request-ID, resolve-once behavior for approvals/questions.
+- [x] Preserve exact-request-ID, resolve-once behavior for approvals/questions.
       No new conflict tokens or operation-tracking subsystem.
-- [ ] Keep explicit target values in mode commands. A client computes the target
+- [x] Keep explicit target values in mode commands. A client computes the target
       it displays; the server does not reinterpret it as "cycle from current mode."
 
 Acceptance: deliberately overlapping calls with a delayed adapter execute in
 the daemon's chosen order, finish with matching adapter/registry state, and leave
 both clients showing the final successful value. Rejection preserves existing
 values and existing plan-review safeguards.
+
+**Done.** Notes:
+
+- New `backend/daemon/src/daemon/session-queue.ts` (`mkSessionQueue`) serializes
+  each session's commands end to end under one key. The insight the old code
+  missed: a mode change is validate → apply to adapter → write registry + provider
+  defaults → publish, and gating only the adapter call leaves the other three
+  interleaved. `session.setMode` / `setModel` / `setEffort` / `setProvider` now
+  run whole under `#queue.run(id, …)`, with their existence and validity checks
+  moved _inside_ so they are rechecked at execution time rather than at issue time.
+- The daemon already had this exact shape as `#withLifecycleGate` / `#lifecycleGate`
+  for `markDone` / `remove` / `gc`. Rather than stand a second one up beside it,
+  those fold into the same queue: lifecycle ops are precisely the commands that
+  can invalidate a queued configuration change, so sharing one chain is what makes
+  a queued command's existence recheck conclusive instead of a narrower race.
+  Net effect is one concept where there were two, and `#withLifecycleGate` is gone.
+- Inactive sessions are covered by the same key, and the queue is now also held
+  across adapter _construction_: `#startSession` wraps registry-create-through-attach,
+  and `#reviveSession` wraps the rebuild (`#reviveLocked`). Both build the adapter
+  from the row's mode/model/effort, so a command landing in that window used to take
+  the "session isn't running" path and write the row only — leaving the adapter on
+  its pre-command values. The attach-time mode reconciliation in `#startSession`
+  existed to paper over exactly that for mode; it is deleted, and model/effort
+  (which it never covered) are fixed by the same hold.
+- `onMode` — the adapter reporting where it actually landed, after a plan decision
+  or its own switch — goes through the queue too, so it can't land after an
+  in-flight `setMode`'s registry write and leave the row describing a mode the
+  adapter has since left. It is `void`-dispatched on purpose: the manager calls it
+  from inside `respondToPlan`, and awaiting a queue an approval doesn't otherwise
+  touch would park the approval behind whatever command happens to be running.
+- Approvals, questions, plan responses and `interrupt` are deliberately _not_
+  queued, so none of them can be held up behind a configuration command. Exact-request-id
+  resolve-once behaviour is untouched, and no conflict token or operation-id
+  subsystem was added.
+- Deadlock freedom is structural, not incidental: the edge between the two gates is
+  one-way. A queued command may take the session manager's turn gate; nothing
+  holding the turn gate ever waits on the queue (the pump's `onMode` is
+  fire-and-forget, `#maybeAutoRebase` re-enters via `#sessions.send`, not an RPC).
+  The one place the new hold could have parked on a turn-length wait —
+  `session.setProvider` waiting out a `compact` while holding the queue — now
+  fast-fails with the same `code: "busy"` `session.send` already uses.
+- `plan_pending` still refuses, and now refuses _inside_ the queue: the reject
+  happens before any registry or provider-defaults write, so a failed command
+  never publishes its requested value as applied.
+- TUI: `cycleSessionMode` already sent an explicit target (the server never
+  re-derives "next mode from current"). Fixed a draft-lifetime bug beside it — the
+  chip's local draft was retired when the _first_ `session.setMode` replied, which
+  with two overlapping cycles snapped the chip back to a snapshot a later call was
+  still on its way to change. It now survives until nothing is in flight.
+- Collapsed the `#publishState(); #publishState(snap.id);` pairs left by §2's
+  mechanical conversion — the second is a superset of the first, so these were
+  sending two whole-fleet snapshots where one was meant.
+
+Validation: `deno check .`, `deno task test:silent`, `deno task lint`,
+`deno task format:check` all clean. New `test/session-queue.test.ts` (5 tests)
+covers the queue itself; `test/daemon.test.ts` gains overlapping-mode-changes,
+mode-racing-a-revive, mode-behind-a-removal and plan-review-rejection cases, and
+the existing mount-window test was reshaped (the click now queues rather than
+racing, so it asserts on the settled row instead of the create's return value).
+The four ordering tests were each verified to **fail** against a pass-through
+`mkSessionQueue`, and their races are driven by `ping` round-trip barriers
+(requests dispatch in arrival order) rather than sleeps.
 
 ## 4. Separate transcript storage, live delivery, and pagination from state
 

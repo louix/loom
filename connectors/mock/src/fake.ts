@@ -232,7 +232,24 @@ export class FakeSession implements AgentSession {
     this.#snap.status = stateIdle;
   }
 
+  /** Park *only the next* `setMode()` until the returned fn is called — later
+   *  calls run straight through, so a test can tell a serialized command
+   *  (queued before the adapter) from one that sailed past the parked call. */
+  #modeGate: Promise<void> | null = null;
+  blockMode(): () => void {
+    let release!: () => void;
+    this.#modeGate = new Promise<void>((r) => {
+      release = r;
+    });
+    return release;
+  }
+
   async setMode(mode: SessionMode): Promise<void> {
+    const gate = this.#modeGate;
+    if (gate) {
+      this.#modeGate = null;
+      await gate;
+    }
     this.modeChanges.push(mode);
     this.#snap.mode = mode;
   }
@@ -303,7 +320,23 @@ export class FakeProvider implements AgentProvider {
     return s;
   }
 
+  /** Park the next `resumeSession()` until the returned fn is called — a test
+   *  holds a revive open to drive RPCs against a session whose adapter is
+   *  being rebuilt from its registry row. */
+  #resumeGate: Promise<void> | null = null;
+  blockResume(): () => void {
+    let release!: () => void;
+    this.#resumeGate = new Promise<void>((r) => {
+      release = r;
+    });
+    return () => {
+      this.#resumeGate = null;
+      release();
+    };
+  }
+
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    if (this.#resumeGate) await this.#resumeGate;
     const s = new FakeSession(
       ref.sessionId,
       { mode: ref.mode ?? "default", ...(ref.model ? { model: ref.model } : {}) },

@@ -60,6 +60,7 @@ import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { SessionManager } from "./session-manager.ts";
+import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager, type RebaseOutcome } from "./worktrees.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
@@ -188,6 +189,14 @@ export class Daemon {
   #pmsgs: ProviderMessageStore;
   #sessionEvents: SessionEventStore;
   #providerDefaults: ProviderDefaultStore;
+  /**
+   * Serializes each session's commands end to end — configuration changes and
+   * lifecycle ops alike (see {@link SessionQueue}). Also held across adapter
+   * creation / revival, so a change arriving mid-mount either lands before the
+   * adapter is built (and is built in) or after it is attached (and is applied
+   * to it) — never in the gap where it would reach only the registry.
+   */
+  readonly #queue: SessionQueue = mkSessionQueue();
   /** Claude's CLI-reported model catalog, discovered once at start-up. */
   #claudeChoices: ModelChoice[] | null = null;
   /** Set once the start-up catalog probe has settled (any outcome) — drives
@@ -198,10 +207,6 @@ export class Daemon {
   /** Prompt-cache TTL last *observed* per session, in minutes — the dedupe key
    *  for the drift notice, so it fires on a change rather than every turn. */
   readonly #cacheTtlSeen = new Map<string, number>();
-  /** Per-session-id gate serialising lifecycle ops (`markDone` / `remove` / `gc`)
-   *  so two of them can't interleave their awaits and act on a half-torn-down
-   *  or already-deleted row. */
-  readonly #lifecycleGate = new Map<string, Promise<unknown>>();
   // The "already nudged for this base head" record is persisted on the session
   // row (`auto_rebase_nudged_sha`) — see `SessionStore.autoRebaseNudgedSha` —
   // so it survives a daemon restart.
@@ -325,8 +330,19 @@ export class Daemon {
       },
       onMode: (id, mode) => {
         if (this.#stopping) return;
-        const snap = this.#registry.setFields(id, { mode });
-        this.#publishState(snap.id);
+        // The adapter reporting where it actually landed (a plan decision, or
+        // its own mid-turn switch). Queued rather than written straight
+        // through: unordered against an in-flight `session.setMode` it could
+        // land after that command's registry write and leave the row
+        // describing a mode the adapter has since left. Fire-and-forget on
+        // purpose — the manager calls this from inside `respondToPlan`, and
+        // awaiting a queue an approval doesn't otherwise touch would park the
+        // approval behind whatever configuration command happens to be running.
+        void this.#queue.run(id, async () => {
+          if (this.#stopping || !this.#registry.get(id)) return;
+          const snap = this.#registry.setFields(id, { mode });
+          this.#publishState(snap.id);
+        });
       },
       log: this.#log.child("sessions"),
     });
@@ -992,107 +1008,94 @@ export class Daemon {
     }
     const cwd = wt ? wt.path : this.repoRoot;
 
-    this.#registry.create({
-      id,
-      provider: o.providerId,
-      model: o.model,
-      effort: o.effort,
-      mode: o.mode,
-      parentId: o.parentId,
-      title: o.prompt.slice(0, 200),
-      worktree: wt ? wt.path : null,
-      branch: wt ? wt.branch : null,
-      baseBranch: wt ? wt.baseRef : this.config.baseBranch,
-      ...(wt ? {} : { inPlace: true }),
-      // Every ChatGPT session created from here on runs on Codex's app-server
-      // (a provider-owned thread) — explicit so a future `grep` for
-      // `history_backend = 'codex'` finds real rows, not just the absence of
-      // the pre-cutover 'aisdk' legacy marker (migration 20).
-      ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
+    // The row and the adapter are created under one hold on the session queue.
+    // Between them the session is in the registry but has no run attached, so a
+    // `session.setMode` landing in that window would take the inactive path and
+    // update the row only — leaving the adapter on its create-time mode with
+    // nothing to reconcile it. Queued, such a command simply waits and then finds
+    // a live session to apply itself to.
+    await this.#queue.run(id, async () => {
+      this.#registry.create({
+        id,
+        provider: o.providerId,
+        model: o.model,
+        effort: o.effort,
+        mode: o.mode,
+        parentId: o.parentId,
+        title: o.prompt.slice(0, 200),
+        worktree: wt ? wt.path : null,
+        branch: wt ? wt.branch : null,
+        baseBranch: wt ? wt.baseRef : this.config.baseBranch,
+        ...(wt ? {} : { inPlace: true }),
+        // Every ChatGPT session created from here on runs on Codex's app-server
+        // (a provider-owned thread) — explicit so a future `grep` for
+        // `history_backend = 'codex'` finds real rows, not just the absence of
+        // the pre-cutover 'aisdk' legacy marker (migration 20).
+        ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
+      });
+
+      // Remember what this session was created with, so the next `new`
+      // defaults here without any of it being pinned in config.
+      if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
+        this.#providerDefaults.remember(o.providerId, o.model);
+      }
+      if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
+      this.#providerDefaults.rememberProvider(o.providerId);
+      this.#providerDefaults.rememberMode(o.mode);
+      this.#publishState();
+
+      const isClaude = isClaudeId(o.providerId);
+      const isAisdk = aisdkProfile !== undefined;
+      const mcpHandles = this.#mcpHandles();
+      const promptAppend = systemPromptAppendFor(
+        isAisdk,
+        mcpHandles.length > 0,
+        cwd,
+        this.repoRoot,
+      );
+      const opts: CreateSessionOptions = {
+        sessionId: id,
+        cwd,
+        prompt: o.prompt,
+        mode: o.mode,
+        mcpServers: mcpHandles,
+        disableTools: this.config.providers.claude.disableBuiltin,
+        settingSources: this.config.providers.claude.settingSources,
+        ...(isClaude || isAisdk
+          ? {
+              loomServer: true,
+              systemPromptAppend: promptAppend,
+              repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+              workspaceRoot: cwd,
+            }
+          : {}),
+        ...(o.model ? { model: o.model } : {}),
+        ...(o.effort ? { effort: o.effort } : {}),
+        ...(o.parentId ? { parentId: o.parentId } : {}),
+      };
+
+      this.#lastSend.set(id, o.prompt);
+      try {
+        await this.#sessions.create(await this.#providers.get(o.providerId), opts);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Nothing ran in the worktree — reclaim it now (gc only touches `done`
+        // rows, so an `error` row's tree would leak forever). Keep the row as
+        // a record of the failure, with no worktree. (An in-place session has
+        // no tree to reclaim.)
+        if (wt) {
+          try {
+            this.#worktrees.remove(wt.path, { force: true });
+          } catch {
+            /* best effort */
+          }
+          this.#registry.setFields(id, { worktree: null });
+        }
+        this.#registry.setStatus(id, stateError(message.slice(0, 120)));
+        throw new RpcError("provider_error", `could not start session: ${message}`);
+      }
     });
 
-    // Remember what this session was created with, so the next `new`
-    // defaults here without any of it being pinned in config.
-    if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
-      this.#providerDefaults.remember(o.providerId, o.model);
-    }
-    if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
-    this.#providerDefaults.rememberProvider(o.providerId);
-    this.#providerDefaults.rememberMode(o.mode);
-    this.#publishState();
-
-    const isClaude = isClaudeId(o.providerId);
-    const isAisdk = aisdkProfile !== undefined;
-    const mcpHandles = this.#mcpHandles();
-    const promptAppend = systemPromptAppendFor(isAisdk, mcpHandles.length > 0, cwd, this.repoRoot);
-    const opts: CreateSessionOptions = {
-      sessionId: id,
-      cwd,
-      prompt: o.prompt,
-      mode: o.mode,
-      mcpServers: mcpHandles,
-      disableTools: this.config.providers.claude.disableBuiltin,
-      settingSources: this.config.providers.claude.settingSources,
-      ...(isClaude || isAisdk
-        ? {
-            loomServer: true,
-            systemPromptAppend: promptAppend,
-            repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
-            workspaceRoot: cwd,
-          }
-        : {}),
-      ...(o.model ? { model: o.model } : {}),
-      ...(o.effort ? { effort: o.effort } : {}),
-      ...(o.parentId ? { parentId: o.parentId } : {}),
-    };
-
-    this.#lastSend.set(id, o.prompt);
-    try {
-      await this.#sessions.create(await this.#providers.get(o.providerId), opts);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Nothing ran in the worktree — reclaim it now (gc only touches `done`
-      // rows, so an `error` row's tree would leak forever). Keep the row as
-      // a record of the failure, with no worktree. (An in-place session has
-      // no tree to reclaim.)
-      if (wt) {
-        try {
-          this.#worktrees.remove(wt.path, { force: true });
-        } catch {
-          /* best effort */
-        }
-        this.#registry.setFields(id, { worktree: null });
-      }
-      this.#registry.setStatus(id, stateError(message.slice(0, 120)));
-      throw new RpcError("provider_error", `could not start session: ${message}`);
-    }
-
-    // A `session.setMode` that landed while the adapter was still being built
-    // (lazy connector load, MCP connect) found no attached run and updated
-    // only the registry — the session would otherwise run in its create-time
-    // mode no matter what the chip said. The row is the user's latest word:
-    // push it into the now-attached adapter when it drifted during the mount.
-    const rowMode = this.#registry.get(id)?.mode;
-    if (isSessionMode(rowMode) && rowMode !== o.mode) {
-      try {
-        const r = await this.#sessions.setMode(id, rowMode);
-        if (!r.ok) {
-          this.#log.warn("could not apply a mode clicked during creation", {
-            id,
-            mode: rowMode,
-            reason: r.reason,
-          });
-        }
-      } catch (err) {
-        // The run died between attach and here — its own teardown settles the
-        // state, and the row already carries the clicked mode.
-        this.#log.warn("could not apply a mode clicked during creation", {
-          id,
-          mode: rowMode,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
     // The opening prompt is a user message like any follow-up — put it on the
     // event stream so it's in the log / transcript and survives a reconnect
     // (clients no longer local-echo it).
@@ -1117,6 +1120,14 @@ export class Daemon {
    * emits `session_updated`.
    */
   async #reviveSession(id: string): Promise<SessionSnapshot> {
+    // Held for the whole rebuild: the adapter is constructed from the row's
+    // mode / model / effort, so a configuration command must not slip into the
+    // window where the session still looks inactive — it would write the row
+    // only, against an adapter already built from the pre-command values.
+    return this.#queue.run(id, () => this.#reviveLocked(id));
+  }
+
+  async #reviveLocked(id: string): Promise<SessionSnapshot> {
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
     // An archived (`done`) session had its worktree reclaimed but its branch and
@@ -1569,27 +1580,6 @@ export class Daemon {
       headSha,
       headDirty,
     });
-  }
-
-  /**
-   * Run `fn` after any lifecycle op already in flight for `id` has finished, so
-   * `markDone` / `remove` / `gc` on the same session can't interleave their
-   * awaits (G13). The gate swap is synchronous before the first `await`.
-   */
-  async #withLifecycleGate<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.#lifecycleGate.get(id) ?? Promise.resolve();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    this.#lifecycleGate.set(id, gate);
-    await prev.catch(() => {});
-    try {
-      return await fn();
-    } finally {
-      release();
-      if (this.#lifecycleGate.get(id) === gate) this.#lifecycleGate.delete(id);
-    }
   }
 
   /** ~cost to re-prime an aisdk transcript truncated to `keepMessages` (a cache write). */
@@ -2557,57 +2547,69 @@ export class Daemon {
       if (!mode) {
         throw new RpcError("bad_request", "mode must be one of manual|plan|acceptEdits|auto");
       }
-      if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) {
-        const r = await this.#sessions.setMode(id, mode);
-        if (!r.ok) {
-          throw new RpcError(
-            "plan_pending",
-            "a plan review is pending — resolve it in the plan review before changing mode",
-          );
+      // The target is the client's, computed against what it displays — never
+      // re-derived here as "the next mode after the current one", which would
+      // resolve differently depending on where in the queue this lands.
+      return this.#queue.run(id, async () => {
+        // Rechecked *inside* the queue: the session may have been removed, or a
+        // plan review raised, while this command waited its turn.
+        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+        if (this.#sessions.has(id)) {
+          const r = await this.#sessions.setMode(id, mode);
+          // Rejected: leave the registry and the defaults alone. Publishing the
+          // requested mode here would advertise a value the adapter refused.
+          if (!r.ok) {
+            throw new RpcError(
+              "plan_pending",
+              "a plan review is pending — resolve it in the plan review before changing mode",
+            );
+          }
         }
-      }
-      const snap = this.#registry.setFields(id, { mode });
-      // A deliberate switch is also "the last mode used" for the next new session.
-      this.#providerDefaults.rememberMode(mode);
-      this.#publishState();
-      this.#publishState(snap.id);
-      return snap;
+        const snap = this.#registry.setFields(id, { mode });
+        // A deliberate switch is also "the last mode used" for the next new session.
+        this.#providerDefaults.rememberMode(mode);
+        this.#publishState(snap.id);
+        return snap;
+      });
     });
 
     d.register("session.setModel", async (params) => {
       const id = reqString(params, "id");
       const model = reqString(params, "model");
-      const row = this.#registry.get(id);
-      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
-      const snap = this.#registry.setFields(id, { model });
-      // Later commits carry the model that runs them — re-point the worktree
-      // identity after a deliberate switch.
-      if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
-      // A deliberate switch is also "the last model used" for this provider.
-      if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
-        this.#providerDefaults.remember(row.provider, model);
-      }
-      this.#publishState();
-      this.#publishState(snap.id);
-      return snap;
+      return this.#queue.run(id, async () => {
+        // Reread inside the queue — a command ahead of this one may have moved
+        // the provider (and with it which defaults store to write).
+        const row = this.#registry.get(id);
+        if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+        if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
+        const snap = this.#registry.setFields(id, { model });
+        // Later commits carry the model that runs them — re-point the worktree
+        // identity after a deliberate switch.
+        if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
+        // A deliberate switch is also "the last model used" for this provider.
+        if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
+          this.#providerDefaults.remember(row.provider, model);
+        }
+        this.#publishState(snap.id);
+        return snap;
+      });
     });
 
     d.register("session.setEffort", async (params) => {
       const id = reqString(params, "id");
       const effort = reqString(params, "effort");
-      const row = this.#registry.get(id);
-      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-      if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort);
-      const snap = this.#registry.setFields(id, { effort });
-      // A deliberate switch is also "the last effort used" for this provider.
-      if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
-        this.#providerDefaults.rememberEffort(row.provider, effort);
-      }
-      this.#publishState();
-      this.#publishState(snap.id);
-      return snap;
+      return this.#queue.run(id, async () => {
+        const row = this.#registry.get(id);
+        if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+        if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort);
+        const snap = this.#registry.setFields(id, { effort });
+        // A deliberate switch is also "the last effort used" for this provider.
+        if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
+          this.#providerDefaults.rememberEffort(row.provider, effort);
+        }
+        this.#publishState(snap.id);
+        return snap;
+      });
     });
 
     // Switch a live session onto a different provider (the mid-chat `⌥p`).
@@ -2623,109 +2625,126 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const wantModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
       const wantEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
-      const row = this.#registry.get(id);
-      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-      if (!this.#providers.has(provider)) {
-        throw new RpcError("bad_request", `unknown provider: ${provider}`);
-      }
-
-      const model = wantModel ?? (this.#defaultModelFor(provider) || null);
-      if (
-        wantEffort !== undefined &&
-        !EFFORT_LEVELS.includes(wantEffort) &&
-        !this.#advertisedEfforts(provider, model ?? undefined).includes(wantEffort)
-      ) {
-        throw new RpcError("bad_request", "effort must be a level this model supports");
-      }
-      const effort = wantEffort ?? (this.#defaultEffortFor(provider, model ?? undefined) || null);
-
-      // Same provider: this is a model / effort change, nothing more.
-      if (provider === row.provider) {
-        if (this.#sessions.has(id)) {
-          if (model) await this.#sessions.setModel(id, model);
-          if (effort) await this.#sessions.setEffort(id, effort);
+      // Rechecked inside the queue, and held for the whole swap: a mode /
+      // model / effort change arriving mid-swap applies to the new adapter
+      // rather than to one that is being torn down.
+      return this.#queue.run(id, async () => {
+        const row = this.#registry.get(id);
+        if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+        if (!this.#providers.has(provider)) {
+          throw new RpcError("bad_request", `unknown provider: ${provider}`);
         }
-        const snap = this.#registry.setFields(id, {
-          ...(model ? { model } : {}),
+        // A compact / rewind already holds the op gate, and the swap below
+        // would park on it — while holding this session's command queue, so
+        // every other command for it would park behind a restructure that can
+        // run for minutes. Fast-fail instead, the way `session.send` does.
+        const busy = this.#sessions.isRestructuring(id);
+        if (busy) {
+          const doing = busy === "provider" ? "switching provider" : `${busy}ing`;
+          throw new RpcError("busy", `session is ${doing} — retry in a moment`);
+        }
+
+        const model = wantModel ?? (this.#defaultModelFor(provider) || null);
+        if (
+          wantEffort !== undefined &&
+          !EFFORT_LEVELS.includes(wantEffort) &&
+          !this.#advertisedEfforts(provider, model ?? undefined).includes(wantEffort)
+        ) {
+          throw new RpcError("bad_request", "effort must be a level this model supports");
+        }
+        const effort = wantEffort ?? (this.#defaultEffortFor(provider, model ?? undefined) || null);
+
+        // Same provider: this is a model / effort change, nothing more.
+        if (provider === row.provider) {
+          if (this.#sessions.has(id)) {
+            if (model) await this.#sessions.setModel(id, model);
+            if (effort) await this.#sessions.setEffort(id, effort);
+          }
+          const snap = this.#registry.setFields(id, {
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          });
+          if (row.worktree && model) this.#worktrees.setIdentity(row.worktree, model);
+          if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
+            if (model) this.#providerDefaults.remember(row.provider, model);
+            if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
+          }
+          this.#publishState(snap.id);
+          return snap;
+        }
+
+        // Resolve real capabilities for both providers rather than guess from
+        // config membership — an unloaded ChatGPT provider is configured under
+        // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
+        // conservatively `false`, so a config-membership guess would wrongly
+        // authorize a transcript-based switch into (or out of) it.
+        const [fromProvider, toProvider] = await Promise.all([
+          this.#providers.get(row.provider),
+          this.#providers.get(provider),
+        ]);
+        if (!toProvider.capabilities.ownsTranscript || !fromProvider.capabilities.ownsTranscript) {
+          throw new RpcError(
+            "bad_request",
+            "switching to or from a provider that doesn't own its transcript isn't supported yet — start a fresh session on it instead",
+          );
+        }
+        if (!model) {
+          throw new RpcError("bad_request", `no model available for ${provider}`);
+        }
+        if (!this.#sessions.has(id)) {
+          throw new RpcError(
+            "bad_request",
+            "send the session a message to revive it before switching its provider",
+          );
+        }
+
+        const cwd = row.worktree ?? this.repoRoot;
+        const mcpHandles = this.#mcpHandles();
+        const ref: SessionRef = {
+          sessionId: id,
+          providerRef: this.#registry.store.providerRef(id) ?? id,
+          cwd,
+          mode: isSessionMode(row.mode) ? row.mode : "default",
+          mcpServers: mcpHandles,
+          systemPromptAppend: systemPromptAppendFor(
+            true,
+            mcpHandles.length > 0,
+            cwd,
+            this.repoRoot,
+          ),
+          model,
           ...(effort ? { effort } : {}),
+        };
+
+        try {
+          await this.#sessions.setProvider(id, toProvider, ref);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (/interrupt the session/.test(message)) {
+            throw new RpcError("bad_request", message);
+          }
+          throw new RpcError("provider_error", `could not switch provider: ${message}`);
+        }
+
+        const snap = this.#registry.setFields(id, { provider, model, effort });
+        if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
+        this.#providerDefaults.remember(provider, model);
+        if (effort) this.#providerDefaults.rememberEffort(provider, effort);
+        this.#providerDefaults.rememberProvider(provider);
+        this.emitEvent({
+          type: "provider_changed",
+          sessionId: id,
+          ts: Date.now(),
+          from: row.provider,
+          provider,
+          model,
+          effort,
+          lossy: false,
         });
-        if (row.worktree && model) this.#worktrees.setIdentity(row.worktree, model);
-        if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
-          if (model) this.#providerDefaults.remember(row.provider, model);
-          if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
-        }
-        this.#publishState();
         this.#publishState(snap.id);
+        this.#onActivityChange("provider-switched");
         return snap;
-      }
-
-      // Resolve real capabilities for both providers rather than guess from
-      // config membership — an unloaded ChatGPT provider is configured under
-      // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
-      // conservatively `false`, so a config-membership guess would wrongly
-      // authorize a transcript-based switch into (or out of) it.
-      const [fromProvider, toProvider] = await Promise.all([
-        this.#providers.get(row.provider),
-        this.#providers.get(provider),
-      ]);
-      if (!toProvider.capabilities.ownsTranscript || !fromProvider.capabilities.ownsTranscript) {
-        throw new RpcError(
-          "bad_request",
-          "switching to or from a provider that doesn't own its transcript isn't supported yet — start a fresh session on it instead",
-        );
-      }
-      if (!model) {
-        throw new RpcError("bad_request", `no model available for ${provider}`);
-      }
-      if (!this.#sessions.has(id)) {
-        throw new RpcError(
-          "bad_request",
-          "send the session a message to revive it before switching its provider",
-        );
-      }
-
-      const cwd = row.worktree ?? this.repoRoot;
-      const mcpHandles = this.#mcpHandles();
-      const ref: SessionRef = {
-        sessionId: id,
-        providerRef: this.#registry.store.providerRef(id) ?? id,
-        cwd,
-        mode: isSessionMode(row.mode) ? row.mode : "default",
-        mcpServers: mcpHandles,
-        systemPromptAppend: systemPromptAppendFor(true, mcpHandles.length > 0, cwd, this.repoRoot),
-        model,
-        ...(effort ? { effort } : {}),
-      };
-
-      try {
-        await this.#sessions.setProvider(id, toProvider, ref);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (/interrupt the session/.test(message)) {
-          throw new RpcError("bad_request", message);
-        }
-        throw new RpcError("provider_error", `could not switch provider: ${message}`);
-      }
-
-      const snap = this.#registry.setFields(id, { provider, model, effort });
-      if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
-      this.#providerDefaults.remember(provider, model);
-      if (effort) this.#providerDefaults.rememberEffort(provider, effort);
-      this.#providerDefaults.rememberProvider(provider);
-      this.emitEvent({
-        type: "provider_changed",
-        sessionId: id,
-        ts: Date.now(),
-        from: row.provider,
-        provider,
-        model,
-        effort,
-        lossy: false,
       });
-      this.#publishState();
-      this.#publishState(snap.id);
-      this.#onActivityChange("provider-switched");
-      return snap;
     });
 
     d.register("session.setTitle", (params) => {
@@ -2761,7 +2780,7 @@ export class Daemon {
     d.register("session.markDone", async (params) => {
       const id = reqString(params, "id");
       const force = isObj(params) && params["force"] === true;
-      return this.#withLifecycleGate(id, async () => {
+      return this.#queue.run(id, async () => {
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
         if (!force && row.worktree && this.#worktrees.isDirty(row.worktree)) {
@@ -2808,7 +2827,7 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const alsoBranch = p["deleteBranch"] === true;
       const force = p["force"] === true;
-      return this.#withLifecycleGate(id, async () => {
+      return this.#queue.run(id, async () => {
         const s = this.#registry.get(id);
         if (!s) throw new RpcError("not_found", `no such session: ${id}`);
         // Removing a worktree with uncommitted / untracked changes discards that
@@ -2881,7 +2900,7 @@ export class Daemon {
         .list()
         .filter((s) => eligible(s.status.kind) && s.worktree && (!only || s.id === only));
       for (const t of targets) {
-        await this.#withLifecycleGate(t.id, async () => {
+        await this.#queue.run(t.id, async () => {
           // Re-read under the gate: a concurrent `remove` may have deleted it.
           const s = this.#registry.get(t.id);
           if (!s?.worktree || !eligible(s.status.kind)) return;

@@ -1895,16 +1895,245 @@ test("a mode clicked while the adapter is still mounting reaches the session", a
       id = rows.find((r) => r.title === "race-the-attach")?.id ?? "";
       return id !== "";
     }, 5000);
-    await c.request("session.setMode", { id, mode: "auto", by: "t" });
+    // Not awaited before the release: the click queues behind the create on the
+    // session queue, so awaiting it here would wait on a create this test has
+    // deliberately parked.
+    const clicked = c.request<SessionSnapshot>("session.setMode", { id, mode: "auto", by: "t" });
+    // Past the daemon's dispatch point before the mount is released, so the
+    // click really does have to survive the window rather than arrive after it.
+    await barrier(c);
     release();
     const s = await creating;
-    assert.equal(s.mode, "auto");
-    // The click must reach the adapter, not just the row — before the
-    // attach-time reconcile the RPC skipped the un-attached run silently and
-    // the session ran in its create-time mode.
+    // The create returns the row as it stood when the adapter attached — the
+    // click is ordered after it, not merged into it.
+    assert.equal(s.mode, "plan");
+    assert.equal((await clicked).mode, "auto");
+    // The click must reach the adapter, not just the row — while the run was
+    // un-attached the RPC would otherwise have skipped it silently and the
+    // session would have run on in its create-time mode.
     const fake = provider.session(s.id);
     assert.ok(fake, "the fake session should be attached once create resolves");
     assert.deepEqual(fake.modeChanges, ["auto"]);
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+// --- §3: serialized configuration commands ---------------------------------
+
+/**
+ * Wait until every request already issued on `c` has been dispatched by the
+ * daemon. Frames are read and dispatched in arrival order, and a handler runs
+ * synchronously up to its first `await`, so a round-tripped `ping` behind an
+ * earlier request proves that request got at least as far as its first suspend
+ * — a barrier for ordering races that a sleep could only approximate.
+ */
+const barrier = async (c: LoomClient): Promise<void> => {
+  await c.request("ping", {});
+};
+
+/** A session snapshot as the push stream currently reports it — what every
+ *  attached client is actually showing, as opposed to an RPC return value. */
+const pushed = (c: LoomClient, id: string): SessionSnapshot | undefined => {
+  const st = c.getState();
+  return st.tag === "data" ? st.value.sessions.find((s) => s.id === id) : undefined;
+};
+
+test("overlapping mode changes apply in issue order and leave the adapter and the registry agreeing", async () => {
+  const hh = await makeHarness();
+  const a = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  const b = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given — a live session whose adapter `setMode` can be parked
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await a.request<SessionSnapshot>("session.create", {
+      prompt: "overlap",
+      provider: "fake",
+      mode: "default",
+    });
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+    const release = fake.blockMode();
+
+    // when — two clients change the same session's mode, the first one parked
+    // inside the adapter while the second is issued
+    const first = a.request<SessionSnapshot>("session.setMode", {
+      id: s.id,
+      mode: "plan",
+      by: "a",
+    });
+    const second = b.request<SessionSnapshot>("session.setMode", {
+      id: s.id,
+      mode: "acceptEdits",
+      by: "b",
+    });
+    // The second command must not have reached the adapter — it is queued
+    // behind the first, not racing it. (Unserialized, it sails past the parked
+    // call and the adapter records `acceptEdits` first.)
+    await barrier(b);
+    assert.deepEqual(fake.modeChanges, []);
+    release();
+    await Promise.all([first, second]);
+
+    // then — one order, and the adapter and the registry are on the same value
+    assert.deepEqual(fake.modeChanges, ["plan", "acceptEdits"]);
+    assert.equal(fake.snapshot().mode, "acceptEdits");
+    const rows = await a.request<SessionSnapshot[]>("session.list", {});
+    assert.equal(rows.find((r) => r.id === s.id)?.mode, "acceptEdits");
+    // ...and both clients settle showing that same final value.
+    await waitFor(() => pushed(a, s.id)?.mode === "acceptEdits");
+    await waitFor(() => pushed(b, s.id)?.mode === "acceptEdits");
+  } finally {
+    await a.close();
+    await b.close();
+    await hh.cleanup();
+  }
+});
+
+test("a mode change racing a revive reaches the rebuilt adapter", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given — a session that has been closed, so the next send revives it
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "revive-race",
+      provider: "fake",
+      mode: "default",
+    });
+    // A revive resumes from the persisted provider ref, which the manager only
+    // learns from the adapter's event stream — let one turn land first.
+    const live = provider.session(s.id);
+    assert.ok(live);
+    live.emit({ type: "result", kind: "ok", summary: "done" });
+    await waitFor(() => pushed(c, s.id)?.status.kind === "idle");
+    await hh.daemon.sessions.close(s.id);
+    assert.equal(hh.daemon.sessions.has(s.id), false);
+
+    // when — a send parks inside `resumeSession` (the adapter is built from the
+    // row's mode) and a mode change is issued while it is parked
+    const releaseResume = provider.blockResume();
+    const sending = c.request("session.send", { id: s.id, text: "go" });
+    await barrier(c);
+    const setting = c.request<SessionSnapshot>("session.setMode", {
+      id: s.id,
+      mode: "acceptEdits",
+      by: "t",
+    });
+    // Both requests are now past the daemon's dispatch point, so releasing the
+    // resume genuinely resolves a race rather than winning it by arriving first.
+    await barrier(c);
+    releaseResume();
+    await sending;
+    const snap = await setting;
+
+    // then — the change lands on the rebuilt adapter rather than in the gap
+    // where the session looks inactive and only the row gets written
+    assert.equal(snap.mode, "acceptEdits");
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+    assert.equal(fake.snapshot().mode, "acceptEdits");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("a mode change queued behind a removal fails rather than writing a gone session", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "remove-race",
+      provider: "fake",
+      mode: "default",
+    });
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+    const release = fake.blockMode();
+
+    // when — the mode change parks in the adapter, a removal is queued behind
+    // it, and a second mode change lands behind the removal
+    const first = c.request("session.setMode", { id: s.id, mode: "plan", by: "t" });
+    const removing = c.request("session.remove", { id: s.id, force: true });
+    // Settled into a value up front — left bare it would spend the awaits below
+    // as an unhandled rejection.
+    const afterRemoval = c.request("session.setMode", { id: s.id, mode: "auto", by: "t" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    release();
+    await first;
+    await removing;
+
+    // then — the existence recheck runs when the command executes, not when it
+    // was issued, so it is conclusive rather than a narrower race
+    assert.match(String(await afterRemoval), /no such session/);
+    const rows = await c.request<SessionSnapshot[]>("session.list", {});
+    assert.equal(
+      rows.find((r) => r.id === s.id),
+      undefined,
+    );
+    assert.deepEqual(fake.modeChanges, ["plan"]);
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("a rejected mode change leaves the existing mode and the plan review intact", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    // given — a session parked on an `ExitPlanMode` review
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "plan-guard",
+      provider: "fake",
+      mode: "plan",
+    });
+    const fake = provider.session(s.id);
+    assert.ok(fake);
+    fake.emit({ type: "plan_review", id: "p1", plan: "the plan" });
+    await waitFor(() => (pushed(c, s.id)?.requests ?? []).some((r) => r.kind === "plan_review"));
+
+    // when
+    const rejected = c.request("session.setMode", { id: s.id, mode: "auto", by: "t" });
+
+    // then — the mode never moved, in the adapter or in the row, and the
+    // review is still there to be answered deliberately
+    await assert.rejects(() => rejected, /plan review is pending/);
+    assert.deepEqual(fake.modeChanges, []);
+    const rows = await c.request<SessionSnapshot[]>("session.list", {});
+    assert.equal(rows.find((r) => r.id === s.id)?.mode, "plan");
+    assert.equal(pushed(c, s.id)?.mode, "plan");
+    assert.deepEqual(
+      (pushed(c, s.id)?.requests ?? []).map((r) => r.id),
+      ["p1"],
+    );
   } finally {
     await c.close();
     await hh.cleanup();
