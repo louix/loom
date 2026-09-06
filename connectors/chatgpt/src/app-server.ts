@@ -13,6 +13,7 @@ import { stateIdle, stateRunning } from "@loom/core/session-state";
 import { commitInWorktree } from "@loom/core/commit";
 import { statusInWorktree } from "@loom/core/status";
 import { COMMIT_DESC, STATUS_DESC } from "@loom/runtime/loom-tools";
+import { policy } from "@loom/runtime/policy";
 import type {
   AdapterSnapshot,
   AgentSession,
@@ -280,11 +281,14 @@ export class CodexAppServerSession implements AgentSession {
         sandbox: sandboxFor(opts.mode),
         excludeTurns: true,
         ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
-        // Codex persists dynamic tools in thread rollout metadata and restores
-        // them when the caller sends none — but Loom always resends its own
-        // set here, the same reason it always resends `developerInstructions`:
-        // a stale steer/tool set surviving a daemon restart would be a bug.
-        ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
+        // No `dynamicTools` here: the generated `ThreadResumeParams` binding
+        // (Codex 0.153.2) has no such field — `thread/resume` cannot register
+        // or refresh a thread's dynamic tools at all. Codex restores whatever
+        // was registered at `thread/start` from the thread's own rollout
+        // history. A schema/description change to `commit`/`status` (see
+        // `loomDynamicTools`) therefore only reaches *new* threads; an
+        // already-persisted thread keeps serving its original registration
+        // until a fresh thread starts (Phase 6's summarize-and-restart).
       });
       s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
       s.#idle();
@@ -491,14 +495,36 @@ export class CodexAppServerSession implements AgentSession {
   /** `item/tool/call` — Codex invoking one of Loom's own dynamic tools
    *  (`commit`/`status`, see `loomDynamicTools`). Reply on the envelope `id`,
    *  not `params.callId` — they're different fields in the protocol. Both
-   *  tools are synchronous (`spawnSync`-backed), so this needs no async work
-   *  and no pending-interaction bookkeeping. */
+   *  tools are synchronous (`spawnSync`-backed), so this needs no async work.
+   *
+   *  Codex's own approval/sandbox machinery has no visibility into this
+   *  side-channel call — it runs in Loom's own process, not the sandboxed
+   *  turn — so a mutating tool needs Loom's *own* gate here, same as
+   *  Claude/aisdk's `commit` goes through `@loom/runtime/policy`'s `policy()`
+   *  before running (see `aisdk/src/gate.ts#wrapToolSet`). `policy()` returns
+   *  "allow" only in `auto` mode for a non-readonly name like `commit` —
+   *  every other mode (including `plan`) needs a human's answer to a
+   *  `permission_request`, which Codex sessions can't raise yet
+   *  (`respondToPermission` only answers Codex's own native approvals;
+   *  Phase 5 is where Loom's own pending-interaction machinery reaches
+   *  Codex tool calls). Until then, "needs asking" means "deny", not
+   *  "silently run" — a temporary but safe stand-in, not a silent gap. */
   #toolCall(p: Record<string, unknown>, id: number | string): void {
     const tool = String(p["tool"] ?? "");
     const args = (p["arguments"] as Record<string, unknown> | null) ?? {};
     const respond = (text: string, success: boolean): void => {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
+    if (tool === "commit" || tool === "status") {
+      if (policy(this.#mode, tool) !== "allow") {
+        respond(
+          `${tool} needs approval in ${this.#mode} mode, which Codex sessions can't yet ask for — ` +
+            "switch to auto mode to allow it, or ask the user to do it manually.",
+          false,
+        );
+        return;
+      }
+    }
     if (tool === "commit") {
       const message = typeof args["message"] === "string" ? args["message"] : "";
       const res = commitInWorktree(this.#cwd, message, { stageAll: args["stage_all"] !== false });

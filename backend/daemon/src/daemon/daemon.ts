@@ -979,7 +979,7 @@ export class Daemon {
       // (a provider-owned thread) — explicit so a future `grep` for
       // `history_backend = 'codex'` finds real rows, not just the absence of
       // the pre-cutover 'aisdk' legacy marker (migration 20).
-      ...(o.providerId === "chatgpt" ? { historyBackend: "codex" } : {}),
+      ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
     });
 
     // Remember what this session was created with, so the next `new`
@@ -1004,7 +1004,7 @@ export class Daemon {
       mcpServers: mcpHandles,
       disableTools: this.config.providers.claude.disableBuiltin,
       settingSources: this.config.providers.claude.settingSources,
-      ...(isClaude || isAisdk || o.providerId === "chatgpt"
+      ...(isClaude || isAisdk
         ? { loomServer: true, systemPromptAppend: promptAppend }
         : {}),
       ...(o.model ? { model: o.model } : {}),
@@ -1157,7 +1157,7 @@ export class Daemon {
         mcpServers: mcpHandles,
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
-        ...(isClaude || isAisdk || row.provider === "chatgpt" ? { systemPromptAppend: promptAppend } : {}),
+        ...(isClaude || isAisdk ? { systemPromptAppend: promptAppend } : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1468,14 +1468,18 @@ export class Daemon {
   }
 
   /** Whether `id` (a session row, not a provider) can be resumed. Only
-   *  ChatGPT sessions created under the pre-Phase-4 direct backend
-   *  (`history_backend = 'aisdk'`) are excluded — their `provider_ref` is a
-   *  Loom transcript-store id, not a Codex thread id, and handing it to
-   *  `CodexAppServerSession.resume()` would either error confusingly or
-   *  silently start an unrelated new thread. History stays readable; only
-   *  resuming is blocked. */
+   *  sessions on a `sdk = "chatgpt"` profile (the literal `chatgpt` id, or a
+   *  custom `[providers.<id>]` one) that predate Phase 4's Codex cutover
+   *  (`history_backend = 'aisdk'`, migration 20 — evidence from
+   *  `provider_messages`, not the provider's name) are excluded: their
+   *  `provider_ref` is a Loom transcript-store id, not a Codex thread id, and
+   *  handing it to `CodexAppServerSession.resume()` would either error
+   *  confusingly or silently start an unrelated new thread. History stays
+   *  readable; only resuming is blocked. Checked against *live* config, not
+   *  a name literal, so a custom chatgpt-sdk profile is covered exactly like
+   *  the built-in `chatgpt` id. */
   #resumable(providerId: string, id: string): boolean {
-    if (providerId !== "chatgpt") return true;
+    if (this.config.providers.aisdk[providerId]?.sdk !== "chatgpt") return true;
     return this.#registry.store.historyBackend(id) !== "aisdk";
   }
 

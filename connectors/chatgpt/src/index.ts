@@ -15,6 +15,21 @@ import { CodexAppServerSession } from "./app-server.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
 import { discoverCodexModels } from "./discovery.ts";
 
+/** Model context-window enrichment is best-effort (see `listModels` below) —
+ *  bound the *whole* operation explicitly, not just whatever internal timeout
+ *  `ChatGPTCatalog` happens to use for its own network call — a credential
+ *  read or a slow network hanging inside it must not stall model discovery
+ *  indefinitely. */
+const CATALOG_TIMEOUT_MS = 8_000;
+const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      t.unref?.();
+    }),
+  ]);
+
 /**
  * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`, see
  * `app-server.ts`) are a strict subset of the full Claude/aisdk loom tool set
@@ -142,7 +157,7 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     // not block model discovery or session creation.
     const [discovered, restCatalog] = await Promise.all([
       discoverCodexModels({ cliPath: codexCliPath, codexHome }),
-      catalog.list().catch((err) => {
+      withTimeout(catalog.list(), CATALOG_TIMEOUT_MS, "chatgpt model catalog fetch").catch((err) => {
         ctx.logger.warn("chatgpt model catalog fetch failed — context-window sizes may be unavailable", {
           error: err instanceof Error ? err.message : String(err),
         });

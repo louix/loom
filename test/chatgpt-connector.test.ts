@@ -344,7 +344,7 @@ test("Code Mode compact() rejects custom instructions instead of silently runnin
   }
 });
 
-test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on the envelope id", async () => {
+test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on the envelope id (auto mode allows it)", async () => {
   const { root, git, cleanup } = repo();
   const codexHome = { dir: "/tmp/loom-codex-dyntool-commit", authJsonPath: "/tmp/loom-codex-dyntool-commit/auth.json" };
   const resultFile = join(root, "..", `tool-call-result-${process.pid}.json`);
@@ -356,7 +356,7 @@ test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on t
     );
     Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
     const s = await CodexAppServerSession.start(
-      { sessionId: "s1", cwd: root, prompt: "go", mode: "default", mcpServers: [], loomServer: true },
+      { sessionId: "s1", cwd: root, prompt: "go", mode: "auto", mcpServers: [], loomServer: true },
       codexHome,
       FAKE_CODEX,
     );
@@ -367,6 +367,79 @@ test("Codex's item/tool/call invokes Loom's commit dynamic tool and replies on t
       assert.equal(result.contentItems[0]?.type, "inputText");
       assert.match(result.contentItems[0]?.text ?? "", /^committed [0-9a-f]{7,} Add a\.txt/);
       assert.equal(git("log", "-1", "--format=%s"), "Add a.txt");
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+    await cleanup();
+  }
+});
+
+for (const mode of ["default", "plan", "acceptEdits"] as const) {
+  test(`Codex's item/tool/call denies commit in ${mode} mode instead of running it unapproved`, async () => {
+    // Loom can't yet raise a `permission_request` for a Codex dynamic-tool
+    // call (Phase 5) — Codex's own sandbox has no visibility into this
+    // side-channel call either, since it runs in Loom's process, not the
+    // sandboxed turn. Every mode but `auto` must deny rather than silently
+    // mutate the worktree, matching Claude/aisdk's own `commit` gating
+    // (`@loom/runtime/policy`'s `policy()`, which never auto-allows `commit`
+    // outside `auto` mode — "commit" matches neither the readonly nor edit
+    // verb lists).
+    const { root, git, cleanup } = repo();
+    const codexHome = {
+      dir: `/tmp/loom-codex-dyntool-deny-${mode}`,
+      authJsonPath: `/tmp/loom-codex-dyntool-deny-${mode}/auth.json`,
+    };
+    const resultFile = join(root, "..", `tool-call-result-deny-${mode}-${process.pid}.json`);
+    try {
+      await writeFile(join(root, "a.txt"), "hello\n");
+      const headBefore = git("rev-parse", "HEAD");
+      Deno.env.set(
+        "LOOM_TEST_TOOL_CALL_SPEC",
+        JSON.stringify({ tool: "commit", arguments: { message: "Add a.txt" } }),
+      );
+      Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+      const s = await CodexAppServerSession.start(
+        { sessionId: "s1", cwd: root, prompt: "go", mode, mcpServers: [], loomServer: true },
+        codexHome,
+        FAKE_CODEX,
+      );
+      try {
+        const raw = await waitForFile(resultFile);
+        const result = JSON.parse(raw) as { success: boolean };
+        assert.equal(result.success, false);
+        assert.equal(git("rev-parse", "HEAD"), headBefore, "no commit should have been made");
+      } finally {
+        await s.close();
+      }
+    } finally {
+      Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
+      Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
+      await rm(resultFile, { force: true });
+      await cleanup();
+    }
+  });
+}
+
+test("Codex's item/tool/call always allows status, regardless of mode", async () => {
+  const { root, cleanup } = repo();
+  const codexHome = { dir: "/tmp/loom-codex-dyntool-status", authJsonPath: "/tmp/loom-codex-dyntool-status/auth.json" };
+  const resultFile = join(root, "..", `tool-call-result-status-${process.pid}.json`);
+  try {
+    Deno.env.set("LOOM_TEST_TOOL_CALL_SPEC", JSON.stringify({ tool: "status", arguments: {} }));
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    const s = await CodexAppServerSession.start(
+      { sessionId: "s1", cwd: root, prompt: "go", mode: "plan", mcpServers: [], loomServer: true },
+      codexHome,
+      FAKE_CODEX,
+    );
+    try {
+      const raw = await waitForFile(resultFile);
+      const result = JSON.parse(raw) as { success: boolean };
+      assert.equal(result.success, true);
     } finally {
       await s.close();
     }

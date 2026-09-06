@@ -259,20 +259,36 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN comment TEXT;
   `,
 
-  // 21 — which backend actually owns a ChatGPT session's history. Phase 4 of
-  // the ChatGPT provider plan cut every ChatGPT model over to Codex's
-  // app-server (a provider-owned thread, `provider_ref` = a Codex thread id);
-  // before that, ordinary ChatGPT models ran on a direct OAuth/Responses
-  // backend with a Loom-owned aisdk transcript. Both wrote the same
-  // `provider = 'chatgpt'` row, so a pre-cutover row's `provider_ref` isn't a
-  // Codex thread id at all and must never be handed to `thread/resume` — it
-  // would either error confusingly or silently start an unrelated new thread.
-  // '' means "native/provider-owned thread" (every non-chatgpt row, and every
-  // chatgpt row created after this migration); 'aisdk' is a pure legacy
-  // marker for rows that predate it and marks them non-resumable (still
-  // readable) going forward. See `Daemon#resumable`.
+  // 21 — which backend actually owns a session's history. Phase 4 of the
+  // ChatGPT provider plan cut every ChatGPT model over to Codex's app-server
+  // (a provider-owned thread, `provider_ref` = a Codex thread id); before
+  // that, ordinary (non-Code-Mode) ChatGPT models ran on a direct
+  // OAuth/Responses backend with a Loom-owned aisdk transcript in
+  // `provider_messages`. Both wrote the same `provider = 'chatgpt'` row, so a
+  // provider-name match can't tell a pre-cutover direct-backend row apart
+  // from one that was already Code-Mode/Codex-backed (and would wrongly mark
+  // the latter non-resumable) — and it misses `sdk = "chatgpt"` custom
+  // profiles (`[providers.work]`) entirely, since those keep their own
+  // configured id, not literally `'chatgpt'`.
+  //
+  // Use persisted evidence instead, independent of provider naming: only the
+  // direct aisdk backend ever wrote rows into `provider_messages` (Code Mode
+  // sessions never did, at any point in this plan) — its presence is proof a
+  // session's history lives in Loom's transcript store, not a Codex thread.
+  // Harmless to check across every provider, not just chatgpt ones: for any
+  // provider where an aisdk transcript is the *current*, correct backend
+  // (openai, google, anthropic, and non-chatgpt custom profiles),
+  // `Daemon#resumable` never consults this column in the first place — it
+  // only gates providers `[[sdk = "chatgpt"]]` currently configures, checked
+  // by live config lookup, not by whatever this migration wrote for their id.
+  // '' means "native/provider-owned thread" (including every ChatGPT row
+  // created after this migration); 'aisdk' means "this session's history
+  // lives in `provider_messages`", which is what actually makes a `chatgpt`-
+  // sdk row unsafe to `thread/resume`. See `Daemon#resumable`.
   /* sql */ `
   ALTER TABLE sessions ADD COLUMN history_backend TEXT NOT NULL DEFAULT '';
-  UPDATE sessions SET history_backend = 'aisdk' WHERE provider = 'chatgpt';
+  UPDATE sessions SET history_backend = 'aisdk'
+    WHERE history_backend = ''
+      AND EXISTS (SELECT 1 FROM provider_messages WHERE provider_messages.session_id = sessions.id);
   `,
 ];
