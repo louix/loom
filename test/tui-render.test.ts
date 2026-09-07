@@ -26,13 +26,14 @@ import {
   askQuestionLines,
   Detail,
   FooterArea,
-  logRowCount,
   PromptPane,
   promptPaneRows,
   promptRows,
   RequestPanel,
   requestPanelRows,
 } from "@loom/tui/components";
+import { logRowCount } from "@loom/tui/transcript";
+import { shownLog } from "@loom/tui/model";
 import {
   mkFleetHandle,
   type FleetClient,
@@ -857,7 +858,7 @@ models   = ["m1", "m2"]
       }
       const view = handle.getView();
       const paneWidth = view.body.t === "split" ? view.rightW : view.cols;
-      const top = Math.max(0, logRowCount(view.state, paneWidth) - view.logPage);
+      const top = Math.max(0, logRowCount(shownLog(view.state), paneWidth) - view.logPage);
       assert.equal(view.logScroll, top, "the viewport reaches the log's top");
 
       // Past the start the done latch fires: further PgUp neither moves nor churns.

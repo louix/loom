@@ -206,6 +206,11 @@ export const truncate = (s: string, n: number): string => {
   return s.slice(0, n - 1) + "…";
 };
 
+/** Inner width of a `borderStyle:"round"` + `paddingX:1` box — the columns a
+ *  pane's contents actually get. Shared so the wrapped-row geometry and the
+ *  components that render it measure the same box. */
+export const inside = (w: number): number => Math.max(4, w - 4);
+
 /** Greedy word wrap to `width` columns; hard-breaks any token longer than it. */
 export const wrapText = (s: string, width: number): string[] => {
   if (width <= 0) return [s];

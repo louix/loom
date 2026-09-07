@@ -34,7 +34,6 @@ import { setThemeMode, shortId, truncate } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailRows,
-  logRowCount,
   modeChipHit,
   promptPaneRows,
   promptRows,
@@ -44,12 +43,12 @@ import { mkStore } from "./store.ts";
 import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
 import { mkSearchControl, searchStale } from "./fleet-search.ts";
+import { cycleLogFilter, logRowCount, transcriptText, type LogLine } from "./transcript.ts";
 import {
   fleetProviders,
   fleetSessions,
   allowedActs,
   commandsFor,
-  cycleLogFilter,
   defaultModelOf,
   defaultProviderId,
   escapePicker,
@@ -69,12 +68,11 @@ import {
   reduce,
   selectedSession,
   sessionLog,
-  transcriptText,
+  shownLog,
   versionMismatchAction,
   type ActName,
   type Action,
   type FleetHit,
-  type LogLine,
   type TuiState,
 } from "./model.ts";
 import {
@@ -561,7 +559,7 @@ export const mkFleetHandle = ({
   // the focused child while drilled in. This — not the logical line count,
   // which wrapping inflates several-fold — is the unit `logScroll` offsets in
   // and what `EventLog` clamps that offset against.
-  const shownLogRows = (): number => logRowCount(state, logPaneWidth());
+  const shownLogRows = (): number => logRowCount(shownLog(state), logPaneWidth());
 
   // Ceiling for `logScroll`: EventLog pins the viewport at `rows - capacity`
   // (the top of the log), so the backing offset must clamp there too — running
@@ -734,9 +732,9 @@ export const mkFleetHandle = ({
       // where a tail-anchored offset already keeps your place, and
       // `loadOlderHistory` owns the top-pinned case.
       const width = logPaneWidth();
-      const grew = logRowCount(state, width) - logRowCount(prev, width);
+      const grew = logRowCount(shownLog(state), width) - logRowCount(shownLog(prev), width);
       if (grew > 0) {
-        const max = Math.max(0, logRowCount(state, width) - store.get().logPage);
+        const max = Math.max(0, logRowCount(shownLog(state), width) - store.get().logPage);
         logScroll = Math.min(max, logScroll + grew);
       }
     }

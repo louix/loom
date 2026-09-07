@@ -36,7 +36,6 @@ import {
   fleetHits,
   focusedChildOf,
   footerHints,
-  formatEvent,
   groupsOf,
   initialState,
   newSettings,
@@ -47,19 +46,16 @@ import {
   providerPickItems,
   versionMismatchAction,
   queueFor,
-  condenseLog,
   anyCompacting,
   compactingFor,
   reduce,
   selectedSession,
   sessionLog,
+  shownLog,
   TRANSCRIPT_CAP,
   transcriptFor,
   sortSessions,
-  toLogLine,
-  transcriptText,
   visibleLog,
-  type LogLine,
   type Action,
   type TuiState,
   connectionOf,
@@ -67,12 +63,14 @@ import {
   fleetSessions,
 } from "@loom/tui/model";
 import {
-  detailRows,
+  condenseLog,
+  formatEvent,
   logRowCount,
-  modeChipHit,
-  promptPaneRows,
-  promptRows,
-} from "@loom/tui/components";
+  toLogLine,
+  transcriptText,
+  type LogLine,
+} from "@loom/tui/transcript";
+import { detailRows, modeChipHit, promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   discussPrompt,
@@ -3388,10 +3386,10 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
 
   // Drill into the reviewer sub-agent: the pane narrows to its stream.
   let s = seed([fanout]);
-  const full = logRowCount(s, 60);
+  const full = logRowCount(shownLog(s), 60);
   s = reduce(s, { t: "childEnter" });
   s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
-  const narrowed = logRowCount(s, 60);
+  const narrowed = logRowCount(shownLog(s), 60);
   assert.ok(narrowed > 0 && narrowed !== full, "the narrowed pane measures its own stream");
 
   // Every child drains at once: the snapshot leaves nothing to focus, so
@@ -3399,7 +3397,7 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
   // has to follow the *resolved* child, not the raw selection.
   s = reduce(s, fleet([{ ...fanout, backgroundTasks: [], subagents: [] }]));
   assert.equal(focusedChildOf(s), null);
-  assert.equal(logRowCount(s, 60), full, "un-narrowed pane measures the full log again");
+  assert.equal(logRowCount(shownLog(s), 60), full, "un-narrowed pane measures the full log again");
 
   // A partial drain instead lands the focus on a surviving sibling rather than
   // leaving it dangling — snapshots reconcile the selection, they don't strand it.

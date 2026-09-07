@@ -12,6 +12,7 @@ import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { fleetFilterStatus, searchStale } from "./fleet-search.ts";
+import { diffSegColor, logContext, logFilterTag, totalRows, windowRows } from "./transcript.ts";
 import {
   connectionOf,
   fleetDaemon,
@@ -19,12 +20,10 @@ import {
   fleetSessions,
   cacheHeat,
   cacheStatus,
-  clock,
   fleetLayout,
   fleetRowBudget,
   focusedChildOf,
   footerHints,
-  logFilterTag,
   providerInfo,
   queueFor,
   selectedSession,
@@ -32,7 +31,6 @@ import {
   type CacheStatus,
   type Connection,
   type FleetChild,
-  type LogLine,
   type TuiState,
 } from "./model.ts";
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
@@ -61,6 +59,7 @@ import {
   statusLook,
   toneColor,
   truncate,
+  inside,
   wrapText,
   type Tone,
 } from "./theme.ts";
@@ -76,9 +75,6 @@ const statusDetailSuffix = (s: SessionSnapshot): string => {
   }
   return "";
 };
-
-/** Inner width of a `borderStyle:"round"` + `paddingX:1` box. */
-const inside = (w: number): number => Math.max(4, w - 4);
 
 /** First non-blank line of a (possibly multi-line) session title. */
 const titleLine = (t: string | null): string => {
@@ -810,7 +806,7 @@ export const EventLog = ({
   // scroll math can't drift from what renders. The full wrapped list is never
   // materialised, which is what keeps a LOG_CAP-sized log (hundreds of
   // thousands of wrapped rows) from stalling every render.
-  const ctx = logContext(state, width);
+  const ctx = logContext(visibleLog(state, child), width);
   const total = totalRows(ctx);
   const maxScroll = Math.max(0, total - capacity);
   const off = Math.min(scroll, maxScroll);
@@ -871,134 +867,6 @@ export const EventLog = ({
     </Box>
   );
 };
-
-/** One wrapped screen row of the event log. `first` rows carry the time + glyph
- *  gutter; continuation rows carry `indent` spaces and nothing else. */
-interface PhysicalRow {
-  readonly key: string;
-  readonly first: boolean;
-  readonly ts: string;
-  readonly indent: number;
-  readonly glyph: string;
-  readonly tone: Tone;
-  /** The source line's event kind — gates {@link diffSegColor}, so a bulleted
-   *  list in assistant prose can't misread as a removed diff line. */
-  readonly kind: LogLine["kind"];
-  readonly seg: string;
-}
-
-/** A `+ `/`- `-prefixed line inside a `tool_call` / `tool_result` body reads as
- *  an added/removed diff line (an Edit's old/new block, tilth_write's own
- *  `diff: true` output, or even a `git diff` a Bash call happened to print) —
- *  colour it accordingly. Any other row keeps its plain tone colour. */
-const diffSegColor = (kind: LogLine["kind"], seg: string, fallback: string): string => {
-  if (kind !== "tool_call" && kind !== "tool_result") return fallback;
-  if (seg.startsWith("+ ")) return C.good;
-  if (seg.startsWith("- ")) return C.bad;
-  return fallback;
-};
-
-/**
- * Per-line render geometry: the gutter strings, indent, and the line's wrapped
- * segments, memoised per line + wrap width — appending an event then re-wraps
- * one line, not the backlog. LogLines are immutable and fall out of
- * `state.log` at its cap, so the `WeakMap` self-bounds.
- */
-const layoutCache = new WeakMap<
-  LogLine,
-  { iw: number; ts: string; indent: number; segs: readonly string[] }
->();
-const lineLayout = (
-  l: LogLine,
-  iw: number,
-): { ts: string; indent: number; segs: readonly string[] } => {
-  const hit = layoutCache.get(l);
-  if (hit && hit.iw === iw) return hit;
-  const ts = `${clock(l.ts)} `;
-  const indent = ts.length + 2; // + "glyph "
-  // Wrap each source line separately so intentional newlines are kept.
-  const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
-  const segs = source
-    .split("\n")
-    .flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, Math.max(8, iw - indent)));
-  const entry = { iw, ts, indent, segs };
-  layoutCache.set(l, entry);
-  return entry;
-};
-
-/** Everything the log renderers need for one state + pane width: the visible
- *  (filtered / condensed) lines, and the pane's inner width. */
-interface LogContext {
-  lines: readonly LogLine[];
-  iw: number;
-}
-
-const logContext = (state: TuiState, width: number): LogContext => {
-  // The main stream keeps no per-row child prefix: a sub-agent's frames are
-  // its subtree's lines (visibleLog hides them here), and drilled in the pane
-  // header already names the child.
-  const child = focusedChildOf(state);
-  return {
-    lines: visibleLog(state, child),
-    iw: inside(width),
-  };
-};
-
-/** Wrapped-row total for the visible log — O(lines) per call, with per-line
- *  geometry memoised in `layoutCache`, so re-measuring a grown log re-wraps
- *  only the new lines. Deliberately NOT cached per log version: a stale total
- *  here desyncs the scroll math from the rendered window (the exact bug class
- *  this replaced a full materialisation to avoid), and the walk is cheap — a
- *  WeakMap hit + an add per line. */
-const totalRows = (ctx: LogContext): number => {
-  let total = 0;
-  for (const l of ctx.lines) total += lineLayout(l, ctx.iw).segs.length;
-  return total;
-};
-/** The wrapped rows `[from, to)` of the visible log — builds only the window's
- *  row objects; the full wrapped list is never materialised. Partial lines at
- *  the window edges render their inner segments only, exactly like slices of a
- *  fully-built list did. */
-const windowRows = (ctx: LogContext, from: number, to: number): PhysicalRow[] => {
-  const out: PhysicalRow[] = [];
-  if (to <= from) return out;
-  let off = 0;
-  for (const l of ctx.lines) {
-    const { ts, indent, segs } = lineLayout(l, ctx.iw);
-    const lineEnd = off + segs.length;
-    if (lineEnd > from) {
-      const lo = Math.max(0, from - off);
-      const hi = Math.min(segs.length, to - off);
-      for (let i = lo; i < hi; i++) {
-        out.push({
-          // The durable id is unique within a session and stable across daemon
-          // restarts; a local echo has none, so it falls back to its timestamp.
-          key: `${l.id ?? `e${l.ts}`}-${i}`,
-          first: i === 0,
-          ts,
-          indent,
-          glyph: l.glyph,
-          tone: l.tone,
-          kind: l.kind,
-          seg: segs[i]!,
-        });
-      }
-      if (lineEnd >= to) break;
-    }
-    off = lineEnd;
-  }
-  return out;
-};
-
-/**
- * The event log's wrapped-row count at pane `width` — what `logScroll` is a
- * row offset into, and what {@link EventLog} pins the viewport against. The
- * scrollback handler in `fleet-handle.ts` measures through this so the scroll
- * math can't drift from what renders: one logical line wraps to several
- * physical rows, and only this count is the truth.
- */
-export const logRowCount = (state: TuiState, width: number): number =>
-  totalRows(logContext(state, width));
 
 // ---------------------------------------------------------------------------
 // input line (the prompt's editor, the pickers' filter)

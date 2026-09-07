@@ -15,6 +15,7 @@
     "./fleet-handle": "./src/fleet-handle.ts",
     "./fleet-search": "./src/fleet-search.ts",
     "./theme": "./src/theme.ts",
+    "./transcript": "./src/transcript.ts",
     "./theme-store": "./src/theme-store.ts"
   }
 }
