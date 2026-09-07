@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { homedir, tmpdir } from "node:os";
 import type { HarnessEvent } from "@loom/core/events";
 import {
   ClaudeProvider,
   __setClaudeSdk,
+  allowedWriteRoots,
   outOfTreeWriteReason,
 } from "@loom/connector-claude/adapter";
 import { setLogLevel } from "@loom/core/logger";
@@ -433,6 +435,48 @@ test("outOfTreeWriteReason: leaves in-tree writes and non-write tools alone", ()
     null,
   );
   assert.equal(outOfTreeWriteReason(ROOT, ROOT, "Edit", {}), null);
+});
+
+test("outOfTreeWriteReason: lets through the roots that are writable anyway", () => {
+  const allowed = allowedWriteRoots("/home/user/.claude-work");
+  // Temp scratch and this session's `claude` profile dir — both outside the
+  // tree by construction, both routine writes.
+  assert.equal(
+    outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "/tmp/x.json" }, allowed),
+    null,
+  );
+  assert.equal(
+    outOfTreeWriteReason(ROOT, ROOT, "Edit", { file_path: `${tmpdir()}/deep/x.json` }, allowed),
+    null,
+  );
+  assert.equal(
+    outOfTreeWriteReason(
+      ROOT,
+      ROOT,
+      "mcp__tilth__tilth_write",
+      { path: "/home/user/.claude-work/memory/a.md" },
+      allowed,
+    ),
+    null,
+  );
+  // The default profile dir, when the connector pins none.
+  assert.equal(
+    outOfTreeWriteReason(
+      ROOT,
+      ROOT,
+      "Write",
+      { file_path: `${homedir()}/.claude/settings.json` },
+      allowedWriteRoots(),
+    ),
+    null,
+  );
+  // A pinned profile dir does not drag the default one along with it.
+  assert.ok(
+    outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: `${homedir()}/.claude/x` }, allowed),
+  );
+  // Everything else outside the tree still prompts — including a prefix match.
+  assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "/etc/passwd" }, allowed));
+  assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "/tmpfoo/x" }, allowed));
 });
 
 type FakeHook = (input: unknown) => Promise<{

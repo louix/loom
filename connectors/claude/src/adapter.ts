@@ -8,7 +8,7 @@
  * Auth is not brokered here — the SDK uses Claude's OAuth in `~/.claude`.
  */
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { forkSession as sdkForkSession, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -134,11 +134,38 @@ const isTilthWriteTool = (name: string): boolean =>
  *  tilth's base dir, the rest are per-tool path fields. */
 const PATH_KEYS = ["file_path", "notebook_path", "path", "root"] as const;
 
+/** Lexical containment: is `abs` `base` itself or under it? A sibling that
+ *  merely shares the string prefix (`/root-scratch` vs `/root`) is outside. */
+const under = (base: string, abs: string): boolean => {
+  const rel = relative(base, abs);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+/**
+ * Roots a file-mutating tool may target without prompting, on top of the
+ * session's worktree: scratch space under the system temp dir, and the profile
+ * directory this session's `claude` runs against (`CLAUDE_CONFIG_DIR`, default
+ * `~/.claude`) — where the CLI keeps its settings and memory files, which the
+ * agent edits on the user's behalf and which by definition never live inside a
+ * worktree. `configDir` is the connector's own setting; "" means the default.
+ */
+export const allowedWriteRoots = (configDir?: string): string[] => {
+  const roots = [tmpdir(), "/tmp", configDir ? expandTilde(configDir) : join(homedir(), ".claude")];
+  // Containment is lexical, so macOS's `/tmp` → `/private/tmp` and
+  // `/var/folders` → `/private/var/folders` symlinks need both spellings — a
+  // tool that resolved the path before handing it over reports the `/private` one.
+  const aliases = roots
+    .filter((r) => r.startsWith("/tmp") || r.startsWith("/var"))
+    .map((r) => `/private${r}`);
+  return [...new Set([...roots, ...aliases])];
+};
+
 /**
  * Reason string when a file-mutating tool call points outside `root` — the
  * session's pinned worktree — or `null` when every checkable path stays in-tree.
  * `hookCwd` is the tool call's live working directory, so a relative path
- * resolves the way the tool would resolve it.
+ * resolves the way the tool would resolve it. Paths under any of
+ * `alsoAllowed` (see {@link allowedWriteRoots}) are let through too.
  *
  * Lexical containment only: the target is catching an agent that built a path
  * off the wrong repo root (e.g. `/repo/foo` or tilth `root: /repo` instead of
@@ -150,6 +177,7 @@ export const outOfTreeWriteReason = (
   hookCwd: string,
   toolName: string,
   toolInput: unknown,
+  alsoAllowed: readonly string[] = [],
 ): string | null => {
   if (!BUILTIN_WRITE_TOOLS.has(toolName) && !isTilthWriteTool(toolName)) return null;
   const raw = (toolInput ?? {}) as Record<string, unknown>;
@@ -157,9 +185,9 @@ export const outOfTreeWriteReason = (
     const v = raw[key];
     if (typeof v !== "string" || v === "") continue;
     const abs = isAbsolute(v) ? v : resolvePath(hookCwd || root, v);
-    const rel = relative(root, abs);
-    const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-    if (!inside) return `writes ${abs}, outside this session's worktree (${root})`;
+    if (under(root, abs)) continue;
+    if (alsoAllowed.some((base) => under(base, abs))) continue;
+    return `writes ${abs}, outside this session's worktree (${root})`;
   }
   return null;
 };
@@ -390,11 +418,13 @@ class ClaudeSession implements AgentSession {
     // `canUseTool`, so an agent that builds an absolute path off the wrong repo
     // root (the main checkout instead of `.loom/trees/<id>`) writes there
     // silently. This PreToolUse hook runs ahead of that classifier: for a
-    // file-mutating tool whose target escapes the session's worktree it forces
-    // an `ask`, which flows back through `canUseTool` as a normal
+    // file-mutating tool whose target escapes the session's worktree — and
+    // isn't under one of the always-writable roots (`allowedWriteRoots`) — it
+    // forces an `ask`, which flows back through `canUseTool` as a normal
     // `permission_request`. Self-gates on the *live* mode — every other mode
     // already prompts, so the guard would only double up.
     const worktreeRoot = opts.cwd;
+    const writableOutsideTree = allowedWriteRoots(configDir);
     const guardOutOfTreeWrites: HookCallback = (input) => {
       if (input.hook_event_name !== "PreToolUse") return Promise.resolve({});
       if (this.#mode !== "auto") return Promise.resolve({});
@@ -403,6 +433,7 @@ class ClaudeSession implements AgentSession {
         input.cwd,
         input.tool_name,
         input.tool_input,
+        writableOutsideTree,
       );
       if (reason === null) return Promise.resolve({});
       this.#log.info("out-of-worktree write → prompting", { tool: input.tool_name, reason });
