@@ -8,7 +8,7 @@ import type { SessionStateKind } from "@loom/core/events";
 
 export type ThemeMode = "dark" | "light" | "argonext";
 
-type Palette = {
+export type Palette = {
   accent: string;
   accentDim: string;
   await_: string;
@@ -74,7 +74,11 @@ const ARGONEXT: Palette = {
   bg: "#0d0f18",
 };
 
-const PALETTES: Record<ThemeMode, Palette> = { dark: DARK, light: LIGHT, argonext: ARGONEXT };
+export const PALETTES: Record<ThemeMode, Palette> = {
+  dark: DARK,
+  light: LIGHT,
+  argonext: ARGONEXT,
+};
 
 /** Valid modes — the set a theme read back from the persisted state file may name. */
 export const THEME_MODES = Object.keys(PALETTES) as ThemeMode[];

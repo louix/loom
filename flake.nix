@@ -150,11 +150,13 @@
               mkdir -p $out/libexec/loom
               cp -R . $out/libexec/loom
 
+              # Dependencies are already installed under node_modules. Leave
+              # DENO_DIR to Deno (or the caller): its runtime SQLite caches
+              # must be writable, unlike the build-time dependency store.
               for bin in loom loomd; do
                 makeWrapper ${pkgs.deno}/bin/deno $out/bin/$bin \
                   --add-flags "run -A --cached-only --node-modules-dir=manual" \
                   --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
-                  --set DENO_DIR ${denoDeps} \
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version}

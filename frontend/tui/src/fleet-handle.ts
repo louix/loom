@@ -1,3 +1,4 @@
+import { helpLines } from "./help.ts";
 /**
  * Everything the TUI does that isn't drawing: owns the {@link TuiState}, the
  * keymap, and every daemon round-trip. The React side (`./app.tsx`) is a pure
@@ -16,6 +17,7 @@ import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
 import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
+import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import type { ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
@@ -24,7 +26,7 @@ import type {
   DoctorReport,
   HistoryPage,
   PushFrame,
-  SearchPage,
+  SearchResult,
   SessionSnapshot,
 } from "@loom/core/wire";
 import { LOOM_VERSION } from "@loom/core/version";
@@ -41,26 +43,15 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import { AGE_MS, mkClock, mkDeadline, type Beat } from "./clock.ts";
-import {
-  detailView,
-  fleetPaneView,
-  headerView,
-  logView,
-  type DetailView,
-  type FleetPaneView,
-  type HeaderView,
-  type LogView,
-} from "./views.ts";
-import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
-import { mkModeControl } from "./mode-control.ts";
-import { mkSearchControl, searchStale } from "./fleet-search.ts";
-import { cycleLogFilter, mkTranscript, noTranscript, transcriptText } from "./transcript.ts";
+import { mkComposer, outboxOf, pending, release } from "./composer.ts";
+import { mkModeControl, pendingMode } from "./mode-control.ts";
+import { mkSearchControl, searchStale, searchMatches, type Find } from "./fleet-search.ts";
+import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
 import {
   fleetProviders,
   fleetSessions,
   allowedActs,
   commandsFor,
-  connectionOf,
   defaultModelOf,
   defaultProviderId,
   escapePicker,
@@ -86,6 +77,9 @@ import {
   type FleetLayout,
   type FleetHit,
   type TuiState,
+  focusedChildOf,
+  providerAccountOf,
+  cacheStatus,
 } from "./model.ts";
 import {
   browse,
@@ -129,7 +123,6 @@ const LOG_TAIL_BYTES = 256 * 1024;
 /** Matches per `session.search` page. Big enough that a normal fleet comes
  *  back whole; small enough that a query against a large history is bounded.
  *  A full page never means "no more" — the daemon returns a cursor for that. */
-const SEARCH_PAGE = 50;
 
 /** Last `maxBytes` of `path` as text, partial first line dropped. Never throws —
  *  a missing / unreadable file comes back as a one-line note. */
@@ -150,14 +143,6 @@ const tailFileSync = (path: string, maxBytes: number): string => {
     if (fd !== null) closeSync(fd);
   }
 };
-
-/**
- * Actions that touch nothing but this process, so they stay live while the
- * connection is down: reading the UI, changing how it looks, viewing the log
- * files, leaving. Everything else needs a daemon, and is gated once in
- * `runAct` on ClientState's discriminant rather than failing per-RPC.
- */
-const OFFLINE_ACTS = new Set<ActName>(["help", "theme", "filter", "viewlog", "logs", "quit"]);
 
 /** Overlays that arm the batched-input latch ({@link overlayActed}). */
 const LATCHED_OVERLAYS = new Set<Overlay["t"]>(["confirm", "plan", "picker"]);
@@ -240,30 +225,10 @@ export type BodyKind =
   | { t: "split" }
   | { t: "fleetOnly" }
   | { t: "sessionPane" };
-/**
- * Everything `./app.tsx` needs for one frame: the layout, the selection, the
- * active overlay — and one narrow view per pane, each rebuilt only when its own
- * inputs move. `state` is still here for the overlays and the footer, which are
- * the input surface and repaint with every keystroke anyway.
- */
+/** Layout and UI coordination only. Feature values stay in their handles. */
 export interface FleetView {
-  readonly state: TuiState;
-  /** Spinner phase. Advances only while something visible animates. */
-  readonly tick: number;
-  /** The frame's clock, coarsened to a second — what cache ages and elapsed
-   *  times are rendered against. */
-  readonly now: number;
-  /** What the header row draws. */
-  readonly header: HeaderView;
-  /** What the FLEET pane draws, already windowed to the row budget. */
-  readonly fleetPane: FleetPaneView;
-  /** What the DETAIL pane draws, or null with nothing selected. */
-  readonly detail: DetailView | null;
-  /** What the EVENTS pane draws — filtered, wrapped and windowed. */
-  readonly log: LogView;
-  /** Viewport offset into the event log, in physical (wrapped) rows up from the
-   *  live tail — `EventLog` pins the viewport at `rows - capacity`, the top. */
-  readonly logScroll: number;
+  readonly ui: TuiState;
+  readonly fleetLayout: FleetLayout;
   /** Top-anchored offset into the plan-review body (PgUp/PgDn/wheel). */
   readonly planScroll: number;
   /** The active layout view — `⇥` toggles it, `Esc` resets to `overview`. */
@@ -273,10 +238,6 @@ export interface FleetView {
   readonly request: SessionInteraction | null;
   /** How many the selected session has outstanding in total, `request` included. */
   readonly requestCount: number;
-  readonly allowed: ReadonlySet<ActName>;
-  /** What the selected session still owes the daemon, oldest first — the
-   *  Detail pane shows the count and the head. */
-  readonly queued: readonly string[];
   readonly showRequest: boolean;
   /** Which `AskUserQuestion` question the request panel should show — the one
    *  the open `answerQuestion` prompt is collecting, else the first. */
@@ -297,6 +258,15 @@ export interface FleetView {
 export interface FleetHandle {
   readonly subscribe: (onChange: () => void) => () => void;
   readonly getView: () => FleetView;
+  readonly composer: ReturnType<typeof mkComposer>;
+  readonly modes: ReturnType<typeof mkModeControl>;
+  readonly searches: ReturnType<typeof mkSearchControl>;
+  readonly transcript: ReturnType<typeof mkTranscript>;
+  readonly animation: {
+    get: () => { tick: number; now: number };
+    getNow: () => number;
+    subscribe: (fn: () => void) => () => void;
+  };
   readonly handleKey: (input: string, key: Key) => void;
   /** Subscribe the daemon feed + tickers; returns teardown. One `useEffect`. */
   readonly effectStart: () => () => void;
@@ -340,70 +310,21 @@ export interface MkFleetHandleInput {
   readonly historyPageSize?: number;
 }
 
-/**
- * One memo slot. `compute` runs only when a dep changes by identity — no deep
- * comparison and no per-pane equality function: the deps *are* the pane's
- * inputs, so if none of them moved the pane has nothing new to draw. A stale
- * dep list can only ever cost a rebuild, never a wrong frame, because every
- * builder is a pure function of exactly what it lists.
- */
-type Memo<A> = (deps: readonly unknown[], compute: () => A) => A;
-
-const memoOne = <A>(): Memo<A> => {
-  let last: readonly unknown[] | null = null;
-  let cell: { readonly value: A } | null = null;
-  return (deps, compute) => {
-    if (cell !== null && last !== null && last.length === deps.length) {
-      let same = true;
-      for (let i = 0; i < deps.length; i++) {
-        if (deps[i] !== last[i]) {
-          same = false;
-          break;
-        }
-      }
-      if (same) return cell.value;
-    }
-    last = deps;
-    cell = { value: compute() };
-    return cell.value;
-  };
-};
-
-/** The per-pane memo slots. One set per handle — they are frame-to-frame state,
- *  not a module-level cache shared between two mounted TUIs. */
-interface ViewMemos {
-  readonly layout: Memo<FleetLayout>;
-  readonly header: Memo<HeaderView>;
-  readonly fleet: Memo<FleetPaneView>;
-  readonly detail: Memo<DetailView | null>;
-  readonly log: Memo<LogView>;
-}
-
-const mkViewMemos = (): ViewMemos => ({
-  layout: memoOne(),
-  header: memoOne(),
-  fleet: memoOne(),
-  detail: memoOne(),
-  log: memoOne(),
-});
-
 const deriveView = (
   state: TuiState,
-  memos: ViewMemos,
-  frame: { tick: number; now: number },
-  logScroll: number,
+  find: Find | null,
+  queued: readonly string[],
+  mode: SessionMode | null,
   planScroll: number,
   layoutView: LayoutView,
   dims: { cols: number; rows: number },
 ): FleetView => {
-  const { tick, now } = frame;
   const sel = selectedSession(state);
   // The panel shows what the turn is parked on, straight off the snapshot: the
   // request's id, kind and payload travel together from here to the screen and
   // back to the RPC that answers it.
   const request = sel ? activeRequest(fleetSessions(state), sel.id) : null;
   const requestCount = sel ? requestsFor(fleetSessions(state), sel.id).length : 0;
-  const allowed = allowedActs(sel);
 
   // The approve / answer / plan panel sits full-width just above the footer in
   // both layout views; every overlay owns the screen.
@@ -450,18 +371,15 @@ const deriveView = (
     : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
   const rightW = narrow ? cols : Math.max(1, cols - leftW - 1);
 
-  const detail = memos.detail([sel, state.outbox, state.modes, state.fleet, now], () =>
-    detailView(state, sel, now),
-  );
+  const account = sel ? providerAccountOf(state, sel.provider) : "";
 
   // The right column is Detail (natural height) + gap 1 + the log, and must
   // sum to exactly bodyH — size the log against Detail's real row count
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
-  const queued = detail?.queued ?? [];
   const detailH = detailRows(sel, {
-    account: detail?.account ?? "",
-    compacting: detail?.compacting ?? null,
+    account: account,
+    compacting: sel?.compacting ?? null,
     queued,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
@@ -473,12 +391,7 @@ const deriveView = (
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
   const logPage = Math.max(1, splitLogH - 3);
 
-  const conn = connectionOf(state);
-  const budget = fleetRowBudget(bodyH, state.find != null);
-  const layout = memos.layout(
-    [sessionsRef(state), state.find, state.selectedId, state.selectedChild, budget],
-    () => fleetLayout(state, budget),
-  );
+  const layout = fleetLayout({ ...state, find }, fleetRowBudget(bodyH, find !== null));
 
   // Clickable regions — screen coordinates the keymap's mouse branch hit-tests
   // against. The body starts at screen row 2 (Header is one row); Ink clips the
@@ -486,40 +399,36 @@ const deriveView = (
   const hits: FleetHit[] = [];
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
   if (body.t === "split") {
-    hits.push(...fleetHits(state, { ...fleetGeom, listW: leftW }, layout));
+    hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: leftW }, layout));
     const chip = modeChipHit(sel, {
       originX: leftW + 2,
       originY: 2,
       paneW: rightW,
-      account: detail?.account ?? "",
-      pending: detail?.pendingMode ?? null,
+      account: account,
+      pending: mode,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   } else if (body.t === "fleetOnly") {
-    hits.push(...fleetHits(state, { ...fleetGeom, listW: cols }, layout));
+    hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: cols }, layout));
   } else if (body.t === "sessionPane") {
     const chip = modeChipHit(sel, {
       originX: 1,
       originY: 2,
       paneW: cols,
-      account: detail?.account ?? "",
-      pending: detail?.pendingMode ?? null,
+      account: account,
+      pending: mode,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   }
 
   return {
-    state,
-    tick,
-    now,
-    logScroll,
+    ui: state,
+    fleetLayout: layout,
     planScroll,
     layoutView,
     sel,
     request,
     requestCount,
-    queued,
-    allowed,
     showRequest: showRequest === true,
     questionIdx,
     body,
@@ -531,16 +440,6 @@ const deriveView = (
     splitLogH,
     logPage,
     hits,
-    header: memos.header([state.fleet], () => headerView(state, conn)),
-    fleetPane: memos.fleet(
-      [layout, state.fleet, state.selectedId, state.selectedChild, state.find, now],
-      () => fleetPaneView(state, layout, conn, now),
-    ),
-    detail,
-    log: memos.log(
-      [state.transcript, state.logFilter, state.selectedChild, sel, eventsW, splitLogH, logScroll],
-      () => logView(state, sel, eventsW, splitLogH, logScroll),
-    ),
   };
 };
 
@@ -552,25 +451,35 @@ const deriveView = (
  * pixel and is not worth a repaint. And an elapsed second or a cache countdown
  * is drawn at whole-second resolution, so it does not need the spinner's rate.
  */
-export const animationNeed = (v: FleetView): Beat => {
+export const animationNeed = (v: FleetView, now = Date.now()): Beat => {
+  if (v.ui.fleet.tag !== "data") return null;
   const fleet = v.body.t === "split" || v.body.t === "fleetOnly";
   const session = v.body.t === "split" || v.body.t === "sessionPane";
-  if (fleet && v.fleetPane.spins) return "spin";
-  if (session && (v.log.spinning || v.detail?.compacting)) return "spin";
-  if (fleet && v.fleetPane.ages) return "age";
-  if (session && v.detail?.ages) return "age";
+  const spins = (s: SessionSnapshot) =>
+    ["running", "starting", "working_background"].includes(s.status.kind) ||
+    s.compacting !== undefined;
+  if (
+    fleet &&
+    v.fleetLayout.visible.some((e) => e.kind === "child" || (e.kind === "session" && spins(e.s)))
+  )
+    return "spin";
+  if (session && v.sel && (spins(v.sel) || focusedChildOf(v.ui))) return "spin";
+  if (
+    fleet &&
+    v.fleetLayout.visible.some(
+      (e) => e.kind === "session" && cacheStatus(e.s, now).state === "warm",
+    )
+  )
+    return "age";
+  if (
+    session &&
+    v.sel &&
+    (cacheStatus(v.sel, now).state === "warm" ||
+      Object.values(v.sel.rateLimits).some((r) => r.resetsAt != null && r.resetsAt > now))
+  )
+    return "age";
   return null;
 };
-
-/**
- * The authoritative session list, or `null` when there is no snapshot to read
- * one from. {@link fleetSessions} answers `[]` for both "no sessions" and "no
- * connection", and a *fresh* `[]` each call — comparing those to decide whether
- * the fleet changed fires on every dispatch and reads a dropped connection as
- * an emptied fleet. Compare this instead; `null !== null` is false.
- */
-const sessionsRef = (s: TuiState): readonly SessionSnapshot[] | null =>
-  s.fleet.tag === "data" ? s.fleet.value.sessions : null;
 
 export const mkFleetHandle = ({
   client,
@@ -591,14 +500,7 @@ export const mkFleetHandle = ({
   /** Whether the daemon has given us a snapshot to act on. The single source
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
-  // The frame's clock: the spinner phase, and a `now` coarsened to the second
-  // every time-derived thing on screen is rendered at. A `now` that moved on
-  // each publish would defeat the pane memos to no visible end.
-  const frame = { tick: 0, now: Date.now() };
-  const refreshNow = (): void => {
-    const real = Date.now();
-    if (real - frame.now >= AGE_MS) frame.now = real;
-  };
+  const animation = mkStore({ tick: 0, now: Date.now() });
   let planScroll = 0;
   // Fleet toggle: `⇥` swaps the overview split ↔ the session's detail + events,
   // `Esc` snaps back to overview. On a narrow terminal overview is the list alone.
@@ -637,8 +539,6 @@ export const mkFleetHandle = ({
     setMode: (id, mode) =>
       client.request("session.setMode", { id, mode, by: client.clientId }).then(),
     fleet: () => fleetSessions(state),
-    choices: () => state.modes,
-    commit: (sessionId, choice) => dispatch({ t: "mode", sessionId, choice }),
     note: (text, tone) => note(text, tone),
     planPending: (sessionId) => {
       const review = planReviewFor(sessionId);
@@ -652,31 +552,66 @@ export const mkFleetHandle = ({
   // per settled query, results tagged with the query that asked for them, and
   // no page shown as an answer to a query it wasn't asked.
   const searches = mkSearchControl({
-    search: (query, cursor) =>
-      client.request<SearchPage>("session.search", {
-        query,
-        limit: SEARCH_PAGE,
-        ...(cursor === null ? {} : { cursor }),
-      }),
-    find: () => state.find,
-    sessions: () => fleetSessions(state),
-    selectedId: () => state.selectedId,
+    search: (query) => client.request<SearchResult>("session.search", { query }),
     connected,
-    loaded: (query, results) => dispatch({ t: "searchLoaded", query, results }),
   });
 
-  // The event log's offset belongs to the transcript handle below — the store is
-  // built before it exists, and an unloaded transcript is at its tail anyway.
-  const memos = mkViewMemos();
-  const store = mkStore<FleetView>(
-    deriveView(state, memos, frame, 0, planScroll, layoutView, dims),
-  );
+  const composer = mkComposer({
+    recover: (text) => dispatch({ t: "recoverDraft", text }),
+    send: (sessionId, text) => client.request("session.send", { id: sessionId, text }).then(),
+    fleet: () => fleetSessions(state),
+    note: (text) => note(text, "bad"),
+  });
+  // Rows per page. The first pull matches the daemon's own default so a session
+  // that fits in one page arrives whole; scroll-back adds more.
+  const HISTORY_PAGE = historyPageSize ?? 500;
+
+  /**
+   * The selected session's transcript: one resource, its own lifetime, and the
+   * viewport into it. Nothing else here fetches history or moves the event
+   * pane's offset — the handle decides both from what the pane is drawing,
+   * which it measures through the same geometry the pane renders with.
+   *
+   * Live frames are already arriving before any of this runs (the push
+   * subscription is established at start-up, not at selection), so an entry
+   * landing while the first page is in flight is merged by durable id rather
+   * than lost between the two sources.
+   */
+  const transcripts = mkTranscript({
+    fetch: (id, cursor) =>
+      client.request<HistoryPage>("session.events", {
+        id,
+        limit: HISTORY_PAGE,
+        ...(cursor === null ? {} : { cursor }),
+      }),
+    connected,
+    shown: (transcript) => shownLog({ ...state, transcript, outbox: composer.get() }),
+    // Width the log pane renders at for the current body (see app.tsx): the
+    // zoomed and session views give it the whole terminal, the overview split
+    // its right column.
+    paneWidth: () => {
+      const v = store.get();
+      return v.body.t === "split" ? v.rightW : v.cols;
+    },
+    pageRows: () => store.get().logPage,
+  });
+
+  const view = (): FleetView =>
+    deriveView(
+      state,
+      searches.get(),
+      pending(outboxOf(composer.get(), state.selectedId)),
+      pendingMode(modes.get(), state.selectedId),
+      planScroll,
+      layoutView,
+      dims,
+    );
+  const store = mkStore(view());
   const publish = (): void => {
-    refreshNow();
-    store.set(deriveView(state, memos, frame, transcripts.scroll(), planScroll, layoutView, dims));
-    // What the frame that just went out needs from the clock — read off the
-    // frame itself, so a session spinning in a row that is scrolled out of the
-    // list, or in a pane this layout isn't drawing, costs nothing.
+    const frame = animation.get();
+    const now = Date.now();
+    if (now - frame.now >= AGE_MS) animation.set({ ...frame, now });
+    store.set(view());
     clock.settle();
   };
 
@@ -685,8 +620,13 @@ export const mkFleetHandle = ({
   const clock = mkClock({
     needs: () => animationNeed(store.get()),
     beat: () => {
-      frame.tick = (frame.tick + 1) % 100_000;
-      publish();
+      const frame = animation.get();
+      const now = Date.now();
+      animation.set({
+        tick: (frame.tick + 1) % 100_000,
+        now: now - frame.now >= AGE_MS ? now : frame.now,
+      });
+      clock.settle();
     },
   });
 
@@ -710,66 +650,22 @@ export const mkFleetHandle = ({
     publish();
   };
 
-  // Rows per page. The first pull matches the daemon's own default so a session
-  // that fits in one page arrives whole; scroll-back adds more.
-  const HISTORY_PAGE = historyPageSize ?? 500;
-
-  /**
-   * The selected session's transcript: one resource, its own lifetime, and the
-   * viewport into it. Nothing else here fetches history or moves the event
-   * pane's offset — the handle decides both from what the pane is drawing,
-   * which it measures through the same geometry the pane renders with.
-   *
-   * Live frames are already arriving before any of this runs (the push
-   * subscription is established at start-up, not at selection), so an entry
-   * landing while the first page is in flight is merged by durable id rather
-   * than lost between the two sources.
-   */
-  const transcripts = mkTranscript({
-    fetch: (id, cursor) =>
-      client.request<HistoryPage>("session.events", {
-        id,
-        limit: HISTORY_PAGE,
-        ...(cursor === null ? {} : { cursor }),
-      }),
-    transcript: () => state.transcript,
-    selectedId: () => state.selectedId,
-    connected,
-    shown: () => shownLog(state),
-    // The filter and the drill-down change which rows exist, so an offset
-    // counted against the old ones means nothing.
-    viewKey: () => `${state.selectedId} ${state.logFilter} ${state.selectedChild}`,
-    // Width the log pane renders at for the current body (see app.tsx): the
-    // zoomed and session views give it the whole terminal, the overview split
-    // its right column.
-    paneWidth: () => {
-      const v = store.get();
-      return v.body.t === "split" ? v.rightW : v.cols;
-    },
-    pageRows: () => store.get().logPage,
-    commit: (transcript) => dispatch({ t: "transcript", transcript }),
-    publish: () => publish(),
-  });
-
-  // Follow-ups typed at a busy session, the sends already on the wire, and
-  // anything whose reply was lost — all of it lives in `state.outbox`, and the
-  // composer is what moves a message between those. It sees the snapshots and
-  // one commit function; it does not see the rest of the app.
-  const composer = mkComposer({
-    send: (sessionId, text) => client.request("session.send", { id: sessionId, text }).then(),
-    fleet: () => fleetSessions(state),
-    boxes: () => state.outbox,
-    commit: (sessionId, box) => dispatch({ t: "outbox", sessionId, box }),
-    note: (text) => note(text, "bad"),
-  });
-
   const dispatch = (a: Action): void => {
     const prev = state;
-    state = reduce(state, a);
+    state = reduce(
+      state,
+      a.t === "move"
+        ? { ...a, ids: searchMatches(searches.get(), fleetSessions(state)).map((s) => s.id) }
+        : a,
+    );
     if (state === prev) return;
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
-    if (heldPlan(state.overlay)?.requestId !== heldPlan(prev.overlay)?.requestId) planScroll = 0;
+    if (
+      state.overlay.t !== prev.overlay.t ||
+      heldPlan(state.overlay)?.requestId !== heldPlan(prev.overlay)?.requestId
+    )
+      planScroll = 0;
     // Narrow layout: opening a reply to a session pulls the events pane into
     // view (its input renders there) — from `overview` there's no room for it.
     if (
@@ -786,15 +682,16 @@ export const mkFleetHandle = ({
       // Remember the choice for the next launch — best-effort, like the log.
       if (themeState) persistTheme(themeState, state.theme);
     }
-    // The `/` query moved, or the filter opened or closed: the search handle
-    // decides whether that needs a round trip.
-    if (state.find?.buffer !== prev.find?.buffer) searches.typed();
-    searches.settle();
-    // Both handles run outside the connection gate below, because losing the
-    // daemon is exactly what has to invalidate what is on screen: the search
-    // results describe a fleet we are no longer told about, and the transcript
-    // window is a position in a history the next connection re-reads.
-    transcripts.settle();
+    if (
+      state.selectedId !== prev.selectedId ||
+      state.logFilter !== prev.logFilter ||
+      state.selectedChild !== prev.selectedChild ||
+      connected() !== (prev.fleet.tag === "data")
+    )
+      transcripts.select(
+        connected() ? state.selectedId : null,
+        `${state.logFilter} ${state.selectedChild}`,
+      );
     // A notice has a known expiry, so it waits on one timer rather than on a
     // poll. Re-armed only when the notice itself changed: a stream of unrelated
     // dispatches must not keep pushing the deadline out.
@@ -802,24 +699,6 @@ export const mkFleetHandle = ({
       notices.at(state.notice === null ? null : NOTICE_TTL_MS - (Date.now() - state.notice.at));
     }
     publish();
-    // One gate for every daemon-dependent effect, read off ClientState's
-    // discriminant rather than a flag beside it. Without a snapshot there is
-    // nothing to fetch (the transcript was dropped when the connection went), no
-    // session proven dead, and no queue that can be drained — an unknown fleet
-    // is not an empty fleet, and treating it as one strands every queue.
-    if (!connected()) return;
-    if (sessionsRef(state) !== sessionsRef(prev)) {
-      // Both hold work keyed by session: a request's guard, a scheduled mode
-      // change. A session the daemon has stopped listing releases both.
-      interactions.settle();
-      modes.settle();
-    }
-    // A new snapshot may have taken a session idle (or ended a compaction, or
-    // killed it outright), and a newly queued message may be releasable right
-    // now — both are the composer's to work out.
-    if (sessionsRef(state) !== sessionsRef(prev) || state.outbox !== prev.outbox) {
-      composer.advance();
-    }
   };
 
   const note = (text: string, tone: "good" | "bad" | "dim" | "accent" = "good"): void =>
@@ -842,7 +721,10 @@ export const mkFleetHandle = ({
   };
 
   /** `o` / `⌥o` dump: the selected session's whole log as a readable transcript. */
-  const logText = (): string => transcriptText(sessionLog(state));
+  const logText = (): string =>
+    transcriptText(
+      sessionLog({ ...state, transcript: transcripts.get().transcript, outbox: composer.get() }),
+    );
 
   /**
    * Hand the terminal to `$EDITOR` and hand it back. `suspendTerminal` (Ink 7.1)
@@ -971,7 +853,7 @@ export const mkFleetHandle = ({
     if (name === "find") {
       // The fleet filter — an inline single-line query on the FLEET pane, not a
       // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
-      return void dispatch({ t: state.find ? "closeFind" : "openFind" });
+      return void (searches.get() ? searches.close() : searches.open());
     }
     if (name === "help") return void show(state.overlay.t === "help" ? browse : { t: "help" });
     if (name === "quit") return quitTui();
@@ -1059,8 +941,7 @@ export const mkFleetHandle = ({
         // the explicit action that releases it — it is editable from here, is
         // not re-sent unless the user submits it, and whatever was queued behind
         // it starts moving again.
-        const held = release(outboxOf(state.outbox, s.id));
-        if (held) dispatch({ t: "outbox", sessionId: s.id, box: held.box });
+        const held = release(outboxOf(composer.get(), s.id));
         const text = held?.text ?? state.drafts.last;
         return void show({ t: "prompt", prompt: sessionPrompt("send", s.id, "send", text) });
       }
@@ -1489,12 +1370,6 @@ export const mkFleetHandle = ({
   const submitPrompt = (): void => {
     const p = openPrompt(state.overlay);
     if (!p) return;
-    // Nothing typed is submitted while the connection is down — including text
-    // an `$EDITOR` handoff started before the drop just handed back. The prompt
-    // stays open with it, to be sent (or abandoned) once the daemon answers.
-    if (!connected()) {
-      return note("not connected — your message is kept, press enter again once it is", "dim");
-    }
     const text = p.buffer.text.trim();
     const by = client.clientId;
     const kind = promptKind(p);
@@ -1517,11 +1392,16 @@ export const mkFleetHandle = ({
     const reopen = (): void =>
       show({ t: "prompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
 
+    if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
     dispatch({ t: "closePrompt" });
 
     const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
       switch (k) {
         case "send": {
+          if (outboxOf(composer.get(), sessionId).t === "held") {
+            await composer.retry(sessionId, text);
+            return "";
+          }
           // No local echo — the daemon emits a `user_message` event that every
           // client (this one included) renders. The RPC tells us whether it
           // actually landed mid-turn.
@@ -1529,7 +1409,6 @@ export const mkFleetHandle = ({
             id: sessionId,
             text,
           });
-          dispatch({ t: "pushHistory", text });
           // Quote a preview: mid-turn sends are easy to fire twice in a row,
           // and "injected" alone says neither which message landed nor that
           // it's queued behind the running tool call rather than lost.
@@ -1654,11 +1533,7 @@ export const mkFleetHandle = ({
   // send is typed during a compaction (`why` overrides the status line).
   const queueSend = (sessionId: string, text: string, why = "queued for turn end"): void => {
     dispatch({ t: "closePrompt" });
-    dispatch({
-      t: "outbox",
-      sessionId,
-      box: enqueue(outboxOf(state.outbox, sessionId), text),
-    });
+    composer.enqueue(sessionId, text);
     dispatch({ t: "pushHistory", text });
     // No marker to add: the event pane derives one per queued message straight
     // from the outbox, so it appears with this dispatch and disappears when the
@@ -1834,9 +1709,6 @@ export const mkFleetHandle = ({
    * through {@link act}; the app / view / structural commands are handled here.
    */
   const runAct = (name: ActName): void => {
-    if (!connected() && !OFFLINE_ACTS.has(name)) {
-      return note("not connected — nothing to act on until the daemon answers", "dim");
-    }
     const sel = selectedSession(state);
     const allowed = allowedActs(sel);
     switch (name) {
@@ -1887,11 +1759,11 @@ export const mkFleetHandle = ({
         return copyToClipboard(nm, nm);
       }
       case "clearqueue": {
-        const box = sel && outboxOf(state.outbox, sel.id);
+        const box = sel && outboxOf(composer.get(), sel.id);
         if (!box || pending(box).length === 0) {
           return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
         }
-        return void dispatch({ t: "outbox", sessionId: sel.id, box: cleared(box) });
+        return void composer.clear(sel.id);
       }
       case "fork": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
@@ -1961,6 +1833,10 @@ export const mkFleetHandle = ({
 
   // ---- keymap -----------------------------------------------
   const handleKey = (input: string, key: Key): void => {
+    if (!connected()) {
+      if (input === "q" || (key.ctrl && input === "c")) quitTui();
+      return;
+    }
     const sel = selectedSession(state);
     const allowed = allowedActs(sel);
     const { logPage } = store.get();
@@ -1974,7 +1850,7 @@ export const mkFleetHandle = ({
     // the fleet filter. The replayed presses are length-1, so this never
     // re-enters.
     const onInputLine =
-      state.overlay.t === "prompt" || state.overlay.t === "picker" || !!state.find;
+      state.overlay.t === "prompt" || state.overlay.t === "picker" || !!searches.get();
     if (
       onInputLine &&
       input.length > 1 &&
@@ -2089,8 +1965,7 @@ export const mkFleetHandle = ({
         return;
       }
       if (key.meta && input === "x" && sendTo) {
-        const box = outboxOf(state.outbox, sendTo);
-        return void dispatch({ t: "outbox", sessionId: sendTo, box: cleared(box) });
+        return void composer.clear(sendTo);
       }
       // ⌥⏎ while the target is still working queues for turn end instead of its
       // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
@@ -2181,6 +2056,18 @@ export const mkFleetHandle = ({
     }
 
     if (state.overlay.t === "help") {
+      const page = Math.max(1, store.get().bodyH - 1);
+      const max = Math.max(0, helpLines(Math.max(1, dims.cols - 2)).length - page);
+      let by = 0;
+      if (key.upArrow) by = -1;
+      else if (key.downArrow) by = 1;
+      else if (key.pageUp) by = -page;
+      else if (key.pageDown) by = page;
+      if (by) {
+        planScroll = Math.max(0, Math.min(max, planScroll + by));
+        publish();
+        return;
+      }
       if (input === "?" || input === "q" || key.escape) show(browse);
       return;
     }
@@ -2221,9 +2108,9 @@ export const mkFleetHandle = ({
     // The fleet filter is up: typing edits it (a single line, no history); ↑/↓,
     // PgUp/PgDn and Home/End fall through — the selection and the log keep
     // working. ⏎ accepts (and keeps ⏎'s fleet-row meaning below); esc clears.
-    if (state.find) {
-      const find = state.find;
-      if (key.escape) return void dispatch({ t: "closeFind" });
+    const find = searches.get();
+    if (find) {
+      if (key.escape) return void searches.close();
       if (key.return) {
         // A search that failed has ⏎ for a retry — the one explicit way to
         // re-run a query without retyping it.
@@ -2232,7 +2119,7 @@ export const mkFleetHandle = ({
         // now would act on a session the query no longer names, so ⏎ waits
         // rather than committing to a row it is about to replace.
         if (searchStale(find)) return void note("still searching…", "dim");
-        dispatch({ t: "closeFind" });
+        searches.close();
       } else if (
         !key.upArrow &&
         !key.downArrow &&
@@ -2242,7 +2129,7 @@ export const mkFleetHandle = ({
         !key.end
       ) {
         const res = applyKey(find.buffer, input, key, { multiline: false });
-        if (res.kind === "buffer") return void dispatch({ t: "findSet", buffer: res.buffer });
+        if (res.kind === "buffer") return void searches.setBuffer(res.buffer);
         return; // unbound modified keys — ignore
       }
     }
@@ -2332,7 +2219,7 @@ export const mkFleetHandle = ({
         picker: makePicker({
           step: "command",
           title: "commands",
-          items: commandsFor(state),
+          items: commandsFor({ ...state, outbox: composer.get() }),
           dest: { t: "command" },
         }),
       });
@@ -2381,14 +2268,43 @@ export const mkFleetHandle = ({
     void reconcileVersion();
 
     const offs = [
+      composer.subscribe(() => {
+        transcripts.contentChanged();
+        publish();
+      }),
+      modes.subscribe(publish),
+      searches.subscribe(() => {
+        const find = searches.get();
+        const matches = searchMatches(find, fleetSessions(state));
+        if (
+          find?.results.tag === "data" &&
+          matches.length &&
+          !matches.some((s) => s.id === state.selectedId)
+        )
+          dispatch({ t: "select", id: matches[0]!.id });
+        else publish();
+      }),
       // Live entries first: `subscribe` fires synchronously with the current
       // state, which is what starts the selected session's head fetch. An entry
       // landing between that fetch going out and this listener being installed
       // would belong to neither source and simply be missing.
-      client.onPush((frame) => dispatch({ t: "push", frame })),
+      client.onPush((frame) => {
+        transcripts.receive(frame);
+        dispatch({ t: "push", frame });
+      }),
       // The one authoritative feed: every fleet change arrives as a complete
       // snapshot, so there is nothing to reconcile, merge or refetch.
-      client.subscribe((s) => dispatch({ t: "state", state: s })),
+      client.subscribe((s) => {
+        const wasConnected = connected();
+        dispatch({ t: "state", state: s });
+        searches.settle();
+        if (wasConnected && !connected()) modes.cancel();
+        if (connected()) {
+          interactions.settle();
+          modes.settle();
+          composer.advance();
+        }
+      }),
       client.on("reconnect", () => {
         log?.info("daemon reconnected");
         // The caches were cleared and the generation bumped when the connection
@@ -2406,20 +2322,21 @@ export const mkFleetHandle = ({
         // The stream rolled past our seq without the connection dropping, so
         // nothing else drops the window: entries in the gap never arrived and
         // the transcript would hold a hole it cannot see.
-        dispatch({ t: "transcript", transcript: noTranscript });
+        transcripts.refresh();
       }),
       term.onResize(() => {
         dims = term.getSize();
         // A narrower pane wraps into more rows, a wider one into fewer: the
         // offset has to be re-clamped against what the pane now draws.
-        transcripts.resized();
         publish();
+        transcripts.resized();
       }),
     ];
 
     // The clock is armed by `settle()` after every publish (below), from the
     // frame that was just published; nothing to start here.
     return () => {
+      composer.dispose();
       clock.dispose();
       notices.dispose();
       // A mode change scheduled a moment before the UI went away, and a search
@@ -2511,6 +2428,15 @@ export const mkFleetHandle = ({
   };
 
   return {
+    composer,
+    modes,
+    searches,
+    transcript: transcripts,
+    animation: {
+      get: animation.get,
+      subscribe: animation.subscribe,
+      getNow: () => animation.get().now,
+    },
     subscribe: store.subscribe,
     getView: store.get,
     handleKey,

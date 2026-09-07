@@ -14,6 +14,8 @@
  * buffer around a `suspendTerminal` `$EDITOR` handoff and re-enters on return.
  * The option is a no-op when stdout isn't an interactive TTY (tests included).
  */
+import { openSync } from "node:fs";
+import { ReadStream } from "node:tty";
 import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
@@ -27,35 +29,45 @@ export const runTui = async (
    *  `themeState` — the TUI preference file the `t` theme choice persists to. */
   opts: { logs?: { daemon: string; tui: string }; themeState?: string } = {},
 ): Promise<void> => {
-  // Ask the terminal to bracket pastes so a multi-line paste arrives as one
-  // chunk instead of a stream of Enter-looking carriage returns. Also turn on
-  // SGR mouse reporting so the wheel arrives as its own escape sequence —
-  // without it, terminals translate wheel scroll into Up/Down arrow keys on
-  // the alt screen, which App's keymap reads as fleet-selection movement.
-  if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
-
-  const instance = render(
-    <App
-      client={client}
-      {...(opts.logs ? { logs: opts.logs } : {})}
-      {...(opts.themeState ? { themeState: opts.themeState } : {})}
-    />,
-    {
-      exitOnCtrlC: false,
-      alternateScreen: true,
-      // Only rewrite the lines that actually changed. A spinner tick or one
-      // appended transcript row costs its own rows instead of a full ~2KB
-      // repaint of the whole viewport: measured at 120×40, a 60-event stream
-      // drops from 494KB to 139KB of terminal output, and paging back through
-      // a long transcript from 195KB to 33KB (see docs/tui-reduction-baseline.md).
-      // React still renders exactly as often — this is terminal traffic only.
-      incrementalRendering: true,
-    },
-  );
+  // Deno cannot reopen /dev/pts/N when that path is hidden by a container.
+  // Its fallback shares file flags with stdout, which can make stdin block
+  // the event loop until the next key. Opening proc's fd link gives Ink an
+  // independent file description even when the original device path is hidden.
+  const stdin =
+    Deno.build.os === "linux" && Deno.stdin.isTerminal()
+      ? new ReadStream(openSync("/proc/self/fd/0", "r"))
+      : undefined;
 
   try {
+    // Ask the terminal to bracket pastes so a multi-line paste arrives as one
+    // chunk instead of a stream of Enter-looking carriage returns. Also turn on
+    // SGR mouse reporting so the wheel arrives as its own escape sequence —
+    // without it, terminals translate wheel scroll into Up/Down arrow keys on
+    // the alt screen, which App's keymap reads as fleet-selection movement.
+    if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+
+    const instance = render(
+      <App
+        client={client}
+        {...(opts.logs ? { logs: opts.logs } : {})}
+        {...(opts.themeState ? { themeState: opts.themeState } : {})}
+      />,
+      {
+        ...(stdin ? { stdin } : {}),
+        exitOnCtrlC: false,
+        alternateScreen: true,
+        // Only rewrite the lines that actually changed. A spinner tick or one
+        // appended transcript row costs its own rows instead of a full ~2KB
+        // repaint of the whole viewport: measured at 120×40, a 60-event stream
+        // drops from 494KB to 139KB of terminal output, and paging back through
+        // a long transcript from 195KB to 33KB (see docs/tui-reduction-baseline.md).
+        // React still renders exactly as often — this is terminal traffic only.
+        incrementalRendering: true,
+      },
+    );
     await instance.waitUntilExit();
   } finally {
+    stdin?.destroy();
     if (Deno.stdout.isTerminal()) writeStdout("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
     await client.close();
   }

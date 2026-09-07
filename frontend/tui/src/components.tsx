@@ -4,8 +4,9 @@
  * load its hook), so the only build step is still "none". Every component is a
  * pure projection of the narrow view its pane is handed — see `views.ts`.
  */
-import { memo, type ReactNode } from "react";
+import { createContext, useContext, memo, type ReactNode } from "react";
 import { Box, Text } from "ink";
+import { helpLines } from "./help.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
@@ -13,13 +14,18 @@ import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { diffSegColor } from "./transcript.ts";
-import type { DetailView, FleetPaneView, HeaderView, LogView } from "./views.ts";
+import type { ClientState } from "@loom/client";
+import { pending, type Outbox, type Outboxes } from "./composer.ts";
+import type { ModeChoices } from "./mode-control.ts";
+import type { FleetPaneView, HeaderView, LogView } from "./views.ts";
 import {
   fleetSessions,
   cacheHeat,
   cacheStatus,
   footerHints,
   providerInfo,
+  providerAccountOf,
+  providerColorOf,
   queueFor,
   type CacheStatus,
   type Connection,
@@ -134,7 +140,10 @@ const gitLineText = (s: SessionSnapshot): string => {
 // header
 // ---------------------------------------------------------------------------
 
+export const PaletteContext = createContext(C);
+
 export const Header = memo(({ view, width }: { view: HeaderView; width: number }): ReactNode => {
+  const C = useContext(PaletteContext);
   const lamp = lampFor(view.connection);
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
@@ -186,22 +195,13 @@ export const Fleet = memo(
     width: number;
     now: number;
   }): ReactNode => {
+    const C = useContext(PaletteContext);
     const iw = inside(width);
     const childKeyOf = (s: SessionSnapshot): string | null =>
       view.focused && s.id === view.selectedId ? view.focused.key : null;
 
     let blocks: ReactNode[];
     switch (view.body.t) {
-      case "unknown":
-        // No snapshot: the fleet is unknown, not empty. Saying "no sessions yet"
-        // here would invite starting a second one for work already running.
-        blocks = [
-          <Text key="conn" color={C.dim} wrap="truncate-end">
-            {lampFor(view.connection).text}
-            {" — the daemon's sessions are unknown until it answers"}
-          </Text>,
-        ];
-        break;
       case "searching":
         // An answer that hasn't come back yet is not an answer of "none".
         blocks = [
@@ -250,7 +250,7 @@ export const Fleet = memo(
                 iw,
                 now,
                 pcolor: view.providerColors,
-                compacting: view.compacting.has(entry.s.id),
+                compacting: entry.s.compacting !== undefined,
               });
             case "child":
               return FleetChildRow({
@@ -468,8 +468,23 @@ const Field = ({ label, children }: { label: string; children: ReactNode }): Rea
 );
 
 export const Detail = memo(
-  ({ view, width, now }: { view: DetailView | null; width: number; now: number }): ReactNode => {
-    if (!view) {
+  ({
+    session: s,
+    fleet,
+    box,
+    mode,
+    width,
+    now,
+  }: {
+    session: SessionSnapshot | null;
+    fleet: ClientState;
+    box: Outbox;
+    mode: SessionMode | null;
+    width: number;
+    now: number;
+  }): ReactNode => {
+    const C = useContext(PaletteContext);
+    if (!s) {
       return (
         <Box
           width={width}
@@ -485,8 +500,10 @@ export const Detail = memo(
       );
     }
 
-    const { queued, engineColor, account, compacting, pendingMode } = view;
-    const s = view.session;
+    const queued = pending(box);
+    const engineColor = providerColorOf({ fleet }, s.provider);
+    const account = providerAccountOf({ fleet }, s.provider);
+    const compacting = s.compacting ?? null;
     const w = inside(width);
     const look = statusLook(s.status.kind);
     const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
@@ -535,7 +552,7 @@ export const Detail = memo(
           {/* thing on this row you change mid-session, so it should catch the eye. */}
           <Text wrap="truncate-end">
             <Text color={C.dim}>{"mode "}</Text>
-            <Text color={C.warn}>{modeChipText(s.mode, pendingMode)}</Text>
+            <Text color={C.warn}>{modeChipText(s.mode, mode)}</Text>
           </Text>
           <Text color={C.dim} wrap="truncate-end">
             {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
@@ -575,10 +592,7 @@ export const Detail = memo(
               <Text
                 color={cs.state === "cold" ? C.faint : C.good}
                 wrap="truncate-end"
-              >{`${cacheLede(cs)}${hit}${warm}${assumed}`}</Text>${hit}${warm}${assumed}`}</Text>
-              ) : (
-                <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}${warm}${assumed}`}</Text>
-              )}
+              >{`${cacheLede(cs)}${hit}${warm}${assumed}`}</Text>
             </Field>
           );
         })()}
@@ -746,7 +760,8 @@ export const modeChipHit = (
 // ---------------------------------------------------------------------------
 
 export const EventLog = memo(
-  ({ view, width, tick = 0 }: { view: LogView; width: number; tick?: number }): ReactNode => {
+  ({ view, width, spinner }: { view: LogView; width: number; spinner?: ReactNode }): ReactNode => {
+    const C = useContext(PaletteContext);
     const { child, rows } = view;
     // Pane title: the focused child's name while drilled in, else the plain header.
     let title = "EVENTS";
@@ -797,9 +812,7 @@ export const EventLog = memo(
             ),
           )
         )}
-        {view.spinning ? (
-          <Text color={C.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text>
-        ) : null}
+        {view.spinning ? spinner : null}
       </Box>
     );
   },
@@ -991,7 +1004,17 @@ const noticeGlyph = (tone: Tone): string => {
   }
 };
 
-export const FooterArea = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
+export const FooterArea = ({
+  state,
+  width,
+  outbox = {},
+  modes = {},
+}: {
+  state: TuiState;
+  width: number;
+  modes?: ModeChoices;
+  outbox?: Outboxes;
+}): ReactNode => {
   const p = openPrompt(state.overlay);
   if (p && p.t !== "new") {
     // A reply to a session — the input lives on that session's EVENTS pane
@@ -1003,9 +1026,9 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
         <Text color={C.faint} wrap="truncate-end">
           {promptHints(
             p,
-            send ? queueFor(state, p.sessionId).length : 0,
+            send ? queueFor({ ...state, outbox }, p.sessionId).length : 0,
             sess?.mode,
-            pendingMode(state.modes, sess?.id),
+            pendingMode(modes, sess?.id),
           )}
         </Text>
       </Box>
@@ -1115,7 +1138,15 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
 /** The input group for a session-targeted prompt — label + the session's mode
  *  chip, then the editor — drawn under that session's EVENTS log: you're
  *  replying to this agent, so the input sits with its transcript. */
-export const PromptPane = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
+export const PromptPane = ({
+  state,
+  width,
+  modes = {},
+}: {
+  state: TuiState;
+  width: number;
+  modes?: ModeChoices;
+}): ReactNode => {
   const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return null;
   const sess =
@@ -1128,7 +1159,7 @@ export const PromptPane = ({ state, width }: { state: TuiState; width: number })
         <Text color={C.accent} bold wrap="truncate-end">
           {p.label}
         </Text>
-        {sess ? modeChip(sess.mode, pendingMode(state.modes, sess.id)) : null}
+        {sess ? modeChip(sess.mode, pendingMode(modes, sess.id)) : null}
       </Box>
       <InputLine
         buf={p.buffer}
@@ -1307,10 +1338,10 @@ export const RequestPanel = ({
       paddingX={1}
       flexDirection="column"
     >
-      <Text color={C.await_} bold>
+      <Text color={C.await_} bold wrap="truncate-end">
         {title}
       </Text>
-      {body}
+      {body.slice(0, requestPanelRows(request, width, questionIdx) - REQUEST_PANEL_CHROME)}
       <Text color={C.faint} wrap="truncate-end">
         {hint}
       </Text>
@@ -1522,80 +1553,6 @@ export const PlanReview = ({
 // ---------------------------------------------------------------------------
 
 /** The grammar in one screen — the five rules, then the keys they generate. */
-const GRAMMAR_ROWS: Array<[string, string]> = [
-  ["bare key", "act on the selected session, or move"],
-  ["Shift + key", "the heavier / structural sibling — Q quit-all · R restart · X delete · F fork"],
-  ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
-  [
-    "Alt + key",
-    "run an action without leaving the prompt — ⌥e ⌥o ⌥x; ⌥m / ⌥p switch the model / provider (also from the fleet view)",
-  ],
-  ["⇧⇥", "cycle the permission mode — on the selection, or inside a prompt (mid-message)"],
-  ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
-];
-
-const HELP_ROWS: Array<[string, string]> = [
-  ["↑ / ↓  ·  j / k", "move the selection"],
-  [
-    "→ / ←  (fleet)",
-    "drill into the session's sub-agents & background tasks — ↑/↓ picks one and EVENTS follows it · back out (esc too)",
-  ],
-  ["Space", "command palette — search and run any action available here"],
-  [
-    "a / ⏎  ·  d",
-    "approve a request (`a` only) · answer / review it (`⏎` too)  ·  `d` deny (deny-only — never deletes)",
-  ],
-  [
-    "⏎  ·  i",
-    "send a message to the selected session (revives a stopped one)  ·  interrupt its turn",
-  ],
-  ["c  ·  x", "compact the context (any time)  ·  archive the session"],
-  [
-    "u  ·  ⇧⇥  ·  ⌥m / ⌥p",
-    "undo to an earlier turn  ·  cycle the permission mode  ·  switch the model, or the provider + model (applies next turn)",
-  ],
-  ["e  ·  y", "rename  ·  copy the branch name to the clipboard"],
-  ["o  ·  v", "view the log in $EDITOR  ·  event log full / chat"],
-  [
-    "⇥",
-    "toggle the fleet list — hide it to give the session's detail + events the whole width (esc brings it back)",
-  ],
-  ["t", "cycle theme — dark / light / argonext"],
-  [
-    "n  ·  /",
-    "new session (the prompt shows the provider / model; ⌥p to change)  ·  find a session",
-  ],
-  [
-    "F  ·  X",
-    "hard fork — new session + worktree off this one (aisdk)  ·  delete the session (confirm)",
-  ],
-  ["R  ·  Q", "restart the daemon  ·  quit the UI and stop the daemon  (both confirm)"],
-  ["q  ·  ⌃c  ·  esc", "quit the UI, daemon keeps running  ·  quit  ·  back out of any overlay"],
-  [
-    "⟢ (fleet)",
-    "prompt cache still warm — green → amber → red as it lapses; held green while a turn runs",
-  ],
-  ["␣ keep cache warm", "daemon re-primes the cache before its TTL lapses (Claude, pinned TTL)"],
-  ["fleet id colour", "which provider the session runs on (default provider stays plain)"],
-];
-
-const EDIT_ROWS: Array<[string, string]> = [
-  ["enter  ·  esc", "submit  ·  cancel"],
-  ["⇧⏎ / ⌥⏎", "insert a newline (⇧⏎ needs a terminal that sends a distinct code; ⌥⏎ always works)"],
-  ["⌃a / ⌃e", "start / end of line     ⌃b / ⌃f  char back / forward"],
-  ["⌃← / ⌃→", "word back / forward"],
-  ["⌃u / ⌃k  ·  ⌃w", "kill to start / end     ·     delete the word before the cursor"],
-  [
-    "⌥e  ·  ⌥o",
-    "edit in $EDITOR, event log alongside (`:wq` to return)  ·  view the log, read-only",
-  ],
-  [
-    "⇧⇥  ·  ⌥m  ·  ⌥p",
-    "cycle the permission mode  ·  switch the model  ·  switch the provider + model — the new session's, or the one you're messaging (aisdk↔aisdk carries the transcript; Claude isn't supported yet)",
-  ],
-  ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
-];
-
 // ---------------------------------------------------------------------------
 // picker overlay — provider / model choice, session find
 // ---------------------------------------------------------------------------
@@ -1669,56 +1626,25 @@ export const Picker = ({
   );
 };
 
-export const Help = ({ width }: { width: number }): ReactNode => {
+export const Help = ({
+  width,
+  height,
+  scroll,
+}: {
+  width: number;
+  height: number;
+  scroll: number;
+}): ReactNode => {
+  const capacity = Math.max(0, height - 1);
+  const lines = helpLines(width);
+  const start = Math.min(scroll, Math.max(0, lines.length - capacity));
   return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={C.accent}
-      borderBackgroundColor={C.bg}
-      paddingX={2}
-      paddingY={1}
-      flexDirection="column"
-    >
-      <Text color={C.accent} bold>
-        {"loom — keys"}
+    <Box width={width} height={height} flexDirection="column">
+      <Text color={C.dim} wrap="truncate-end">
+        {lines.slice(start, start + capacity).join("\n")}
       </Text>
-      <Box height={1} />
-      <Text color={C.dim} bold>
-        {"the grammar"}
-      </Text>
-      {GRAMMAR_ROWS.map(([k, v], i) => (
-        <Box key={`g${i}`} gap={2}>
-          <Box width={16}>
-            <Text color={C.accent}>{k}</Text>
-          </Box>
-          <Text color={C.dim}>{v}</Text>
-        </Box>
-      ))}
-      <Box height={1} />
-      {HELP_ROWS.map(([k, v], i) => (
-        <Box key={i} gap={2}>
-          <Box width={16}>
-            <Text color={C.accent}>{k}</Text>
-          </Box>
-          <Text color={C.dim}>{v}</Text>
-        </Box>
-      ))}
-      <Box height={1} />
-      <Text color={C.dim} bold>
-        {"in the prompt"}
-      </Text>
-      {EDIT_ROWS.map(([k, v], i) => (
-        <Box key={`e${i}`} gap={2}>
-          <Box width={16}>
-            <Text color={C.accent}>{k}</Text>
-          </Box>
-          <Text color={C.dim}>{v}</Text>
-        </Box>
-      ))}
-      <Box height={1} />
-      <Text color={C.faint}>
-        {"loom drives worktrees only — it never pushes or touches your remotes."}
+      <Text color={C.accent} wrap="truncate-end">
+        ↑↓ PgUp/PgDn scroll · Esc close
       </Text>
     </Box>
   );

@@ -4,10 +4,7 @@
  * (the keymap). Shaped for `useSyncExternalStore` — `subscribe` returns its own
  * unsubscribe, `get` is the snapshot.
  *
- * Not RxJS: there are no operators and no multicasting to get right because the
- * fleet handle keeps exactly one of these and derives the view eagerly. The
- * synchronous `get` is safe here — the only writer is the handle's `reduce`,
- * and Node runs it on one thread with nothing to interleave.
+ * Each feature owns its value; subscribing observes changes without running effects.
  */
 export interface Store<A> {
   readonly get: () => A;

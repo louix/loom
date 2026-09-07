@@ -4,17 +4,36 @@
  * needs from Ink, starts it once, forwards key presses, and renders the view it
  * publishes. JSX with no bundler — `@oxc-node` transforms `.tsx` on the fly.
  */
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
-import { absurd } from "@loom/core/absurd";
-import type { LoomClient } from "@loom/client";
-import type { EditorHandoff } from "./editor-handoff.ts";
-import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
-import { openPrompt, promptOnPane } from "./overlay.ts";
-import { fleetSessions, providerColorOf, providerInfo } from "./model.ts";
-
-import { C } from "./theme.ts";
 import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  useMemo,
+  useContext,
+  type ReactNode,
+} from "react";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { absurd } from "@loom/core/absurd";
+import { showConnectionError, type LoomClient } from "@loom/client";
+import type { EditorHandoff } from "./editor-handoff.ts";
+import { mkFleetHandle, type FleetView, type FleetHandle } from "./fleet-handle.ts";
+import { openPrompt, promptOnPane } from "./overlay.ts";
+import {
+  fleetSessions,
+  providerColorOf,
+  providerInfo,
+  focusedChildOf,
+  childrenOf,
+  fleetLayout,
+  fleetRowBudget,
+} from "./model.ts";
+
+import { outboxOf } from "./composer.ts";
+import { pendingMode } from "./mode-control.ts";
+import { headerView, fleetPaneView, logView } from "./views.ts";
+import { C, PALETTES, spinnerFrame } from "./theme.ts";
+import {
+  PaletteContext,
   Confirm,
   Detail,
   Doctor,
@@ -74,18 +93,37 @@ export const App = ({
   useInput(handle.handleKey);
   const view = useSyncExternalStore(handle.subscribe, handle.getView);
 
-  return <Layout view={view} />;
+  return (
+    <PaletteContext.Provider value={PALETTES[view.ui.theme]}>
+      <Layout view={view} handle={handle} />
+    </PaletteContext.Provider>
+  );
 };
 
-const Layout = ({ view }: { view: FleetView }): ReactNode => {
-  const { state, cols, bodyH, leftW, rightW } = view;
+type PaneProps = { view: FleetView; handle: FleetHandle; width: number };
+
+const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
+  const { ui: state, cols, bodyH, leftW, rightW } = view;
+  const header = useMemo(() => headerView(state.fleet), [state.fleet]);
+
+  if (state.fleet.tag !== "data")
+    return (
+      <Box width={cols} height={view.rows} flexDirection="column">
+        <Text>
+          {state.fleet.tag === "error"
+            ? showConnectionError(state.fleet.error)
+            : "Connecting to daemon…"}
+        </Text>
+        <Text>q quit</Text>
+      </Box>
+    );
 
   let body: ReactNode;
   switch (view.body.t) {
     case "help":
       body = (
-        <Box paddingX={1} paddingTop={1}>
-          <Help width={cols - 2} />
+        <Box paddingX={1}>
+          <Help width={Math.max(1, cols - 2)} height={bodyH} scroll={view.planScroll} />
         </Box>
       );
       break;
@@ -153,21 +191,15 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       break;
     case "split":
       body = (
-        <Box height={bodyH} gap={1}>
+        <Box height={bodyH} flexShrink={0} overflow="hidden" gap={1}>
           <Box width={leftW}>
-            <Fleet
-              view={view.fleetPane}
-              find={state.find?.buffer ?? null}
-              tick={view.tick}
-              width={leftW}
-              now={view.now}
-            />
+            <FleetArea view={view} handle={handle} width={leftW} />
           </Box>
           <Box width={rightW} flexDirection="column">
-            <Detail view={view.detail} width={rightW} now={view.now} />
-            <EventLog view={view.log} width={rightW} tick={view.tick} />
+            <DetailArea view={view} handle={handle} width={rightW} />
+            <LogArea view={view} handle={handle} width={rightW} />
             {promptOnPane(openPrompt(state.overlay)) ? (
-              <PromptPane state={state} width={rightW} />
+              <InputArea view={view} handle={handle} width={rightW} pane />
             ) : null}
           </Box>
         </Box>
@@ -176,14 +208,8 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
     case "fleetOnly":
       // Narrow `overview`: only the fleet fits — detail + events wait for `⇥`.
       body = (
-        <Box height={bodyH}>
-          <Fleet
-            view={view.fleetPane}
-            find={state.find?.buffer ?? null}
-            tick={view.tick}
-            width={cols}
-            now={view.now}
-          />
+        <Box height={bodyH} flexShrink={0} overflow="hidden">
+          <FleetArea view={view} handle={handle} width={cols} />
         </Box>
       );
       break;
@@ -191,11 +217,11 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       // The `session` view — Detail + events (+ reply pane) with the whole
       // terminal width, the fleet list toggled away.
       body = (
-        <Box height={bodyH} width={cols} flexDirection="column">
-          <Detail view={view.detail} width={cols} now={view.now} />
-          <EventLog view={view.log} width={cols} tick={view.tick} />
+        <Box height={bodyH} flexShrink={0} overflow="hidden" width={cols} flexDirection="column">
+          <DetailArea view={view} handle={handle} width={cols} />
+          <LogArea view={view} handle={handle} width={cols} />
           {promptOnPane(openPrompt(state.overlay)) ? (
-            <PromptPane state={state} width={cols} />
+            <InputArea view={view} handle={handle} width={cols} pane />
           ) : null}
         </Box>
       );
@@ -205,8 +231,14 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
   }
 
   return (
-    <Box flexDirection="column" width={cols} backgroundColor={C.bg}>
-      <Header view={view.header} width={cols} />
+    <Box
+      flexDirection="column"
+      width={cols}
+      height={view.rows}
+      overflow="hidden"
+      backgroundColor={C.bg}
+    >
+      <Header view={header} width={cols} />
       {body}
       {view.showRequest ? (
         <RequestPanel
@@ -216,7 +248,95 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
           questionIdx={view.questionIdx}
         />
       ) : null}
-      <FooterArea state={state} width={cols} />
+      <InputArea view={view} handle={handle} width={cols} />
     </Box>
+  );
+};
+
+const FleetArea = ({ view, handle, width }: PaneProps): ReactNode => {
+  const find = useSyncExternalStore(handle.searches.subscribe, handle.searches.get);
+  const frame = useSyncExternalStore(handle.animation.subscribe, handle.animation.get);
+  const { fleet, selectedId, selectedChild } = view.ui;
+  const budget = fleetRowBudget(view.bodyH, find !== null);
+  const pane = useMemo(() => {
+    const state = { fleet, selectedId, selectedChild, find };
+    return fleetPaneView(
+      fleet,
+      fleetLayout(state, budget),
+      selectedId,
+      focusedChildOf(state),
+      find,
+    );
+  }, [fleet, selectedId, selectedChild, find, budget]);
+  return (
+    <Fleet
+      view={pane}
+      find={find?.buffer ?? null}
+      width={width}
+      tick={frame.tick}
+      now={frame.now}
+    />
+  );
+};
+
+const DetailArea = ({ view, handle, width }: PaneProps): ReactNode => {
+  const boxes = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
+  const choices = useSyncExternalStore(handle.modes.subscribe, handle.modes.get);
+  const now = useSyncExternalStore(handle.animation.subscribe, handle.animation.getNow);
+  const box = outboxOf(boxes, view.sel?.id ?? null);
+  const mode = pendingMode(choices, view.sel?.id);
+  return (
+    <Detail
+      session={view.sel}
+      fleet={view.ui.fleet}
+      box={box}
+      mode={mode}
+      width={width}
+      now={now}
+    />
+  );
+};
+
+const Working = ({ handle }: { handle: FleetHandle }): ReactNode => {
+  const { tick } = useSyncExternalStore(handle.animation.subscribe, handle.animation.get);
+  const palette = useContext(PaletteContext);
+  return <Text color={palette.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text>;
+};
+
+const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
+  const tr = useSyncExternalStore(handle.transcript.subscribe, handle.transcript.get);
+  const boxes = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
+  const box = outboxOf(boxes, view.sel?.id ?? null);
+  const { selectedChild, logFilter } = view.ui;
+  const child = useMemo(
+    () => (view.sel ? (childrenOf(view.sel).find((c) => c.key === selectedChild) ?? null) : null),
+    [view.sel, selectedChild],
+  );
+  const id = view.sel?.id ?? null;
+  const spinning =
+    child !== null ||
+    (view.sel !== null &&
+      ["running", "starting", "working_background"].includes(view.sel.status.kind));
+  const pane = useMemo(
+    () =>
+      logView(tr.transcript, box, id, logFilter, child, spinning, width, view.splitLogH, tr.scroll),
+    [tr, box, id, logFilter, child, spinning, width, view.splitLogH],
+  );
+  const spinner = useMemo(() => <Working handle={handle} />, [handle]);
+  return <EventLog view={pane} width={width} spinner={spinner} />;
+};
+
+const InputArea = ({
+  view,
+  handle,
+  width,
+  pane = false,
+}: PaneProps & { pane?: boolean }): ReactNode => {
+  const outbox = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
+  const modes = useSyncExternalStore(handle.modes.subscribe, handle.modes.get);
+  return pane ? (
+    <PromptPane state={view.ui} width={width} modes={modes} />
+  ) : (
+    <FooterArea state={view.ui} width={width} modes={modes} outbox={outbox} />
   );
 };

@@ -8,10 +8,11 @@
  * draws. When those two drifted apart the viewport slid; keeping one measuring
  * function is what makes that impossible rather than merely unlikely.
  */
+import { mkStore, type Store } from "./store.ts";
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { HistoryCursor, HistoryPage, TranscriptId } from "@loom/core/wire";
+import type { HistoryCursor, HistoryPage, TranscriptId, PushFrame } from "@loom/core/wire";
 import { C, clock, humanTokens, inside, truncate, wrapText, type Tone } from "./theme.ts";
 
 /** How much of the selected session's log to show:
@@ -1112,31 +1113,41 @@ export const logRowCount = (lines: readonly LogLine[], width: number): number =>
 // the handle
 // ---------------------------------------------------------------------------
 
+/** Fold only durable entries for this resource; other sessions cost no formatting. */
+export const liveFrame = (tr: Transcript, frame: PushFrame, toolName?: string): Transcript => {
+  if (
+    frame.type !== "event" ||
+    frame.id === undefined ||
+    NON_TRANSCRIPT.has(frame.event.type) ||
+    transcriptSession(tr) !== frame.event.sessionId
+  )
+    return tr;
+  return liveLine(tr, toLogLine(frame.id, frame.event, toolName));
+};
+
+export interface TranscriptView {
+  readonly transcript: Transcript;
+  readonly scroll: number;
+}
+
 export interface TranscriptDeps {
   /** `session.events`. One page; a cursor continues into older history. */
   fetch: (sessionId: string, cursor: HistoryCursor | null) => Promise<HistoryPage>;
-  /** The resource as the reducer holds it. */
-  transcript: () => Transcript;
-  /** The session the pane is showing, or none. */
-  selectedId: () => string | null;
   /** Only fetch while the daemon is there. */
   connected: () => boolean;
   /** The lines the pane is drawing — filter and child focus already applied.
    *  Scroll is measured in the wrapped rows *these* produce, through the same
    *  geometry the pane renders with. */
-  shown: () => readonly LogLine[];
-  /** What the pane is a view of. Any change re-anchors it at the live tail. */
-  viewKey: () => string;
+  shown: (transcript: Transcript) => readonly LogLine[];
   /** The log pane's width in columns and its height in wrapped rows. */
   paneWidth: () => number;
   pageRows: () => number;
-  /** Install a transition. */
-  commit: (tr: Transcript) => void;
-  /** The offset moved with no state change behind it (a keypress). */
-  publish: () => void;
 }
 
-export interface TranscriptControl {
+export interface TranscriptControl extends Pick<Store<TranscriptView>, "get" | "subscribe"> {
+  readonly receive: (frame: PushFrame) => void;
+  readonly refresh: () => void;
+  readonly contentChanged: () => void;
   /** Wrapped rows the viewport is offset up from the live tail. */
   readonly scroll: () => number;
   /** Scroll back by `by` rows (negative moves toward the tail). Pulls the next
@@ -1147,9 +1158,8 @@ export interface TranscriptControl {
   /** End: back to the live tail — and, from a detached window, the action that
    *  reloads the newest page. Also the explicit retry for a failed load. */
   readonly toTail: () => void;
-  /** Called on every state change: open the selected session's transcript,
-   *  drop it when there is no connection, and re-anchor the viewport. */
-  readonly settle: () => void;
+  /** A selection/filter/connection input, independent of resource publications. */
+  readonly select: (id: string | null, viewKey: string) => void;
   /** Re-measure after the terminal resized. */
   readonly resized: () => void;
   readonly dispose: () => void;
@@ -1180,13 +1190,27 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
  * below it — and nothing else adjusts the offset.
  */
 export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
+  let resource: Transcript = noTranscript;
+  const store = mkStore<TranscriptView>({ transcript: resource, scroll: 0 });
+  const toolNames = new Map<string, string>();
+  let disposed = false;
+  let viewKey = "";
+  const publish = () => {
+    const before = store.get();
+    if (before.transcript !== resource || before.scroll !== scroll)
+      store.set({ transcript: resource, scroll });
+  };
+  const commit = (tr: Transcript, older = false) => {
+    if (disposed || tr === resource) return;
+    resource = tr;
+    reanchor(older);
+    publish();
+  };
   let gen = 0;
   let scroll = 0;
   let anchor: Anchor = { key: "", rows: 0, tailId: null, pinnedTop: false };
-  /** The next measurement follows an older page landing above the window. */
-  let foldedOlder = false;
 
-  const anchorKey = (): string => `${gen} ${d.viewKey()}`;
+  const anchorKey = (): string => `${gen} ${viewKey}`;
 
   /**
    * Measure the pane and remember it. Returns the ceiling for `scroll`:
@@ -1196,7 +1220,7 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    * again.
    */
   const sync = (key: string): number => {
-    const lines = d.shown();
+    const lines = d.shown(resource);
     const rows = logRowCount(lines, d.paneWidth());
     const max = Math.max(0, rows - d.pageRows());
     scroll = Math.min(scroll, max);
@@ -1211,23 +1235,24 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
 
   const invalidate = (): void => {
     gen += 1;
-    foldedOlder = false;
   };
 
   /** Load `sessionId`'s newest page under a fresh lifetime. */
   const open = (sessionId: string): void => {
+    if (disposed) return;
     invalidate();
+    toolNames.clear();
     const mine = gen;
-    d.commit(openTranscript(sessionId));
+    commit(openTranscript(sessionId));
     if (!d.connected()) return;
     d.fetch(sessionId, null).then(
       (page) => {
         if (mine !== gen) return;
-        d.commit(headLoaded(d.transcript(), sessionId, page));
+        commit(headLoaded(resource, sessionId, page));
       },
       (e: unknown) => {
         if (mine !== gen) return;
-        d.commit(headFailed(d.transcript(), sessionId, errText(e)));
+        commit(headFailed(resource, sessionId, errText(e)));
       },
     );
   };
@@ -1239,24 +1264,23 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    */
   const loadOlder = (): void => {
     if (!d.connected()) return;
-    const tr = d.transcript();
+    const tr = resource;
     const win = transcriptWindow(tr);
     if (!win || win.older.t === "loading" || win.olderCursor === null) return;
     const mine = gen;
     const { sessionId, olderCursor } = win;
-    d.commit(olderLoading(tr, sessionId));
+    commit(olderLoading(tr, sessionId));
     d.fetch(sessionId, olderCursor).then(
       (page) => {
         if (mine !== gen) return;
         // Read by the reanchor this commit triggers: these rows land *above*
         // the window, which is the one growth a tail-relative offset cannot
         // simply absorb.
-        foldedOlder = true;
-        d.commit(olderLoaded(d.transcript(), sessionId, page));
+        commit(olderLoaded(resource, sessionId, page), true);
       },
       (e: unknown) => {
         if (mine !== gen) return;
-        d.commit(olderFailed(d.transcript(), sessionId, errText(e)));
+        commit(olderFailed(resource, sessionId, errText(e)));
       },
     );
   };
@@ -1268,20 +1292,17 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    * below and the viewport is already where it should be, so the common case
    * costs one string compare and no measurement.
    */
-  const reanchor = (): void => {
+  const reanchor = (fold = false): void => {
     const key = anchorKey();
     if (key !== anchor.key) {
       // A different session, filter, child or lifetime: the rows the offset was
       // counted against are gone.
       scroll = 0;
-      foldedOlder = false;
       anchor = { key, rows: 0, tailId: null, pinnedTop: false };
       return;
     }
-    if (scroll === 0 && !foldedOlder) return;
+    if (scroll === 0 && !fold) return;
     const before = anchor;
-    const fold = foldedOlder;
-    foldedOlder = false;
     const max = sync(key);
     if (fold) {
       // Rows landed above the window. A view anchored on its own rows keeps
@@ -1302,6 +1323,33 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
   };
 
   return {
+    get: store.get,
+    subscribe: store.subscribe,
+    receive: (frame) => {
+      if (disposed) return;
+      if (frame.type === "resync") {
+        const id = transcriptSession(resource);
+        if (id) open(id);
+        return;
+      }
+      if (frame.type !== "event" || frame.event.sessionId !== transcriptSession(resource)) return;
+      const ev = frame.event;
+      let name: string | undefined;
+      if (ev.type === "tool_call") toolNames.set(ev.id, ev.name);
+      if (ev.type === "tool_result") {
+        name = toolNames.get(ev.id);
+        toolNames.delete(ev.id);
+      }
+      commit(liveFrame(resource, frame, name));
+    },
+    refresh: () => {
+      const id = transcriptSession(resource);
+      if (id) open(id);
+    },
+    contentChanged: () => {
+      reanchor();
+      publish();
+    },
     scroll: () => scroll,
 
     scrollBy: (by) => {
@@ -1311,7 +1359,7 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
       // Prefetch the next older page as the viewport nears the top, so paging
       // back feels seamless instead of stalling at the current oldest line.
       if (max - scroll < d.pageRows()) loadOlder();
-      d.publish();
+      publish();
     },
 
     toTop: () => {
@@ -1319,42 +1367,49 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
       scroll = max;
       anchor = { ...anchor, pinnedTop: true };
       loadOlder();
-      d.publish();
+      publish();
     },
 
     toTail: () => {
       scroll = 0;
-      const tr = d.transcript();
+      const tr = resource;
       // Paging back far enough evicts the newest end of the window, and live
       // entries stop being folded in while that is true. Jumping to the tail is
       // the action that undoes it — and the explicit retry a failed load waits
       // for.
       if (tr.t === "detached" || tr.t === "failed") return void open(tr.sessionId);
-      d.publish();
+      publish();
     },
 
-    settle: () => {
-      const tr = d.transcript();
-      const id = d.selectedId();
+    select: (id, key) => {
+      if (disposed) return;
+      viewKey = key;
+      const tr = resource;
       if (!d.connected() || id === null) {
         // No connection means no transcript we can trust: entries were appended
         // while we were away and the cursor is a position in a history the next
         // connection re-reads from scratch.
         if (tr.t !== "unloaded") {
           invalidate();
-          d.commit(noTranscript);
+          commit(noTranscript);
         }
       } else if (transcriptSession(tr) !== id) {
         open(id);
       }
       reanchor();
+      publish();
     },
 
     resized: () => {
       if (scroll === 0) return;
       sync(anchorKey());
+      publish();
     },
 
-    dispose: () => invalidate(),
+    dispose: () => {
+      disposed = true;
+      invalidate();
+      toolNames.clear();
+    },
   };
 };

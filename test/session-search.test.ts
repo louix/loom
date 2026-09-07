@@ -47,7 +47,7 @@ const mkSearch = () => {
       clock += 1;
       events.append(sessionId, { ...(event as object), sessionId, ts: clock } as HarnessEvent);
     },
-    ids: (q: string): string[] => search.rank(snaps, q).map((h) => h.id),
+    ids: async (q: string): Promise<string[]> => (await search.rank(snaps, q)).map((h) => h.id),
     rank: (q: string) => search.rank(snaps, q),
     snaps,
     cleanup: (): void => {
@@ -57,90 +57,90 @@ const mkSearch = () => {
   };
 };
 
-const withSearch = (fn: (s: ReturnType<typeof mkSearch>) => void): void => {
+const withSearch = async (fn: (s: ReturnType<typeof mkSearch>) => Promise<void>): Promise<void> => {
   const s = mkSearch();
   try {
-    fn(s);
+    await fn(s);
   } finally {
     s.cleanup();
   }
 };
 
-test("search: a 'term is a literal substring, case-insensitive", () => {
-  withSearch((s) => {
+test("search: a 'term is a literal substring, case-insensitive", async () => {
+  await withSearch(async (s) => {
     s.session("lit", "say Hello there");
     s.session("spread", "spelling h-e-l-l-o out");
-    assert.deepEqual(s.ids("'hello"), ["lit"]);
+    assert.deepEqual(await s.ids("'hello"), ["lit"]);
   });
 });
 
-test("search: bare terms match fuzzily; space-separated terms are AND'd", () => {
-  withSearch((s) => {
+test("search: bare terms match fuzzily; space-separated terms are AND'd", async () => {
+  await withSearch(async (s) => {
     s.session("m", "mobile layout");
     s.session("a", "database access");
     s.session("both", "mobile access rollout");
-    assert.deepEqual(s.ids("layout"), ["m"]);
-    assert.deepEqual(s.ids("mobile access"), ["both"]);
+    assert.deepEqual(await s.ids("layout"), ["m"]);
+    assert.deepEqual(await s.ids("mobile access"), ["both"]);
   });
 });
 
-test("search: title beats your messages beats the agent's", () => {
-  withSearch((s) => {
+test("search: title beats your messages beats the agent's", async () => {
+  await withSearch(async (s) => {
     s.session("theirs", "chat");
     s.session("mine", "chat");
     s.session("title", "mobile rollout");
     s.emit("mine", { type: "user_message", text: "start the mobile work", injected: false });
     s.emit("theirs", { type: "assistant_text", text: "the mobile plan is ready" });
-    assert.deepEqual(s.ids("mobile"), ["title", "mine", "theirs"]);
+    assert.deepEqual(await s.ids("mobile"), ["title", "mine", "theirs"]);
   });
 });
 
-test("search: an answer is yours, a question is the agent's", () => {
-  withSearch((s) => {
+test("search: an answer is yours, a question is the agent's", async () => {
+  await withSearch(async (s) => {
     s.session("answered", "chat");
     s.session("asked", "chat");
     s.emit("answered", { type: "answer", id: "q1", text: "the zebra one" });
     s.emit("asked", { type: "question", id: "q1", question: "which zebra did you mean?" });
-    assert.deepEqual(s.ids("zebra"), ["answered", "asked"]);
+    assert.deepEqual(await s.ids("zebra"), ["answered", "asked"]);
   });
 });
 
-test("search: tool traffic and thinking are invisible", () => {
-  withSearch((s) => {
+test("search: tool traffic and thinking are invisible", async () => {
+  await withSearch(async (s) => {
     s.session("x", "unrelated");
     s.emit("x", { type: "tool_call", id: "c1", name: "Bash", input: { command: "grep mobile *" } });
     s.emit("x", { type: "tool_result", id: "c1", ok: true, output: { text: "mobile" } });
     s.emit("x", { type: "thinking", text: "they said mobile, so…" });
-    assert.deepEqual(s.ids("mobile"), []);
+    assert.deepEqual(await s.ids("mobile"), []);
   });
 });
 
-test("search: terms are AND'd across a session's messages, not within one", () => {
-  withSearch((s) => {
+test("search: terms are AND'd across a session's messages, not within one", async () => {
+  await withSearch(async (s) => {
     s.session("split", "chat");
     s.emit("split", { type: "user_message", text: "about the zebra", injected: false });
     s.emit("split", { type: "user_message", text: "and the migration", injected: false });
-    assert.deepEqual(s.ids("zebra migration"), ["split"]);
+    assert.deepEqual(await s.ids("zebra migration"), ["split"]);
   });
 });
 
-test("search: whole message bodies are searched, not a one-line summary", () => {
-  withSearch((s) => {
+test("search: whole message bodies are searched, not a one-line summary", async () => {
+  await withSearch(async (s) => {
     s.session("a", "chat");
     s.emit("a", {
       type: "user_message",
       text: `${"filler ".repeat(60)}zebra migration`,
       injected: false,
     });
-    assert.deepEqual(s.ids("'zebra migration"), ["a"]);
+    assert.deepEqual(await s.ids("'zebra migration"), ["a"]);
   });
 });
 
-test("search: equal scores keep the fleet's order", () => {
-  withSearch((s) => {
+test("search: equal scores keep the fleet's order", async () => {
+  await withSearch(async (s) => {
     s.session("first", "zebra run");
     s.session("second", "zebra run");
-    const hits = s.rank("'zebra");
+    const hits = await s.rank("'zebra");
     assert.deepEqual(
       hits.map((h) => h.id),
       ["first", "second"],
@@ -149,24 +149,24 @@ test("search: equal scores keep the fleet's order", () => {
   });
 });
 
-test("search: an empty query is every session, unranked", () => {
-  withSearch((s) => {
+test("search: an empty query is every session, unranked", async () => {
+  await withSearch(async (s) => {
     s.session("a", "x");
     s.session("b", "y");
-    assert.deepEqual(s.ids(""), ["a", "b"]);
-    assert.deepEqual(s.ids("   "), ["a", "b"]);
+    assert.deepEqual(await s.ids(""), ["a", "b"]);
+    assert.deepEqual(await s.ids("   "), ["a", "b"]);
   });
 });
 
-test("search: an untitled session is found by the short id the fleet shows it under", () => {
-  withSearch((s) => {
+test("search: an untitled session is found by the short id the fleet shows it under", async () => {
+  await withSearch(async (s) => {
     s.session("abcdef0123456789", null);
-    assert.deepEqual(s.ids("'abcdef01"), ["abcdef0123456789"]);
+    assert.deepEqual(await s.ids("'abcdef01"), ["abcdef0123456789"]);
   });
 });
 
-test("search: text is found in a session no client has ever opened", () => {
-  withSearch((s) => {
+test("search: text is found in a session no client has ever opened", async () => {
+  await withSearch(async (s) => {
     // The point of moving this to the daemon: the corpus is the durable table,
     // so nothing here depends on a client having downloaded a transcript page.
     s.session("never-visited", "chat");
@@ -174,6 +174,21 @@ test("search: text is found in a session no client has ever opened", () => {
       type: "assistant_text",
       text: "the pelican crossing is repainted",
     });
-    assert.deepEqual(s.ids("pelican"), ["never-visited"]);
+    assert.deepEqual(await s.ids("pelican"), ["never-visited"]);
+  });
+});
+
+test("search includes long-message tails and old text beyond the former session cutoff", async () => {
+  await withSearch(async (s) => {
+    s.session("a", "chat");
+    s.emit("a", { type: "assistant_text", text: "olduniqueneedle" });
+    for (let i = 0; i < 130; i++) s.emit("a", { type: "assistant_text", text: "x".repeat(2048) });
+    s.emit("a", {
+      type: "user_message",
+      text: "x".repeat(2100) + " longmessageneedle",
+      injected: false,
+    });
+    assert.deepEqual(await s.ids("'olduniqueneedle"), ["a"]);
+    assert.deepEqual(await s.ids("'longmessageneedle"), ["a"]);
   });
 });

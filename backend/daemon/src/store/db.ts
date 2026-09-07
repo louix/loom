@@ -76,7 +76,9 @@ export const migrate = (db: Db): void => {
     // install, a downgrade, an older checkout). Running against a schema we
     // don't understand silently mis-reads every row — refuse instead.
     throw new Error(
-      `loom.db is schema v${from} but this build only understands v${MIGRATIONS.length} — upgrade loom`,
+      `loom.db is schema v${from}, but this build only supports up to v${MIGRATIONS.length}. ` +
+        "Use a newer Loom build. To test an older checkout, use --repo with a fresh temporary repository. " +
+        "The database has not been downgraded.",
     );
   }
   if (from === MIGRATIONS.length) return;

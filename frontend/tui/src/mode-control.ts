@@ -14,6 +14,7 @@
  * the applied field with the target would claim a change the daemon may yet
  * reject.
  */
+import { mkStore, type Store } from "./store.ts";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { isAmbiguousFailure } from "@loom/client";
@@ -28,10 +29,10 @@ import { modeLabel } from "./theme.ts";
  */
 export type ModeChoice =
   /** Chosen, waiting out the debounce window before it is applied. */
-  | { t: "choosing"; target: SessionMode }
+  | { t: "choosing"; target: SessionMode; timer: ReturnType<typeof setTimeout> }
   /** `session.setMode` is on the wire with `sent`; `next` is what the user has
    *  cycled to since, to be applied when this call settles. */
-  | { t: "applying"; sent: SessionMode; next: SessionMode | null };
+  | { t: "applying"; operation: symbol; sent: SessionMode; next: SessionMode | null };
 
 /** Per session; a session with no entry has nothing in progress. */
 export type ModeChoices = Record<string, ModeChoice>;
@@ -57,20 +58,12 @@ export const pendingMode = (
   id: string | null | undefined,
 ): SessionMode | null => targetOf(id ? choices[id] : undefined);
 
-/** Fold a fresh choice in: a call already out keeps it as `next`, so one
- *  application is outstanding per session however fast the user cycles. */
-const chose = (c: ModeChoice | undefined, target: SessionMode): ModeChoice =>
-  c?.t === "applying" ? { ...c, next: target } : { t: "choosing", target };
-
 // ---- the handle ------------------------------------------------------------
 
 export interface ModeControlDeps {
   setMode: (sessionId: string, mode: SessionMode) => Promise<void>;
   /** The newest snapshots — the only source of the applied mode. */
   fleet: () => readonly SessionSnapshot[];
-  choices: () => ModeChoices;
-  /** Commit a transition; `null` forgets the session. */
-  commit: (sessionId: string, choice: ModeChoice | null) => void;
   note: (text: string, tone: "good" | "bad" | "dim") => void;
   /**
    * The session refused to leave `plan` because an `ExitPlanMode` review is
@@ -86,12 +79,13 @@ export interface ModeControlDeps {
   debounceMs?: number;
 }
 
-export interface ModeControl {
+export interface ModeControl extends Pick<Store<ModeChoices>, "get" | "subscribe"> {
   /** `⇧⇥`: choose the next mode for `sessionId` and show it immediately. */
   cycle: (sessionId: string) => void;
   /** Drop the choice, and any timer, for every session the daemon has stopped
    *  listing. Called on each snapshot. */
   settle: () => void;
+  cancel: () => void;
   /** Cancel every timer — the UI is going away. */
   dispose: () => void;
 }
@@ -102,44 +96,49 @@ const codeOf = (e: unknown): unknown =>
 export const mkModeControl = ({
   setMode,
   fleet,
-  choices,
-  commit,
   note,
   planPending,
   debounceMs = 300,
 }: ModeControlDeps): ModeControl => {
-  // A timer exists exactly while its session is `choosing`; every transition
-  // out of that state goes through `disarm` first.
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  const disarm = (sessionId: string): void => {
-    const t = timers.get(sessionId);
-    if (t === undefined) return;
-    clearTimeout(t);
-    timers.delete(sessionId);
+  // Choosing owns its timer; leaving that variant cancels it.
+  const store = mkStore<ModeChoices>({});
+  const choices = store.get;
+  const commit = (id: string, choice: ModeChoice | null): void => {
+    const old = choices()[id];
+    if (old?.t === "choosing") clearTimeout(old.timer);
+    const { [id]: _old, ...rest } = choices();
+    store.set(choice === null ? rest : { ...rest, [id]: choice });
   };
-
-  const arm = (sessionId: string): void => {
-    disarm(sessionId);
-    timers.set(
-      sessionId,
-      setTimeout(() => {
-        timers.delete(sessionId);
-        apply(sessionId);
+  let disposed = false;
+  const choose = (id: string, target: SessionMode): void => {
+    const choice: Extract<ModeChoice, { t: "choosing" }> = {
+      t: "choosing",
+      target,
+      timer: setTimeout(() => {
+        if (choices()[id] === choice) apply(id);
       }, debounceMs),
-    );
+    };
+    commit(id, choice);
   };
 
   /** The debounce elapsed: send whatever the presses settled on. */
   const apply = (sessionId: string): void => {
     const c = choices()[sessionId];
-    if (c?.t !== "choosing") return;
+    if (disposed || c?.t !== "choosing") return;
     if (!fleet().some((x) => x.id === sessionId)) return void commit(sessionId, null);
     const target = c.target;
-    commit(sessionId, { t: "applying", sent: target, next: null });
+    const operation = Symbol();
+    commit(sessionId, { t: "applying", operation, sent: target, next: null });
+    const current = () => {
+      const choice = choices()[sessionId];
+      return !disposed && choice?.t === "applying" && choice.operation === operation;
+    };
     setMode(sessionId, target).then(
-      () => resume(sessionId),
+      () => {
+        if (current()) resume(sessionId);
+      },
       (e: unknown) => {
+        if (!current()) return;
         // Every failure ends the chain rather than going on to `next`: the
         // targets behind it were cycled on from a mode the daemon never took,
         // so applying one would land somewhere the user never chose. Dropping
@@ -167,36 +166,37 @@ export const mkModeControl = ({
     const c = choices()[sessionId];
     if (c?.t !== "applying") return;
     if (c.next === null) return void commit(sessionId, null);
-    commit(sessionId, { t: "choosing", target: c.next });
-    arm(sessionId);
+    choose(sessionId, c.next);
   };
 
   return {
+    get: store.get,
+    subscribe: store.subscribe,
     cycle: (sessionId) => {
+      if (disposed) return;
       const s = fleet().find((x) => x.id === sessionId);
       if (!s) return void note("session is gone", "dim");
       const c = choices()[sessionId];
       // Cycle on from where the selection is heading, not from the snapshot:
       // three quick presses move three modes, whatever the daemon has taken.
       const target = nextMode(targetOf(c) ?? s.mode);
-      commit(sessionId, chose(c, target));
+      if (c?.t === "applying") commit(sessionId, { ...c, next: target });
+      else choose(sessionId, target);
       note(`mode → ${modeLabel(target)}`, "good");
-      // A call is already out; `resume` applies this when it settles.
-      if (c?.t !== "applying") arm(sessionId);
     },
     settle: () => {
-      const ids = Object.keys(choices());
-      if (ids.length === 0) return;
-      const live = new Set(fleet().map((s) => s.id));
-      for (const id of ids) {
-        if (live.has(id)) continue;
-        disarm(id);
+      for (const id of Object.keys(choices()))
+        if (!fleet().some((s) => s.id === id)) commit(id, null);
+    },
+    cancel: () => {
+      for (const id of Object.keys(choices())) {
         commit(id, null);
       }
     },
     dispose: () => {
-      for (const t of timers.values()) clearTimeout(t);
-      timers.clear();
+      disposed = true;
+      for (const choice of Object.values(choices()))
+        if (choice.t === "choosing") clearTimeout(choice.timer);
     },
   };
 };

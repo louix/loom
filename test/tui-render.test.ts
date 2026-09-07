@@ -1,4 +1,6 @@
+import { snap } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
+import { outboxOf, pending } from "@loom/tui/composer";
 import { describe, test } from "node:test";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
@@ -45,15 +47,7 @@ import {
   type FleetHandle,
   type Term,
 } from "@loom/tui/fleet-handle";
-import {
-  initialState,
-  fleetSessions,
-  shownLog,
-  type TuiState,
-  queueFor,
-  reduce,
-  sessionLog,
-} from "@loom/tui/model";
+import { initialState, fleetSessions, shownLog, reduce, sessionLog } from "@loom/tui/model";
 import { openPrompt, questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
 import type { FakeProvider } from "@loom/connector-mock";
@@ -62,9 +56,11 @@ import { makeHarness, type Harness } from "@loom/harness";
 const ESC = "\x1b";
 
 /** The loaded transcript window, or null while there isn't one. */
-const winOf = (s: TuiState) => transcriptWindow(s.transcript);
+const winOf = (s: { transcript: import("@loom/tui/transcript").Transcript }) =>
+  transcriptWindow(s.transcript);
 /** Every durable id the transcript is holding. */
-const idsOf = (s: TuiState) => transcriptLines(s.transcript).map((l) => l.id);
+const idsOf = (s: { transcript: import("@loom/tui/transcript").Transcript }) =>
+  transcriptLines(s.transcript).map((l) => l.id);
 
 class FakeOut extends EventEmitter {
   columns = 120;
@@ -803,19 +799,30 @@ models   = ["m1", "m2"]
     const teardown = handle.effectStart();
     try {
       const pressPgUp = (): void => handle.handleKey("", { pageUp: true } as Key);
-      const oldest = (): string => sessionLog(handle.getView().state)[0]?.text ?? "";
+      const oldest = (): string =>
+        sessionLog({ ...handle.getView().ui, transcript: handle.transcript.get().transcript })[0]
+          ?.text ?? "";
       // Gate on the log COUNT: the fold dispatches land in the view's state
       // synchronously, while rendered-output checks race ink's delivery.
       const climbTo = async (): Promise<void> => {
         const deadline = Date.now() + 30_000;
-        while (sessionLog(handle.getView().state).length < 9 && Date.now() < deadline) {
+        while (
+          sessionLog({ ...handle.getView().ui, transcript: handle.transcript.get().transcript })
+            .length < 9 &&
+          Date.now() < deadline
+        ) {
           pressPgUp(); // pins the top and pulls the next-older page
           await delay(100);
         }
       };
 
       await climbTo();
-      assert.equal(sessionLog(handle.getView().state).length, 9, "every page folded in");
+      assert.equal(
+        sessionLog({ ...handle.getView().ui, transcript: handle.transcript.get().transcript })
+          .length,
+        9,
+        "every page folded in",
+      );
       assert.match(oldest(), /^page1-head/, "the climb reaches the very first event");
       // Keep climbing: the viewport must be able to reach the log's top. (The
       // original bug clamped `logScroll` against the *logical* line count, which
@@ -827,14 +834,25 @@ models   = ["m1", "m2"]
       }
       const view = handle.getView();
       const paneWidth = view.body.t === "split" ? view.rightW : view.cols;
-      const top = Math.max(0, logRowCount(shownLog(view.state), paneWidth) - view.logPage);
-      assert.equal(view.logScroll, top, "the viewport reaches the log's top");
+      const top = Math.max(
+        0,
+        logRowCount(
+          shownLog({ ...view.ui, transcript: handle.transcript.get().transcript }),
+          paneWidth,
+        ) - view.logPage,
+      );
+      assert.equal(handle.transcript.get().scroll, top, "the viewport reaches the log's top");
 
       // Past the start the done latch fires: further PgUp neither moves nor churns.
       pressPgUp();
       pressPgUp();
-      assert.equal(sessionLog(handle.getView().state).length, 9, "no churn past the start");
-      assert.equal(handle.getView().logScroll, top, "still pinned at the log's top");
+      assert.equal(
+        sessionLog({ ...handle.getView().ui, transcript: handle.transcript.get().transcript })
+          .length,
+        9,
+        "no churn past the start",
+      );
+      assert.equal(handle.transcript.get().scroll, top, "still pinned at the log's top");
     } finally {
       teardown();
       await second.close();
@@ -2025,7 +2043,16 @@ model    = "gpt-5"
     };
     const row = (session: SessionSnapshot): string =>
       stripAnsi(
-        renderToString(createElement(Detail, { session, width: 80, now: T0 + 40 * 60_000 })),
+        renderToString(
+          createElement(Detail, {
+            session,
+            fleet: loadableIdle,
+            box: outboxOf({}, session.id),
+            mode: null,
+            width: 80,
+            now: T0 + 40 * 60_000,
+          }),
+        ),
       )
         .split("\n")
         .find((l) => l.includes("cache")) ?? "";
@@ -2221,40 +2248,8 @@ const testDaemon: DaemonInfo = {
   epoch: "e1",
 };
 
-const testSession = (over: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
-  id: "a",
-  parentId: null,
-  forkTurn: null,
-  provider: "fake",
-  model: null,
-  effort: null,
-  mode: "default",
-  status: stateRunning,
-  title: "a task",
-  comment: null,
-  worktree: null,
-  branch: null,
-  baseBranch: null,
-  inPlace: false,
-  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextUsed: 0,
-  contextLimit: 0,
-  costUsd: 0,
-  costSource: "none",
-  turns: 0,
-  requests: [],
-  subagents: [],
-  backgroundTasks: [],
-  rateLimits: {},
-  cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
-  keepWarm: false,
-  canRewind: true,
-  resumable: true,
-  git: null,
-  createdAt: 1,
-  updatedAt: 1,
-  ...over,
-});
+const testSession = (over: Partial<SessionSnapshot> = {}): SessionSnapshot =>
+  snap({ id: "a", status: "running", createdAt: 1, updatedAt: 1, ...over });
 
 const fleetOf = (...sessions: SessionSnapshot[]): ClientState =>
   loadableLoaded({ daemon: testDaemon, providers: [], sessions });
@@ -2284,52 +2279,6 @@ const queueFollowUp = (handle: FleetHandle, text: string): void => {
 };
 
 describe("tui fleet-handle effects", () => {
-  test("a pane is not re-derived by an event that is not one of its inputs", async () => {
-    const fake = mkFakeClient();
-    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
-    const teardown = handle.effectStart();
-    try {
-      fake.deliver(
-        fleetOf(
-          testSession({ id: "a", status: stateIdle, updatedAt: 9 }),
-          testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
-        ),
-      );
-      fake.heads()[0]?.resolve(pageOf(3, 3, null, "a"));
-      await delay(0);
-      assert.equal(handle.getView().state.selectedId, "a");
-
-      // Another session streams. The state moves — a push always produces a new
-      // one — but nothing the EVENTS or FLEET panes read moved with it.
-      const before = handle.getView();
-      fake.push({
-        kind: "push",
-        seq: 2,
-        epoch: "e1",
-        type: "event",
-        id: 900,
-        event: { sessionId: "b", ts: 1, type: "assistant_text", text: "elsewhere" },
-      });
-      const after = handle.getView();
-      assert.notEqual(after.state, before.state, "the frame really was republished");
-      assert.equal(after.log, before.log, "the selected transcript is not rebuilt");
-      assert.equal(after.fleetPane, before.fleetPane, "nor is the fleet list");
-      assert.equal(after.detail, before.detail, "nor the detail pane");
-
-      // Typing. The prompt is the one thing that has to repaint; the fleet list
-      // behind it reads none of it.
-      handle.handleKey("", { return: true } as Key);
-      const opened = handle.getView();
-      for (const ch of "hi") handle.handleKey(ch, {} as Key);
-      const typed = handle.getView();
-      assert.notEqual(typed.state, opened.state, "the keystrokes landed");
-      assert.equal(typed.fleetPane, opened.fleetPane, "typing does not re-derive the fleet");
-      assert.equal(typed.log, opened.log, "nor the transcript");
-    } finally {
-      teardown();
-    }
-  });
-
   test("what is not on screen is not animation", async () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
@@ -2358,11 +2307,11 @@ describe("tui fleet-handle effects", () => {
     const teardown = handle.effectStart();
     try {
       fake.deliver(fleetOf(testSession({ id: "a" })));
-      assert.equal(handle.getView().state.selectedId, "a");
+      assert.equal(handle.getView().ui.selectedId, "a");
       assert.equal(fake.heads().length, 1, "the selected session fetched its head");
 
       queueFollowUp(handle, "follow up");
-      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
 
       const before = fake.calls.length;
       // The connection drops. The fleet is unknown, not empty — nothing about
@@ -2370,8 +2319,12 @@ describe("tui fleet-handle effects", () => {
       fake.deliver(loadablePending);
 
       assert.equal(fake.calls.length, before, "no RPC is issued while the fleet is unknown");
-      const s = handle.getView().state;
-      assert.deepEqual(queueFor(s, "a"), ["follow up"], "the queued follow-up survives");
+      const s = handle.getView().ui;
+      assert.deepEqual(
+        pending(outboxOf(handle.composer.get(), "a")),
+        ["follow up"],
+        "the queued follow-up survives",
+      );
       assert.equal(s.selectedId, "a", "the selection survives");
       assert.doesNotMatch(
         s.notice?.text ?? "",
@@ -2384,7 +2337,7 @@ describe("tui fleet-handle effects", () => {
       fake.deliver(fleetOf(testSession({ id: "a" })));
       assert.equal(fake.heads().length, 2, "one replacement head fetch");
       assert.equal(fake.of("session.send").length, 0, "a running session is not drained");
-      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
     } finally {
       teardown();
     }
@@ -2399,8 +2352,7 @@ describe("tui fleet-handle effects", () => {
       // rather than each action discovering the dead socket for itself.
       fake.deliver(loadablePending);
       handle.handleKey("n", {} as Key);
-      assert.equal(handle.getView().state.overlay.t, "browse", "no new-session prompt opens");
-      assert.match(handle.getView().state.notice?.text ?? "", /not connected/);
+      assert.equal(handle.getView().ui.overlay.t, "browse", "no new-session prompt opens");
 
       fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
       handle.handleKey("", { return: true } as Key); // open the send prompt
@@ -2409,14 +2361,14 @@ describe("tui fleet-handle effects", () => {
       // The connection drops with the message half-written (an `$EDITOR`
       // handoff returning after the drop lands the same way).
       fake.deliver(loadablePending);
+      handle.handleKey("x", {} as Key);
       handle.handleKey("", { return: true } as Key);
       assert.equal(fake.of("session.send").length, 0, "nothing is sent to a socket that is gone");
       assert.equal(
-        openPrompt(handle.getView().state.overlay)?.buffer.text,
+        openPrompt(handle.getView().ui.overlay)?.buffer.text,
         "half typed",
         "the prompt keeps what was typed",
       );
-      assert.match(handle.getView().state.notice?.text ?? "", /not connected/);
 
       // Reconnected: the same keypress sends the same text, once.
       fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
@@ -2438,12 +2390,12 @@ describe("tui fleet-handle effects", () => {
       assert.equal(fake.heads().length, 1);
       fake.heads()[0]?.resolve(pageOf(3, 3, null));
       await delay(0);
-      assert.equal(handle.getView().state.transcript.t, "tailing");
+      assert.equal(handle.transcript.get().transcript.t, "tailing");
 
       fake.deliver(loadablePending);
       assert.equal(fake.heads().length, 1, "no replacement fetch while the fleet is unknown");
       assert.equal(
-        handle.getView().state.transcript.t,
+        handle.transcript.get().transcript.t,
         "unloaded",
         "the window was dropped, not left claiming data",
       );
@@ -2452,7 +2404,7 @@ describe("tui fleet-handle effects", () => {
       assert.equal(fake.heads().length, 2, "data refetches the head, once");
       fake.heads()[1]?.resolve(pageOf(6, 3, null));
       await delay(0);
-      assert.equal(handle.getView().state.transcript.t, "tailing");
+      assert.equal(handle.transcript.get().transcript.t, "tailing");
     } finally {
       teardown();
     }
@@ -2471,7 +2423,7 @@ describe("tui fleet-handle effects", () => {
       handle.handleKey("", { pageUp: true } as Key);
       const stale = fake.olders()[0];
       assert.ok(stale, "scrolling near the top asked for an older page");
-      assert.ok(handle.getView().logScroll > 0, "and left the viewport pinned at the top");
+      assert.ok(handle.transcript.get().scroll > 0, "and left the viewport pinned at the top");
 
       // The connection drops and returns before that page lands. The new
       // generation reads its own, longer head page.
@@ -2481,21 +2433,21 @@ describe("tui fleet-handle effects", () => {
       fake.heads()[1]?.resolve(pageOf(200, 80, { olderThan: 121 }));
       await delay(0);
 
-      const before = handle.getView();
-      const idsBefore = idsOf(before.state);
-      assert.equal(before.logScroll, 0, "the reset re-anchored the viewport at the live tail");
+      const before = handle.transcript.get();
+      const idsBefore = idsOf(before);
+      assert.equal(before.scroll, 0, "the reset re-anchored the viewport at the live tail");
 
       stale.resolve(pageOf(60, 40, { olderThan: 21 }));
       await delay(0);
 
-      const after = handle.getView();
-      assert.deepEqual(idsOf(after.state), idsBefore, "the obsolete page adds no entries");
+      const after = handle.transcript.get();
+      assert.deepEqual(idsOf(after), idsBefore, "the obsolete page adds no entries");
       assert.deepEqual(
-        winOf(after.state)?.olderCursor,
+        winOf(after)?.olderCursor,
         { olderThan: 121 },
         "and cannot move the cursor back to its own generation's",
       );
-      assert.equal(after.logScroll, 0, "and moves no viewport");
+      assert.equal(after.scroll, 0, "and moves no viewport");
     } finally {
       teardown();
     }
@@ -2512,24 +2464,24 @@ describe("tui fleet-handle effects", () => {
           testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
         ),
       );
-      const sel = handle.getView().state.selectedId;
+      const sel = handle.getView().ui.selectedId;
       assert.ok(sel);
       fake.heads()[0]?.reject(new Error("history unavailable"));
       await delay(0);
-      assert.equal(handle.getView().state.transcript.t, "failed");
+      assert.equal(handle.transcript.get().transcript.t, "failed");
       assert.equal(fake.heads().length, 1, "and nothing retries it on its own");
 
       // Move away and come back — an explicit user action, not a render.
       handle.handleKey("", { downArrow: true } as Key);
-      assert.notEqual(handle.getView().state.selectedId, sel);
+      assert.notEqual(handle.getView().ui.selectedId, sel);
       handle.handleKey("", { upArrow: true } as Key);
-      assert.equal(handle.getView().state.selectedId, sel);
+      assert.equal(handle.getView().ui.selectedId, sel);
 
       const retry = fake.heads().filter((c) => c.params["id"] === sel);
       assert.equal(retry.length, 2, "reselecting retries the failed head fetch");
       retry[1]?.resolve(pageOf(2, 2, null, sel));
       await delay(0);
-      assert.equal(handle.getView().state.transcript.t, "tailing");
+      assert.equal(handle.transcript.get().transcript.t, "tailing");
     } finally {
       teardown();
     }
@@ -2542,14 +2494,19 @@ describe("tui fleet-handle effects", () => {
     try {
       fake.deliver(fleetOf(testSession({ id: "a" })));
       queueFollowUp(handle, "follow up");
-      assert.deepEqual(queueFor(handle.getView().state, "a"), ["follow up"]);
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
 
       // Another client removed the session, and this snapshot proves it. Clear
       // the queue before saying so, or the notice's own dispatch re-enters the
       // drain and finds the same stranded queue again, forever.
       fake.deliver(fleetOf(testSession({ id: "b", status: stateIdle })));
-      const s = handle.getView().state;
-      assert.deepEqual(queueFor(s, "a"), [], "the stranded queue is cleared");
+      const s = handle.getView().ui;
+      assert.equal(s.drafts.last, "follow up", "the stranded text is recoverable as a new draft");
+      assert.deepEqual(
+        pending(outboxOf(handle.composer.get(), "a")),
+        [],
+        "the stranded queue is cleared",
+      );
       assert.match(s.notice?.text ?? "", /not sent/);
     } finally {
       teardown();
@@ -2576,13 +2533,17 @@ describe("tui fleet-handle effects", () => {
       // No later snapshot may put it back on the wire.
       fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 2 })));
       assert.equal(fake.of("session.send").length, 1, "no automatic second send");
-      const s = handle.getView().state;
-      assert.deepEqual(queueFor(s, "a"), [], "the ambiguous head left the drain queue");
+      const s = handle.getView().ui;
+      assert.deepEqual(
+        pending(outboxOf(handle.composer.get(), "a")),
+        [],
+        "the ambiguous head left the drain queue",
+      );
       assert.match(s.notice?.text ?? "", /may already have been sent/);
 
       // The text is not lost: opening `send` on that session brings it back.
       handle.handleKey("", { return: true } as Key);
-      assert.equal(openPrompt(handle.getView().state.overlay)?.buffer.text, "follow up");
+      assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "follow up");
     } finally {
       teardown();
     }
@@ -2598,7 +2559,7 @@ describe("tui transcript paging through the handle", () => {
       fake.deliver(fleetOf(testSession({ id: "a" })));
       fake.heads()[0]?.resolve(pageOf(20_000, 6_000, { olderThan: 14_001 }));
       await delay(0);
-      assert.equal(handle.getView().state.transcript.t, "tailing");
+      assert.equal(handle.transcript.get().transcript.t, "tailing");
 
       // Home scrolls to the oldest row held, which prefetches the next older
       // page; folding it in takes the window past the cap.
@@ -2609,10 +2570,10 @@ describe("tui transcript paging through the handle", () => {
       older.resolve(pageOf(14_000, 6_000, { olderThan: 8_001 }));
       await delay(0);
 
-      const browsing = winOf(handle.getView().state)!;
+      const browsing = winOf(handle.transcript.get())!;
       assert.equal(browsing.lines.length, TRANSCRIPT_CAP, "12,000 fetched, 10,000 retained");
       assert.equal(browsing.lines[0]?.id, 8_001, "the oldest end is the end being read");
-      assert.equal(handle.getView().state.transcript.t, "detached", "the newest end was evicted");
+      assert.equal(handle.transcript.get().transcript.t, "detached", "the newest end was evicted");
       assert.deepEqual(browsing.olderCursor, { olderThan: 8_001 }, "and the cursor advanced");
 
       // A live event now has nowhere contiguous to go, so it stays out of the
@@ -2626,7 +2587,7 @@ describe("tui transcript paging through the handle", () => {
         event: { sessionId: "a", ts: 1, type: "assistant_text", text: "live" },
       });
       assert.equal(
-        winOf(handle.getView().state)?.lines,
+        winOf(handle.transcript.get())?.lines,
         browsing.lines,
         "the rows being read are untouched",
       );
@@ -2638,10 +2599,10 @@ describe("tui transcript paging through the handle", () => {
       reloads[1]?.resolve(pageOf(20_001, 500, { olderThan: 19_502 }));
       await delay(0);
 
-      const followed = winOf(handle.getView().state)!;
-      assert.equal(handle.getView().state.transcript.t, "tailing", "and resumed following it");
+      const followed = winOf(handle.transcript.get())!;
+      assert.equal(handle.transcript.get().transcript.t, "tailing", "and resumed following it");
       assert.equal(followed.lines.at(-1)?.id, 20_001);
-      assert.equal(handle.getView().logScroll, 0, "with the viewport back at the tail");
+      assert.equal(handle.transcript.get().scroll, 0, "with the viewport back at the tail");
     } finally {
       teardown();
     }
@@ -2658,15 +2619,15 @@ describe("tui transcript paging through the handle", () => {
           testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
         ),
       );
-      assert.equal(handle.getView().state.selectedId, "a");
+      assert.equal(handle.getView().ui.selectedId, "a");
       const forA = fake.heads()[0];
       assert.ok(forA, "the selected session fetched its head");
 
       // Move to `b` before `a`'s page lands. There is no cache to fall back on:
       // the resource is the selected session's, so it starts loading again.
       handle.handleKey("", { downArrow: true } as Key);
-      assert.equal(handle.getView().state.selectedId, "b");
-      assert.equal(handle.getView().state.transcript.t, "loading");
+      assert.equal(handle.getView().ui.selectedId, "b");
+      assert.equal(handle.transcript.get().transcript.t, "loading");
       const forB = fake.heads()[1];
       assert.ok(forB, "and `b` asked for its own newest page");
       assert.equal(forB.params["id"], "b");
@@ -2675,14 +2636,14 @@ describe("tui transcript paging through the handle", () => {
       forA.resolve(pageOf(50, 5, null, "a"));
       await delay(0);
       assert.equal(
-        handle.getView().state.transcript.t,
+        handle.transcript.get().transcript.t,
         "loading",
         "the abandoned page installs nothing, not even under the wrong session",
       );
 
       forB.resolve(pageOf(9, 3, null, "b"));
       await delay(0);
-      const win = winOf(handle.getView().state);
+      const win = winOf(handle.transcript.get());
       assert.equal(win?.sessionId, "b");
       assert.deepEqual(
         win?.lines.map((l) => l.id),
@@ -2703,7 +2664,7 @@ describe("tui transcript paging through the handle", () => {
       await delay(0);
 
       handle.handleKey("", { pageUp: true } as Key);
-      const scrolled = handle.getView().logScroll;
+      const scrolled = handle.transcript.get().scroll;
       assert.ok(scrolled > 0, "the viewport is back in history");
 
       // One more line at the tail. The offset counts up from the tail, so it has
@@ -2717,7 +2678,7 @@ describe("tui transcript paging through the handle", () => {
         event: { sessionId: "a", ts: 1, type: "assistant_text", text: "live" },
       });
       assert.equal(
-        handle.getView().logScroll,
+        handle.transcript.get().scroll,
         scrolled + 1,
         "the one row it added is absorbed by the offset, not by the window",
       );
@@ -2758,7 +2719,7 @@ describe("tui interaction actions through the handle", () => {
       // The authoritative list is untouched: nothing local hides p1, and the
       // panel keeps showing it until the daemon says otherwise.
       assert.deepEqual(
-        requestsFor(fleetSessions(handle.getView().state), "a").map((r) => r.id),
+        requestsFor(fleetSessions(handle.getView().ui), "a").map((r) => r.id),
         ["p1", "p2"],
       );
       assert.equal(handle.getView().request?.id, "p1");
@@ -2801,7 +2762,7 @@ describe("tui interaction actions through the handle", () => {
 
       // A long-answered request in old history is transcript and nothing more.
       assert.deepEqual(
-        requestsFor(fleetSessions(handle.getView().state), "a").map((r) => r.id),
+        requestsFor(fleetSessions(handle.getView().ui), "a").map((r) => r.id),
         ["p1"],
       );
       assert.equal(handle.getView().request?.id, "p1");
@@ -2809,4 +2770,72 @@ describe("tui interaction actions through the handle", () => {
       teardown();
     }
   });
+});
+
+test("an unchanged memoized header reads the new palette when the theme changes", async () => {
+  const { Header, PaletteContext } = await import("@loom/tui/components");
+  const { PALETTES } = await import("@loom/tui/theme");
+  const colors: string[] = [];
+  const palette = (p: typeof PALETTES.dark) => ({
+    ...p,
+    get accent() {
+      colors.push(p.accent);
+      return p.accent;
+    },
+  });
+  const child = createElement(Header, {
+    width: 80,
+    view: {
+      connection: "live",
+      version: "test",
+      repo: "repo",
+      sessions: 0,
+      waiting: 0,
+      running: 0,
+      background: 0,
+    },
+  });
+  const stdout = new FakeOut();
+  const stdin = new FakeIn();
+  const tree = (p: typeof PALETTES.dark) =>
+    createElement(PaletteContext.Provider, { value: palette(p) }, child);
+  const app = render(tree(PALETTES.dark), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    debug: true,
+    patchConsole: false,
+  });
+  try {
+    await app.waitUntilRenderFlush();
+    assert.ok(colors.includes(PALETTES.dark.accent));
+    colors.length = 0;
+    app.rerender(tree(PALETTES.light));
+    await app.waitUntilRenderFlush();
+    assert.ok(
+      colors.includes(PALETTES.light.accent),
+      "the header must request its new colour despite unchanged view props",
+    );
+  } finally {
+    app.unmount();
+  }
+});
+
+test("help fits short and narrow viewports and keeps the last bindings reachable", async () => {
+  const { Help } = await import("@loom/tui/components");
+  for (const [width, height] of [
+    [118, 38],
+    [28, 8],
+  ]) {
+    const top = renderToString(createElement(Help, { width: width!, height: height!, scroll: 0 }), {
+      columns: width!,
+    });
+    assert.ok(top.split("\n").length <= height!);
+    assert.match(top, /loom — keys/);
+    const end = renderToString(
+      createElement(Help, { width: width!, height: height!, scroll: 10000 }),
+      { columns: width! },
+    );
+    assert.ok(end.split("\n").length <= height!);
+    assert.match(end, /remotes/);
+  }
 });

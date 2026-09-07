@@ -30,7 +30,6 @@ import {
   stateIdle,
 } from "@loom/core/session-state";
 import {
-  isSearchCursor,
   isTranscriptId,
   PROTOCOL_VERSION,
   type DaemonInfo,
@@ -40,7 +39,7 @@ import {
   type HelloResult,
   type ModelChoice,
   type ProviderInfo,
-  type SearchPage,
+  type SearchResult,
   type SessionSnapshot,
   type StatePush,
   type TranscriptId,
@@ -1992,43 +1991,12 @@ export class Daemon {
      * is no live ranked view maintained per client — a client that wants
      * fresher results asks again.
      */
-    d.register("session.search", (params) => {
-      const p = isObj(params) ? params : {};
-      const query = typeof p["query"] === "string" ? p["query"] : "";
-      // Clamp: a client drives this in a paging loop, so a negative / NaN /
-      // fractional `limit` must not reach a slice bound.
-      const rawLimit = typeof p["limit"] === "number" ? Math.trunc(p["limit"]) : 50;
-      const limit = Number.isFinite(rawLimit) ? Math.min(500, Math.max(1, rawLimit)) : 50;
-      // Optional continuation, read off an earlier page. Rejecting a malformed
-      // or mismatched one keeps "you asked wrongly" distinct from the page's
-      // own `cursor: null`, which means the ranking is exhausted — conflating
-      // them is what stalls a paging loop silently.
-      let offset = 0;
-      const rawCursor = p["cursor"];
-      if (rawCursor !== undefined && rawCursor !== null) {
-        if (!isSearchCursor(rawCursor)) {
-          throw new RpcError(
-            "bad_request",
-            "cursor must be the object from an earlier page's cursor",
-          );
-        }
-        if (rawCursor.query !== query) {
-          throw new RpcError("bad_request", "cursor belongs to a different query");
-        }
-        offset = rawCursor.offset;
-      }
-      // Ranking the whole match set is what answering costs; the page bounds
-      // the response, not the search. Sessions come from the registry in the
-      // same order `session.list` reports, so ties rank the way the fleet is
-      // already sorted.
-      const ranked = this.#search.rank(this.#registry.listSorted(), query);
-      const hits = ranked.slice(offset, offset + limit);
-      const next = offset + hits.length;
+    d.register("session.search", async (params) => {
+      const query = reqString(params, "query");
       return {
         query,
-        hits,
-        cursor: next < ranked.length ? { query, offset: next } : null,
-      } satisfies SearchPage;
+        ids: (await this.#search.rank(this.#registry.listSorted(), query)).map((hit) => hit.id),
+      } satisfies SearchResult;
     });
 
     // --- session control (Claude adapter, milestone 2) --------------------

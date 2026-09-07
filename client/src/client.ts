@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
@@ -23,7 +25,7 @@ export interface ConnectOptions {
   repoRoot: string;
   sockPath: string;
   /**
-   * Absolute path to the `loomd` entry script, run as `node <daemonEntry> --repo …`
+   * Absolute path to the `loomd` entry script, run as `deno run -A <daemonEntry> --repo …`
    * when `autospawn` fires. Required unless `autospawn` is false.
    */
   daemonEntry?: string;
@@ -453,8 +455,7 @@ export class LoomClient {
       sock = await tryConnect(this.#opts.sockPath);
     } catch (err) {
       if (!this.#opts.autospawn || !isRetryableConnectError(err)) throw err;
-      await this.#spawnDaemon();
-      sock = await this.#connectWithRetry();
+      sock = await this.#spawnDaemon();
     }
     // Dialling takes as long as it takes, and `close()` can land in the middle
     // of it. A socket handed back after that is not a connection — installing
@@ -486,29 +487,48 @@ export class LoomClient {
     return a;
   }
 
-  async #spawnDaemon(): Promise<void> {
+  async #spawnDaemon(): Promise<Deno.Conn> {
     const entry = this.#opts.daemonEntry;
     if (!entry) throw new Error("LoomClient: autospawn needs `daemonEntry` (path to loomd)");
-    // Re-invoking the running interpreter needs an explicit `run -A`: unlike
-    // `node <file>`, bare `deno <file>` runs with no permissions by default.
-    const child = spawn(Deno.execPath(), ["run", "-A", entry, "--repo", this.#opts.repoRoot], {
-      detached: true,
-      stdio: "ignore",
+    const dir = dirname(this.#opts.sockPath);
+    mkdirSync(dir, { recursive: true });
+    const logPath = join(dir, "daemon-startup.log");
+    // A file survives client exit without keeping a stderr pipe (or the client)
+    // alive. Preserve failures that occur before the daemon's logger starts.
+    const stderr = openSync(logPath, "w", 0o600);
+    const child = (() => {
+      try {
+        return spawn(Deno.execPath(), ["run", "-A", entry, "--repo", this.#opts.repoRoot], {
+          detached: true,
+          stdio: ["ignore", "ignore", stderr],
+        });
+      } finally {
+        closeSync(stderr);
+      }
+    })();
+    let spawnError: Error | undefined;
+    child.once("error", (err) => {
+      spawnError = err;
     });
     child.unref();
-  }
-
-  async #connectWithRetry(): Promise<Deno.Conn> {
     let waitMs = 25;
     for (let i = 0; i < 40; i++) {
       try {
         return await tryConnect(this.#opts.sockPath);
       } catch {
+        if (spawnError) throw spawnError;
+        // Exit 3 means another launcher won the daemon lock; keep dialing it.
+        if ((child.exitCode !== null && child.exitCode !== 3) || child.signalCode !== null) {
+          const detail = readFileSync(logPath, "utf8").trim();
+          throw new Error(
+            `daemon failed to start (${child.signalCode ?? `exit ${child.exitCode}`}):\n${detail}\nStartup log: ${logPath}`,
+          );
+        }
         await delay(waitMs);
         waitMs = Math.min(waitMs * 1.5, 500);
       }
     }
-    throw new Error(`daemon did not come up on ${this.#opts.sockPath}`);
+    throw new Error(`daemon did not come up on ${this.#opts.sockPath}; see ${logPath}`);
   }
 
   async #runReadLoop(a: Attempt): Promise<void> {

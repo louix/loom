@@ -1,3 +1,4 @@
+import { snap, fleet, daemon } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,22 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
 import type { SessionInteraction } from "@loom/core/interaction";
-import {
-  type SessionState,
-  type SessionStateKind,
-  stateAwaitingInput,
-  stateIdle,
-} from "@loom/core/session-state";
-import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
-import type { SessionMode } from "@loom/core/types";
+import { stateIdle } from "@loom/core/session-state";
+import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
-import type {
-  EventPush,
-  HistoryCursor,
-  HistoryPage,
-  SearchCursor,
-  SearchPage,
-} from "@loom/core/wire";
+import type { PushFrame, EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
 import {
   actionsFor,
   allowedActs,
@@ -45,7 +34,6 @@ import {
   providerColorOf,
   providerPickItems,
   versionMismatchAction,
-  queueFor,
   compactingFor,
   reduce,
   selectedSession,
@@ -72,6 +60,11 @@ import {
   logRowCount,
   toLogLine,
   transcriptText,
+  liveFrame,
+  mkTranscript,
+  transcriptLines,
+  noTranscript,
+  type Transcript,
   type LogLine,
 } from "@loom/tui/transcript";
 import { detailRows, modeChipHit, promptPaneRows, promptRows } from "@loom/tui/components";
@@ -94,16 +87,9 @@ import {
   type PlanReview,
 } from "@loom/tui/overlay";
 import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
-import { cleared, enqueue, outboxOf, pending, release, type Outbox } from "@loom/tui/composer";
-import { mkModeControl, pendingMode, type ModeChoices } from "@loom/tui/mode-control";
+import { enqueue, outboxOf } from "@loom/tui/composer";
 import { mkClock, mkDeadline, SPIN_MS, type Beat } from "@loom/tui/clock";
-import {
-  fleetFilterStatus,
-  mkSearchControl,
-  searchMatches,
-  searchStale,
-  type Find,
-} from "@loom/tui/fleet-search";
+import { openFind } from "@loom/tui/fleet-search";
 
 /** Put an overlay up — the action every open/close goes through. */
 const open = (overlay: Overlay): Action => ({ t: "overlay", overlay });
@@ -118,7 +104,6 @@ import {
   bar,
   humanTokens,
   money,
-  modeChipText,
   setThemeMode,
   spinnerFrame,
   statusLook,
@@ -136,69 +121,6 @@ const shown = (s: TuiState, id: string) => activeRequest(fleetSessions(s), id);
 // ---------------------------------------------------------------------------
 // fixtures
 // ---------------------------------------------------------------------------
-
-let clock = 1_000;
-
-/** Build a `SessionState` from a bare kind (+ an await reason), for fixtures. */
-const toState = (
-  kind: SessionStateKind = "idle",
-  awaitReason: AwaitReason | null = null,
-): SessionState => {
-  switch (kind) {
-    case "awaiting_input":
-      return stateAwaitingInput(awaitReason ?? "permission");
-    case "interrupted":
-      return { kind: "interrupted", by: "user" };
-    case "error":
-      return { kind: "error", message: "" };
-    default:
-      return { kind } as SessionState;
-  }
-};
-
-const snap = (
-  over: Partial<Omit<SessionSnapshot, "status">> & {
-    status?: SessionStateKind;
-    awaitReason?: AwaitReason | null;
-  } = {},
-): SessionSnapshot => {
-  const now = ++clock;
-  const { status: statusKind, awaitReason, ...rest } = over;
-  return {
-    id: over.id ?? `s${now}`,
-    parentId: null,
-    forkTurn: null,
-    provider: "fake",
-    model: null,
-    effort: null,
-    mode: "default",
-    status: toState(statusKind, awaitReason),
-    title: "a task",
-    comment: null,
-    worktree: null,
-    branch: null,
-    baseBranch: null,
-    inPlace: false,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextUsed: 0,
-    contextLimit: 0,
-    costUsd: 0,
-    costSource: "none",
-    turns: 0,
-    requests: [],
-    subagents: [],
-    backgroundTasks: [],
-    rateLimits: {},
-    cache: { ttlMinutes: 0, ttlSource: "none", lastTurnAt: 0, lastRead: 0, lastWrite: 0 },
-    keepWarm: false,
-    canRewind: true,
-    resumable: true,
-    git: null,
-    createdAt: now,
-    updatedAt: now,
-    ...rest,
-  };
-};
 
 const ev = (over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent => {
   return { sessionId: "s1", ts: 5_000, ...(over as object) } as HarnessEvent;
@@ -227,49 +149,42 @@ const historyPage = (
   olderCursor: HistoryCursor | null = null,
 ): HistoryPage => ({ items: entries.map((e) => ({ id: e.id, event: e.event })), olderCursor });
 
+type WithTranscript = TuiState & { transcript: Transcript };
+const pushed = (s: TuiState & { transcript?: Transcript }, frame: PushFrame): WithTranscript => ({
+  ...reduce(s, { t: "push", frame }),
+  transcript: liveFrame(s.transcript ?? noTranscript, frame),
+});
+
 /** The transcript opened on `sessionId`, as the handle does on selection. */
-const opened = (s: TuiState = initialState(), sessionId = "s1"): TuiState =>
-  reduce(s, { t: "transcript", transcript: openTranscript(sessionId) });
+const opened = (s: TuiState = initialState(), sessionId = "s1"): WithTranscript => ({
+  ...s,
+  transcript: openTranscript(sessionId),
+});
 
 /** The newest page landing. */
-const headPage = (s: TuiState, page: HistoryPage, sessionId = "s1"): TuiState =>
-  reduce(s, { t: "transcript", transcript: headLoaded(s.transcript, sessionId, page) });
+const headPage = (s: WithTranscript, page: HistoryPage, sessionId = "s1"): WithTranscript => ({
+  ...s,
+  transcript: headLoaded(s.transcript, sessionId, page),
+});
 
 /** An older page landing. */
-const olderPage = (s: TuiState, page: HistoryPage, sessionId = "s1"): TuiState =>
-  reduce(s, { t: "transcript", transcript: olderLoaded(s.transcript, sessionId, page) });
+const olderPage = (s: WithTranscript, page: HistoryPage, sessionId = "s1"): WithTranscript => ({
+  ...s,
+  transcript: olderLoaded(s.transcript, sessionId, page),
+});
 
 /** A loaded, empty transcript following the live tail — what selecting a
  *  session and getting an empty first page leaves behind. */
-const tailing = (s: TuiState = initialState(), sessionId = "s1"): TuiState =>
+const tailing = (s: TuiState = initialState(), sessionId = "s1"): WithTranscript =>
   headPage(opened(s, sessionId), historyPage([]), sessionId);
 
 /** The loaded window, with its variant: `tailing` while it ends at the live
  *  tail, `detached` once paging back has evicted that end. */
-const win = (s: TuiState) => {
+const win = (s: WithTranscript) => {
   const t = s.transcript;
   assert.ok(t.t === "tailing" || t.t === "detached", `expected a window, got ${t.t}`);
   return t;
 };
-
-const daemon: DaemonInfo = {
-  pid: 1,
-  version: "0.0.1",
-  repoRoot: "/tmp/demo",
-  startedAt: 0,
-  epoch: "e1",
-};
-
-/**
- * A complete-replacement snapshot action — the only way fleet state reaches the
- * reducer. Tests that used to push a single per-session update now hand over the
- * whole fleet as it stands after the change, which is exactly what the daemon
- * does.
- */
-const fleet = (sessions: SessionSnapshot[], providers: ProviderInfo[] = []): Action => ({
-  t: "state",
-  state: loadableLoaded({ daemon, providers, sessions }),
-});
 
 // ---------------------------------------------------------------------------
 // hello / selection / ordering
@@ -387,7 +302,7 @@ test("childrenOf lists live background tasks then active sub-agents", () => {
 test("childEnter lands on the first child; childMove clamps within the list", () => {
   let s = reduce(initialState(), fleet([fanout]));
   assert.equal(s.selectedChild, null);
-  s = reduce(s, { t: "childEnter" });
+  s = { ...s, ...reduce(s, { t: "childEnter" }) };
   assert.equal(s.selectedChild, "bg:task1");
   s = reduce(s, { t: "childMove", delta: 1 });
   s = reduce(s, { t: "childMove", delta: 1 });
@@ -401,7 +316,7 @@ test("childEnter lands on the first child; childMove clamps within the list", ()
 test("childEnter while focused keeps the current child; after an exit it restarts", () => {
   let s = reduce(initialState(), fleet([fanout]));
   s = reduce(s, { t: "childEnter" });
-  s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
+  s = { ...s, ...reduce(s, { t: "childMove", delta: 2 }) }; // → sub:t1
   s = reduce(s, { t: "childEnter" });
   assert.equal(s.selectedChild, "sub:t1", "→ again while focused doesn't jump");
   s = reduce(s, { t: "childExit" });
@@ -516,8 +431,7 @@ test("fleetHits shifts every row down when the filter box is open", () => {
   let s = reduce(initialState(), fleet([a]));
   const geom = { originX: 1, listW: 40, originY: 2, maxY: 100 };
   const before = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
-  s = reduce(s, { t: "openFind" });
-  const after = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
+  const after = fleetHits({ ...s, find: openFind() }, geom).find((h) => h.kind === "session")!.y;
   assert.equal(after - before, 2, "the marginTop + the InputLine push the list down");
 });
 
@@ -539,175 +453,29 @@ test("modeChipHit points at the Detail status row's chip cell", () => {
   assert.equal(modeChipHit(plain, { originX: 1, originY: 2, paneW: 8 }), null);
 });
 
-// ---------------------------------------------------------------------------
-// mode control
-// ---------------------------------------------------------------------------
-
-/** A controller over a mutable session list, with `session.setMode` parked so a
- *  test can settle each call by hand. The debounce is short but real. */
-const mkModes = (sessions: SessionSnapshot[], debounceMs = 5) => {
-  let choices: ModeChoices = {};
-  const sent: SessionMode[] = [];
-  const calls: Array<{ ok: () => void; fail: (e: unknown) => void }> = [];
-  const notes: string[] = [];
-  const reviews: string[] = [];
-  const ctl = mkModeControl({
-    setMode: (_id, mode) => {
-      sent.push(mode);
-      return new Promise<void>((res, rej) => calls.push({ ok: () => res(), fail: rej }));
-    },
-    fleet: () => sessions,
-    choices: () => choices,
-    commit: (id, choice) => {
-      const { [id]: _gone, ...rest } = choices;
-      choices = choice === null ? rest : { ...rest, [id]: choice };
-    },
-    note: (text) => notes.push(text),
-    planPending: (id) => reviews.push(id),
-    debounceMs,
-  });
-  const wait = (ms = debounceMs * 4): Promise<void> =>
-    new Promise((r) => setTimeout(r, ms)) as Promise<void>;
-  return {
-    ctl,
-    sent,
-    calls,
-    notes,
-    reviews,
-    wait,
-    choice: (id: string) => choices[id],
-    pending: (id: string) => pendingMode(choices, id),
-  };
-};
-
-test("a rapid cycle shows every press and applies only the mode it settles on", async () => {
-  const m = mkModes([snap({ id: "a", status: "idle", mode: "default" })]);
-
-  m.ctl.cycle("a");
-  // Feedback is immediate — before any network work — and it names the target
-  // without touching the applied mode, which is still the snapshot's.
-  assert.equal(m.pending("a"), "plan");
-  assert.equal(modeChipText("default", m.pending("a")), "[manual → plan]");
-  assert.deepEqual(m.sent, [], "nothing has gone to the daemon yet");
-
-  m.ctl.cycle("a");
-  m.ctl.cycle("a");
-  assert.equal(m.pending("a"), "auto", "each press moves on from the target, not the snapshot");
-
-  await m.wait();
-  // `plan` is not a permission level — it flips the SDK session into plan mode
-  // — so a cycle through it must not stop there on the way to `auto`.
-  assert.deepEqual(m.sent, ["auto"]);
-  assert.deepEqual(m.notes, ["mode → plan", "mode → acceptEdits", "mode → auto"]);
-});
-
-test("a press during an outstanding mode change is kept, and applied when it settles", async () => {
-  const m = mkModes([snap({ id: "a", status: "idle", mode: "default" })]);
-  m.ctl.cycle("a");
-  await m.wait();
-  assert.deepEqual(m.sent, ["plan"]);
-  assert.deepEqual(m.choice("a"), { t: "applying", sent: "plan", next: null });
-
-  m.ctl.cycle("a");
-  m.ctl.cycle("a");
-  await m.wait();
-  assert.deepEqual(m.sent, ["plan"], "one application is outstanding per session");
-  assert.deepEqual(
-    m.choice("a"),
-    { t: "applying", sent: "plan", next: "auto" },
-    "further presses replace the next target rather than queueing every stop",
-  );
-
-  m.calls[0]!.ok();
-  await m.wait();
-  assert.deepEqual(m.sent, ["plan", "auto"], "the target chosen meanwhile went on the same rules");
-
-  m.calls[1]!.ok();
-  await m.wait();
-  assert.equal(m.pending("a"), null, "nothing pending — the chip is the snapshot's again");
-});
-
-test("a refused mode change gives the chip back to the daemon and stops there", async () => {
-  const m = mkModes([snap({ id: "a", status: "idle", mode: "default" })]);
-  m.ctl.cycle("a");
-  await m.wait();
-  m.ctl.cycle("a"); // queued behind the call in flight
-
-  m.calls[0]!.fail(new Error("provider said no"));
-  await m.wait();
-  assert.equal(m.pending("a"), null, "the authoritative mode is the one shown");
-  assert.deepEqual(m.sent, ["plan"], "the target behind it is dropped, not applied blind");
-  assert.match(m.notes.at(-1)!, /mode switch failed: provider said no/);
-});
-
-test("a mode change that may have arrived waits for the user, not for a retry", async () => {
-  const m = mkModes([snap({ id: "a", status: "idle", mode: "default" })]);
-  m.ctl.cycle("a");
-  await m.wait();
-  m.calls[0]!.fail(Object.assign(new Error("dropped"), { code: "disconnected" }));
-  await m.wait();
-  assert.deepEqual(m.sent, ["plan"], "no automatic re-send — the daemon may have taken it");
-  assert.equal(m.pending("a"), null);
-  assert.match(m.notes.at(-1)!, /may not have arrived/);
-});
-
-test("a session refusing to leave plan opens the review instead of answering it", async () => {
-  const m = mkModes([snap({ id: "a", status: "idle", mode: "plan" })]);
-  m.ctl.cycle("a");
-  await m.wait();
-  m.calls[0]!.fail(Object.assign(new Error("plan review is pending"), { code: "plan_pending" }));
-  await m.wait();
-  assert.deepEqual(m.reviews, ["a"], "the real plan-review UI, not a chip that silently allows");
-  assert.match(m.notes.at(-1)!, /plan review is pending/);
-  assert.equal(m.pending("a"), null, "the chip says `plan`, which is where the session still is");
-});
-
-test("a session that goes takes its scheduled mode change with it", async () => {
-  const sessions = [snap({ id: "a", status: "idle", mode: "default" })];
-  const m = mkModes(sessions);
-  m.ctl.cycle("a");
-  sessions.length = 0;
-  m.ctl.settle();
-  assert.equal(m.pending("a"), null, "the choice is forgotten with the session");
-  await m.wait();
-  assert.deepEqual(m.sent, [], "and the timer it left behind fires at nothing");
-
-  m.ctl.cycle("a");
-  assert.deepEqual(m.notes.at(-1), "session is gone");
-});
-
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
   let s = tailing(reduce(initialState(), fleet([fanout])), "fan");
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      2,
-      ev({ sessionId: "fan", type: "assistant_text", text: "from reviewer", agentId: "t1" }),
-    ),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      3,
-      ev({ sessionId: "fan", type: "assistant_text", text: "from task", agentId: "task1" }),
-    ),
-  });
+  s = pushed(s, push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })));
+  s = pushed(
+    s,
+    push(2, ev({ sessionId: "fan", type: "assistant_text", text: "from reviewer", agentId: "t1" })),
+  );
+  s = pushed(
+    s,
+    push(3, ev({ sessionId: "fan", type: "assistant_text", text: "from task", agentId: "task1" })),
+  );
   assert.deepEqual(
     visibleLog(s).map((l) => l.text),
     ["mainline"],
   );
-  s = reduce(s, { t: "childEnter" });
+  s = { ...s, ...reduce(s, { t: "childEnter" }) };
   const child = focusedChildOf(s);
   assert.equal(child?.key, "bg:task1");
   assert.deepEqual(
     visibleLog(s, child).map((l) => l.text),
     ["from task"],
   );
-  s = reduce(s, { t: "childMove", delta: 2 }); // → sub:t1
+  s = { ...s, ...reduce(s, { t: "childMove", delta: 2 }) }; // → sub:t1
   assert.deepEqual(
     visibleLog(s, focusedChildOf(s)).map((l) => l.text),
     ["from reviewer"],
@@ -806,10 +574,7 @@ test("a snapshot's providers become the new-session defaults", () => {
 test("event pushes append transcript lines in durable order", () => {
   let s = tailing();
   for (const id of [11, 12, 13]) {
-    s = reduce(s, {
-      t: "push",
-      frame: push(id, ev({ type: "assistant_text", text: `line ${id}`, sessionId: "s1" })),
-    });
+    s = pushed(s, push(id, ev({ type: "assistant_text", text: `line ${id}`, sessionId: "s1" })));
   }
   assert.deepEqual(
     lines(s).map((l) => l.id),
@@ -819,9 +584,9 @@ test("event pushes append transcript lines in durable order", () => {
 
 test("a push with no durable id is a heartbeat, never a transcript line", () => {
   let s = tailing();
-  s = reduce(s, {
-    t: "push",
-    frame: transient(
+  s = pushed(
+    s,
+    transient(
       ev({
         type: "compact_progress",
         sessionId: "s1",
@@ -831,21 +596,24 @@ test("a push with no durable id is a heartbeat, never a transcript line", () => 
         before: 90_000,
       }),
     ),
-  });
+  );
   assert.deepEqual(lines(s), [], "the daemon didn't persist it, so it isn't transcript");
 
   // The compaction the beat reports is read off the snapshot instead, so a
   // client that attached mid-compaction sees exactly what everyone else does.
-  s = reduce(
-    s,
-    fleet([
-      snap({
-        id: "s1",
-        status: "running",
-        compacting: { startedAt: 6_000, before: 90_000, generated: 128 },
-      }),
-    ]),
-  );
+  s = {
+    ...s,
+    ...reduce(
+      s,
+      fleet([
+        snap({
+          id: "s1",
+          status: "running",
+          compacting: { startedAt: 6_000, before: 90_000, generated: 128 },
+        }),
+      ]),
+    ),
+  };
   assert.deepEqual(compactingFor(s, "s1"), {
     startedAt: 6_000,
     before: 90_000,
@@ -854,14 +622,14 @@ test("a push with no durable id is a heartbeat, never a transcript line", () => 
 
   // ...and it stops when the daemon stops reporting it, with no local
   // bookkeeping to get out of step. The landing `compact` event *is* transcript.
-  s = reduce(s, {
-    t: "push",
-    frame: push(
+  s = pushed(
+    s,
+    push(
       3,
       ev({ type: "compact", sessionId: "s1", trigger: "manual", before: 90_000, after: 12_000 }),
     ),
-  });
-  s = reduce(s, fleet([snap({ id: "s1", status: "idle" })]));
+  );
+  s = { ...s, ...reduce(s, fleet([snap({ id: "s1", status: "idle" })])) };
   assert.equal(compactingFor(s, "s1"), null);
   assert.equal(lines(s).length, 1);
   assert.match(lines(s)[0]?.text ?? "", /context compacted/);
@@ -871,18 +639,12 @@ test("a repeated durable id folds once, and ids order the transcript, not timest
   let s = tailing();
   // Deliberately out of timestamp order: the provider reported the second entry
   // with an *earlier* clock than the first, and a burst shares a millisecond.
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "assistant_text", text: "first", sessionId: "s1", ts: 9_000 })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(3, ev({ type: "assistant_text", text: "third", sessionId: "s1", ts: 1_000 })),
-  });
+  s = pushed(s, push(1, ev({ type: "assistant_text", text: "first", sessionId: "s1", ts: 9_000 })));
+  s = pushed(
+    s,
+    push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
+  );
+  s = pushed(s, push(3, ev({ type: "assistant_text", text: "third", sessionId: "s1", ts: 1_000 })));
   assert.deepEqual(
     lines(s).map((l) => l.text),
     ["first", "second", "third"],
@@ -892,10 +654,10 @@ test("a repeated durable id folds once, and ids order the transcript, not timest
   // The same entry again — the ring replaying across a reconnect, or a page
   // overlapping the live stream. One entry, and the reducer says nothing moved.
   const before = s;
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
-  });
+  s = pushed(
+    s,
+    push(2, ev({ type: "assistant_text", text: "second", sessionId: "s1", ts: 1_000 })),
+  );
   assert.deepEqual(
     lines(s).map((l) => l.text),
     ["first", "second", "third"],
@@ -918,17 +680,14 @@ const bulkPage = (lastId: number, n: number, olderCursor: HistoryCursor | null):
 
 /** A transcript at exactly the cap, following the live tail, with entries older
  *  than it still on the daemon. */
-const atCapacity = (): TuiState =>
+const atCapacity = (): WithTranscript =>
   headPage(opened(), bulkPage(11_000, TRANSCRIPT_CAP, { olderThan: 1_001 }));
 
 test("the cap evicts the oldest lines and points the older cursor at them", () => {
   let s = atCapacity();
   assert.equal(win(s).lines.length, TRANSCRIPT_CAP);
 
-  s = reduce(s, {
-    t: "push",
-    frame: push(11_001, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })),
-  });
+  s = pushed(s, push(11_001, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })));
 
   const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP);
@@ -980,10 +739,10 @@ test("a live event while browsing an older window changes nothing but the notice
   const before = win(s);
   assert.equal(before.t, "detached");
 
-  s = reduce(s, {
-    t: "push",
-    frame: push(99_999, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
-  });
+  s = pushed(
+    s,
+    push(99_999, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
+  );
 
   const after = win(s);
   assert.equal(after.lines, before.lines, "the rows being read are untouched");
@@ -1022,13 +781,10 @@ test("jump to latest reloads the newest window; evicted older pages can return",
 test("duplicate and out-of-order live entries cannot bypass the cap or repeat an id", () => {
   let s = atCapacity();
   const same = ev({ type: "assistant_text", text: "again", sessionId: "s1" });
-  s = reduce(s, { t: "push", frame: push(11_001, same) });
-  s = reduce(s, { t: "push", frame: push(11_001, same) });
+  s = pushed(s, push(11_001, same));
+  s = pushed(s, push(11_001, same));
   // An entry the daemon delivers late, older than everything held.
-  s = reduce(s, {
-    t: "push",
-    frame: push(7, ev({ type: "assistant_text", text: "late", sessionId: "s1" })),
-  });
+  s = pushed(s, push(7, ev({ type: "assistant_text", text: "late", sessionId: "s1" })));
 
   const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP, "still exactly at the cap");
@@ -1044,10 +800,7 @@ test("duplicate and out-of-order live entries cannot bypass the cap or repeat an
 test("a failed older page keeps the window that is already loaded", () => {
   const s = atCapacity();
   const before = win(s).lines;
-  const failed = reduce(s, {
-    t: "transcript",
-    transcript: olderFailed(s.transcript, "s1", "history unavailable"),
-  });
+  const failed = { ...s, transcript: olderFailed(s.transcript, "s1", "history unavailable") };
 
   const t = win(failed);
   assert.equal(t.lines, before, "the rows on screen stay on screen");
@@ -1061,11 +814,8 @@ test("a failed older page keeps the window that is already loaded", () => {
 
 test("a failed first page keeps whatever arrived live, and End retries it", () => {
   let s = opened();
-  s = reduce(s, {
-    t: "push",
-    frame: push(4, ev({ type: "assistant_text", text: "streamed in", sessionId: "s1" })),
-  });
-  s = reduce(s, { t: "transcript", transcript: headFailed(s.transcript, "s1", "no history") });
+  s = pushed(s, push(4, ev({ type: "assistant_text", text: "streamed in", sessionId: "s1" })));
+  s = { ...s, transcript: headFailed(s.transcript, "s1", "no history") };
 
   assert.equal(s.transcript.t, "failed");
   assert.deepEqual(
@@ -1092,39 +842,15 @@ test("a failed first page keeps whatever arrived live, and End retries it", () =
 
 test("permission / question / fatal-error events raise a notice", () => {
   let s = initialState();
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
-  });
+  s = pushed(s, push(1, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })));
   assert.match(s.notice?.text ?? "", /Bash needs approval/);
   assert.equal(s.notice?.tone, "accent");
 
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "question", id: "q1", question: "which db?" })),
-  });
+  s = pushed(s, push(2, ev({ type: "question", id: "q1", question: "which db?" })));
   assert.match(s.notice?.text ?? "", /question waiting/);
 
-  s = reduce(s, { t: "push", frame: push(3, ev({ type: "error", message: "boom", fatal: true })) });
+  s = pushed(s, push(3, ev({ type: "error", message: "boom", fatal: true })));
   assert.equal(s.notice?.tone, "bad");
-});
-
-test("a history page never raises a notice — it's transcript, not news (U2)", () => {
-  const a = snap({ id: "s1", status: "running" });
-  let s = opened(reduce(initialState(), fleet([a])));
-  s = headPage(
-    s,
-    historyPage([
-      { id: 1, event: ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} }) },
-      { id: 2, event: ev({ type: "error", message: "old boom", fatal: true }) },
-    ]),
-  );
-  assert.equal(s.notice, null, "scrolling back must not flash a long-settled approval or error");
-  // …but the entries still land in the transcript.
-  assert.deepEqual(
-    lines(s).map((l) => l.id),
-    [1, 2],
-  );
 });
 
 test("a history page and the live stream merge by durable id, one entry each", () => {
@@ -1134,7 +860,7 @@ test("a history page and the live stream merge by durable id, one entry each", (
   // Live frames arrive first — the push subscription is up before any fetch —
   // and their ids overlap the page that is still in flight.
   const live = (id: number, e: Parameters<typeof ev>[0], ts: number) =>
-    (s = reduce(s, { t: "push", frame: push(id, { ...ev(e), sessionId: "a", ts }) }));
+    (s = pushed(s, push(id, { ...ev(e), sessionId: "a", ts })));
   live(20, { type: "user_message", text: "follow up", injected: false }, 2_000);
   live(21, { type: "assistant_text", text: "on it" }, 2_100);
 
@@ -1205,7 +931,7 @@ test("an older page preserves the loaded entries while it is in flight, and prep
     "a",
   );
 
-  s = reduce(s, { t: "transcript", transcript: olderLoading(s.transcript, "a") });
+  s = { ...s, transcript: olderLoading(s.transcript, "a") };
   assert.deepEqual(win(s).older, { t: "loading" });
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
@@ -1226,100 +952,6 @@ test("an older page preserves the loaded entries while it is in flight, and prep
   );
   assert.deepEqual(win(s).older, { t: "idle" });
   assert.equal(win(s).olderCursor, null, "the page reached the start of the history and said so");
-});
-
-test("losing the connection drops the window, and the selection survives it", () => {
-  const a = snap({ id: "a", status: "running" });
-  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
-  s = headPage(
-    s,
-    historyPage([
-      { id: 4, event: { ...ev({ type: "assistant_text", text: "before" }), sessionId: "a" } },
-    ]),
-    "a",
-  );
-
-  // The cursor is a position in a history the next connection re-reads from
-  // scratch, so it goes with the fleet.
-  s = reduce(s, { t: "state", state: loadablePending });
-  assert.equal(s.transcript.t, "unloaded");
-  assert.deepEqual(sessionLog(s), []);
-  assert.equal(s.selectedId, "a", "the selection is ours, not the daemon's");
-});
-
-test("an outstanding request is read off the snapshot, so old history cannot resurrect a settled one", () => {
-  const req = {
-    kind: "permission" as const,
-    id: "p1",
-    tool: "bash",
-    input: {},
-    at: 1,
-  };
-  const blocked = snap({
-    id: "a",
-    status: "awaiting_input",
-    awaitReason: "permission",
-    requests: [req],
-  });
-  let s = reduce(initialState(), fleet([blocked]));
-  assert.deepEqual(shown(s, "a"), req);
-
-  // Scrolling back through history delivers the *original* permission_request
-  // event. It is transcript and nothing more — the request set does not move.
-  s = headPage(
-    opened(s, "a"),
-    historyPage([
-      {
-        id: 1,
-        event: ev({
-          type: "permission_request",
-          id: "ancient",
-          tool: "rm",
-          input: {},
-          sessionId: "a",
-        }),
-      },
-    ]),
-    "a",
-  );
-  assert.deepEqual(
-    reqs(s, "a").map((r) => r.id),
-    ["p1"],
-    "a long-answered request in old history is not offered for answering again",
-  );
-
-  // Same for a compaction in flight: the page carries the `compact` event that
-  // ended some earlier one, and the indicator is unmoved by it.
-  s = reduce(
-    s,
-    fleet([
-      snap({
-        id: "a",
-        status: "awaiting_input",
-        awaitReason: "permission",
-        requests: [req],
-        compacting: { startedAt: 5, before: 90_000, generated: 12 },
-      }),
-    ]),
-  );
-  s = olderPage(
-    s,
-    historyPage([
-      {
-        id: 1,
-        event: ev({ type: "compact", sessionId: "a", trigger: "auto", before: 1, after: 1 }),
-      },
-    ]),
-    "a",
-  );
-  assert.deepEqual(compactingFor(s, "a"), { startedAt: 5, before: 90_000, generated: 12 });
-  assert.equal(reqs(s, "a").length, 1);
-
-  // The daemon says the session is no longer blocked: the request set is empty,
-  // with no local projection to prune alongside it.
-  s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.deepEqual(reqs(s, "a"), []);
-  assert.equal(shown(s, "a"), null);
 });
 
 test("the active request is the one the daemon says the turn is blocked on", () => {
@@ -1368,14 +1000,8 @@ test("the event log always shows just the selected session", () => {
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), fleet([a, b]));
   s = tailing(reduce(s, { t: "select", id: "a" }), "a");
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "assistant_text", text: "for b", sessionId: "b" })),
-  });
+  s = pushed(s, push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })));
+  s = pushed(s, push(2, ev({ type: "assistant_text", text: "for b", sessionId: "b" })));
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
     ["for a"],
@@ -1391,7 +1017,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
   let s = reduce(initialState(), fleet([a]));
   s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
-    (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
+    (s = pushed(s, push(n, { ...ev(e), sessionId: "a", ts })));
   at(1, { type: "assistant_text", text: "let me look" }, 1_000);
   at(2, { type: "thinking", text: "hmm" }, 2_000);
   at(3, { type: "thinking", text: "still hmm" }, 5_000); // 3s of thinking
@@ -1431,7 +1057,7 @@ test("chat view: tool calls with an input `description` get their own line; thos
   let s = reduce(initialState(), fleet([a]));
   s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
-    (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
+    (s = pushed(s, push(n, { ...ev(e), sessionId: "a", ts })));
   at(1, { type: "tool_call", id: "t1", name: "Read", input: { file_path: "a.ts" } }, 1_000);
   at(2, { type: "tool_result", id: "t1", ok: true, output: {} }, 1_100);
   at(
@@ -1869,7 +1495,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
 
   // clearqueue only shows when the selected session actually has a queue
   assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
-  const withQueue: TuiState = { ...base, outbox: { s1: enqueue(outboxOf({}, "s1"), "note") } };
+  const withQueue = { ...base, outbox: { s1: enqueue(outboxOf({}, "s1"), "note") } };
   assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
 
   // rebase needs a worktree, but is offered regardless of the (lag-prone)
@@ -2213,15 +1839,16 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
   );
   assert.equal(tilth.text, "mcp__tilth__tilth_read  b.ts");
 
-  // once the reducer has seen the matching tool_call, the tool_result's `full`
-  // — the whole file — is dropped: the call line already says enough, and the
-  // user can see the file themselves.
-  const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
-  s = reduce(s, {
-    t: "push",
-    frame: push(
+  const tr = mkTranscript({
+    fetch: () => new Promise(() => {}),
+    connected: () => true,
+    shown: transcriptLines,
+    paneWidth: () => 80,
+    pageRows: () => 20,
+  });
+  tr.select("a", "everything");
+  tr.receive(
+    push(
       1,
       ev({
         type: "tool_call",
@@ -2231,10 +1858,9 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
         sessionId: "a",
       }),
     ),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
+  );
+  tr.receive(
+    push(
       2,
       ev({
         type: "tool_result",
@@ -2244,15 +1870,14 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
         sessionId: "a",
       }),
     ),
-  });
-  const result = sessionLog(s).at(-1);
+  );
+  const result = transcriptLines(tr.get().transcript).at(-1);
   assert.equal(result?.text, "ok");
   assert.equal(result?.full, undefined, "the file content isn't duplicated into the log");
 
   // an error result from a Read is still shown in full — it's short and useful
-  s = reduce(s, {
-    t: "push",
-    frame: push(
+  tr.receive(
+    push(
       3,
       ev({
         type: "tool_call",
@@ -2262,16 +1887,16 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
         sessionId: "a",
       }),
     ),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(
+  );
+  tr.receive(
+    push(
       4,
       ev({ type: "tool_result", id: "r2", ok: false, output: { text: "ENOENT" }, sessionId: "a" }),
     ),
-  });
-  const failed = sessionLog(s).at(-1);
+  );
+  const failed = transcriptLines(tr.get().transcript).at(-1);
   assert.equal(failed?.full, "error\nENOENT");
+  tr.dispose();
 });
 
 test("an Edit-shaped tool call renders old_string/new_string as a removed/added block", () => {
@@ -2453,13 +2078,11 @@ test("queued follow-ups render after the durable transcript, derived from the ou
   const a = snap({ id: "a", status: "running" });
   let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
   s = headPage(s, historyPage([]), "a");
-  s = reduce(s, {
-    t: "push",
-    frame: push(5, { ...ev({ type: "assistant_text", text: "from the daemon" }), sessionId: "a" }),
-  });
-  const box = (text: string) => enqueue(outboxOf(s.outbox, "a"), text);
-  s = reduce(s, { t: "outbox", sessionId: "a", box: box("hi") });
-  s = reduce(s, { t: "outbox", sessionId: "a", box: box("there") });
+  s = pushed(
+    s,
+    push(5, { ...ev({ type: "assistant_text", text: "from the daemon" }), sessionId: "a" }),
+  );
+  let outbox = { a: enqueue(enqueue(outboxOf({}, "a"), "hi"), "there") };
 
   assert.deepEqual(
     win(s).lines.map((l) => l.text),
@@ -2467,40 +2090,18 @@ test("queued follow-ups render after the durable transcript, derived from the ou
     "a marker never enters the durable list, so it cannot be deduplicated or paged",
   );
   assert.deepEqual(
-    sessionLog(s).map((l) => l.text),
+    sessionLog({ ...s, outbox }).map((l) => l.text),
     ["from the daemon", "queued: hi", "queued: there"],
     "a queued send belongs at the bottom — it is about to happen, not part of the record",
   );
 
   // The message goes on the wire: its marker disappears in the same breath,
   // because the daemon's own `user_message` is what takes its place.
-  s = reduce(s, {
-    t: "outbox",
-    sessionId: "a",
-    box: { t: "sending", text: "hi", rest: ["there"], barrier: 0 },
-  });
+  outbox = { a: { t: "sending", operation: Symbol(), text: "hi", rest: ["there"], barrier: 0 } };
   assert.deepEqual(
-    sessionLog(s).map((l) => l.text),
+    sessionLog({ ...s, outbox }).map((l) => l.text),
     ["from the daemon", "queued: there"],
   );
-});
-
-test("an outbox owns one message at a time, with the unsent tail explicit", () => {
-  let box = outboxOf({}, "a");
-  box = enqueue(box, "  first  ");
-  box = enqueue(box, "second");
-  box = enqueue(box, "   "); // blank is not a message
-  assert.equal(box.t, "queued");
-  assert.deepEqual(pending(box), ["first", "second"]);
-  // A message whose send came back uncertain is not re-sent: opening the `send`
-  // prompt releases it as editable text, and the tail behind it moves up.
-  const held: Outbox = { t: "held", text: "first", rest: ["second"], barrier: 3 };
-  const out = release(held);
-  assert.equal(out?.text, "first");
-  assert.deepEqual(pending(held), ["second"], "the tail waits rather than overtaking it");
-  assert.deepEqual(pending(out!.box), ["second"], "and moves up once the hold is released");
-  assert.equal(release(box), null, "only a held message can be released");
-  assert.deepEqual(pending(cleared(box)), []);
 });
 
 test("a request's guard is its own: an uncertain answer blocks only that request", async () => {
@@ -2564,31 +2165,6 @@ test("a permission carries its tool + input; leaving awaiting_input clears it", 
   assert.equal(r?.id, "p1");
   s = reduce(s, fleet([snap({ id: "a", status: "running" })]));
   assert.equal(shown(s, "a"), null);
-});
-
-test("a queue outlives its session in the state, for the composer to strand and report", () => {
-  let s = reduce(initialState(), fleet([snap({ id: "a", status: "running" })]));
-  const box = enqueue(outboxOf(s.outbox, "a"), "later");
-  s = reduce(s, { t: "outbox", sessionId: "a", box });
-  s = reduce(s, fleet([]));
-  // Deliberately kept: dropping a message the user typed without a word about
-  // it is the bug, not the tidy-up. The composer forgets it and says so — see
-  // "a queued session proven gone is reported once" in tui-render.
-  assert.deepEqual(queueFor(s, "a"), ["later"]);
-  s = reduce(s, { t: "outbox", sessionId: "a", box: null });
-  assert.deepEqual(queueFor(s, "a"), []);
-});
-
-test("a held send survives its snapshots and outlives its session, like a queue", () => {
-  const held: Outbox = { t: "held", text: "did this land?", rest: [], barrier: 2 };
-  let s = reduce(initialState(), fleet([snap({ id: "a", status: "idle" })]));
-  s = reduce(s, { t: "outbox", sessionId: "a", box: held });
-  s = reduce(s, fleet([snap({ id: "a", status: "idle" })]));
-  assert.deepEqual(s.outbox["a"], held, "a snapshot doesn't clear the hold");
-  // Nor does the session going: text the user may or may not have sent is worth
-  // a word, and the composer is what says it — see tui-render.
-  s = reduce(s, fleet([]));
-  assert.deepEqual(s.outbox["a"], held);
 });
 
 test("confirm open / run / close", () => {
@@ -2803,18 +2379,9 @@ test("initialState reports the active theme, so a restored one sticks", () => {
 
 test("status_changed events stay out of the log; result is a terse marker", () => {
   let s = tailing();
-  s = reduce(s, {
-    t: "push",
-    frame: push(1, ev({ type: "assistant_text", text: "here is the answer" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(2, ev({ type: "status_changed", status: stateIdle, note: "result" })),
-  });
-  s = reduce(s, {
-    t: "push",
-    frame: push(3, ev({ type: "result", kind: "ok", summary: "here is the answer" })),
-  });
+  s = pushed(s, push(1, ev({ type: "assistant_text", text: "here is the answer" })));
+  s = pushed(s, push(2, ev({ type: "status_changed", status: stateIdle, note: "result" })));
+  s = pushed(s, push(3, ev({ type: "result", kind: "ok", summary: "here is the answer" })));
   assert.deepEqual(
     lines(s).map((l) => l.glyph),
     ["▪", "■"],
@@ -2975,33 +2542,6 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
   s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
   assert.equal(s.overlay.t, "browse");
   assert.equal(pickerOf(s), null);
-});
-
-test("the fleet filter opens empty and closes without disturbing the selection", () => {
-  // What the filter *matches* is the daemon's business now (see
-  // `session-search.test.ts`) and what it does with an answer is the search
-  // handle's (see "fleet search:" below). This is the rest of it: the query is
-  // a buffer that opens empty, and closing it is not a navigation.
-  let s = reduce(
-    withProviders(),
-    fleet([
-      snap({ id: "aaa", status: "running", title: "renovate the deck" }),
-      snap({ id: "bbb", status: "idle", title: "refactor the parser" }),
-    ]),
-  );
-  s = reduce(s, { t: "select", id: "bbb" });
-
-  s = reduce(s, { t: "openFind" });
-  assert.equal(s.find?.buffer.text, "");
-  assert.equal(s.find?.results.tag, "idle", "no query yet is not a search that returned nothing");
-
-  s = reduce(s, { t: "findSet", buffer: buffer("parser") });
-  assert.equal(s.find?.buffer.text, "parser");
-  assert.equal(s.selectedId, "bbb", "typing does not move the selection on its own");
-
-  s = reduce(s, { t: "closeFind" });
-  assert.equal(s.find, null);
-  assert.equal(s.selectedId, "bbb");
 });
 
 test("a live model picker closes if its session is removed", () => {
@@ -3387,13 +2927,10 @@ test("a model picker opened while the catalog loads resolves when the fresh list
 test("logRowCount tracks the resolved child through drill and drain", () => {
   const seed = (sessions: SessionSnapshot[]): TuiState => {
     let t = tailing(reduce(initialState(), fleet(sessions)), "fan");
-    t = reduce(t, {
-      t: "push",
-      frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
-    });
-    t = reduce(t, {
-      t: "push",
-      frame: push(
+    t = pushed(t, push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })));
+    t = pushed(
+      t,
+      push(
         2,
         ev({
           sessionId: "fan",
@@ -3402,7 +2939,7 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
           agentId: "t1",
         }),
       ),
-    });
+    );
     return t;
   };
 
@@ -3431,280 +2968,6 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
     fleet([{ ...fanout, subagents: [{ id: "t1", name: "reviewer", active: false }] }]),
   );
   assert.equal(focusedChildOf(partial)?.key, "bg:task1");
-});
-
-// ---------------------------------------------------------------------------
-// fleet search (`/`) — the query's lifetime
-// ---------------------------------------------------------------------------
-//
-// Matching and ranking are the daemon's now, and tested against a real
-// database in `session-search.test.ts`. What is left here is what the TUI
-// still owns: one search per settled query, results that can't outlive the
-// query that asked for them, and the fleet as the only source of sessions.
-
-/** A search page as `session.search` returns one — ranked ids and whether the
- *  ranking has more behind it. */
-const page = (query: string, ids: string[], more = false): SearchPage => ({
-  query,
-  hits: ids.map((id, i) => ({ id, score: 100 - i })),
-  cursor: more ? { query, offset: ids.length } : null,
-});
-
-/**
- * A search control over the real reducer, with `session.search` parked so a
- * test settles each call by hand. `settle()` runs after every state change,
- * as `fleet-handle`'s effect block does.
- */
-const mkSearch = (
-  sessions: SessionSnapshot[],
-  opts: { debounceMs?: number; prefetchWithin?: number } = {},
-) => {
-  let s = reduce(reduce(initialState(), fleet(sessions)), { t: "openFind" });
-  let live = true;
-  const calls: Array<{
-    query: string;
-    cursor: SearchCursor | null;
-    ok: (p: SearchPage) => void;
-    fail: (e: unknown) => void;
-  }> = [];
-  const ctl = mkSearchControl({
-    search: (query, cursor) =>
-      new Promise<SearchPage>((ok, fail) => calls.push({ query, cursor, ok, fail })),
-    find: () => s.find,
-    sessions: () => fleetSessions(s),
-    selectedId: () => s.selectedId,
-    connected: () => live,
-    loaded: (query, results) => {
-      s = reduce(s, { t: "searchLoaded", query, results });
-      ctl.settle();
-    },
-    debounceMs: opts.debounceMs ?? 5,
-    prefetchWithin: opts.prefetchWithin ?? 1,
-  });
-  const after = <T>(x: T): T => {
-    ctl.settle();
-    return x;
-  };
-  return {
-    ctl,
-    calls,
-    /** Every query the handle has actually sent, in order. */
-    sent: (): string[] => calls.map((c) => c.query),
-    type: (text: string): void => {
-      s = reduce(s, { t: "findSet", buffer: buffer(text) });
-      ctl.typed();
-      after(null);
-    },
-    select: (id: string): void => after((s = reduce(s, { t: "select", id }))) && undefined,
-    move: (delta: number): void => after((s = reduce(s, { t: "move", delta }))) && undefined,
-    disconnect: (): void => {
-      live = false;
-      after(null);
-    },
-    reconnect: (): void => {
-      live = true;
-      after(null);
-    },
-    rows: (): string[] => searchMatches(s.find, fleetSessions(s)).map((x) => x.id),
-    state: (): TuiState => s,
-    find: (): Find => {
-      assert.ok(s.find);
-      return s.find;
-    },
-    /** Long enough for a debounce that is set to 5ms to have fired. */
-    wait: (): Promise<void> => new Promise((r) => setTimeout(r, 25)) as Promise<void>,
-  };
-};
-
-const two = (): SessionSnapshot[] => [
-  snap({ id: "best", title: "mobile access" }),
-  snap({ id: "weak", title: "another chat" }),
-];
-
-test("fleet search: a burst of keystrokes is one search, for the query it settles on", async () => {
-  const m = mkSearch(two());
-  m.type("m");
-  m.type("mo");
-  m.type("mob");
-  assert.deepEqual(m.sent(), [], "nothing goes out mid-word");
-  // Typing is visible immediately even though the answer isn't.
-  assert.equal(m.find().buffer.text, "mob");
-  assert.ok(searchStale(m.find()), "and it reads as unanswered, not as no matches");
-
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mob"]);
-  m.calls[0]!.ok(page("mob", ["best"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["best"]);
-  assert.equal(searchStale(m.find()), false);
-});
-
-test("fleet search: a page for a query you have typed past is not an answer to this one", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  m.type("another");
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mobile", "another"]);
-
-  // The first search finally answers — after the query moved on. Its rows are
-  // a correct answer to a question nobody is asking any more.
-  m.calls[0]!.ok(page("mobile", ["best"]));
-  await m.wait();
-  assert.ok(searchStale(m.find()), "still waiting on `another`");
-  assert.deepEqual(m.rows(), [], "and showing nothing rather than the wrong thing");
-
-  m.calls[1]!.ok(page("another", ["weak"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["weak"]);
-});
-
-test("fleet search: clearing the query is the whole fleet, with no round trip", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  m.calls[0]!.ok(page("mobile", ["best"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["best"]);
-
-  m.type("");
-  assert.deepEqual(m.rows(), ["weak", "best"], "immediately, and in the fleet's own order");
-  assert.equal(searchStale(m.find()), false);
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mobile"], "the empty query is not a search");
-});
-
-test("fleet search: the selection rides onto the best match, but only on its own results", async () => {
-  const m = mkSearch(two());
-  assert.equal(m.state().selectedId, "weak", "fixture: the fleet head is not the best match");
-
-  m.type("chat");
-  await m.wait();
-  assert.equal(m.state().selectedId, "weak", "typing alone does not move the selection");
-  m.calls[0]!.ok(page("chat", ["weak", "best"]));
-  await m.wait();
-  assert.equal(m.state().selectedId, "weak", "a selection that still matches stays put");
-
-  m.type("mobile");
-  await m.wait();
-  assert.equal(m.state().selectedId, "weak", "still not — `mobile` has not answered yet");
-  m.calls[1]!.ok(page("mobile", ["best"]));
-  await m.wait();
-  assert.equal(m.state().selectedId, "best", "one that no longer matches rides onto the top row");
-});
-
-test("fleet search: ids the fleet doesn't have are not rows", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  // The daemon ranks over its own sessions; this client's snapshot can be a
-  // beat behind (or a session can end between the search and the frame).
-  m.calls[0]!.ok(page("mobile", ["best", "ended", "weak"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["best", "weak"]);
-  const results = m.find().results;
-  assert.ok(results.tag === "data");
-  assert.deepEqual(
-    [...results.value.ids],
-    ["best", "ended", "weak"],
-    "the page is kept as it came — the intersection is a display decision",
-  );
-});
-
-test("fleet search: a capped page is topped up as the selection nears its end", async () => {
-  const ids = ["a", "b", "c", "d", "e"];
-  const m = mkSearch(ids.map((id) => snap({ id, title: `${id} zebra` })));
-  m.type("zebra");
-  await m.wait();
-  m.calls[0]!.ok(page("zebra", ["a", "b", "c"], true));
-  await m.wait();
-  assert.deepEqual(m.sent(), ["zebra"], "a full page is not a reason to fetch on its own");
-
-  m.move(1);
-  m.move(1); // onto "c", the last loaded row
-  await m.wait();
-  assert.deepEqual(m.sent(), ["zebra", "zebra"], "walking off the end asks for more");
-  assert.deepEqual(m.calls[1]!.cursor, { query: "zebra", offset: 3 });
-
-  m.calls[1]!.ok(page("zebra", ["d", "e"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["a", "b", "c", "d", "e"], "pages append, they don't replace");
-  m.move(1);
-  await m.wait();
-  assert.deepEqual(m.sent().length, 2, "an exhausted ranking is not asked again");
-});
-
-test("fleet search: losing the daemon drops the results; coming back re-runs the query once", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  m.calls[0]!.ok(page("mobile", ["best"]));
-  await m.wait();
-  assert.deepEqual(m.rows(), ["best"]);
-
-  m.disconnect();
-  assert.deepEqual(m.rows(), [], "the fleet it described is one we're no longer told about");
-  assert.ok(searchStale(m.find()));
-  m.disconnect(); // a second dispatch while still down must not re-arm anything
-
-  m.reconnect();
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mobile", "mobile"], "re-run once, not per frame");
-  m.reconnect();
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mobile", "mobile"]);
-});
-
-test("fleet search: a failed search says so, and refresh is what retries it", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  m.calls[0]!.fail(new Error("daemon said no"));
-  await m.wait();
-  assert.equal(m.find().results.tag, "error");
-  assert.deepEqual(m.rows(), [], "a failure is not an empty result set");
-  assert.match(
-    fleetFilterStatus(m.find(), fleetSessions(m.state())),
-    /search failed: daemon said no/,
-  );
-  assert.deepEqual(m.sent(), ["mobile"], "and it does not retry itself");
-
-  m.ctl.refresh();
-  await m.wait();
-  assert.deepEqual(m.sent(), ["mobile", "mobile"]);
-});
-
-test("fleet search: the header separates 'still counting' from 'nothing matched'", async () => {
-  const m = mkSearch(two());
-  const header = (): string => fleetFilterStatus(m.find(), fleetSessions(m.state()));
-  assert.equal(header(), "2 sessions", "no query yet — a count, not a search");
-
-  m.type("mobile");
-  assert.equal(header(), "searching…");
-  await m.wait();
-  m.calls[0]!.ok(page("mobile", []));
-  await m.wait();
-  assert.equal(header(), "0/2 matches");
-
-  m.type("chat");
-  await m.wait();
-  m.calls[1]!.ok(page("chat", ["best"], true));
-  await m.wait();
-  assert.equal(header(), "1+/2 matches", "a capped page must not read as the whole answer");
-});
-
-test("fleet search: ↑↓ walk the ranked rows, not the fleet's", async () => {
-  const m = mkSearch(two());
-  m.type("mobile");
-  await m.wait();
-  // Ranked best-first, which is the reverse of the fleet's own order here.
-  m.calls[0]!.ok(page("mobile", ["best", "weak"]));
-  await m.wait();
-  assert.equal(m.state().selectedId, "weak", "the selection still matches, so it stays");
-  m.move(-1);
-  assert.equal(m.state().selectedId, "best", "↑ walks up the ranked list");
-  m.move(1);
-  assert.equal(m.state().selectedId, "weak");
 });
 
 // ---------------------------------------------------------------------------

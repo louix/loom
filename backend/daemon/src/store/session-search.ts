@@ -13,7 +13,7 @@
  * grammar tests drive. Below it is {@link SessionSearchStore}, which streams
  * candidates out of SQLite and ranks them.
  */
-import type { SearchHit, SessionSnapshot } from "@loom/core/wire";
+import type { SessionSnapshot } from "@loom/core/wire";
 import type { Db } from "./db.ts";
 
 // ---- the matcher (pure) ----------------------------------------------------
@@ -140,18 +140,10 @@ const TEXT_TYPES = [...USER_TYPES, ...AGENT_TYPES];
 
 const USER_TYPE_SET: ReadonlySet<string> = new Set(USER_TYPES);
 
-/** Cap on one message's searchable text — past a couple of KB of a single
- *  message the recall loss is negligible next to the scan it saves. */
-const MESSAGE_TEXT_CAP = 2_048;
-
-/**
- * Cap on one session's searchable text per field. Reached, the scan stops
- * reading that session and keeps the *newest* text, which is the half of a
- * long conversation anyone is trying to find their way back to. Without it a
- * session with a year of history would be read into memory in full to answer
- * one keystroke's worth of query.
- */
-const SESSION_TEXT_CAP = 256 * 1024;
+interface SearchHit {
+  id: string;
+  score: number;
+}
 
 interface TextRow {
   type: string;
@@ -164,28 +156,6 @@ const textOf = (type: string, payload: string): string => {
   const raw = type === "question" ? ev["question"] : ev["text"];
   return typeof raw === "string" ? raw : "";
 };
-
-/** Accumulates one field's text newest-first, up to {@link SESSION_TEXT_CAP}. */
-class Field {
-  #chunks: string[] = [];
-  #size = 0;
-
-  add(text: string): void {
-    if (this.full) return;
-    const t = text.slice(0, MESSAGE_TEXT_CAP);
-    this.#chunks.push(t);
-    this.#size += t.length + 1;
-  }
-
-  get full(): boolean {
-    return this.#size >= SESSION_TEXT_CAP;
-  }
-
-  /** Oldest-first again, folded lowercase — the shape the scorers read. */
-  text(): string {
-    return this.#chunks.reverse().join(" ").toLowerCase();
-  }
-}
 
 export class SessionSearchStore {
   #db: Db;
@@ -204,13 +174,19 @@ export class SessionSearchStore {
    * An empty query matches everything without reading a single transcript row:
    * "no filter" is the fleet, not a search for the empty string.
    */
-  rank(sessions: readonly SessionSnapshot[], query: string): SearchHit[] {
+  async rank(sessions: readonly SessionSnapshot[], query: string): Promise<SearchHit[]> {
     const terms = parseQuery(query);
     if (terms.length === 0) return sessions.map((s) => ({ id: s.id, score: 0 }));
 
     const out: SearchHit[] = [];
+    let deadline = performance.now() + 8;
+    const yieldIfDue = async () => {
+      if (performance.now() < deadline) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      deadline = performance.now() + 8;
+    };
     for (const s of sessions) {
-      const score = scoreDoc(this.#doc(s), terms);
+      const score = scoreDoc(await this.#doc(s, yieldIfDue), terms);
       if (score > 0) out.push({ id: s.id, score });
     }
     // Stable: equal scores keep the order the unfiltered fleet list uses.
@@ -223,9 +199,9 @@ export class SessionSearchStore {
    * `(session_id, id)` index and dropped as soon as it has been scored — the
    * daemon keeps no second copy of any transcript.
    */
-  #doc(s: SessionSnapshot): SearchDoc {
-    const user = new Field();
-    const agent = new Field();
+  async #doc(s: SessionSnapshot, yieldIfDue: () => Promise<void>): Promise<SearchDoc> {
+    const user: string[] = [];
+    const agent: string[] = [];
     const rows = this.#db
       .prepare(
         `SELECT type, payload FROM session_events
@@ -235,20 +211,15 @@ export class SessionSearchStore {
       .iterate(s.id, ...TEXT_TYPES) as Iterable<TextRow>;
     for (const row of rows) {
       const field = USER_TYPE_SET.has(row.type) ? user : agent;
-      if (field.full) {
-        // Both sides full: nothing further in this session can change its
-        // score, so stop the cursor rather than read the rest of the history.
-        if (user.full && agent.full) break;
-        continue;
-      }
-      field.add(textOf(row.type, row.payload));
+      field.push(textOf(row.type, row.payload));
+      await yieldIfDue();
     }
     return {
       // The fleet shows an untitled session by its short id, so that is what
       // "search what you can see" has to mean.
       title: (s.title ?? s.id.slice(0, 8)).toLowerCase(),
-      user: user.text(),
-      agent: agent.text(),
+      user: user.reverse().join(" ").toLowerCase(),
+      agent: agent.reverse().join(" ").toLowerCase(),
     };
   }
 }

@@ -16,7 +16,7 @@ import type {
   SessionSnapshot,
 } from "@loom/core/wire";
 import type { ClientState, ConnectionError } from "@loom/client";
-import { foldLoadable, loadableIdle, type Loadable } from "@loom/core/loadable";
+import { foldLoadable, loadableIdle } from "@loom/core/loadable";
 import type { SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
@@ -35,7 +35,7 @@ import {
   type PickerStep,
   type Prompt,
 } from "./overlay.ts";
-import { nextMode, type ModeChoice, type ModeChoices } from "./mode-control.ts";
+import { nextMode } from "./mode-control.ts";
 import type { QNav } from "./interactions.ts";
 import {
   noDrafts,
@@ -45,19 +45,14 @@ import {
   recalled,
   recorded,
   type Drafts,
-  type Outbox,
   type Outboxes,
 } from "./composer.ts";
-import { openFind, queryOf, searchMatches, type Find, type SearchResults } from "./fleet-search.ts";
+import { queryOf, searchMatches, type Find } from "./fleet-search.ts";
 import {
-  NON_TRANSCRIPT,
   cycleLogFilter,
   filterLog,
-  liveLine,
-  transcriptSession,
   noTranscript,
   queuedLine,
-  toLogLine,
   transcriptLines,
   type Transcript,
   logFilterLabel,
@@ -84,7 +79,7 @@ import {
  */
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
 
-export const connectionOf = (s: TuiState): Connection =>
+export const connectionOf = (s: Pick<TuiState, "fleet">): Connection =>
   foldLoadable<ConnectionError, DaemonSnapshot, Connection>({
     onIdle: () => "connecting",
     onPending: () => "reconnecting",
@@ -93,14 +88,14 @@ export const connectionOf = (s: TuiState): Connection =>
   })(s.fleet);
 
 /** The fleet in display order, or empty while there is no current snapshot. */
-export const fleetSessions = (s: TuiState): SessionSnapshot[] =>
+export const fleetSessions = (s: Pick<TuiState, "fleet">): SessionSnapshot[] =>
   s.fleet.tag === "data" ? s.fleet.value.sessions : [];
 
 /** Configured providers from the current snapshot, or empty while pending. */
-export const fleetProviders = (s: TuiState): ProviderInfo[] =>
+export const fleetProviders = (s: Pick<TuiState, "fleet">): ProviderInfo[] =>
   s.fleet.tag === "data" ? s.fleet.value.providers : [];
 
-export const fleetDaemon = (s: TuiState): DaemonInfo | null =>
+export const fleetDaemon = (s: Pick<TuiState, "fleet">): DaemonInfo | null =>
   s.fleet.tag === "data" ? s.fleet.value.daemon : null;
 
 /**
@@ -134,14 +129,6 @@ export interface TuiState {
    * order — {@link sortSessions} runs once at install, not per read.
    */
   fleet: ClientState;
-  /**
-   * Mode selections in progress, per session: what the user has cycled to that
-   * the daemon has not confirmed. The applied mode is never here — it stays in
-   * the snapshot, and the chip shows both (`manual → plan`) rather than letting
-   * a target stand in for a change that may yet be rejected. Owned by
-   * `mode-control.ts`, which is also what forgets a session that has gone.
-   */
-  modes: ModeChoices;
   selectedId: string | null;
   /**
    * A session just picked (create / fork / find) whose row hasn't landed in
@@ -160,15 +147,7 @@ export interface TuiState {
    * and whenever churn empties the child list (`clampChild`).
    */
   selectedChild: string | null;
-  /**
-   * The selected session's transcript — one resource, loaded when a session is
-   * selected and dropped when the connection goes. See {@link Transcript}.
-   */
-  transcript: Transcript;
   logFilter: LogFilter;
-  /** Per session, what the user has typed at it that the daemon has not
-   *  acknowledged — see {@link Outbox}. Absent = nothing outgoing, ever. */
-  outbox: Outboxes;
   notice: Notice | null;
   /**
    * What is open over the fleet, with its payload inside it — see
@@ -178,27 +157,12 @@ export interface TuiState {
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
    *  on open; kept between opens so a reopen paints immediately. */
   doctor: DoctorReport | null;
-  /**
-   * The fleet filter (`/`) — a single-line query that narrows the FLEET list
-   * in place and ranks it: title hits first, then your messages, then the
-   * agent's; space-separated terms are AND'd and `'term` pins a literal
-   * substring. Matching happens in the daemon, over every session's durable
-   * transcript, so this holds the query and whatever page came back — see
-   * {@link Find}. ↑/↓ keep moving the session selection while it's up; ⏎
-   * accepts (keeping enter's fleet-row meaning) and esc clears. null = closed.
-   */
-  find: Find | null;
   /** In-progress answers for a multi-question `AskUserQuestion` — see
    *  {@link QNav}. Persists across the answer prompt opening and closing. */
   qnav: QNav | null;
   /** Unsent `new` / `send` text with no session behind it yet — see
    *  {@link Drafts}. */
   drafts: Drafts;
-  /** Tool name for every in-flight `tool_call`, keyed by its id — looked up
-   *  when the matching `tool_result` lands so tool-aware formatting (Read's
-   *  result staying terse, an Edit rendering as a diff) doesn't need the
-   *  event itself to carry the name. */
-  toolNames: Record<string, string>;
 }
 
 export const initialState = (): TuiState => {
@@ -207,19 +171,14 @@ export const initialState = (): TuiState => {
     // via `setThemeMode` before the handle built its initial state.
     theme: themeMode(),
     fleet: loadableIdle,
-    modes: {},
     selectedId: null,
     selectedChild: null,
-    transcript: noTranscript,
     logFilter: "everything",
-    outbox: {},
     notice: null,
     overlay: browse,
     doctor: null,
-    find: null,
     qnav: null,
     drafts: noDrafts,
-    toolNames: {},
   };
 };
 
@@ -250,13 +209,9 @@ export const versionMismatchAction = (o: {
 
 export type Action =
   | { t: "state"; state: ClientState }
-  | { t: "mode"; sessionId: string; choice: ModeChoice | null }
   | { t: "push"; frame: PushFrame }
-  /** Install a transcript transition — see `transcript.ts`, which owns both the
-   *  transitions and the requests behind them. */
-  | { t: "transcript"; transcript: Transcript }
   | { t: "toggleTheme" }
-  | { t: "move"; delta: number }
+  | { t: "move"; delta: number; ids?: readonly string[] }
   | { t: "select"; id: string }
   | { t: "selectChild"; sessionId: string; key: string }
   | { t: "childEnter" }
@@ -273,19 +228,13 @@ export type Action =
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
+  | { t: "recoverDraft"; text: string }
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
-  /** Commit one session's outgoing text — the composer works out what it should
-   *  be, this only stores it. `null` forgets the session. */
-  | { t: "outbox"; sessionId: string; box: Outbox | null }
   | { t: "cyclePlanMode" }
   | { t: "toggleConfirmBranch" }
   | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
-  | { t: "openFind" }
-  | { t: "findSet"; buffer: Buffer }
-  | { t: "searchLoaded"; query: string; results: Loadable<string, SearchResults> }
-  | { t: "closeFind" }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "doctorLoaded"; report: DoctorReport };
 
@@ -299,20 +248,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "state":
       return applyClientState(s, a.state);
 
-    case "mode":
-      return {
-        ...s,
-        modes:
-          a.choice === null
-            ? without(s.modes, a.sessionId)
-            : { ...s.modes, [a.sessionId]: a.choice },
-      };
-
     case "push":
       return applyPush(s, a.frame);
-
-    case "transcript":
-      return s.transcript === a.transcript ? s : { ...s, transcript: a.transcript };
 
     case "toggleTheme":
       return { ...s, theme: nextThemeMode(s.theme) };
@@ -322,13 +259,13 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // order — the rows the fleet is actually showing. Off-list (the
       // selection was filtered out), ↓ lands on the best match and ↑ on the
       // last.
-      const list = searchMatches(s.find, fleetSessions(s));
-      let from = list.findIndex((x) => x.id === s.selectedId);
+      const list = a.ids ?? fleetSessions(s).map((x) => x.id);
+      let from = list.indexOf(s.selectedId ?? "");
       if (from < 0) from = a.delta < 0 ? list.length : -1;
       const next = Math.max(0, Math.min(list.length - 1, from + a.delta));
       const picked = list[next];
-      if (!picked || picked.id === s.selectedId) return s;
-      return { ...s, selectedId: picked.id, selectedChild: null };
+      if (!picked || picked === s.selectedId) return s;
+      return { ...s, selectedId: picked, selectedChild: null };
     }
 
     case "select": {
@@ -436,6 +373,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return withPrompt(s, { ...p, histIdx: idx, draft, buffer: buffer(text) });
     }
 
+    case "recoverDraft":
+      return {
+        ...s,
+        drafts: { ...s.drafts, last: [s.drafts.last, a.text].filter(Boolean).join("\n\n") },
+      };
+
     case "pushHistory":
       return { ...s, drafts: recorded(s.drafts, a.text) };
 
@@ -449,13 +392,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       if (!draftable) return { ...s, overlay };
       return { ...s, overlay, drafts: { ...s.drafts, last: a.saveDraft ? p.buffer.text : "" } };
     }
-
-    case "outbox":
-      return {
-        ...s,
-        outbox:
-          a.box === null ? without(s.outbox, a.sessionId) : { ...s.outbox, [a.sessionId]: a.box },
-      };
 
     case "cyclePlanMode": {
       if (s.overlay.t !== "plan") return s;
@@ -489,36 +425,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         ? s
         : { ...s, overlay: { t: "picker", picker: { ...p, index: next } } };
     }
-    case "openFind":
-      return { ...s, find: openFind() };
-
-    case "findSet":
-      // Typing only moves the query. The selection stays where it is until
-      // results for *this* query arrive (see `searchLoaded`) — riding it onto
-      // the best row of the previous query's answer would point the Detail
-      // and EVENTS panes at a session that has nothing to do with what is
-      // typed.
-      return s.find ? { ...s, find: { ...s.find, buffer: a.buffer } } : s;
-
-    case "searchLoaded": {
-      // Results the buffer has moved on from are dropped here rather than in
-      // the handle: the buffer is the reducer's, and it can have changed
-      // between the response landing and this action running.
-      if (!s.find || queryOf(s.find) !== a.query) return s;
-      const next = { ...s, find: { ...s.find, results: a.results } };
-      if (a.query === "" || a.results.tag !== "data") return next;
-      // The answer is in: ride the selection onto the best-ranked match
-      // (fzf-style), so the Detail / EVENTS panes follow the row the filter is
-      // pointing at. A selection that still matches stays put, so this doesn't
-      // fight ↑/↓ walking the ranked rows.
-      const matches = searchMatches(next.find, fleetSessions(s));
-      if (matches.length === 0 || matches.some((m) => m.id === s.selectedId)) return next;
-      return { ...next, selectedId: matches[0]!.id, selectedChild: null };
-    }
-
-    case "closeFind":
-      return s.find ? { ...s, find: null } : s;
-
     case "qnavSet":
       return { ...s, qnav: a.nav };
 
@@ -550,7 +456,7 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     // bumps its own lifetime in the same breath, so a fetch already in flight
     // cannot land afterwards and reinstate what this just discarded. Drafts
     // and selection are ours, not the daemon's, and survive.
-    return { ...s, transcript: noTranscript, fleet: state };
+    return { ...s, fleet: state };
   }
   const sessions = sortSessions(state.value.sessions);
   const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
@@ -580,10 +486,6 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
     ...(qnavGone ? { qnav: null } : {}),
-    // `outbox` is deliberately NOT pruned here. Text queued at a session that
-    // has gone is stranded, and stranding it is news — silently dropping it
-    // loses a message the user typed with no word about it. The composer
-    // forgets it and says so, in the same dispatch this snapshot triggers.
     overlay,
     ...(notice ? { notice: mkNotice(notice, "dim") } : {}),
   };
@@ -598,42 +500,10 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       // long-settled "Bash needs approval" flashing for 4s on scroll-back was
       // exactly the confusion that separating the two resources removes (U2).
       const notice = noticeForEvent(s, ev) ?? s.notice;
-      // No durable id means the daemon did not persist this event, which is its
-      // way of saying "not transcript": status transitions and compaction beats
-      // are read off the session snapshot instead. They can still raise a
-      // transient notice, which is what the live stream is for.
-      if (frame.id === undefined || NON_TRANSCRIPT.has(ev.type)) {
-        return notice === s.notice ? s : { ...s, notice };
-      }
-      // Remember each tool_call's name by id so its later tool_result can be
-      // formatted tool-aware (an Edit's diff needs no lookup — its own event
-      // already carries the name — but a Read's terse result does).
-      let toolNames = s.toolNames;
-      let toolName: string | undefined;
-      if (ev.type === "tool_call") {
-        toolNames = { ...toolNames, [ev.id]: ev.name };
-      } else if (ev.type === "tool_result") {
-        toolName = toolNames[ev.id];
-        if (toolName !== undefined) toolNames = without(toolNames, ev.id);
-      }
-      // Only the selected session has a transcript, so only its events are worth
-      // formatting — the rest of the fleet's stream costs one comparison here
-      // and is read off the snapshot instead.
-      const mine = transcriptSession(s.transcript) === ev.sessionId;
-      return {
-        ...s,
-        ...(mine ? { transcript: liveLine(s.transcript, toLogLine(frame.id, ev, toolName)) } : {}),
-        notice,
-        toolNames,
-      };
+      return notice === s.notice ? s : { ...s, notice };
     }
     case "resync":
-      // The push stream rolled past our seq, so entries in the gap never
-      // arrived and the window would have a hole in it with nothing on screen
-      // to say so. Everything describing *current* state comes whole in the
-      // next snapshot; the transcript is the one thing that has to be re-read,
-      // which the handle does when it sees the resource unloaded.
-      return { ...s, transcript: noTranscript };
+      return s;
 
     case "notice":
       // A daemon-level advisory (config reload). Transient — same channel as a
@@ -650,12 +520,6 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
     default:
       return absurd(frame);
   }
-};
-
-const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {
-  if (!(key in rec)) return rec;
-  const { [key]: _drop, ...rest } = rec;
-  return rest;
 };
 
 // ---------------------------------------------------------------------------
@@ -770,12 +634,16 @@ const clampChild = (
 // selectors
 // ---------------------------------------------------------------------------
 
-export const selectedSession = (s: TuiState): SessionSnapshot | null => {
+export const selectedSession = (
+  s: Pick<TuiState, "fleet" | "selectedId">,
+): SessionSnapshot | null => {
   return fleetSessions(s).find((x) => x.id === s.selectedId) ?? null;
 };
 
 /** The focused child of the selected session, when the fleet is drilled in. */
-export const focusedChildOf = (s: TuiState): FleetChild | null => {
+export const focusedChildOf = (
+  s: Pick<TuiState, "fleet" | "selectedId" | "selectedChild">,
+): FleetChild | null => {
   const sel = selectedSession(s);
   if (!sel || s.selectedChild == null) return null;
   return childrenOf(sel).find((k) => k.key === s.selectedChild) ?? null;
@@ -790,8 +658,10 @@ export const compactingFor = (
   return fleetSessions(s).find((x) => x.id === id)?.compacting ?? null;
 };
 /** What the selected session still owes the daemon, oldest first. */
-export const queueFor = (s: TuiState, id: string | null): readonly string[] =>
-  pending(outboxOf(s.outbox, id));
+export const queueFor = (
+  s: TuiState & { outbox?: Outboxes },
+  id: string | null,
+): readonly string[] => pending(outboxOf(s.outbox ?? {}, id));
 
 export interface CacheStatus {
   /**
@@ -872,11 +742,13 @@ export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
  *  Those markers are derived, not stored — the outbox is where a queued
  *  message lives, so one disappears exactly when its message goes on the wire
  *  and the daemon's own `user_message` takes its place. */
-export const sessionLog = (s: TuiState): LogLine[] => {
-  const lines = transcriptLines(s.transcript);
+export const sessionLog = (
+  s: TuiState & { outbox?: Outboxes; transcript?: Transcript },
+): LogLine[] => {
+  const lines = transcriptLines(s.transcript ?? noTranscript);
   const id = s.selectedId;
   if (id === null) return [...lines];
-  const queued = waiting(outboxOf(s.outbox, id));
+  const queued = waiting(outboxOf(s.outbox ?? {}, id));
   if (queued.length === 0) return [...lines];
   return [...lines, ...queued.map((text) => queuedLine(id, text))];
 };
@@ -886,29 +758,35 @@ export const sessionLog = (s: TuiState): LogLine[] => {
  * focused child when drilled in and condensed per {@link LogFilter} — see
  * {@link filterLog}.
  */
-export const visibleLog = (s: TuiState, child: FleetChild | null = null): LogLine[] =>
-  filterLog(sessionLog(s), s.logFilter, child?.id ?? null);
+export const visibleLog = (
+  s: TuiState & { outbox?: Outboxes; transcript?: Transcript },
+  child: FleetChild | null = null,
+): LogLine[] => filterLog(sessionLog(s), s.logFilter, child?.id ?? null);
 
 /** The lines the event pane is actually drawing right now — the selected
  *  session's log under the current filter and child focus. What the scrollback
  *  offset is measured against. */
-export const shownLog = (s: TuiState): LogLine[] => visibleLog(s, focusedChildOf(s));
+export const shownLog = (s: TuiState & { outbox?: Outboxes; transcript?: Transcript }): LogLine[] =>
+  visibleLog(s, focusedChildOf(s));
 
 // ---------------------------------------------------------------------------
 // provider / model / find helpers for the picker flow
 // ---------------------------------------------------------------------------
 
 /** The Ink colour a provider's session ids render in, or "" for the default. */
-export const providerColorOf = (s: TuiState, providerId: string): string => {
+export const providerColorOf = (s: Pick<TuiState, "fleet">, providerId: string): string => {
   return fleetProviders(s).find((p) => p.id === providerId)?.color ?? "";
 };
 
-export const providerInfo = (s: TuiState, providerId: string): ProviderInfo | null => {
+export const providerInfo = (
+  s: Pick<TuiState, "fleet">,
+  providerId: string,
+): ProviderInfo | null => {
   return fleetProviders(s).find((p) => p.id === providerId) ?? null;
 };
 
 /** `<login method> (<org>)` for a Claude profile, or "" when unknown. */
-export const providerAccountOf = (s: TuiState, providerId: string): string => {
+export const providerAccountOf = (s: Pick<TuiState, "fleet">, providerId: string): string => {
   const a = providerInfo(s, providerId)?.account;
   if (!a) return "";
   if (a.loginMethod && a.org) return `${a.loginMethod} (${a.org})`;
@@ -1153,8 +1031,10 @@ export type FleetEntry =
 
 /** An active filter renders one flat ranked list; otherwise the status
  *  groups (see {@link groupsOf}). */
-export const fleetEntries = (state: TuiState): FleetEntry[] => {
-  const matched = searchMatches(state.find, fleetSessions(state));
+export const fleetEntries = (
+  state: Pick<TuiState, "fleet" | "selectedId" | "selectedChild"> & { find?: Find | null },
+): FleetEntry[] => {
+  const matched = searchMatches(state.find ?? null, fleetSessions(state));
   const active = state.find != null && queryOf(state.find) !== "";
   const focused = focusedChildOf(state);
   const out: FleetEntry[] = [];
@@ -1188,7 +1068,10 @@ export const fleetEntries = (state: TuiState): FleetEntry[] => {
 /** The entry that carries the visual cursor: the focused child's row while
  *  drilled in, else the selected session's row. -1 if neither survives the
  *  current filter — nothing to scroll toward. */
-export const fleetSelectedEntryIndex = (state: TuiState, entries: FleetEntry[]): number => {
+export const fleetSelectedEntryIndex = (
+  state: Pick<TuiState, "fleet" | "selectedId" | "selectedChild">,
+  entries: FleetEntry[],
+): number => {
   const focused = focusedChildOf(state);
   if (focused) {
     const i = entries.findIndex(
@@ -1239,7 +1122,10 @@ export interface FleetLayout {
  * doesn't fit, the last row is given up to a scroll indicator instead of an
  * entry — see `Fleet` in components.tsx.
  */
-export const fleetLayout = (state: TuiState, budget: number): FleetLayout => {
+export const fleetLayout = (
+  state: Pick<TuiState, "fleet" | "selectedId" | "selectedChild"> & { find?: Find | null },
+  budget: number,
+): FleetLayout => {
   const entries = fleetEntries(state);
   if (entries.length <= budget) return { visible: entries, offset: 0, total: entries.length };
   const shown = Math.max(1, budget - 1);
@@ -1256,7 +1142,7 @@ export const fleetLayout = (state: TuiState, budget: number): FleetLayout => {
  * both read `fleetEntries`/`fleetLayout`, neither re-derives the other.
  */
 export const fleetHits = (
-  state: TuiState,
+  state: Pick<TuiState, "fleet" | "selectedId" | "selectedChild"> & { find?: Find | null },
   geom: { originX: number; listW: number; originY: number; maxY: number },
   /** The window this frame drew. Defaults to computing it, so a test can ask
    *  for the hit map on its own; the root passes the one it already has, since
@@ -1479,7 +1365,7 @@ export const allowedActs = (session: SessionSnapshot | null): Set<ActName> => {
  * selected session's contextual verbs ({@link actionsFor}) plus the app / view
  * commands that never earn a footer slot. One entry per act; `hint` is its key.
  */
-export const commandsFor = (s: TuiState): PickItem[] => {
+export const commandsFor = (s: TuiState & { outbox?: Outboxes }): PickItem[] => {
   const seen = new Set<ActName>();
   const items: PickItem[] = [];
   for (const h of actionsFor(selectedSession(s))) {
