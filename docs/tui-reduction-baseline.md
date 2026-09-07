@@ -217,3 +217,53 @@ Line counts, against the end of step 5 (`205c4e1`): TUI production 9480 →
 reduction: the three files lost 1218 lines between them, `theme.ts` and
 `composer.ts` gained 27 (`inside`, `waiting`), and the new module is larger
 than the three files lost by the handle and the resource it owns.
+
+## Step 7 — feature views and a scoped clock
+
+Two "after" runs, both with `incrementalRendering` on: `--label step7` is the
+step, and `step7-oldclock` is the same tree with the 120ms interval put back
+(publish while anything in the fleet is busy, early-return otherwise), so the
+comparison isolates the clock rather than seven steps of drift.
+
+| scenario                  | renders   | CPU ms        | writes    | bytes             |
+| ------------------------- | --------- | ------------- | --------- | ----------------- |
+| idle (3s, no input)       | 0 → 0     | **5.1 → 0.4** | 0 → 0     | 0 → 0             |
+| stream (60 events)        | 80 → 77   | 438 → 402     | 237 → 231 | 140,034 → 139,343 |
+| scroll (12×PgUp + End)    | 39 → 30   | 159 → 142     | 87 → 90   | 33,030 → 33,448   |
+| type+mode while streaming | 197 → 168 | 903 → 834     | 492 → 495 | 251,405 → 251,541 |
+
+`cpuMs` (process user+system inside the measured window) is new in the bench,
+because the idle row is where the clock change lands and renders and bytes are
+both zero either way. What the old interval cost an idle TUI was ~8 wakeups a
+second forever, for a frame it then declined to draw: 5.1ms of CPU per 3s, or
+about 0.17% of a core, permanently. There is now no timer at all while nothing
+on screen animates.
+
+The other rows always have something running, so the clock is armed either way;
+what falls is the beats that no longer fire for content the layout isn't
+drawing, and the derivation each surviving beat no longer repeats. Terminal
+bytes are unchanged either way, as they should be — this step changed how often
+the panes are asked to draw, not what they draw.
+
+**What the bench does not show.** The narrowing lands as pane rebuilds avoided,
+not as renders. `test/tui-render.test.ts` asserts identity on the handle's own
+memo output — `view.log` and `view.fleetPane` survive an event for another
+session, and the fleet view survives typing — which is a claim about this code
+rather than about React's scheduling. Adding one dep back to a memo makes it
+fail, which is how it was checked.
+
+Representations deleted: the central 120ms `setInterval`, the tick-bump
+heuristic beside it (`transcript.lines.length > 3`), the poll for notice expiry,
+`anyCompacting` (its only caller was that interval), and `Date.now()` at render
+time in `app.tsx` — the frame's `now` is coarsened to the second every
+time-derived thing is drawn at, so it no longer invalidates a memo per keystroke.
+
+`FooterArea` and `PromptPane` still take the whole `TuiState`. They are the
+input surface and repaint on every keystroke regardless; narrowing them would
+buy nothing and cost the plumbing.
+
+Line counts, against the end of step 6 (`cee980e`): TUI production 9645 →
+**10,043**; `views.ts` 245 and `clock.ts` 99 are new, `fleet-handle.ts`
+2380 → 2519 (the memo slots and the per-pane derivation), `components.tsx`
+1906 → 1840, `app.tsx` 246 → 222, `model.ts` 1571 → 1576. TUI tests
+6642 → **6761**.

@@ -272,21 +272,21 @@ their behavior remains. Reduce ownership and invalid combinations, not scrollbac
 
 Files: `app.tsx`, `fleet-handle.ts`, `store.ts`, `components.tsx`, feature handles.
 
-- [ ] Root view contains layout/selection/active-overlay information, not a fresh
+- [x] Root view contains layout/selection/active-overlay information, not a fresh
       copy of every pane's inputs for every event. Panes consume narrow feature
       views with stable references when their actual inputs have not changed.
-- [ ] Replace the central 120ms whole-app publish with an animation subscription
+- [x] Replace the central 120ms whole-app publish with an animation subscription
       scoped to visible animated content. One shared clock is sufficient; disable
       it when nothing visible animates. Use a deadline for notice expiration.
-- [ ] Keep cache-age/elapsed-time displays updating at their visible precision.
+- [x] Keep cache-age/elapsed-time displays updating at their visible precision.
       Removing the global clock must not freeze those displays indefinitely.
-- [ ] Use memoization only after narrowing inputs. Do not deep-compare entire
+- [x] Use memoization only after narrowing inputs. Do not deep-compare entire
       snapshots, introduce a second replicated fleet, or add custom equality
       functions to every component. In-place mutation is not reference stability.
-- [ ] Keep events/state updates immediate. If measurements still show redundant
+- [x] Keep events/state updates immediate. If measurements still show redundant
       work during bursts, coalesce view publication only, with a bounded delay;
       never drop provider events or delay the state used to interpret keypresses.
-- [ ] Delete central tick plumbing and root-dispatch effect checks as their last
+- [x] Delete central tick plumbing and root-dispatch effect checks as their last
       consumers move. The root handle should compose features and route input.
 
 Validation: spinner-only updates do not execute transcript derivation; typing does
