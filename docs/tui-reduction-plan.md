@@ -233,31 +233,31 @@ it does not authorize the all-method RPC migration listed under follow-ups.
 Files: transcript sections of `model.ts`, `fleet-handle.ts`, `components.tsx`.
 Introduce `transcript.ts` containing pure resource transitions and its handle.
 
-- [ ] Own one selected-session transcript resource, including existing child
+- [x] Own one selected-session transcript resource, including existing child
       filtering. Drop per-session transcript caches; selecting another session
       reloads it. Drafts and queues remain independent and survive selection.
-- [ ] Represent unloaded/loading/failure/ready explicitly. Only ready contains
+- [x] Represent unloaded/loading/failure/ready explicitly. Only ready contains
       a retained window and the operations possible on that window. Avoid two
       independent Loadables plus unrelated flags that permit impossible mixtures.
-- [ ] One resource lifetime owns live subscription, requests, and scroll. On
+- [x] One resource lifetime owns live subscription, requests, and scroll. On
       selection change/reconnect/disposal invalidate that lifetime. Late callbacks
       must affect neither rows nor scroll. Cancellation alone is not a proof that
       an already queued callback cannot run.
-- [ ] Listen for live events before the initial fetch and retain the minimal
+- [x] Listen for live events before the initial fetch and retain the minimal
       durable-ID deduplication needed for overlap. Fetch only while connected.
       Reconnect loads latest; failed initial loads retry on explicit action.
-- [ ] Move pure line formatting/wrapping out of the React component module so
+- [x] Move pure line formatting/wrapping out of the React component module so
       the transcript handle does not import components to compute geometry.
       Preserve existing per-line layout caching and visible-row construction.
 
-- [ ] Keep cursor pagination, bounded retention, and existing Home/End behavior.
+- [x] Keep cursor pagination, bounded retention, and existing Home/End behavior.
       Encode live-tail versus historical-window behavior in variants, rather than
       a `following` boolean unrelated to load state.
-- [ ] Give window retention and scroll adjustment one owner. Do not duplicate
+- [x] Give window retention and scroll adjustment one owner. Do not duplicate
       viewport corrections between promise callbacks and root dispatch.
-- [ ] Keep the cap in all growth paths. When old browsing evicts the live tail,
+- [x] Keep the cap in all growth paths. When old browsing evicts the live tail,
       do not append new events across the missing interval; End reloads latest.
-- [ ] Preserve `o`/`Alt+o` request/transcript viewing and `Ctrl+e` prompt editing
+- [x] Preserve `o`/`Alt+o` request/transcript viewing and `Ctrl+e` prompt editing
       with transcript context, using the existing editor-handoff module. Preserve
       the current retained-transcript export scope; a full-history export is not
       required for this refactor. Never retain other sessions' pages for the editor.

@@ -175,3 +175,45 @@ What the user sees that they could not before: a match in a session this TUI has
 never opened. What they see that is new and slower: `FLEET · searching…` for the
 duration of one round trip, where step 0 recomputed the filter synchronously on
 every keystroke over a much smaller (and incomplete) corpus.
+
+## Step 6 — transcript ownership
+
+Same four scenarios, `--label step6`, `incrementalRendering` on throughout, so
+the step-4 row is the honest comparison:
+
+| scenario                  | renders (4 → 6) | render ms | writes  | bytes           |
+| ------------------------- | --------------- | --------- | ------- | --------------- |
+| idle                      | 0 → 0           | 0 → 0     | 0 → 0   | 0 → 0           |
+| stream (60 events)        | 74 → 77         | 160 → 144 | 219→228 | 138,517→138,931 |
+| scroll (12×PgUp + End)    | 29 → 30         | 53 → 49   | 87→90   | 33,030→33,448   |
+| type+mode while streaming | 167 → 167       | 315 → 272 | 492→492 | 251,405→254,518 |
+
+Nothing here moved outside run-to-run noise, which is the expected result: this
+step changed who owns the transcript, not what is drawn. Scroll key latency is
+p50 2.6ms / p95 37.5ms (step 4: 3.4 / 39.3) — the p95 is still the 30fps frame
+cap, not work.
+
+The one measurable change is what the *un*scrolled case costs. The viewport
+correction used to run `logRowCount` twice on every `push` dispatch where the
+offset was non-zero; it now runs in one place and returns before measuring
+anything while the pane is at the live tail, which is where it sits almost
+always. And an event for a session that is not selected is no longer turned
+into a `LogLine` at all — with the per-session caches gone there is nothing to
+put it in, so `formatEvent` runs for the selected session's stream only, not the
+whole fleet's.
+
+Representations deleted: `TuiState.transcripts` (a `Record` of per-session
+caches), `transcriptGen`, `Transcript.head` / `Transcript.older` (two
+independent `Loadable`s), `Transcript.following`, `Transcript.echoes`, the
+`echo` action, and the `historyStart` / `historyPage` / `historyFailed` /
+`transcriptReset` / `transcriptFollow` actions — five actions and a generation
+counter replaced by one `transcript` action carrying a value the pure
+transitions produced.
+
+Line counts, against the end of step 5 (`205c4e1`): TUI production 9480 →
+**9645**. `transcript.ts` is 1356 new lines, of which ~830 are the move in §6a;
+`model.ts` 2491 → 1571, `fleet-handle.ts` 2546 → 2380, `components.tsx`
+2038 → 1906. TUI tests 6535 → **6642**. This is separation again, not
+reduction: the three files lost 1218 lines between them, `theme.ts` and
+`composer.ts` gained 27 (`inside`, `waiting`), and the new module is larger
+than the three files lost by the handle and the resource it owns.
