@@ -73,6 +73,19 @@
               # category of fix as fetchPnpmDeps' own checkedAt-stripping
               # fixupPhase below.
               rm -f "$DENO_DIR"/dep_analysis_cache_v2* "$DENO_DIR"/node_analysis_cache_v2*
+
+              # Deno also caches each top-level npm dep's *packument* (the
+              # registry's whole version index) as npm/<registry>/<pkg>/
+              # registry.json. Those are not pinned by deno.lock: they carry
+              # the response's `_deno.etag`, npm's `time.modified`, and every
+              # version published so far, so a single unrelated release —
+              # anywhere in the dep's history — changes this output and
+              # breaks the hash below, on a lockfile that never moved.
+              # Nothing downstream needs them: `deno install --frozen
+              # --cached-only` resolves from deno.lock plus the tarballs
+              # already fetched here (verified: that install succeeds, and
+              # refetches nothing, with every registry.json deleted).
+              find "$DENO_DIR/npm" -name registry.json -delete
               runHook postBuild
             '';
 
@@ -81,7 +94,7 @@
 
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-mjvKDG7d1xgLPTT3vV0F+uDkPC/xlH+BpA8UYPjABvg=";
+            outputHash = "sha256-L0Ijkju7ki8x2n6SAzqOOdDe2o4WG5Cl098Sp/3+Qb0=";
           };
 
           loom = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
