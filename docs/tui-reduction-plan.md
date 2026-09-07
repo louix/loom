@@ -300,19 +300,19 @@ from code inspection alone.
 
 Files: `client/src/client.ts`; connection tests.
 
-- [ ] Make one supervisor own dial → handshake/first snapshot → connected →
+- [x] Make one supervisor own dial → handshake/first snapshot → connected →
       teardown → optional retry. A read-loop close reports to that supervisor;
       it never recursively starts another reconnect loop.
-- [ ] Scope socket, decoder/buffer, write chain, and pending RPC cleanup to one
+- [x] Scope socket, decoder/buffer, write chain, and pending RPC cleanup to one
       connection attempt. Dispose the attempt before starting another. Keep one
       cancellation/identity check for late asynchronous work; delete guards only
       where exclusive ownership makes their case unreachable.
-- [ ] Reuse the same opening path for initial connect and reconnect. Bound startup,
+- [x] Reuse the same opening path for initial connect and reconnect. Bound startup,
       clean up every failure path, and keep mismatch terminal. Closing during a dial
       must close a late socket rather than reopening the client.
-- [ ] Preserve partial-write ordering, backlog limits, pending RPC rejection,
+- [x] Preserve partial-write ordering, backlog limits, pending RPC rejection,
       no mutation replay, epoch handling, and existing `loom tail` replay behavior.
-- [ ] No new transport interface hierarchy. If an extraction grows the lifecycle
+- [x] No new transport interface hierarchy. If an extraction grows the lifecycle
       implementation without deleting overlapping ownership, revise it before merge.
 
 Validation: keep transport-boundary tests for partial/failed writes, malformed

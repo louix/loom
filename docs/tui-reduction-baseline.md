@@ -267,3 +267,30 @@ Line counts, against the end of step 6 (`cee980e`): TUI production 9645 →
 2380 → 2519 (the memo slots and the per-pane derivation), `components.tsx`
 1906 → 1840, `app.tsx` 246 → 222, `model.ts` 1571 → 1576. TUI tests
 6642 → **6761**.
+
+## Step 8 — connection lifecycle
+
+No bench: this is the transport, and none of the four scenarios exercises a
+reconnect. What it is measured against is `test/client-state.test.ts` and
+`test/connection.test.ts`, both unchanged in substance and both still passing —
+partial/failed writes, malformed frames, reconnect with `sinceSeq` replay,
+startup failure, mismatch in both directions, and close during pending work.
+
+Representations deleted: `#generation`, `#sock`, `#buf`, `#decoder`,
+`#writeChain`, `#readLoop`, `#helloDone`, `#preHelloQueue`, `#invalidate`,
+`#attach`, `#dial`, `#reconnectLoop`. What replaces them is one `Attempt` (the
+socket and everything whose lifetime is that socket's) and one supervisor loop.
+There were two opening paths — `connect()`'s and the reconnect loop's — and the
+loop was started from the socket-close handler, so a drop during a handshake ran
+a second opening while the first was still awaiting; the generation counter was
+the guard around that shape rather than a reason for it.
+
+One behavioural change worth naming: `close()` now cuts a backoff sleep short,
+where before a client the caller had finished with could stay asleep for up to
+four seconds before noticing.
+
+`client/src/client.ts` 777 → 855 (+78): the `Attempt` class and the supervisor
+are more lines than the fields and the loop they replace, and the guards that
+are gone were one-liners. Reported as separation, like §3, §5, §6 and §7.
+`test/client-state.test.ts` +52: `peak()` on the stub daemon (the most sockets
+it ever had open at once) and one regression that drives a drop mid-handshake.
