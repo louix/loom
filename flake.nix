@@ -109,7 +109,7 @@
 
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-L0Ijkju7ki8x2n6SAzqOOdDe2o4WG5Cl098Sp/3+Qb0=";
+            outputHash = "sha256-owMiJzg2obrdhloRDQ5TDEAwtZY0wrr5lLzFlmnKNm0=";
           };
 
           loom = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
