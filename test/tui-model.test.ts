@@ -46,7 +46,6 @@ import {
   providerPickItems,
   versionMismatchAction,
   queueFor,
-  anyCompacting,
   compactingFor,
   reduce,
   selectedSession,
@@ -97,6 +96,7 @@ import {
 import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
 import { cleared, enqueue, outboxOf, pending, release, type Outbox } from "@loom/tui/composer";
 import { mkModeControl, pendingMode, type ModeChoices } from "@loom/tui/mode-control";
+import { mkClock, mkDeadline, SPIN_MS, type Beat } from "@loom/tui/clock";
 import {
   fleetFilterStatus,
   mkSearchControl,
@@ -3296,7 +3296,6 @@ test("the compacting indicator is whatever the snapshot says, for every client a
     generated: 0,
     before: 120_000,
   });
-  assert.ok(anyCompacting(s));
 
   // Progress rides the snapshot too, so every client shows the same number.
   s = reduce(
@@ -3316,7 +3315,6 @@ test("the compacting indicator is whatever the snapshot says, for every client a
   // entry that could survive the release and pin "compacting…" forever.
   s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 99 })]));
   assert.equal(compactingFor(s, "a"), null);
-  assert.equal(anyCompacting(s), false);
 });
 
 test("every session's compaction rides the same snapshot", () => {
@@ -3707,4 +3705,56 @@ test("fleet search: ↑↓ walk the ranked rows, not the fleet's", async () => {
   assert.equal(m.state().selectedId, "best", "↑ walks up the ranked list");
   m.move(1);
   assert.equal(m.state().selectedId, "weak");
+});
+
+// ---------------------------------------------------------------------------
+// the animation clock
+// ---------------------------------------------------------------------------
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test("the clock beats only while the frame needs it, and settling does not reset its phase", async () => {
+  let need: Beat = null;
+  let beats = 0;
+  const clock = mkClock({ needs: () => need, beat: () => void (beats += 1) });
+
+  clock.settle();
+  await wait(SPIN_MS * 3);
+  assert.equal(beats, 0, "a still frame costs no timer at all");
+
+  need = "spin";
+  clock.settle();
+  // Every publish settles the clock. Re-arming an interval resets its phase, so
+  // a steady stream of publishes would starve the spinner of every beat — the
+  // one thing this has to get right beyond starting and stopping.
+  for (let i = 0; i < 20; i++) {
+    clock.settle();
+    await wait(SPIN_MS / 4);
+  }
+  assert.ok(beats >= 3, `the spinner advanced through the publishes (${beats} beats)`);
+
+  need = null;
+  clock.settle();
+  const settled = beats;
+  await wait(SPIN_MS * 3);
+  assert.equal(beats, settled, "and it stops the moment nothing on screen animates");
+  clock.dispose();
+});
+
+test("a deadline fires once, moves when re-armed, and cancels on null", async () => {
+  let fired = 0;
+  const d = mkDeadline(() => void (fired += 1));
+
+  d.at(10);
+  d.at(60); // re-arming replaces the pending firing rather than adding one
+  await wait(30);
+  assert.equal(fired, 0, "the deadline moved out; the first one did not survive it");
+  await wait(60);
+  assert.equal(fired, 1);
+
+  d.at(10);
+  d.at(null);
+  await wait(30);
+  assert.equal(fired, 1, "null cancels");
+  d.dispose();
 });

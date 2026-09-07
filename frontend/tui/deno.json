@@ -16,6 +16,8 @@
     "./fleet-search": "./src/fleet-search.ts",
     "./theme": "./src/theme.ts",
     "./transcript": "./src/transcript.ts",
-    "./theme-store": "./src/theme-store.ts"
+    "./theme-store": "./src/theme-store.ts",
+    "./views": "./src/views.ts",
+    "./clock": "./src/clock.ts"
   }
 }

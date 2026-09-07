@@ -79,6 +79,10 @@ interface Window {
 interface Scenario extends Window {
   name: string;
   wallMs: number;
+  /** Process CPU (user+system) burnt inside the window. The idle scenario is
+   *  the one this exists for: renders and bytes are both zero either way, and
+   *  what a periodic timer costs shows up only here. */
+  cpuMs: number;
   notes?: Record<string, unknown>;
 }
 
@@ -176,12 +180,15 @@ const record = (
   from: { n: number; ms: number },
   fromWrite: number,
   since: number,
+  cpuFrom: NodeJS.CpuUsage,
   notes?: Record<string, unknown>,
 ): void => {
+  const cpu = process.cpuUsage(cpuFrom);
   scenarios.push({
     name,
     ...windowSince(out, renders, from, fromWrite, since),
     wallMs: +(performance.now() - since).toFixed(2),
+    cpuMs: +((cpu.user + cpu.system) / 1000).toFixed(2),
     ...(notes ? { notes } : {}),
   });
 };
@@ -205,8 +212,9 @@ const idleScenario = async (): Promise<void> => {
     const from = renders.mark();
     const fromWrite = out.writes.length;
     const since = performance.now();
+    const cpuFrom = process.cpuUsage();
     await delay(3000);
-    record("idle", out, renders, from, fromWrite, since);
+    record("idle", out, renders, from, fromWrite, since, cpuFrom);
   } finally {
     app.unmount();
     await client.close();
@@ -236,12 +244,13 @@ const streamScenario = async (): Promise<void> => {
     const from = renders.mark();
     const fromWrite = out.writes.length;
     const since = performance.now();
+    const cpuFrom = process.cpuUsage();
     for (let i = 0; i < 60; i++) {
       fs?.emit({ type: "assistant_text", text: `streamed chunk ${i} of sixty` });
       await delay(50);
     }
     await delay(200);
-    record("stream", out, renders, from, fromWrite, since, { events: 60 });
+    record("stream", out, renders, from, fromWrite, since, cpuFrom, { events: 60 });
   } finally {
     app.unmount();
     await client.close();
@@ -285,6 +294,7 @@ const scrollScenario = async (): Promise<void> => {
     const from = renders.mark();
     const fromWrite = out.writes.length;
     const since = performance.now();
+    const cpuFrom = process.cpuUsage();
     const keyLatencies: number[] = [];
     for (let i = 0; i < 12; i++) {
       const at = performance.now();
@@ -295,7 +305,7 @@ const scrollScenario = async (): Promise<void> => {
     }
     input.feed(END); // back to the live tail
     await delay(400);
-    record("scroll", out, renders, from, fromWrite, since, {
+    record("scroll", out, renders, from, fromWrite, since, cpuFrom, {
       pageUps: 12,
       keyLatencyMs: summarize(keyLatencies),
     });
@@ -352,6 +362,7 @@ const typeModeScenario = async (): Promise<void> => {
     const from = renders.mark();
     const fromWrite = out.writes.length;
     const since = performance.now();
+    const cpuFrom = process.cpuUsage();
 
     // Typing: one keypress at a time, measuring when the character appears.
     input.feed("\r"); // open the send prompt
@@ -404,7 +415,7 @@ const typeModeScenario = async (): Promise<void> => {
     input.feed(SHIFT_TAB);
     const browseNoticeMs = await latency(out, browseAt, /mode →/);
     await delay(1200);
-    record("type+mode-while-streaming", out, renders, from, fromWrite, since, {
+    record("type+mode-while-streaming", out, renders, from, fromWrite, since, cpuFrom, {
       typeLatencyMs: summarize(typeLatencies),
       modeKeypressToLocalHintMs: hintMs,
       modeKeypressToDispatchMs: dispatchMs,

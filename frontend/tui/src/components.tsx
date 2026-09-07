@@ -2,32 +2,25 @@
  * Ink components for the TUI. Written in JSX and run with no bundler — `@oxc-node`
  * transforms `.tsx` on the fly (the `loom`/`loomd` bins and the test runner both
  * load its hook), so the only build step is still "none". Every component is a
- * pure projection of {@link TuiState}.
+ * pure projection of the narrow view its pane is handed — see `views.ts`.
  */
-import { type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { Box, Text } from "ink";
+import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
-import { fleetFilterStatus, searchStale } from "./fleet-search.ts";
-import { diffSegColor, logContext, logFilterTag, totalRows, windowRows } from "./transcript.ts";
+import { diffSegColor } from "./transcript.ts";
+import type { DetailView, FleetPaneView, HeaderView, LogView } from "./views.ts";
 import {
-  connectionOf,
-  fleetDaemon,
-  fleetProviders,
   fleetSessions,
   cacheHeat,
   cacheStatus,
-  fleetLayout,
-  fleetRowBudget,
-  focusedChildOf,
   footerHints,
   providerInfo,
   queueFor,
-  selectedSession,
-  visibleLog,
   type CacheStatus,
   type Connection,
   type FleetChild,
@@ -63,8 +56,6 @@ import {
   wrapText,
   type Tone,
 } from "./theme.ts";
-
-const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
 
 /** The ` · …` tail after a status label in the Detail pane. */
 const statusDetailSuffix = (s: SessionSnapshot): string => {
@@ -143,18 +134,8 @@ const gitLineText = (s: SessionSnapshot): string => {
 // header
 // ---------------------------------------------------------------------------
 
-export const Header = ({ state, width }: { state: TuiState; width: number }): ReactNode => {
-  const lamp = lampFor(connectionOf(state));
-
-  const daemon = fleetDaemon(state);
-  const sessions = fleetSessions(state);
-  const repo = daemon ? basename(daemon.repoRoot) : "—";
-  const running = sessions.filter(
-    (s) => s.status.kind === "running" || s.status.kind === "starting",
-  ).length;
-  const waiting = sessions.filter((s) => s.status.kind === "awaiting_input").length;
-  const bg = sessions.filter((s) => s.status.kind === "working_background").length;
-
+export const Header = memo(({ view, width }: { view: HeaderView; width: number }): ReactNode => {
+  const lamp = lampFor(view.connection);
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
       <Box gap={1}>
@@ -162,20 +143,20 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
           {"▍ loom"}
         </Text>
         <Text color={C.dim} wrap="truncate-end">
-          {`v${daemon?.version ?? "?"}`}
+          {`v${view.version}`}
         </Text>
         <Text color={C.faint}>{"·"}</Text>
         <Text color={C.text} wrap="truncate-end">
-          {repo}
+          {view.repo}
         </Text>
       </Box>
       <Box gap={1}>
         <Text color={C.dim} wrap="truncate-end">
-          {`${sessions.length} sessions`}
+          {`${view.sessions} sessions`}
         </Text>
-        {waiting ? <Text color={C.await_}>{`◆ ${waiting}`}</Text> : null}
-        {running ? <Text color={C.accent}>{`● ${running}`}</Text> : null}
-        {bg ? <Text color={C.accentDim}>{`◐ ${bg}`}</Text> : null}
+        {view.waiting ? <Text color={C.await_}>{`◆ ${view.waiting}`}</Text> : null}
+        {view.running ? <Text color={C.accent}>{`● ${view.running}`}</Text> : null}
+        {view.background ? <Text color={C.accentDim}>{`◐ ${view.background}`}</Text> : null}
         <Text color={C.faint}>{"·"}</Text>
         <Text color={lamp.color} wrap="truncate-end">
           {lamp.text}
@@ -183,159 +164,161 @@ export const Header = ({ state, width }: { state: TuiState; width: number }): Re
       </Box>
     </Box>
   );
-};
+});
 
 // ---------------------------------------------------------------------------
 // fleet list (left column)
 // ---------------------------------------------------------------------------
 
-export const Fleet = ({
-  state,
-  tick,
-  width,
-  height,
-  now = Date.now(),
-}: {
-  state: TuiState;
-  tick: number;
-  width: number;
-  /** Row budget for the whole pane, border to border — entries beyond it
-   *  scroll (centered on the selection) instead of spilling past the pane
-   *  into whatever the layout put next (the reply box, the footer). */
-  height: number;
-  now?: number;
-}): ReactNode => {
-  const iw = inside(width);
-  const pcolor = new Map(fleetProviders(state).map((p) => [p.id, p.color]));
-  const compactingIds = new Set(
-    fleetSessions(state)
-      .filter((x) => x.compacting !== undefined)
-      .map((x) => x.id),
-  );
-  // Drilled in? The focus only ever applies to the selected session's rows.
-  const focused = focusedChildOf(state);
-  const childKeyOf = (s: SessionSnapshot): string | null =>
-    focused && s.id === state.selectedId ? focused.key : null;
+export const Fleet = memo(
+  ({
+    view,
+    find,
+    tick,
+    width,
+    now,
+  }: {
+    view: FleetPaneView;
+    /** The `/` filter's buffer, drawn under the title. Separate from `view`
+     *  because typing in it is the one keystroke this pane must repaint for. */
+    find: Buffer | null;
+    tick: number;
+    width: number;
+    now: number;
+  }): ReactNode => {
+    const iw = inside(width);
+    const childKeyOf = (s: SessionSnapshot): string | null =>
+      view.focused && s.id === view.selectedId ? view.focused.key : null;
 
-  const budget = fleetRowBudget(height, state.find != null);
-  const { visible, offset, total } = fleetLayout(state, budget);
-  const truncated = total > visible.length;
-  let blocks: ReactNode[];
-  if (state.fleet.tag !== "data") {
-    // No snapshot: the fleet is unknown, not empty. Saying "no sessions yet"
-    // here would invite starting a second one for work already running.
-    blocks = [
-      <Text key="conn" color={C.dim} wrap="truncate-end">
-        {lampFor(connectionOf(state)).text}
-        {" — the daemon's sessions are unknown until it answers"}
-      </Text>,
-    ];
-  } else if (total === 0) {
-    blocks = [
-      state.find ? (
-        <Text key="empty" color={C.dim} wrap="truncate-end">
-          {/* An answer that hasn't come back yet is not an answer of "none". */}
-          {searchStale(state.find)
-            ? "searching every session…"
-            : "no sessions match — esc clears the filter"}
+    let blocks: ReactNode[];
+    switch (view.body.t) {
+      case "unknown":
+        // No snapshot: the fleet is unknown, not empty. Saying "no sessions yet"
+        // here would invite starting a second one for work already running.
+        blocks = [
+          <Text key="conn" color={C.dim} wrap="truncate-end">
+            {lampFor(view.connection).text}
+            {" — the daemon's sessions are unknown until it answers"}
+          </Text>,
+        ];
+        break;
+      case "searching":
+        // An answer that hasn't come back yet is not an answer of "none".
+        blocks = [
+          <Text key="empty" color={C.dim} wrap="truncate-end">
+            {"searching every session…"}
+          </Text>,
+        ];
+        break;
+      case "noMatch":
+        blocks = [
+          <Text key="empty" color={C.dim} wrap="truncate-end">
+            {"no sessions match — esc clears the filter"}
+          </Text>,
+        ];
+        break;
+      case "none":
+        blocks = [
+          <Text key="empty" color={C.dim}>
+            {"no sessions yet — press "}
+            <Text color={C.accent}>{"n"}</Text>
+            {" to start one"}
+          </Text>,
+        ];
+        break;
+      case "rows":
+        blocks = view.body.entries.map((entry, i) => {
+          switch (entry.kind) {
+            case "blank":
+              return <Box key={`blank-${i}`} height={1} />;
+            case "groupHeader":
+              return (
+                <Text key={`hdr-${entry.group.status}`} bold>
+                  <Text color={statusLook(entry.group.status).color}>
+                    {statusLook(entry.group.status).glyph + " "}
+                  </Text>
+                  <Text color={C.dim}>{entry.group.label.toUpperCase()}</Text>
+                  <Text color={C.faint}>{`  ${entry.group.sessions.length}`}</Text>
+                </Text>
+              );
+            case "session":
+              return FleetRow({
+                s: entry.s,
+                selected: entry.s.id === view.selectedId,
+                focused: childKeyOf(entry.s) != null,
+                tick,
+                iw,
+                now,
+                pcolor: view.providerColors,
+                compacting: view.compacting.has(entry.s.id),
+              });
+            case "child":
+              return FleetChildRow({
+                rowKey: `${entry.s.id}:${entry.c.key}`,
+                c: entry.c,
+                isLast: entry.isLast,
+                sel: entry.c.key === childKeyOf(entry.s),
+                tick,
+                iw,
+              });
+            case "childMore":
+              return (
+                <Text key={`more-${entry.s.id}`} color={C.faint}>
+                  {`  └ +${entry.extra} more`}
+                </Text>
+              );
+          }
+        });
+        break;
+      default:
+        return absurd(view.body);
+    }
+
+    let title = "FLEET";
+    if (view.focused) {
+      title = `FLEET · ${shortId(view.selectedId ?? "")} ▸ ${childGlyph(view.focused)} ${truncate(
+        view.focused.label.replace(/\s+/g, " ").trim(),
+        Math.max(8, iw - 24),
+      )}`;
+    } else if (view.filterStatus !== null) {
+      title = `FLEET · ${view.filterStatus}`;
+    }
+
+    return (
+      <Box
+        flexDirection="column"
+        flexShrink={0}
+        width={width}
+        borderStyle="round"
+        borderColor={C.faint}
+        borderBackgroundColor={C.bg}
+        paddingX={1}
+      >
+        <Text color={C.dim} wrap="truncate-end">
+          {title}
         </Text>
-      ) : (
-        <Text key="empty" color={C.dim}>
-          {"no sessions yet — press "}
-          <Text color={C.accent}>{"n"}</Text>
-          {" to start one"}
-        </Text>
-      ),
-    ];
-  } else {
-    blocks = visible.map((entry, i) => {
-      switch (entry.kind) {
-        case "blank":
-          return <Box key={`blank-${i}`} height={1} />;
-        case "groupHeader":
-          return (
-            <Text key={`hdr-${entry.group.status}`} bold>
-              <Text color={statusLook(entry.group.status).color}>
-                {statusLook(entry.group.status).glyph + " "}
-              </Text>
-              <Text color={C.dim}>{entry.group.label.toUpperCase()}</Text>
-              <Text color={C.faint}>{`  ${entry.group.sessions.length}`}</Text>
-            </Text>
-          );
-        case "session":
-          return FleetRow({
-            s: entry.s,
-            selected: entry.s.id === state.selectedId,
-            focused: childKeyOf(entry.s) != null,
-            tick,
-            iw,
-            now,
-            pcolor,
-            compacting: compactingIds.has(entry.s.id),
-          });
-        case "child":
-          return FleetChildRow({
-            rowKey: `${entry.s.id}:${entry.c.key}`,
-            c: entry.c,
-            isLast: entry.isLast,
-            sel: entry.c.key === childKeyOf(entry.s),
-            tick,
-            iw,
-          });
-        case "childMore":
-          return (
-            <Text key={`more-${entry.s.id}`} color={C.faint}>
-              {`  └ +${entry.extra} more`}
-            </Text>
-          );
-      }
-    });
-  }
-
-  let title = "FLEET";
-  if (focused) {
-    title = `FLEET · ${shortId(state.selectedId ?? "")} ▸ ${childGlyph(focused)} ${truncate(
-      focused.label.replace(/\s+/g, " ").trim(),
-      Math.max(8, iw - 24),
-    )}`;
-  } else if (state.find) {
-    title = `FLEET · ${fleetFilterStatus(state.find, fleetSessions(state))}`;
-  }
-
-  return (
-    <Box
-      flexDirection="column"
-      flexShrink={0}
-      width={width}
-      borderStyle="round"
-      borderColor={C.faint}
-      borderBackgroundColor={C.bg}
-      paddingX={1}
-    >
-      <Text color={C.dim} wrap="truncate-end">
-        {title}
-      </Text>
-      {state.find ? (
-        <Box marginTop={1} flexShrink={0}>
-          <InputLine
-            buf={state.find.buffer}
-            room={Math.max(8, iw - 2)}
-            placeholder="type to filter"
-            multiline={false}
-          />
-        </Box>
-      ) : null}
-      <Box flexDirection="column" marginTop={1} flexShrink={0}>
-        {blocks}
-        {truncated ? (
-          <Text color={C.faint} wrap="truncate-end">
-            {`↕ ${offset + 1}–${offset + visible.length} of ${total}`}
-          </Text>
+        {find ? (
+          <Box marginTop={1} flexShrink={0}>
+            <InputLine
+              buf={find}
+              room={Math.max(8, iw - 2)}
+              placeholder="type to filter"
+              multiline={false}
+            />
+          </Box>
         ) : null}
+        <Box flexDirection="column" marginTop={1} flexShrink={0}>
+          {blocks}
+          {view.shown < view.total ? (
+            <Text color={C.faint} wrap="truncate-end">
+              {`↕ ${view.offset + 1}–${view.offset + view.shown} of ${view.total}`}
+            </Text>
+          ) : null}
+        </Box>
       </Box>
-    </Box>
-  );
-};
+    );
+  },
+);
 
 /** Fleet-row cache dot: `⟢` graded green → amber → red by TTL left, blank otherwise. */
 const cacheHeatColor = (h: "fresh" | "fading" | "expiring"): string => {
@@ -381,7 +364,7 @@ const FleetRow = ({
   iw: number;
   now: number;
   /** provider id → Fleet-row id colour ("" for the plain default). */
-  pcolor: Map<string, string>;
+  pcolor: ReadonlyMap<string, string>;
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
 }): ReactNode => {
@@ -484,218 +467,202 @@ const Field = ({ label, children }: { label: string; children: ReactNode }): Rea
   </Box>
 );
 
-export const Detail = ({
-  session,
-  width,
-  queued = [],
-  now = Date.now(),
-  engineColor = "",
-  account = "",
-  compacting = null,
-  pendingMode = null,
-}: {
-  session: SessionSnapshot | null;
-  width: number;
-  queued?: readonly string[];
-  now?: number;
-  /** Ink colour for the provider/model line; matches the Fleet id colour. */
-  engineColor?: string;
-  /** `<login method> (<org>)` for a Claude profile; "" hides the line. */
-  account?: string;
-  /** Set while a compaction is in flight on this session. */
-  compacting?: { startedAt: number; before: number } | null;
-  /** The mode a cycle is heading for while the daemon has not taken it yet. */
-  pendingMode?: SessionMode | null;
-}): ReactNode => {
-  if (!session) {
+export const Detail = memo(
+  ({ view, width, now }: { view: DetailView | null; width: number; now: number }): ReactNode => {
+    if (!view) {
+      return (
+        <Box
+          width={width}
+          borderStyle="round"
+          borderColor={C.faint}
+          borderBackgroundColor={C.bg}
+          paddingX={1}
+          flexDirection="column"
+        >
+          <Text color={C.dim}>{"DETAIL"}</Text>
+          <Text color={C.faint}>{"select a session with ↑/↓"}</Text>
+        </Box>
+      );
+    }
+
+    const { queued, engineColor, account, compacting, pendingMode } = view;
+    const s = view.session;
+    const w = inside(width);
+    const look = statusLook(s.status.kind);
+    const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
+    const ctxPct = Math.round(ctxFrac * 100);
+    const g = s.git;
+    const gitLine = gitLineText(s);
+    const hitRate = cacheHitRate(s.usage);
+
     return (
       <Box
         width={width}
         borderStyle="round"
-        borderColor={C.faint}
+        borderColor={look.color}
         borderBackgroundColor={C.bg}
         paddingX={1}
         flexDirection="column"
       >
-        <Text color={C.dim}>{"DETAIL"}</Text>
-        <Text color={C.faint}>{"select a session with ↑/↓"}</Text>
-      </Box>
-    );
-  }
-
-  const s = session;
-  const w = inside(width);
-  const look = statusLook(s.status.kind);
-  const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
-  const ctxPct = Math.round(ctxFrac * 100);
-  const g = s.git;
-  const gitLine = gitLineText(s);
-  const hitRate = cacheHitRate(s.usage);
-
-  return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={look.color}
-      borderBackgroundColor={C.bg}
-      paddingX={1}
-      flexDirection="column"
-    >
-      <Box>
-        <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
-        <Box flexGrow={1} justifyContent="flex-end">
+        <Box>
+          <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
+          <Box flexGrow={1} justifyContent="flex-end">
+            <Text wrap="truncate-end">
+              <Text color={C.faint}>{"engine "}</Text>
+              <Text color={engineColor || C.faint}>{s.provider}</Text>
+              <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
+            </Text>
+          </Box>
+        </Box>
+        {account ? (
+          <Text color={C.faint} wrap="truncate-end">
+            {account}
+          </Text>
+        ) : null}
+        <Text color={C.text} wrap="truncate-end">
+          {truncate(titleLine(s.title), w)}
+        </Text>
+        {s.parentId && s.forkTurn != null ? (
+          <Text color={C.faint} wrap="truncate-end">
+            {`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}
+          </Text>
+        ) : null}
+        <Box marginTop={1} gap={2}>
+          <Text color={look.color} bold wrap="truncate-end">
+            {`${look.glyph} ${look.label}${statusDetailSuffix(s)}`}
+          </Text>
+          {/* `[mode]` in the same gold the event log gives tool commands — the one */}
+          {/* thing on this row you change mid-session, so it should catch the eye. */}
           <Text wrap="truncate-end">
-            <Text color={C.faint}>{"engine "}</Text>
-            <Text color={engineColor || C.faint}>{s.provider}</Text>
-            <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
+            <Text color={C.dim}>{"mode "}</Text>
+            <Text color={C.warn}>{modeChipText(s.mode, pendingMode)}</Text>
+          </Text>
+          <Text color={C.dim} wrap="truncate-end">
+            {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
           </Text>
         </Box>
-      </Box>
-      {account ? (
-        <Text color={C.faint} wrap="truncate-end">
-          {account}
-        </Text>
-      ) : null}
-      <Text color={C.text} wrap="truncate-end">
-        {truncate(titleLine(s.title), w)}
-      </Text>
-      {s.parentId && s.forkTurn != null ? (
-        <Text color={C.faint} wrap="truncate-end">
-          {`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}
-        </Text>
-      ) : null}
-      <Box marginTop={1} gap={2}>
-        <Text color={look.color} bold wrap="truncate-end">
-          {`${look.glyph} ${look.label}${statusDetailSuffix(s)}`}
-        </Text>
-        {/* `[mode]` in the same gold the event log gives tool commands — the one */}
-        {/* thing on this row you change mid-session, so it should catch the eye. */}
-        <Text wrap="truncate-end">
-          <Text color={C.dim}>{"mode "}</Text>
-          <Text color={C.warn}>{modeChipText(s.mode, pendingMode)}</Text>
-        </Text>
-        <Text color={C.dim} wrap="truncate-end">
-          {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
-        </Text>
-      </Box>
-      <Field label="context">
-        <Text wrap="truncate-end">
-          <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
-          <Text color={C.dim}>
-            {`  ${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
-          </Text>
-        </Text>
-      </Field>
-      {compacting ? (
-        <Field label="">
+        <Field label="context">
           <Text wrap="truncate-end">
-            <Text color={C.accent}>
-              {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
+            <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
+            <Text color={C.dim}>
+              {`  ${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
             </Text>
-            <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
           </Text>
         </Field>
-      ) : null}
-      {(() => {
-        const cs = cacheStatus(s, now);
-        if (cs.state === "unknown") return null;
-        const hit = cs.lastHit
-          ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
-          : "";
-        const warm = s.keepWarm ? "  ·  keep-warm" : "";
-        // The countdown length is only confirmed once a turn has written cache
-        // and reported which bucket; until then it is the configured pin, which
-        // the provider is free to ignore. Say so rather than imply precision.
-        const assumed = cs.source === "config" ? "  ·  ttl assumed" : "";
-        return (
-          <Field label="cache">
-            <Text
-              color={cs.state === "cold" ? C.faint : C.good}
-              wrap="truncate-end"
-            >{`${cacheLede(cs)}${hit}${warm}${assumed}`}</Text>
+        {compacting ? (
+          <Field label="">
+            <Text wrap="truncate-end">
+              <Text color={C.accent}>
+                {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
+              </Text>
+              <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
+            </Text>
           </Field>
-        );
-      })()}
-      <Box>
-        <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
-        <Box flexGrow={1}>
-          <Text color={C.faint} wrap="truncate-end">
-            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
-              // Share of prompt tokens served from cache over the session's
-              // life. The other figures on this row are lifetime totals too, so
-              // a session that switched models blends them — `loom cache` is
-              // the per-model breakdown.
-              (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
+        ) : null}
+        {(() => {
+          const cs = cacheStatus(s, now);
+          if (cs.state === "unknown") return null;
+          const hit = cs.lastHit
+            ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
+            : "";
+          const warm = s.keepWarm ? "  ·  keep-warm" : "";
+          // The countdown length is only confirmed once a turn has written cache
+          // and reported which bucket; until then it is the configured pin, which
+          // the provider is free to ignore. Say so rather than imply precision.
+          const assumed = cs.source === "config" ? "  ·  ttl assumed" : "";
+          return (
+            <Field label="cache">
+              <Text
+                color={cs.state === "cold" ? C.faint : C.good}
+                wrap="truncate-end"
+              >{`${cacheLede(cs)}${hit}${warm}${assumed}`}</Text>${hit}${warm}${assumed}`}</Text>
+              ) : (
+                <Text color={C.faint} wrap="truncate-end">{`⟢ cold${hit}${warm}${assumed}`}</Text>
+              )}
+            </Field>
+          );
+        })()}
+        <Box>
+          <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
+          <Box flexGrow={1}>
+            <Text color={C.faint} wrap="truncate-end">
+              {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+                // Share of prompt tokens served from cache over the session's
+                // life. The other figures on this row are lifetime totals too, so
+                // a session that switched models blends them — `loom cache` is
+                // the per-model breakdown.
+                (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
+            </Text>
+          </Box>
+          <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
+            {` ${(s.costSource === "table" ? "~" : "") + money(s.costUsd)}`}
           </Text>
         </Box>
-        <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
-          {` ${(s.costSource === "table" ? "~" : "") + money(s.costUsd)}`}
-        </Text>
-      </Box>
-      {Object.keys(s.rateLimits).length > 0 ? (
-        <Field label="plan">
-          <Text wrap="truncate-end">
-            {Object.entries(s.rateLimits).map(([window, rl], i) => {
-              let col: string = C.faint;
-              if (rl.status === "rejected") col = C.bad;
-              else if (rl.status === "allowed_warning") col = C.warn;
-              const pct = rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%";
-              const resets = rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : "";
+        {Object.keys(s.rateLimits).length > 0 ? (
+          <Field label="plan">
+            <Text wrap="truncate-end">
+              {Object.entries(s.rateLimits).map(([window, rl], i) => {
+                let col: string = C.faint;
+                if (rl.status === "rejected") col = C.bad;
+                else if (rl.status === "allowed_warning") col = C.warn;
+                const pct = rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%";
+                const resets = rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : "";
+                return (
+                  <Text key={window} color={col}>
+                    {`${i > 0 ? "   " : ""}${window} ${pct}${resets}`}
+                  </Text>
+                );
+              })}
+            </Text>
+          </Field>
+        ) : null}
+        <Box marginTop={1}>
+          <Text color={C.faint}>{"⌥ "}</Text>
+          <Text color={C.dim} wrap="truncate-end">
+            {gitLine}
+          </Text>
+        </Box>
+        {g?.lastCommitSubject ? (
+          <Text color={C.faint} wrap="truncate-end">
+            {`  “${truncate(g.lastCommitSubject, w - 4)}”`}
+          </Text>
+        ) : null}
+        {s.comment ? (
+          <Field label="comment">
+            <Text color={C.accentDim} wrap="truncate-end">
+              {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
+            </Text>
+          </Field>
+        ) : null}
+        {queued.length > 0 ? (
+          <Text color={C.accentDim} wrap="truncate-end">
+            {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
+          </Text>
+        ) : null}
+        {(s.subagents ?? []).length > 0
+          ? (() => {
+              const subs = s.subagents ?? [];
+              const active = subs.filter((a) => a.active);
+              const names = subs.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
               return (
-                <Text key={window} color={col}>
-                  {`${i > 0 ? "   " : ""}${window} ${pct}${resets}`}
+                <Text color={C.dim} wrap="truncate-end">
+                  {`⑂ ${active.length}/${subs.length} sub-agent${subs.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
                 </Text>
               );
-            })}
-          </Text>
-        </Field>
-      ) : null}
-      <Box marginTop={1}>
-        <Text color={C.faint}>{"⌥ "}</Text>
-        <Text color={C.dim} wrap="truncate-end">
-          {gitLine}
-        </Text>
-      </Box>
-      {g?.lastCommitSubject ? (
-        <Text color={C.faint} wrap="truncate-end">
-          {`  “${truncate(g.lastCommitSubject, w - 4)}”`}
-        </Text>
-      ) : null}
-      {s.comment ? (
-        <Field label="comment">
+            })()
+          : null}
+        {(s.backgroundTasks ?? []).length > 0 ? (
           <Text color={C.accentDim} wrap="truncate-end">
-            {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
+            {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(
+              s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "),
+              w - 24,
+            )}`}
           </Text>
-        </Field>
-      ) : null}
-      {queued.length > 0 ? (
-        <Text color={C.accentDim} wrap="truncate-end">
-          {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
-        </Text>
-      ) : null}
-      {(s.subagents ?? []).length > 0
-        ? (() => {
-            const subs = s.subagents ?? [];
-            const active = subs.filter((a) => a.active);
-            const names = subs.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
-            return (
-              <Text color={C.dim} wrap="truncate-end">
-                {`⑂ ${active.length}/${subs.length} sub-agent${subs.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
-              </Text>
-            );
-          })()
-        : null}
-      {(s.backgroundTasks ?? []).length > 0 ? (
-        <Text color={C.accentDim} wrap="truncate-end">
-          {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(
-            s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "),
-            w - 24,
-          )}`}
-        </Text>
-      ) : null}
-    </Box>
-  );
-};
+        ) : null}
+      </Box>
+    );
+  },
+);
 
 /**
  * The physical rows {@link Detail} renders for a session — the layout's budget
@@ -778,95 +745,65 @@ export const modeChipHit = (
 // event log (right column, bottom)
 // ---------------------------------------------------------------------------
 
-export const EventLog = ({
-  state,
-  width,
-  height,
-  scroll = 0,
-  tick = 0,
-}: {
-  state: TuiState;
-  width: number;
-  height: number;
-  scroll?: number;
-  tick?: number;
-}): ReactNode => {
-  // Drilled in? The pane narrows to the focused child's own stream.
-  const child = focusedChildOf(state);
-  const session = selectedSession(state);
-  const active =
-    child != null ||
-    session?.status.kind === "running" ||
-    session?.status.kind === "starting" ||
-    session?.status.kind === "working_background";
-  const capacity = Math.max(1, height - 3);
+export const EventLog = memo(
+  ({ view, width, tick = 0 }: { view: LogView; width: number; tick?: number }): ReactNode => {
+    const { child, rows } = view;
+    // Pane title: the focused child's name while drilled in, else the plain header.
+    let title = "EVENTS";
+    if (child) {
+      title = `EVENTS · ${childGlyph(child)} ${truncate(
+        child.label.replace(/\s+/g, " ").trim(),
+        Math.max(8, inside(width) - 24),
+      )}`;
+    }
 
-  // Measure the log (total wrapped rows) and build only the visible window's
-  // rows — through the same helpers the scrollback handler measures with, so
-  // scroll math can't drift from what renders. The full wrapped list is never
-  // materialised, which is what keeps a LOG_CAP-sized log (hundreds of
-  // thousands of wrapped rows) from stalling every render.
-  const ctx = logContext(visibleLog(state, child), width);
-  const total = totalRows(ctx);
-  const maxScroll = Math.max(0, total - capacity);
-  const off = Math.min(scroll, maxScroll);
-  const end = total - off;
-  const shown = windowRows(ctx, Math.max(0, end - capacity), end);
-  const above = Math.max(0, end - capacity);
-
-  // Pane title: the focused child's name while drilled in, else the plain header.
-  let title = "EVENTS";
-  if (child) {
-    title = `EVENTS · ${childGlyph(child)} ${truncate(
-      child.label.replace(/\s+/g, " ").trim(),
-      Math.max(8, inside(width) - 24),
-    )}`;
-  }
-
-  return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={off > 0 ? C.accentDim : C.faint}
-      borderBackgroundColor={C.bg}
-      paddingX={1}
-      flexDirection="column"
-      flexGrow={1}
-    >
-      <Box justifyContent="space-between">
-        <Text color={C.dim} wrap="truncate-end">
-          {title}
-        </Text>
-        <Text color={C.faint}>
-          {logFilterTag(state.logFilter) + (off > 0 ? `  ·  ↑${above} more` : "")}
-        </Text>
+    return (
+      <Box
+        width={width}
+        borderStyle="round"
+        borderColor={view.scrolled ? C.accentDim : C.faint}
+        borderBackgroundColor={C.bg}
+        paddingX={1}
+        flexDirection="column"
+        flexGrow={1}
+      >
+        <Box justifyContent="space-between">
+          <Text color={C.dim} wrap="truncate-end">
+            {title}
+          </Text>
+          <Text color={C.faint}>
+            {view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}
+          </Text>
+        </Box>
+        {rows.length === 0 ? (
+          <Text color={C.faint}>
+            {child
+              ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
+              : "  (quiet)"}
+          </Text>
+        ) : (
+          rows.map((r) =>
+            r.first ? (
+              <Text key={r.key} wrap="truncate-end">
+                <Text color={C.faint}>{r.ts}</Text>
+                <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
+                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
+              </Text>
+            ) : (
+              <Text key={r.key} wrap="truncate-end">
+                <Text>{" ".repeat(r.indent)}</Text>
+                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
+              </Text>
+            ),
+          )
+        )}
+        {view.spinning ? (
+          <Text color={C.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text>
+        ) : null}
       </Box>
-      {shown.length === 0 ? (
-        <Text color={C.faint}>
-          {child
-            ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
-            : "  (quiet)"}
-        </Text>
-      ) : (
-        shown.map((r) =>
-          r.first ? (
-            <Text key={r.key} wrap="truncate-end">
-              <Text color={C.faint}>{r.ts}</Text>
-              <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
-              <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
-            </Text>
-          ) : (
-            <Text key={r.key} wrap="truncate-end">
-              <Text>{" ".repeat(r.indent)}</Text>
-              <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
-            </Text>
-          ),
-        )
-      )}
-      {active ? <Text color={C.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text> : null}
-    </Box>
-  );
-};
+    );
+  },
+);
 
 // ---------------------------------------------------------------------------
 // input line (the prompt's editor, the pickers' filter)

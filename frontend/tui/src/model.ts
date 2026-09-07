@@ -118,6 +118,10 @@ export interface Notice {
   at: number;
 }
 
+/** How long a transient notice stays up. The root arms one timer at this
+ *  deadline when a notice appears; nothing polls for it. */
+export const NOTICE_TTL_MS = 4_000;
+
 const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
 
 export interface TuiState {
@@ -392,7 +396,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "expireNotice":
       if (!s.notice) return s;
-      return a.now - s.notice.at >= (a.ttlMs ?? 4000) ? { ...s, notice: null } : s;
+      return a.now - s.notice.at >= (a.ttlMs ?? NOTICE_TTL_MS) ? { ...s, notice: null } : s;
 
     case "overlay":
       return { ...s, overlay: a.overlay };
@@ -785,12 +789,6 @@ export const compactingFor = (
   if (!id) return null;
   return fleetSessions(s).find((x) => x.id === id)?.compacting ?? null;
 };
-
-/** Is any session compacting? Drives the spinner tick. */
-export const anyCompacting = (s: TuiState): boolean => {
-  return fleetSessions(s).some((x) => x.compacting !== undefined);
-};
-
 /** What the selected session still owes the daemon, oldest first. */
 export const queueFor = (s: TuiState, id: string | null): readonly string[] =>
   pending(outboxOf(s.outbox, id));
@@ -1260,13 +1258,20 @@ export const fleetLayout = (state: TuiState, budget: number): FleetLayout => {
 export const fleetHits = (
   state: TuiState,
   geom: { originX: number; listW: number; originY: number; maxY: number },
+  /** The window this frame drew. Defaults to computing it, so a test can ask
+   *  for the hit map on its own; the root passes the one it already has, since
+   *  hit-testing a *different* window than the one on screen is the bug this
+   *  parameter exists to make impossible. */
+  layout: FleetLayout = fleetLayout(
+    state,
+    fleetRowBudget(geom.maxY - geom.originY + 1, state.find != null),
+  ),
 ): FleetHit[] => {
-  const { originX, originY, maxY } = geom;
+  const { originX, originY } = geom;
   const x0 = originX;
   const x1 = originX + geom.listW - 1;
   const hasFilter = state.find != null;
-  const budget = fleetRowBudget(maxY - originY + 1, hasFilter);
-  const { visible } = fleetLayout(state, budget);
+  const { visible } = layout;
 
   const out: FleetHit[] = [];
   let y = originY + FLEET_CHROME_ROWS + (hasFilter ? FLEET_FILTER_ROWS : 0);

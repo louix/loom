@@ -40,36 +40,40 @@ import {
   requestPanelRows,
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
-import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
-import { mkModeControl, pendingMode } from "./mode-control.ts";
-import { mkSearchControl, searchStale } from "./fleet-search.ts";
+import { AGE_MS, mkClock, mkDeadline, type Beat } from "./clock.ts";
 import {
-  cycleLogFilter,
-  mkTranscript,
-  noTranscript,
-  transcriptLines,
-  transcriptText,
-} from "./transcript.ts";
+  detailView,
+  fleetPaneView,
+  headerView,
+  logView,
+  type DetailView,
+  type FleetPaneView,
+  type HeaderView,
+  type LogView,
+} from "./views.ts";
+import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
+import { mkModeControl } from "./mode-control.ts";
+import { mkSearchControl, searchStale } from "./fleet-search.ts";
+import { cycleLogFilter, mkTranscript, noTranscript, transcriptText } from "./transcript.ts";
 import {
   fleetProviders,
   fleetSessions,
   allowedActs,
   commandsFor,
+  connectionOf,
   defaultModelOf,
   defaultProviderId,
   escapePicker,
   fleetHits,
-  anyCompacting,
   compactingFor,
   initialState,
   newSettings,
+  NOTICE_TTL_MS,
   modelPickItems,
   modelSupportsEffort,
   pickerStep,
   type WizardStep,
-  providerAccountOf,
   providerInfo,
-  queueFor,
   reduce,
   selectedSession,
   sessionLog,
@@ -77,6 +81,9 @@ import {
   versionMismatchAction,
   type ActName,
   type Action,
+  fleetLayout,
+  fleetRowBudget,
+  type FleetLayout,
   type FleetHit,
   type TuiState,
 } from "./model.ts";
@@ -233,11 +240,27 @@ export type BodyKind =
   | { t: "split" }
   | { t: "fleetOnly" }
   | { t: "sessionPane" };
-
-/** Everything `./app.tsx` needs for one frame. Pure projection of the state + UI bits. */
+/**
+ * Everything `./app.tsx` needs for one frame: the layout, the selection, the
+ * active overlay — and one narrow view per pane, each rebuilt only when its own
+ * inputs move. `state` is still here for the overlays and the footer, which are
+ * the input surface and repaint with every keystroke anyway.
+ */
 export interface FleetView {
   readonly state: TuiState;
+  /** Spinner phase. Advances only while something visible animates. */
   readonly tick: number;
+  /** The frame's clock, coarsened to a second — what cache ages and elapsed
+   *  times are rendered against. */
+  readonly now: number;
+  /** What the header row draws. */
+  readonly header: HeaderView;
+  /** What the FLEET pane draws, already windowed to the row budget. */
+  readonly fleetPane: FleetPaneView;
+  /** What the DETAIL pane draws, or null with nothing selected. */
+  readonly detail: DetailView | null;
+  /** What the EVENTS pane draws — filtered, wrapped and windowed. */
+  readonly log: LogView;
   /** Viewport offset into the event log, in physical (wrapped) rows up from the
    *  live tail — `EventLog` pins the viewport at `rows - capacity`, the top. */
   readonly logScroll: number;
@@ -317,14 +340,63 @@ export interface MkFleetHandleInput {
   readonly historyPageSize?: number;
 }
 
+/**
+ * One memo slot. `compute` runs only when a dep changes by identity — no deep
+ * comparison and no per-pane equality function: the deps *are* the pane's
+ * inputs, so if none of them moved the pane has nothing new to draw. A stale
+ * dep list can only ever cost a rebuild, never a wrong frame, because every
+ * builder is a pure function of exactly what it lists.
+ */
+type Memo<A> = (deps: readonly unknown[], compute: () => A) => A;
+
+const memoOne = <A>(): Memo<A> => {
+  let last: readonly unknown[] | null = null;
+  let cell: { readonly value: A } | null = null;
+  return (deps, compute) => {
+    if (cell !== null && last !== null && last.length === deps.length) {
+      let same = true;
+      for (let i = 0; i < deps.length; i++) {
+        if (deps[i] !== last[i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return cell.value;
+    }
+    last = deps;
+    cell = { value: compute() };
+    return cell.value;
+  };
+};
+
+/** The per-pane memo slots. One set per handle — they are frame-to-frame state,
+ *  not a module-level cache shared between two mounted TUIs. */
+interface ViewMemos {
+  readonly layout: Memo<FleetLayout>;
+  readonly header: Memo<HeaderView>;
+  readonly fleet: Memo<FleetPaneView>;
+  readonly detail: Memo<DetailView | null>;
+  readonly log: Memo<LogView>;
+}
+
+const mkViewMemos = (): ViewMemos => ({
+  layout: memoOne(),
+  header: memoOne(),
+  fleet: memoOne(),
+  detail: memoOne(),
+  log: memoOne(),
+});
+
 const deriveView = (
   state: TuiState,
-  tick: number,
+  memos: ViewMemos,
+  frame: { tick: number; now: number },
   logScroll: number,
   planScroll: number,
   layoutView: LayoutView,
   dims: { cols: number; rows: number },
 ): FleetView => {
+  const { tick, now } = frame;
   const sel = selectedSession(state);
   // The panel shows what the turn is parked on, straight off the snapshot: the
   // request's id, kind and payload travel together from here to the screen and
@@ -377,15 +449,19 @@ const deriveView = (
     ? cols
     : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
   const rightW = narrow ? cols : Math.max(1, cols - leftW - 1);
+
+  const detail = memos.detail([sel, state.outbox, state.modes, state.fleet, now], () =>
+    detailView(state, sel, now),
+  );
+
   // The right column is Detail (natural height) + gap 1 + the log, and must
   // sum to exactly bodyH — size the log against Detail's real row count
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
-  const queued = sel ? queueFor(state, sel.id) : [];
-  const detailAccount = sel ? providerAccountOf(state, sel.provider) : "";
+  const queued = detail?.queued ?? [];
   const detailH = detailRows(sel, {
-    account: detailAccount,
-    compacting: compactingFor(state, sel?.id ?? null),
+    account: detail?.account ?? "",
+    compacting: detail?.compacting ?? null,
     queued,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
@@ -397,30 +473,37 @@ const deriveView = (
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
   const logPage = Math.max(1, splitLogH - 3);
 
+  const conn = connectionOf(state);
+  const budget = fleetRowBudget(bodyH, state.find != null);
+  const layout = memos.layout(
+    [sessionsRef(state), state.find, state.selectedId, state.selectedChild, budget],
+    () => fleetLayout(state, budget),
+  );
+
   // Clickable regions — screen coordinates the keymap's mouse branch hit-tests
   // against. The body starts at screen row 2 (Header is one row); Ink clips the
   // fleet list past `bodyH + 1`.
   const hits: FleetHit[] = [];
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
   if (body.t === "split") {
-    hits.push(...fleetHits(state, { ...fleetGeom, listW: leftW }));
+    hits.push(...fleetHits(state, { ...fleetGeom, listW: leftW }, layout));
     const chip = modeChipHit(sel, {
       originX: leftW + 2,
       originY: 2,
       paneW: rightW,
-      account: detailAccount,
-      pending: pendingMode(state.modes, sel?.id),
+      account: detail?.account ?? "",
+      pending: detail?.pendingMode ?? null,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   } else if (body.t === "fleetOnly") {
-    hits.push(...fleetHits(state, { ...fleetGeom, listW: cols }));
+    hits.push(...fleetHits(state, { ...fleetGeom, listW: cols }, layout));
   } else if (body.t === "sessionPane") {
     const chip = modeChipHit(sel, {
       originX: 1,
       originY: 2,
       paneW: cols,
-      account: detailAccount,
-      pending: pendingMode(state.modes, sel?.id),
+      account: detail?.account ?? "",
+      pending: detail?.pendingMode ?? null,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   }
@@ -428,6 +511,7 @@ const deriveView = (
   return {
     state,
     tick,
+    now,
     logScroll,
     planScroll,
     layoutView,
@@ -447,7 +531,35 @@ const deriveView = (
     splitLogH,
     logPage,
     hits,
+    header: memos.header([state.fleet], () => headerView(state, conn)),
+    fleetPane: memos.fleet(
+      [layout, state.fleet, state.selectedId, state.selectedChild, state.find, now],
+      () => fleetPaneView(state, layout, conn, now),
+    ),
+    detail,
+    log: memos.log(
+      [state.transcript, state.logFilter, state.selectedChild, sel, eventsW, splitLogH, logScroll],
+      () => logView(state, sel, eventsW, splitLogH, logScroll),
+    ),
   };
+};
+
+/**
+ * What the frame on screen needs from the clock.
+ *
+ * Not "is anything in the fleet busy": a session spinning in a pane this layout
+ * is not drawing, or behind an overlay that owns the whole screen, changes no
+ * pixel and is not worth a repaint. And an elapsed second or a cache countdown
+ * is drawn at whole-second resolution, so it does not need the spinner's rate.
+ */
+export const animationNeed = (v: FleetView): Beat => {
+  const fleet = v.body.t === "split" || v.body.t === "fleetOnly";
+  const session = v.body.t === "split" || v.body.t === "sessionPane";
+  if (fleet && v.fleetPane.spins) return "spin";
+  if (session && (v.log.spinning || v.detail?.compacting)) return "spin";
+  if (fleet && v.fleetPane.ages) return "age";
+  if (session && v.detail?.ages) return "age";
+  return null;
 };
 
 /**
@@ -479,7 +591,14 @@ export const mkFleetHandle = ({
   /** Whether the daemon has given us a snapshot to act on. The single source
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
-  let tick = 0;
+  // The frame's clock: the spinner phase, and a `now` coarsened to the second
+  // every time-derived thing on screen is rendered at. A `now` that moved on
+  // each publish would defeat the pane memos to no visible end.
+  const frame = { tick: 0, now: Date.now() };
+  const refreshNow = (): void => {
+    const real = Date.now();
+    if (real - frame.now >= AGE_MS) frame.now = real;
+  };
   let planScroll = 0;
   // Fleet toggle: `⇥` swaps the overview split ↔ the session's detail + events,
   // `Esc` snaps back to overview. On a narrow terminal overview is the list alone.
@@ -548,9 +667,39 @@ export const mkFleetHandle = ({
 
   // The event log's offset belongs to the transcript handle below — the store is
   // built before it exists, and an unloaded transcript is at its tail anyway.
-  const store = mkStore<FleetView>(deriveView(state, tick, 0, planScroll, layoutView, dims));
-  const publish = (): void =>
-    store.set(deriveView(state, tick, transcripts.scroll(), planScroll, layoutView, dims));
+  const memos = mkViewMemos();
+  const store = mkStore<FleetView>(
+    deriveView(state, memos, frame, 0, planScroll, layoutView, dims),
+  );
+  const publish = (): void => {
+    refreshNow();
+    store.set(deriveView(state, memos, frame, transcripts.scroll(), planScroll, layoutView, dims));
+    // What the frame that just went out needs from the clock — read off the
+    // frame itself, so a session spinning in a row that is scrolled out of the
+    // list, or in a pane this layout isn't drawing, costs nothing.
+    clock.settle();
+  };
+
+  // One shared beat for every animated thing on screen, and none at all when
+  // nothing on screen animates.
+  const clock = mkClock({
+    needs: () => animationNeed(store.get()),
+    beat: () => {
+      frame.tick = (frame.tick + 1) % 100_000;
+      publish();
+    },
+  });
+
+  // A notice expires at a known time, so it waits on a deadline rather than on
+  // a poll — the old clock ran four times a second forever to ask.
+  const notices = mkDeadline(() => {
+    const n = state.notice;
+    if (n === null) return;
+    // The timer *is* the deadline, so it is what the reducer is told: a timer
+    // that lands a fraction early would otherwise leave the notice up until
+    // some unrelated dispatch happened along, and there may not be one.
+    dispatch({ t: "expireNotice", now: n.at + NOTICE_TTL_MS });
+  });
 
   // Plan-review body scroll: a top-anchored offset (0 = first line; larger =
   // further down — the opposite sense to the event log's). No line count is
@@ -646,6 +795,12 @@ export const mkFleetHandle = ({
     // results describe a fleet we are no longer told about, and the transcript
     // window is a position in a history the next connection re-reads.
     transcripts.settle();
+    // A notice has a known expiry, so it waits on one timer rather than on a
+    // poll. Re-armed only when the notice itself changed: a stream of unrelated
+    // dispatches must not keep pushing the deadline out.
+    if (state.notice !== prev.notice) {
+      notices.at(state.notice === null ? null : NOTICE_TTL_MS - (Date.now() - state.notice.at));
+    }
     publish();
     // One gate for every daemon-dependent effect, read off ClientState's
     // discriminant rather than a flag beside it. Without a snapshot there is
@@ -2262,27 +2417,11 @@ export const mkFleetHandle = ({
       }),
     ];
 
-    const iv = setInterval(() => {
-      // Only spend a frame when something is actually animating — a spinner
-      // row, a live compaction, or a notice waiting to expire. An idle fleet
-      // otherwise re-renders ~8×/s for nothing.
-      const animating =
-        state.notice !== null ||
-        anyCompacting(state) ||
-        fleetSessions(state).some(
-          (s) =>
-            s.status.kind === "running" ||
-            s.status.kind === "starting" ||
-            s.status.kind === "working_background",
-        );
-      if (!animating) return;
-      if (transcriptLines(state.transcript).length > 3) tick = (tick + 1) % 100000;
-      dispatch({ t: "expireNotice", now: Date.now() });
-      publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
-    }, 120);
-
+    // The clock is armed by `settle()` after every publish (below), from the
+    // frame that was just published; nothing to start here.
     return () => {
-      clearInterval(iv);
+      clock.dispose();
+      notices.dispose();
       // A mode change scheduled a moment before the UI went away, and a search
       // still on the wire, have nothing left to render into.
       modes.dispose();

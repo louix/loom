@@ -11,14 +11,8 @@ import type { LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
 import { mkFleetHandle, type FleetView } from "./fleet-handle.ts";
 import { openPrompt, promptOnPane } from "./overlay.ts";
-import {
-  compactingFor,
-  fleetSessions,
-  providerAccountOf,
-  providerColorOf,
-  providerInfo,
-} from "./model.ts";
-import { pendingMode } from "./mode-control.ts";
+import { fleetSessions, providerColorOf, providerInfo } from "./model.ts";
+
 import { C } from "./theme.ts";
 import {
   Confirm,
@@ -84,7 +78,7 @@ export const App = ({
 };
 
 const Layout = ({ view }: { view: FleetView }): ReactNode => {
-  const { state, sel, cols, bodyH, leftW, rightW, splitLogH } = view;
+  const { state, cols, bodyH, leftW, rightW } = view;
 
   let body: ReactNode;
   switch (view.body.t) {
@@ -161,26 +155,17 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       body = (
         <Box height={bodyH} gap={1}>
           <Box width={leftW}>
-            <Fleet state={state} tick={view.tick} width={leftW} height={bodyH} now={Date.now()} />
+            <Fleet
+              view={view.fleetPane}
+              find={state.find?.buffer ?? null}
+              tick={view.tick}
+              width={leftW}
+              now={view.now}
+            />
           </Box>
           <Box width={rightW} flexDirection="column">
-            <Detail
-              session={sel}
-              width={rightW}
-              queued={view.queued}
-              now={Date.now()}
-              engineColor={sel ? providerColorOf(state, sel.provider) : ""}
-              account={sel ? providerAccountOf(state, sel.provider) : ""}
-              compacting={compactingFor(state, sel?.id ?? null)}
-              pendingMode={pendingMode(state.modes, sel?.id)}
-            />
-            <EventLog
-              state={state}
-              width={rightW}
-              height={splitLogH}
-              scroll={view.logScroll}
-              tick={view.tick}
-            />
+            <Detail view={view.detail} width={rightW} now={view.now} />
+            <EventLog view={view.log} width={rightW} tick={view.tick} />
             {promptOnPane(openPrompt(state.overlay)) ? (
               <PromptPane state={state} width={rightW} />
             ) : null}
@@ -192,7 +177,13 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       // Narrow `overview`: only the fleet fits — detail + events wait for `⇥`.
       body = (
         <Box height={bodyH}>
-          <Fleet state={state} tick={view.tick} width={cols} height={bodyH} now={Date.now()} />
+          <Fleet
+            view={view.fleetPane}
+            find={state.find?.buffer ?? null}
+            tick={view.tick}
+            width={cols}
+            now={view.now}
+          />
         </Box>
       );
       break;
@@ -201,23 +192,8 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
       // terminal width, the fleet list toggled away.
       body = (
         <Box height={bodyH} width={cols} flexDirection="column">
-          <Detail
-            session={sel}
-            width={cols}
-            queued={view.queued}
-            now={Date.now()}
-            engineColor={sel ? providerColorOf(state, sel.provider) : ""}
-            account={sel ? providerAccountOf(state, sel.provider) : ""}
-            compacting={compactingFor(state, sel?.id ?? null)}
-            pendingMode={pendingMode(state.modes, sel?.id)}
-          />
-          <EventLog
-            state={state}
-            width={cols}
-            height={splitLogH}
-            scroll={view.logScroll}
-            tick={view.tick}
-          />
+          <Detail view={view.detail} width={cols} now={view.now} />
+          <EventLog view={view.log} width={cols} tick={view.tick} />
           {promptOnPane(openPrompt(state.overlay)) ? (
             <PromptPane state={state} width={cols} />
           ) : null}
@@ -230,7 +206,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
 
   return (
     <Box flexDirection="column" width={cols} backgroundColor={C.bg}>
-      <Header state={state} width={cols} />
+      <Header view={view.header} width={cols} />
       {body}
       {view.showRequest ? (
         <RequestPanel

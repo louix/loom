@@ -39,6 +39,7 @@ import {
   transcriptWindow,
 } from "@loom/tui/transcript";
 import {
+  animationNeed,
   mkFleetHandle,
   type FleetClient,
   type FleetHandle,
@@ -2344,6 +2345,74 @@ const queueFollowUp = (handle: FleetHandle, text: string): void => {
 };
 
 describe("tui fleet-handle effects", () => {
+  test("a pane is not re-derived by an event that is not one of its inputs", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(
+        fleetOf(
+          testSession({ id: "a", status: stateIdle, updatedAt: 9 }),
+          testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
+        ),
+      );
+      fake.heads()[0]?.resolve(pageOf(3, 3, null, "a"));
+      await delay(0);
+      assert.equal(handle.getView().state.selectedId, "a");
+
+      // Another session streams. The state moves — a push always produces a new
+      // one — but nothing the EVENTS or FLEET panes read moved with it.
+      const before = handle.getView();
+      fake.push({
+        kind: "push",
+        seq: 2,
+        epoch: "e1",
+        type: "event",
+        id: 900,
+        event: { sessionId: "b", ts: 1, type: "assistant_text", text: "elsewhere" },
+      });
+      const after = handle.getView();
+      assert.notEqual(after.state, before.state, "the frame really was republished");
+      assert.equal(after.log, before.log, "the selected transcript is not rebuilt");
+      assert.equal(after.fleetPane, before.fleetPane, "nor is the fleet list");
+      assert.equal(after.detail, before.detail, "nor the detail pane");
+
+      // Typing. The prompt is the one thing that has to repaint; the fleet list
+      // behind it reads none of it.
+      handle.handleKey("", { return: true } as Key);
+      const opened = handle.getView();
+      for (const ch of "hi") handle.handleKey(ch, {} as Key);
+      const typed = handle.getView();
+      assert.notEqual(typed.state, opened.state, "the keystrokes landed");
+      assert.equal(typed.fleetPane, opened.fleetPane, "typing does not re-derive the fleet");
+      assert.equal(typed.log, opened.log, "nor the transcript");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("what is not on screen is not animation", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning })));
+      fake.heads()[0]?.resolve(pageOf(3, 3, null, "a"));
+      await delay(0);
+      assert.equal(animationNeed(handle.getView()), "spin", "a running session spins on screen");
+
+      // `?` — the help overlay owns the whole screen. The session is still
+      // running; not one pixel of it is being drawn.
+      handle.handleKey("?", {} as Key);
+      assert.equal(handle.getView().body.t, "help");
+      assert.equal(animationNeed(handle.getView()), null, "nothing behind an overlay animates");
+
+      handle.handleKey("", { escape: true } as Key);
+      assert.equal(animationNeed(handle.getView()), "spin", "and it resumes when it is back");
+    } finally {
+      teardown();
+    }
+  });
   test("a dropped connection is not an empty fleet: no exception, no RPCs, queue kept", () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
