@@ -28,7 +28,7 @@ import {
   loadablePending,
   type Loadable,
 } from "@loom/core/loadable";
-import { SESSION_MODES, type SessionMode } from "@loom/core/types";
+import type { SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
   browse,
@@ -46,6 +46,7 @@ import {
   type PickerStep,
   type Prompt,
 } from "./overlay.ts";
+import { nextMode, type ModeChoice, type ModeChoices } from "./mode-control.ts";
 import type { QNav } from "./interactions.ts";
 import {
   noDrafts,
@@ -103,10 +104,6 @@ export const fleetProviders = (s: TuiState): ProviderInfo[] =>
 export const fleetDaemon = (s: TuiState): DaemonInfo | null =>
   s.fleet.tag === "data" ? s.fleet.value.daemon : null;
 
-/** A session's mode as the UI should show it: a local un-acknowledged cycle
- *  wins over the snapshot until the debounced RPC settles. */
-export const sessionMode = (s: TuiState, session: SessionSnapshot): string =>
-  s.modeDraft[session.id] ?? session.mode;
 /**
  * Keybinding grammar (see docs/keybindings.md):
  *   • bare key  → act on the selected session, or move
@@ -252,13 +249,13 @@ export interface TuiState {
    */
   fleet: ClientState;
   /**
-   * Permission modes cycled locally but not yet acknowledged. `session.setMode`
-   * is debounced in fleet-handle, so the chip has to move before the round trip
-   * — but it moves *here*, beside the snapshot, never inside it. Cleared when
-   * the debounced RPC settles either way, so a rejected change falls back to
-   * whatever the daemon actually reports.
+   * Mode selections in progress, per session: what the user has cycled to that
+   * the daemon has not confirmed. The applied mode is never here — it stays in
+   * the snapshot, and the chip shows both (`manual → plan`) rather than letting
+   * a target stand in for a change that may yet be rejected. Owned by
+   * `mode-control.ts`, which is also what forgets a session that has gone.
    */
-  modeDraft: Record<string, SessionMode>;
+  modes: ModeChoices;
   selectedId: string | null;
   /**
    * A session just picked (create / fork / find) whose row hasn't landed in
@@ -326,7 +323,7 @@ export const initialState = (): TuiState => {
     // via `setThemeMode` before the handle built its initial state.
     theme: themeMode(),
     fleet: loadableIdle,
-    modeDraft: {},
+    modes: {},
     selectedId: null,
     selectedChild: null,
     transcripts: {},
@@ -370,7 +367,7 @@ export const versionMismatchAction = (o: {
 
 export type Action =
   | { t: "state"; state: ClientState }
-  | { t: "modeDraft"; sessionId: string; mode: SessionMode | null }
+  | { t: "mode"; sessionId: string; choice: ModeChoice | null }
   | { t: "push"; frame: PushFrame }
   | { t: "historyStart"; sessionId: string; older: boolean; gen: number }
   | { t: "historyPage"; sessionId: string; page: HistoryPage; older: boolean; gen: number }
@@ -576,16 +573,13 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "state":
       return applyClientState(s, a.state);
 
-    case "modeDraft":
+    case "mode":
       return {
         ...s,
-        modeDraft:
-          a.mode === null
-            ? without(s.modeDraft, a.sessionId)
-            : {
-                ...s.modeDraft,
-                [a.sessionId]: a.mode,
-              },
+        modes:
+          a.choice === null
+            ? without(s.modes, a.sessionId)
+            : { ...s.modes, [a.sessionId]: a.choice },
       };
 
     case "push":
@@ -747,10 +741,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "promptCycleMode": {
       const p = openPrompt(s.overlay);
       if (p?.t !== "new") return s;
-      const next =
-        SESSION_MODES[(SESSION_MODES.indexOf(p.settings.mode) + 1) % SESSION_MODES.length] ??
-        "default";
-      return withPrompt(s, { ...p, settings: { ...p.settings, mode: next } });
+      // A session that doesn't exist yet has no daemon to tell: the `new`
+      // prompt's mode is settled the moment it's cycled.
+      const mode = nextMode(p.settings.mode);
+      return withPrompt(s, { ...p, settings: { ...p.settings, mode } });
     }
 
     case "promptHistoryNav": {
@@ -916,7 +910,6 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     // has gone is stranded, and stranding it is news — silently dropping it
     // loses a message the user typed with no word about it. The composer
     // forgets it and says so, in the same dispatch this snapshot triggers.
-    modeDraft: pruneByLive(s.modeDraft, sessions),
     transcripts: pruneByLive(s.transcripts, sessions),
     overlay,
     ...(notice ? { notice: mkNotice(notice, "dim") } : {}),

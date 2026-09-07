@@ -162,20 +162,20 @@ made unnecessary by the new ownership. No general-purpose effect/action bus.
 
 Files: `fleet-handle.ts`, `model.ts`; introduce `mode-control.ts`.
 
-- [ ] Keep applied mode exclusively in the daemon snapshot. Model local control
+- [x] Keep applied mode exclusively in the daemon snapshot. Model local control
       as idle, choosing(target), or applying(sent target, optional next target).
       Include the target session in the controller's scope. This explicitly permits
       rapid cycling while a previous application is awaiting a response.
-- [ ] Update selection feedback on the keypress, before network work. Label a
+- [x] Update selection feedback on the keypress, before network work. Label a
       pending target honestly; do not overwrite the applied snapshot field.
-- [ ] Retain the existing debounce initially: passing through plan mode has real
+- [x] Retain the existing debounce initially: passing through plan mode has real
       provider effects. One timer belongs to the choosing state. One application
       can be outstanding per session; further input replaces the next target.
-- [ ] When an application settles, consume only the next chosen target according
+- [x] When an application settles, consume only the next chosen target according
       to the same debounce policy. On ambiguous failure, stop automatic application
       and require fresh user intent. On session removal/disposal, cancel timers.
-- [ ] Preserve `plan_pending` feedback and the route into the real plan review.
-- [ ] Delete `modeDraft`, `modeDebounce`, `modeInFlight`, their reducer actions,
+- [x] Preserve `plan_pending` feedback and the route into the real plan review.
+- [x] Delete `modeDraft`, `modeDebounce`, `modeInFlight`, their reducer actions,
       and cleanup loops once the controller owns those responsibilities.
 
 Validation: a rapid cycle applies the settled choice, not every intermediate mode;

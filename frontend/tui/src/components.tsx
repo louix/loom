@@ -36,6 +36,7 @@ import {
   type TuiState,
 } from "./model.ts";
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
+import { pendingMode } from "./mode-control.ts";
 import {
   openPrompt,
   pickerVisible,
@@ -51,7 +52,9 @@ import {
   humanDuration,
   humanTokens,
   mmss,
+  modeChipText,
   modeLabel,
+  modeText,
   money,
   shortId,
   spinnerFrame,
@@ -495,6 +498,7 @@ export const Detail = ({
   engineColor = "",
   account = "",
   compacting = null,
+  pendingMode = null,
 }: {
   session: SessionSnapshot | null;
   width: number;
@@ -506,6 +510,8 @@ export const Detail = ({
   account?: string;
   /** Set while a compaction is in flight on this session. */
   compacting?: { startedAt: number; before: number } | null;
+  /** The mode a cycle is heading for while the daemon has not taken it yet. */
+  pendingMode?: SessionMode | null;
 }): ReactNode => {
   if (!session) {
     return (
@@ -572,7 +578,7 @@ export const Detail = ({
         {/* thing on this row you change mid-session, so it should catch the eye. */}
         <Text wrap="truncate-end">
           <Text color={C.dim}>{"mode "}</Text>
-          <Text color={C.warn}>{`[${modeLabel(s.mode)}]`}</Text>
+          <Text color={C.warn}>{modeChipText(s.mode, pendingMode)}</Text>
         </Text>
         <Text color={C.dim} wrap="truncate-end">
           {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
@@ -748,7 +754,15 @@ export const detailRows = (
  */
 export const modeChipHit = (
   session: SessionSnapshot | null,
-  geom: { originX: number; originY: number; paneW: number; account?: string },
+  geom: {
+    originX: number;
+    originY: number;
+    paneW: number;
+    account?: string;
+    /** Widens the chip while a mode change is pending — the click target has to
+     *  follow the text it points at. */
+    pending?: SessionMode | null;
+  },
 ): { y: number; x0: number; x1: number } | null => {
   if (!session) return null;
   const s = session;
@@ -760,7 +774,7 @@ export const modeChipHit = (
   const left = `${look.glyph} ${look.label}${statusDetailSuffix(s)}`;
   const contentX = geom.originX + 2; // round border + paddingX:1
   const x0 = contentX + [...left].length + 2; // the status row's gap={2}
-  const chip = `mode [${modeLabel(s.mode)}]`;
+  const chip = `mode ${modeChipText(s.mode, geom.pending)}`;
   const rightEdge = geom.originX + geom.paneW - 3; // inside the far border + pad
   if (x0 > rightEdge) return null;
   return { y, x0, x1: Math.min(x0 + [...chip].length - 1, rightEdge) };
@@ -1113,17 +1127,24 @@ const MODE_HINT: Record<PromptKind, string> = {
   compact: "compact",
 };
 
-/** The `[mode]` chip: gold once it's off the mundane `manual` default, faint
- *  otherwise — the same chip the Detail pane shows for a live session. */
-const modeChip = (mode: string | null | undefined): ReactNode => {
+/** The `[mode]` chip: gold once it's off the mundane `manual` default (or once
+ *  a change is pending), faint otherwise — the same chip the Detail pane shows
+ *  for a live session. */
+const modeChip = (mode: string | null | undefined, pending?: SessionMode | null): ReactNode => {
+  const settled = !pending || pending === mode;
   return (
-    <Text wrap="truncate-end" color={mode && mode !== "default" ? C.warn : C.faint}>
-      {`[${modeLabel(mode)}]`}
+    <Text wrap="truncate-end" color={!settled || (mode && mode !== "default") ? C.warn : C.faint}>
+      {modeChipText(mode, pending)}
     </Text>
   );
 };
 
-const promptHints = (p: Prompt, queued: number, sessionMode?: string | null): string => {
+const promptHints = (
+  p: Prompt,
+  queued: number,
+  sessionMode?: string | null,
+  pendingMode?: SessionMode | null,
+): string => {
   const bits = [`enter ${MODE_HINT[promptKind(p)]}`, "⌥⏎ newline", "⌥e editor"];
   // a new-session prompt has no session / log yet; an AskUserQuestion answer
   // opens the formatted question sheet rather than the event log
@@ -1135,7 +1156,12 @@ const promptHints = (p: Prompt, queued: number, sessionMode?: string | null): st
   } else if (p.t === "session" && p.kind === "send") {
     // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
     // without leaving the half-typed message.
-    bits.push(`⇧⇥ mode:${modeLabel(sessionMode)}`, "⌥m model", "⌥p provider", "↑↓ history");
+    bits.push(
+      `⇧⇥ mode:${modeText(sessionMode, pendingMode)}`,
+      "⌥m model",
+      "⌥p provider",
+      "↑↓ history",
+    );
     if (queued > 0) bits.push(`⌥x clear ${queued} queued`);
   }
   // Esc on an AskUserQuestion answer drops back to the request panel (where
@@ -1172,7 +1198,12 @@ export const FooterArea = ({ state, width }: { state: TuiState; width: number })
     return (
       <Box width={width} paddingX={1}>
         <Text color={C.faint} wrap="truncate-end">
-          {promptHints(p, send ? queueFor(state, p.sessionId).length : 0, sess?.mode)}
+          {promptHints(
+            p,
+            send ? queueFor(state, p.sessionId).length : 0,
+            sess?.mode,
+            pendingMode(state.modes, sess?.id),
+          )}
         </Text>
       </Box>
     );
@@ -1294,7 +1325,7 @@ export const PromptPane = ({ state, width }: { state: TuiState; width: number })
         <Text color={C.accent} bold wrap="truncate-end">
           {p.label}
         </Text>
-        {sess ? modeChip(sess.mode) : null}
+        {sess ? modeChip(sess.mode, pendingMode(state.modes, sess.id)) : null}
       </Box>
       <InputLine
         buf={p.buffer}

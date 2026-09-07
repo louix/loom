@@ -383,6 +383,12 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /\[manual\]/, "the send prompt shows the session's current mode");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
+      await delay(60); // still well inside the 300ms debounce
+      assert.match(
+        stdout.last,
+        /\[manual → plan\]/,
+        "the target shows on the keypress, beside the mode the session is still in",
+      );
       await delay(360); // clear the 300ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(

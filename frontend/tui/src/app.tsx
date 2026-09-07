@@ -18,6 +18,7 @@ import {
   providerColorOf,
   providerInfo,
 } from "./model.ts";
+import { pendingMode } from "./mode-control.ts";
 import { C } from "./theme.ts";
 import {
   Confirm,
@@ -171,6 +172,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
               engineColor={sel ? providerColorOf(state, sel.provider) : ""}
               account={sel ? providerAccountOf(state, sel.provider) : ""}
               compacting={compactingFor(state, sel?.id ?? null)}
+              pendingMode={pendingMode(state.modes, sel?.id)}
             />
             <EventLog
               state={state}
@@ -207,6 +209,7 @@ const Layout = ({ view }: { view: FleetView }): ReactNode => {
             engineColor={sel ? providerColorOf(state, sel.provider) : ""}
             account={sel ? providerAccountOf(state, sel.provider) : ""}
             compacting={compactingFor(state, sel?.id ?? null)}
+            pendingMode={pendingMode(state.modes, sel?.id)}
           />
           <EventLog
             state={state}

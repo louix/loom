@@ -369,14 +369,14 @@ const typeModeScenario = async (): Promise<void> => {
     }
 
     // Mode: the prompt footer suppresses notices, so the local feedback is the
-    // `⇧⇥ mode:<label>` hint, which reads the un-acknowledged draft. The Detail
-    // pane's own `[mode]` chip deliberately shows the applied snapshot instead,
-    // so it moves only once the daemon has answered — both are timed.
+    // `⇧⇥ mode:<applied> → <target>` hint, which names the chosen target beside
+    // the mode the session is still in. The Detail pane's `[mode]` chip does the
+    // same; a bare `[plan]` means the daemon has taken it — both are timed.
     //
     // (a) one isolated press: keypress → local hint → RPC dispatch → settle.
     const pressAt = performance.now();
     input.feed(SHIFT_TAB);
-    const hintMs = await latency(out, pressAt, /mode:plan/);
+    const hintMs = await latency(out, pressAt, /mode:manual → plan/);
     const appliedMs = await latency(out, pressAt, /\[plan\]/, 3000);
     const dispatchMs = dispatches[0] === undefined ? -1 : +(dispatches[0] - pressAt).toFixed(2);
     const settleMs = +(settles[0] ?? -1).toFixed(2);
@@ -390,13 +390,15 @@ const typeModeScenario = async (): Promise<void> => {
       input.feed(SHIFT_TAB);
       await delay(60);
     }
-    const cycleHintMs = await latency(out, cycleAt, /mode:acceptEdits/); // first press
+    const cycleHintMs = await latency(out, cycleAt, /mode:plan → acceptEdits/); // first press
     await delay(1500);
-    const cycleSettledMs = await latency(out, cycleAt, /mode:manual/, 100); // 3 presses land on manual
+    // `mode:manual` with nothing before it is the applied label — the pending one
+    // reads `mode:plan → manual`.
+    const cycleSettledMs = await latency(out, cycleAt, /mode:manual/, 100);
     input.feed(ESC);
     await delay(400);
 
-    // (c) the same press from browse, where the transient notice — the one
+    // piece of local mode feedback that predates step 4 — is rendered.
     // piece of genuinely local mode feedback that exists today — is rendered.
     const browseAt = performance.now();
     input.feed(SHIFT_TAB);

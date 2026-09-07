@@ -26,11 +26,10 @@ import type {
   PushFrame,
   SessionSnapshot,
 } from "@loom/core/wire";
-import { SESSION_MODES, type SessionMode } from "@loom/core/types";
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { modeLabel, setThemeMode, shortId, truncate } from "./theme.ts";
+import { setThemeMode, shortId, truncate } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailRows,
@@ -42,10 +41,10 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
+import { mkModeControl, pendingMode } from "./mode-control.ts";
 import {
   fleetProviders,
   fleetSessions,
-  sessionMode,
   allowedActs,
   commandsFor,
   cycleLogFilter,
@@ -134,9 +133,6 @@ const tailFileSync = (path: string, maxBytes: number): string => {
     if (fd !== null) closeSync(fd);
   }
 };
-
-const nextMode = (m: SessionMode): SessionMode =>
-  SESSION_MODES[(SESSION_MODES.indexOf(m) + 1) % SESSION_MODES.length] ?? "default";
 
 /**
  * Actions that touch nothing but this process, so they stay live while the
@@ -403,6 +399,7 @@ const deriveView = (
       originY: 2,
       paneW: rightW,
       account: detailAccount,
+      pending: pendingMode(state.modes, sel?.id),
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   } else if (body.t === "fleetOnly") {
@@ -413,6 +410,7 @@ const deriveView = (
       originY: 2,
       paneW: cols,
       account: detailAccount,
+      pending: pendingMode(state.modes, sel?.id),
     });
     if (chip) hits.push({ kind: "mode", ...chip });
   }
@@ -502,14 +500,23 @@ export const mkFleetHandle = ({
   // the selection (U5). Suppress a fleet-row Enter for a beat after a submit.
   let promptSubmittedAt = 0;
 
-  // `⇧⇥` mode cycling: the debounce window before `session.setMode` actually
-  // reaches the daemon for a session (see `cycleSessionMode` below).
-  const modeDebounce = new Map<string, ReturnType<typeof setTimeout>>();
-  // How many `session.setMode` calls are still outstanding per session. The
-  // draft is what the chip shows; retiring it on the *first* reply would snap
-  // the chip back to a snapshot that a later call is still on its way to
-  // change, so it survives until nothing is in flight.
-  const modeInFlight = new Map<string, number>();
+  // `⇧⇥` cycles a live session's permission mode — from the fleet row, the
+  // Detail chip, or inside a `send` prompt. The controller owns the debounce
+  // (passing through `plan` has real provider effects, so a fast cycle must not
+  // stop there) and shows the target the moment the key is pressed; the applied
+  // mode stays the snapshot's.
+  const modes = mkModeControl({
+    setMode: (id, mode) =>
+      client.request("session.setMode", { id, mode, by: client.clientId }).then(),
+    fleet: () => fleetSessions(state),
+    choices: () => state.modes,
+    commit: (sessionId, choice) => dispatch({ t: "mode", sessionId, choice }),
+    note: (text, tone) => note(text, tone),
+    planPending: (sessionId) => {
+      const review = planReviewFor(sessionId);
+      if (review) show({ t: "plan", plan: review });
+    },
+  });
 
   const store = mkStore<FleetView>(
     deriveView(state, tick, logScroll, planScroll, layoutView, dims),
@@ -745,7 +752,12 @@ export const mkFleetHandle = ({
     ) {
       loadHistory();
     }
-    if (sessionsRef(state) !== sessionsRef(prev)) interactions.settle();
+    if (sessionsRef(state) !== sessionsRef(prev)) {
+      // Both hold work keyed by session: a request's guard, a scheduled mode
+      // change. A session the daemon has stopped listing releases both.
+      interactions.settle();
+      modes.settle();
+    }
     // A new snapshot may have taken a session idle (or ended a compaction, or
     // killed it outright), and a newly queued message may be releasable right
     // now — both are the composer's to work out.
@@ -1105,7 +1117,7 @@ export const mkFleetHandle = ({
           }
         });
       case "mode":
-        return void cycleSessionMode(s.id);
+        return void modes.cycle(s.id);
       default:
         return absurd(name);
     }
@@ -1426,76 +1438,6 @@ export const mkFleetHandle = ({
       { provider: s.provider, model: s.model },
       "effort",
     );
-  };
-
-  /**
-   * `⇧⇥` cycles a live session's permission mode — from the fleet row or from
-   * inside a `send` prompt. The chip updates immediately on every press so
-   * cycling feels responsive regardless of round-trip time, but it moves a
-   * *local draft* beside the snapshot, never the snapshot itself: the draft is
-   * dropped once the RPC settles, so a rejected change falls back to whatever
-   * the daemon actually reports rather than leaving the chip lying.
-   *
-   * The `session.setMode` RPC is debounced behind the draft, so only the mode
-   * the presses settle on reaches the connector. Without that, a fast cycle
-   * through to `auto` would still briefly apply `plan` as an intermediate stop
-   * — and unlike the other three modes, `plan` has real side effects once it's
-   * actually live (it flips the SDK session into plan mode, tools and all),
-   * not just a permission level.
-   */
-  const cycleSessionMode = (sessionId: string): void => {
-    const s = fleetSessions(state).find((x) => x.id === sessionId);
-    if (!s) return void dispatch({ t: "notice", text: "session is gone", tone: "dim" });
-    const target = nextMode(sessionMode(state, s) as SessionMode);
-    dispatch({ t: "modeDraft", sessionId, mode: target });
-    dispatch({ t: "notice", text: `mode → ${modeLabel(target)}`, tone: "good" });
-    const prevTimer = modeDebounce.get(sessionId);
-    if (prevTimer) clearTimeout(prevTimer);
-    const timer = setTimeout(() => {
-      modeDebounce.delete(sessionId);
-      // The session was removed while the debounce sat idle — nothing to apply.
-      if (!fleetSessions(state).some((x) => x.id === sessionId)) {
-        dispatch({ t: "modeDraft", sessionId, mode: null });
-        return;
-      }
-      modeInFlight.set(sessionId, (modeInFlight.get(sessionId) ?? 0) + 1);
-      client
-        .request("session.setMode", { id: sessionId, mode: target, by: client.clientId })
-        .catch((e: unknown) => {
-          const code =
-            e instanceof Error && "code" in e ? (e as { code?: unknown }).code : undefined;
-          if (code === "plan_pending") {
-            // The mode never actually left `plan` — a pending `ExitPlanMode`
-            // review has to be resolved through the real plan-review UI, not
-            // silently answered by the chip. Dropping the draft (below) already
-            // snaps the chip back to the `plan` the snapshot still reports;
-            // open the review so there's no impossible "chip says X, the live
-            // session is still parked on a plan" state to land in.
-            const review = planReviewFor(sessionId);
-            if (review) show({ t: "plan", plan: review });
-            dispatch({
-              t: "notice",
-              text: "a plan review is pending — resolve it first",
-              tone: "bad",
-            });
-            return;
-          }
-          dispatch({
-            t: "notice",
-            text: `mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
-            tone: "bad",
-          });
-        })
-        // Settled either way: once nothing is outstanding the snapshot is the
-        // truth about this session's mode, so the local draft has done its job.
-        .finally(() => {
-          const left = (modeInFlight.get(sessionId) ?? 1) - 1;
-          if (left > 0) return void modeInFlight.set(sessionId, left);
-          modeInFlight.delete(sessionId);
-          dispatch({ t: "modeDraft", sessionId, mode: null });
-        });
-    }, 300);
-    modeDebounce.set(sessionId, timer);
   };
 
   const submitPrompt = (): void => {
@@ -2069,7 +2011,7 @@ export const mkFleetHandle = ({
       // ⇧⇥ cycles the permission mode without leaving the prompt.
       if (key.tab && key.shift) {
         if (p.t === "new") return void dispatch({ t: "promptCycleMode" });
-        if (sendTo) return void cycleSessionMode(sendTo);
+        if (sendTo) return void modes.cycle(sendTo);
         return;
       }
       // ⌥m swaps the model without leaving the prompt.
@@ -2467,6 +2409,9 @@ export const mkFleetHandle = ({
 
     return () => {
       clearInterval(iv);
+      // A mode change scheduled a moment before the UI went away has nothing
+      // left to render into.
+      modes.dispose();
       for (const off of offs) off();
     };
   };

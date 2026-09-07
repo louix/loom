@@ -115,3 +115,29 @@ Ink can fall back to a full repaint when a frame overflows the viewport, so the
 help overlay does not benefit from the option at 40 rows. That is a pre-existing
 layout bug, recorded here rather than fixed in this step. No blocker found: the
 option is kept.
+
+## Step 4 — mode control
+
+`deno run -A scripts/tui-bench.ts --label step4 --incremental`, same scenario,
+same machine. The bench's local-hint regex changed with the label it measures:
+the send prompt now reads `⇧⇥ mode:manual → plan` while a change is pending, and
+`⇧⇥ mode:plan` once the daemon has taken it.
+
+| leg                                      | step 0 | step 4 |
+| ---------------------------------------- | ------ | ------ |
+| keypress → local hint in the send prompt | 317    | **3**  |
+| keypress → `session.setMode` dispatched  | 301    | 302    |
+| `session.setMode` dispatch → settled     | 16     | 21     |
+| keypress → applied `[mode]` chip         | 317    | 368    |
+| keypress → `mode → …` notice in browse   | 37     | 3      |
+| rapid cycle: first press → its target    | never  | **3**  |
+| rapid cycle: 3 presses → `setMode` calls | 2      | 2      |
+
+The debounce is deliberately unchanged: passing through `plan` has real provider
+effects, and 302ms of it is the timer, not the socket (21ms round trip).
+
+What moved is the feedback. Step 0 had none in the send prompt — the hint read
+the snapshot, so a press showed nothing for 317ms, and during a rapid cycle the
+intermediate targets were never rendered at all (`rapidCycleHintMs: null` in
+both step-0 runs). The applied chip is ~50ms slower than step 0 within run-to-run
+jitter; it is still the daemon's answer, one frame after it lands.

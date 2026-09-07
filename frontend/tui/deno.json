@@ -5,6 +5,7 @@
     "./run": "./src/run.tsx",
     "./app": "./src/app.tsx",
     "./model": "./src/model.ts",
+    "./mode-control": "./src/mode-control.ts",
     "./overlay": "./src/overlay.ts",
     "./composer": "./src/composer.ts",
     "./interactions": "./src/interactions.ts",
