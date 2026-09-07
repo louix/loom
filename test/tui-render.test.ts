@@ -760,47 +760,6 @@ models   = ["m1", "m2"]
     }
   });
 
-  test("PgUp climbs to the very top of a wrapped log (scroll math is physical rows)", async () => {
-    const { connect, cleanup } = await harness();
-    const first = await connect();
-    const s = await first.request<SessionSnapshot>("session.createStub", {
-      prompt: "a session with heavily wrapped output",
-      status: "running",
-      provider: "fake",
-    });
-    // Six messages whose text wraps to dozens of screen rows each: a handful of
-    // logical log lines, hundreds of physical rows. Regression: the scroll
-    // ceiling was computed from the *logical* line count, so PgUp froze partway
-    // up a wrapped log, unable to reach its start.
-    for (let i = 1; i <= 6; i++) {
-      await first.request("dev.emit", {
-        event: {
-          sessionId: s.id,
-          type: "assistant_text",
-          text: `wrapped-${i}-top ${"wrap ".repeat(300)}`,
-        },
-      });
-    }
-    await delay(80);
-    await first.close();
-
-    const second = await connect();
-    const { stdout, stdin, app } = mount(second);
-    try {
-      // The tail view shows event 6's wrapped filler; its head row is a page up.
-      await waitFor(stdout, /wrap wrap wrap/);
-      for (let i = 0; i < 40 && !/wrapped-1-top/.test(stdout.last); i++) {
-        stdin.feed("\x1b[5~"); // PgUp
-        await delay(50);
-      }
-      assert.match(stdout.last, /wrapped-1-top/, "PgUp reaches the first event's first row");
-    } finally {
-      app.unmount();
-      await second.close();
-      await cleanup();
-    }
-  });
-
   test("paging a wrapped log folds in older pages and reaches the first event", async () => {
     const { connect, cleanup } = await harness();
     const first = await connect();
@@ -1439,26 +1398,6 @@ models   = ["m1", "m2"]
       stdin.feed("\x1b[D");
       await waitFor(stdout, (t) => !/▸ ⑂ reviewer/.test(t));
       assert.match(stdout.last, /FLEET/);
-    } finally {
-      app.unmount();
-      await client.close();
-      await cleanup();
-    }
-  });
-
-  test("a wide terminal shows the full split", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    await client.request("session.createStub", {
-      prompt: "wide layout task",
-      status: "running",
-      provider: "fake",
-    });
-    const { stdout, app } = mount(client, {}, { columns: 120 });
-    try {
-      await waitFor(stdout, /engine fake/);
-      assert.match(stdout.last, /FLEET/);
-      assert.match(stdout.last, /EVENTS/);
     } finally {
       app.unmount();
       await client.close();

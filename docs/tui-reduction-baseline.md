@@ -7,6 +7,12 @@ own stdout). No interactive terminal was available: every number below comes
 from a simulated TTY (`interactive: true` forced, so Ink emits the real
 erase/cursor sequences). Visible flicker is therefore **unverified**.
 
+> **The bench scripts are gone.** `scripts/tui-bench.ts` and
+> `scripts/search-bench.ts` were temporary instrumentation for this plan and
+> were deleted in §9, along with the `references/tui-bench-*.json` they wrote.
+> Every number below was taken with them before that; the commands are recorded
+> so the measurement can be rebuilt, not re-run as-is.
+
 ## Standard checks
 
 | task                     | result            |

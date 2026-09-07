@@ -1,7 +1,10 @@
 # TUI reduction, separation, and rendering plan
 
-Baseline: local `main` at `f67c653`. Status: planned; no implementation is
-represented by the checkboxes below.
+Baseline: local `main` at `f67c653`, implemented from `6e2c2e4`. Status: **historical; superseded by `tui-remediation-plan.md`**.
+The original completion claim was incorrect. Unchecked items below identify
+ownership/rendering work not completed at `46de3ef`; the remediation records
+the subsequent implementation. Historical measurements remain in the report. Per-step measurements are in
+`docs/tui-reduction-baseline.md`.
 
 Goal: reduce the amount of state and behavior we maintain, separate pure domain
 code from effect-owning handles, and keep the TUI responsive without repeatedly
@@ -139,11 +142,11 @@ Introduce `interactions.ts` and `composer.ts` under `frontend/tui/src/`.
 - [x] Keep one submission guard scoped to the relevant session/request operation.
       Batched duplicate keys issue one command. Failure and request replacement
       must not leave another request blocked or reuse the old answer.
-- [x] Put drafts, queued messages, and send progression in the composer. Replace
+- [ ] Put drafts, queued messages, and send progression in the composer. Replace
       correlated `draining`, `lastDrainTurn`, and held-text bookkeeping with a
       per-session union whose active variant owns its message and turn barrier.
       Keep the unsent tail explicit; do not call it an uncertain send.
-- [x] Commit the sending/held/removed state before invoking effects or publishing
+- [ ] Commit the sending/held/removed state before invoking effects or publishing
       notices. Reducers never call dispatch. Sending completion produces a new
       input to the owning handle, not recursive inspection of the entire app.
 - [x] On timeout/disconnect, preserve the ambiguous message for explicit review,
@@ -208,7 +211,7 @@ Files: `frontend/tui/src/fleet-search.ts`, search consumers in `model.ts` and
       If fuzzy scoring requires scanning text, stream/batch candidates and keep a
       bounded result set; measure a large history before inventing an index. Query
       pagination bounds the response, not necessarily the cost of finding matches.
-- [x] Add a small search handle owning query, Loadable results, debounce, and one
+- [ ] Add a small search handle owning query, Loadable results, debounce, and one
       query lifetime. Typing updates immediately; stale results cannot replace a
       newer query. Disable result activation while showing stale/loading results.
       Clearing the query restores the full fleet immediately.
@@ -239,7 +242,7 @@ Introduce `transcript.ts` containing pure resource transitions and its handle.
 - [x] Represent unloaded/loading/failure/ready explicitly. Only ready contains
       a retained window and the operations possible on that window. Avoid two
       independent Loadables plus unrelated flags that permit impossible mixtures.
-- [x] One resource lifetime owns live subscription, requests, and scroll. On
+- [ ] One resource lifetime owns live subscription, requests, and scroll. On
       selection change/reconnect/disposal invalidate that lifetime. Late callbacks
       must affect neither rows nor scroll. Cancellation alone is not a proof that
       an already queued callback cannot run.
@@ -272,10 +275,10 @@ their behavior remains. Reduce ownership and invalid combinations, not scrollbac
 
 Files: `app.tsx`, `fleet-handle.ts`, `store.ts`, `components.tsx`, feature handles.
 
-- [x] Root view contains layout/selection/active-overlay information, not a fresh
+- [ ] Root view contains layout/selection/active-overlay information, not a fresh
       copy of every pane's inputs for every event. Panes consume narrow feature
       views with stable references when their actual inputs have not changed.
-- [x] Replace the central 120ms whole-app publish with an animation subscription
+- [ ] Replace the central 120ms whole-app publish with an animation subscription
       scoped to visible animated content. One shared clock is sufficient; disable
       it when nothing visible animates. Use a deadline for notice expiration.
 - [x] Keep cache-age/elapsed-time displays updating at their visible precision.
@@ -286,7 +289,7 @@ Files: `app.tsx`, `fleet-handle.ts`, `store.ts`, `components.tsx`, feature handl
 - [x] Keep events/state updates immediate. If measurements still show redundant
       work during bursts, coalesce view publication only, with a bounded delay;
       never drop provider events or delay the state used to interpret keypresses.
-- [x] Delete central tick plumbing and root-dispatch effect checks as their last
+- [ ] Delete central tick plumbing and root-dispatch effect checks as their last
       consumers move. The root handle should compose features and route input.
 
 Validation: spinner-only updates do not execute transcript derivation; typing does
@@ -322,23 +325,23 @@ gone. Multiple clients are not required to trigger these failures.
 
 ## 9. Remove redundant tests and close the work
 
-- [ ] Review affected tests by responsibility: pure transition, effect boundary,
+- [x] Review affected tests by responsibility: pure transition, effect boundary,
       transport boundary, or integrated user flow. Keep a representative integrated
       flow; do not repeat its full daemon setup for every pure branch.
-- [ ] Delete tests for removed overlay combinations, old projection/cleanup helpers,
+- [x] Delete tests for removed overlay combinations, old projection/cleanup helpers,
       optimistic-mode counters, and any offline browsing behavior. Preserve tests
       that protect drafts, queued text, and uncertain sends across disconnects.
-- [ ] Remove exact snapshot-count/order assertions where they express no user
+- [x] Remove exact snapshot-count/order assertions where they express no user
       requirement. Keep proof that resulting state is coherent, request changes
       arrive, and rate-limit-only changes eventually publish. Do not deliberately
       reintroduce partial internal updates to save a few lines.
-- [ ] Retain ordinary second-client smoke coverage. Drop exhaustive multi-client
+- [x] Retain ordinary second-client smoke coverage. Drop exhaustive multi-client
       permutations that duplicate the same session serialization invariant. Retain
       adapter/event versus command races that one TUI can produce.
-- [ ] Run affected checks during each step; finish with all four standard tasks
+- [x] Run affected checks during each step; finish with all four standard tasks
       from step 0. Exercise actual TUI selection, typing, mode switching, queueing,
       questions, plans, history, reconnect, resize, and editor handoff.
-- [ ] Report removed state fields/maps, deleted branches/effects, module boundaries,
+- [x] Report removed state fields/maps, deleted branches/effects, module boundaries,
       source/test deltas, and before/after performance. List unverified manual checks.
       Do not invent extra features or tests to hit a reduction percentage.
 
