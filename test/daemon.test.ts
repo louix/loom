@@ -12,6 +12,7 @@ import type {
   DoctorReport,
   HelloResult,
   HistoryPage,
+  SearchPage,
   PushFrame,
   SessionSnapshot,
 } from "@loom/core/wire";
@@ -254,6 +255,75 @@ test("session.events: the cursor pages older rows; limit is clamped; a malformed
     cursor: null,
   });
   assert.deepEqual(texts(nulled), ["line 4", "line 5"]);
+  await c.close();
+});
+
+test("session.search pages a ranked answer, and binds the continuation to the query", async () => {
+  const c = await client();
+  // Titles all match "zebra"; a body-only match proves the search reads the
+  // durable transcript, not just the session row.
+  const ids: string[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const s = await c.request<SessionSnapshot>("session.createStub", { prompt: `zebra ${i}` });
+    ids.push(s.id);
+  }
+  const buried = await c.request<SessionSnapshot>("session.createStub", { prompt: "unrelated" });
+  await c.request("dev.emit", {
+    event: { sessionId: buried.id, type: "assistant_text", text: "a zebra, buried in the body" },
+  });
+
+  const all = await c.request<SearchPage>("session.search", { query: "'zebra" });
+  assert.equal(all.query, "'zebra");
+  assert.equal(all.cursor, null, "six matches in one page is the whole ranking");
+  assert.deepEqual(new Set(all.hits.map((h) => h.id)), new Set([...ids, buried.id]));
+  assert.ok(
+    all.hits.findIndex((h) => h.id === buried.id) === all.hits.length - 1,
+    "the title matches outrank the body-only one",
+  );
+
+  // Paging walks the same ranking; a full page says nothing about exhaustion,
+  // so the daemon reports it rather than leaving it to be inferred.
+  const first = await c.request<SearchPage>("session.search", { query: "'zebra", limit: 4 });
+  assert.equal(first.hits.length, 4);
+  assert.deepEqual(first.cursor, { query: "'zebra", offset: 4 });
+  const rest = await c.request<SearchPage>("session.search", {
+    query: "'zebra",
+    limit: 4,
+    cursor: first.cursor,
+  });
+  assert.equal(rest.cursor, null);
+  assert.deepEqual(
+    [...first.hits, ...rest.hits].map((h) => h.id),
+    all.hits.map((h) => h.id),
+  );
+
+  // An exactly-filled last page still has to say it is the last one.
+  const exact = await c.request<SearchPage>("session.search", { query: "'zebra", limit: 6 });
+  assert.equal(exact.hits.length, 6);
+  assert.equal(exact.cursor, null);
+
+  // A cursor from another query would page a ranking it was never computed
+  // against — a client bug that must read differently from exhaustion.
+  await assert.rejects(
+    c.request("session.search", { query: "'other", cursor: first.cursor }),
+    /different query/,
+  );
+  for (const bad of [{ query: "'zebra" }, { offset: 0 }, { query: "'zebra", offset: -1 }, 7]) {
+    await assert.rejects(
+      c.request("session.search", { query: "'zebra", cursor: bad }),
+      /cursor must be/,
+      `cursor ${JSON.stringify(bad)} should be rejected`,
+    );
+  }
+
+  // Clamped, not thrown, and not "the whole ranking".
+  const clamped = await c.request<SearchPage>("session.search", { query: "'zebra", limit: -1 });
+  assert.equal(clamped.hits.length, 1);
+
+  // An empty query is the fleet, without reading a transcript row.
+  const empty = await c.request<SearchPage>("session.search", { query: "" });
+  assert.equal(empty.hits.length, 6);
+  assert.ok(empty.hits.every((h) => h.score === 0));
   await c.close();
 });
 

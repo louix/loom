@@ -107,6 +107,63 @@ export interface HistoryPage {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-session search
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the next page of a search starts. Opaque to the client — read it off a
+ * page and hand it back verbatim.
+ *
+ * It carries the query it was issued for, so handing a cursor back with a
+ * different query is a `bad_request` rather than a silently mismatched page.
+ * The position is an *offset* into the ranked list: the daemon ranks the whole
+ * match set to answer at all, and the underlying rows keep changing between
+ * pages regardless, so a keyset cursor would buy determinism the search does
+ * not otherwise have.
+ */
+export interface SearchCursor {
+  readonly query: string;
+  readonly offset: number;
+}
+
+/** Could the daemon have issued `v` as a {@link SearchCursor}? Guards the
+ *  cursor a client hands back, which is otherwise arbitrary JSON. */
+export const isSearchCursor = (v: unknown): v is SearchCursor => {
+  if (typeof v !== "object" || v === null) return false;
+  const c = v as Record<string, unknown>;
+  return (
+    typeof c["query"] === "string" &&
+    typeof c["offset"] === "number" &&
+    Number.isSafeInteger(c["offset"]) &&
+    c["offset"] >= 0
+  );
+};
+
+/** One matching session. Only the id and its rank — the session itself comes
+ *  from the fleet snapshot the client already has, so a page carries no
+ *  duplicate (and possibly staler) copy of it. */
+export interface SearchHit {
+  readonly id: string;
+  /** Coarse relevance, higher is better. Comparable only within one page set. */
+  readonly score: number;
+}
+
+/**
+ * One page of a cross-session search, best match first.
+ *
+ * `cursor === null` means this page reaches the end of the ranked matches —
+ * actual exhaustion, and only that. A page filled to `limit` says nothing
+ * either way, which is why exhaustion is reported rather than inferred.
+ */
+export interface SearchPage {
+  /** Echoed back so a client can drop a page for a query it has moved on from
+   *  without tracking request ids. */
+  readonly query: string;
+  readonly hits: readonly SearchHit[];
+  readonly cursor: SearchCursor | null;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client push stream
 // ---------------------------------------------------------------------------
 

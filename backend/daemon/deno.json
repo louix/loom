@@ -25,6 +25,7 @@
     "./store/migrations": "./src/store/migrations.ts",
     "./store/provider-messages": "./src/store/provider-messages.ts",
     "./store/session-events": "./src/store/session-events.ts",
+    "./store/session-search": "./src/store/session-search.ts",
     "./store/sessions": "./src/store/sessions.ts"
   }
 }
