@@ -161,50 +161,21 @@ model = "" # "" = a per-provider cheap default (Haiku for claude)
 [pricing]
 table = ".loom/models.toml"
 
-# [[hooks]] — shell commands run when something happens in a session. Both this
-# file and a repo's .loom/config.toml can declare them; because config layering
-# replaces arrays wholesale, a repo-level [[hooks]] shadows every entry here, so
-# scope a per-project hook with `project` rather than splitting it across files.
+# Hooks: see README for events, environment variables, and cancellation semantics.
+# "notify" is the default and never messages the agent, including on turn_end.
+# "check" accepts file_write / turn_end and sends bounded failure output back.
+# Repository hook arrays replace user hook arrays; use project to scope entries.
+# Each hook runs serially. file_write retains every changed path for $LOOM_FILE.
 #
-#   on       one event or a list. Write events: "file_write" (one write tool's
-#            result) and "turn_end" (once per finished turn, with every file it
-#            wrote). Waiting events: "waiting" (any blocked reason at once) or
-#            one of "permission" / "question" / "plan_review" / "user_question",
-#            plus "error" and "interrupted".
-#   run      handed to `sh -c`, in the session's worktree.
-#   project  glob on the daemon's repo root; "" (default) = every repo.
-#   match    path globs; a write event fires only if a written file matches.
-#   name     label for logs and the agent-facing message; defaults to run's first word.
-#   timeout  seconds before SIGKILL. Default 30, clamped 1–600.
+# [[hooks]]
+# kind = "check"
+# on = "turn_end"
+# match = ["**/*.ts"]
+# run = "deno task lint"
 #
-# The command gets the session in its environment rather than interpolated into
-# the string: $LOOM_HOOK_EVENT, $LOOM_SESSION_ID, $LOOM_SESSION_TITLE,
-# $LOOM_SESSION_PROVIDER, $LOOM_SESSION_MODEL, $LOOM_SESSION_STATUS,
-# $LOOM_WORKTREE, $LOOM_BRANCH, $LOOM_REPO_ROOT, $LOOM_AWAIT_REASON,
-# $LOOM_FILE / $LOOM_FILES (newline-separated), and $LOOM_MESSAGE — a ready-made
-# one-line summary for a desktop toast.
-#
-# A write hook that exits non-zero has its output sent to the agent as a [loom]
-# message, so it fixes what the checker reports: keep the command silent on
-# success and terse on failure. An identical failure is not re-sent, and a hook
-# failing three turns running stops talking to the agent until it passes once.
-# A waiting hook never messages the agent (it would re-drive the turn it was
-# announcing) — a failure there is logged and shown as an operator notice.
-#
-# [[hooks]]                         # lint what the turn touched, and tell the agent
-# on      = "turn_end"
-# match   = ["**/*.ts"]
-# run     = "deno task lint --quiet"
-#
-# [[hooks]]                         # desktop toast whenever a session wants you
-# on      = ["waiting", "turn_end"]
-# run     = 'notify-send "loom" "$LOOM_MESSAGE"'
-#
-# [[hooks]]                         # only in one project
-# on      = "file_write"
-# project = "~/dev/loom"
-# run     = 'oxfmt "$LOOM_FILE"'
-
+# [[hooks]]
+# on = ["waiting", "turn_end"]
+# run = 'notify-send "loom" "$LOOM_MESSAGE"'
 
 [notify]
 webhook = "" # best-effort POST on awaiting_input / error when no client attached

@@ -608,7 +608,7 @@ export class SessionManager {
   async send(
     id: string,
     text: string,
-    opts: { keepWarm?: boolean } = {},
+    opts: { keepWarm?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ injected: boolean }> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
@@ -622,6 +622,7 @@ export class SessionManager {
     // whole (up-to-15-min) compaction.
     if (run.restructuring) throw new Error(`session is ${run.restructuring}ing`);
     return this.#enqueue(run, async () => {
+      opts.signal?.throwIfAborted();
       const injected = isLiveState(run.state);
       const before = run.state;
       await run.session.send(text);

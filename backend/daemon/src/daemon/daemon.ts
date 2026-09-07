@@ -296,18 +296,11 @@ export class Daemon {
       // A failed write hook talks to the agent through the same path as the
       // commit nudge: emitted so every client sees it land, and kept out of
       // `#lastSend` so it seeds neither the undo picker nor the auto-title.
-      onFeedback: (id, text) => {
-        if (this.#stopping) return;
-        this.emitEvent({
-          type: "user_message",
-          sessionId: id,
-          ts: Date.now(),
-          text,
-          injected: false,
-        });
-        void this.#sessions.send(id, text).catch((err) => {
-          this.#log.warn("hook feedback failed", { id, err: String(err) });
-        });
+      onFeedback: async (id, text, signal) => {
+        if (this.#stopping || signal.aborted) return;
+        const { injected } = await this.#sessions.send(id, text, { signal });
+        if (this.#stopping || signal.aborted) return;
+        this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
       },
       onNotice: (text, tone) => this.#emitNotice(text, tone),
     });
@@ -528,6 +521,7 @@ export class Daemon {
   async stop(reason: string): Promise<void> {
     if (this.#stopping) return this.#closed;
     this.#stopping = true;
+    this.#hooks.close();
     this.#log.info("daemon stopping", { reason });
 
     this.#idle.stop();
@@ -1829,7 +1823,7 @@ export class Daemon {
       next = loadConfig(this.paths.config, userConfigPath());
     } catch (err) {
       this.#log.warn("config reload failed — keeping the running config", { err: String(err) });
-      this.#emitNotice("config has a syntax error — kept the running one", "warn");
+      this.#emitNotice(`config reload failed — kept the running one: ${String(err)}`, "warn");
       return;
     }
     // Deep copy, not an alias: the hot-apply block below mutates `this.config`
@@ -1845,8 +1839,10 @@ export class Daemon {
     this.config.titles = next.titles;
     // Hooks are re-read per fire, so a new command takes effect on the next
     // event — no restart, and no need to touch a running session.
-    this.config.hooks = next.hooks;
-    this.#hooks.setHooks(next.hooks);
+    if (JSON.stringify(next.hooks) !== JSON.stringify(before.hooks)) {
+      this.config.hooks = next.hooks;
+      this.#hooks.setHooks(next.hooks);
+    }
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
       this.config.daemon = {
         ...this.config.daemon,
@@ -2318,6 +2314,7 @@ export class Daemon {
       // (a refused resume, say) must not leave the row claiming fewer turns
       // than the transcript actually has.
       if (this.#sessions.has(id)) {
+        this.#hooks.forget(id);
         await this.#sessions.rewind(id, keep, at);
       } else {
         this.#pmsgs.replaceFrom(id, keep, []);
@@ -2476,6 +2473,7 @@ export class Daemon {
     d.register("session.interrupt", async (params) => {
       const id = reqString(params, "id");
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      this.#hooks.forget(id);
       await this.#sessions.interrupt(id);
       return this.#registry.mustGet(id);
     });
@@ -2916,6 +2914,7 @@ export class Daemon {
             "the worktree has uncommitted changes — commit them, or archive with force to discard",
           );
         }
+        this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#lastSend.delete(id);
@@ -2967,6 +2966,7 @@ export class Daemon {
             "the worktree has uncommitted changes — commit them, or pass force to discard",
           );
         }
+        this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
         this.#lastSend.delete(id);
         this.#cacheTtlSeen.delete(id);

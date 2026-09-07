@@ -1,27 +1,6 @@
-/**
- * `[[hooks]]` — shell commands the daemon runs when something happens in a
- * session. Two families, from one config array:
- *
- *  - **write** hooks (`file_write` / `turn_end`) run a checker over the files
- *    the agent just edited. A non-zero exit is *fed back to the agent* as a
- *    `[loom]` message, so the linter's own output is what the model reads and
- *    acts on — keep the command quiet on success and terse on failure.
- *  - **waiting** hooks (`waiting` / `permission` / `question` / `plan_review` /
- *    `user_question` / `error` / `interrupted`) fire when a turn stops and wants
- *    a human. These never message the agent — a notifier that re-drove the turn
- *    it was announcing would loop — so a failure is logged and shown as an
- *    operator notice only.
- *
- * The command is handed to `sh -c` in the session's worktree, with the session's
- * facts in the environment (`LOOM_*`). Nothing is interpolated into the command
- * string: a branch name or a plan's text reaching a shell through substitution
- * is an injection, and through the environment is just a variable.
- *
- * Trust: a hook can come from the per-repo `.loom/config.toml`, i.e. from
- * whatever repo the daemon was pointed at. That is the same trust level
- * `[[mcp]]` already carries — its `command` is spawned too — so this adds no
- * new exposure, but it is worth knowing before running a daemon against a repo
- * you did not write.
+/** Runs configured shell commands, with bounded output and cancellable per-hook queues.
+ * Check hooks may feed failures to the agent; notification hooks never do.
+ * Commands use LOOM_* environment variables, not string interpolation.
  */
 import process from "node:process";
 import { spawn } from "node:child_process";
@@ -58,7 +37,7 @@ export interface HookRunnerOptions {
   repoRoot: string;
   log: Logger;
   /** Deliver a failed write hook's output to the agent (the commit-nudge path). */
-  onFeedback: (sessionId: string, text: string) => void;
+  onFeedback: (sessionId: string, text: string, signal: AbortSignal) => Promise<void>;
   /** Surface an operator-facing advisory (a waiting hook that failed). */
   onNotice: (text: string, tone: "info" | "warn") => void;
 }
@@ -68,13 +47,25 @@ const OUTPUT_CAP = 8_000;
 
 /**
  * How many times in a row one hook may message a session before it gives up.
- * A `turn_end` linter reporting a failure the agent then can't fix would
+ * A checker reporting a failure the agent then can't fix would
  * otherwise re-fire on the very turn its own message provoked, forever. The
  * counter resets on a clean run, and an *unchanged* failure never re-sends at
  * all (see `#lastFeedback`) — this is the backstop for a failure that keeps
  * changing shape.
  */
 const MAX_CONSECUTIVE_FEEDBACK = 3;
+
+interface PendingRun {
+  event: HookEvent;
+  session: HookSession;
+  files: string[];
+  ctx: { reason?: AwaitReason; detail?: string };
+}
+interface RunningHook {
+  sessionId: string;
+  abort: AbortController;
+  pending: Map<string, PendingRun>;
+}
 
 interface Attempt {
   code: number;
@@ -94,13 +85,8 @@ export class HookRunner {
   readonly #lastFeedback = new Map<string, string>();
   /** Consecutive feedback messages per session+hook; reset by a clean run. */
   readonly #feedbackRuns = new Map<string, number>();
-  /**
-   * One in-flight run per session+hook+event. A second fire while the first is
-   * still going is dropped rather than queued: a `file_write` hook on a turn
-   * that rewrites ten files should not spawn ten linters, and the run already
-   * going will read the same worktree anyway.
-   */
-  readonly #running = new Map<string, Promise<void>>();
+  /** Each configured hook owns a serial queue; pending writes retain every path. */
+  readonly #running = new Map<string, RunningHook>();
 
   constructor(opts: HookRunnerOptions) {
     this.#opts = opts;
@@ -108,6 +94,7 @@ export class HookRunner {
 
   /** Install (or hot-reload) the configured hooks, keeping only this repo's. */
   setHooks(hooks: HookConfig[]): void {
+    this.close();
     this.#hooks = hooks.filter(
       (h) => h.project === "" || matchGlob(h.project, this.#opts.repoRoot),
     );
@@ -126,7 +113,25 @@ export class HookRunner {
   }
 
   /** Forget a session's accumulated state (it closed, or was removed). */
+  close(): void {
+    for (const job of this.#running.values()) job.abort.abort();
+    this.#running.clear();
+    this.#inFlight.clear();
+    this.#turnFiles.clear();
+    this.#lastFeedback.clear();
+    this.#feedbackRuns.clear();
+  }
+
+  cancel(sessionId: string): void {
+    for (const [key, job] of this.#running) {
+      if (job.sessionId !== sessionId) continue;
+      job.abort.abort();
+      this.#running.delete(key);
+    }
+  }
+
   forget(sessionId: string): void {
+    this.cancel(sessionId);
     this.#inFlight.delete(sessionId);
     this.#turnFiles.delete(sessionId);
     for (const map of [this.#lastFeedback, this.#feedbackRuns]) {
@@ -150,14 +155,14 @@ export class HookRunner {
       if (paths.length === 0) return;
       let byCall = this.#inFlight.get(ev.sessionId);
       if (!byCall) this.#inFlight.set(ev.sessionId, (byCall = new Map()));
-      byCall.set(ev.id, paths);
+      byCall.set(`${ev.agentId ?? ""} ${ev.id}`, paths);
       return;
     }
     if (ev.type !== "tool_result") return;
     const byCall = this.#inFlight.get(ev.sessionId);
-    const paths = byCall?.get(ev.id);
+    const paths = byCall?.get(`${ev.agentId ?? ""} ${ev.id}`);
     if (!byCall || !paths) return;
-    byCall.delete(ev.id);
+    byCall.delete(`${ev.agentId ?? ""} ${ev.id}`);
     if (!ev.ok) return;
 
     const snap = session();
@@ -188,6 +193,7 @@ export class HookRunner {
    * it is; the generic `waiting` hook fires for all of them.
    */
   waiting(session: HookSession, reason: AwaitReason): void {
+    this.cancel(session.id);
     if (this.empty) return;
     this.fire("waiting", session, { reason });
     this.fire(reason, session, { reason });
@@ -195,6 +201,7 @@ export class HookRunner {
 
   /** The turn stopped on a failure (`error`) or was cut short (`interrupted`). */
   stopped(session: HookSession, event: "error" | "interrupted", detail: string): void {
+    this.forget(session.id);
     if (this.empty) return;
     this.fire(event, session, { detail });
   }
@@ -208,9 +215,15 @@ export class HookRunner {
     const files = ctx.files ?? [];
     const write = event === "file_write" || event === "turn_end";
     for (const hook of this.#hooks) {
-      if (!hook.on.includes(event)) continue;
+      if (!hook.on.some((e) => e === event)) continue;
       if (write && hook.match.length > 0 && !this.#matchesAny(hook, session, files)) continue;
-      void this.#run(hook, event, session, files, ctx);
+      if (event === "file_write") {
+        for (const file of files) {
+          if (hook.match.length === 0 || this.#matchesAny(hook, session, [file])) {
+            this.#run(hook, { event, session, files: [file], ctx });
+          }
+        }
+      } else this.#run(hook, { event, session, files, ctx });
     }
   }
 
@@ -223,23 +236,45 @@ export class HookRunner {
     });
   }
 
-  async #run(
-    hook: HookConfig,
-    event: HookEvent,
-    session: HookSession,
-    files: string[],
-    ctx: { reason?: AwaitReason; detail?: string },
-  ): Promise<void> {
-    const key = `${session.id} ${hook.name} ${event}`;
-    if (this.#running.has(key)) return;
-    const job = this.#exec(hook, event, session, files, ctx)
-      .then((attempt) => this.#report(hook, event, session, attempt))
-      .catch((err) => {
-        this.#opts.log.warn("hook failed to start", { hook: hook.name, event, err: String(err) });
-      })
-      .finally(() => this.#running.delete(key));
+  #run(hook: HookConfig, task: PendingRun): void {
+    const key = task.session.id + " " + this.#hooks.indexOf(hook);
+    let job = this.#running.get(key);
+    const pendingKey = task.event + " " + (task.event === "file_write" ? task.files[0] : "");
+    if (job) {
+      const prior = job.pending.get(pendingKey);
+      job.pending.set(pendingKey, {
+        ...task,
+        files: [...new Set([...(prior?.files ?? []), ...task.files])],
+      });
+      return;
+    }
+    job = {
+      sessionId: task.session.id,
+      abort: new AbortController(),
+      pending: new Map([[pendingKey, task]]),
+    };
     this.#running.set(key, job);
-    await job;
+    void this.#drain(key, hook, job);
+  }
+
+  async #drain(key: string, hook: HookConfig, job: RunningHook): Promise<void> {
+    const signal = job.abort.signal;
+    try {
+      for (const [pendingKey, task] of job.pending) {
+        job.pending.delete(pendingKey);
+        if (signal.aborted) break;
+        const { event, session, files, ctx } = task;
+        try {
+          const attempt = await this.#exec(hook, event, session, files, ctx, signal);
+          if (!signal.aborted) await this.#report(hook, event, session, attempt, signal);
+        } catch (err) {
+          if (!signal.aborted)
+            this.#opts.onNotice('hook "' + hook.name + '": ' + String(err), "warn");
+        }
+      }
+    } finally {
+      if (this.#running.get(key) === job) this.#running.delete(key);
+    }
   }
 
   #exec(
@@ -248,6 +283,7 @@ export class HookRunner {
     session: HookSession,
     files: string[],
     ctx: { reason?: AwaitReason; detail?: string },
+    signal: AbortSignal,
   ): Promise<Attempt> {
     const cwd = session.worktree ?? this.#opts.repoRoot;
     const env: Record<string, string> = {
@@ -288,21 +324,27 @@ export class HookRunner {
       };
       child.stdout.on("data", append);
       child.stderr.on("data", append);
-      const timer = setTimeout(() => {
-        timedOut = true;
+      const kill = (): void => {
         try {
           if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
         } catch {
           child.kill("SIGKILL"); // group already gone, or no pid — try the shell itself
         }
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        kill();
       }, hook.timeoutMs);
+      signal.addEventListener("abort", kill, { once: true });
       timer.unref();
       child.on("error", (err) => {
         clearTimeout(timer);
+        signal.removeEventListener("abort", kill);
         fail(err);
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        signal.removeEventListener("abort", kill);
         const text = out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}\n… [truncated]` : out;
         settle({ code: code ?? 1, output: text.trim(), timedOut });
       });
@@ -310,8 +352,14 @@ export class HookRunner {
   }
 
   /** Deal with a finished run: nothing on success, feedback or a notice on failure. */
-  #report(hook: HookConfig, event: HookEvent, session: HookSession, attempt: Attempt): void {
-    const key = `${session.id} ${hook.name}`;
+  async #report(
+    hook: HookConfig,
+    event: HookEvent,
+    session: HookSession,
+    attempt: Attempt,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const key = `${session.id} ${this.#hooks.indexOf(hook)}`;
     if (attempt.code === 0) {
       // A clean run clears the "already told the agent this" memo, so the next
       // regression is reported even if it looks identical to the last one.
@@ -330,7 +378,7 @@ export class HookRunner {
       output: attempt.output.slice(0, 400),
     });
 
-    if (event !== "file_write" && event !== "turn_end") {
+    if (hook.kind === "notify") {
       // A notifier that failed is the operator's problem, not the agent's.
       this.#opts.onNotice(`hook "${hook.name}" (${event}) ${why}`, "warn");
       return;
@@ -340,19 +388,20 @@ export class HookRunner {
     if (this.#lastFeedback.get(key) === body) return; // unchanged — the agent has been told
     const runs = (this.#feedbackRuns.get(key) ?? 0) + 1;
     if (runs > MAX_CONSECUTIVE_FEEDBACK) {
-      this.#opts.onNotice(
-        `hook "${hook.name}" has failed ${runs} turns running — not telling the agent again ` +
-          "until it passes once",
-        "warn",
-      );
       return;
     }
     this.#lastFeedback.set(key, body);
     this.#feedbackRuns.set(key, runs);
-    this.#opts.onFeedback(
+    if (runs === MAX_CONSECUTIVE_FEEDBACK)
+      this.#opts.onNotice(
+        `hook "${hook.name}": feedback limit reached; further failures are suppressed until it passes`,
+        "warn",
+      );
+    await this.#opts.onFeedback(
       session.id,
       `[loom] The \`${hook.name}\` hook ${why} after your edits:\n\n${body}\n\n` +
         "Fix what it reports, or say why it should stand.",
+      signal,
     );
   }
 }

@@ -355,65 +355,72 @@ leaving it at zero made the bulk of a caching agent's prompt spend free. An
 explicit `cache_write` always wins, and a provider that reports no TTL (the
 OpenAI-compatible ones, which have no write premium) stays at zero.
 
-**Hooks (`[[hooks]]`).** Shell commands the daemon runs when something happens
-in a session — a linter after the agent edits a file, `notify-send` when a turn
-parks on a question. Declare them in the user-level
-`~/.config/loom/config.toml` or in a repo's `.loom/config.toml` — but not both:
-config layering replaces arrays wholesale, so a repo-level `[[hooks]]` shadows
-every user-level entry. Scope a per-project hook with `project` instead. Either
-file hot-applies on save, no restart. (Nothing to do with `.loom/hooks/`, which holds the
-git `pre-push` block.)
+**Hooks (`[[hooks]]`).** Commands run asynchronously in the session's worktree.
+Declare them in `~/.config/loom/config.toml` or `.loom/config.toml`. Repository
+arrays replace user arrays; use `project` to scope entries in the user config.
+Changes hot-apply; changing hooks cancels old runs and clears their feedback state.
 
-| key       | meaning                                                                            |
-| --------- | ---------------------------------------------------------------------------------- |
-| `on`      | one event or a list — see below                                                    |
-| `run`     | handed to `sh -c`, in the session's worktree                                       |
-| `project` | glob on the daemon's repo root (`~` expanded, `**` crosses `/`); `""` = every repo |
-| `match`   | path globs; a _write_ event fires only if a written file matches                   |
-| `name`    | label for logs and the agent-facing message; defaults to `run`'s first word        |
-| `timeout` | seconds before `SIGKILL`. Default 30, clamped 1–600                                |
+| key       | meaning                                                                           |
+| --------- | --------------------------------------------------------------------------------- |
+| `kind`    | `"notify"` (default) never messages the agent; `"check"` sends failures back      |
+| `on`      | event or list; checks accept only `file_write` and `turn_end`                     |
+| `run`     | command passed to `sh -c`                                                         |
+| `name`    | optional display label, defaults to the command's first word; duplicates are fine |
+| `project` | repo-root glob, with `~` expansion; empty means every repo                        |
+| `match`   | path glob or list, matched against absolute and worktree-relative paths           |
+| `timeout` | seconds; default 30, clamped to 1–600                                             |
 
-_Write_ events: `file_write` (one write tool's result — `Write` / `Edit` /
-`MultiEdit` / `tilth_write` / the aisdk engine's own editors, across every
-provider) and `turn_end` (once per finished turn, carrying every file it wrote).
-_Waiting_ events, for when a turn stops and wants a human: `waiting` (any
-blocked reason at once) or one of `permission` / `question` / `plan_review` /
-`user_question`, plus `error` and `interrupted`.
+`file_write` runs once per successfully written path. Each hook runs serially:
+if another write arrives while it runs, that path is retained for a later run.
+Repeated pending writes to the same path collapse into one run. This is
+asynchronous: it does not hold the agent's next tool call until formatting ends.
+`turn_end` carries the turn's written paths, including an empty list when no
+files were written. Pending turn-end runs merge their path sets. A `match`
+filter excludes events without matching paths.
 
-The session reaches the command through the environment rather than string
-interpolation — `$LOOM_HOOK_EVENT`, `$LOOM_SESSION_ID`, `$LOOM_SESSION_TITLE`,
-`$LOOM_SESSION_PROVIDER`, `$LOOM_SESSION_MODEL`, `$LOOM_SESSION_STATUS`,
-`$LOOM_WORKTREE`, `$LOOM_BRANCH`, `$LOOM_REPO_ROOT`, `$LOOM_AWAIT_REASON`,
-`$LOOM_FILE` / `$LOOM_FILES` (newline-separated), and `$LOOM_MESSAGE`, a
-ready-made one-line summary for a desktop toast.
+Notifications also accept `waiting` (any blocked reason), `permission`,
+`question`, `plan_review`, `user_question`, `error`, and `interrupted`.
+Subscribing to both `waiting` and a specific reason delivers both events.
+`match` only applies to write events.
 
-A **write** hook that exits non-zero has its output sent to the agent as a
-`[loom]` message (the commit-reminder path), so it fixes what the checker
-reports: keep the command quiet on success and terse on failure. An identical
-failure is never re-sent, and a hook failing three turns running stops talking
-to the agent until it passes once. A **waiting** hook never messages the agent —
-it would re-drive the very turn it was announcing — so a failure there is logged
-and raised as an operator notice. Runs are coalesced per session + hook + event,
-so a turn that rewrites ten files spawns one linter, not ten.
+Environment: `LOOM_HOOK`, `LOOM_HOOK_EVENT`, `LOOM_SESSION_ID`,
+`LOOM_SESSION_TITLE`, `LOOM_SESSION_PROVIDER`, `LOOM_SESSION_MODEL`,
+`LOOM_SESSION_STATUS`, `LOOM_WORKTREE`, `LOOM_BRANCH`, `LOOM_REPO_ROOT`,
+`LOOM_AWAIT_REASON`, `LOOM_DETAIL`, and `LOOM_MESSAGE` (a toast summary).
+`LOOM_FILES` is newline-separated; `LOOM_FILE` is the first path and is the
+single changed path for `file_write`. Quote shell variables normally.
+
+A failed check sends bounded command output to the agent. Repeated identical
+output is suppressed; at most three failure messages are sent per hook and
+session until a successful run resets the limit. Notification failures only
+raise an operator notice. Interrupting, closing, or removing a session cancels
+its outstanding runs and feedback. Entering a human-input wait cancels pending
+runs before firing waiting notifications. Timeouts and cancellation kill the
+command's process group.
+
+Write detection covers Claude's editors, aisdk `edit`, tilth write/edit, and
+ChatGPT file changes. Arbitrary shell commands are not inspected for writes.
 
 ```toml
-[[hooks]]                                  # lint what the turn touched
-on    = "turn_end"
+[[hooks]]
+kind = "check"
+on = "turn_end"
 match = ["**/*.ts"]
-run   = "deno task lint --quiet"
+run = "deno task lint"
 
-[[hooks]]                                  # toast whenever a session wants you
-on  = ["waiting", "turn_end"]
+[[hooks]]
+on = ["waiting", "turn_end"]
 run = 'notify-send "loom" "$LOOM_MESSAGE"'
 
-[[hooks]]                                  # only in one project
-on      = "file_write"
+[[hooks]]
+kind = "check"
+on = "file_write"
 project = "~/dev/loom"
-run     = 'oxfmt "$LOOM_FILE"'
+run = 'oxfmt "$LOOM_FILE"'
 ```
 
-`loom config` lints the hooks too: a `run` whose command isn't on `PATH`, and a
-`match` on a hook with no write event to filter.
+Invalid hook kinds, events, and missing commands are rejected. An invalid
+reload keeps the running configuration and reports the error.
 
 **Session titles.** A session's title starts as its first message clipped to 200
 chars; after the first successful turn the daemon replaces it with a 4–6 word

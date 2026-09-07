@@ -8,11 +8,20 @@ import { LoomClient } from "@loom/client";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { writtenPaths } from "@loom/core/tool-paths";
 import { lintConfig, normalizeConfig } from "@loom/daemon/config/config";
-import { matchGlob } from "@loom/daemon/daemon/hooks";
+import { HookRunner, matchGlob } from "@loom/daemon/daemon/hooks";
+import { makeLogger } from "@loom/core/logger";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness } from "@loom/harness";
 
 const cfg = (toml: string) => normalizeConfig(parseToml(toml));
+
+const until = async (ready: () => boolean | Promise<boolean>): Promise<void> => {
+  const end = Date.now() + 3000;
+  while (!(await ready())) {
+    assert.ok(Date.now() < end, "timed out waiting for hook");
+    await delay(10);
+  }
+};
 
 // --- writtenPaths -------------------------------------------------------------
 
@@ -35,6 +44,173 @@ test("writtenPaths unpacks tilth_write's batch, de-duplicated", () => {
   // a batch write with no usable entries is "not a write", not "wrote nothing"
   assert.deepEqual(writtenPaths("mcp__tilth__tilth_write", { files: [] }), []);
   assert.deepEqual(writtenPaths("Write", "not an object"), []);
+  assert.deepEqual(writtenPaths("NotebookEdit", { notebook_path: "a.ipynb" }), ["a.ipynb"]);
+  assert.deepEqual(writtenPaths("apply_patch", { changes: [{ path: "a.ts" }, { path: "b.ts" }] }), [
+    "a.ts",
+    "b.ts",
+  ]);
+});
+
+test("same-named hooks run independently and overlapping writes retain every path", async () => {
+  const dir = await Deno.makeTempDir({ dir: "/tmp" });
+  const output = join(dir, "output");
+  const started = join(dir, "started");
+  const release = join(dir, "release");
+  const other = join(dir, "other");
+  const runner = new HookRunner({
+    repoRoot: dir,
+    log: makeLogger("test"),
+    onFeedback: async () => assert.fail("notification sent feedback"),
+    onNotice: () => {},
+  });
+  const session = {
+    id: "s",
+    title: null,
+    provider: "fake",
+    model: null,
+    status: "running",
+    worktree: dir,
+    branch: null,
+  };
+  runner.setHooks(
+    cfg(`
+[[hooks]]
+on = "file_write"
+run = """sh -c 'touch ${started}; while ! test -e ${release}; do sleep 0.01; done; echo "$LOOM_FILE" >> ${output}'"""
+[[hooks]]
+on = "file_write"
+run = "sh -c 'touch ${other}'"
+`).hooks,
+  );
+  try {
+    runner.fire("file_write", session, { files: [join(dir, "a.ts")] });
+    await until(() => existsSync(started) && existsSync(other));
+    runner.fire("file_write", session, { files: [join(dir, "b.ts"), join(dir, "a.ts")] });
+    runner.fire("file_write", session, { files: [join(dir, "b.ts")] });
+    writeFileSync(release, "");
+    await until(
+      () => existsSync(output) && readFileSync(output, "utf8").trim().split("\n").length === 3,
+    );
+    assert.deepEqual(
+      readFileSync(output, "utf8").trim().split("\n"),
+      ["a.ts", "b.ts", "a.ts"].map((p) => join(dir, p)),
+    );
+  } finally {
+    runner.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+test("a failing turn_end notification never starts another agent turn", async () => {
+  let notices = 0;
+  const runner = new HookRunner({
+    repoRoot: "/tmp",
+    log: makeLogger("test"),
+    onFeedback: async () => assert.fail("notification sent feedback"),
+    onNotice: () => {
+      notices++;
+    },
+  });
+  runner.setHooks(cfg('[[hooks]]\non="turn_end"\nrun="exit 1"').hooks);
+  try {
+    runner.turnEnded({
+      id: "s",
+      title: null,
+      provider: "fake",
+      model: null,
+      status: "idle",
+      worktree: null,
+      branch: null,
+    });
+    await until(() => notices === 1);
+  } finally {
+    runner.close();
+  }
+});
+
+test("waiting, removal, reload, and shutdown invalidate feedback waiting for delivery", async () => {
+  for (const action of ["waiting", "removal", "reload", "shutdown"]) {
+    const delivery = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const runner = new HookRunner({
+      repoRoot: "/tmp",
+      log: makeLogger("test"),
+      onFeedback: async (_id, _text, pending) => {
+        signal = pending;
+        await delivery.promise;
+      },
+      onNotice: () => {},
+    });
+    runner.setHooks(cfg('[[hooks]]\nkind="check"\non="turn_end"\nrun="exit 1"').hooks);
+    const session = {
+      id: "s",
+      title: null,
+      provider: "fake",
+      model: null,
+      status: "idle",
+      worktree: null,
+      branch: null,
+    };
+    try {
+      runner.turnEnded(session);
+      await until(() => signal !== undefined);
+      switch (action) {
+        case "waiting":
+          runner.waiting(session, "permission");
+          break;
+        case "removal":
+          runner.forget(session.id);
+          break;
+        case "reload":
+          runner.setHooks([]);
+          break;
+        case "shutdown":
+          runner.close();
+          break;
+      }
+      assert.equal(signal?.aborted, true, action);
+    } finally {
+      delivery.resolve();
+      runner.close();
+    }
+  }
+});
+
+test("interrupt kills a pending checker and prevents feedback from restarting the session", async () => {
+  const dir = await Deno.makeTempDir({ dir: "/tmp" });
+  const started = join(dir, "started"),
+    release = join(dir, "release"),
+    completed = join(dir, "completed");
+  const h = await makeHarness({
+    config: `[[hooks]]\nkind="check"\non="file_write"\nrun="""touch ${started}; while ! test -e ${release}; do sleep 0.01; done; touch ${completed}; echo bad; exit 1"""`,
+  });
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+  });
+  try {
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "edit",
+      provider: "fake",
+    });
+    const f = ((await h.daemon.providers.get("fake")) as FakeProvider).session(s.id)!;
+    f.emit({ type: "tool_call", id: "w", name: "Write", input: { file_path: "a.ts" } });
+    f.emit({ type: "tool_result", id: "w", ok: true, output: "ok" });
+    await until(() => existsSync(started));
+    await c.request("session.interrupt", { id: s.id });
+    writeFileSync(release, "");
+    await delay(150);
+    assert.equal(
+      (await c.request<SessionSnapshot>("session.get", { id: s.id })).status.kind,
+      "interrupted",
+    );
+    assert.ok(!existsSync(completed), "cancelled command must not continue editing files");
+  } finally {
+    await c.close();
+    await h.cleanup();
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 // --- matchGlob ----------------------------------------------------------------
@@ -83,14 +259,13 @@ run = "notify-send loom"
   assert.equal(notify.project, "", "no project = every repo");
 });
 
-test("[[hooks]] drops an entry with no run or no recognised event, and clamps timeout", () => {
-  assert.deepEqual(cfg('[[hooks]]\non = "turn_end"\n').hooks, [], "no run");
-  assert.deepEqual(cfg('[[hooks]]\nrun = "x"\n').hooks, [], "no on");
-  assert.deepEqual(cfg('[[hooks]]\non = "typo"\nrun = "x"\n').hooks, [], "unknown event");
-  // an unknown event alongside a good one keeps the entry, minus the typo
-  assert.deepEqual(cfg('[[hooks]]\non = ["typo", "waiting"]\nrun = "x"\n').hooks[0]?.on, [
-    "waiting",
-  ]);
+test("[[hooks]] rejects invalid entries and clamps timeout", () => {
+  assert.throws(() => cfg('[[hooks]]\non = "turn_end"\n'), /run/);
+  assert.throws(() => cfg('[[hooks]]\nrun = "x"\n'), /on/);
+  assert.throws(() => cfg('[[hooks]]\non = "typo"\nrun = "x"\n'), /on/);
+  assert.throws(() => cfg('[[hooks]]\non=["waiting", "typo"]\nrun="x"'), /on/);
+  assert.throws(() => cfg('[[hooks]]\nkind="check"\non="waiting"\nrun="x"'), /check hook/);
+  assert.throws(() => cfg('[[hooks]]\nkind="typo"\non="waiting"\nrun="x"'), /kind/);
   // de-duped, so a repeated event doesn't double-fire
   assert.deepEqual(cfg('[[hooks]]\non = ["waiting", "waiting"]\nrun = "x"\n').hooks[0]?.on, [
     "waiting",
@@ -198,7 +373,7 @@ test("a waiting hook fires when the turn blocks, with the reason in the environm
 test("a failing write hook sends its output to the agent, once per distinct failure", async () => {
   const hh = await makeHarness({
     config:
-      '[[hooks]]\nname = "lint"\non = "turn_end"\nrun = """sh -c \'echo a.ts:1 no semicolon; exit 1\'"""\n',
+      '[[hooks]]\nkind = "check"\nname = "lint"\non = "turn_end"\nrun = """sh -c \'echo a.ts:1 no semicolon; exit 1\'"""\n',
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -282,7 +457,8 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
 test("a hook that hangs is killed at its timeout, and the agent hears why", async () => {
   const hh = await makeHarness({
     // `sleep` outlives the timeout; the kill has to reach it, not just the `sh`.
-    config: '[[hooks]]\nname = "slow"\non = "turn_end"\nrun = "sleep 60"\ntimeout = 1\n',
+    config:
+      '[[hooks]]\nkind = "check"\nname = "slow"\non = "turn_end"\nrun = "sleep 60"\ntimeout = 1\n',
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,

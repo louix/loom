@@ -163,7 +163,7 @@ export interface ClaudeProfile {
  *  - *Write* events — `file_write` (one tool call that wrote files, fired as
  *    soon as its result lands) and `turn_end` (once per turn, with every file
  *    the turn wrote). A linter usually wants `turn_end`; a formatter that
- *    should run before the agent reads the file back wants `file_write`.
+ *    should run shortly after an edit wants `file_write` (asynchronous).
  *  - *Waiting* events — the turn stopped and wants a human: `waiting` covers
  *    every blocked reason at once, and `permission` / `question` /
  *    `plan_review` / `user_question` name one apiece. `error` and `interrupted`
@@ -198,11 +198,14 @@ const isHookEvent = (v: unknown): v is HookEvent =>
   typeof v === "string" && (HOOK_EVENTS as readonly string[]).includes(v);
 
 /** One `[[hooks]]` entry, normalized. */
-export interface HookConfig {
+export type WriteHookEvent = "file_write" | "turn_end";
+
+export type HookConfig = HookFields &
+  ({ kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] });
+
+interface HookFields {
   /** Label for logs and the agent-facing failure message; defaults to `run`'s first word. */
   name: string;
-  /** Events this hook fires on. Never empty — an entry with no valid event is dropped. */
-  on: HookEvent[];
   /** The command, run through `sh -c` in the session's worktree. */
   run: string;
   /**
@@ -475,28 +478,43 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
 const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
 
 /**
- * `[[hooks]]` → normalized entries. An entry with no `run`, or with no
- * recognised `on` event, is dropped ({@link lintConfig} says so out loud) —
- * a typo'd hook must not silently fire on everything.
+ * Reject invalid entries at the boundary; hot reload keeps the old config on error.
  */
 const parseHooks = (raw: unknown): HookConfig[] => {
+  if (raw !== undefined && !Array.isArray(raw)) throw new Error("hooks: use [[hooks]] entries");
   const rows = Array.isArray(raw) ? raw : [];
   const out: HookConfig[] = [];
   for (const entry of rows) {
     const e = asRecord(entry);
     const run = str(e["run"], "").trim();
-    if (run === "") continue;
-    const onRaw = e["on"];
-    const on = (Array.isArray(onRaw) ? onRaw : [onRaw]).filter(isHookEvent);
-    if (on.length === 0) continue;
+    if (run === "") throw new Error("hook: run must be a non-empty command");
+    const onRaw = Array.isArray(e["on"]) ? e["on"] : [e["on"]];
+    const on = onRaw.filter(isHookEvent);
+    if (on.length === 0 || on.length !== onRaw.length) {
+      throw new Error("hook: on must contain valid hook events");
+    }
+    const kind = e["kind"] ?? "notify";
+    if (kind !== "check" && kind !== "notify")
+      throw new Error("hook: kind must be check or notify");
+    const events = [...new Set(on)];
+    const trigger: { kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] } =
+      kind === "check"
+        ? {
+            kind,
+            on: events.map((event): WriteHookEvent => {
+              if (event !== "file_write" && event !== "turn_end")
+                throw new Error("check hook: only file_write and turn_end are supported");
+              return event;
+            }),
+          }
+        : { kind, on: events };
     // `match` takes one glob or a list, like `on`.
     const matchRaw = e["match"];
     const matchList = Array.isArray(matchRaw) ? matchRaw : [matchRaw];
     const timeoutSec = num(e["timeout"], DEFAULT_HOOK_TIMEOUT_MS / 1000);
     out.push({
       name: str(e["name"], "").trim() || (run.split(/\s+/)[0] ?? "hook"),
-      // De-dupe so `on = ["waiting", "waiting"]` doesn't double-fire.
-      on: [...new Set(on)],
+      ...trigger,
       run,
       project: expandTilde(str(e["project"], "").trim()),
       match: strArray(matchList, []),
