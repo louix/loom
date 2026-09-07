@@ -200,12 +200,16 @@ const mkStubDaemon = async (
   onHello: (helloId: number, conn: StubConn) => void | Promise<void>,
 ): Promise<{
   handshakes: () => number;
+  /** The most sockets this stub ever had open at once — a client that starts a
+   *  second connection attempt while one is still opening shows up here. */
+  peak: () => number;
   received: () => ReadonlyArray<{ id: number; method: string }>;
   dropAll: () => void;
   close: () => Promise<void>;
 }> => {
   const listener = Deno.listen({ transport: "unix", path: sockPath });
   let accepted = 0;
+  let peak = 0;
   const conns = new Set<Deno.Conn>();
   const enc = new TextEncoder();
   const received: Array<{ id: number; method: string }> = [];
@@ -214,6 +218,7 @@ const mkStubDaemon = async (
       accepted++;
       const nth = accepted;
       conns.add(conn);
+      peak = Math.max(peak, conns.size);
       const stub: StubConn = {
         nth,
         send: async (line) => {
@@ -255,6 +260,8 @@ const mkStubDaemon = async (
           }
         } catch {
           // the client hanging up is the normal end of this
+        } finally {
+          conns.delete(conn);
         }
       })();
     }
@@ -271,6 +278,7 @@ const mkStubDaemon = async (
   };
   return {
     handshakes: () => accepted,
+    peak: () => peak,
     received: (): ReadonlyArray<{ id: number; method: string }> => received,
     dropAll,
     close: async () => {
@@ -356,6 +364,50 @@ nodeTest("a daemon that comes back on a different wire version stops the reconne
     await delay(500);
     assert.equal(stub.handshakes(), settled, "no further reconnect attempts");
     assert.deepEqual(mismatchOf(c), { daemon: PROTOCOL_VERSION + 7, client: PROTOCOL_VERSION });
+  } finally {
+    await c.close();
+    await stub.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+nodeTest("a socket that drops mid-handshake is one attempt in flight, not two", async () => {
+  const dir = await Deno.makeTempDir();
+  const sockPath = `${dir}/loom.sock`;
+  // The second connection — the first reconnect — dies while its `hello` is on
+  // the wire. That close used to start its own reconnect loop while the loop
+  // that opened it was still awaiting the handshake, so two of them dialled.
+  const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+    if (conn.nth === 2) {
+      conn.close();
+      return;
+    }
+    await conn.send(stateLine(dir));
+    await conn.send(helloLine(id, dir));
+  });
+  const c = await LoomClient.connect({
+    repoRoot: dir,
+    sockPath,
+    autospawn: false,
+    reconnect: true,
+  });
+  try {
+    assert.equal(c.getState().tag, "data");
+    c.dropForTest();
+
+    await waitFor(() => c.getState().tag === "pending", 5000);
+    await waitFor(() => c.getState().tag === "data", 5000);
+    assert.equal(stub.peak(), 1, "one socket at a time, all the way through");
+    assert.equal(
+      stub.handshakes(),
+      3,
+      "the first connection, the reconnect that died, and the retry that worked",
+    );
+
+    // …and having recovered, it is a working connection, not a half-open one.
+    const settled = stub.handshakes();
+    await delay(300);
+    assert.equal(stub.handshakes(), settled, "nothing kept dialling behind it");
   } finally {
     await c.close();
     await stub.close();

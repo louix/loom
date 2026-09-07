@@ -119,6 +119,66 @@ const writeAll = async (conn: Deno.Conn, data: Uint8Array): Promise<void> => {
 };
 
 /**
+ * One connection attempt: the socket, and everything whose lifetime is exactly
+ * that socket's.
+ *
+ * The frame buffer, the decoder, the write chain and the pre-hello queue used
+ * to be fields on the client, reset field by field whenever a socket was
+ * installed — so every new one of them was a thing to remember to reset, and
+ * forgetting spliced a dead connection's bytes into a live one's frame stream.
+ * Here they are simply gone with the object.
+ *
+ * Late asynchronous work asks `client.#attempt === mine` rather than comparing
+ * a counter to a field: one identity check, and the thing it identifies is the
+ * thing that owns the state the work would touch.
+ */
+class Attempt {
+  readonly sock: Deno.Conn;
+  /** Resolves once the socket is gone and its pending work has been settled.
+   *  The supervisor waits on this; nothing else decides what happens next. */
+  readonly closed: Promise<void>;
+  /** The read loop, so `close()` can await a clean stop. */
+  readLoop: Promise<void> = Promise.resolve();
+  buf = "";
+  decoder = new TextDecoder();
+  /**
+   * Serializes writes on this socket — `writeAll` can return after a *partial*
+   * write, so two concurrent requests would interleave their halves and
+   * corrupt both frames. Per attempt, so a write queued against a dead socket
+   * cannot hold up the next one.
+   */
+  writes: Promise<void> = Promise.resolve();
+  helloDone = false;
+  /** Pushes that arrived before `hello` returned, replayed in order once it
+   *  did. Bounded: a handshake that never completes must not let a chatty
+   *  daemon grow this without limit. */
+  preHello: Array<PushFrame | StatePush> = [];
+  #finish!: () => void;
+
+  constructor(sock: Deno.Conn) {
+    this.sock = sock;
+    this.closed = new Promise<void>((resolve) => {
+      this.#finish = resolve;
+    });
+  }
+
+  /** Drop the socket. Idempotent — the read loop's `finally` reports the close
+   *  exactly once regardless of who asked for it. */
+  dispose(): void {
+    try {
+      this.sock.close();
+    } catch {
+      // already gone
+    }
+  }
+
+  /** The socket is gone and its pending work is settled. */
+  finish(): void {
+    this.#finish();
+  }
+}
+
+/**
  * Thin client for the Loom daemon. Handles connect-or-spawn, the `hello`
  * handshake, request/response correlation, and — for long-lived uses like
  * `loom tail` — automatic reconnect with `sinceSeq` gap replay.
@@ -126,10 +186,12 @@ const writeAll = async (conn: Deno.Conn, data: Uint8Array): Promise<void> => {
 export class LoomClient {
   readonly clientId: string;
   #opts: Required<ConnectOptions>;
-  #sock: Deno.Conn | null = null;
-  #readLoop: Promise<void> | null = null;
-  #buf = "";
-  #decoder = new TextDecoder();
+  /**
+   * The live connection attempt, or none. Exactly one exists at a time: the
+   * supervisor disposes an attempt before opening another, and the identity of
+   * this field is what every socket callback checks itself against.
+   */
+  #attempt: Attempt | null = null;
   #nextId = 1;
   #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   #pushListeners = new Set<PushListener>();
@@ -138,30 +200,16 @@ export class LoomClient {
   #closed = false;
   /**
    * A handshake failure no reconnect can fix, latched on first sight. While
-   * set, the reconnect loop does not run and a dropped socket keeps the `error`
+   * set, the supervisor does not retry and a dropped socket keeps the `error`
    * state rather than falling back to `pending` — the two builds cannot be made
    * to agree by waiting, so saying "reconnecting…" would be a lie.
    */
   #fatal: ConnectionError | null = null;
-  /**
-   * Bumped on every `#attach`. Every socket callback carries the generation it
-   * was started under and no-ops when it no longer matches, so a read, a close
-   * or a response from a socket the reconnect loop has already superseded
-   * cannot touch current state. Lifecycle bookkeeping, not a wire revision.
-   */
-  #generation = 0;
-  /**
-   * Serializes writes on the current socket — `writeAll` can return after a
-   * *partial* write, so two concurrent requests would interleave their halves
-   * and corrupt both frames. Reset per socket in `#attach`, so a write queued
-   * against a dead socket can't hold up the new one.
-   */
-  #writeChain: Promise<void> = Promise.resolve();
-  #helloDone = false;
-  #preHelloQueue: Array<PushFrame | StatePush> = [];
   /** The daemon epoch from the last hello — a change means it restarted. */
   #daemonEpoch: string | null = null;
   daemonInfo: HelloResult["daemon"] | null = null;
+  /** Cuts a backoff sleep short when `close()` lands during one. */
+  #wake: () => void = () => {};
 
   #state: ClientState = loadableIdle;
   #snapshotListeners = new Set<SnapshotListener>();
@@ -185,14 +233,17 @@ export class LoomClient {
   static async connect(opts: ConnectOptions): Promise<LoomClient> {
     const c = new LoomClient(opts);
     c.#setState(loadablePending);
+    let first: Attempt;
     try {
-      await c.#dial(opts.autospawn ?? true);
-      await c.#handshake(undefined);
+      // The same opening path a reconnect uses. The only difference is what
+      // `connect()` does with a failure: it throws, where the supervisor backs
+      // off and tries again.
+      first = await c.#open(undefined);
       // A hello response is not a connection. Every caller of `connect()` goes
       // straight on to read the fleet, so resolving before the first snapshot
       // hands them a `pending` and makes "no snapshot yet" indistinguishable
       // from "no sessions".
-      await c.#awaitFirstSnapshot();
+      await c.#awaitFirstSnapshot(first);
     } catch (err) {
       // `#handshake` already installed the precise error for a protocol
       // mismatch; anything else is the transport failing to come up at all.
@@ -206,23 +257,23 @@ export class LoomClient {
       }
       throw err;
     }
+    c.#supervise(first);
     return c;
   }
 
   /** Resolve once a valid snapshot is installed; reject (having closed the
    *  socket) if the daemon never sends one. Startup only — a reconnect keeps
    *  the last snapshot until the new one lands. */
-  #awaitFirstSnapshot(): Promise<void> {
+  #awaitFirstSnapshot(attempt: Attempt): Promise<void> {
     if (this.#state.tag === "data") return Promise.resolve();
-    const gen = this.#generation;
     return new Promise<void>((resolve, reject) => {
       let off: (() => void) | null = null;
       const timer = setTimeout(() => {
         off?.();
         // Nothing will hold this client once `connect()` throws, so don't
-        // leave a socket or a reconnect loop running behind it.
+        // leave a socket or a supervisor running behind it.
         this.#closed = true;
-        this.#invalidate(gen);
+        attempt.dispose();
         reject(new Error("daemon completed the handshake but sent no state snapshot"));
       }, this.#opts.firstSnapshotMs);
       // Safe to install after the timer: the `data` early-return above means
@@ -254,7 +305,7 @@ export class LoomClient {
   };
 
   async request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
-    if (!this.#sock) throw new Error("not connected");
+    if (!this.#attempt) throw new Error("not connected");
     const id = this.#nextId++;
     const limit = timeoutMs ?? LoomClient.#SLOW_METHODS[method] ?? 30_000;
     const frame: RequestFrame = {
@@ -292,34 +343,20 @@ export class LoomClient {
   }
 
   /**
-   * Queue one frame on the current socket's write chain. A failure means part
+   * Queue one frame on the current attempt's write chain. A failure means part
    * of a frame may be on the wire with no way to tell the daemon so: the frame
    * is never retried (a mutation would then run twice) and nothing more is
-   * written onto a stream we know has lost bytes. Invalidating the socket
-   * routes the rest through `#onSocketClose`, which rejects everything
-   * outstanding as `disconnected` — the "may have completed" answer, which is
-   * the truth here.
+   * written onto a stream we know has lost bytes. Dropping the socket routes
+   * the rest through `#onSocketClose`, which rejects everything outstanding as
+   * `disconnected` — the "may have completed" answer, which is the truth here.
    */
   #send(frame: RequestFrame): void {
-    const sock = this.#sock;
-    if (!sock) return;
-    const gen = this.#generation;
+    const a = this.#attempt;
+    if (!a) return;
     const bytes = encoder.encode(JSON.stringify(frame) + "\n");
-    this.#writeChain = this.#writeChain.then(() =>
-      this.#sock === sock ? writeAll(sock, bytes).catch(() => this.#invalidate(gen)) : undefined,
+    a.writes = a.writes.then(() =>
+      this.#attempt === a ? writeAll(a.sock, bytes).catch(() => a.dispose()) : undefined,
     );
-  }
-
-  /** Drop the socket belonging to generation `gen`, if it is still the current
-   *  one. A superseded generation's socket is already gone and closing "the"
-   *  socket would take the live one with it. */
-  #invalidate(gen: number): void {
-    if (gen !== this.#generation) return;
-    try {
-      this.#sock?.close();
-    } catch {
-      // already gone
-    }
   }
 
   /** The current authoritative daemon state. */
@@ -370,20 +407,23 @@ export class LoomClient {
 
   async close(): Promise<void> {
     this.#closed = true;
-    const sock = this.#sock;
-    this.#sock = null;
-    // Closing while reconnecting has no socket to drop, so `#onSocketClose`
-    // never runs and nothing else would move the state off `pending` — leaving
-    // a client the caller has finished with still saying "reconnecting…". A
-    // latched protocol mismatch is the truth and outlives the close.
+    // Closing while reconnecting has no socket to drop, so nothing else would
+    // move the state off `pending` — leaving a client the caller has finished
+    // with still saying "reconnecting…". A latched protocol mismatch is the
+    // truth and outlives the close.
     if (this.#fatal === null) this.#setState(loadableIdle);
-    if (!sock) return;
-    try {
-      sock.close();
-    } catch {
-      // already gone
-    }
-    await this.#readLoop;
+    // Cut a backoff sleep short; the supervisor then sees `#closed` and stops.
+    // It is deliberately not awaited: it may be inside a dial that takes as
+    // long as a spawned daemon takes to listen, and nobody waiting on `close()`
+    // should wait for that. `#open` closes a socket handed back after this.
+    this.#wake();
+    const a = this.#attempt;
+    if (!a) return;
+    // Left installed on purpose: `#onSocketClose` is what rejects everything
+    // still outstanding as `disconnected`, and a request in flight when the
+    // caller closed us deserves that answer rather than its own timeout.
+    a.dispose();
+    await a.readLoop;
   }
 
   /**
@@ -391,26 +431,59 @@ export class LoomClient {
    * reconnect path (with `sinceSeq` gap replay) runs. Not for production use.
    */
   dropForTest(): void {
-    try {
-      this.#sock?.close();
-    } catch {
-      // already gone
-    }
+    this.#attempt?.dispose();
   }
 
   // -------------------------------------------------------------------------
   // connection management
   // -------------------------------------------------------------------------
 
-  async #dial(autospawn: boolean): Promise<void> {
+  /**
+   * Open one connection: dial (spawning a daemon if nothing is listening),
+   * install the attempt, and complete the handshake. The same path for the
+   * first connection and for every reconnect — the only difference is
+   * `sinceSeq`, which is `undefined` when there is no stream to resume.
+   *
+   * Every failure disposes what it built. Nothing partial is left installed for
+   * the next attempt to inherit.
+   */
+  async #open(sinceSeq: number | undefined): Promise<Attempt> {
+    let sock: Deno.Conn;
     try {
-      this.#sock = await tryConnect(this.#opts.sockPath);
+      sock = await tryConnect(this.#opts.sockPath);
     } catch (err) {
-      if (!autospawn || !isRetryableConnectError(err)) throw err;
+      if (!this.#opts.autospawn || !isRetryableConnectError(err)) throw err;
       await this.#spawnDaemon();
-      this.#sock = await this.#connectWithRetry();
+      sock = await this.#connectWithRetry();
     }
-    this.#attach(this.#sock);
+    // Dialling takes as long as it takes, and `close()` can land in the middle
+    // of it. A socket handed back after that is not a connection — installing
+    // it would reopen a client the caller has finished with.
+    if (this.#closed || this.#fatal !== null) {
+      try {
+        sock.close();
+      } catch {
+        // already gone
+      }
+      throw new Error("client closed while connecting");
+    }
+    const a = new Attempt(sock);
+    this.#attempt = a;
+    a.readLoop = this.#runReadLoop(a);
+    try {
+      await this.#handshake(a, sinceSeq);
+    } catch (err) {
+      // The socket may still be up (a mismatch is an answer, not a drop), and a
+      // half-open attempt is exactly what the next one must not inherit.
+      if (this.#attempt === a) this.#attempt = null;
+      a.dispose();
+      throw err;
+    }
+    // It dropped again while the handshake was in flight, so this connection is
+    // already over — `#onSocketClose` has told the supervisor, and reporting
+    // success here would announce one that no longer exists.
+    if (this.#attempt !== a) throw new Error("connection dropped during the handshake");
+    return a;
   }
 
   async #spawnDaemon(): Promise<void> {
@@ -438,52 +511,40 @@ export class LoomClient {
     throw new Error(`daemon did not come up on ${this.#opts.sockPath}`);
   }
 
-  #attach(sock: Deno.Conn): void {
-    // Fresh socket ⇒ fresh pre-hello buffer. A previous handshake that failed
-    // (timeout, socket dropped again) would otherwise leave frames from the
-    // dead connection here for the next successful `#handshake` to drain.
-    this.#preHelloQueue = [];
-    this.#buf = "";
-    this.#decoder = new TextDecoder();
-    this.#writeChain = Promise.resolve();
-    this.#readLoop = this.#runReadLoop(sock, ++this.#generation);
-  }
-
-  async #runReadLoop(sock: Deno.Conn, gen: number): Promise<void> {
+  async #runReadLoop(a: Attempt): Promise<void> {
     const buf = new Uint8Array(64 * 1024);
     try {
       for (;;) {
-        const n = await sock.read(buf);
+        const n = await a.sock.read(buf);
         if (n === null) break; // remote closed cleanly (EOF)
-        // A read that lands after the reconnect loop moved on belongs to a
-        // socket whose state has already been re-baselined — decoding it into
-        // the live buffer would splice a dead connection's bytes into the new
-        // one's frame stream.
-        if (gen !== this.#generation) return;
-        this.#ingest(gen, this.#decoder.decode(buf.subarray(0, n), { stream: true }));
+        // A read that lands after this attempt was superseded belongs to a
+        // socket whose state has already been re-baselined — decoding it would
+        // splice a dead connection's bytes into the live one's frame stream.
+        if (this.#attempt !== a) return;
+        this.#ingest(a, a.decoder.decode(buf.subarray(0, n), { stream: true }));
       }
     } catch {
       // surfaced via close, same as the old socket 'error' no-op handler
     } finally {
-      this.#onSocketClose(gen);
+      this.#onSocketClose(a);
     }
   }
 
-  #ingest(gen: number, chunk: string): void {
-    this.#buf += chunk;
+  #ingest(a: Attempt, chunk: string): void {
+    a.buf += chunk;
     // Symmetric with the daemon's `Connection.#ingest`: a frame (or a stream
     // with no newline) past the cap means a daemon bug or a corrupt stream —
     // drop the socket and let the reconnect path re-baseline rather than grow
     // the buffer without bound.
-    if (this.#buf.length > MAX_FRAME_BYTES) {
-      this.#buf = "";
-      this.#invalidate(gen);
+    if (a.buf.length > MAX_FRAME_BYTES) {
+      a.buf = "";
+      a.dispose();
       return;
     }
     let nl: number;
-    while ((nl = this.#buf.indexOf("\n")) !== -1) {
-      const line = this.#buf.slice(0, nl).trim();
-      this.#buf = this.#buf.slice(nl + 1);
+    while ((nl = a.buf.indexOf("\n")) !== -1) {
+      const line = a.buf.slice(0, nl).trim();
+      a.buf = a.buf.slice(nl + 1);
       if (line === "") continue;
       // Also symmetric with the daemon: a line we cannot read, or one whose
       // shape we cannot route, is not a frame to skip past. The stream has
@@ -494,13 +555,13 @@ export class LoomClient {
       try {
         parsed = JSON.parse(line);
       } catch {
-        this.#buf = "";
-        this.#invalidate(gen);
+        a.buf = "";
+        a.dispose();
         return;
       }
-      if (!this.#onFrame(parsed)) {
-        this.#buf = "";
-        this.#invalidate(gen);
+      if (!this.#onFrame(a, parsed)) {
+        a.buf = "";
+        a.dispose();
         return;
       }
     }
@@ -509,16 +570,16 @@ export class LoomClient {
   /** False when the frame is one this client cannot account for — an unknown
    *  discriminant, an unaddressable response, or a malformed snapshot. The
    *  daemon never sends `req` frames, so one of those counts too. */
-  #onFrame(frame: unknown): boolean {
+  #onFrame(a: Attempt, frame: unknown): boolean {
     if (isResponseFrame(frame)) {
       this.#settle(frame);
       return true;
     }
     if (isStatePush(frame) || isPushFrame(frame)) {
-      if (!this.#helloDone) {
+      if (!a.helloDone) {
         // Bounded: a handshake that never completes must not let a chatty
         // daemon grow this without limit before the reconnect loop gives up.
-        if (this.#preHelloQueue.length < 20_000) this.#preHelloQueue.push(frame);
+        if (a.preHello.length < 20_000) a.preHello.push(frame);
         return true;
       }
       this.#route(frame);
@@ -587,8 +648,8 @@ export class LoomClient {
     return mkFatal(e);
   }
 
-  async #handshake(sinceSeq: number | undefined): Promise<void> {
-    this.#helloDone = false;
+  async #handshake(a: Attempt, sinceSeq: number | undefined): Promise<void> {
+    a.helloDone = false;
     let raw: unknown;
     try {
       raw = await this.request<unknown>("hello", {
@@ -623,9 +684,9 @@ export class LoomClient {
     if (restarted || sinceSeq === undefined || !result.replaying) {
       this.#lastSeq = result.seq;
     }
-    this.#helloDone = true;
-    const queued = this.#preHelloQueue;
-    this.#preHelloQueue = [];
+    a.helloDone = true;
+    const queued = a.preHello;
+    a.preHello = [];
     // On a restart, drop any "replayed" frames from the old seq space.
     for (const f of queued) {
       if (restarted && f.type !== "state" && f.seq <= result.seq) continue;
@@ -634,12 +695,19 @@ export class LoomClient {
     if (restarted) this.#fire("resync", { reason: "daemon restarted" });
   }
 
-  #onSocketClose(gen: number): void {
-    // A superseded socket closing is expected bookkeeping, not a disconnect:
-    // firing the reconnect path again here would tear down the live socket the
-    // reconnect loop just installed.
-    if (gen !== this.#generation) return;
-    this.#sock = null;
+  /**
+   * The socket for `a` is gone. This *reports*; it does not decide. Deciding
+   * what happens next — reconnect, give up, or nothing because the caller
+   * closed us — belongs to the supervisor, and a close that started its own
+   * reconnect is what let a drop during a handshake run two openings at once.
+   */
+  #onSocketClose(a: Attempt): void {
+    // A superseded socket closing is expected bookkeeping, not a disconnect.
+    if (this.#attempt !== a) {
+      a.finish();
+      return;
+    }
+    this.#attempt = null;
     // The daemon may still run an in-flight `session.create` / `session.compact`
     // to completion — the caller can't know. Tag the rejection so it can choose
     // to reconcile (poll, or wait for the next snapshot) rather than
@@ -655,78 +723,88 @@ export class LoomClient {
       );
     }
     this.#pending.clear();
-    if (this.#fatal !== null) {
-      // The `error` is already installed and is the truth; nothing about the
-      // socket going away afterwards changes it.
-      this.#fire("close");
-      return;
-    }
-    if (this.#closed || !this.#opts.reconnect) {
-      // A deliberate close is not a failure — nothing is being asked for any
-      // more, so the state goes back to `idle`. A drop with reconnect off is,
-      // since no snapshot will ever arrive.
-      this.#setState(
-        this.#closed
-          ? loadableIdle
-          : loadableFailed({ kind: "connect_failed", message: "connection dropped" }),
-      );
-      this.#fire("close");
-      return;
-    }
-    // The snapshot we hold describes a daemon we are no longer talking to.
-    this.#setState(loadablePending);
-    this.#fire("disconnect");
-    void this.#reconnectLoop();
+    a.finish();
   }
 
-  async #reconnectLoop(): Promise<void> {
-    let waitMs = 100;
-    while (!this.#closed && this.#fatal === null) {
-      try {
-        // Try to connect first; only fork a daemon when nothing is listening
-        // (mirrors #dial) — otherwise a briefly-unreachable daemon makes us
-        // spawn a doomed loomd per iteration.
-        let sock: Deno.Conn;
-        try {
-          sock = await tryConnect(this.#opts.sockPath);
-        } catch (err) {
-          if (!this.#opts.autospawn || !isRetryableConnectError(err)) throw err;
-          await this.#spawnDaemon();
-          sock = await this.#connectWithRetry();
-        }
-        // Dialling takes as long as it takes, and `close()` can land in the
-        // middle of it. A socket handed back after that is not a reconnection
-        // — installing it would reopen a client the caller has finished with.
-        if (this.#closed || this.#fatal !== null) {
-          try {
-            sock.close();
-          } catch {
-            // already gone
-          }
-          return;
-        }
-        this.#sock = sock;
-        this.#attach(sock);
-        const gen = this.#generation;
-        await this.#handshake(this.#lastSeq);
-        // The socket this handshake was for has already been superseded (it
-        // dropped again mid-handshake, and `#onSocketClose` started another
-        // attempt). Its success belongs to a connection that no longer exists,
-        // so announcing a reconnect on it would describe the wrong one.
-        if (gen !== this.#generation || this.#closed) return;
-        this.#fire("reconnect", { lastSeq: this.#lastSeq });
+  /**
+   * The connection's whole life after the first one is up: wait for the live
+   * attempt to close, say what that means, and — if anything is still to be
+   * gained by it — open another. Exactly one of these runs per client, so
+   * there is one place that opens a connection and one place that decides to.
+   */
+  #supervise(first: Attempt): void {
+    void this.#run(first).catch(() => {
+      // Every failure inside is already reflected in the state; a rejected
+      // supervisor would only surface as an unhandled rejection.
+    });
+  }
+
+  async #run(first: Attempt): Promise<void> {
+    let attempt: Attempt | null = first;
+    for (;;) {
+      await attempt.closed;
+      if (this.#fatal !== null) {
+        // The `error` is already installed and is the truth; nothing about the
+        // socket going away afterwards changes it.
+        this.#fire("close");
         return;
-      } catch (err) {
-        // A version incompatibility is not a transient failure. Retrying it
-        // would leave the UI flickering between "reconnecting" and the real
-        // error forever, and re-spawn a daemon it still cannot talk to.
-        if (fatalOf(err)) return;
-        // Full-ish jitter so a fleet of clients (TUI + `loom tail` + CLI) that
-        // dropped together don't retry — and re-spawn a daemon — in lockstep.
-        await delay(waitMs / 2 + Math.random() * (waitMs / 2));
-        waitMs = Math.min(waitMs * 2, 4000);
       }
+      if (this.#closed || !this.#opts.reconnect) {
+        // A deliberate close is not a failure — nothing is being asked for any
+        // more, so the state goes back to `idle`. A drop with reconnect off is,
+        // since no snapshot will ever arrive.
+        this.#setState(
+          this.#closed
+            ? loadableIdle
+            : loadableFailed({ kind: "connect_failed", message: "connection dropped" }),
+        );
+        this.#fire("close");
+        return;
+      }
+      // The snapshot we hold describes a daemon we are no longer talking to.
+      this.#setState(loadablePending);
+      this.#fire("disconnect");
+
+      attempt = null;
+      let waitMs = 100;
+      while (attempt === null) {
+        if (this.#closed || this.#fatal !== null) return;
+        try {
+          attempt = await this.#open(this.#lastSeq);
+        } catch (err) {
+          // A version incompatibility is not a transient failure. Retrying it
+          // would leave the UI flickering between "reconnecting" and the real
+          // error forever, and re-spawn a daemon it still cannot talk to.
+          if (fatalOf(err)) return;
+          if (this.#closed) return;
+          // Full-ish jitter so a fleet of clients (TUI + `loom tail` + CLI)
+          // that dropped together don't retry — and re-spawn a daemon — in
+          // lockstep.
+          await this.#backoff(waitMs);
+          waitMs = Math.min(waitMs * 2, 4000);
+        }
+      }
+      this.#fire("reconnect", { lastSeq: this.#lastSeq });
     }
+  }
+
+  /** Sleep, unless `close()` lands first — a client the caller has finished
+   *  with must not hold the process up for the rest of a 4-second backoff. */
+  #backoff(waitMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(
+        () => {
+          this.#wake = () => {};
+          resolve();
+        },
+        waitMs / 2 + Math.random() * (waitMs / 2),
+      );
+      this.#wake = () => {
+        clearTimeout(timer);
+        this.#wake = () => {};
+        resolve();
+      };
+    });
   }
 
   async #resync(reason: string): Promise<void> {
