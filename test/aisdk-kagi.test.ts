@@ -105,13 +105,14 @@ test("runSearch (kagi): one MCP session, bearer auth, query passed through", asy
     assert.match(r.output, /1\. Loom\n {3}https:\/\/loom\.example\n {3}a fleet of agents/);
     assert.match(r.output, /second text block/);
 
-    // initialize → notification (202) → tools/list → tools/call, all bearer-authed.
+    // discover → initialize → notification (202) → tools/list → tools/call, all
+    // bearer-authed. `server/discover` is the probe @ai-sdk/mcp v2 opens with.
     assert.deepEqual(
       s.reqs.map((q) => q.method),
-      ["initialize", "notifications/initialized", "tools/list", "tools/call"],
+      ["server/discover", "initialize", "notifications/initialized", "tools/list", "tools/call"],
     );
     for (const q of s.reqs) assert.equal(q.auth, "Bearer kg-key");
-    const call = JSON.parse(s.reqs[3]?.body ?? "{}") as {
+    const call = JSON.parse(s.reqs[4]?.body ?? "{}") as {
       params: { name: string; arguments: unknown };
     };
     assert.equal(call.params.name, "kagi_search_fetch");
@@ -166,10 +167,10 @@ test("kagiExtract: one MCP session, url passed through, markdown out", async () 
     assert.equal(out, "# A page\n\nSome markdown body.");
     assert.deepEqual(
       s.reqs.map((q) => q.method),
-      ["initialize", "notifications/initialized", "tools/list", "tools/call"],
+      ["server/discover", "initialize", "notifications/initialized", "tools/list", "tools/call"],
     );
     for (const q of s.reqs) assert.equal(q.auth, "Bearer kg-key");
-    const call = JSON.parse(s.reqs[3]?.body ?? "{}") as {
+    const call = JSON.parse(s.reqs[4]?.body ?? "{}") as {
       params: { name: string; arguments: unknown };
     };
     assert.equal(call.params.name, "kagi_extract");
@@ -215,7 +216,10 @@ test("kagi sessions get web_fetch alongside web_search (brave does not); both re
     ["web_search", "web_fetch"],
   );
   assert.equal(isReadonly("web_fetch"), true); // never prompts in default mode
-  assert.match(searchTool(kagiCfg("")).description ?? "", /web_fetch/);
+  // v7 lets a tool resolve its description from the call context; ours is static.
+  const searchDescription = searchTool(kagiCfg("")).description;
+  assert.equal(typeof searchDescription, "string");
+  assert.match(searchDescription as string, /web_fetch/);
 
   const brave = new BuiltinTools("/tmp", {
     backend: "brave",

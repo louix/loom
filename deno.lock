@@ -1,13 +1,13 @@
 {
   "version": "5",
   "specifiers": {
-    "npm:@ai-sdk/anthropic@2.0.99": "2.0.99_zod@4.5.4",
-    "npm:@ai-sdk/google@2.0.94": "2.0.94_zod@4.5.4",
-    "npm:@ai-sdk/mcp@0.0.31": "0.0.31_zod@4.5.4",
-    "npm:@ai-sdk/openai-compatible@1.0.52": "1.0.52_zod@4.5.4",
-    "npm:@ai-sdk/provider@2.0.3": "2.0.3",
+    "npm:@ai-sdk/anthropic@4.0.46": "4.0.46_zod@4.5.4",
+    "npm:@ai-sdk/google@4.0.58": "4.0.58_zod@4.5.4",
+    "npm:@ai-sdk/mcp@2.0.41": "2.0.41_zod@4.5.4",
+    "npm:@ai-sdk/openai-compatible@3.0.41": "3.0.41_zod@4.5.4",
+    "npm:@ai-sdk/provider@4.0.9": "4.0.9",
     "npm:@anthropic-ai/claude-agent-sdk@0.3.251": "0.3.251_zod@4.5.4",
-    "npm:ai@5.0.249": "5.0.249_zod@4.5.4",
+    "npm:ai@7.0.85": "7.0.85_zod@4.5.4",
     "npm:ink@7.1.1": "7.1.1_@types+react@19.2.18_react@19.2.8",
     "npm:oxfmt@0.65.0": "0.65.0",
     "npm:oxlint@1.80.0": "1.80.0",
@@ -16,16 +16,16 @@
     "npm:zod@4.5.4": "4.5.4"
   },
   "npm": {
-    "@ai-sdk/anthropic@2.0.99_zod@4.5.4": {
-      "integrity": "sha512-z5pmzlzHsYZ4FSDdUTJkQMMAbOdTY3FpbbFbWIRC1ZLLNDTfga5/TIpZulXv1+k2c0QKK0Xtgo9IYNSaY19JHQ==",
+    "@ai-sdk/anthropic@4.0.46_zod@4.5.4": {
+      "integrity": "sha512-/q/wWLArkavQHeOYdv8kZyJRTuasTRwrzoAnvUaY0sHx/BGDYDWW9ENn7lu/H5iUeYId6NhtYAVv+TlqHpp9Cg==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "zod"
       ]
     },
-    "@ai-sdk/gateway@2.0.143_zod@4.5.4": {
-      "integrity": "sha512-ULaaBnXviDDKdpQdPyiiRv8fOxoNiSLoCLpVi35CiWlPgbkgJN8ME0PG5D08KO+Ad0X4x2wTrw0CxQLtnfC5Vw==",
+    "@ai-sdk/gateway@4.0.69_zod@4.5.4": {
+      "integrity": "sha512-W5MMdyqsaziQy/A4kxlK74iEQ+NuO6OaszH32cEQpUgBW0o15S2fAdP0aYSH2/5lrVZSMXLQLCzuMkRGHBua3A==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
@@ -33,16 +33,16 @@
         "zod"
       ]
     },
-    "@ai-sdk/google@2.0.94_zod@4.5.4": {
-      "integrity": "sha512-Wy9IaPDI6jfTVYX8GOmwJSIO73WweNRCNXtnR1nFlhP6zekrT+KQeoz5D03e0HqCEUCbrVucFUhrDO4QZ0NVlA==",
+    "@ai-sdk/google@4.0.58_zod@4.5.4": {
+      "integrity": "sha512-4xd28cAErn/aO0yoG95qwPO7QvoBlSKw7UeQuxivbTwFCSjA5hy/OrMEM4adPLPoPrnTi4PXFVzNesNBtKHI0Q==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "zod"
       ]
     },
-    "@ai-sdk/mcp@0.0.31_zod@4.5.4": {
-      "integrity": "sha512-bNHCXOql6sYlt65pqpEIAOHdfUyAvE7cnupm9jcaJHOomIVYUEVvRXOnzq2vS++/QVCp9iVZ5nT31rwAFM0Z2Q==",
+    "@ai-sdk/mcp@2.0.41_zod@4.5.4": {
+      "integrity": "sha512-1u3HJYmgehXl1cz7ipi3NO8HrT6SdozZ7DNEh9MXdQE7knAnq70yhD8DIqfRdk/iZ3Net7QRmECUC+R5ISG0SQ==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
@@ -51,26 +51,27 @@
         "zod"
       ]
     },
-    "@ai-sdk/openai-compatible@1.0.52_zod@4.5.4": {
-      "integrity": "sha512-QOX9Jo1VKGAJqxycB7IGheR+08Vt0xbtzQBZiwjTyQdSYw5aCfP5EYbvCNahcfQ9pz4Oxm3IHoIOoCR0tWcaMA==",
+    "@ai-sdk/openai-compatible@3.0.41_zod@4.5.4": {
+      "integrity": "sha512-djOLRg4WOq5EINvWLfw2dniO14vBrf0iMRs/aXAQqsp4a67Wi49aMpZuvC7C7L3VpL43rnFzS1fWw7T6vpzgUQ==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "zod"
       ]
     },
-    "@ai-sdk/provider-utils@3.0.35_zod@4.5.4": {
-      "integrity": "sha512-/5z8tRGuYXwFy0ID+WtiWiECJzH5x/rI/g/3H8x3GQvE4i4etnZfKWAiU23VZEymInh+4l7uMNQJyaNN/54QFw==",
+    "@ai-sdk/provider-utils@5.0.34_zod@4.5.4": {
+      "integrity": "sha512-tRBdgRcys/4d8wyQdOdyYScq1AxfMdMd0hIlwolxJKVIbBwXUgClZuQT0VIsz4e7pylY8FE6utYCCZ494UAMJQ==",
       "dependencies": [
         "@ai-sdk/provider",
         "@standard-schema/spec",
+        "@workflow/serde",
         "eventsource-parser",
         "undici",
         "zod"
       ]
     },
-    "@ai-sdk/provider@2.0.3": {
-      "integrity": "sha512-h88OPkavHTiN9tMn2l5awAznGB0lXzjcLhgR1/rvjB2zlLprsNxbM2tt6OJsHUxduLC3klq0/eqaSf6fX5XVww==",
+    "@ai-sdk/provider@4.0.9": {
+      "integrity": "sha512-XnGXPWiBIfqjsVEud5pOaVneRByJQOu2sYNwlSVJTPCvakdCDkVuYKKfNuStkIpMUYl7JIkBZGBx+B5YfNeVjA==",
       "dependencies": [
         "json-schema"
       ]
@@ -155,9 +156,6 @@
     "@babel/runtime@7.29.7": {
       "integrity": "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="
     },
-    "@fastify/busboy@2.1.1": {
-      "integrity": "sha512-vBZP4NlzfOlerQTnba4aqZoMhE/a9HY7HRqoOPaETQcSQuWEIyZMHGfVu6w9wGtGK5fED5qRs2DteVCjOH60sA=="
-    },
     "@hono/node-server@2.1.1_hono@4.13.5": {
       "integrity": "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==",
       "dependencies": [
@@ -185,9 +183,6 @@
         "zod",
         "zod-to-json-schema"
       ]
-    },
-    "@opentelemetry/api@1.9.0": {
-      "integrity": "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="
     },
     "@oxfmt/binding-android-arm-eabi@0.65.0": {
       "integrity": "sha512-M10Gs1SSpTNI6ahGx3M/OlIdUF4hkaP6OgUb+MS79t/Pgflk3r1nW5gPFqsZGUAXg0H1AfANT9AvLdBSTIhZKg==",
@@ -391,8 +386,11 @@
         "csstype"
       ]
     },
-    "@vercel/oidc@3.1.0": {
-      "integrity": "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="
+    "@vercel/oidc@3.2.0": {
+      "integrity": "sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug=="
+    },
+    "@workflow/serde@4.1.0": {
+      "integrity": "sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ=="
     },
     "accepts@2.0.0": {
       "integrity": "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==",
@@ -401,13 +399,12 @@
         "negotiator"
       ]
     },
-    "ai@5.0.249_zod@4.5.4": {
-      "integrity": "sha512-FDiGfFRKRcMMDMhPZ7MEQnCqcXOzDfc1Rlq8TV/2bkbWgwcH0iBmdjQdNfrYH1z3kqgubJdW+L/U2OHIW3mY2w==",
+    "ai@7.0.85_zod@4.5.4": {
+      "integrity": "sha512-HVtPz0qLbTUad+QBnWWReIUmwk+U4PcRENMx+9PsHGVoinoc5CLDiVjNR+VBXTKOSaNgce8kSU/Rtbb4kjZsSw==",
       "dependencies": [
         "@ai-sdk/gateway",
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "@opentelemetry/api",
         "zod"
       ]
     },
@@ -1131,11 +1128,8 @@
         "mime-types"
       ]
     },
-    "undici@5.29.0": {
-      "integrity": "sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==",
-      "dependencies": [
-        "@fastify/busboy"
-      ]
+    "undici@7.29.1": {
+      "integrity": "sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q=="
     },
     "unpipe@1.0.0": {
       "integrity": "sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ=="
@@ -1184,13 +1178,13 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@ai-sdk/anthropic@2.0.99",
-      "npm:@ai-sdk/google@2.0.94",
-      "npm:@ai-sdk/mcp@0.0.31",
-      "npm:@ai-sdk/openai-compatible@1.0.52",
-      "npm:@ai-sdk/provider@2.0.3",
+      "npm:@ai-sdk/anthropic@4.0.46",
+      "npm:@ai-sdk/google@4.0.58",
+      "npm:@ai-sdk/mcp@2.0.41",
+      "npm:@ai-sdk/openai-compatible@3.0.41",
+      "npm:@ai-sdk/provider@4.0.9",
       "npm:@anthropic-ai/claude-agent-sdk@0.3.251",
-      "npm:ai@5.0.249",
+      "npm:ai@7.0.85",
       "npm:ink@7.1.1",
       "npm:oxfmt@0.65.0",
       "npm:oxlint@1.80.0",

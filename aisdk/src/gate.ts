@@ -10,7 +10,7 @@
  * and lives in `@loom/runtime/policy`, re-exported here; only the `ToolSet`
  * wrapping below is aisdk-specific.
  */
-import type { ToolCallOptions, ToolSet } from "ai";
+import type { ToolExecutionOptions, ToolSet } from "ai";
 import type { SessionMode } from "@loom/core/types";
 import { isEdit, isReadonly, policy } from "@loom/runtime/policy";
 
@@ -51,10 +51,10 @@ export const wrapToolSet = (tools: ToolSet, opts: GateOptions): ToolSet => {
       out[name] = t; // provider-executed / declaration-only — nothing to gate
       continue;
     }
-    const call = run as (input: unknown, ctx: ToolCallOptions) => unknown;
+    const call = run as (input: unknown, ctx: ToolExecutionOptions<unknown>) => unknown;
     out[name] = {
       ...t,
-      execute: async (input: unknown, ctx: ToolCallOptions): Promise<unknown> => {
+      execute: async (input: unknown, ctx: ToolExecutionOptions<unknown>): Promise<unknown> => {
         if (policy(opts.mode(), name, opts.readonlyHints?.get(name)) === "ask") {
           const decision = await opts.ask(name, input, ctx.toolCallId);
           if (!decision.allow) throw new PermissionDenied(decision.message ?? "denied by the user");

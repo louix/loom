@@ -4,24 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModel } from "ai";
 import { setLogLevel } from "@loom/core/logger";
 import { openDb } from "@loom/daemon/store/db";
 import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
 import { AisdkProvider } from "@loom/aisdk/provider";
 import type { HarnessEvent } from "@loom/core/events";
+import { streamUsage } from "./usage-fixtures.ts";
 
 setLogLevel("error");
 const FAKE_MCP = fileURLToPath(new URL("./fixtures/fake-mcp-server.mjs", import.meta.url));
 
-type Chunk = LanguageModelV2StreamPart;
+type Chunk = LanguageModelV3StreamPart;
 
 /** Model whose Nth `doStream` returns the Nth chunk list (last repeats). */
 const stepModel = (steps: Chunk[][]): LanguageModel => {
   let n = 0;
-  return new MockLanguageModelV2({
+  return new MockLanguageModelV3({
     doStream: async () => {
       const chunks = steps[Math.min(n, steps.length - 1)] ?? [];
       n += 1;
@@ -37,8 +38,8 @@ const callStep = (id: string, name: string, input: string): Chunk[] => {
     { type: "tool-call", toolCallId: id, toolName: name, input },
     {
       type: "finish",
-      finishReason: "tool-calls",
-      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      finishReason: { unified: "tool-calls", raw: undefined },
+      usage: streamUsage({ noCache: 4, output: 2 }),
     },
   ];
 };
@@ -52,8 +53,8 @@ const textStep = (text: string): Chunk[] => {
     { type: "text-end", id: "t" },
     {
       type: "finish",
-      finishReason: "stop",
-      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      finishReason: { unified: "stop", raw: undefined },
+      usage: streamUsage({ noCache: 5, output: 3 }),
     },
   ];
 };
@@ -439,7 +440,7 @@ test("a failed summariser emits a non-fatal error and leaves the transcript inta
  *  its chunks slowly, so a test can `interrupt()` / `close()` mid-summarise. */
 const slowSummariserModel = (): LanguageModel => {
   let n = 0;
-  return new MockLanguageModelV2({
+  return new MockLanguageModelV3({
     doStream: async () => {
       n += 1;
       const chunks = n === 1 ? textStep("did a thing") : textStep("A SUMMARY of the work so far");

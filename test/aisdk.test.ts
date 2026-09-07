@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
 import type { HarnessEvent, SessionState } from "@loom/core/events";
@@ -22,15 +22,16 @@ import { AisdkEventMapper } from "@loom/aisdk/map";
 import { ProviderMessageStore } from "@loom/daemon/store/provider-messages";
 import { runTurn } from "@loom/aisdk/loop";
 import { contextLimitFor, estimateTokens, knownContextLimit } from "@loom/core/tokens";
+import { stepUsage, streamUsage } from "./usage-fixtures.ts";
 
 setLogLevel("error");
 
 // --- helpers ---------------------------------------------------------------
 
-type Chunk = LanguageModelV2StreamPart;
+type Chunk = LanguageModelV3StreamPart;
 
 const model = (chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): LanguageModel => {
-  return new MockLanguageModelV2({
+  return new MockLanguageModelV3({
     doStream: async () => ({
       stream: simulateReadableStream({
         chunks,
@@ -43,12 +44,7 @@ const model = (chunks: Chunk[], opts: { chunkDelayInMs?: number } = {}): Languag
 
 const textReply = (
   text: string,
-  usage: Partial<{
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    cachedInputTokens: number;
-  }> = {},
+  usage: Partial<{ noCache: number; output: number; cacheRead: number }> = {},
   opts: { chunkDelayInMs?: number } = {},
 ): LanguageModel => {
   return model(
@@ -62,15 +58,12 @@ const textReply = (
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: {
-          inputTokens: usage.inputTokens ?? 10,
-          outputTokens: usage.outputTokens ?? 3,
-          totalTokens: usage.totalTokens ?? 13,
-          ...(usage.cachedInputTokens != null
-            ? { cachedInputTokens: usage.cachedInputTokens }
-            : {}),
-        },
+        finishReason: { unified: "stop", raw: undefined },
+        usage: streamUsage({
+          noCache: usage.noCache ?? 10,
+          output: usage.output ?? 3,
+          ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}),
+        }),
       },
     ],
     opts,
@@ -300,7 +293,7 @@ test("mapper splits cached tokens out of input on finish-step", () => {
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40 },
+    usage: stepUsage({ noCache: 60, output: 20, cacheRead: 40 }),
     response: {},
     providerMetadata: undefined,
   } as never)[0];
@@ -315,20 +308,20 @@ test("mapper splits cached tokens out of input on finish-step", () => {
   assert.equal((ev as { contextLimit: number }).contextLimit, 400_000);
 });
 
-test("mapper reads Anthropic's convention: input is already the uncached remainder", () => {
-  // `@ai-sdk/anthropic` passes `input_tokens` through untouched, and that field
-  // excludes both cache reads and cache writes — the opposite of OpenAI's
-  // `prompt_tokens`. Subtracting the reads again would clamp input to 0 and
-  // report a near-empty context window on a well-cached conversation.
+test("mapper reads Anthropic's cache write and its TTL from provider metadata", () => {
+  // Through AI SDK v5 this test guarded a convention guess: `@ai-sdk/anthropic`
+  // passed `input_tokens` through untouched — the uncached remainder, the
+  // opposite of OpenAI's `prompt_tokens` — and the mapper had to tell which
+  // number it was holding. v7 normalizes the split at the provider boundary, so
+  // what is left to read out of band is the *TTL* the write went into.
   const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50, cachedInputTokens: 9000 },
+    usage: stepUsage({ noCache: 30, output: 20, cacheRead: 9000, cacheWrite: 1200 }),
     response: {},
     providerMetadata: {
       anthropic: {
-        cacheCreationInputTokens: 1200,
         usage: {
           input_tokens: 30,
           cache_read_input_tokens: 9000,
@@ -350,6 +343,38 @@ test("mapper reads Anthropic's convention: input is already the uncached remaind
   assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, 5);
 });
 
+test("mapper falls back to arithmetic when a provider reports no uncached count", () => {
+  // `inputTokenDetails` is normalized but not mandatory: a provider that only
+  // knows the prompt total leaves `noCacheTokens` undefined. Deriving it keeps
+  // cache reads and writes out of full-price `input` rather than counting the
+  // whole prompt twice.
+  const m = new AisdkEventMapper("s1", "gpt-5");
+  const ev = m.map({
+    type: "finish-step",
+    finishReason: "stop",
+    usage: {
+      inputTokens: 100,
+      inputTokenDetails: {
+        noCacheTokens: undefined,
+        cacheReadTokens: 40,
+        cacheWriteTokens: 10,
+      },
+      outputTokens: 20,
+      outputTokenDetails: { textTokens: 20, reasoningTokens: undefined },
+      totalTokens: 120,
+    },
+    response: {},
+    providerMetadata: undefined,
+  } as never)[0];
+  assert.deepEqual((ev as { tokens: unknown }).tokens, {
+    input: 50,
+    output: 20,
+    cacheRead: 40,
+    cacheWrite: 10,
+  });
+  assert.equal((ev as { contextUsed: number }).contextUsed, 100);
+});
+
 test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
   const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
   const at = (cc: Record<string, number>) =>
@@ -357,10 +382,10 @@ test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
       m.map({
         type: "finish-step",
         finishReason: "stop",
-        usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+        usage: stepUsage({ noCache: 10, output: 1 }),
         response: {},
         providerMetadata: {
-          anthropic: { cacheCreationInputTokens: 900, usage: { cache_creation: cc } },
+          anthropic: { usage: { cache_creation_input_tokens: 900, cache_creation: cc } },
         },
       } as never)[0] as { cacheTtlMinutes?: number }
     ).cacheTtlMinutes;
@@ -370,19 +395,18 @@ test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
   assert.equal(at({}), undefined);
 });
 
-test("an OpenAI-compatible provider named 'anthropic' keeps OpenAI token semantics", () => {
+test("an OpenAI-compatible provider named 'anthropic' is not read as Anthropic", () => {
   // `[providers.anthropic] adapter = "aisdk"` with no `sdk` installs an
   // OpenAI-compatible profile whose id — and so whose providerMetadata key — is
-  // "anthropic". Detecting the vendor by that name would stop subtracting
-  // cached reads from `input` on a provider that counts them inside it,
-  // double-counting them into the context meter and into full-price input.
+  // "anthropic". Detecting the vendor by that name would attach a cache TTL,
+  // and an out-of-band write, to a step that reported neither.
   const m = new AisdkEventMapper("s1", "some-model", () => 200_000);
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40 },
+    usage: stepUsage({ noCache: 60, output: 20, cacheRead: 40 }),
     response: {},
-    // openai-compatible metadata: no `cacheCreationInputTokens` anywhere.
+    // openai-compatible metadata: no raw `cache_creation` split anywhere.
     providerMetadata: { anthropic: { usage: { prompt_tokens: 100 } } },
   } as never)[0];
   assert.deepEqual((ev as { tokens: unknown }).tokens, {
@@ -392,18 +416,20 @@ test("an OpenAI-compatible provider named 'anthropic' keeps OpenAI token semanti
     cacheWrite: 0,
   });
   assert.equal((ev as { contextUsed: number }).contextUsed, 100);
+  assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, undefined);
 });
 
-test("a null cacheCreationInputTokens still identifies the Anthropic provider", () => {
-  // It is always present on `@ai-sdk/anthropic`, and null on a turn that wrote
-  // no cache — which must still select the Anthropic token convention.
+test("an Anthropic turn that wrote no cache claims no TTL", () => {
+  // A well-cached turn that only read reports no `cache_creation` split at
+  // all. That is not a missing reading to paper over — there is no write to
+  // bill, so there is no TTL to attach.
   const m = new AisdkEventMapper("s1", "claude-sonnet-5", () => 200_000);
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50, cachedInputTokens: 9000 },
+    usage: stepUsage({ noCache: 30, output: 20, cacheRead: 9000 }),
     response: {},
-    providerMetadata: { anthropic: { cacheCreationInputTokens: null, usage: {} } },
+    providerMetadata: { anthropic: { usage: { input_tokens: 30 } } },
   } as never)[0];
   assert.deepEqual((ev as { tokens: unknown }).tokens, {
     input: 30,
@@ -412,15 +438,16 @@ test("a null cacheCreationInputTokens still identifies the Anthropic provider", 
     cacheWrite: 0,
   });
   assert.equal((ev as { contextUsed: number }).contextUsed, 9030);
+  assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, undefined);
 });
-test("a non-Anthropic provider keeps the OpenAI convention untouched", () => {
-  // Provider metadata from someone else must not be read as an Anthropic
-  // usage block — the subtraction and the zero cache write both still apply.
+test("a non-Anthropic provider claims no cache TTL", () => {
+  // Provider metadata from someone else must not be read as an Anthropic usage
+  // block, however plausibly shaped — no TTL is claimed from it.
   const m = new AisdkEventMapper("s1", "gpt-5");
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 40 },
+    usage: stepUsage({ noCache: 60, output: 20, cacheRead: 40 }),
     response: {},
     providerMetadata: { openai: { someField: 1 } },
   } as never)[0];
@@ -433,12 +460,13 @@ test("a non-Anthropic provider keeps the OpenAI convention untouched", () => {
   assert.equal((ev as { contextUsed: number }).contextUsed, 100);
   assert.equal((ev as { cacheTtlMinutes?: number }).cacheTtlMinutes, undefined);
 });
+
 test("mapper takes a context-limit resolver (endpoint-reported sizes)", () => {
   const m = new AisdkEventMapper("s1", "zai-org/GLM-5.3-Flash", () => 1_048_576);
   const ev = m.map({
     type: "finish-step",
     finishReason: "stop",
-    usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    usage: stepUsage({ noCache: 100, output: 20 }),
     response: {},
     providerMetadata: undefined,
   } as never)[0];
@@ -456,7 +484,7 @@ test("provider modelContext reaches the session's context meter", async () => {
         models: ["zai-org/GLM-5.3-Flash"],
         // keyed on the bare name — the after-slash candidate must still hit
         modelContext: { "glm-5.3-flash": 1_048_576 },
-        makeModel: () => textReply("done", { inputTokens: 30, outputTokens: 4, totalTokens: 34 }),
+        makeModel: () => textReply("done", { noCache: 30, output: 4 }),
       },
       store,
     );
@@ -508,7 +536,7 @@ test("runTurn streams text + usage and captures the response messages", async ()
   const mapper = new AisdkEventMapper("s1", "gpt-5");
   const r = await runTurn({
     sessionId: "s1",
-    model: textReply("hello there", { inputTokens: 8, outputTokens: 2, totalTokens: 10 }),
+    model: textReply("hello there", { noCache: 8, output: 2 }),
     system: undefined,
     messages: [{ role: "user", content: "hi" }],
     maxSteps: 1,
@@ -532,7 +560,7 @@ test("runTurn streams text + usage and captures the response messages", async ()
 test("runTurn splices a mid-turn injection in after the current tool result", async () => {
   const prompts: string[][] = [];
   let n = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (opts) => {
       n += 1;
       prompts.push(
@@ -553,8 +581,8 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
               { type: "tool-call", toolCallId: "tc1", toolName: "ping", input: "{}" },
               {
                 type: "finish",
-                finishReason: "tool-calls",
-                usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+                finishReason: { unified: "tool-calls", raw: undefined },
+                usage: streamUsage({ noCache: 5, output: 3 }),
               },
             ]
           : [
@@ -565,8 +593,8 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 6, output: 2 }),
               },
             ];
       return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
@@ -614,7 +642,7 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
 
 test("runTurn flags hitStepLimit when the model is still calling tools at the ceiling", async () => {
   let step = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       step += 1;
       return {
@@ -626,8 +654,8 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
             { type: "tool-call", toolCallId: `c${step}`, toolName: "ping", input: "{}" },
             {
               type: "finish",
-              finishReason: "tool-calls",
-              usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+              finishReason: { unified: "tool-calls", raw: undefined },
+              usage: streamUsage({ noCache: 3, output: 1 }),
             },
           ],
         }),
@@ -673,7 +701,7 @@ test("runTurn flags hitStepLimit when the model is still calling tools at the ce
 
 test("runTurn ends a segment early when shouldStopForContext trips (A9)", async () => {
   let step = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       step += 1;
       return {
@@ -685,8 +713,8 @@ test("runTurn ends a segment early when shouldStopForContext trips (A9)", async 
             { type: "tool-call", toolCallId: `c${step}`, toolName: "ping", input: "{}" },
             {
               type: "finish",
-              finishReason: "tool-calls",
-              usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+              finishReason: { unified: "tool-calls", raw: undefined },
+              usage: streamUsage({ noCache: 3, output: 1 }),
             },
           ],
         }),
@@ -733,8 +761,8 @@ test("runTurn breaks on an error part and stops consuming the stream (A4)", asyn
     { type: "text-end", id: "u" },
     {
       type: "finish",
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: { unified: "stop", raw: undefined },
+      usage: streamUsage({ noCache: 1, output: 1 }),
     },
   ];
   const r = await runTurn({
@@ -808,7 +836,7 @@ test("a chosen reasoning effort rides into providerOptions on every model call",
     const store = new ProviderMessageStore(db);
     const seen: Array<Record<string, unknown> | undefined> = [];
     let roundTrips = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async (opts) => {
         roundTrips += 1;
         seen.push(opts.providerOptions as Record<string, unknown> | undefined);
@@ -828,8 +856,8 @@ test("a chosen reasoning effort rides into providerOptions on every model call",
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 4, output: 2 }),
               },
             ],
           }),
@@ -898,7 +926,7 @@ test("an Anthropic session asks for a cache breakpoint on every request", async 
     const store = new ProviderMessageStore(db);
     const seen: Array<Record<string, unknown> | undefined> = [];
     let roundTrips = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async (opts) => {
         roundTrips += 1;
         seen.push(opts.providerOptions as Record<string, unknown> | undefined);
@@ -918,8 +946,8 @@ test("an Anthropic session asks for a cache breakpoint on every request", async 
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 4, output: 2 }),
               },
             ],
           }),
@@ -969,7 +997,7 @@ test("a provider given no cacheControl sends no providerOptions at all", async (
   try {
     const store = new ProviderMessageStore(db);
     const seen: Array<Record<string, unknown> | undefined> = [];
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async (opts) => {
         seen.push(opts.providerOptions as Record<string, unknown> | undefined);
         return {
@@ -982,8 +1010,8 @@ test("a provider given no cacheControl sends no providerOptions at all", async (
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 4, output: 2 }),
               },
             ],
           }),
@@ -1052,7 +1080,7 @@ test("a message sent mid-turn with no step to catch it folds into the same turn"
   try {
     const store = new ProviderMessageStore(db);
     let roundTrips = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async () => {
         roundTrips += 1;
         return {
@@ -1072,8 +1100,8 @@ test("a message sent mid-turn with no step to catch it folds into the same turn"
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 4, output: 2 }),
               },
             ],
           }),
@@ -1119,7 +1147,7 @@ test("two near-simultaneous sends to an idle session don't double-run a turn", a
   try {
     const store = new ProviderMessageStore(db);
     let rt = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async () => {
         rt += 1;
         return {
@@ -1134,8 +1162,8 @@ test("two near-simultaneous sends to an idle session don't double-run a turn", a
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 4, output: 1 }),
               },
             ],
           }),
@@ -1174,7 +1202,7 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
   try {
     const store = new ProviderMessageStore(db);
     let attempt = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async () => {
         attempt += 1;
         if (attempt === 1) throw new Error("transient upstream failure");
@@ -1188,8 +1216,8 @@ test("a turn that fails to start clears the busy flag; the next send recovers", 
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 3, output: 1 }),
               },
             ],
           }),
@@ -1288,10 +1316,12 @@ test("repairMalformedToolInputs normalizes string tool-call inputs; healthy ones
 
 test("runTurn repairs a poisoned transcript tool-call before the request goes out", async () => {
   const prompts: Array<Array<{ type: string; input?: string }>> = [];
-  const capturing = new MockLanguageModelV2({
+  const capturing = new MockLanguageModelV3({
     doStream: async (opts) => {
       prompts.push(
-        opts.prompt.flatMap((m) => (typeof m.content === "string" ? [] : m.content)) as never,
+        opts.prompt.flatMap((m): unknown[] =>
+          typeof m.content === "string" ? [] : [...m.content],
+        ) as never,
       );
       return {
         stream: simulateReadableStream({
@@ -1303,8 +1333,8 @@ test("runTurn repairs a poisoned transcript tool-call before the request goes ou
             { type: "text-end", id: "t" },
             {
               type: "finish",
-              finishReason: "stop",
-              usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 },
+              finishReason: { unified: "stop", raw: undefined },
+              usage: streamUsage({ noCache: 4, output: 1 }),
             },
           ],
           initialDelayInMs: 0,
@@ -1358,11 +1388,13 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
   const prompts: Array<Array<{ type: string; input?: unknown }>> = [];
   const appended: ModelMessage[] = [];
   let n = 0;
-  const glitchy = new MockLanguageModelV2({
+  const glitchy = new MockLanguageModelV3({
     doStream: async (opts) => {
       n += 1;
       prompts.push(
-        opts.prompt.flatMap((m) => (typeof m.content === "string" ? [] : m.content)) as never,
+        opts.prompt.flatMap((m): unknown[] =>
+          typeof m.content === "string" ? [] : [...m.content],
+        ) as never,
       );
       const chunks: Chunk[] =
         n === 1
@@ -1377,8 +1409,8 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
               },
               {
                 type: "finish",
-                finishReason: "tool-calls",
-                usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+                finishReason: { unified: "tool-calls", raw: undefined },
+                usage: streamUsage({ noCache: 5, output: 3 }),
               },
             ]
           : [
@@ -1389,8 +1421,8 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
               { type: "text-end", id: "t" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+                finishReason: { unified: "stop", raw: undefined },
+                usage: streamUsage({ noCache: 6, output: 2 }),
               },
             ];
       return { stream: simulateReadableStream({ chunks, initialDelayInMs: 0 }) };
@@ -1416,22 +1448,30 @@ test("runTurn sanitizes a tool call the model generated mid-turn before the next
     },
   });
 
-  // step 2's prompt must carry the mid-turn tool call re-wrapped, not the raw
-  // garbage the SDK would otherwise put straight on the wire
+  // step 2's prompt must not carry the raw garbage onto the wire. AI SDK v7
+  // neutralizes it upstream of us — an input that will not parse never reaches
+  // the transcript as a string; the call lands with an empty object input and
+  // the model is told what went wrong through a tool error. `runTurn` keeps
+  // calling `repairMalformedToolInputs` each step because a transcript loaded
+  // from the store can still hold a string input written by an older Loom.
   assert.equal(prompts.length >= 2, true);
   const calls = prompts[1]?.filter((p) => p.type === "tool-call") ?? [];
-  const seen = calls[0]?.input as unknown as { malformed_tool_input?: string };
-  assert.equal(typeof seen.malformed_tool_input, "string");
-  // and the persisted messages (#messages + store) carry the sanitized form,
-  // so retries / forks / compaction never inherit the raw unrenderable text
+  const seen = calls[0]?.input;
+  assert.equal(typeof seen, "object");
+  assert.notEqual(seen, null);
+  const results = prompts[1]?.filter((p) => p.type === "tool-result") ?? [];
+  const output = (results[0] as { output?: { type: string; value: string } } | undefined)?.output;
+  assert.equal(output?.type, "error-text");
+  assert.match(output?.value ?? "", /Invalid input for tool ping/);
+  // and the persisted messages (#messages + store) carry the same normalized
+  // form, so retries / forks / compaction never inherit unrenderable text
   const persistedCall = appended
     .flatMap((m) =>
       Array.isArray(m.content) ? (m.content as Array<{ type: string; input?: unknown }>) : [],
     )
-    .find((p) => p.type === "tool-call") as
-    | { input: { malformed_tool_input?: string } }
-    | undefined;
-  assert.equal(typeof persistedCall?.input.malformed_tool_input, "string");
+    .find((p) => p.type === "tool-call") as { input: unknown } | undefined;
+  assert.equal(typeof persistedCall?.input, "object");
+  assert.notEqual(persistedCall?.input, null);
 });
 test("resumeSession reloads the transcript; the next turn sees the history", async () => {
   const { db, cleanup } = tmpDb();
@@ -1439,7 +1479,7 @@ test("resumeSession reloads the transcript; the next turn sees the history", asy
     const store = new ProviderMessageStore(db);
     let seenMessages = 0;
     const make = (): LanguageModel =>
-      new MockLanguageModelV2({
+      new MockLanguageModelV3({
         doStream: async (opts) => {
           seenMessages = opts.prompt.length;
           return {
@@ -1451,8 +1491,8 @@ test("resumeSession reloads the transcript; the next turn sees the history", asy
                 { type: "text-end", id: "t" },
                 {
                   type: "finish",
-                  finishReason: "stop",
-                  usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: streamUsage({ noCache: 5, output: 1 }),
                 },
               ],
             }),
@@ -1498,7 +1538,7 @@ test("resumeSession sends the ref's systemPromptAppend, not a dropped system pro
     const store = new ProviderMessageStore(db);
     let seenSystem: unknown;
     const make = (): LanguageModel =>
-      new MockLanguageModelV2({
+      new MockLanguageModelV3({
         doStream: async (opts) => {
           seenSystem = opts.prompt[0];
           return {
@@ -1509,8 +1549,8 @@ test("resumeSession sends the ref's systemPromptAppend, not a dropped system pro
                 { type: "text-end", id: "t" },
                 {
                   type: "finish",
-                  finishReason: "stop",
-                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: streamUsage({ noCache: 1, output: 1 }),
                 },
               ],
             }),
@@ -1542,16 +1582,7 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
   const { db, cleanup } = tmpDb();
   try {
     const store = new ProviderMessageStore(db);
-    const p = provider(
-      () =>
-        textReply("done", {
-          inputTokens: 30,
-          outputTokens: 4,
-          totalTokens: 34,
-          cachedInputTokens: 10,
-        }),
-      store,
-    );
+    const p = provider(() => textReply("done", { noCache: 20, output: 4, cacheRead: 10 }), store);
 
     const events: HarnessEvent[] = [];
     const usage: UsageDelta[] = [];
@@ -1611,8 +1642,8 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
       },
       {
         type: "finish",
-        finishReason: "tool-calls",
-        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: streamUsage({ noCache: 4, output: 2 }),
       },
     ];
     const doneChunks: Chunk[] = [
@@ -1623,12 +1654,12 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+        finishReason: { unified: "stop", raw: undefined },
+        usage: streamUsage({ noCache: 5, output: 3 }),
       },
     ];
     let call = 0;
-    const m = new MockLanguageModelV2({
+    const m = new MockLanguageModelV3({
       doStream: async () => {
         call += 1;
         return {
@@ -1710,8 +1741,8 @@ test("setMode refuses to leave `plan` while a review is pending, instead of sile
       },
       {
         type: "finish",
-        finishReason: "tool-calls",
-        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: streamUsage({ noCache: 4, output: 2 }),
       },
     ];
     const doneChunks: Chunk[] = [
@@ -1722,12 +1753,12 @@ test("setMode refuses to leave `plan` while a review is pending, instead of sile
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+        finishReason: { unified: "stop", raw: undefined },
+        usage: streamUsage({ noCache: 5, output: 3 }),
       },
     ];
     let call = 0;
-    const m = new MockLanguageModelV2({
+    const m = new MockLanguageModelV3({
       doStream: async () => {
         call += 1;
         return {
@@ -1885,7 +1916,7 @@ test("AisdkSession.rewind truncates the transcript in memory and in the store", 
     const store = new ProviderMessageStore(db);
     let n = 0;
     const make = (): LanguageModel =>
-      new MockLanguageModelV2({
+      new MockLanguageModelV3({
         doStream: async () => {
           n += 1;
           return {
@@ -1897,8 +1928,8 @@ test("AisdkSession.rewind truncates the transcript in memory and in the store", 
                 { type: "text-end", id: "t" },
                 {
                   type: "finish",
-                  finishReason: "stop",
-                  usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: streamUsage({ noCache: 4, output: 2 }),
                 },
               ],
             }),

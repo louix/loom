@@ -102,17 +102,16 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   // means the loop was cut by `stopWhen`, not by the model deciding it was done.
   let lastStepReason: string | undefined;
 
-  // Generated messages already handed to the store. `onStepFinish` reports the
-  // running total, so we persist the fresh tail each step — which also keeps
-  // injected user messages (appended between steps) in the right order.
-  let persistedGen = 0;
   // Messages this turn started from, before any generation. Captured on the
   // first `prepareStep` so injections can be spliced at a stable offset.
   let baseCount = -1;
   const applied: Array<{ afterGen: number; msg: ModelMessage }> = [];
 
+  // How many messages the model has generated so far this turn. Each step
+  // reports only what *it* produced (v7 stopped handing out the running
+  // total), so the offset injections splice at is the sum across steps.
   const genCount = (steps: ReadonlyArray<{ response: { messages: unknown[] } }>): number =>
-    steps.length > 0 ? (steps[steps.length - 1]?.response.messages.length ?? 0) : 0;
+    steps.reduce((n, step) => n + step.response.messages.length, 0);
 
   // Set by the `shouldStopForContext` stop condition so the caller can tell a
   // context-driven segment end from the model finishing / the step ceiling.
@@ -152,9 +151,12 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
           if (fresh.length > 0) hooks.appendMessages(fresh);
         }
 
-        // A tool call generated MID-TURN with malformed arguments rides
-        // straight onto the next step's request — the entry-level repair only
-        // saw the transcript as the turn started. Sanitize every step.
+        // Sanitize every step, not just the turn's entry: a transcript loaded
+        // from the store can hold a string tool-call input written by an older
+        // Loom, and injections are spliced in mid-turn. (The case this was
+        // written for — a model poisoning its own transcript mid-turn — the SDK
+        // now neutralizes upstream, landing an unparseable input as `{}` plus a
+        // tool error rather than passing the raw text through.)
         const repaired = repairMalformedToolInputs(stepMessages);
 
         if (applied.length === 0) {
@@ -169,13 +171,12 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
         return { messages: rebuilt };
       },
       onStepFinish: ({ response }) => {
-        const all = response.messages as ModelMessage[];
-        if (all.length > persistedGen) {
+        const generated = response.messages as ModelMessage[];
+        if (generated.length > 0) {
           // Persist the sanitized form: a mid-turn glitched call lands in
           // #messages / the store as the wrapped object, so retries, forks
           // and compaction never inherit the raw unrenderable text.
-          hooks.appendMessages(repairMalformedToolInputs(all.slice(persistedGen)));
-          persistedGen = all.length;
+          hooks.appendMessages(repairMalformedToolInputs(generated));
         }
       },
     });

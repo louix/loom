@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { tool, type LanguageModel } from "ai";
 import { z } from "zod";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
@@ -15,6 +15,7 @@ import { AisdkProvider } from "@loom/aisdk/provider";
 import { McpHub } from "@loom/aisdk/mcp";
 import { isReadonly, isEdit, policy, wrapToolSet, PermissionDenied } from "@loom/aisdk/gate";
 import type { HarnessEvent } from "@loom/core/events";
+import { streamUsage } from "./usage-fixtures.ts";
 
 setLogLevel("error");
 const log = makeLogger("test");
@@ -22,12 +23,12 @@ const FAKE_MCP = fileURLToPath(new URL("./fixtures/fake-mcp-server.mjs", import.
 
 // --- helpers -------------------------------------------------------------
 
-type Chunk = LanguageModelV2StreamPart;
+type Chunk = LanguageModelV3StreamPart;
 
 /** A model whose Nth call returns the Nth chunk list. */
 const stepModel = (steps: Chunk[][]): LanguageModel => {
   let n = 0;
-  return new MockLanguageModelV2({
+  return new MockLanguageModelV3({
     doStream: async () => {
       const chunks = steps[Math.min(n, steps.length - 1)] ?? [];
       n += 1;
@@ -46,8 +47,8 @@ const toolCallStep = (id: string, name: string, input: string): Chunk[] => {
     { type: "tool-call", toolCallId: id, toolName: name, input },
     {
       type: "finish",
-      finishReason: "tool-calls",
-      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      finishReason: { unified: "tool-calls", raw: undefined },
+      usage: streamUsage({ noCache: 5, output: 3 }),
     },
   ];
 };
@@ -61,8 +62,8 @@ const textStep = (text: string): Chunk[] => {
     { type: "text-end", id: "t" },
     {
       type: "finish",
-      finishReason: "stop",
-      usage: { inputTokens: 6, outputTokens: 4, totalTokens: 10 },
+      finishReason: { unified: "stop", raw: undefined },
+      usage: streamUsage({ noCache: 6, output: 4 }),
     },
   ];
 };
@@ -333,7 +334,7 @@ test("an MCP tool with a builtin's name (fff's grep) replaces the builtin", asyn
   const { dir, store, cleanup } = tmpEnv();
   try {
     let offered: Array<{ name: string; description?: string }> = [];
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async (options) => {
         offered = (options.tools ?? []).map((t) =>
           "description" in t ? { name: t.name, description: t.description } : { name: t.name },
@@ -608,7 +609,7 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
   try {
     // The model never stops calling a tool — every step ends on `tool-calls`.
     let step = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async () => {
         step += 1;
         return {
@@ -630,8 +631,8 @@ test("a turn stuck calling tools auto-continues past the step ceiling, then stop
               },
               {
                 type: "finish",
-                finishReason: "tool-calls",
-                usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+                finishReason: { unified: "tool-calls", raw: undefined },
+                usage: streamUsage({ noCache: 3, output: 1 }),
               },
             ],
           }),

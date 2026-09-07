@@ -80,6 +80,9 @@ const callTool = async (
       toolCallId: name,
       messages: [],
       abortSignal: signal,
+      // MCP tools declare no context schema, so there is nothing to thread in;
+      // v7 made the field required rather than optional.
+      context: undefined,
     })) as {
       content?: Array<{ type: string; text?: string }>;
       isError?: boolean;

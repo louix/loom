@@ -151,24 +151,26 @@ export class AisdkEventMapper {
   }
 
   #usage(u: LanguageModelUsage, meta?: ProviderMetadata): HarnessEvent {
-    const reported = u.inputTokens ?? 0;
-    const cacheRead = u.cachedInputTokens ?? 0;
+    const details = u.inputTokenDetails;
+    const cacheRead = details.cacheReadTokens ?? 0;
     const output = u.outputTokens ?? 0;
-    const anth = anthropicCache(meta);
-    // Two conventions, and mixing them up is silent. OpenAI's `prompt_tokens`
-    // is the whole prompt with cached reads counted inside it; Anthropic's
-    // `input_tokens` is the *uncached remainder*, with reads and writes
-    // reported alongside it. `@ai-sdk/anthropic` passes its own convention
-    // straight through, so the presence of anthropic provider metadata is what
-    // says which number we're holding.
-    const input = anth ? reported : Math.max(0, reported - cacheRead);
-    const cacheWrite = anth?.writeTokens ?? 0;
+    // The two conventions are the SDK's problem now. Through v5 this had to
+    // guess: OpenAI's `prompt_tokens` counts cached reads inside the prompt
+    // total, Anthropic's `input_tokens` is the *uncached remainder*, and the
+    // provider passed its own straight through. v7 normalizes both —
+    // `inputTokens` is always the whole prompt and `inputTokenDetails` splits
+    // it — so we read the split, and only fall back to arithmetic when a
+    // provider reports the total without saying how much of it was cached.
+    const cacheWrite = details.cacheWriteTokens ?? 0;
+    const input =
+      details.noCacheTokens ?? Math.max(0, (u.inputTokens ?? 0) - cacheRead - cacheWrite);
     const prompt = input + cacheRead + cacheWrite;
     // Several OpenAI-compatible endpoints omit usage on streamed responses.
     // Report the last real prompt-token count for `contextUsed` rather than 0,
     // so the meter holds steady instead of flapping after each such step.
     const hasData = prompt > 0 || output > 0;
     if (hasData) this.#lastContextUsed = prompt;
+    const ttlMinutes = anthropicCacheTtl(meta);
     return {
       type: "usage",
       sessionId: this.#sessionId,
@@ -178,7 +180,7 @@ export class AisdkEventMapper {
       tokens: { input, output, cacheRead, cacheWrite },
       contextUsed: hasData ? prompt : this.#lastContextUsed,
       contextLimit: this.#limitFor(this.#model),
-      ...(anth && anth.ttlMinutes > 0 ? { cacheTtlMinutes: anth.ttlMinutes } : {}),
+      ...(ttlMinutes > 0 ? { cacheTtlMinutes: ttlMinutes } : {}),
     };
   }
 }
@@ -190,34 +192,27 @@ const isObj = (v: unknown): v is Record<string, unknown> => {
 const numOf = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /**
- * Cache writes and the TTL they went into, dug out of a step's provider
- * metadata. `LanguageModelUsage` carries no field for either — `cachedInputTokens`
- * is reads only — so vendors report writes out of band. Anthropic gives both:
- * `cacheCreationInputTokens`, and the raw `usage.cache_creation` split that
- * says which ephemeral bucket the write went into. `null` for every other
- * vendor, which also marks the usage numbers as OpenAI-convention.
+ * How long a step's cache write lives, in minutes, dug out of its provider
+ * metadata. `LanguageModelUsage` reports the write itself under
+ * `inputTokenDetails.cacheWriteTokens`, but says nothing about which ephemeral
+ * bucket it landed in — a 1h write is billed at twice a 5m one, so the meter
+ * cannot price a turn without it. Only Anthropic reports the split, in the raw
+ * `usage` block it passes through untouched. `0` for every other vendor, and
+ * for an Anthropic turn that wrote nothing.
  */
-const anthropicCache = (
-  meta: ProviderMetadata | undefined,
-): { writeTokens: number; ttlMinutes: number } | null => {
+const anthropicCacheTtl = (meta: ProviderMetadata | undefined): number => {
   const a = meta?.["anthropic"];
   // Structural, not by name: the key is the provider id, and an
   // OpenAI-compatible profile can legitimately be called "anthropic"
-  // (`[providers.anthropic] adapter = "aisdk"` with no `sdk`). Reading that as
-  // Anthropic would stop subtracting cached reads from `input` on a provider
-  // that counts them inside it. `@ai-sdk/anthropic` always emits
-  // `cacheCreationInputTokens` (null when it wrote nothing); nobody else does.
-  if (!isObj(a) || !("cacheCreationInputTokens" in a)) return null;
-  const cc = isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;
-  return {
-    writeTokens: Math.max(0, Math.trunc(numOf(a["cacheCreationInputTokens"]))),
-    ttlMinutes: isObj(cc)
-      ? ephemeralTtlMinutes({
-          ephemeral_5m_input_tokens: numOf(cc["ephemeral_5m_input_tokens"]),
-          ephemeral_1h_input_tokens: numOf(cc["ephemeral_1h_input_tokens"]),
-        })
-      : 0,
-  };
+  // (`[providers.anthropic] adapter = "aisdk"` with no `sdk`) — reading its
+  // metadata as Anthropic's would attach a TTL to a step that has none. The
+  // `cache_creation` split inside the raw usage is what nobody else emits.
+  const cc = isObj(a) && isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;
+  if (!isObj(cc)) return 0;
+  return ephemeralTtlMinutes({
+    ephemeral_5m_input_tokens: numOf(cc["ephemeral_5m_input_tokens"]),
+    ephemeral_1h_input_tokens: numOf(cc["ephemeral_1h_input_tokens"]),
+  });
 };
 
 /** Subscription-window readings sent by the vendored ChatGPT provider. */
