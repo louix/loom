@@ -189,36 +189,36 @@ Files: `frontend/tui/src/fleet-search.ts`, search consumers in `model.ts` and
 `fleet-handle.ts`, `backend/daemon/src/daemon/daemon.ts`, the stores under
 `backend/daemon/src/store/`, and `core/src/wire.ts`.
 
-- [ ] Add one read-only search RPC accepting query, bounded limit, and an optional
+- [x] Add one read-only search RPC accepting query, bounded limit, and an optional
       continuation cursor. Return ordered session IDs and only the match metadata
       needed by the existing UI, plus continuation information. Empty query uses
       the ordinary fleet snapshot; it does not query every transcript.
       Use a deterministic tie-breaker and bind continuation to the query. Results
       may change as the database changes; no snapshot-isolated search is required.
-- [ ] Search durable user/assistant text and session metadata in the daemon.
+- [x] Search durable user/assistant text and session metadata in the daemon.
       Preserve case-insensitive AND terms, the leading-apostrophe literal match,
       fuzzy matching, and title-before-message ranking from the current matcher.
       Include persisted answers and agent questions as the existing matcher does.
       Unsent drafts/queue echoes need not be searchable; they are not durable text.
       Move the pure matcher without importing TUI theme/model code into the daemon.
       Do not silently substitute SQL LIKE or FTS semantics for the current grammar.
-- [ ] Query the database directly and keep matching/ranking server-side. Inspect
+- [x] Query the database directly and keep matching/ranking server-side. Inspect
       the existing schema/query facilities first. Do not construct a second
       permanent in-memory copy of every transcript or add a new search engine.
       If fuzzy scoring requires scanning text, stream/batch candidates and keep a
       bounded result set; measure a large history before inventing an index. Query
       pagination bounds the response, not necessarily the cost of finding matches.
-- [ ] Add a small search handle owning query, Loadable results, debounce, and one
+- [x] Add a small search handle owning query, Loadable results, debounce, and one
       query lifetime. Typing updates immediately; stale results cannot replace a
       newer query. Disable result activation while showing stale/loading results.
       Clearing the query restores the full fleet immediately.
-- [ ] Intersect returned IDs with the current fleet for display and selection.
+- [x] Intersect returned IDs with the current fleet for display and selection.
       Do not clamp selection to unrelated results while a new search is pending.
       Load more results on demand; a capped response must not imply no more matches.
-- [ ] Search refreshes on query change or explicit refresh/reopening. It need not
+- [x] Search refreshes on query change or explicit refresh/reopening. It need not
       rerun on every streamed event or maintain live ranked results across clients.
       Disconnect invalidates results; reconnect reruns an active query once.
-- [ ] Delete TUI search-document caches, scoring, and transcript-based `fleetView`
+- [x] Delete TUI search-document caches, scoring, and transcript-based `fleetView`
       projections. Search must work for sessions never selected in this TUI.
 
 Validation: move existing pure grammar/ranking tests to the server matcher, rather

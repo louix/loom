@@ -11,7 +11,7 @@ import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/
 import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
-import { searchSessions } from "./fleet-search.ts";
+import { fleetFilterStatus, searchStale } from "./fleet-search.ts";
 import {
   connectionOf,
   fleetDaemon,
@@ -238,7 +238,10 @@ export const Fleet = ({
     blocks = [
       state.find ? (
         <Text key="empty" color={C.dim} wrap="truncate-end">
-          {"no sessions match — esc clears the filter"}
+          {/* An answer that hasn't come back yet is not an answer of "none". */}
+          {searchStale(state.find)
+            ? "searching every session…"
+            : "no sessions match — esc clears the filter"}
         </Text>
       ) : (
         <Text key="empty" color={C.dim}>
@@ -300,12 +303,7 @@ export const Fleet = ({
       Math.max(8, iw - 24),
     )}`;
   } else if (state.find) {
-    const query = state.find.buffer.text;
-    const matched = searchSessions(
-      { sessions: fleetSessions(state), transcripts: state.transcripts },
-      query,
-    ).length;
-    title = `FLEET · ${matched}/${fleetSessions(state).length} match${matched === 1 ? "" : "es"}`;
+    title = `FLEET · ${fleetFilterStatus(state.find, fleetSessions(state))}`;
   }
 
   return (

@@ -1639,10 +1639,12 @@ models   = ["gpt-5", "gpt-5-mini"]
       await waitFor(stdout, /update the docs/); // list un-narrows with it
 
       // A query matching both rows, then ↑: the selection moves — the arrows are
-      // NOT swallowed by the filter — and the Detail pane follows it. (The fleet
-      // order puts the docs session first, so ↑ walks onto it.)
+      // NOT swallowed by the filter — and the Detail pane follows it. Matching
+      // is a round trip to the daemon now, so wait for the count to land rather
+      // than for a Detail pane that may still be showing the previous answer.
       stdin.feed("the");
-      await waitFor(stdout, (s) => /refactor the parser/.test(detailTitle(s)));
+      await waitFor(stdout, /FLEET · 2\/2 matches/);
+      assert.match(detailTitle(stdout.last), /refactor the parser/);
       stdin.feed("\x1b[A"); // ↑
       await waitFor(stdout, (s) => /update the docs/.test(detailTitle(s)));
 
@@ -1686,8 +1688,10 @@ models   = ["gpt-5", "gpt-5-mini"]
       stdin.feed("/");
       await waitFor(stdout, /type to filter/);
       stdin.feed("mobile");
-      await waitFor(stdout, (s) => !/IDLE/.test(s)); // filtering: one flat list, no headers
-      assert.match(stdout.last, /FLEET · 2\/3 matches/);
+      // Filtering is one flat list, no status headers — and the match count
+      // only appears once the daemon has answered.
+      await waitFor(stdout, /FLEET · 2\/3 matches/);
+      assert.doesNotMatch(stdout.last, /IDLE/);
       // "mobile layouts" carries the cursor (the selection rode onto the best
       // match) and sits above the scattered m…o…b…i…l…e hit inside "demobilize".
       const lines = stdout.last
@@ -1702,8 +1706,51 @@ models   = ["gpt-5", "gpt-5-mini"]
 
       stdin.feed("\x15"); // ⌃u — clear, then an exact term: "demobilize" has no "mobile"
       stdin.feed("'mobile");
-      await waitFor(stdout, (s) => !/demobilize/.test(s));
-      assert.match(stdout.last, /FLEET · 1\/3 match\b/);
+      await waitFor(stdout, /FLEET · 1\/3 match\b/);
+      assert.doesNotMatch(stdout.last, /demobilize/);
+    } finally {
+      app.unmount();
+      await client.close();
+      await cleanup();
+    }
+  });
+
+  test("the filter finds message text in a session this TUI has never opened", async () => {
+    const { connect, cleanup } = await harness();
+    const client = await connect();
+    // The message lands in the *older* session, which the TUI never selects and
+    // therefore never pages a transcript for. Before the search moved to the
+    // daemon this was simply unfindable: the matcher only ever saw the pages
+    // this client had downloaded.
+    const buried = await client.request<SessionSnapshot>("session.createStub", {
+      prompt: "an ordinary title",
+      status: "idle",
+      provider: "fake",
+    });
+    await client.request("dev.emit", {
+      event: {
+        sessionId: buried.id,
+        type: "assistant_text",
+        text: "the pelican crossing is repainted",
+      },
+    });
+    await delay(5);
+    await client.request("session.createStub", {
+      prompt: "something else entirely",
+      status: "idle",
+      provider: "fake",
+    });
+    const { stdout, stdin, app } = mount(client);
+    try {
+      // The newest session is the selected one, so the buried one's transcript
+      // is never fetched.
+      await waitFor(stdout, (s) => /something else entirely/.test(detailTitle(s)));
+      stdin.feed("/");
+      await waitFor(stdout, /type to filter/);
+      stdin.feed("pelican");
+      await waitFor(stdout, /FLEET · 1\/2 match\b/);
+      assert.match(stdout.last, /an ordinary title/);
+      assert.doesNotMatch(stdout.last, /something else entirely\s+—/);
     } finally {
       app.unmount();
       await client.close();

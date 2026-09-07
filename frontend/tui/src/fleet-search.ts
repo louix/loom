@@ -1,217 +1,285 @@
 /**
- * The fleet filter's engine — the `/` query's matcher and ranking. Pure and
- * model-free: it reads a structural slice of whatever the host hands it
- * ({@link FleetView}: sessions plus their log lines), never `TuiState`, so the
- * model can change shape without touching this file, and any other host (the
- * tests today; a CLI or web view tomorrow) can drive it as-is.
+ * The fleet filter (`/`) — its state and the handle that keeps it fed.
  *
- * The contract is the bottom of the file: `parseQuery` (the query grammar) and
- * `searchSessions` (ranked matches). Everything above it — the scorers, field
- * weights, doc build and memo caches — is implementation, free to swap.
+ * Matching and ranking are the daemon's (`session.search`); nothing here scores
+ * anything. That is the point: the corpus is every session's durable
+ * transcript, not the pages this one client happens to have downloaded, so a
+ * session you have never selected is findable and two clients agree on what
+ * exists.
+ *
+ * What is local is the query, one lifetime per query, and the results last
+ * returned — with the query they were returned *for*, so a page that arrives
+ * after you have typed on can be recognised as stale rather than shown as an
+ * answer. The fleet snapshot stays the only source of the sessions themselves:
+ * a page carries ids, and {@link searchMatches} intersects them with the fleet
+ * that is on screen.
  */
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { SearchCursor, SearchPage, SessionSnapshot } from "@loom/core/wire";
+import {
+  loadableFailed,
+  loadableIdle,
+  loadableLoaded,
+  loadablePending,
+  type Loadable,
+} from "@loom/core/loadable";
+import { buffer, type Buffer } from "./editor.ts";
 
-import { shortId } from "./theme.ts";
-
-/** The slice of a log line the engine reads — the model's `LogLine` conforms. */
-interface FleetLogLine {
-  kind: string;
-  text: string;
-  full?: string;
-}
-
-/** The slice of a transcript cache the engine reads. */
-interface FleetTranscript {
-  lines: readonly FleetLogLine[];
-  echoes: readonly FleetLogLine[];
-}
-
-/** What the engine sees of the fleet: every session and its transcript, keyed
- *  by session id — already grouped, so the doc build never has to bucket. */
-export interface FleetView {
-  sessions: readonly SessionSnapshot[];
-  transcripts: Readonly<Record<string, FleetTranscript>>;
+/** One query's answer, as far as it has been paged in. */
+export interface SearchResults {
+  /** The query these are for — not necessarily the one in the buffer. */
+  readonly query: string;
+  /** Matching session ids, best first. May name sessions the fleet no longer
+   *  has; {@link searchMatches} is where that is resolved. */
+  readonly ids: readonly string[];
+  /** Where the next page starts, or null when the ranking is exhausted. A
+   *  full page means nothing on its own — the daemon says which it is. */
+  readonly cursor: SearchCursor | null;
+  /** A next-page fetch is out. Distinct from `pending`, which is the *first*
+   *  page: these results are showable, there are just more coming. */
+  readonly loadingMore: boolean;
 }
 
 /**
- * One parsed query term. `exact` terms (fzf's `'` prefix) match as a literal
- * substring; the rest match fuzzily (subsequence). Text is lowercased here —
- * haystacks are folded lowercase at build time.
+ * The filter as the UI holds it: the query being typed, and whatever the last
+ * completed search produced.
+ *
+ * `results` is `idle` exactly when the query is empty — no filter is the whole
+ * fleet, which needs no round trip and must not flash a spinner on `/`.
  */
-interface SearchTerm {
-  text: string;
-  exact: boolean;
+export interface Find {
+  readonly buffer: Buffer;
+  readonly results: Loadable<string, SearchResults>;
 }
 
-/**
- * fzf-style query: space-separated terms, AND'd. A leading `'` pins a term to
- * a literal (case-insensitive) substring — `'hello` won't match a spelled-out
- * "h-e-l-l-o". A bare `'` is dropped.
- */
-export const parseQuery = (q: string): SearchTerm[] =>
-  q
-    .split(/\s+/)
-    .filter((t) => t !== "")
-    .map((t) => {
-      const exact = t.startsWith("'");
-      return { text: (exact ? t.slice(1) : t).toLowerCase(), exact };
-    })
-    .filter((t) => t.text !== "");
+export const openFind = (): Find => ({ buffer: buffer(), results: loadableIdle });
 
-const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[a-z0-9]/.test(ch);
+/** The query as the daemon will see it. Trailing whitespace is a keystroke on
+ *  the way to a word, not a different search. */
+export const queryOf = (find: Find): string => find.buffer.text.trim();
 
 /**
- * Fuzzy subsequence score of `q` in `hay` (both lowercase): 0 when the
- * characters aren't there in order; otherwise 1, +1 when the match starts at
- * a word boundary, +1 per extra consecutive character (capped) — "mobile"
- * inside "mobile access" outranks an m…o…b…i…l…e scattered across a
- * paragraph.
+ * Are the results on screen for a query other than the one in the buffer?
+ *
+ * True while a search is in flight or failed, and true for the beat between a
+ * keystroke and its results. The rows shown are then the *previous* query's,
+ * which is deliberate — blanking the list on every keystroke is worse — but
+ * they are not an answer to what is typed, so nothing may be activated from
+ * them and the selection must not ride onto them.
  */
-const fuzzyScore = (hay: string, q: string): number => {
-  let prev = -1;
-  let run = 0;
-  let bestRun = 1;
-  let boundary = false;
-  for (let k = 0; k < q.length; k++) {
-    const at = hay.indexOf(q[k]!, prev + 1);
-    if (at === -1) return 0;
-    if (at === prev + 1) {
-      run += 1;
-      if (run > bestRun) bestRun = run;
-    } else {
-      run = 1;
-    }
-    if (k === 0) boundary = at === 0 || !isWordChar(hay[at - 1]);
-    prev = at;
-  }
-  return 1 + (boundary ? 1 : 0) + Math.min(bestRun - 1, 2);
+export const searchStale = (find: Find): boolean => {
+  const q = queryOf(find);
+  if (q === "") return false;
+  return find.results.tag !== "data" || find.results.value.query !== q;
 };
 
 /**
- * Literal-substring score of `q` in `hay` (both lowercase): 0 when absent; a
- * word-boundary hit (either end) outranks one buried inside a word.
+ * The sessions to show under the filter, in rank order: the returned ids
+ * intersected with the fleet the client currently has. A session that has
+ * ended between the search and now simply isn't there, and one the daemon
+ * ranked but this client hasn't seen yet arrives on the next snapshot.
+ *
+ * An empty query is the fleet itself, untouched and in its own order.
  */
-const exactScore = (hay: string, q: string): number => {
-  const at = hay.indexOf(q);
-  if (at === -1) return 0;
-  const startOk = at === 0 || !isWordChar(hay[at - 1]);
-  const endOk = at + q.length >= hay.length || !isWordChar(hay[at + q.length]);
-  return startOk || endOk ? 4 : 3;
-};
-
-/** A session's searchable fields, folded lowercase. */
-interface SearchDoc {
-  title: string;
-  user: string;
-  agent: string;
-}
-
-/**
- * Field weights. They dwarf the per-field scores (1–4), so a title hit always
- * outranks a message-only hit and your words outrank the agent's; within a
- * field, match quality decides.
- */
-const FIELD_WEIGHTS: ReadonlyArray<readonly [keyof SearchDoc, number]> = [
-  ["title", 100],
-  ["user", 10],
-  ["agent", 1],
-];
-
-/** Transcript kinds that count as *your* words — `echo` is the optimistic
- *  local copy of a send, `answer` your reply to an agent question. */
-const USER_KINDS: ReadonlySet<string> = new Set(["user_message", "echo", "answer"]);
-
-/** Transcript kinds that count as the agent's words (its questions included). */
-const AGENT_KINDS: ReadonlySet<string> = new Set(["assistant_text", "question"]);
-
-/** Cap on one message's searchable text — past a couple of KB of a single
- *  message the recall loss is negligible next to the scan it saves. */
-const SEARCH_TEXT_CAP = 2_048;
-
-const buildDocs = (fleet: FleetView): Map<string, SearchDoc> => {
-  const docs = new Map<string, SearchDoc>();
-  for (const sess of fleet.sessions) {
-    const doc: SearchDoc = {
-      title: (sess.title ?? shortId(sess.id)).toLowerCase(),
-      user: "",
-      agent: "",
-    };
-    const t = fleet.transcripts[sess.id];
-    if (t) {
-      for (const l of t.lines) addLine(doc, l);
-      for (const l of t.echoes) addLine(doc, l);
-    }
-    docs.set(sess.id, doc);
+export const searchMatches = (
+  find: Find | null,
+  sessions: readonly SessionSnapshot[],
+): SessionSnapshot[] => {
+  if (!find || queryOf(find) === "") return [...sessions];
+  if (find.results.tag !== "data") return [];
+  const live = new Map(sessions.map((s) => [s.id, s]));
+  const out: SessionSnapshot[] = [];
+  for (const id of find.results.value.ids) {
+    const s = live.get(id);
+    if (s) out.push(s);
   }
-  return docs;
-};
-
-const addLine = (doc: SearchDoc, l: FleetLogLine): void => {
-  const text = (l.full ?? l.text).slice(0, SEARCH_TEXT_CAP);
-  if (USER_KINDS.has(l.kind)) doc.user += ` ${text}`;
-  else if (AGENT_KINDS.has(l.kind)) doc.agent += ` ${text}`;
-};
-
-/** Sum over AND'd terms of each term's best weighted field score; 0 = no match. */
-const scoreDoc = (doc: SearchDoc, terms: readonly SearchTerm[]): number => {
-  let total = 0;
-  for (const term of terms) {
-    let best = 0;
-    for (const [field, weight] of FIELD_WEIGHTS) {
-      const raw = term.exact
-        ? exactScore(doc[field], term.text)
-        : fuzzyScore(doc[field], term.text);
-      if (raw > 0 && raw * weight > best) best = raw * weight;
-    }
-    if (best === 0) return 0; // AND: one missed term kills the session
-    total += best;
-  }
-  return total;
-};
-
-export interface SessionMatch {
-  session: SessionSnapshot;
-  /** Coarse relevance, higher is better — see the scoring above. */
-  score: number;
-}
-
-let docsLog: FleetView["transcripts"] | null = null;
-let docsSessions: readonly SessionSnapshot[] | null = null;
-let docCache: Map<string, SearchDoc> = new Map();
-const resultCache = new Map<string, SessionMatch[]>();
-
-/**
- * The fleet filter's ranked view: every session matching `q`, best first —
- * title over your messages over the agent's, tight match over scattered, and
- * equal scores keep the fleet's own order (status groups, then recency). An
- * empty / all-whitespace query returns every session, unranked. Memoised on
- * the (log, sessions) refs — both are replaced immutably on change — so a
- * keystroke costs one pass over the parsed terms, and the reducer's calls and
- * the render share one computation.
- */
-export const searchSessions = (fleet: FleetView, q: string): SessionMatch[] => {
-  if (fleet.transcripts !== docsLog || fleet.sessions !== docsSessions) {
-    docsLog = fleet.transcripts;
-    docsSessions = fleet.sessions;
-    docCache = buildDocs(fleet);
-    resultCache.clear();
-  }
-  const hit = resultCache.get(q);
-  if (hit) return hit;
-  const terms = parseQuery(q);
-  const out: SessionMatch[] = [];
-  if (terms.length === 0) {
-    for (const session of fleet.sessions) out.push({ session, score: 0 });
-  } else {
-    for (const session of fleet.sessions) {
-      const doc = docCache.get(session.id);
-      const score = doc === undefined ? 0 : scoreDoc(doc, terms);
-      if (score > 0) out.push({ session, score });
-    }
-    // Stable sort: ties keep the order the unfiltered fleet list uses.
-    out.sort((a, b) => b.score - a.score);
-  }
-  if (resultCache.size >= 32) resultCache.clear();
-  resultCache.set(q, out);
   return out;
+};
+
+/**
+ * What the FLEET pane's header says while the filter is up. The search is a
+ * round trip now, so "how many match" has three more answers than it used to:
+ * nothing typed yet, the daemon still counting, and a search that failed —
+ * each of which has to read differently from an honest zero.
+ */
+export const fleetFilterStatus = (find: Find, sessions: readonly SessionSnapshot[]): string => {
+  if (queryOf(find) === "") return `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+  if (find.results.tag === "error") return `search failed: ${find.results.error}`;
+  if (searchStale(find)) return "searching…";
+  const n = searchMatches(find, sessions).length;
+  const more = find.results.tag === "data" && find.results.value.cursor !== null ? "+" : "";
+  return `${n}${more}/${sessions.length} match${n === 1 && more === "" ? "" : "es"}`;
+};
+
+// ---- the handle ------------------------------------------------------------
+
+export interface SearchControlDeps {
+  /** `session.search`. One page; `cursor` continues an earlier one. */
+  search: (query: string, cursor: SearchCursor | null) => Promise<SearchPage>;
+  find: () => Find | null;
+  /** The fleet on screen — how far a page has to be paged in is decided
+   *  against what the user can actually select. */
+  sessions: () => readonly SessionSnapshot[];
+  /** The selected session, so an exhausted-looking list can be topped up
+   *  before the selection walks off the end of it. */
+  selectedId: () => string | null;
+  /** Only fetch while the daemon is there. */
+  connected: () => boolean;
+  /** Install results for `query`; the reducer drops them if the buffer has
+   *  moved on. */
+  loaded: (query: string, results: Loadable<string, SearchResults>) => void;
+  /** How long a query sits before it is sent. Search is a scan over every
+   *  session's durable text, so a keystroke must not start one. */
+  debounceMs?: number;
+  /** How close to the end of the loaded results the selection has to get
+   *  before the next page is fetched. */
+  prefetchWithin?: number;
+}
+
+export interface SearchControl {
+  /** The query changed (or the filter opened): schedule the search it needs. */
+  typed: () => void;
+  /** Re-run the current query now — an explicit refresh, or a reconnect. */
+  refresh: () => void;
+  /** Called on every state change: page in more results when the selection is
+   *  running out of them, and invalidate everything on disconnect. */
+  settle: () => void;
+  /** Cancel the timer and orphan any outstanding response. */
+  dispose: () => void;
+}
+
+export const mkSearchControl = ({
+  search,
+  find,
+  sessions,
+  selectedId,
+  connected,
+  loaded,
+  debounceMs = 180,
+  prefetchWithin = 10,
+}: SearchControlDeps): SearchControl => {
+  // One lifetime per query. Bumped by every keystroke, refresh, disconnect and
+  // dispose, so a response can be matched against the search that asked for it
+  // — cancelling a fetch cannot un-queue a callback that is already scheduled.
+  let gen = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** The query `gen` belongs to, so `settle` can tell an in-flight page for
+   *  the current query from one left over from an abandoned search. */
+  let inFlight: string | null = null;
+  let wasConnected = true;
+
+  const disarm = (): void => {
+    if (timer === null) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+
+  /** Abandon whatever is scheduled or outstanding. */
+  const invalidate = (): void => {
+    gen += 1;
+    inFlight = null;
+    disarm();
+  };
+
+  const run = (query: string, cursor: SearchCursor | null, previous: readonly string[]): void => {
+    if (!connected()) return;
+    const mine = gen;
+    inFlight = query;
+    search(query, cursor).then(
+      (page) => {
+        if (mine !== gen) return; // a newer query owns the filter now
+        inFlight = null;
+        // The daemon echoes the query; a page for anything else is a page for
+        // a search this handle has already replaced.
+        if (page.query !== query) return;
+        loaded(
+          query,
+          loadableLoaded({
+            query,
+            ids: [...previous, ...page.hits.map((h) => h.id)],
+            cursor: page.cursor,
+            loadingMore: false,
+          }),
+        );
+      },
+      (e: unknown) => {
+        if (mine !== gen) return;
+        inFlight = null;
+        loaded(query, loadableFailed(e instanceof Error ? e.message : String(e)));
+      },
+    );
+  };
+
+  const start = (query: string): void => {
+    invalidate();
+    if (query === "") return void loaded(query, loadableIdle);
+    loaded(query, loadablePending);
+    run(query, null, []);
+  };
+
+  return {
+    typed: () => {
+      const f = find();
+      if (!f) return void invalidate();
+      const q = queryOf(f);
+      // Already answered, or already on its way: `findSet` fires on every
+      // keystroke, including the ones that don't change the query (cursor
+      // motion, a space at the end).
+      if (q === "") {
+        invalidate();
+        if (f.results.tag !== "idle") loaded(q, loadableIdle);
+        return;
+      }
+      if (inFlight === q) return;
+      if (f.results.tag === "data" && f.results.value.query === q) return;
+      disarm();
+      timer = setTimeout(() => {
+        timer = null;
+        start(q);
+      }, debounceMs);
+    },
+
+    refresh: () => {
+      const f = find();
+      if (!f) return void invalidate();
+      start(queryOf(f));
+    },
+
+    settle: () => {
+      const live = connected();
+      if (!live) {
+        // The results describe a fleet this client is no longer being told
+        // about. Holding them would let a selection land on a session that
+        // may not exist by the time the socket is back.
+        if (wasConnected) {
+          invalidate();
+          const f = find();
+          if (f && f.results.tag !== "idle") loaded(queryOf(f), loadableIdle);
+        }
+        wasConnected = false;
+        return;
+      }
+      if (!wasConnected) {
+        // Reconnected: re-run the active query once, rather than leaving the
+        // filter showing an answer from before the gap.
+        wasConnected = true;
+        const f = find();
+        if (f && queryOf(f) !== "") start(queryOf(f));
+        return;
+      }
+      const f = find();
+      if (!f || f.results.tag !== "data") return;
+      const r = f.results.value;
+      if (r.cursor === null || r.loadingMore || r.query !== queryOf(f)) return;
+      // Page in more only as the selection approaches the end of what is
+      // loaded: a capped page is not "no more matches", and the user walking
+      // down the list must not stop at an arbitrary boundary.
+      const shown = searchMatches(f, sessions());
+      const at = shown.findIndex((s) => s.id === selectedId());
+      if (shown.length - (at < 0 ? 0 : at) > prefetchWithin) return;
+      loaded(r.query, loadableLoaded({ ...r, loadingMore: true }));
+      run(r.query, r.cursor, r.ids);
+    },
+
+    dispose: () => invalidate(),
+  };
 };

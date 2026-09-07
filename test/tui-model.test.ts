@@ -14,7 +14,13 @@ import {
 import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
-import type { EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
+import type {
+  EventPush,
+  HistoryCursor,
+  HistoryPage,
+  SearchCursor,
+  SearchPage,
+} from "@loom/core/wire";
 import {
   actionsFor,
   allowedActs,
@@ -88,7 +94,13 @@ import {
 import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
 import { cleared, enqueue, outboxOf, pending, release, type Outbox } from "@loom/tui/composer";
 import { mkModeControl, pendingMode, type ModeChoices } from "@loom/tui/mode-control";
-import { searchSessions, type FleetView } from "@loom/tui/fleet-search";
+import {
+  fleetFilterStatus,
+  mkSearchControl,
+  searchMatches,
+  searchStale,
+  type Find,
+} from "@loom/tui/fleet-search";
 
 /** Put an overlay up — the action every open/close goes through. */
 const open = (overlay: Overlay): Action => ({ t: "overlay", overlay });
@@ -2943,7 +2955,11 @@ test("picker: open, filter narrows the list, move clamps to the filtered set", (
   assert.equal(pickerOf(s), null);
 });
 
-test("the fleet filter matches title + log text and rides the selection", () => {
+test("the fleet filter opens empty and closes without disturbing the selection", () => {
+  // What the filter *matches* is the daemon's business now (see
+  // `session-search.test.ts`) and what it does with an answer is the search
+  // handle's (see "fleet search:" below). This is the rest of it: the query is
+  // a buffer that opens empty, and closing it is not a navigation.
   let s = reduce(
     withProviders(),
     fleet([
@@ -2951,41 +2967,21 @@ test("the fleet filter matches title + log text and rides the selection", () => 
       snap({ id: "bbb", status: "idle", title: "refactor the parser" }),
     ]),
   );
-  s = reduce(s, {
-    t: "push",
-    frame: {
-      type: "event",
-      seq: 1,
-      event: {
-        type: "assistant_text",
-        sessionId: "bbb",
-        ts: 1,
-        text: "refactor the parser module",
-      },
-    },
-  } as never);
+  s = reduce(s, { t: "select", id: "bbb" });
 
   s = reduce(s, { t: "openFind" });
   assert.equal(s.find?.buffer.text, "");
+  assert.equal(s.find?.results.tag, "idle", "no query yet is not a search that returned nothing");
 
-  // A query matches the title OR the session's log text; as it narrows, the
-  // selection rides onto the first match.
   s = reduce(s, { t: "findSet", buffer: buffer("parser") });
-  assert.equal(s.selectedId, "bbb");
+  assert.equal(s.find?.buffer.text, "parser");
+  assert.equal(s.selectedId, "bbb", "typing does not move the selection on its own");
 
-  // ↑/↓ walk the matching sessions only, never leaving the filtered set.
-  s = reduce(s, { t: "findSet", buffer: buffer("the") }); // both match again
-  assert.equal(s.selectedId, "bbb"); // still on a match — no jump
-  s = reduce(s, { t: "move", delta: -1 });
-  assert.equal(s.selectedId, "aaa");
-  s = reduce(s, { t: "move", delta: 1 });
-  assert.equal(s.selectedId, "bbb");
-
-  // esc closes the filter; the selection survives.
   s = reduce(s, { t: "closeFind" });
   assert.equal(s.find, null);
   assert.equal(s.selectedId, "bbb");
 });
+
 test("a live model picker closes if its session is removed", () => {
   let s = reduce(
     withProviders(),
@@ -3418,161 +3414,275 @@ test("logRowCount tracks the resolved child through drill and drain", () => {
 });
 
 // ---------------------------------------------------------------------------
-// fleet search (`/`) — matching, ranking, exclusions
+// fleet search (`/`) — the query's lifetime
 // ---------------------------------------------------------------------------
+//
+// Matching and ranking are the daemon's now, and tested against a real
+// database in `session-search.test.ts`. What is left here is what the TUI
+// still owns: one search per settled query, results that can't outlive the
+// query that asked for them, and the fleet as the only source of sessions.
 
-// The search engine reads a `FleetView`, not the whole UI state — hand it
-// exactly that rather than a TuiState that happens to satisfy it structurally.
-const searchState = (sessions: SessionSnapshot[], log: LogLine[] = []): FleetView => {
-  const transcripts: Record<string, { lines: LogLine[]; echoes: LogLine[] }> = {};
-  for (const s of sessions) transcripts[s.id] = { lines: [], echoes: [] };
-  for (const l of log) transcripts[l.sessionId]?.lines.push(l);
-  return { sessions, transcripts };
+/** A search page as `session.search` returns one — ranked ids and whether the
+ *  ranking has more behind it. */
+const page = (query: string, ids: string[], more = false): SearchPage => ({
+  query,
+  hits: ids.map((id, i) => ({ id, score: 100 - i })),
+  cursor: more ? { query, offset: ids.length } : null,
+});
+
+/**
+ * A search control over the real reducer, with `session.search` parked so a
+ * test settles each call by hand. `settle()` runs after every state change,
+ * as `fleet-handle`'s effect block does.
+ */
+const mkSearch = (
+  sessions: SessionSnapshot[],
+  opts: { debounceMs?: number; prefetchWithin?: number } = {},
+) => {
+  let s = reduce(reduce(initialState(), fleet(sessions)), { t: "openFind" });
+  let live = true;
+  const calls: Array<{
+    query: string;
+    cursor: SearchCursor | null;
+    ok: (p: SearchPage) => void;
+    fail: (e: unknown) => void;
+  }> = [];
+  const ctl = mkSearchControl({
+    search: (query, cursor) =>
+      new Promise<SearchPage>((ok, fail) => calls.push({ query, cursor, ok, fail })),
+    find: () => s.find,
+    sessions: () => fleetSessions(s),
+    selectedId: () => s.selectedId,
+    connected: () => live,
+    loaded: (query, results) => {
+      s = reduce(s, { t: "searchLoaded", query, results });
+      ctl.settle();
+    },
+    debounceMs: opts.debounceMs ?? 5,
+    prefetchWithin: opts.prefetchWithin ?? 1,
+  });
+  const after = <T>(x: T): T => {
+    ctl.settle();
+    return x;
+  };
+  return {
+    ctl,
+    calls,
+    /** Every query the handle has actually sent, in order. */
+    sent: (): string[] => calls.map((c) => c.query),
+    type: (text: string): void => {
+      s = reduce(s, { t: "findSet", buffer: buffer(text) });
+      ctl.typed();
+      after(null);
+    },
+    select: (id: string): void => after((s = reduce(s, { t: "select", id }))) && undefined,
+    move: (delta: number): void => after((s = reduce(s, { t: "move", delta }))) && undefined,
+    disconnect: (): void => {
+      live = false;
+      after(null);
+    },
+    reconnect: (): void => {
+      live = true;
+      after(null);
+    },
+    rows: (): string[] => searchMatches(s.find, fleetSessions(s)).map((x) => x.id),
+    state: (): TuiState => s,
+    find: (): Find => {
+      assert.ok(s.find);
+      return s.find;
+    },
+    /** Long enough for a debounce that is set to 5ms to have fired. */
+    wait: (): Promise<void> => new Promise((r) => setTimeout(r, 25)) as Promise<void>,
+  };
 };
 
-test("fleet search: a 'term is a literal substring, case-insensitive", () => {
-  const s = searchState([
-    snap({ id: "lit", title: "say Hello there" }),
-    snap({ id: "spread", title: "spelling h-e-l-l-o out" }),
-  ]);
+const two = (): SessionSnapshot[] => [
+  snap({ id: "best", title: "mobile access" }),
+  snap({ id: "weak", title: "another chat" }),
+];
+
+test("fleet search: a burst of keystrokes is one search, for the query it settles on", async () => {
+  const m = mkSearch(two());
+  m.type("m");
+  m.type("mo");
+  m.type("mob");
+  assert.deepEqual(m.sent(), [], "nothing goes out mid-word");
+  // Typing is visible immediately even though the answer isn't.
+  assert.equal(m.find().buffer.text, "mob");
+  assert.ok(searchStale(m.find()), "and it reads as unanswered, not as no matches");
+
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mob"]);
+  m.calls[0]!.ok(page("mob", ["best"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["best"]);
+  assert.equal(searchStale(m.find()), false);
+});
+
+test("fleet search: a page for a query you have typed past is not an answer to this one", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  m.type("another");
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mobile", "another"]);
+
+  // The first search finally answers — after the query moved on. Its rows are
+  // a correct answer to a question nobody is asking any more.
+  m.calls[0]!.ok(page("mobile", ["best"]));
+  await m.wait();
+  assert.ok(searchStale(m.find()), "still waiting on `another`");
+  assert.deepEqual(m.rows(), [], "and showing nothing rather than the wrong thing");
+
+  m.calls[1]!.ok(page("another", ["weak"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["weak"]);
+});
+
+test("fleet search: clearing the query is the whole fleet, with no round trip", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  m.calls[0]!.ok(page("mobile", ["best"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["best"]);
+
+  m.type("");
+  assert.deepEqual(m.rows(), ["weak", "best"], "immediately, and in the fleet's own order");
+  assert.equal(searchStale(m.find()), false);
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mobile"], "the empty query is not a search");
+});
+
+test("fleet search: the selection rides onto the best match, but only on its own results", async () => {
+  const m = mkSearch(two());
+  assert.equal(m.state().selectedId, "weak", "fixture: the fleet head is not the best match");
+
+  m.type("chat");
+  await m.wait();
+  assert.equal(m.state().selectedId, "weak", "typing alone does not move the selection");
+  m.calls[0]!.ok(page("chat", ["weak", "best"]));
+  await m.wait();
+  assert.equal(m.state().selectedId, "weak", "a selection that still matches stays put");
+
+  m.type("mobile");
+  await m.wait();
+  assert.equal(m.state().selectedId, "weak", "still not — `mobile` has not answered yet");
+  m.calls[1]!.ok(page("mobile", ["best"]));
+  await m.wait();
+  assert.equal(m.state().selectedId, "best", "one that no longer matches rides onto the top row");
+});
+
+test("fleet search: ids the fleet doesn't have are not rows", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  // The daemon ranks over its own sessions; this client's snapshot can be a
+  // beat behind (or a session can end between the search and the frame).
+  m.calls[0]!.ok(page("mobile", ["best", "ended", "weak"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["best", "weak"]);
+  const results = m.find().results;
+  assert.ok(results.tag === "data");
   assert.deepEqual(
-    searchSessions(s, "'hello").map((m) => m.session.id),
-    ["lit"],
+    [...results.value.ids],
+    ["best", "ended", "weak"],
+    "the page is kept as it came — the intersection is a display decision",
   );
 });
 
-test("fleet search: bare terms match fuzzily; space-separated terms are AND'd", () => {
-  const both = snap({ id: "both", title: "mobile access rollout" });
-  const onlyMobile = snap({ id: "m", title: "mobile layout" });
-  const onlyAccess = snap({ id: "a", title: "database access" });
-  const s = searchState([onlyMobile, onlyAccess, both]);
-  assert.deepEqual(
-    searchSessions(s, "layout").map((m) => m.session.id),
-    ["m"],
-  );
-  assert.deepEqual(
-    searchSessions(s, "mobile access").map((m) => m.session.id),
-    ["both"],
-  );
+test("fleet search: a capped page is topped up as the selection nears its end", async () => {
+  const ids = ["a", "b", "c", "d", "e"];
+  const m = mkSearch(ids.map((id) => snap({ id, title: `${id} zebra` })));
+  m.type("zebra");
+  await m.wait();
+  m.calls[0]!.ok(page("zebra", ["a", "b", "c"], true));
+  await m.wait();
+  assert.deepEqual(m.sent(), ["zebra"], "a full page is not a reason to fetch on its own");
+
+  m.move(1);
+  m.move(1); // onto "c", the last loaded row
+  await m.wait();
+  assert.deepEqual(m.sent(), ["zebra", "zebra"], "walking off the end asks for more");
+  assert.deepEqual(m.calls[1]!.cursor, { query: "zebra", offset: 3 });
+
+  m.calls[1]!.ok(page("zebra", ["d", "e"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["a", "b", "c", "d", "e"], "pages append, they don't replace");
+  m.move(1);
+  await m.wait();
+  assert.deepEqual(m.sent().length, 2, "an exhausted ranking is not asked again");
 });
 
-test("fleet search: title beats your messages beats the agent's", () => {
-  const title = snap({ id: "title", title: "mobile rollout" });
-  const mine = snap({ id: "mine", title: "chat" });
-  const theirs = snap({ id: "theirs", title: "chat" });
-  const s = searchState(
-    [theirs, mine, title],
-    [
-      toLogLine(
-        1,
-        ev({
-          type: "user_message",
-          text: "start the mobile work",
-          injected: false,
-          sessionId: "mine",
-        }),
-      ),
-      toLogLine(
-        2,
-        ev({ type: "assistant_text", text: "the mobile plan is ready", sessionId: "theirs" }),
-      ),
-    ],
-  );
-  assert.deepEqual(
-    searchSessions(s, "mobile").map((m) => m.session.id),
-    ["title", "mine", "theirs"],
-  );
+test("fleet search: losing the daemon drops the results; coming back re-runs the query once", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  m.calls[0]!.ok(page("mobile", ["best"]));
+  await m.wait();
+  assert.deepEqual(m.rows(), ["best"]);
+
+  m.disconnect();
+  assert.deepEqual(m.rows(), [], "the fleet it described is one we're no longer told about");
+  assert.ok(searchStale(m.find()));
+  m.disconnect(); // a second dispatch while still down must not re-arm anything
+
+  m.reconnect();
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mobile", "mobile"], "re-run once, not per frame");
+  m.reconnect();
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mobile", "mobile"]);
 });
 
-test("fleet search: tool traffic and thinking are invisible", () => {
-  const x = snap({ id: "x", title: "unrelated" });
-  const s = searchState(
-    [x],
-    [
-      toLogLine(
-        1,
-        ev({
-          type: "tool_call",
-          id: "c1",
-          name: "Bash",
-          input: { command: "grep mobile *" },
-          sessionId: "x",
-        }),
-      ),
-      toLogLine(
-        2,
-        ev({ type: "tool_result", id: "c1", ok: true, output: { text: "mobile" }, sessionId: "x" }),
-      ),
-      toLogLine(3, ev({ type: "thinking", text: "they said mobile, so…", sessionId: "x" })),
-    ],
+test("fleet search: a failed search says so, and refresh is what retries it", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  m.calls[0]!.fail(new Error("daemon said no"));
+  await m.wait();
+  assert.equal(m.find().results.tag, "error");
+  assert.deepEqual(m.rows(), [], "a failure is not an empty result set");
+  assert.match(
+    fleetFilterStatus(m.find(), fleetSessions(m.state())),
+    /search failed: daemon said no/,
   );
-  assert.deepEqual(searchSessions(s, "mobile"), []);
+  assert.deepEqual(m.sent(), ["mobile"], "and it does not retry itself");
+
+  m.ctl.refresh();
+  await m.wait();
+  assert.deepEqual(m.sent(), ["mobile", "mobile"]);
 });
 
-test("fleet search: message bodies beyond the one-line summary are searched", () => {
-  const long = `${"filler ".repeat(60)}zebra migration`;
-  const a = snap({ id: "a", title: "chat" });
-  const s = searchState(
-    [a],
-    [toLogLine(1, ev({ type: "user_message", text: long, injected: false, sessionId: "a" }))],
-  );
-  const line = s.transcripts["a"]?.lines[0];
-  assert.ok(line);
-  assert.ok(
-    (line.full?.length ?? 0) > line.text.length,
-    "fixture: the log line's summary is truncated",
-  );
-  assert.deepEqual(
-    searchSessions(s, "'zebra migration").map((m) => m.session.id),
-    ["a"],
-  );
+test("fleet search: the header separates 'still counting' from 'nothing matched'", async () => {
+  const m = mkSearch(two());
+  const header = (): string => fleetFilterStatus(m.find(), fleetSessions(m.state()));
+  assert.equal(header(), "2 sessions", "no query yet — a count, not a search");
+
+  m.type("mobile");
+  assert.equal(header(), "searching…");
+  await m.wait();
+  m.calls[0]!.ok(page("mobile", []));
+  await m.wait();
+  assert.equal(header(), "0/2 matches");
+
+  m.type("chat");
+  await m.wait();
+  m.calls[1]!.ok(page("chat", ["best"], true));
+  await m.wait();
+  assert.equal(header(), "1+/2 matches", "a capped page must not read as the whole answer");
 });
 
-test("fleet search: equal scores keep the fleet's order (newest first)", () => {
-  const older = snap({ id: "older", title: "zebra run", updatedAt: 10 });
-  const newer = snap({ id: "newer", title: "zebra run", updatedAt: 99 });
-  const s = reduce(initialState(), fleet([older, newer]));
-  assert.deepEqual(
-    searchSessions({ sessions: fleetSessions(s), transcripts: s.transcripts }, "'zebra").map(
-      (m) => m.session.id,
-    ),
-    ["newer", "older"],
-  );
-});
-
-test("fleet search: an empty query lists every session, unranked", () => {
-  const a = snap({ id: "a", title: "x" });
-  const b = snap({ id: "b", title: "y" });
-  const s = searchState([a, b]);
-  assert.deepEqual(
-    searchSessions(s, "").map((m) => m.session.id),
-    ["a", "b"],
-  );
-  assert.deepEqual(
-    searchSessions(s, "   ").map((m) => m.session.id),
-    ["a", "b"],
-  );
-});
-
-test("fleet search: findSet rides onto the best-ranked match; ↑↓ walk it", () => {
-  // The fleet head ("head", newest) doesn't match at all; of the matches, the
-  // title hit outranks the message-only hit.
-  const weak = snap({ id: "weak", title: "another chat" });
-  const best = snap({ id: "best", title: "mobile access" });
-  const head = snap({ id: "head", title: "unrelated chatter" });
-  let s = reduce(initialState(), fleet([weak, best, head]));
-  s = reduce(s, {
-    t: "push",
-    frame: push(
-      1,
-      ev({ type: "user_message", text: "mobile thoughts", injected: false, sessionId: "weak" }),
-    ),
-  });
-  s = reduce(s, { t: "openFind" });
-  s = reduce(s, { t: "findSet", buffer: buffer("mobile") });
-  assert.equal(s.selectedId, "best", "rode onto the title match");
-  s = reduce(s, { t: "move", delta: 1 });
-  assert.equal(s.selectedId, "weak", "↓ walks down the ranked list");
-  s = reduce(s, { t: "move", delta: -1 });
-  assert.equal(s.selectedId, "best");
+test("fleet search: ↑↓ walk the ranked rows, not the fleet's", async () => {
+  const m = mkSearch(two());
+  m.type("mobile");
+  await m.wait();
+  // Ranked best-first, which is the reverse of the fleet's own order here.
+  m.calls[0]!.ok(page("mobile", ["best", "weak"]));
+  await m.wait();
+  assert.equal(m.state().selectedId, "weak", "the selection still matches, so it stays");
+  m.move(-1);
+  assert.equal(m.state().selectedId, "best", "↑ walks up the ranked list");
+  m.move(1);
+  assert.equal(m.state().selectedId, "weak");
 });

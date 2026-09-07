@@ -244,8 +244,8 @@ export const makePicker = (init: {
 
 /**
  * Case-insensitive subsequence match — every char of `q` appears in order.
- * The picker's matcher over short labels; the fleet filter ranks instead
- * (see `searchSessions`).
+ * The picker's matcher over short labels; the fleet filter ranks instead, in
+ * the daemon (see `session.search`).
  */
 const fuzzyMatch = (hay: string, q: string): boolean => {
   if (q === "") return true;

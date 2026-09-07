@@ -58,7 +58,7 @@ import {
   type Outbox,
   type Outboxes,
 } from "./composer.ts";
-import { searchSessions, type FleetView } from "./fleet-search.ts";
+import { openFind, queryOf, searchMatches, type Find, type SearchResults } from "./fleet-search.ts";
 import {
   STATUS_ORDER,
   clock,
@@ -90,12 +90,6 @@ export const connectionOf = (s: TuiState): Connection =>
 /** The fleet in display order, or empty while there is no current snapshot. */
 export const fleetSessions = (s: TuiState): SessionSnapshot[] =>
   s.fleet.tag === "data" ? s.fleet.value.sessions : [];
-
-/** What the fleet search engine sees — sessions plus their event lines. */
-const fleetView = (s: TuiState): FleetView => ({
-  sessions: fleetSessions(s),
-  transcripts: s.transcripts,
-});
 
 /** Configured providers from the current snapshot, or empty while pending. */
 export const fleetProviders = (s: TuiState): ProviderInfo[] =>
@@ -300,10 +294,12 @@ export interface TuiState {
    * The fleet filter (`/`) — a single-line query that narrows the FLEET list
    * in place and ranks it: title hits first, then your messages, then the
    * agent's; space-separated terms are AND'd and `'term` pins a literal
-   * substring. ↑/↓ keep moving the session selection while it's up; ⏎ accepts
-   * (keeping enter's fleet-row meaning) and esc clears. null = closed.
+   * substring. Matching happens in the daemon, over every session's durable
+   * transcript, so this holds the query and whatever page came back — see
+   * {@link Find}. ↑/↓ keep moving the session selection while it's up; ⏎
+   * accepts (keeping enter's fleet-row meaning) and esc clears. null = closed.
    */
-  find: { buffer: Buffer } | null;
+  find: Find | null;
   /** In-progress answers for a multi-question `AskUserQuestion` — see
    *  {@link QNav}. Persists across the answer prompt opening and closing. */
   qnav: QNav | null;
@@ -405,6 +401,7 @@ export type Action =
   | { t: "pickerMove"; delta: number }
   | { t: "openFind" }
   | { t: "findSet"; buffer: Buffer }
+  | { t: "searchLoaded"; query: string; results: Loadable<string, SearchResults> }
   | { t: "closeFind" }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "doctorLoaded"; report: DoctorReport };
@@ -644,11 +641,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // order — the rows the fleet is actually showing. Off-list (the
       // selection was filtered out), ↓ lands on the best match and ↑ on the
       // last.
-      const find = s.find;
-      const list = find
-        ? searchSessions(fleetView(s), find.buffer.text).map((m) => m.session)
-        : fleetSessions(s);
-      if (list.length === 0) return s;
+      const list = searchMatches(s.find, fleetSessions(s));
       let from = list.findIndex((x) => x.id === s.selectedId);
       if (from < 0) from = a.delta < 0 ? list.length : -1;
       const next = Math.max(0, Math.min(list.length - 1, from + a.delta));
@@ -823,23 +816,31 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         ? s
         : { ...s, overlay: { t: "picker", picker: { ...p, index: next } } };
     }
-
     case "openFind":
-      return { ...s, find: { buffer: buffer() } };
+      return { ...s, find: openFind() };
 
-    case "findSet": {
-      if (!s.find) return s;
-      const next = { ...s, find: { buffer: a.buffer } };
-      // As the query narrows, ride the selection onto the best-ranked match
-      // (fzf-style) — the Detail / EVENTS panes then follow the row the
-      // filter is pointing at. An empty query (or no match) leaves the
-      // selection be; a selection that still matches stays put, so it doesn't
+    case "findSet":
+      // Typing only moves the query. The selection stays where it is until
+      // results for *this* query arrive (see `searchLoaded`) — riding it onto
+      // the best row of the previous query's answer would point the Detail
+      // and EVENTS panes at a session that has nothing to do with what is
+      // typed.
+      return s.find ? { ...s, find: { ...s.find, buffer: a.buffer } } : s;
+
+    case "searchLoaded": {
+      // Results the buffer has moved on from are dropped here rather than in
+      // the handle: the buffer is the reducer's, and it can have changed
+      // between the response landing and this action running.
+      if (!s.find || queryOf(s.find) !== a.query) return s;
+      const next = { ...s, find: { ...s.find, results: a.results } };
+      if (a.query === "" || a.results.tag !== "data") return next;
+      // The answer is in: ride the selection onto the best-ranked match
+      // (fzf-style), so the Detail / EVENTS panes follow the row the filter is
+      // pointing at. A selection that still matches stays put, so this doesn't
       // fight ↑/↓ walking the ranked rows.
-      const q = a.buffer.text;
-      if (q === "") return next;
-      const matches = searchSessions(fleetView(s), q);
-      if (matches.length === 0 || matches.some((m) => m.session.id === s.selectedId)) return next;
-      return { ...next, selectedId: matches[0]!.session.id, selectedChild: null };
+      const matches = searchMatches(next.find, fleetSessions(s));
+      if (matches.length === 0 || matches.some((m) => m.id === s.selectedId)) return next;
+      return { ...next, selectedId: matches[0]!.id, selectedChild: null };
     }
 
     case "closeFind":
@@ -1714,9 +1715,8 @@ export type FleetEntry =
 /** An active filter renders one flat ranked list; otherwise the status
  *  groups (see {@link groupsOf}). */
 export const fleetEntries = (state: TuiState): FleetEntry[] => {
-  const query = state.find?.buffer.text ?? "";
-  const matched = searchSessions(fleetView(state), query).map((m) => m.session);
-  const active = query.trim() !== "";
+  const matched = searchMatches(state.find, fleetSessions(state));
+  const active = state.find != null && queryOf(state.find) !== "";
   const focused = focusedChildOf(state);
   const out: FleetEntry[] = [];
 

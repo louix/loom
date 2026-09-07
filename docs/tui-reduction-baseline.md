@@ -141,3 +141,37 @@ the snapshot, so a press showed nothing for 317ms, and during a rapid cycle the
 intermediate targets were never rendered at all (`rapidCycleHintMs: null` in
 both step-0 runs). The applied chip is ~50ms slower than step 0 within run-to-run
 jitter; it is still the daemon's answer, one frame after it lands.
+
+## Step 5 — cross-session search
+
+Search is no longer a local computation, so the step-0 render bench has nothing
+to compare against here. What it costs now is one `session.search` scan in the
+daemon, measured over synthetic histories far larger than a real one
+(`deno run -A scripts/search-bench.ts <sessions> <eventsPerSession>`, warm page
+cache; the temporary bench script goes with `tui-bench.ts` at §9):
+
+| corpus                    | db size | rank one query |
+| ------------------------- | ------- | -------------- |
+| 50 sessions × 200 events  | 13 MB   | ~14ms          |
+| 200 sessions × 100 events | 25 MB   | ~33ms          |
+| 1000 sessions × 50 events | 64 MB   | ~85ms          |
+| 200 sessions × 500 events | 128 MB  | ~150ms         |
+
+Behind the handle's 180ms debounce, the realistic corpora are invisible. The
+extremes are not fast, but the plan's instruction was to measure before
+inventing an index — and an index is not the answer: adding
+`(session_id, type, id)` leaves SQLite still choosing `(session_id, id)`, which
+already satisfies the ordering, so the plan doesn't change. Cost is dominated
+by reading and `JSON.parse`-ing rows, not by scoring; halving the per-session
+text cap moved the 128MB number by under 10%. None was added.
+
+Two caps bound the scan: 2 KB per message (as the TUI matcher had) and 256 KB
+per field per session, reading newest-first and stopping there. The second is
+new, and it is strictly more text than step 0 searched — which was only the
+transcript pages this one client had downloaded, and nothing at all for a
+session never selected.
+
+What the user sees that they could not before: a match in a session this TUI has
+never opened. What they see that is new and slower: `FLEET · searching…` for the
+duration of one round trip, where step 0 recomputed the filter synchronously on
+every keystroke over a much smaller (and incomplete) corpus.

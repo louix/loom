@@ -320,9 +320,14 @@ test("session.search pages a ranked answer, and binds the continuation to the qu
   const clamped = await c.request<SearchPage>("session.search", { query: "'zebra", limit: -1 });
   assert.equal(clamped.hits.length, 1);
 
-  // An empty query is the fleet, without reading a transcript row.
+  // An empty query is the fleet — every session this daemon has, in the order
+  // `session.list` reports them, without reading a transcript row.
+  const listed = await c.request<SessionSnapshot[]>("session.list");
   const empty = await c.request<SearchPage>("session.search", { query: "" });
-  assert.equal(empty.hits.length, 6);
+  assert.deepEqual(
+    empty.hits.map((h) => h.id),
+    listed.map((s) => s.id),
+  );
   assert.ok(empty.hits.every((h) => h.score === 0));
   await c.close();
 });

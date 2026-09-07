@@ -24,6 +24,7 @@ import type {
   DoctorReport,
   HistoryPage,
   PushFrame,
+  SearchPage,
   SessionSnapshot,
 } from "@loom/core/wire";
 import { LOOM_VERSION } from "@loom/core/version";
@@ -42,6 +43,7 @@ import {
 import { mkStore } from "./store.ts";
 import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
+import { mkSearchControl, searchStale } from "./fleet-search.ts";
 import {
   fleetProviders,
   fleetSessions,
@@ -113,6 +115,11 @@ import {
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
+
+/** Matches per `session.search` page. Big enough that a normal fleet comes
+ *  back whole; small enough that a query against a large history is bounded.
+ *  A full page never means "no more" — the daemon returns a cursor for that. */
+const SEARCH_PAGE = 50;
 
 /** Last `maxBytes` of `path` as text, partial first line dropped. Never throws —
  *  a missing / unreadable file comes back as a one-line note. */
@@ -518,6 +525,25 @@ export const mkFleetHandle = ({
     },
   });
 
+  // The `/` filter. Matching is the daemon's — `session.search` scans every
+  // session's durable transcript, including sessions this client has never
+  // opened — so what is owned here is only the query's lifetime: one search
+  // per settled query, results tagged with the query that asked for them, and
+  // no page shown as an answer to a query it wasn't asked.
+  const searches = mkSearchControl({
+    search: (query, cursor) =>
+      client.request<SearchPage>("session.search", {
+        query,
+        limit: SEARCH_PAGE,
+        ...(cursor === null ? {} : { cursor }),
+      }),
+    find: () => state.find,
+    sessions: () => fleetSessions(state),
+    selectedId: () => state.selectedId,
+    connected,
+    loaded: (query, results) => dispatch({ t: "searchLoaded", query, results }),
+  });
+
   const store = mkStore<FleetView>(
     deriveView(state, tick, logScroll, planScroll, layoutView, dims),
   );
@@ -733,6 +759,12 @@ export const mkFleetHandle = ({
       // Remember the choice for the next launch — best-effort, like the log.
       if (themeState) persistTheme(themeState, state.theme);
     }
+    // The `/` query moved, or the filter opened or closed: the search handle
+    // decides whether that needs a round trip. `settle` is outside the
+    // connection gate below because losing the daemon is exactly what has to
+    // invalidate the results on screen.
+    if (state.find?.buffer !== prev.find?.buffer) searches.typed();
+    searches.settle();
     publish();
     // One gate for every daemon-dependent effect, read off ClientState's
     // discriminant rather than a flag beside it. Without a snapshot there is
@@ -2187,9 +2219,18 @@ export const mkFleetHandle = ({
     // PgUp/PgDn and Home/End fall through — the selection and the log keep
     // working. ⏎ accepts (and keeps ⏎'s fleet-row meaning below); esc clears.
     if (state.find) {
+      const find = state.find;
       if (key.escape) return void dispatch({ t: "closeFind" });
-      if (key.return) dispatch({ t: "closeFind" });
-      else if (
+      if (key.return) {
+        // A search that failed has ⏎ for a retry — the one explicit way to
+        // re-run a query without retyping it.
+        if (find.results.tag === "error") return void searches.refresh();
+        // The rows on screen still answer the *previous* query. Accepting one
+        // now would act on a session the query no longer names, so ⏎ waits
+        // rather than committing to a row it is about to replace.
+        if (searchStale(find)) return void note("still searching…", "dim");
+        dispatch({ t: "closeFind" });
+      } else if (
         !key.upArrow &&
         !key.downArrow &&
         !key.pageUp &&
@@ -2197,7 +2238,7 @@ export const mkFleetHandle = ({
         !key.home &&
         !key.end
       ) {
-        const res = applyKey(state.find.buffer, input, key, { multiline: false });
+        const res = applyKey(find.buffer, input, key, { multiline: false });
         if (res.kind === "buffer") return void dispatch({ t: "findSet", buffer: res.buffer });
         return; // unbound modified keys — ignore
       }
@@ -2409,9 +2450,10 @@ export const mkFleetHandle = ({
 
     return () => {
       clearInterval(iv);
-      // A mode change scheduled a moment before the UI went away has nothing
-      // left to render into.
+      // A mode change scheduled a moment before the UI went away, and a search
+      // still on the wire, have nothing left to render into.
       modes.dispose();
+      searches.dispose();
       for (const off of offs) off();
     };
   };

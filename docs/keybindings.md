@@ -92,11 +92,11 @@ you can see what you type.
 
 ### Always
 
-| key        | action                                                                                                                                                   |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `n`        | new session — the prompt shows the provider / model; `⌥p` changes them                                                                                   |
-| `/`        | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
-| `q` / `⌃c` | quit the UI — the daemon keeps running                                                                                                                   |
+| key        | action                                                                                                                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `n`        | new session — the prompt shows the provider / model; `⌥p` changes them                                                                                                                                                               |
+| `/`        | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text; matched in the daemon, so sessions this TUI has never opened are found too); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
+| `q` / `⌃c` | quit the UI — the daemon keeps running                                                                                                                                                                                               |
 
 ## In the prompt
 
