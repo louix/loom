@@ -62,6 +62,7 @@ import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
+import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
@@ -220,6 +221,7 @@ export class Daemon {
   #providers: ProviderRegistry;
   #sessions: SessionManager;
   #worktrees: WorktreeManager;
+  #hooks: HookRunner;
   #idle: IdleTimer;
   #pricing: PriceTable;
   #pidfile: PidfileInfo | null = null;
@@ -288,6 +290,28 @@ export class Daemon {
       log: this.#log.child("worktrees"),
     });
     this.#providers = new ProviderRegistry(this.config, this.#pmsgs, opts.connectors);
+    this.#hooks = new HookRunner({
+      repoRoot: opts.repoRoot,
+      log: this.#log.child("hooks"),
+      // A failed write hook talks to the agent through the same path as the
+      // commit nudge: emitted so every client sees it land, and kept out of
+      // `#lastSend` so it seeds neither the undo picker nor the auto-title.
+      onFeedback: (id, text) => {
+        if (this.#stopping) return;
+        this.emitEvent({
+          type: "user_message",
+          sessionId: id,
+          ts: Date.now(),
+          text,
+          injected: false,
+        });
+        void this.#sessions.send(id, text).catch((err) => {
+          this.#log.warn("hook feedback failed", { id, err: String(err) });
+        });
+      },
+      onNotice: (text, tone) => this.#emitNotice(text, tone),
+    });
+    this.#hooks.setHooks(this.config.hooks);
     this.#sessions = new SessionManager({
       emitEvent: (ev) => {
         if (ev.type === "compact" && !this.#stopping) {
@@ -295,6 +319,15 @@ export class Daemon {
           // stored in the checkpoints no longer point anywhere sane, so undo
           // past a compaction isn't recoverable — drop them.
           this.#checkpoints.truncate(ev.sessionId, 0);
+        }
+        // Watch the stream for writes before it goes out, so a write tool's
+        // `tool_call` is always recorded ahead of the `tool_result` that
+        // consumes it. No-ops entirely when no hook is configured.
+        if (!this.#stopping) {
+          this.#hooks.observe(ev, () => {
+            const s = this.#registry.get(ev.sessionId);
+            return s ? hookSessionOf(s) : null;
+          });
         }
         this.emitEvent(ev);
       },
@@ -1328,6 +1361,41 @@ export class Daemon {
     // pull the branch up to its base and, failing that, to flag a worktree the
     // agent left with uncommitted changes.
     if (state.kind === "idle" && !this.#maybeAutoRebase(id)) this.#maybeCommitNudge(id);
+
+    this.#fireStatusHooks(snap, state);
+  }
+
+  /**
+   * `[[hooks]]` for a transition the event stream produced. Only the states a
+   * human would want to hear about fire: the turn finished, or it stopped and
+   * is waiting on someone. `running` / `starting` / `working_background` are
+   * mid-turn and would be pure noise; `done` is a human marking the session
+   * closed, not the agent reaching anything.
+   *
+   * Deliberately *after* the auto-rebase / commit nudge above: those can send
+   * the agent a message, which moves the session back to `running`, and a
+   * notifier should be told the state the session actually settled in.
+   */
+  #fireStatusHooks(snap: SessionSnapshot, state: SessionState): void {
+    if (this.#hooks.empty) return;
+    const current = this.#registry.get(snap.id) ?? snap;
+    const session = hookSessionOf(current);
+    switch (state.kind) {
+      case "idle":
+        this.#hooks.turnEnded(session);
+        return;
+      case "awaiting_input":
+        this.#hooks.waiting(session, state.on);
+        return;
+      case "error":
+        this.#hooks.stopped(session, "error", state.message);
+        return;
+      case "interrupted":
+        this.#hooks.stopped(session, "interrupted", state.by);
+        return;
+      default:
+        return;
+    }
   }
 
   /**
@@ -1775,6 +1843,10 @@ export class Daemon {
     this.config.commitReminder = next.commitReminder;
     this.config.notify = next.notify;
     this.config.titles = next.titles;
+    // Hooks are re-read per fire, so a new command takes effect on the next
+    // event — no restart, and no need to touch a running session.
+    this.config.hooks = next.hooks;
+    this.#hooks.setHooks(next.hooks);
     if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
       this.config.daemon = {
         ...this.config.daemon,
@@ -2922,6 +2994,7 @@ export class Daemon {
           branchDeleted = this.#worktrees.deleteBranch(s.branch);
         }
         this.#registry.remove(id);
+        this.#hooks.forget(id);
         this.#publishState();
         this.#worktrees.prune();
         this.#onActivityChange("session-removed");

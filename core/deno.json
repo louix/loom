@@ -14,6 +14,7 @@
     "./logger": "./src/logger.ts",
     "./commit": "./src/commit.ts",
     "./status": "./src/status.ts",
+    "./tool-paths": "./src/tool-paths.ts",
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",
     "./provider-id": "./src/provider-id.ts",

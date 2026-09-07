@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { onPath } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { PriceRow } from "./pricing.ts";
 
@@ -156,6 +157,77 @@ export interface ClaudeProfile {
   color: string;
 }
 
+/**
+ * What a `[[hooks]]` entry can fire on. Two families:
+ *
+ *  - *Write* events — `file_write` (one tool call that wrote files, fired as
+ *    soon as its result lands) and `turn_end` (once per turn, with every file
+ *    the turn wrote). A linter usually wants `turn_end`; a formatter that
+ *    should run before the agent reads the file back wants `file_write`.
+ *  - *Waiting* events — the turn stopped and wants a human: `waiting` covers
+ *    every blocked reason at once, and `permission` / `question` /
+ *    `plan_review` / `user_question` name one apiece. `error` and `interrupted`
+ *    are the other two ways a turn stops without finishing.
+ *
+ * `turn_end` fires on any completed turn, including one that wrote nothing.
+ */
+export type HookEvent =
+  | "file_write"
+  | "turn_end"
+  | "waiting"
+  | "permission"
+  | "question"
+  | "plan_review"
+  | "user_question"
+  | "error"
+  | "interrupted";
+
+export const HOOK_EVENTS: readonly HookEvent[] = [
+  "file_write",
+  "turn_end",
+  "waiting",
+  "permission",
+  "question",
+  "plan_review",
+  "user_question",
+  "error",
+  "interrupted",
+];
+
+const isHookEvent = (v: unknown): v is HookEvent =>
+  typeof v === "string" && (HOOK_EVENTS as readonly string[]).includes(v);
+
+/** One `[[hooks]]` entry, normalized. */
+export interface HookConfig {
+  /** Label for logs and the agent-facing failure message; defaults to `run`'s first word. */
+  name: string;
+  /** Events this hook fires on. Never empty — an entry with no valid event is dropped. */
+  on: HookEvent[];
+  /** The command, run through `sh -c` in the session's worktree. */
+  run: string;
+  /**
+   * Restrict the hook to one repo. A glob against the daemon's absolute
+   * repo root (`~` expanded, `**` crosses `/`), so `~/dev/loom` pins one
+   * project and `~/dev/**` covers everything under a directory. "" = every
+   * repo — which is what a hook in a per-repo `.loom/config.toml` normally
+   * wants, since that file already only applies to its own project.
+   *
+   * This exists because config layering replaces arrays wholesale: a repo-level
+   * `[[hooks]]` would otherwise shadow every user-level one, so per-project
+   * hooks have to be expressible in the user-level file itself.
+   */
+  project: string;
+  /**
+   * Path globs gating the *write* events; a hook fires only if at least one
+   * written file matches (tested against both the absolute path and the path
+   * relative to the session's worktree). Empty = every path. Ignored by the
+   * waiting events, which have no files.
+   */
+  match: string[];
+  /** Wall-clock ceiling for the command, in ms. Default 30s, clamped 1s–10min. */
+  timeoutMs: number;
+}
+
 export interface LoomConfig {
   baseBranch: string;
   worktreeDir: string;
@@ -257,6 +329,16 @@ export interface LoomConfig {
   pricing: { table: string };
   notify: { webhook: string };
   /**
+   * Shell commands the daemon runs when something happens in a session — a
+   * linter after the agent edits a file, `notify-send` when a turn parks on a
+   * question. Configured as `[[hooks]]`, in the user-level config and/or the
+   * per-repo one.
+   *
+   * Unrelated to `.loom/hooks/` on disk, which holds the git `pre-push` block
+   * installed into session worktrees.
+   */
+  hooks: HookConfig[];
+  /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
    * backend is chosen and its key env var is set. `kagi` dials Kagi's hosted
    * MCP server with the key as a bearer token.
@@ -307,6 +389,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   titles: { enabled: true, model: "" },
   pricing: { table: ".loom/models.toml" },
   notify: { webhook: "" },
+  hooks: [],
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
 };
 
@@ -385,6 +468,41 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
   }
   if (out.length === 0)
     return DEFAULT_CONFIG.claudeProfiles.map((p) => ({ ...p, dir: expandTilde(p.dir) }));
+  return out;
+};
+
+/** Default hook timeout; long enough for a cold typecheck, short of a hang. */
+const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
+
+/**
+ * `[[hooks]]` → normalized entries. An entry with no `run`, or with no
+ * recognised `on` event, is dropped ({@link lintConfig} says so out loud) —
+ * a typo'd hook must not silently fire on everything.
+ */
+const parseHooks = (raw: unknown): HookConfig[] => {
+  const rows = Array.isArray(raw) ? raw : [];
+  const out: HookConfig[] = [];
+  for (const entry of rows) {
+    const e = asRecord(entry);
+    const run = str(e["run"], "").trim();
+    if (run === "") continue;
+    const onRaw = e["on"];
+    const on = (Array.isArray(onRaw) ? onRaw : [onRaw]).filter(isHookEvent);
+    if (on.length === 0) continue;
+    // `match` takes one glob or a list, like `on`.
+    const matchRaw = e["match"];
+    const matchList = Array.isArray(matchRaw) ? matchRaw : [matchRaw];
+    const timeoutSec = num(e["timeout"], DEFAULT_HOOK_TIMEOUT_MS / 1000);
+    out.push({
+      name: str(e["name"], "").trim() || (run.split(/\s+/)[0] ?? "hook"),
+      // De-dupe so `on = ["waiting", "waiting"]` doesn't double-fire.
+      on: [...new Set(on)],
+      run,
+      project: expandTilde(str(e["project"], "").trim()),
+      match: strArray(matchList, []),
+      timeoutMs: Math.min(600_000, Math.max(1_000, Math.round(timeoutSec * 1000))),
+    });
+  }
   return out;
 };
 
@@ -550,6 +668,20 @@ export const lintConfig = (
       );
     }
   }
+  for (const h of cfg.hooks) {
+    // The command runs through `sh -c`, so only a plain leading word is worth
+    // probing — a pipeline, a `VAR=x cmd`, or an absolute path is the user's
+    // business. This catches the common miss: `notify-send` on a box without it.
+    const word = h.run.split(/\s+/)[0] ?? "";
+    if (/^[\w.-]+$/.test(word) && !onPath(word, env)) {
+      w.push(`hook "${h.name}": \`${word}\` is not on PATH — the hook will fail every time`);
+    }
+    if (h.match.length > 0 && !h.on.some((e) => e === "file_write" || e === "turn_end")) {
+      w.push(
+        `hook "${h.name}": \`match\` only filters file_write / turn_end — it does nothing for ${h.on.join(", ")}`,
+      );
+    }
+  }
   if (cfg.search.backend !== "none" && !cfg.search.apiKey) {
     if (!cfg.search.apiKeyEnv) {
       w.push(
@@ -668,6 +800,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     },
     pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
+    hooks: parseHooks(r["hooks"]),
     search: {
       backend:
         search["backend"] === "brave" ||
