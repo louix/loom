@@ -16,6 +16,7 @@ import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
 import type { PlanDecision } from "@loom/core/types";
+import { writtenPaths } from "@loom/core/tool-paths";
 import { policy } from "@loom/runtime/policy";
 import {
   approvalsReviewerFor,
@@ -30,6 +31,48 @@ import {
 import { localToolDispatcher } from "@loom/connector-chatgpt/tool-dispatch";
 
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
+
+test("ChatGPT file changes report paths and correlated success or failure", async () => {
+  for (const status of ["completed", "failed", "declined"]) {
+    const changes = [{ path: "/tmp/a.ts", kind: { type: "update" }, diff: "" }];
+    Deno.env.set(
+      "LOOM_TEST_PRE_NOTIFICATION",
+      JSON.stringify({
+        method: "item/completed",
+        params: { item: { type: "fileChange", id: "edit-1", status, changes } },
+      }),
+    );
+    let session: CodexAppServerSession | undefined;
+    try {
+      session = await CodexAppServerSession.start(
+        {
+          sessionId: "file-change-test",
+          cwd: "/tmp",
+          prompt: "go",
+          mode: "default",
+          mcpServers: [],
+        },
+        {
+          dir: "/tmp/loom-codex-file-change",
+          authJsonPath: "/tmp/loom-codex-file-change/auth.json",
+        },
+        FAKE_CODEX,
+      );
+      let paths: string[] = [];
+      for await (const ev of session.events()) {
+        if (ev.type === "tool_call" && ev.id === "edit-1") paths = writtenPaths(ev.name, ev.input);
+        if (ev.type === "tool_result" && ev.id === "edit-1") {
+          assert.deepEqual(paths, ["/tmp/a.ts"]);
+          assert.equal(ev.ok, status === "completed");
+          break;
+        }
+      }
+    } finally {
+      await session?.close();
+      Deno.env.delete("LOOM_TEST_PRE_NOTIFICATION");
+    }
+  }
+});
 
 const repo = (): {
   root: string;

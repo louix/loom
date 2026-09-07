@@ -24,12 +24,13 @@ const SINGLE_WRITERS = new Set([
   "write",
   "edit",
   "tilth_edit",
+  "tilth_write",
 ]);
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
 const pathOf = (o: Record<string, unknown>): string | null => {
-  return str(o["file_path"]) ?? str(o["path"]);
+  return str(o["file_path"]) ?? str(o["notebook_path"]) ?? str(o["path"]);
 };
 
 /**
@@ -46,12 +47,21 @@ export const writtenPaths = (name: string, input: unknown): string[] => {
   const bare = bareName(name);
 
   // tilth's batch write takes `files: [{ path, … }]` — one call, many files.
-  if (bare === "tilth_write" && Array.isArray(o["files"])) {
+  let batch: unknown;
+  if (bare === "apply_patch") batch = o["changes"];
+  if (bare === "tilth_write") batch = o["files"];
+  if (Array.isArray(batch)) {
     const out: string[] = [];
-    for (const f of o["files"]) {
+    for (const f of batch) {
       if (!f || typeof f !== "object") continue;
       const p = pathOf(f as Record<string, unknown>);
       if (p && !out.includes(p)) out.push(p);
+      const kind = (f as Record<string, unknown>)["kind"];
+      const moved =
+        kind && typeof kind === "object"
+          ? str((kind as Record<string, unknown>)["move_path"])
+          : null;
+      if (moved && !out.includes(moved)) out.push(moved);
     }
     return out;
   }

@@ -1072,7 +1072,7 @@ export class CodexAppServerSession implements AgentSession {
         ok: item["status"] === "completed",
         output: item["aggregatedOutput"] ?? "",
       });
-    } else if (type === "fileChange")
+    } else if (type === "fileChange") {
       this.#events.push({
         type: "tool_call",
         sessionId: this.id,
@@ -1081,7 +1081,15 @@ export class CodexAppServerSession implements AgentSession {
         name: "apply_patch",
         input: { changes: item["changes"] },
       });
-    else if (type === "mcpToolCall") {
+      this.#events.push({
+        type: "tool_result",
+        sessionId: this.id,
+        ts,
+        id,
+        ok: item["status"] === "completed",
+        output: item["status"] ?? "unknown",
+      });
+    } else if (type === "mcpToolCall") {
       this.#events.push({
         type: "tool_call",
         sessionId: this.id,
