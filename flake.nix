@@ -48,8 +48,23 @@
           # to vary, not what it's allowed to produce.
           denoDeps = pkgs.stdenvNoCC.mkDerivation {
             pname = "loom-deno-deps";
-            version = revFor;
-            src = ./.;
+
+            # A FOD's store path is derived from its output hash *and its
+            # name*, so naming this after the git rev handed every commit a
+            # fresh path: `nix profile upgrade` refetched ~550MB of tarballs
+            # that were already in the store byte for byte. Name it after the
+            # lockfile's digest instead, and feed it only the files that
+            # decide what gets fetched — the lockfile and the workspace's
+            # `deno.json`s — so commits that don't touch dependencies leave
+            # both this derivation and its output path alone.
+            version = "lock-${builtins.substring 0 8 (builtins.hashFile "sha256" ./deno.lock)}";
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./deno.lock
+                (pkgs.lib.fileset.fileFilter (f: f.name == "deno.json") ./.)
+              ];
+            };
 
             nativeBuildInputs = [ pkgs.deno pkgs.cacert ];
             dontConfigure = true;
