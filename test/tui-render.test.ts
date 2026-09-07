@@ -32,8 +32,12 @@ import {
   RequestPanel,
   requestPanelRows,
 } from "@loom/tui/components";
-import { logRowCount } from "@loom/tui/transcript";
-import { shownLog } from "@loom/tui/model";
+import {
+  logRowCount,
+  TRANSCRIPT_CAP,
+  transcriptLines,
+  transcriptWindow,
+} from "@loom/tui/transcript";
 import {
   mkFleetHandle,
   type FleetClient,
@@ -43,11 +47,11 @@ import {
 import {
   initialState,
   fleetSessions,
+  shownLog,
+  type TuiState,
   queueFor,
   reduce,
   sessionLog,
-  TRANSCRIPT_CAP,
-  transcriptFor,
 } from "@loom/tui/model";
 import { openPrompt, questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
@@ -55,6 +59,11 @@ import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
 const ESC = "\x1b";
+
+/** The loaded transcript window, or null while there isn't one. */
+const winOf = (s: TuiState) => transcriptWindow(s.transcript);
+/** Every durable id the transcript is holding. */
+const idsOf = (s: TuiState) => transcriptLines(s.transcript).map((l) => l.id);
 
 class FakeOut extends EventEmitter {
   columns = 120;
@@ -2421,21 +2430,21 @@ describe("tui fleet-handle effects", () => {
       assert.equal(fake.heads().length, 1);
       fake.heads()[0]?.resolve(pageOf(3, 3, null));
       await delay(0);
-      assert.equal(transcriptFor(handle.getView().state, "a").head.tag, "data");
+      assert.equal(handle.getView().state.transcript.t, "tailing");
 
       fake.deliver(loadablePending);
       assert.equal(fake.heads().length, 1, "no replacement fetch while the fleet is unknown");
       assert.equal(
-        transcriptFor(handle.getView().state, "a").head.tag,
-        "idle",
-        "the cache was invalidated, not left claiming data",
+        handle.getView().state.transcript.t,
+        "unloaded",
+        "the window was dropped, not left claiming data",
       );
 
       fake.deliver(fleetOf(testSession({ id: "a" })));
       assert.equal(fake.heads().length, 2, "data refetches the head, once");
       fake.heads()[1]?.resolve(pageOf(6, 3, null));
       await delay(0);
-      assert.equal(transcriptFor(handle.getView().state, "a").head.tag, "data");
+      assert.equal(handle.getView().state.transcript.t, "tailing");
     } finally {
       teardown();
     }
@@ -2465,20 +2474,16 @@ describe("tui fleet-handle effects", () => {
       await delay(0);
 
       const before = handle.getView();
-      const idsBefore = transcriptFor(before.state, "a").lines.map((l) => l.id);
+      const idsBefore = idsOf(before.state);
       assert.equal(before.logScroll, 0, "the reset re-anchored the viewport at the live tail");
 
       stale.resolve(pageOf(60, 40, { olderThan: 21 }));
       await delay(0);
 
       const after = handle.getView();
+      assert.deepEqual(idsOf(after.state), idsBefore, "the obsolete page adds no entries");
       assert.deepEqual(
-        transcriptFor(after.state, "a").lines.map((l) => l.id),
-        idsBefore,
-        "the obsolete page adds no entries",
-      );
-      assert.deepEqual(
-        transcriptFor(after.state, "a").olderCursor,
+        winOf(after.state)?.olderCursor,
         { olderThan: 121 },
         "and cannot move the cursor back to its own generation's",
       );
@@ -2503,7 +2508,7 @@ describe("tui fleet-handle effects", () => {
       assert.ok(sel);
       fake.heads()[0]?.reject(new Error("history unavailable"));
       await delay(0);
-      assert.equal(transcriptFor(handle.getView().state, sel).head.tag, "error");
+      assert.equal(handle.getView().state.transcript.t, "failed");
       assert.equal(fake.heads().length, 1, "and nothing retries it on its own");
 
       // Move away and come back — an explicit user action, not a render.
@@ -2516,7 +2521,7 @@ describe("tui fleet-handle effects", () => {
       assert.equal(retry.length, 2, "reselecting retries the failed head fetch");
       retry[1]?.resolve(pageOf(2, 2, null, sel));
       await delay(0);
-      assert.equal(transcriptFor(handle.getView().state, sel).head.tag, "data");
+      assert.equal(handle.getView().state.transcript.t, "tailing");
     } finally {
       teardown();
     }
@@ -2585,7 +2590,7 @@ describe("tui transcript paging through the handle", () => {
       fake.deliver(fleetOf(testSession({ id: "a" })));
       fake.heads()[0]?.resolve(pageOf(20_000, 6_000, { olderThan: 14_001 }));
       await delay(0);
-      assert.equal(transcriptFor(handle.getView().state, "a").following, true);
+      assert.equal(handle.getView().state.transcript.t, "tailing");
 
       // Home scrolls to the oldest row held, which prefetches the next older
       // page; folding it in takes the window past the cap.
@@ -2596,10 +2601,10 @@ describe("tui transcript paging through the handle", () => {
       older.resolve(pageOf(14_000, 6_000, { olderThan: 8_001 }));
       await delay(0);
 
-      const browsing = transcriptFor(handle.getView().state, "a");
+      const browsing = winOf(handle.getView().state)!;
       assert.equal(browsing.lines.length, TRANSCRIPT_CAP, "12,000 fetched, 10,000 retained");
       assert.equal(browsing.lines[0]?.id, 8_001, "the oldest end is the end being read");
-      assert.equal(browsing.following, false, "the newest end was evicted");
+      assert.equal(handle.getView().state.transcript.t, "detached", "the newest end was evicted");
       assert.deepEqual(browsing.olderCursor, { olderThan: 8_001 }, "and the cursor advanced");
 
       // A live event now has nowhere contiguous to go, so it stays out of the
@@ -2613,7 +2618,7 @@ describe("tui transcript paging through the handle", () => {
         event: { sessionId: "a", ts: 1, type: "assistant_text", text: "live" },
       });
       assert.equal(
-        transcriptFor(handle.getView().state, "a").lines,
+        winOf(handle.getView().state)?.lines,
         browsing.lines,
         "the rows being read are untouched",
       );
@@ -2625,10 +2630,89 @@ describe("tui transcript paging through the handle", () => {
       reloads[1]?.resolve(pageOf(20_001, 500, { olderThan: 19_502 }));
       await delay(0);
 
-      const followed = transcriptFor(handle.getView().state, "a");
-      assert.equal(followed.following, true, "and resumed following it");
+      const followed = winOf(handle.getView().state)!;
+      assert.equal(handle.getView().state.transcript.t, "tailing", "and resumed following it");
       assert.equal(followed.lines.at(-1)?.id, 20_001);
       assert.equal(handle.getView().logScroll, 0, "with the viewport back at the tail");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("selecting another session loads that one, and the page it left cannot come back", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(
+        fleetOf(
+          testSession({ id: "a", status: stateIdle, updatedAt: 9 }),
+          testSession({ id: "b", status: stateIdle, updatedAt: 8 }),
+        ),
+      );
+      assert.equal(handle.getView().state.selectedId, "a");
+      const forA = fake.heads()[0];
+      assert.ok(forA, "the selected session fetched its head");
+
+      // Move to `b` before `a`'s page lands. There is no cache to fall back on:
+      // the resource is the selected session's, so it starts loading again.
+      handle.handleKey("", { downArrow: true } as Key);
+      assert.equal(handle.getView().state.selectedId, "b");
+      assert.equal(handle.getView().state.transcript.t, "loading");
+      const forB = fake.heads()[1];
+      assert.ok(forB, "and `b` asked for its own newest page");
+      assert.equal(forB.params["id"], "b");
+
+      // `a`'s response finally arrives. It belongs to a lifetime that is over.
+      forA.resolve(pageOf(50, 5, null, "a"));
+      await delay(0);
+      assert.equal(
+        handle.getView().state.transcript.t,
+        "loading",
+        "the abandoned page installs nothing, not even under the wrong session",
+      );
+
+      forB.resolve(pageOf(9, 3, null, "b"));
+      await delay(0);
+      const win = winOf(handle.getView().state);
+      assert.equal(win?.sessionId, "b");
+      assert.deepEqual(
+        win?.lines.map((l) => l.id),
+        [7, 8, 9],
+      );
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a live frame at the tail keeps the rows being read where they are", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm, historyPageSize: 40 });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      fake.heads()[0]?.resolve(pageOf(100, 40, null));
+      await delay(0);
+
+      handle.handleKey("", { pageUp: true } as Key);
+      const scrolled = handle.getView().logScroll;
+      assert.ok(scrolled > 0, "the viewport is back in history");
+
+      // One more line at the tail. The offset counts up from the tail, so it has
+      // to grow by the rows the log gained or the reader's window slides older.
+      fake.push({
+        kind: "push",
+        seq: 1,
+        epoch: "e1",
+        type: "event",
+        id: 101,
+        event: { sessionId: "a", ts: 1, type: "assistant_text", text: "live" },
+      });
+      assert.equal(
+        handle.getView().logScroll,
+        scrolled + 1,
+        "the one row it added is absorbed by the offset, not by the window",
+      );
     } finally {
       teardown();
     }

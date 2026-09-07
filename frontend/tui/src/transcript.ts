@@ -11,7 +11,7 @@
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { HistoryPage, TranscriptId } from "@loom/core/wire";
+import type { HistoryCursor, HistoryPage, TranscriptId } from "@loom/core/wire";
 import { C, clock, humanTokens, inside, truncate, wrapText, type Tone } from "./theme.ts";
 
 /** How much of the selected session's log to show:
@@ -65,7 +65,8 @@ export interface LogLine {
    * The entry's durable {@link TranscriptId}: the id the daemon's live push and
    * its history pages both carry, so the two merge by identity rather than by
    * guessing from timestamps. `null` for a locally synthesised line, which has
-   * no durable counterpart and lives in {@link Transcript.echoes}.
+   * no durable counterpart: a queued-message marker, which is derived per
+   * render from the outbox rather than held anywhere.
    */
   id: TranscriptId | null;
   sessionId: string;
@@ -98,6 +99,7 @@ export const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
   "background_tasks",
   "rate_limit",
 ]);
+
 // ---------------------------------------------------------------------------
 // event → log line
 // ---------------------------------------------------------------------------
@@ -133,6 +135,7 @@ export interface EventFormat {
 }
 
 export const oneLine = (s: string, n = 200): string => truncate(s.replace(/\s+/g, " ").trim(), n);
+
 /**
  * Full body: normalise newlines, expand tabs, trim trailing space, keep
  * everything else. Tabs matter here — a tab counts as ~1 column to our word
@@ -481,6 +484,277 @@ export const pageLines = (page: HistoryPage): LogLine[] => {
 };
 
 /**
+ * The one-line marker a follow-up gets while it waits for the current turn.
+ *
+ * Synthesised per render from the outbox, not stored: there is no durable row
+ * behind it, so it has no id, no place in the id order and nothing to
+ * reconcile against. It sits after every durable line, which is where the
+ * message it stands for is going.
+ */
+export const queuedLine = (sessionId: string, text: string): LogLine => ({
+  id: null,
+  sessionId,
+  kind: "echo",
+  glyph: "▸",
+  text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
+  tone: "dim",
+  ts: 0,
+});
+
+// ---------------------------------------------------------------------------
+// the resource
+// ---------------------------------------------------------------------------
+
+/**
+ * Retained durable lines — roughly 20MB of event text per 10k lines in a
+ * tool-heavy session. It bounds both the footprint and the per-event cost:
+ * every append copies the array, so an uncapped window makes each arriving
+ * frame more expensive than the last.
+ *
+ * The window is always *contiguous*. Whichever end the reader is at survives:
+ * following the tail evicts the front, paging back evicts the tail. Nothing
+ * evicted is lost — `olderCursor` is always the retained front — but the two
+ * cases are not symmetric, because only tail eviction leaves a hole between
+ * what is held and what is arriving. That is the `detached` variant.
+ */
+export const TRANSCRIPT_CAP = 10_000;
+
+/** The next older page's fetch. Loaded lines stay put across all three. */
+export type OlderFetch =
+  | { readonly t: "idle" }
+  | { readonly t: "loading" }
+  | { readonly t: "failed"; readonly error: string };
+
+/** A retained window of one session's durable history. */
+export interface TranscriptWindow {
+  readonly sessionId: string;
+  /** Durable entries, ascending by id and deduplicated by it. Entries are
+   *  keyed and ordered by their durable id, never by timestamp: a burst of
+   *  events shares one millisecond and a provider can report them out of
+   *  order, so a timestamp-sorted merge stitches history back together wrongly
+   *  at exactly the boundaries that matter — a daemon restart, a tool storm. */
+  readonly lines: readonly LogLine[];
+  /**
+   * Where the next older page starts. Always the retained front, so anything
+   * dropped to stay inside {@link TRANSCRIPT_CAP} is refetchable by
+   * construction. `null` iff {@link lines} reaches the oldest entry the daemon
+   * holds — running out of room here can never be mistaken for the daemon
+   * running out of history.
+   */
+  readonly olderCursor: HistoryCursor | null;
+  readonly older: OlderFetch;
+}
+
+/**
+ * The selected session's transcript — one resource, not a cache per session.
+ * Selecting another session loads that one; what the reader was looking at
+ * before is not kept, because keeping it meant keeping a window, a cursor and
+ * a following flag per session that no one was reading and nothing was
+ * invalidating.
+ *
+ * A window exists only in the two loaded variants, and the difference between
+ * them is not a flag beside the load state but the state itself:
+ *
+ *   • `tailing`  — the window ends at the live tail, so an arriving event
+ *                  belongs immediately after the last retained line.
+ *   • `detached` — paging back past the cap evicted the newest end. The entries
+ *                  between this window and the live stream are gone, so an
+ *                  arriving event has nowhere to go that wouldn't draw a gap as
+ *                  continuous history; it reaches the reader through the notice
+ *                  line instead, and `End` reloads the newest page.
+ *
+ * `loading` and `failed` carry `early`: the live entries that arrived before
+ * the page did. The subscription is established long before any fetch, so
+ * those are real events, not a window — no cursor, nothing to page. The head
+ * page merges them in by durable id, which is the whole of the overlap
+ * handling.
+ */
+export type Transcript =
+  | { readonly t: "unloaded" }
+  | { readonly t: "loading"; readonly sessionId: string; readonly early: readonly LogLine[] }
+  | {
+      readonly t: "failed";
+      readonly sessionId: string;
+      readonly error: string;
+      readonly early: readonly LogLine[];
+    }
+  | ({ readonly t: "tailing" } & TranscriptWindow)
+  | ({ readonly t: "detached" } & TranscriptWindow);
+
+export const noTranscript: Transcript = { t: "unloaded" };
+
+/** Start (or restart) the selected session's transcript at its newest page. */
+export const openTranscript = (sessionId: string): Transcript => ({
+  t: "loading",
+  sessionId,
+  early: [],
+});
+
+export const transcriptSession = (tr: Transcript): string | null =>
+  tr.t === "unloaded" ? null : tr.sessionId;
+
+/** The window, or null while there isn't one — the only door to the operations
+ *  a window supports (paging older, appending the live tail). */
+export const transcriptWindow = (tr: Transcript): TranscriptWindow | null =>
+  tr.t === "tailing" || tr.t === "detached" ? tr : null;
+
+const NO_LINES: readonly LogLine[] = [];
+
+/** Every durable line the transcript is holding, oldest first. */
+export const transcriptLines = (tr: Transcript): readonly LogLine[] => {
+  switch (tr.t) {
+    case "unloaded":
+      return NO_LINES;
+    case "loading":
+    case "failed":
+      return tr.early;
+    case "tailing":
+    case "detached":
+      return tr.lines;
+    default:
+      return absurd(tr);
+  }
+};
+
+/** Merge `add` into `have` by durable id, keeping id order. Entries already
+ *  held win, so a page overlapping the live stream re-uses the objects the
+ *  renderer has already measured instead of replacing them. */
+const mergeById = (have: readonly LogLine[], add: readonly LogLine[]): LogLine[] => {
+  if (add.length === 0) return [...have];
+  const byId = new Map<TranscriptId, LogLine>();
+  for (const l of have) if (l.id !== null) byId.set(l.id, l);
+  for (const l of add) if (l.id !== null && !byId.has(l.id)) byId.set(l.id, l);
+  return [...byId.values()].sort((x, y) => (x.id ?? 0) - (y.id ?? 0));
+};
+
+/**
+ * The one retention rule, applied wherever a window grows: page merges,
+ * ordinary live appends, and out-of-order live merges all come through here.
+ *
+ * `keep` says which end the reader is at and therefore which end survives.
+ * `atOldest` is what the source claims about the *front* it supplied — a page
+ * whose `olderCursor` was `null`, or a window we already believed reached the
+ * daemon's first entry. That claim only holds while that front is still here,
+ * which is why `olderCursor` is recomputed from the retained window rather than
+ * copied from the page.
+ */
+const trim = (
+  win: TranscriptWindow,
+  lines: readonly LogLine[],
+  keep: "newest" | "oldest",
+  atOldest: boolean,
+): { readonly win: TranscriptWindow; readonly lostTail: boolean } => {
+  const fits = lines.length <= TRANSCRIPT_CAP;
+  // Not `fits ? lines : slice(...)`: this runs on every arriving event, and
+  // computing the trim eagerly would put an O(n) copy on the common path where
+  // there is nothing to trim.
+  let kept = lines;
+  if (!fits) {
+    kept =
+      keep === "newest"
+        ? lines.slice(lines.length - TRANSCRIPT_CAP)
+        : lines.slice(0, TRANSCRIPT_CAP);
+  }
+  const front = kept[0];
+  // `null` — and only `null` — means the retained front IS the daemon's oldest
+  // entry. Evicting the front withdraws that claim and points the cursor at
+  // what was dropped, so scroll-back can always get it back.
+  const frontKept = front !== undefined && front === lines[0];
+  let olderCursor = win.olderCursor;
+  if (atOldest && frontKept) olderCursor = null;
+  else if (front?.id != null) olderCursor = { olderThan: front.id };
+  return { win: { ...win, lines: kept, olderCursor }, lostTail: !fits && keep === "oldest" };
+};
+
+/** Cap the pre-fetch buffer the same way a window is capped. A session that
+ *  streams 10k events before its first page lands is not a reason to grow
+ *  without bound. */
+const capEarly = (lines: readonly LogLine[]): readonly LogLine[] =>
+  lines.length <= TRANSCRIPT_CAP ? lines : lines.slice(lines.length - TRANSCRIPT_CAP);
+
+/**
+ * Fold one live entry in. Almost always a plain append — its id is newer than
+ * anything held — so that case avoids building a map per event.
+ *
+ * An event for any other session is not this resource's: there is no cache to
+ * put it in, and selecting that session loads it from the daemon.
+ */
+export const liveLine = (tr: Transcript, line: LogLine): Transcript => {
+  if (transcriptSession(tr) !== line.sessionId) return tr;
+  switch (tr.t) {
+    case "unloaded":
+    case "detached":
+      return tr;
+    case "loading":
+    case "failed":
+      return { ...tr, early: capEarly([...tr.early, line]) };
+    case "tailing": {
+      const atOldest = tr.olderCursor === null;
+      const last = tr.lines[tr.lines.length - 1];
+      // Out of order, or a repeat of something already held. `mergeById` dedupes
+      // by durable id, so neither can grow the window twice — but a merge is a
+      // growth like any other and takes the same cap.
+      const grown =
+        last !== undefined && last.id !== null && line.id !== null && line.id <= last.id
+          ? mergeById(tr.lines, [line])
+          : [...tr.lines, line];
+      return { ...trim(tr, grown, "newest", atOldest).win, t: "tailing" };
+    }
+    default:
+      return absurd(tr);
+  }
+};
+
+/**
+ * The newest page landed. It is the newest by definition, so the resource is
+ * `tailing` whatever it was before, and whatever arrived while the fetch was
+ * out merges in by durable id.
+ */
+export const headLoaded = (tr: Transcript, sessionId: string, page: HistoryPage): Transcript => {
+  if (transcriptSession(tr) !== sessionId) return tr;
+  const base: TranscriptWindow = {
+    sessionId,
+    lines: [],
+    olderCursor: null,
+    older: { t: "idle" },
+  };
+  const merged = mergeById(transcriptLines(tr), pageLines(page));
+  return { ...trim(base, merged, "newest", page.olderCursor === null).win, t: "tailing" };
+};
+
+/** The newest page failed. What arrived meanwhile is kept — those lines are on
+ *  screen, and the retry merges them the same way a first load does. */
+export const headFailed = (tr: Transcript, sessionId: string, error: string): Transcript =>
+  tr.t === "loading" && tr.sessionId === sessionId
+    ? { t: "failed", sessionId, error, early: tr.early }
+    : tr;
+
+export const olderLoading = (tr: Transcript, sessionId: string): Transcript => {
+  if (tr.t !== "tailing" && tr.t !== "detached") return tr;
+  if (tr.sessionId !== sessionId) return tr;
+  return { ...tr, older: { t: "loading" } };
+};
+
+/** An older page extends the front, so the window keeps its oldest end. If the
+ *  cap then drops its newest, the live tail is no longer attached to it. */
+export const olderLoaded = (tr: Transcript, sessionId: string, page: HistoryPage): Transcript => {
+  if (tr.t !== "tailing" && tr.t !== "detached") return tr;
+  if (tr.sessionId !== sessionId) return tr;
+  const merged = mergeById(tr.lines, pageLines(page));
+  const { win, lostTail } = trim(tr, merged, "oldest", page.olderCursor === null);
+  const detached = lostTail || tr.t === "detached";
+  return { ...win, older: { t: "idle" }, t: detached ? "detached" : "tailing" };
+};
+
+/** A failed older-page fetch loses the page, not the transcript the reader is
+ *  looking at. */
+export const olderFailed = (tr: Transcript, sessionId: string, error: string): Transcript => {
+  if (tr.t !== "tailing" && tr.t !== "detached") return tr;
+  if (tr.sessionId !== sessionId) return tr;
+  return { ...tr, older: { t: "failed", error } };
+};
+
+/**
  * What the event pane shows, per {@link LogFilter}. A focused child (fleet
  * drill-down) narrows the session's log to the events that child produced —
  * the `agentId` tag the adapter stamps on sub-agent frames — and the
@@ -794,7 +1068,9 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
   const out: PhysicalRow[] = [];
   if (to <= from) return out;
   let off = 0;
+  let n = -1;
   for (const l of ctx.lines) {
+    n += 1;
     const { ts, indent, segs } = lineLayout(l, ctx.iw);
     const lineEnd = off + segs.length;
     if (lineEnd > from) {
@@ -803,8 +1079,9 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
       for (let i = lo; i < hi; i++) {
         out.push({
           // The durable id is unique within a session and stable across daemon
-          // restarts; a local echo has none, so it falls back to its timestamp.
-          key: `${l.id ?? `e${l.ts}`}-${i}`,
+          // restarts; a synthesised line has none, so it falls back to its
+          // position, which is stable for as long as the line is on screen.
+          key: `${l.id ?? `q${n}`}-${i}`,
           first: i === 0,
           ts,
           indent,
@@ -830,3 +1107,254 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
  */
 export const logRowCount = (lines: readonly LogLine[], width: number): number =>
   totalRows(logContext(lines, width));
+
+// ---------------------------------------------------------------------------
+// the handle
+// ---------------------------------------------------------------------------
+
+export interface TranscriptDeps {
+  /** `session.events`. One page; a cursor continues into older history. */
+  fetch: (sessionId: string, cursor: HistoryCursor | null) => Promise<HistoryPage>;
+  /** The resource as the reducer holds it. */
+  transcript: () => Transcript;
+  /** The session the pane is showing, or none. */
+  selectedId: () => string | null;
+  /** Only fetch while the daemon is there. */
+  connected: () => boolean;
+  /** The lines the pane is drawing — filter and child focus already applied.
+   *  Scroll is measured in the wrapped rows *these* produce, through the same
+   *  geometry the pane renders with. */
+  shown: () => readonly LogLine[];
+  /** What the pane is a view of. Any change re-anchors it at the live tail. */
+  viewKey: () => string;
+  /** The log pane's width in columns and its height in wrapped rows. */
+  paneWidth: () => number;
+  pageRows: () => number;
+  /** Install a transition. */
+  commit: (tr: Transcript) => void;
+  /** The offset moved with no state change behind it (a keypress). */
+  publish: () => void;
+}
+
+export interface TranscriptControl {
+  /** Wrapped rows the viewport is offset up from the live tail. */
+  readonly scroll: () => number;
+  /** Scroll back by `by` rows (negative moves toward the tail). Pulls the next
+   *  older page as the viewport nears the top. */
+  readonly scrollBy: (by: number) => void;
+  /** Home: the oldest line held. */
+  readonly toTop: () => void;
+  /** End: back to the live tail — and, from a detached window, the action that
+   *  reloads the newest page. Also the explicit retry for a failed load. */
+  readonly toTail: () => void;
+  /** Called on every state change: open the selected session's transcript,
+   *  drop it when there is no connection, and re-anchor the viewport. */
+  readonly settle: () => void;
+  /** Re-measure after the terminal resized. */
+  readonly resized: () => void;
+  readonly dispose: () => void;
+}
+
+/** What the last measurement saw, so the next one can tell where the log grew. */
+interface Anchor {
+  readonly key: string;
+  readonly rows: number;
+  readonly tailId: TranscriptId | null;
+  readonly pinnedTop: boolean;
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/**
+ * One lifetime per loaded transcript, owning its requests and the viewport.
+ *
+ * The lifetime is a counter, not a cancellation: a fetch that has already
+ * resolved has a callback queued whatever we do to the promise, so every
+ * callback checks the generation it was issued under before it is allowed to
+ * touch anything. Selecting another session, losing the connection, jumping to
+ * the latest page and unmounting all bump it.
+ *
+ * The viewport is corrected in exactly one place ({@link mkTranscript}'s
+ * `reanchor`), from what the previous measurement saw. The promise callbacks
+ * report *what* landed — an older page lands above the window, a live event
+ * below it — and nothing else adjusts the offset.
+ */
+export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
+  let gen = 0;
+  let scroll = 0;
+  let anchor: Anchor = { key: "", rows: 0, tailId: null, pinnedTop: false };
+  /** The next measurement follows an older page landing above the window. */
+  let foldedOlder = false;
+
+  const anchorKey = (): string => `${gen} ${d.viewKey()}`;
+
+  /**
+   * Measure the pane and remember it. Returns the ceiling for `scroll`:
+   * `EventLog` pins the viewport at `rows - capacity` (the top of the log), so
+   * the backing offset must clamp there too — running it past the top would
+   * leave you scrolling back down the same distance before the viewport moves
+   * again.
+   */
+  const sync = (key: string): number => {
+    const lines = d.shown();
+    const rows = logRowCount(lines, d.paneWidth());
+    const max = Math.max(0, rows - d.pageRows());
+    scroll = Math.min(scroll, max);
+    anchor = {
+      key,
+      rows,
+      tailId: lines[lines.length - 1]?.id ?? null,
+      pinnedTop: scroll >= max,
+    };
+    return max;
+  };
+
+  const invalidate = (): void => {
+    gen += 1;
+    foldedOlder = false;
+  };
+
+  /** Load `sessionId`'s newest page under a fresh lifetime. */
+  const open = (sessionId: string): void => {
+    invalidate();
+    const mine = gen;
+    d.commit(openTranscript(sessionId));
+    if (!d.connected()) return;
+    d.fetch(sessionId, null).then(
+      (page) => {
+        if (mine !== gen) return;
+        d.commit(headLoaded(d.transcript(), sessionId, page));
+      },
+      (e: unknown) => {
+        if (mine !== gen) return;
+        d.commit(headFailed(d.transcript(), sessionId, errText(e)));
+      },
+    );
+  };
+
+  /**
+   * Pull the next older page. A `null` cursor means the daemon has nothing
+   * older — and only that, since retention re-points the cursor at whatever it
+   * evicted rather than clearing it.
+   */
+  const loadOlder = (): void => {
+    if (!d.connected()) return;
+    const tr = d.transcript();
+    const win = transcriptWindow(tr);
+    if (!win || win.older.t === "loading" || win.olderCursor === null) return;
+    const mine = gen;
+    const { sessionId, olderCursor } = win;
+    d.commit(olderLoading(tr, sessionId));
+    d.fetch(sessionId, olderCursor).then(
+      (page) => {
+        if (mine !== gen) return;
+        // Read by the reanchor this commit triggers: these rows land *above*
+        // the window, which is the one growth a tail-relative offset cannot
+        // simply absorb.
+        foldedOlder = true;
+        d.commit(olderLoaded(d.transcript(), sessionId, page));
+      },
+      (e: unknown) => {
+        if (mine !== gen) return;
+        d.commit(olderFailed(d.transcript(), sessionId, errText(e)));
+      },
+    );
+  };
+
+  /**
+   * Keep the reader on the rows they are reading.
+   *
+   * At the live tail (`scroll === 0`) there is nothing to hold: new rows appear
+   * below and the viewport is already where it should be, so the common case
+   * costs one string compare and no measurement.
+   */
+  const reanchor = (): void => {
+    const key = anchorKey();
+    if (key !== anchor.key) {
+      // A different session, filter, child or lifetime: the rows the offset was
+      // counted against are gone.
+      scroll = 0;
+      foldedOlder = false;
+      anchor = { key, rows: 0, tailId: null, pinnedTop: false };
+      return;
+    }
+    if (scroll === 0 && !foldedOlder) return;
+    const before = anchor;
+    const fold = foldedOlder;
+    foldedOlder = false;
+    const max = sync(key);
+    if (fold) {
+      // Rows landed above the window. A view anchored on its own rows keeps
+      // them for free — the offset counts up from the tail — but a view pinned
+      // at the top has to follow the new top, and at the cap the fold drops
+      // rows below the viewport as well, so a moved tail invalidates the offset
+      // altogether. Both re-derive from the top the reader is already at: this
+      // fetch only fires within a page of it.
+      if (before.pinnedTop || anchor.tailId !== before.tailId) scroll = max;
+    } else if (anchor.rows > before.rows) {
+      // A live frame landed at the tail while you were reading history. Grow
+      // the offset by however many rows the log gained — `end = total - scroll`
+      // (see `EventLog`) then holds still and the same window renders. A cap
+      // trim (net rows <= 0) is a no-op.
+      scroll = Math.min(max, scroll + (anchor.rows - before.rows));
+    }
+    anchor = { ...anchor, pinnedTop: scroll >= max };
+  };
+
+  return {
+    scroll: () => scroll,
+
+    scrollBy: (by) => {
+      const max = sync(anchorKey());
+      scroll = Math.max(0, Math.min(max, scroll + by));
+      anchor = { ...anchor, pinnedTop: scroll >= max };
+      // Prefetch the next older page as the viewport nears the top, so paging
+      // back feels seamless instead of stalling at the current oldest line.
+      if (max - scroll < d.pageRows()) loadOlder();
+      d.publish();
+    },
+
+    toTop: () => {
+      const max = sync(anchorKey());
+      scroll = max;
+      anchor = { ...anchor, pinnedTop: true };
+      loadOlder();
+      d.publish();
+    },
+
+    toTail: () => {
+      scroll = 0;
+      const tr = d.transcript();
+      // Paging back far enough evicts the newest end of the window, and live
+      // entries stop being folded in while that is true. Jumping to the tail is
+      // the action that undoes it — and the explicit retry a failed load waits
+      // for.
+      if (tr.t === "detached" || tr.t === "failed") return void open(tr.sessionId);
+      d.publish();
+    },
+
+    settle: () => {
+      const tr = d.transcript();
+      const id = d.selectedId();
+      if (!d.connected() || id === null) {
+        // No connection means no transcript we can trust: entries were appended
+        // while we were away and the cursor is a position in a history the next
+        // connection re-reads from scratch.
+        if (tr.t !== "unloaded") {
+          invalidate();
+          d.commit(noTranscript);
+        }
+      } else if (transcriptSession(tr) !== id) {
+        open(id);
+      }
+      reanchor();
+    },
+
+    resized: () => {
+      if (scroll === 0) return;
+      sync(anchorKey());
+    },
+
+    dispose: () => invalidate(),
+  };
+};

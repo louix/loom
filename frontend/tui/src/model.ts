@@ -11,22 +11,12 @@ import type {
   DaemonInfo,
   DaemonSnapshot,
   DoctorReport,
-  HistoryCursor,
-  HistoryPage,
   ProviderInfo,
   PushFrame,
   SessionSnapshot,
-  TranscriptId,
 } from "@loom/core/wire";
 import type { ClientState, ConnectionError } from "@loom/client";
-import {
-  foldLoadable,
-  loadableFailed,
-  loadableIdle,
-  loadableLoaded,
-  loadablePending,
-  type Loadable,
-} from "@loom/core/loadable";
+import { foldLoadable, loadableIdle, type Loadable } from "@loom/core/loadable";
 import type { SessionMode } from "@loom/core/types";
 import { buffer, type Buffer } from "./editor.ts";
 import {
@@ -50,6 +40,7 @@ import type { QNav } from "./interactions.ts";
 import {
   noDrafts,
   outboxOf,
+  waiting,
   pending,
   recalled,
   recorded,
@@ -62,10 +53,15 @@ import {
   NON_TRANSCRIPT,
   cycleLogFilter,
   filterLog,
+  liveLine,
+  transcriptSession,
+  noTranscript,
+  queuedLine,
+  toLogLine,
+  transcriptLines,
+  type Transcript,
   logFilterLabel,
   oneLine,
-  pageLines,
-  toLogLine,
   type LogFilter,
   type LogLine,
 } from "./transcript.ts";
@@ -116,49 +112,6 @@ export const fleetDaemon = (s: TuiState): DaemonInfo | null =>
  *   • Space     → the command palette: everything valid right now, fuzzy, with its key
  */
 
-/**
- * One session's transcript cache.
- *
- * Entries are keyed and ordered by their durable id, never by timestamp: a
- * burst of events shares one millisecond and a provider can report them out of
- * order, so a timestamp-sorted merge stitches history back together wrongly at
- * exactly the boundaries that matter — a daemon restart, a tool storm.
- */
-export interface Transcript {
-  /** Durable entries, ascending by id and deduplicated by it. */
-  lines: readonly LogLine[];
-  /** The newest page. `idle` until the session is first selected. */
-  head: Loadable<string, null>;
-  /** The next older page. Loaded entries stay put while this runs. */
-  older: Loadable<string, null>;
-  /**
-   * Where the next older page starts. Always the retained front, so anything
-   * dropped to stay inside {@link TRANSCRIPT_CAP} is refetchable by
-   * construction. `null` iff {@link lines} reaches the oldest entry the daemon
-   * holds — running out of room here can never be mistaken for the daemon
-   * running out of history.
-   */
-  olderCursor: HistoryCursor | null;
-  /**
-   * True while {@link lines} ends at the live tail, so an arriving event
-   * belongs immediately after the last retained line.
-   *
-   * Paging back past the cap sets it false: entries between this window and the
-   * live stream have been evicted, and appending an arriving event onto the
-   * window would draw a gap as continuous history. While false, live entries
-   * are not folded in at all — the notice line still reports them, and `End`
-   * (jump to latest) reloads the newest window and resumes following.
-   */
-  following: boolean;
-  /**
-   * Locally synthesised lines with no durable counterpart — the "queued: …"
-   * marker for a follow-up waiting on the current turn. Rendered after
-   * {@link lines}; never deduplicated, ordered or paged, because there is no
-   * server-side entry to reconcile them against.
-   */
-  echoes: readonly LogLine[];
-}
-
 export interface Notice {
   text: string;
   tone: Tone;
@@ -203,15 +156,11 @@ export interface TuiState {
    * and whenever churn empties the child list (`clampChild`).
    */
   selectedChild: string | null;
-  /** Per-session transcript caches, keyed by session id. Absent = never seen. */
-  transcripts: Record<string, Transcript>;
   /**
-   * Bumped every time the caches are cleared (a dropped connection). A fetch
-   * carries the generation it was issued under, so a response that was already
-   * in flight when the connection went cannot reinstate cache state belonging
-   * to a history the next connection re-reads from scratch.
+   * The selected session's transcript — one resource, loaded when a session is
+   * selected and dropped when the connection goes. See {@link Transcript}.
    */
-  transcriptGen: number;
+  transcript: Transcript;
   logFilter: LogFilter;
   /** Per session, what the user has typed at it that the daemon has not
    *  acknowledged — see {@link Outbox}. Absent = nothing outgoing, ever. */
@@ -257,8 +206,7 @@ export const initialState = (): TuiState => {
     modes: {},
     selectedId: null,
     selectedChild: null,
-    transcripts: {},
-    transcriptGen: 0,
+    transcript: noTranscript,
     logFilter: "everything",
     outbox: {},
     notice: null,
@@ -300,12 +248,9 @@ export type Action =
   | { t: "state"; state: ClientState }
   | { t: "mode"; sessionId: string; choice: ModeChoice | null }
   | { t: "push"; frame: PushFrame }
-  | { t: "historyStart"; sessionId: string; older: boolean; gen: number }
-  | { t: "historyPage"; sessionId: string; page: HistoryPage; older: boolean; gen: number }
-  | { t: "historyFailed"; sessionId: string; older: boolean; error: string; gen: number }
-  | { t: "transcriptReset" }
-  /** Jump to latest: discard an older browsing window and refetch the newest. */
-  | { t: "transcriptFollow"; sessionId: string }
+  /** Install a transcript transition — see `transcript.ts`, which owns both the
+   *  transitions and the requests behind them. */
+  | { t: "transcript"; transcript: Transcript }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number }
   | { t: "select"; id: string }
@@ -326,7 +271,6 @@ export type Action =
   | { t: "pushHistory"; text: string }
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
-  | { t: "echo"; line: LogLine }
   /** Commit one session's outgoing text — the composer works out what it should
    *  be, this only stores it. `null` forgets the session. */
   | { t: "outbox"; sessionId: string; box: Outbox | null }
@@ -340,143 +284,6 @@ export type Action =
   | { t: "closeFind" }
   | { t: "qnavSet"; nav: QNav | null }
   | { t: "doctorLoaded"; report: DoctorReport };
-
-/**
- * Retained durable lines per session — roughly 20MB of event text per 10k lines
- * in a tool-heavy session. It bounds both the footprint and the per-event cost:
- * every append copies the array, so an uncapped window makes each arriving
- * frame more expensive than the last.
- *
- * The window is always *contiguous*. Whichever end the reader is at survives:
- * following the tail evicts the front, paging back evicts the tail. Nothing
- * evicted is lost — `olderCursor` is always the retained front — but the two
- * cases are not symmetric, because only tail eviction leaves a hole between
- * what is held and what is arriving. {@link Transcript.following} carries that.
- */
-export const TRANSCRIPT_CAP = 10_000;
-
-const EMPTY_TRANSCRIPT: Transcript = {
-  lines: [],
-  head: loadableIdle,
-  older: loadableIdle,
-  olderCursor: null,
-  following: true,
-  echoes: [],
-};
-
-const transcriptOf = (s: TuiState, sessionId: string): Transcript =>
-  s.transcripts[sessionId] ?? EMPTY_TRANSCRIPT;
-
-/**
- * Drop every transcript cache and move to a new generation, so a fetch already
- * in flight cannot land afterwards and reinstate what this discarded. Every
- * `head` is back to `idle`, which is what makes the selected session refetch.
- */
-const resetTranscripts = (s: TuiState): TuiState => {
-  if (Object.keys(s.transcripts).length === 0) return s;
-  return { ...s, transcripts: {}, transcriptGen: s.transcriptGen + 1 };
-};
-
-const withTranscript = (
-  s: TuiState,
-  sessionId: string,
-  t: Transcript,
-): Record<string, Transcript> => ({ ...s.transcripts, [sessionId]: t });
-
-/** Merge `add` into `have` by durable id, keeping id order. Entries already
- *  held win, so a page overlapping the live stream re-uses the objects the
- *  renderer has already measured instead of replacing them. */
-const mergeById = (have: readonly LogLine[], add: readonly LogLine[]): LogLine[] => {
-  if (add.length === 0) return [...have];
-  const byId = new Map<TranscriptId, LogLine>();
-  for (const l of have) if (l.id !== null) byId.set(l.id, l);
-  for (const l of add) if (l.id !== null && !byId.has(l.id)) byId.set(l.id, l);
-  return [...byId.values()].sort((x, y) => (x.id ?? 0) - (y.id ?? 0));
-};
-
-/**
- * The one retention rule, applied wherever a window grows: page merges,
- * ordinary live appends, and out-of-order live merges all come through here.
- *
- * `keep` says which end the reader is at and therefore which end survives.
- * `atOldest` is what the source claims about the *front* it supplied — a page
- * whose `olderCursor` was `null`, or a window we already believed reached the
- * daemon's first entry. That claim only holds while that front is still here,
- * which is why `olderCursor` is recomputed from the retained window rather than
- * copied from the page.
- */
-const retain = (
-  t: Transcript,
-  lines: readonly LogLine[],
-  keep: "newest" | "oldest",
-  atOldest: boolean,
-): Transcript => {
-  const fits = lines.length <= TRANSCRIPT_CAP;
-  // Not `fits ? lines : slice(...)`: this runs on every arriving event, and
-  // computing the trim eagerly would put an O(n) copy on the common path where
-  // there is nothing to trim.
-  let kept = lines;
-  if (!fits) {
-    kept =
-      keep === "newest"
-        ? lines.slice(lines.length - TRANSCRIPT_CAP)
-        : lines.slice(0, TRANSCRIPT_CAP);
-  }
-  const front = kept[0];
-  // `null` — and only `null` — means the retained front IS the daemon's oldest
-  // entry. Evicting the front withdraws that claim and points the cursor at
-  // what was dropped, so scroll-back can always get it back.
-  const frontKept = front !== undefined && front === lines[0];
-  let olderCursor = t.olderCursor;
-  if (atOldest && frontKept) olderCursor = null;
-  else if (front?.id != null) olderCursor = { olderThan: front.id };
-  return {
-    ...t,
-    lines: kept,
-    olderCursor,
-    // Dropping the newest end puts unrepresented history between this window
-    // and the live stream. Nothing may be appended onto it until it is reloaded.
-    following: t.following && (fits || keep === "newest"),
-  };
-};
-
-/**
- * Fold one live entry in. Almost always a plain append — its id is newer than
- * anything held — so that case avoids building a map per event.
- */
-const appendLive = (t: Transcript, line: LogLine): Transcript => {
-  // Browsing an older window: the entries between it and this one were evicted,
-  // so there is nowhere to put this that wouldn't misrepresent the history in
-  // between. `End` reloads the newest window; until then this line reaches the
-  // reader through the notice line, not the transcript.
-  if (!t.following) return t;
-  const atOldest = t.olderCursor === null;
-  const last = t.lines[t.lines.length - 1];
-  if (last !== undefined && last.id !== null && line.id !== null && line.id <= last.id) {
-    // Out of order, or a repeat of something already held. `mergeById` dedupes
-    // by durable id, so neither can grow the window twice — but a merge is a
-    // growth like any other and takes the same cap.
-    return retain(t, mergeById(t.lines, [line]), "newest", atOldest);
-  }
-  return retain(t, [...t.lines, line], "newest", atOldest);
-};
-
-/**
- * Fold a fetched page in. An older page extends the front, so the window keeps
- * its oldest end; a head page is the newest window by definition, so it keeps
- * its newest and resumes following.
- */
-const foldPage = (
-  t: Transcript,
-  page: HistoryPage,
-  lines: readonly LogLine[],
-  older: boolean,
-): Transcript => {
-  const merged = mergeById(t.lines, lines);
-  const atOldest = page.olderCursor === null;
-  if (older) return retain(t, merged, "oldest", atOldest);
-  return retain({ ...t, following: true }, merged, "newest", atOldest);
-};
 
 /** Replace the prompt of an open prompt overlay, keeping everything the
  *  variant carries (a discuss prompt keeps its review). */
@@ -500,56 +307,8 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "push":
       return applyPush(s, a.frame);
 
-    case "transcriptReset":
-      return resetTranscripts(s);
-
-    case "transcriptFollow": {
-      // Jump to latest from an older window: drop what is held (it is a region
-      // of history the newest page may not touch) and put `head` back to
-      // `idle`, which is what makes the handle refetch the newest page. Echoes
-      // are ours, not the daemon's, and stay.
-      const t = transcriptOf(s, a.sessionId);
-      if (t.following) return s;
-      const next: Transcript = {
-        ...EMPTY_TRANSCRIPT,
-        echoes: t.echoes,
-      };
-      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
-    }
-
-    case "historyStart": {
-      if (a.gen !== s.transcriptGen) return s;
-      const t = transcriptOf(s, a.sessionId);
-      const next: Transcript = a.older
-        ? { ...t, older: loadablePending }
-        : { ...t, head: loadablePending };
-      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
-    }
-
-    case "historyPage": {
-      // Issued against a connection we no longer have: its entries and its
-      // cursor describe a history the current connection has re-read from
-      // scratch, so installing them would resurrect exactly what the reset
-      // discarded.
-      if (a.gen !== s.transcriptGen) return s;
-      const t = transcriptOf(s, a.sessionId);
-      const folded = foldPage(t, a.page, pageLines(a.page), a.older);
-      const next: Transcript = a.older
-        ? { ...folded, older: loadableLoaded(null) }
-        : { ...folded, head: loadableLoaded(null) };
-      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
-    }
-
-    case "historyFailed": {
-      if (a.gen !== s.transcriptGen) return s;
-      const t = transcriptOf(s, a.sessionId);
-      // Entries already loaded stay put: a failed older-page fetch loses the
-      // page, not the transcript the reader is looking at.
-      const next: Transcript = a.older
-        ? { ...t, older: loadableFailed(a.error) }
-        : { ...t, head: loadableFailed(a.error) };
-      return { ...s, transcripts: withTranscript(s, a.sessionId, next) };
-    }
+    case "transcript":
+      return s.transcript === a.transcript ? s : { ...s, transcript: a.transcript };
 
     case "toggleTheme":
       return { ...s, theme: nextThemeMode(s.theme) };
@@ -687,14 +446,6 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       return { ...s, overlay, drafts: { ...s.drafts, last: a.saveDraft ? p.buffer.text : "" } };
     }
 
-    case "echo": {
-      const t = transcriptOf(s, a.line.sessionId);
-      return {
-        ...s,
-        transcripts: withTranscript(s, a.line.sessionId, { ...t, echoes: [...t.echoes, a.line] }),
-      };
-    }
-
     case "outbox":
       return {
         ...s,
@@ -790,12 +541,12 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 const applyClientState = (s: TuiState, state: ClientState): TuiState => {
   if (state.tag !== "data") {
     // No connection means no transcript we can trust: entries were appended
-    // while we were away and our cursors are positions in a history the next
-    // connection re-reads from scratch. Drop the caches with the fleet and bump
-    // the generation, so a fetch already in flight cannot land afterwards and
-    // reinstate what this just discarded. Drafts and selection are ours, not
-    // the daemon's, and survive.
-    return { ...resetTranscripts(s), fleet: state };
+    // while we were away and the cursor is a position in a history the next
+    // connection re-reads from scratch. Drop it with the fleet; the handle
+    // bumps its own lifetime in the same breath, so a fetch already in flight
+    // cannot land afterwards and reinstate what this just discarded. Drafts
+    // and selection are ours, not the daemon's, and survive.
+    return { ...s, transcript: noTranscript, fleet: state };
   }
   const sessions = sortSessions(state.value.sessions);
   const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
@@ -829,7 +580,6 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     // has gone is stranded, and stranding it is news — silently dropping it
     // loses a message the user typed with no word about it. The composer
     // forgets it and says so, in the same dispatch this snapshot triggers.
-    transcripts: pruneByLive(s.transcripts, sessions),
     overlay,
     ...(notice ? { notice: mkNotice(notice, "dim") } : {}),
   };
@@ -862,20 +612,24 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
         toolName = toolNames[ev.id];
         if (toolName !== undefined) toolNames = without(toolNames, ev.id);
       }
-      const t = appendLive(transcriptOf(s, ev.sessionId), toLogLine(frame.id, ev, toolName));
+      // Only the selected session has a transcript, so only its events are worth
+      // formatting — the rest of the fleet's stream costs one comparison here
+      // and is read off the snapshot instead.
+      const mine = transcriptSession(s.transcript) === ev.sessionId;
       return {
         ...s,
-        transcripts: withTranscript(s, ev.sessionId, t),
+        ...(mine ? { transcript: liveLine(s.transcript, toLogLine(frame.id, ev, toolName)) } : {}),
         notice,
         toolNames,
       };
     }
     case "resync":
       // The push stream rolled past our seq, so entries in the gap never
-      // arrived and the cache would have a hole in it with nothing on screen to
-      // say so. Everything describing *current* state comes whole in the next
-      // snapshot; the transcript is the one thing that has to be re-read.
-      return resetTranscripts(s);
+      // arrived and the window would have a hole in it with nothing on screen
+      // to say so. Everything describing *current* state comes whole in the
+      // next snapshot; the transcript is the one thing that has to be re-read,
+      // which the handle does when it sees the resource unloaded.
+      return { ...s, transcript: noTranscript };
 
     case "notice":
       // A daemon-level advisory (config reload). Transient — same channel as a
@@ -898,21 +652,6 @@ const without = <T>(rec: Record<string, T>, key: string): Record<string, T> => {
   if (!(key in rec)) return rec;
   const { [key]: _drop, ...rest } = rec;
   return rest;
-};
-
-/** Drop entries keyed by a session that no longer exists. */
-const pruneByLive = <T>(
-  rec: Record<string, T>,
-  sessions: readonly SessionSnapshot[],
-): Record<string, T> => {
-  const live = new Set(sessions.map((x) => x.id));
-  let changed = false;
-  const out: Record<string, T> = {};
-  for (const [id, v] of Object.entries(rec)) {
-    if (live.has(id)) out[id] = v;
-    else changed = true;
-  }
-  return changed ? out : rec;
 };
 
 // ---------------------------------------------------------------------------
@@ -1130,16 +869,18 @@ export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
   return "expiring";
 };
 
-/** The selected session's transcript cache. */
-export const transcriptFor = (s: TuiState, id: string | null): Transcript => {
-  return (id && s.transcripts[id]) || EMPTY_TRANSCRIPT;
-};
-
-/** The selected session's log lines, oldest first: durable entries in durable
- *  order, then the local echoes, which have no place in that order. */
+/** The selected session's log lines, oldest first: the durable entries the
+ *  transcript holds, then a marker per follow-up still waiting to go out.
+ *  Those markers are derived, not stored — the outbox is where a queued
+ *  message lives, so one disappears exactly when its message goes on the wire
+ *  and the daemon's own `user_message` takes its place. */
 export const sessionLog = (s: TuiState): LogLine[] => {
-  const t = transcriptFor(s, s.selectedId);
-  return t.echoes.length === 0 ? [...t.lines] : [...t.lines, ...t.echoes];
+  const lines = transcriptLines(s.transcript);
+  const id = s.selectedId;
+  if (id === null) return [...lines];
+  const queued = waiting(outboxOf(s.outbox, id));
+  if (queued.length === 0) return [...lines];
+  return [...lines, ...queued.map((text) => queuedLine(id, text))];
 };
 
 /**

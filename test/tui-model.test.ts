@@ -52,8 +52,6 @@ import {
   selectedSession,
   sessionLog,
   shownLog,
-  TRANSCRIPT_CAP,
-  transcriptFor,
   sortSessions,
   visibleLog,
   type Action,
@@ -63,7 +61,14 @@ import {
   fleetSessions,
 } from "@loom/tui/model";
 import {
+  TRANSCRIPT_CAP,
   condenseLog,
+  headFailed,
+  headLoaded,
+  olderFailed,
+  olderLoaded,
+  olderLoading,
+  openTranscript,
   formatEvent,
   logRowCount,
   toLogLine,
@@ -213,17 +218,39 @@ const transient = (event: HarnessEvent): EventPush => {
   return { kind: "push", seq: 1, epoch: "e1", type: "event", event };
 };
 
-/** Every line the reducer holds for a session: durable entries, then echoes. */
-const lines = (s: TuiState, sessionId = "s1"): LogLine[] => {
-  const t = s.transcripts[sessionId];
-  return t ? [...t.lines, ...t.echoes] : [];
-};
+/** Every line the reducer holds: durable entries, then the derived queue markers. */
+const lines = (s: TuiState): LogLine[] => sessionLog(s);
 
 /** A `session.events` response carrying `entries` as one page. */
 const historyPage = (
   entries: ReadonlyArray<{ id: number; event: HarnessEvent }>,
   olderCursor: HistoryCursor | null = null,
 ): HistoryPage => ({ items: entries.map((e) => ({ id: e.id, event: e.event })), olderCursor });
+
+/** The transcript opened on `sessionId`, as the handle does on selection. */
+const opened = (s: TuiState = initialState(), sessionId = "s1"): TuiState =>
+  reduce(s, { t: "transcript", transcript: openTranscript(sessionId) });
+
+/** The newest page landing. */
+const headPage = (s: TuiState, page: HistoryPage, sessionId = "s1"): TuiState =>
+  reduce(s, { t: "transcript", transcript: headLoaded(s.transcript, sessionId, page) });
+
+/** An older page landing. */
+const olderPage = (s: TuiState, page: HistoryPage, sessionId = "s1"): TuiState =>
+  reduce(s, { t: "transcript", transcript: olderLoaded(s.transcript, sessionId, page) });
+
+/** A loaded, empty transcript following the live tail — what selecting a
+ *  session and getting an empty first page leaves behind. */
+const tailing = (s: TuiState = initialState(), sessionId = "s1"): TuiState =>
+  headPage(opened(s, sessionId), historyPage([]), sessionId);
+
+/** The loaded window, with its variant: `tailing` while it ends at the live
+ *  tail, `detached` once paging back has evicted that end. */
+const win = (s: TuiState) => {
+  const t = s.transcript;
+  assert.ok(t.t === "tailing" || t.t === "detached", `expected a window, got ${t.t}`);
+  return t;
+};
 
 const daemon: DaemonInfo = {
   pid: 1,
@@ -650,7 +677,7 @@ test("a session that goes takes its scheduled mode change with it", async () => 
 });
 
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
-  let s = reduce(initialState(), fleet([fanout]));
+  let s = tailing(reduce(initialState(), fleet([fanout])), "fan");
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),
@@ -702,7 +729,7 @@ test("a snapshot re-sorts the fleet and preserves selection", () => {
   const a = snap({ id: "a", status: "running", updatedAt: 1 });
   const b = snap({ id: "b", status: "running", updatedAt: 2 });
   let s = reduce(initialState(), fleet([a, b]));
-  s = reduce(s, { t: "select", id: "a" });
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   // a finishes its turn — should drop below b (idle group) but stay selected
   s = reduce(s, fleet([snap({ id: "a", status: "idle", updatedAt: 9 }), b]));
   assert.deepEqual(
@@ -777,7 +804,7 @@ test("a snapshot's providers become the new-session defaults", () => {
 // ---------------------------------------------------------------------------
 
 test("event pushes append transcript lines in durable order", () => {
-  let s = initialState();
+  let s = tailing();
   for (const id of [11, 12, 13]) {
     s = reduce(s, {
       t: "push",
@@ -791,7 +818,7 @@ test("event pushes append transcript lines in durable order", () => {
 });
 
 test("a push with no durable id is a heartbeat, never a transcript line", () => {
-  let s = initialState();
+  let s = tailing();
   s = reduce(s, {
     t: "push",
     frame: transient(
@@ -841,7 +868,7 @@ test("a push with no durable id is a heartbeat, never a transcript line", () => 
 });
 
 test("a repeated durable id folds once, and ids order the transcript, not timestamps", () => {
-  let s = initialState();
+  let s = tailing();
   // Deliberately out of timestamp order: the provider reported the second entry
   // with an *earlier* clock than the first, and a burst shares a millisecond.
   s = reduce(s, {
@@ -889,28 +916,25 @@ const bulkPage = (lastId: number, n: number, olderCursor: HistoryCursor | null):
   olderCursor,
 });
 
-const foldedPage = (s: TuiState, page: HistoryPage, older: boolean, sessionId = "s1"): TuiState =>
-  reduce(s, { t: "historyPage", sessionId, page, older, gen: s.transcriptGen });
-
-/** A transcript at exactly the cap, following the live tail, with `count`
- *  entries older than it still on the daemon. */
+/** A transcript at exactly the cap, following the live tail, with entries older
+ *  than it still on the daemon. */
 const atCapacity = (): TuiState =>
-  foldedPage(initialState(), bulkPage(11_000, TRANSCRIPT_CAP, { olderThan: 1_001 }), false);
+  headPage(opened(), bulkPage(11_000, TRANSCRIPT_CAP, { olderThan: 1_001 }));
 
 test("the cap evicts the oldest lines and points the older cursor at them", () => {
   let s = atCapacity();
-  assert.equal(transcriptFor(s, "s1").lines.length, TRANSCRIPT_CAP);
+  assert.equal(win(s).lines.length, TRANSCRIPT_CAP);
 
   s = reduce(s, {
     t: "push",
     frame: push(11_001, ev({ type: "assistant_text", text: "the newest", sessionId: "s1" })),
   });
 
-  const t = transcriptFor(s, "s1");
+  const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP);
   assert.equal(t.lines[0]?.id, 1_002, "the oldest line was evicted");
   assert.equal(t.lines.at(-1)?.text, "the newest");
-  assert.equal(t.following, true, "the window still ends at the live tail");
+  assert.equal(t.t, "tailing", "the window still ends at the live tail");
   // The point of the whole exercise: running out of room here must never read
   // as the daemon running out of history, or scroll-back stops at the cap.
   assert.deepEqual(
@@ -921,30 +945,30 @@ test("the cap evicts the oldest lines and points the older cursor at them", () =
 });
 
 test("three legal pages never retain more than the cap", () => {
-  let s = foldedPage(initialState(), bulkPage(15_000, 5_000, { olderThan: 10_001 }), false);
-  s = foldedPage(s, bulkPage(10_000, 5_000, { olderThan: 5_001 }), true);
-  s = foldedPage(s, bulkPage(5_000, 5_000, null), true);
+  let s = headPage(opened(), bulkPage(15_000, 5_000, { olderThan: 10_001 }));
+  s = olderPage(s, bulkPage(10_000, 5_000, { olderThan: 5_001 }));
+  s = olderPage(s, bulkPage(5_000, 5_000, null));
 
-  const t = transcriptFor(s, "s1");
+  const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP, "15,000 legal entries, 10,000 retained");
   // Paging back keeps the end being read: the oldest, not the newest.
   assert.equal(t.lines[0]?.id, 1);
   assert.equal(t.lines.at(-1)?.id, 10_000);
-  assert.equal(t.following, false, "the newest end was evicted, so the tail is no longer held");
+  assert.equal(t.t, "detached", "the newest end was evicted, so the tail is no longer held");
   assert.equal(t.olderCursor, null, "and the retained front IS the daemon's oldest entry");
 });
 
 test("older paging at capacity advances, without looping or claiming false exhaustion", () => {
   let s = atCapacity();
-  const cursors: Array<number | null> = [transcriptFor(s, "s1").olderCursor?.olderThan ?? null];
+  const cursors: Array<number | null> = [win(s).olderCursor?.olderThan ?? null];
 
-  s = foldedPage(s, bulkPage(1_000, 500, { olderThan: 501 }), true);
-  cursors.push(transcriptFor(s, "s1").olderCursor?.olderThan ?? null);
-  s = foldedPage(s, bulkPage(500, 500, null), true);
-  cursors.push(transcriptFor(s, "s1").olderCursor?.olderThan ?? null);
+  s = olderPage(s, bulkPage(1_000, 500, { olderThan: 501 }));
+  cursors.push(win(s).olderCursor?.olderThan ?? null);
+  s = olderPage(s, bulkPage(500, 500, null));
+  cursors.push(win(s).olderCursor?.olderThan ?? null);
 
   assert.deepEqual(cursors, [1_001, 501, null], "each page starts strictly earlier than the last");
-  const t = transcriptFor(s, "s1");
+  const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP);
   assert.equal(t.lines[0]?.id, 1, "and the window reached the daemon's first entry");
 });
@@ -952,16 +976,16 @@ test("older paging at capacity advances, without looping or claiming false exhau
 test("a live event while browsing an older window changes nothing but the notice", () => {
   // Page back past the cap: the newest end is evicted and the window no longer
   // ends at the live tail.
-  let s = foldedPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }), true);
-  const before = transcriptFor(s, "s1");
-  assert.equal(before.following, false);
+  let s = olderPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }));
+  const before = win(s);
+  assert.equal(before.t, "detached");
 
   s = reduce(s, {
     t: "push",
     frame: push(99_999, ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} })),
   });
 
-  const after = transcriptFor(s, "s1");
+  const after = win(s);
   assert.equal(after.lines, before.lines, "the rows being read are untouched");
   assert.equal(
     after.lines.at(-1)?.id,
@@ -976,21 +1000,21 @@ test("a live event while browsing an older window changes nothing but the notice
 });
 
 test("jump to latest reloads the newest window; evicted older pages can return", () => {
-  let s = foldedPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }), true);
-  assert.equal(transcriptFor(s, "s1").following, false);
+  let s = olderPage(atCapacity(), bulkPage(1_000, 500, { olderThan: 501 }));
+  assert.equal(win(s).t, "detached");
 
-  s = reduce(s, { t: "transcriptFollow", sessionId: "s1" });
-  const reset = transcriptFor(s, "s1");
-  assert.deepEqual(reset.lines, [], "the older window is dropped");
-  assert.equal(reset.head.tag, "idle", "which is what makes the handle refetch");
-  assert.equal(reset.following, true);
+  // `End`: the handle reopens the transcript, which is what makes it refetch.
+  s = opened(s);
+  assert.equal(s.transcript.t, "loading");
+  assert.deepEqual(sessionLog(s), [], "the older window is dropped");
 
   // The newest page lands, and paging back from it reaches entries the older
   // browsing session had evicted.
-  s = foldedPage(s, bulkPage(11_000, 1_000, { olderThan: 10_001 }), false);
-  assert.equal(transcriptFor(s, "s1").lines.at(-1)?.id, 11_000);
-  s = foldedPage(s, bulkPage(10_000, 1_000, { olderThan: 9_001 }), true);
-  const t = transcriptFor(s, "s1");
+  s = headPage(s, bulkPage(11_000, 1_000, { olderThan: 10_001 }));
+  assert.equal(win(s).t, "tailing");
+  assert.equal(win(s).lines.at(-1)?.id, 11_000);
+  s = olderPage(s, bulkPage(10_000, 1_000, { olderThan: 9_001 }));
+  const t = win(s);
   assert.equal(t.lines[0]?.id, 9_001, "previously evicted entries are back");
   assert.equal(t.lines.length, 2_000);
 });
@@ -1006,7 +1030,7 @@ test("duplicate and out-of-order live entries cannot bypass the cap or repeat an
     frame: push(7, ev({ type: "assistant_text", text: "late", sessionId: "s1" })),
   });
 
-  const t = transcriptFor(s, "s1");
+  const t = win(s);
   assert.equal(t.lines.length, TRANSCRIPT_CAP, "still exactly at the cap");
   const ids = t.lines.map((l) => l.id);
   assert.equal(new Set(ids).size, ids.length, "no id appears twice");
@@ -1017,21 +1041,53 @@ test("duplicate and out-of-order live entries cannot bypass the cap or repeat an
   );
 });
 
-test("a failed page keeps the window that is already loaded", () => {
+test("a failed older page keeps the window that is already loaded", () => {
   const s = atCapacity();
-  const before = transcriptFor(s, "s1").lines;
+  const before = win(s).lines;
   const failed = reduce(s, {
-    t: "historyFailed",
-    sessionId: "s1",
-    older: true,
-    gen: s.transcriptGen,
-    error: "history unavailable",
+    t: "transcript",
+    transcript: olderFailed(s.transcript, "s1", "history unavailable"),
   });
 
-  const t = transcriptFor(failed, "s1");
+  const t = win(failed);
   assert.equal(t.lines, before, "the rows on screen stay on screen");
-  assert.equal(t.older.tag, "error", "and the failure is the Loadable's, not a second flag");
-  assert.equal(t.head.tag, "data");
+  assert.deepEqual(
+    t.older,
+    { t: "failed", error: "history unavailable" },
+    "the failure belongs to the page that failed, not to the window",
+  );
+  assert.equal(t.t, "tailing", "and the window is still the one being read");
+});
+
+test("a failed first page keeps whatever arrived live, and End retries it", () => {
+  let s = opened();
+  s = reduce(s, {
+    t: "push",
+    frame: push(4, ev({ type: "assistant_text", text: "streamed in", sessionId: "s1" })),
+  });
+  s = reduce(s, { t: "transcript", transcript: headFailed(s.transcript, "s1", "no history") });
+
+  assert.equal(s.transcript.t, "failed");
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["streamed in"],
+    "the live stream kept running while the fetch failed, and those rows stay",
+  );
+
+  // `End` reopens, and the retry merges what arrived meanwhile.
+  s = opened(s);
+  s = headPage(
+    s,
+    historyPage([
+      { id: 3, event: ev({ type: "assistant_text", text: "older", sessionId: "s1" }) },
+      { id: 4, event: ev({ type: "assistant_text", text: "streamed in", sessionId: "s1" }) },
+    ]),
+  );
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["older", "streamed in"],
+    "one entry each, merged by durable id",
+  );
 });
 
 test("permission / question / fatal-error events raise a notice", () => {
@@ -1055,17 +1111,14 @@ test("permission / question / fatal-error events raise a notice", () => {
 
 test("a history page never raises a notice — it's transcript, not news (U2)", () => {
   const a = snap({ id: "s1", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "s1",
-    older: true,
-    gen: s.transcriptGen,
-    page: historyPage([
+  let s = opened(reduce(initialState(), fleet([a])));
+  s = headPage(
+    s,
+    historyPage([
       { id: 1, event: ev({ type: "permission_request", id: "p1", tool: "Bash", input: {} }) },
       { id: 2, event: ev({ type: "error", message: "old boom", fatal: true }) },
     ]),
-  });
+  );
   assert.equal(s.notice, null, "scrolling back must not flash a long-settled approval or error");
   // …but the entries still land in the transcript.
   assert.deepEqual(
@@ -1076,8 +1129,7 @@ test("a history page never raises a notice — it's transcript, not news (U2)", 
 
 test("a history page and the live stream merge by durable id, one entry each", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
+  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
 
   // Live frames arrive first — the push subscription is up before any fetch —
   // and their ids overlap the page that is still in flight.
@@ -1089,12 +1141,9 @@ test("a history page and the live stream merge by durable id, one entry each", (
   // The page covers older history *and* the two entries already held. Note the
   // timestamps: the older turn ran before a daemon restart and its clock is not
   // ordered against the newer one — only the durable ids are.
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: false,
-    gen: s.transcriptGen,
-    page: historyPage(
+  s = headPage(
+    s,
+    historyPage(
       [
         {
           id: 18,
@@ -1127,7 +1176,8 @@ test("a history page and the live stream merge by durable id, one entry each", (
       ],
       { olderThan: 18 },
     ),
-  });
+    "a",
+  );
 
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
@@ -1139,83 +1189,62 @@ test("a history page and the live stream merge by durable id, one entry each", (
     1,
     "an entry the live stream already delivered is not duplicated by the page",
   );
-  const t = transcriptFor(s, "a");
-  assert.equal(t.head.tag, "data");
+  const t = win(s);
+  assert.equal(t.t, "tailing");
   assert.deepEqual(t.olderCursor, { olderThan: 18 }, "the page says where the next one starts");
 });
-
 test("an older page preserves the loaded entries while it is in flight, and prepends when it lands", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: false,
-    gen: s.transcriptGen,
-    page: historyPage(
+  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
+  s = headPage(
+    s,
+    historyPage(
       [{ id: 9, event: { ...ev({ type: "assistant_text", text: "newest" }), sessionId: "a" } }],
       { olderThan: 9 },
     ),
-  });
+    "a",
+  );
 
-  s = reduce(s, { t: "historyStart", sessionId: "a", older: true, gen: s.transcriptGen });
-  assert.equal(transcriptFor(s, "a").older.tag, "pending");
+  s = reduce(s, { t: "transcript", transcript: olderLoading(s.transcript, "a") });
+  assert.deepEqual(win(s).older, { t: "loading" });
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
     ["newest"],
     "what is already loaded stays on screen while the older page loads",
   );
 
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: true,
-    gen: s.transcriptGen,
-    page: historyPage([
+  s = olderPage(
+    s,
+    historyPage([
       { id: 7, event: { ...ev({ type: "assistant_text", text: "older" }), sessionId: "a" } },
     ]),
-  });
+    "a",
+  );
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
     ["older", "newest"],
   );
-  assert.equal(
-    transcriptFor(s, "a").olderCursor,
-    null,
-    "the page reached the start of the history and said so",
-  );
+  assert.deepEqual(win(s).older, { t: "idle" });
+  assert.equal(win(s).olderCursor, null, "the page reached the start of the history and said so");
 });
 
-test("a page issued on a dropped connection cannot reinstate the cache it was reset with", () => {
+test("losing the connection drops the window, and the selection survives it", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
-  const stale = s.transcriptGen;
-  s = reduce(s, { t: "historyStart", sessionId: "a", older: false, gen: stale });
-
-  // The connection drops mid-fetch. Caches go, and with them the cursors, which
-  // are positions in a history the next connection re-reads from scratch.
-  s = reduce(s, { t: "state", state: loadablePending });
-  assert.deepEqual(s.transcripts, {});
-  assert.notEqual(s.transcriptGen, stale);
-
-  // The in-flight response finally lands. It describes the old connection.
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: false,
-    gen: stale,
-    page: historyPage([
-      { id: 4, event: { ...ev({ type: "assistant_text", text: "from before" }), sessionId: "a" } },
+  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
+  s = headPage(
+    s,
+    historyPage([
+      { id: 4, event: { ...ev({ type: "assistant_text", text: "before" }), sessionId: "a" } },
     ]),
-  });
-  assert.deepEqual(s.transcripts, {}, "ignored — it belongs to a connection we no longer have");
+    "a",
+  );
 
-  // The selection and the draft survived the reset; only the transcript went.
-  assert.equal(s.selectedId, "a");
-  s = reduce(s, fleet([a]));
-  assert.equal(transcriptFor(s, "a").head.tag, "idle", "so the handle refetches the newest page");
+  // The cursor is a position in a history the next connection re-reads from
+  // scratch, so it goes with the fleet.
+  s = reduce(s, { t: "state", state: loadablePending });
+  assert.equal(s.transcript.t, "unloaded");
+  assert.deepEqual(sessionLog(s), []);
+  assert.equal(s.selectedId, "a", "the selection is ours, not the daemon's");
 });
 
 test("an outstanding request is read off the snapshot, so old history cannot resurrect a settled one", () => {
@@ -1237,12 +1266,9 @@ test("an outstanding request is read off the snapshot, so old history cannot res
 
   // Scrolling back through history delivers the *original* permission_request
   // event. It is transcript and nothing more — the request set does not move.
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: true,
-    gen: s.transcriptGen,
-    page: historyPage([
+  s = headPage(
+    opened(s, "a"),
+    historyPage([
       {
         id: 1,
         event: ev({
@@ -1254,7 +1280,8 @@ test("an outstanding request is read off the snapshot, so old history cannot res
         }),
       },
     ]),
-  });
+    "a",
+  );
   assert.deepEqual(
     reqs(s, "a").map((r) => r.id),
     ["p1"],
@@ -1275,18 +1302,16 @@ test("an outstanding request is read off the snapshot, so old history cannot res
       }),
     ]),
   );
-  s = reduce(s, {
-    t: "historyPage",
-    sessionId: "a",
-    older: true,
-    gen: s.transcriptGen,
-    page: historyPage([
+  s = olderPage(
+    s,
+    historyPage([
       {
         id: 1,
         event: ev({ type: "compact", sessionId: "a", trigger: "auto", before: 1, after: 1 }),
       },
     ]),
-  });
+    "a",
+  );
   assert.deepEqual(compactingFor(s, "a"), { startedAt: 5, before: 90_000, generated: 12 });
   assert.equal(reqs(s, "a").length, 1);
 
@@ -1342,7 +1367,7 @@ test("the event log always shows just the selected session", () => {
   const a = snap({ id: "a", status: "running" });
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), fleet([a, b]));
-  s = reduce(s, { t: "select", id: "a" });
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "assistant_text", text: "for a", sessionId: "a" })),
@@ -1364,7 +1389,7 @@ test("the event log always shows just the selected session", () => {
 test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls but drops results; everything keeps it all", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
     (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
   at(1, { type: "assistant_text", text: "let me look" }, 1_000);
@@ -1404,7 +1429,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 test("chat view: tool calls with an input `description` get their own line; those without still collapse to a count", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
     (s = reduce(s, { t: "push", frame: push(n, { ...ev(e), sessionId: "a", ts }) }));
   at(1, { type: "tool_call", id: "t1", name: "Read", input: { file_path: "a.ts" } }, 1_000);
@@ -2193,7 +2218,7 @@ test("Read tool calls show path + range; their tool_result drops the raw file du
   // user can see the file themselves.
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
   s = reduce(s, {
     t: "push",
     frame: push(
@@ -2424,40 +2449,39 @@ test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   assert.equal(promptOf(s)?.buffer.text, "typed", "↓ is a no-op at the live buffer");
 });
 
-test("echoes are kept apart from the durable transcript and render after it", () => {
+test("queued follow-ups render after the durable transcript, derived from the outbox", () => {
   const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "select", id: "a" });
-  const echo = (text: string, ts: number): LogLine => ({
-    id: null, // no durable row behind it — that is what makes it an echo
-    sessionId: "a",
-    kind: "echo",
-    glyph: "›",
-    text,
-    tone: "accent",
-    ts,
-  });
-  s = reduce(s, { t: "echo", line: echo("hi", 1) });
-  s = reduce(s, { t: "echo", line: echo("there", 2) });
+  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
+  s = headPage(s, historyPage([]), "a");
   s = reduce(s, {
     t: "push",
     frame: push(5, { ...ev({ type: "assistant_text", text: "from the daemon" }), sessionId: "a" }),
   });
+  const box = (text: string) => enqueue(outboxOf(s.outbox, "a"), text);
+  s = reduce(s, { t: "outbox", sessionId: "a", box: box("hi") });
+  s = reduce(s, { t: "outbox", sessionId: "a", box: box("there") });
 
-  const t = transcriptFor(s, "a");
   assert.deepEqual(
-    t.lines.map((l) => l.text),
+    win(s).lines.map((l) => l.text),
     ["from the daemon"],
-    "echoes never enter the durable list, so they cannot be deduplicated or paged",
-  );
-  assert.deepEqual(
-    t.echoes.map((l) => l.text),
-    ["hi", "there"],
+    "a marker never enters the durable list, so it cannot be deduplicated or paged",
   );
   assert.deepEqual(
     sessionLog(s).map((l) => l.text),
-    ["from the daemon", "hi", "there"],
+    ["from the daemon", "queued: hi", "queued: there"],
     "a queued send belongs at the bottom — it is about to happen, not part of the record",
+  );
+
+  // The message goes on the wire: its marker disappears in the same breath,
+  // because the daemon's own `user_message` is what takes its place.
+  s = reduce(s, {
+    t: "outbox",
+    sessionId: "a",
+    box: { t: "sending", text: "hi", rest: ["there"], barrier: 0 },
+  });
+  assert.deepEqual(
+    sessionLog(s).map((l) => l.text),
+    ["from the daemon", "queued: there"],
   );
 });
 
@@ -2778,7 +2802,7 @@ test("initialState reports the active theme, so a restored one sticks", () => {
 });
 
 test("status_changed events stay out of the log; result is a terse marker", () => {
-  let s = initialState();
+  let s = tailing();
   s = reduce(s, {
     t: "push",
     frame: push(1, ev({ type: "assistant_text", text: "here is the answer" })),
@@ -3364,7 +3388,7 @@ test("a model picker opened while the catalog loads resolves when the fresh list
 
 test("logRowCount tracks the resolved child through drill and drain", () => {
   const seed = (sessions: SessionSnapshot[]): TuiState => {
-    let t = reduce(initialState(), fleet(sessions));
+    let t = tailing(reduce(initialState(), fleet(sessions)), "fan");
     t = reduce(t, {
       t: "push",
       frame: push(1, ev({ sessionId: "fan", type: "assistant_text", text: "mainline" })),

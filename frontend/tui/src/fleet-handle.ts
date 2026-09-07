@@ -43,7 +43,13 @@ import { mkStore } from "./store.ts";
 import { cleared, enqueue, mkComposer, outboxOf, pending, release } from "./composer.ts";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
 import { mkSearchControl, searchStale } from "./fleet-search.ts";
-import { cycleLogFilter, logRowCount, transcriptText, type LogLine } from "./transcript.ts";
+import {
+  cycleLogFilter,
+  mkTranscript,
+  noTranscript,
+  transcriptLines,
+  transcriptText,
+} from "./transcript.ts";
 import {
   fleetProviders,
   fleetSessions,
@@ -57,7 +63,6 @@ import {
   compactingFor,
   initialState,
   newSettings,
-  transcriptFor,
   modelPickItems,
   modelSupportsEffort,
   pickerStep,
@@ -475,7 +480,6 @@ export const mkFleetHandle = ({
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
   let tick = 0;
-  let logScroll = 0;
   let planScroll = 0;
   // Fleet toggle: `⇥` swaps the overview split ↔ the session's detail + events,
   // `Esc` snaps back to overview. On a narrow terminal overview is the list alone.
@@ -542,43 +546,16 @@ export const mkFleetHandle = ({
     loaded: (query, results) => dispatch({ t: "searchLoaded", query, results }),
   });
 
-  const store = mkStore<FleetView>(
-    deriveView(state, tick, logScroll, planScroll, layoutView, dims),
-  );
+  // The event log's offset belongs to the transcript handle below — the store is
+  // built before it exists, and an unloaded transcript is at its tail anyway.
+  const store = mkStore<FleetView>(deriveView(state, tick, 0, planScroll, layoutView, dims));
   const publish = (): void =>
-    store.set(deriveView(state, tick, logScroll, planScroll, layoutView, dims));
-
-  // Width the log pane renders at for the current body (see app.tsx): the zoomed
-  // and session views give it the whole terminal, the overview split its right
-  // column.
-  const logPaneWidth = (): number => {
-    const v = store.get();
-    return v.body.t === "split" ? v.rightW : v.cols;
-  };
-  // Physical (wrapped) rows in the log pane as currently rendered — narrowed to
-  // the focused child while drilled in. This — not the logical line count,
-  // which wrapping inflates several-fold — is the unit `logScroll` offsets in
-  // and what `EventLog` clamps that offset against.
-  const shownLogRows = (): number => logRowCount(shownLog(state), logPaneWidth());
-
-  // Ceiling for `logScroll`: EventLog pins the viewport at `rows - capacity`
-  // (the top of the log), so the backing offset must clamp there too — running
-  // it past the top would leave you scrolling back down the same distance
-  // before the viewport moves again.
-  const scrollUp = (by: number): void => {
-    const page = store.get().logPage;
-    const maxScroll = Math.max(0, shownLogRows() - page);
-    logScroll = Math.min(maxScroll, logScroll + by);
-    // Prefetch the next older page as the viewport nears the top, so paging back
-    // feels seamless instead of stalling at the current oldest line.
-    if (maxScroll - logScroll < page) loadOlderHistory();
-    publish();
-  };
+    store.set(deriveView(state, tick, transcripts.scroll(), planScroll, layoutView, dims));
 
   // Plan-review body scroll: a top-anchored offset (0 = first line; larger =
-  // further down — the opposite sense to `logScroll`). No line count is known
-  // here, so clamp only at ≥ 0; `PlanReview` clamps the bottom against its
-  // window.
+  // further down — the opposite sense to the event log's). No line count is
+  // known here, so clamp only at ≥ 0; `PlanReview` clamps the bottom against
+  // its window.
   const planScrollBy = (by: number): void => {
     planScroll = Math.max(0, planScroll + by);
     publish();
@@ -589,104 +566,41 @@ export const mkFleetHandle = ({
   const HISTORY_PAGE = historyPageSize ?? 500;
 
   /**
-   * Fetch the selected session's newest page, once. Whether a page is wanted,
-   * in flight, or already loaded is the transcript's own `head` Loadable — no
-   * second bookkeeping map to keep in step with it, and clearing the caches on
-   * a reconnect is therefore all it takes to make every session fetch again.
+   * The selected session's transcript: one resource, its own lifetime, and the
+   * viewport into it. Nothing else here fetches history or moves the event
+   * pane's offset — the handle decides both from what the pane is drawing,
+   * which it measures through the same geometry the pane renders with.
    *
-   * Live frames are already arriving for every session before this runs (the
-   * push subscription is established at start-up, not at selection), so an
-   * entry landing while the page is in flight is merged by durable id rather
+   * Live frames are already arriving before any of this runs (the push
+   * subscription is established at start-up, not at selection), so an entry
+   * landing while the first page is in flight is merged by durable id rather
    * than lost between the two sources.
    */
-  const loadHistory = (): void => {
-    const id = state.selectedId;
-    if (!id) return;
-    const head = transcriptFor(state, id).head;
-    // `error` retries. This runs only on a selection change, a cache reset or a
-    // regained snapshot — never on a render or an arbitrary snapshot — so a
-    // failed head is retried by leaving and coming back, and cannot loop.
-    if (head.tag === "pending" || head.tag === "data") return;
-    const gen = state.transcriptGen;
-    dispatch({ t: "historyStart", sessionId: id, older: false, gen });
-    client
-      .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE })
-      .then((page) => {
-        if (gen !== state.transcriptGen) return;
-        dispatch({ t: "historyPage", sessionId: id, page, older: false, gen });
-      })
-      .catch((e: unknown) => {
-        dispatch({
-          t: "historyFailed",
-          sessionId: id,
-          older: false,
-          gen,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      });
-  };
-
-  /**
-   * Pull the next older page when the log is scrolled near its top. `null`
-   * cursor means the daemon has nothing older — and only that, since retention
-   * re-points the cursor at whatever it evicted rather than clearing it.
-   */
-  const loadOlderHistory = (): void => {
-    if (!connected()) return;
-    const id = state.selectedId;
-    if (!id) return;
-    const t = transcriptFor(state, id);
-    if (t.head.tag !== "data" || t.older.tag === "pending" || t.olderCursor === null) return;
-    const gen = state.transcriptGen;
-    const cursor = t.olderCursor;
-    dispatch({ t: "historyStart", sessionId: id, older: true, gen });
-    const page = store.get().logPage;
-    // Was the viewport showing the top of the log before the fold-in? Only then
-    // does `logScroll` need touching: rows land above the viewport and the
-    // render's `end = rows.length - off` grows by the same amount, so any other
-    // view stays anchored on its own rows. A top-pinned view must follow the
-    // new top — otherwise the older page lands above it unseen.
-    const beforeRows = shownLogRows();
-    const wasPinnedTop = logScroll >= Math.max(0, beforeRows - page);
-    const tailBefore = t.lines[t.lines.length - 1]?.id ?? null;
-    client
-      .request<HistoryPage>("session.events", { id, limit: HISTORY_PAGE, cursor })
-      .then((got) => {
-        // The generation this page was asked under is gone — a reconnect or a
-        // resync re-read the transcript from scratch. The reducer already
-        // refuses its entries; `beforeRows` and `wasPinnedTop` describe a
-        // viewport that no longer exists, so nothing below may run either.
-        if (gen !== state.transcriptGen || state.selectedId !== id) return;
-        dispatch({ t: "historyPage", sessionId: id, page: got, older: true, gen });
-        const after = transcriptFor(state, id);
-        const rows = shownLogRows();
-        // At the cap the fold drops rows below the viewport as well as adding
-        // them above it, and `logScroll` counts *up from the tail* — so neither
-        // delta can be applied to it once the tail has moved. Re-derive the
-        // position from the top the reader is at instead. This fetch only fires
-        // within a page of the top, so that is where they already were.
-        const tailLost = (after.lines[after.lines.length - 1]?.id ?? null) !== tailBefore;
-        if (wasPinnedTop || tailLost) {
-          logScroll = Math.max(0, rows - page);
-          publish();
-        } else if (rows !== beforeRows) {
-          // Publish even when the view wasn't pinned: the fold changed the log
-          // (the "↑N more" indicator included), and an anchored view renders the
-          // same rows either way — the re-render is free. Without this the fold
-          // sits invisible until the next keypress republishes.
-          publish();
-        }
-      })
-      .catch((e: unknown) => {
-        dispatch({
-          t: "historyFailed",
-          sessionId: id,
-          older: true,
-          gen,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      });
-  };
+  const transcripts = mkTranscript({
+    fetch: (id, cursor) =>
+      client.request<HistoryPage>("session.events", {
+        id,
+        limit: HISTORY_PAGE,
+        ...(cursor === null ? {} : { cursor }),
+      }),
+    transcript: () => state.transcript,
+    selectedId: () => state.selectedId,
+    connected,
+    shown: () => shownLog(state),
+    // The filter and the drill-down change which rows exist, so an offset
+    // counted against the old ones means nothing.
+    viewKey: () => `${state.selectedId} ${state.logFilter} ${state.selectedChild}`,
+    // Width the log pane renders at for the current body (see app.tsx): the
+    // zoomed and session views give it the whole terminal, the overview split
+    // its right column.
+    paneWidth: () => {
+      const v = store.get();
+      return v.body.t === "split" ? v.rightW : v.cols;
+    },
+    pageRows: () => store.get().logPage,
+    commit: (transcript) => dispatch({ t: "transcript", transcript }),
+    publish: () => publish(),
+  });
 
   // Follow-ups typed at a busy session, the sends already on the wire, and
   // anything whose reply was lost — all of it lives in `state.outbox`, and the
@@ -704,40 +618,6 @@ export const mkFleetHandle = ({
     const prev = state;
     state = reduce(state, a);
     if (state === prev) return;
-    // Was `useEffect(() => setLogScroll(0), [selectedId, logFilter])`. Child
-    // focus joins the reset set: entering/leaving a drill-down (or the focused
-    // child draining) re-anchors the pane at the live tail.
-    if (
-      state.selectedId !== prev.selectedId ||
-      state.logFilter !== prev.logFilter ||
-      state.selectedChild !== prev.selectedChild ||
-      // A cache reset (a dropped connection, a rolled push stream) took the rows
-      // the viewport was anchored to with it — go back to the live tail.
-      state.transcriptGen !== prev.transcriptGen
-    ) {
-      logScroll = 0;
-    } else if (
-      a.t === "push" &&
-      logScroll > 0 &&
-      transcriptFor(state, state.selectedId) !== transcriptFor(prev, prev.selectedId)
-    ) {
-      // Scrolled back through history (the pane border shows the accent) and a
-      // live frame just landed at the tail: pin the viewport to the lines
-      // you're reading instead of letting the new rows shove your view older.
-      // `logScroll` counts physical rows up from the live tail, so grow it by
-      // however many rows the log gained — `end = total - logScroll` (see
-      // EventLog) then holds still and the same window renders. Clamp to the
-      // top the way `scrollUp` does; a LOG_CAP trim (net rows <= 0) is a no-op.
-      // Only `push` (tail append): an older page lands *above* the viewport,
-      // where a tail-anchored offset already keeps your place, and
-      // `loadOlderHistory` owns the top-pinned case.
-      const width = logPaneWidth();
-      const grew = logRowCount(shownLog(state), width) - logRowCount(shownLog(prev), width);
-      if (grew > 0) {
-        const max = Math.max(0, logRowCount(shownLog(state), width) - store.get().logPage);
-        logScroll = Math.min(max, logScroll + grew);
-      }
-    }
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
     if (heldPlan(state.overlay)?.requestId !== heldPlan(prev.overlay)?.requestId) planScroll = 0;
@@ -758,30 +638,21 @@ export const mkFleetHandle = ({
       if (themeState) persistTheme(themeState, state.theme);
     }
     // The `/` query moved, or the filter opened or closed: the search handle
-    // decides whether that needs a round trip. `settle` is outside the
-    // connection gate below because losing the daemon is exactly what has to
-    // invalidate the results on screen.
+    // decides whether that needs a round trip.
     if (state.find?.buffer !== prev.find?.buffer) searches.typed();
     searches.settle();
+    // Both handles run outside the connection gate below, because losing the
+    // daemon is exactly what has to invalidate what is on screen: the search
+    // results describe a fleet we are no longer told about, and the transcript
+    // window is a position in a history the next connection re-reads.
+    transcripts.settle();
     publish();
     // One gate for every daemon-dependent effect, read off ClientState's
     // discriminant rather than a flag beside it. Without a snapshot there is
-    // nothing to fetch (the caches were dropped when the connection went), no
+    // nothing to fetch (the transcript was dropped when the connection went), no
     // session proven dead, and no queue that can be drained — an unknown fleet
     // is not an empty fleet, and treating it as one strands every queue.
     if (!connected()) return;
-    // Three transitions want the selected session's newest page, and only
-    // these three: a different session, a cache reset (which put every `head`
-    // back to `idle`), and regaining a snapshot after losing one. The reset a
-    // dropped connection performs deliberately does *not* refetch — there is
-    // nothing to ask — which is why regaining data has to be its own trigger.
-    if (
-      state.selectedId !== prev.selectedId ||
-      state.transcriptGen !== prev.transcriptGen ||
-      prev.fleet.tag !== "data"
-    ) {
-      loadHistory();
-    }
     if (sessionsRef(state) !== sessionsRef(prev)) {
       // Both hold work keyed by session: a request's guard, a scheduled mode
       // change. A session the daemon has stopped listing releases both.
@@ -814,16 +685,6 @@ export const mkFleetHandle = ({
     client.close().catch(() => {});
     term.exit();
   };
-
-  const echoLine = (sessionId: string, text: string): LogLine => ({
-    id: null, // locally synthesised — there is no durable row behind it
-    sessionId,
-    kind: "echo",
-    glyph: "›",
-    text: text.replace(/\s+/g, " ").trim(),
-    tone: "accent",
-    ts: Date.now(),
-  });
 
   /** `o` / `⌥o` dump: the selected session's whole log as a readable transcript. */
   const logText = (): string => transcriptText(sessionLog(state));
@@ -1644,15 +1505,9 @@ export const mkFleetHandle = ({
       box: enqueue(outboxOf(state.outbox, sessionId), text),
     });
     dispatch({ t: "pushHistory", text });
-    dispatch({
-      t: "echo",
-      line: {
-        ...echoLine(sessionId, text),
-        glyph: "▸",
-        tone: "dim",
-        text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
-      },
-    });
+    // No marker to add: the event pane derives one per queued message straight
+    // from the outbox, so it appears with this dispatch and disappears when the
+    // message goes on the wire.
     note(why, "dim");
   };
 
@@ -1994,13 +1849,8 @@ export const mkFleetHandle = ({
         if (base === 65) return planScrollBy(3); // wheel down → toward the end
         return;
       }
-      if (base === 64) {
-        return scrollUp(3); // wheel up → back in history
-      }
-      if (base === 65) {
-        logScroll = Math.max(0, logScroll - 3); // wheel down → toward live tail
-        return publish();
-      }
+      if (base === 64) return transcripts.scrollBy(3); // wheel up → back in history
+      if (base === 65) return transcripts.scrollBy(-3); // wheel down → toward the tail
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
       // or the mode chip. Only in browse — overlays own the screen.
       if (base === 0 && mouse[4] === "M" && (rawBtn & 32) === 0 && state.overlay.t === "browse") {
@@ -2241,31 +2091,13 @@ export const mkFleetHandle = ({
         return; // unbound modified keys — ignore
       }
     }
-    if (key.pageUp) {
-      return scrollUp(Math.max(1, logPage - 1));
-    }
-    if (key.pageDown) {
-      logScroll = Math.max(0, logScroll - Math.max(1, logPage - 1));
-      return publish();
-    }
-    // Home → the oldest line held (scrollUp clamps at the top and prefetches the
-    // next older history page as it lands there); End → back to the live tail.
-    if (key.home) {
-      return scrollUp(shownLogRows());
-    }
-    if (key.end) {
-      logScroll = 0;
-      // Paging back far enough evicts the newest end of the window, and live
-      // entries stop being folded in while that is true. Jumping to the tail is
-      // the action that undoes it: drop the older window and refetch the newest
-      // page, which resumes following.
-      if (sel && !transcriptFor(state, sel.id).following) {
-        dispatch({ t: "transcriptFollow", sessionId: sel.id });
-        loadHistory();
-        return;
-      }
-      return publish();
-    }
+    if (key.pageUp) return transcripts.scrollBy(Math.max(1, logPage - 1));
+    if (key.pageDown) return transcripts.scrollBy(-Math.max(1, logPage - 1));
+    // Home → the oldest line held (which prefetches the next older history page
+    // as it lands there); End → back to the live tail, reloading the newest page
+    // when the window has drifted off it.
+    if (key.home) return transcripts.toTop();
+    if (key.end) return transcripts.toTail();
     // ← / → move between the questions of a pending AskUserQuestion (the panel
     // previews whichever is selected; `a` answers it). Only while parked on a
     // multi-question call — otherwise the arrows drill into children, below.
@@ -2417,12 +2249,15 @@ export const mkFleetHandle = ({
       client.on("resync", () => {
         log?.info("resync");
         // The stream rolled past our seq without the connection dropping, so
-        // nothing else resets the caches: entries in the gap never arrived and
+        // nothing else drops the window: entries in the gap never arrived and
         // the transcript would hold a hole it cannot see.
-        dispatch({ t: "transcriptReset" });
+        dispatch({ t: "transcript", transcript: noTranscript });
       }),
       term.onResize(() => {
         dims = term.getSize();
+        // A narrower pane wraps into more rows, a wider one into fewer: the
+        // offset has to be re-clamped against what the pane now draws.
+        transcripts.resized();
         publish();
       }),
     ];
@@ -2441,7 +2276,7 @@ export const mkFleetHandle = ({
             s.status.kind === "working_background",
         );
       if (!animating) return;
-      if (transcriptFor(state, state.selectedId).lines.length > 3) tick = (tick + 1) % 100000;
+      if (transcriptLines(state.transcript).length > 3) tick = (tick + 1) % 100000;
       dispatch({ t: "expireNotice", now: Date.now() });
       publish(); // the tick bump alone needs a frame (spinner) even if nothing expired
     }, 120);
@@ -2452,6 +2287,7 @@ export const mkFleetHandle = ({
       // still on the wire, have nothing left to render into.
       modes.dispose();
       searches.dispose();
+      transcripts.dispose();
       for (const off of offs) off();
     };
   };

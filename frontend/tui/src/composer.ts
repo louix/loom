@@ -51,6 +51,28 @@ export const pending = (b: Outbox): readonly string[] => {
   return b.t === "held" ? [...b.rest] : [b.text, ...b.rest];
 };
 
+/**
+ * The messages a reader can still see waiting, oldest first — what the
+ * transcript marks as queued.
+ *
+ * Not the same set as {@link pending}: the message on the wire is left out,
+ * because the daemon is about to emit its own `user_message` for it and two
+ * lines for one message is worse than none. A held message is out for the same
+ * reason as in `pending` — it waits for the user, not for a turn — but the
+ * ones stacked behind it are still queued.
+ */
+export const waiting = (b: Outbox): readonly string[] => {
+  switch (b.t) {
+    case "idle":
+      return [];
+    case "queued":
+      return [b.text, ...b.rest];
+    case "sending":
+    case "held":
+      return [...b.rest];
+  }
+};
+
 /** Add `text` behind whatever is already outgoing. Blank text is not a message. */
 export const enqueue = (b: Outbox, raw: string): Outbox => {
   const text = raw.trim();
