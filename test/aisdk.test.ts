@@ -557,7 +557,7 @@ test("runTurn streams text + usage and captures the response messages", async ()
   assert.equal(appended.length >= 1, true);
 });
 
-test("runTurn splices a mid-turn injection in after the current tool result", async () => {
+test("runTurn carries multiple injections forward exactly once across subsequent steps", async () => {
   const prompts: string[][] = [];
   let n = 0;
   const model = new MockLanguageModelV3({
@@ -571,14 +571,14 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
         ),
       );
       const chunks: Chunk[] =
-        n === 1
+        n <= 3
           ? [
               { type: "stream-start", warnings: [] },
               { type: "response-metadata", id: "r1", modelId: "mock", timestamp: new Date(0) },
-              { type: "tool-input-start", id: "tc1", toolName: "ping" },
-              { type: "tool-input-delta", id: "tc1", delta: "{}" },
-              { type: "tool-input-end", id: "tc1" },
-              { type: "tool-call", toolCallId: "tc1", toolName: "ping", input: "{}" },
+              { type: "tool-input-start", id: `tc${n}`, toolName: "ping" },
+              { type: "tool-input-delta", id: `tc${n}`, delta: "{}" },
+              { type: "tool-input-end", id: `tc${n}` },
+              { type: "tool-call", toolCallId: `tc${n}`, toolName: "ping", input: "{}" },
               {
                 type: "finish",
                 finishReason: { unified: "tool-calls", raw: undefined },
@@ -602,7 +602,7 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
   }) as unknown as LanguageModel;
 
   const appended: ModelMessage[] = [];
-  let handed = false;
+  let handed = 0;
   const r = await runTurn({
     sessionId: "s1",
     model,
@@ -615,9 +615,9 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     abortSignal: new AbortController().signal,
     mapper: new AisdkEventMapper("s1", "mock"),
     drainInjections: () => {
-      if (handed) return [];
-      handed = true;
-      return [{ role: "user", content: "ALSO do X" }];
+      handed += 1;
+      if (handed > 2) return [];
+      return [{ role: "user", content: handed === 1 ? "ALSO do X" : "THEN do Y" }];
     },
     hooks: { emit: () => {}, appendMessages: (m) => appended.push(...m) },
   });
@@ -630,14 +630,31 @@ test("runTurn splices a mid-turn injection in after the current tool result", as
     stoppedEarly: false,
   });
   // the model's second request carried the injected user message
-  assert.equal(prompts.length, 2);
+  assert.equal(prompts.length, 4);
+  assert.deepEqual(prompts[2], [
+    "start",
+    "tool-call",
+    "tool-result",
+    "ALSO do X",
+    "tool-call",
+    "tool-result",
+    "THEN do Y",
+  ]);
+  assert.deepEqual(prompts[3], [...prompts[2]!, "tool-call", "tool-result"]);
   assert.equal(prompts[1]?.includes("ALSO do X"), true);
   // persisted order: tool call, tool result, the injection, then the reply
   const injIdx = appended.findIndex((m) => m.content === "ALSO do X");
   assert.equal(injIdx > 0, true);
   assert.equal(appended[injIdx - 1]?.role, "tool");
   assert.equal(appended.at(-1)?.role, "assistant");
-  assert.equal(appended.filter((m) => m.role === "user").length, 1);
+  assert.deepEqual(
+    appended.map((m) => m.role),
+    ["assistant", "tool", "user", "assistant", "tool", "user", "assistant", "tool", "assistant"],
+  );
+  assert.deepEqual(
+    appended.filter((m) => m.role === "user").map((m) => m.content),
+    ["ALSO do X", "THEN do Y"],
+  );
 });
 
 test("runTurn flags hitStepLimit when the model is still calling tools at the ceiling", async () => {

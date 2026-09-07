@@ -102,17 +102,6 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
   // means the loop was cut by `stopWhen`, not by the model deciding it was done.
   let lastStepReason: string | undefined;
 
-  // Messages this turn started from, before any generation. Captured on the
-  // first `prepareStep` so injections can be spliced at a stable offset.
-  let baseCount = -1;
-  const applied: Array<{ afterGen: number; msg: ModelMessage }> = [];
-
-  // How many messages the model has generated so far this turn. Each step
-  // reports only what *it* produced (v7 stopped handing out the running
-  // total), so the offset injections splice at is the sum across steps.
-  const genCount = (steps: ReadonlyArray<{ response: { messages: unknown[] } }>): number =>
-    steps.reduce((n, step) => n + step.response.messages.length, 0);
-
   // Set by the `shouldStopForContext` stop condition so the caller can tell a
   // context-driven segment end from the model finishing / the step ceiling.
   let stoppedForContext = false;
@@ -142,33 +131,15 @@ export const runTurn = async (args: TurnArgs): Promise<TurnResult> => {
       ],
       abortSignal: args.abortSignal,
       prepareStep: ({ steps, messages: stepMessages }) => {
-        const gen = genCount(steps);
-        if (baseCount < 0) baseCount = stepMessages.length - gen;
-
-        if (steps.length > 0) {
-          const fresh = args.drainInjections?.() ?? [];
-          for (const msg of fresh) applied.push({ afterGen: gen, msg });
-          if (fresh.length > 0) hooks.appendMessages(fresh);
-        }
-
-        // Sanitize every step, not just the turn's entry: a transcript loaded
-        // from the store can hold a string tool-call input written by an older
-        // Loom, and injections are spliced in mid-turn. (The case this was
-        // written for — a model poisoning its own transcript mid-turn — the SDK
-        // now neutralizes upstream, landing an unparseable input as `{}` plus a
-        // tool error rather than passing the raw text through.)
-        const repaired = repairMalformedToolInputs(stepMessages);
-
-        if (applied.length === 0) {
-          return repaired === stepMessages ? undefined : { messages: repaired };
-        }
-        const rebuilt = [...repaired];
-        let offset = 0;
-        for (const { afterGen, msg } of applied) {
-          rebuilt.splice(baseCount + afterGen + offset, 0, msg);
-          offset += 1;
-        }
-        return { messages: rebuilt };
+        // v7 carries this override into subsequent steps. Append only fresh
+        // injections, after the current tool results; replaying old injections
+        // duplicates them and can split a tool call from its result.
+        const fresh = steps.length > 0 ? (args.drainInjections?.() ?? []) : [];
+        if (fresh.length > 0) hooks.appendMessages(fresh);
+        const repaired = repairMalformedToolInputs(
+          fresh.length > 0 ? [...stepMessages, ...fresh] : stepMessages,
+        );
+        return repaired === stepMessages ? undefined : { messages: repaired };
       },
       onStepFinish: ({ response }) => {
         const generated = response.messages as ModelMessage[];
