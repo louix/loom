@@ -329,6 +329,8 @@ export interface LoomConfig {
     name: string;
     url: string;
     bearerTokenEnv: string;
+    /** Inline credential, when supplied, takes precedence over the environment. */
+    bearerToken?: string;
     defaultFor: McpCapability[];
   }>;
   titles: {
@@ -724,7 +726,7 @@ export const lintConfig = (
     }
   }
   for (const m of cfg.httpMcp) {
-    if (m.bearerTokenEnv && !env[m.bearerTokenEnv])
+    if (!m.bearerToken && m.bearerTokenEnv && !env[m.bearerTokenEnv])
       w.push(`MCP "${m.name}": $${m.bearerTokenEnv} is not set — session creation will fail`);
   }
   return w;
@@ -810,6 +812,8 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     }) ?? d.mcp;
   const httpMcp =
     entries("http-mcp")?.map((e) => {
+      if (e["bearer_token"] !== undefined && typeof e["bearer_token"] !== "string")
+        throw new Error("http-mcp bearer_token must be a string");
       if (e["bearer_token_env"] !== undefined && typeof e["bearer_token_env"] !== "string")
         throw new Error("http-mcp bearer_token_env must be a string");
       const url = required(e, "url");
@@ -830,6 +834,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         name: required(e, "name"),
         url,
         bearerTokenEnv: str(e["bearer_token_env"], ""),
+        ...(typeof e["bearer_token"] === "string" ? { bearerToken: e["bearer_token"] } : {}),
         defaultFor: defaults(e),
       };
     }) ?? d.httpMcp;

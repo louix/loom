@@ -42,6 +42,10 @@ default_for = ["read", "write", "edit"]`,
   );
   assert.deepEqual(config("command-mcp = []\nhttp-mcp = []").mcp, []);
   assert.deepEqual(config("").httpMcp, []);
+  const inline = config(http + '\nbearer_token = "inline-secret"');
+  assert.equal(inline.httpMcp[0]?.bearerToken, "inline-secret");
+  assert.ok(!lintConfig(inline, {}).some((s) => s.includes("SEARCH_CREDENTIAL")));
+  assert.throws(() => config(http + "\nbearer_token = 42"), /bearer_token/);
 });
 
 test("MCP configuration rejects obsolete syntax, ambiguous defaults, duplicate names and malformed entries", () => {

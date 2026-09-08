@@ -3201,7 +3201,8 @@ export class Daemon {
       };
     });
     const http: McpServerHandle[] = this.config.httpMcp.map((m) => {
-      const token = m.bearerTokenEnv ? Deno.env.get(m.bearerTokenEnv) : undefined;
+      const token =
+        m.bearerToken || (m.bearerTokenEnv ? Deno.env.get(m.bearerTokenEnv) : undefined);
       if (m.bearerTokenEnv && !token)
         throw new Error("MCP " + m.name + ": " + m.bearerTokenEnv + " is not set");
       return {
@@ -3262,7 +3263,7 @@ export class Daemon {
     });
 
     for (const m of this.config.httpMcp) {
-      const missing = m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);
+      const missing = !m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);
       mcp.push({
         name: m.name,
         command: "HTTP MCP",

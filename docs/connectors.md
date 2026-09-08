@@ -63,6 +63,7 @@ interface below remains the worker-side interface during this migration.
 
 Configure local processes with `[[command-mcp]]` (`name`, `command`, `args`) and
 remote servers with `[[http-mcp]]` (`name`, `url`, optional `bearer_token_env`).
+An inline `bearer_token` is also supported and takes precedence over the env var.
 Each active session gets a separate Deno relay for each HTTP mount. Command
 servers retain their existing launch behavior; networked stdio isolation is
 subsequent work. Both groups replace their own defaults when present; top-level

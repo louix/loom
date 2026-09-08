@@ -165,6 +165,7 @@ default_for = ["find", "grep"]
 # name = "kagi"
 # url = "https://mcp.kagi.com/mcp"
 # bearer_token_env = "KAGI_API_KEY"
+# bearer_token = "" # optional inline credential; takes precedence over the env var
 # default_for = ["web_search", "web_fetch"]
 
 [titles]
