@@ -9,11 +9,13 @@ import type {
 } from "@loom/core/types";
 import { mcpToolPreferences } from "@loom/runtime/instructions";
 import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
+import { startRuntimeMcp } from "./runtime-mcp.ts";
 
 export const withExternalMcp = async (
   create: CreateProvider,
   context: ConnectorContext,
   start = startMcpWorker,
+  startRuntime = startRuntimeMcp,
 ): Promise<AgentProvider> => {
   const base = await create(context);
   const open = async (
@@ -22,12 +24,22 @@ export const withExternalMcp = async (
   ): Promise<AgentSession> => {
     const workers: ManagedMcp[] = [];
     const cleanup = async () => {
-      await Promise.allSettled(workers.map((w) => w.close()));
+      const results = await Promise.allSettled(workers.map((w) => w.close()));
+      const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+      if (errors.length)
+        throw new AggregateError(
+          errors,
+          "MCP cleanup failed: " +
+            errors.map((e) => (e instanceof Error ? e.message : String(e))).join("; "),
+        );
     };
     try {
       const mount = async (handle: McpServerHandle): Promise<McpServerHandle> => {
-        if (handle.spec.transport !== "http") return handle;
-        const worker = await start(handle.name, handle.spec);
+        if (handle.spec.transport === "stdio") return handle;
+        const worker =
+          handle.spec.transport === "runtime"
+            ? await startRuntime(handle.name, handle.spec.runtime, input.cwd)
+            : await start(handle.name, handle.spec);
         workers.push(worker);
         return { ...handle, spec: worker.handle.spec };
       };

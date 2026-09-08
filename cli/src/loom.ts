@@ -26,6 +26,7 @@ commands:
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
+  runtime prepare|status|update [runtime]  manage optional packaged MCP runtimes
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -57,6 +58,16 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
+  runtime: `loom runtime prepare|status|update [runtime]
+
+  prepare                      fetch/build configured runtimes outside the daemon
+  status                       inspect prepared artifacts without network access
+  update <runtime>             explicitly prepare the current recipe again
+  --smolvm PATH                Nix-packaged smolvm executable to pin during preparation
+  --json                       machine-readable results
+
+  Built-in recipe: tilth. Custom Nix flake references must produce Loom runtime artifacts.
+  Updates retain previous generations for active sessions.`,
   run: `loom run <prompt...>  — start a session
 
   --provider P                 provider id (see \`loom providers\`); default from config
@@ -153,6 +164,7 @@ const main = async (): Promise<void> => {
     allowPositionals: true,
     options: {
       repo: { type: "string" },
+      smolvm: { type: "string" },
       status: { type: "string" },
       provider: { type: "string" },
       model: { type: "string" },
@@ -185,7 +197,26 @@ const main = async (): Promise<void> => {
     return;
   }
 
-  const repoRoot = values.repo ? values.repo : findRepoRoot();
+  const repoRoot =
+    values.repo ??
+    (() => {
+      try {
+        return findRepoRoot();
+      } catch (error) {
+        if (cmd === "runtime") return Deno.cwd();
+        throw error;
+      }
+    })();
+  if (cmd === "runtime") {
+    const { runtimeCommand } = await import("./runtime.ts");
+    writeOut(
+      await runtimeCommand(positionals.slice(1), repoRoot, {
+        json: values.json,
+        ...(values.smolvm ? { smolvm: values.smolvm } : {}),
+      }),
+    );
+    return;
+  }
   const { sock } = loomPaths(repoRoot);
 
   // `tail` and the TUI are the long-lived commands that want reconnect; the TUI

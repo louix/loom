@@ -42,6 +42,8 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
       .join(", ")} }`;
   const entries = new Map(
     servers.map((s) => {
+      if (s.spec.transport === "runtime")
+        throw new Error("Packaged MCP was not mounted by the daemon");
       if (s.spec.transport === "stdio") {
         const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "stdio" }>;
         const fields = [

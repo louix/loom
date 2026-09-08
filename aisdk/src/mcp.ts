@@ -76,6 +76,8 @@ export class McpHub {
     const readOnlyHints = new Map<string, boolean>();
 
     for (const h of handles) {
+      if (h.spec.transport === "runtime")
+        throw new Error("Packaged MCP was not mounted by the daemon");
       let client: experimental_MCPClient | undefined;
       try {
         client = await experimental_createMCPClient({

@@ -151,6 +151,11 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # default_for selects preferred capabilities, without renaming tools or schemas.
 [[command-mcp]]
 name = "tilth"
+# For a prepared, network-disabled VM, replace command/args below with:
+# runtime = "tilth"
+# isolation = "vm"
+# Then run: loom runtime prepare tilth
+# See docs/packaged-runtimes.md for installation and custom Nix artifacts.
 command = "tilth"
 args = ["--mcp", "--edit"]
 default_for = ["read", "write", "edit"]

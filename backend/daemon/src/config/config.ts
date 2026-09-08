@@ -324,7 +324,12 @@ export interface LoomConfig {
      */
     aisdk: Record<string, AisdkProfile>;
   };
-  mcp: Array<{ name: string; command: string; args?: string[]; defaultFor?: McpCapability[] }>;
+  mcp: Array<
+    { name: string; defaultFor?: McpCapability[] } & (
+      | { command: string; args?: string[] }
+      | { runtime: string; isolation: "vm" }
+    )
+  >;
   httpMcp: Array<{
     name: string;
     url: string;
@@ -800,6 +805,24 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   };
   const mcp =
     entries("command-mcp")?.map((e) => {
+      if ("runtime" in e) {
+        if (e["isolation"] !== "vm")
+          throw new Error('Packaged command-mcp requires isolation = "vm"');
+        if (["command", "args", "env", "network", "hosts", "mounts"].some((k) => k in e))
+          throw new Error(
+            "Packaged command-mcp uses manifest arguments, session workspace and no network; command/args/env/network/hosts/mounts are unsupported",
+          );
+        return {
+          name: required(e, "name"),
+          runtime: required(e, "runtime"),
+          isolation: "vm" as const,
+          defaultFor: defaults(e),
+        };
+      }
+      if ("isolation" in e && e["isolation"] !== "host")
+        throw new Error(
+          'Host command-mcp supports only isolation = "host"; VM execution requires runtime',
+        );
       const args = e["args"] ?? [];
       if (!Array.isArray(args) || !args.every((a) => typeof a === "string"))
         throw new Error("command-mcp args must be strings");

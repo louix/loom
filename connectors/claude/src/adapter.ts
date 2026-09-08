@@ -272,6 +272,8 @@ const userMessage = (text: string): SDKUserMessage => {
 const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> => {
   const out: Record<string, McpServerConfig> = {};
   for (const h of handles) {
+    if (h.spec.transport === "runtime")
+      throw new Error("Packaged MCP was not mounted by the daemon");
     if (h.spec.transport === "stdio") {
       out[h.name] = {
         type: "stdio",

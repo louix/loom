@@ -44,8 +44,10 @@ test(
   "the shipped default tilth command speaks MCP on stdio",
   { skip: onPath("tilth") ? false : "tilth is not installed" },
   async () => {
-    const { command, args: prefixArgs } = resolveMcpCommand(DEFAULT_CONFIG.mcp[0]?.command ?? "");
-    const args = [...prefixArgs, ...(DEFAULT_CONFIG.mcp[0]?.args ?? [])];
+    const mount = DEFAULT_CONFIG.mcp[0]!;
+    assert.ok("command" in mount);
+    const { command, args: prefixArgs } = resolveMcpCommand(mount.command);
+    const args = [...prefixArgs, ...(mount.args ?? [])];
     assert.equal(command, "tilth");
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     try {

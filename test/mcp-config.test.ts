@@ -32,7 +32,9 @@ default_for = ["read", "write", "edit"]`,
       defaultFor: ["web_search", "web_fetch"],
     },
   ]);
-  assert.deepEqual(resolveMcpSpec(cfg.mcp[0]!), {
+  const command = cfg.mcp[0]!;
+  assert.ok("command" in command);
+  assert.deepEqual(resolveMcpSpec(command), {
     command: "/path with spaces/tool",
     args: ["--mcp", "literal $HOME"],
   });

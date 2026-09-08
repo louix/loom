@@ -5,6 +5,7 @@ import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
+import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import { resolveMcpSpec } from "./mcp-fallback.ts";
 import { findClaudeOwner } from "./provider-recovery.ts";
 import {
@@ -3189,6 +3190,12 @@ export class Daemon {
   /** Vendor-neutral MCP handles from config; mounted into every session. */
   #mcpHandles(): McpServerHandle[] {
     const commands: McpServerHandle[] = this.config.mcp.map((m) => {
+      if ("runtime" in m)
+        return {
+          name: m.name,
+          ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
+          spec: { transport: "runtime", runtime: m.runtime, isolation: m.isolation },
+        };
       const { command, args, note } = resolveMcpSpec(m);
       if (note && !this.#tilthFallbackLogged) {
         this.#log.info("mcp command resolved", { name: m.name, note });
@@ -3250,17 +3257,39 @@ export class Daemon {
    * `providers.claude.disable_builtin`) — the daemon never imports them, so
    * they're spelled out here and flagged as indicative.
    */
-  #doctorReport(): DoctorReport {
-    const mcp: DoctorMcpServer[] = this.config.mcp.map((m) => {
-      const { command, args, note } = resolveMcpSpec(m);
-      return {
-        name: m.name,
-        command: m.command,
-        resolved: [command, ...args].join(" "),
-        status: mcpStatusOf(command),
-        note: note ?? "",
-      };
-    });
+  async #doctorReport(): Promise<DoctorReport> {
+    const mcp: DoctorMcpServer[] = await Promise.all(
+      this.config.mcp.map(async (m): Promise<DoctorMcpServer> => {
+        if ("runtime" in m) {
+          try {
+            const prepared = await resolveRuntime(m.runtime);
+            return {
+              name: m.name,
+              command: `runtime ${m.runtime}`,
+              resolved: prepared.manifest.entrypoint,
+              status: "ok",
+              note: "Prepared VM runtime; network disabled. VM boot checked at session startup.",
+            };
+          } catch (error) {
+            return {
+              name: m.name,
+              command: `runtime ${m.runtime}`,
+              resolved: "",
+              status: "missing",
+              note: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+        const { command, args, note } = resolveMcpSpec(m);
+        return {
+          name: m.name,
+          command: m.command,
+          resolved: [command, ...args].join(" "),
+          status: mcpStatusOf(command),
+          note: note ?? "",
+        };
+      }),
+    );
 
     for (const m of this.config.httpMcp) {
       const missing = !m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);

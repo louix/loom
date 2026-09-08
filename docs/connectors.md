@@ -62,6 +62,8 @@ interface below remains the worker-side interface during this migration.
 ### External MCP workers
 
 Configure local processes with `[[command-mcp]]` (`name`, `command`, `args`) and
+use `runtime = "tilth"` with `isolation = "vm"` for an optional
+[prepared VM runtime](packaged-runtimes.md). Configure
 remote servers with `[[http-mcp]]` (`name`, `url`, optional `bearer_token_env`).
 An inline `bearer_token` is also supported and takes precedence over the env var.
 Each active session gets a separate Deno relay for each HTTP mount. Command

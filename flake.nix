@@ -16,6 +16,7 @@
       revFor = "0.0.0-g" + (self.shortRev or self.dirtyShortRev or "unknown");
     in
     {
+      lib.mkRuntime = import ./packaging/runtimes/mk-runtime.nix;
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           # `corepack` ships a `pnpm` shim that reads package.json's
