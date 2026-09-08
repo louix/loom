@@ -47,12 +47,11 @@ remains daemon-owned in either topology; there is no silent isolation downgrade.
 
 ## Spike evidence and remaining gates
 
-The [packaged tilth MCP spike](../spikes/tilth-vm/README.md) builds a pinned
-runtime closure on the host, then runs it in a network-disabled smolvm with only
-that closure and a disposable workspace mounted. It records MCP read/edit/write/
-search, host-file denial, network controls, and normal shutdown checks. The
-[packaged runtime backend](packaged-runtimes.md) adds explicit preparation, pinned
-artifacts, per-session workers, cancellation forwarding and VM cleanup tests.
+The [packaged runtime backend](packaged-runtimes.md) supersedes the tilth MCP
+spike with explicit preparation, pinned artifacts, per-session workers and
+cancellation forwarding. Its maintained acceptance suite checks MCP read/edit/
+write/search, host-file denial, network controls, read-only runtime mounts, and
+normal/crash shutdown through the production launch policy.
 Networked command MCPs and packaged connector CLIs remain follow-up work.
 
 Reported spike results (not a complete security proof), using smolvm 1.8.1 and

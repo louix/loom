@@ -150,10 +150,18 @@ Run the opt-in KVM acceptance test after preparation:
 deno run -A scripts/test-runtime-vm.ts tilth
 ```
 
-It uses only disposable files and checks real MCP read/write through the daemon's
-launcher, normal close, daemon EOF, supervisor SIGKILL, and daemon EOF during boot.
-It also checks denial of unmounted host files and symlinks to them through the bridge.
-The original `spikes/tilth-vm/smoke.ts` additionally exercises network positive and
-negative controls, read-only closure mounts, hash edits and host-file/symlink denial.
+It uses only disposable files and checks tool discovery, read, hash edits, write
+and search through the daemon's launcher, plus normal close, daemon EOF,
+supervisor SIGKILL, and daemon EOF during boot. It also checks denial of unmounted
+host files and symlinks to them through the bridge.
+
+Guest-root probes use the production mount/environment policy to verify the
+read-only runtime closure, its exact store inventory, and denial of host files
+and the Nix daemon socket. Network controls require a non-loopback host IPv4
+address reachable from a guest: a temporary HTTP fixture must be reachable with
+that IP explicitly allowed, then unreachable with the default network policy.
+Host firewall rules can make the positive control fail. Failed runs retain their
+fixture paths for diagnosis. These checks replace the removed tilth spike suite.
+
 Tested here with Linux x86_64, tilth 0.10.1 and smolvm 1.8.1. Other architectures,
 networked command MCPs and packaged connector CLIs remain follow-up work.

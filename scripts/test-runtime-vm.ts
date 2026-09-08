@@ -7,10 +7,13 @@ import {
   type WorkerProcess,
 } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
+import { checkRuntimeIsolation } from "./runtime-vm-isolation.ts";
 const runtime = Deno.args[0] ?? "tilth";
-const { lock } = await resolveRuntime(runtime);
+const prepared = await resolveRuntime(runtime);
+const { lock } = prepared;
 const scratch = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-accept-" });
 const report = [];
+let completed = false;
 await Deno.writeTextFile(join(scratch, "host-only"), "outside-workspace-sentinel");
 try {
   for (const mode of ["close", "parent-eof", "worker-kill", "startup-eof"] as const) {
@@ -19,6 +22,10 @@ try {
     await Deno.mkdir(workspace);
     await Deno.writeTextFile(join(workspace, "code.ts"), "export const before = true;\n");
     await Deno.symlink(join(scratch, "host-only"), join(workspace, "outside-link"));
+    if (mode === "close") {
+      console.error("Testing guest network and filesystem isolation...");
+      report.push(await checkRuntimeIsolation(prepared, workspace, join(scratch, "host-only")));
+    }
     let child: WorkerProcess | undefined;
     let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
     let state = "";
@@ -66,6 +73,40 @@ try {
         arguments: { path: join(workspace, "code.ts") },
       });
       assert.match(JSON.stringify(read), /before = true/);
+      if (mode === "close") {
+        const listed = await rpc("tools/list");
+        for (const name of ["tilth_read", "tilth_write", "tilth_search"])
+          assert.ok(listed.tools.some((tool: { name: string }) => tool.name === name));
+        const text = read.content
+          .filter((c: { type: string }) => c.type === "text")
+          .map((c: { text: string }) => c.text)
+          .join("\n");
+        const anchor = text.match(/\b(1:[a-zA-Z0-9]+)\|/);
+        assert.ok(anchor, `Missing hashline anchor: ${text}`);
+        const edited = await rpc("tools/call", {
+          name: "tilth_write",
+          arguments: {
+            files: [
+              {
+                path: join(workspace, "code.ts"),
+                mode: "hash",
+                edits: [{ start: anchor[1], content: "export const before = false;" }],
+              },
+            ],
+          },
+        });
+        assert.ok(!edited.isError);
+        assert.equal(
+          await Deno.readTextFile(join(workspace, "code.ts")),
+          "export const before = false;\n",
+        );
+        const search = await rpc("tools/call", {
+          name: "tilth_search",
+          arguments: { query: "before", kind: "content", root: workspace },
+        });
+        assert.ok(!search.isError);
+        assert.match(JSON.stringify(search), /before = false/);
+      }
       for (const path of [join(scratch, "host-only"), join(workspace, "outside-link")]) {
         const denied = await rpc("tools/call", { name: "tilth_read", arguments: { path } });
         assert.equal(denied.isError, true);
@@ -123,7 +164,9 @@ try {
     }
   }
   console.log(JSON.stringify(report, null, 2));
+  completed = true;
 } finally {
-  // Reaping belongs to each worker. This directory contains test files only.
-  await Deno.remove(scratch, { recursive: true });
+  // Preserve fixtures on failure in case cleanup could not stop a mounted guest.
+  if (completed) await Deno.remove(scratch, { recursive: true });
+  else console.error(`Acceptance test failed; fixtures retained at ${scratch}`);
 }
