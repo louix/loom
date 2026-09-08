@@ -8,12 +8,14 @@
     lib.mkRuntime = import ./mk-runtime.nix;
     packages = forAll (system: let
       pkgs = tilth.inputs.nixpkgs.legacyPackages.${system};
+      gitShim = import ./git-shim.nix { inherit pkgs; };
       # Upstream's diff tests and runtime shell out to git.
       package = tilth.packages.${system}.default.overrideAttrs (old: {
+        patches = (old.patches or []) ++ [ ./tilth-git-errors.patch ];
         nativeCheckInputs = (old.nativeCheckInputs or []) ++ [ pkgs.gitMinimal ];
         nativeBuildInputs = (old.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
         postFixup = (old.postFixup or "") + ''
-          wrapProgram $out/bin/tilth --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.gitMinimal ]}
+          wrapProgram $out/bin/tilth --prefix PATH : ${pkgs.lib.makeBinPath [ gitShim ]}
         '';
       });
     in rec {

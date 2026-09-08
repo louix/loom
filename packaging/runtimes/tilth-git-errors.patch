@@ -1,0 +1,19 @@
+--- a/src/diff/mod.rs
++++ b/src/diff/mod.rs
+@@ -218,9 +218,13 @@
+         .output()
+         .map_err(|e| format!("failed to run git diff: {e}"))?;
+ 
+-    // git diff --no-index exits 1 when there are differences; that is normal.
+-    // For all other variants, a non-zero exit is unexpected but we still return
+-    // whatever stdout was produced so the caller can decide.
++    // Bridge denials, timeouts and Git failures must not look like a clean tree.
++    // git diff --no-index exits 1 for differences; preserve that special case.
++    if !output.status.success()
++        && !(matches!(source, DiffSource::Files(..)) && output.status.code() == Some(1))
++    {
++        return Err(format!("git diff failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
++    }
+     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+ }
+ 

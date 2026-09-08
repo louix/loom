@@ -1,5 +1,7 @@
-/** Experimental read-only Git capability. Not wired into daemon/runtime launches. */
+/** Read-only Git capability served by a separate, session-scoped host worker. */
 import { isAbsolute, join, resolve } from "node:path";
+import { readOnlyGitArgs } from "./arguments.ts";
+import { validateGitLayout } from "./layout.ts";
 
 const MAX_REQUEST = 4096;
 const MAX_OUTPUT = 64 * 1024;
@@ -17,6 +19,10 @@ export const gitArguments = function (value: unknown): string[] {
       throw new Error("unsupported field");
   };
   switch (r.op) {
+    case "git":
+      keys(["args", "cwd"]);
+      if (typeof r.cwd !== "string") throw new Error("Missing Git cwd");
+      return readOnlyGitArgs(r.args);
     case "status":
       keys([]);
       return ["status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all"];
@@ -128,6 +134,7 @@ export const startGitBridge = async function (options: GitBridgeOptions) {
 export const startPreparedGitBridge = async function (prepared: PreparedGitBridge) {
   const { workspace, gitDir, git, dir, shadow } = prepared;
   try {
+    await validateGitLayout(prepared);
     const env = {
       HOME: dir,
       XDG_CONFIG_HOME: dir,
@@ -156,6 +163,7 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
       const child = new Deno.Command(git, {
         args: [
           "--no-pager",
+          "--literal-pathspecs",
           `--git-dir=${shadow}`,
           `--work-tree=${workspace}`,
           "-c",
@@ -251,11 +259,12 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
           let args: string[];
           let response: unknown;
           try {
-            args = gitArguments(
-              JSON.parse(
-                new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, newline)),
-              ),
+            const request = JSON.parse(
+              new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, newline)),
             );
+            if (request?.op === "git" && request.cwd !== workspace)
+              throw new Error("Git bridge currently requires the session worktree root");
+            args = gitArguments(request);
           } catch {
             args = [];
             response = { version: 1, ok: false, error: "invalid-request" };

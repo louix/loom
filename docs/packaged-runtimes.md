@@ -83,8 +83,10 @@ packages.x86_64-linux.loom-runtime = loom.lib.mkRuntime {
 
 Package the executable's complete runtime dependencies, including programs it
 launches. Nix cannot discover arbitrary subprocesses looked up on PATH: wrap the
-executable to add those dependencies. Tilth's maintained recipe adds Git for its
-upstream tests and its diff tool, with tests left enabled.
+executable to add those dependencies. Tilth uses real Git for upstream tests and
+Loom's read-only Git shim at runtime, with tests left enabled. The artifact helper
+includes that shim and its closure; packages should preserve `/run/loom/bin` on
+PATH or explicitly wrap their Git calls with the shim.
 
 The maintained recipe is also an independent flake:
 
@@ -134,11 +136,13 @@ EOF, then explicitly stops/deletes any remaining private VM. The daemon also
 reaps after supervisor death. Cleanup has bounded retries for smolvm's asynchronous
 registry removal; unresolved state is retained with its path in the error.
 
-Linked Git worktrees need care: their `.git` file points outside the mounted
-workspace. Ordinary file tools work, but Git-backed operations cannot access that
-external metadata. This version does not mount additional repositories to fix
-that. Workspace mounts also do not hide secrets already stored inside the
-workspace itself.
+Supported linked Git worktrees automatically get a separate host Git worker and
+a dedicated vsock endpoint. Read-only Git operations use the guest shim; actual
+repository metadata stays outside the mount. Run `loom runtime update tilth` once
+for older prepared artifacts. See [session Git bridge](guest-host-bridge.md) for
+commands, layout checks, lifecycle and remaining limitations. Main checkouts with
+a `.git` directory are rejected rather than mounting their metadata. Workspace
+mounts do not hide secrets already stored inside the workspace itself.
 
 ## Verification
 
@@ -148,6 +152,7 @@ Run the opt-in KVM acceptance test after preparation:
 
 ```sh
 deno run -A scripts/test-runtime-vm.ts tilth
+deno run -A scripts/test-session-git-vm.ts tilth
 ```
 
 It uses only disposable files and checks tool discovery, read, hash edits, write

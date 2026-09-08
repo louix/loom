@@ -10,7 +10,6 @@ import { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
 import { checkRuntimeIsolation } from "./runtime-vm-isolation.ts";
 const runtime = Deno.args[0] ?? "tilth";
 const prepared = await resolveRuntime(runtime);
-const { lock } = prepared;
 const scratch = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-accept-" });
 const report = [];
 let completed = false;
@@ -138,22 +137,8 @@ try {
         } finally {
           clearTimeout(timer);
         }
-        // EOF cleanup must happen inside the supervisor, before daemon fallback.
-        if (mode === "parent-eof") {
-          const r = await new Deno.Command(lock.smolvm, {
-            args: ["machine", "ls", "--json"],
-            clearEnv: true,
-            env: {
-              HOME: join(state, "home"),
-              XDG_CACHE_HOME: join(state, "cache"),
-              XDG_DATA_HOME: join(state, "data"),
-              XDG_CONFIG_HOME: join(state, "config"),
-              PATH: "/usr/bin:/bin",
-            },
-          }).output();
-          assert.ok(r.success);
-          assert.deepEqual(JSON.parse(new TextDecoder().decode(r.stdout)), []);
-        }
+        // Actual parent-death reaping without daemon fallback is exercised by
+        // test-session-git-vm.ts. Here automatic cleanup may already remove state.
       }
       await worker.close();
       await assert.rejects(fetch(s.url));

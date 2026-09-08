@@ -5,17 +5,19 @@ import { vmArguments, reapVm, type VmBinding } from "../../../../runtime/src/pac
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
 import type { ManagedMcp } from "./mcp-worker.ts";
+import { startSessionGit } from "./git-worker.ts";
 
 export const startRuntimeMcp = async (
   name: string,
   runtime: string,
   workspace: string,
   launch: WorkerLauncher = launchLocalWorker,
+  startGit = startSessionGit,
 ): Promise<ManagedMcp> => {
   if (Deno.build.os !== "linux")
     throw new Error("Packaged MCP VMs currently require Linux with KVM");
   const { lock, manifest } = await resolveRuntime(runtime);
-  const cwd = resolve(workspace);
+  const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
   const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" });
   const binding: VmBinding = {
@@ -28,12 +30,13 @@ export const startRuntimeMcp = async (
     token: crypto.randomUUID() + crypto.randomUUID(),
   };
   let child: ReturnType<WorkerLauncher>;
+  let git: Awaited<ReturnType<typeof startSessionGit>>;
   try {
     vmArguments(binding);
-    // A symlink to / or /tmp must not bypass mount exclusions or expose the supervisor.
-    vmArguments({ ...binding, workspace: await Deno.realPath(cwd) });
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
+    git = await startGit(cwd, state, lock.artifact);
+    if (git) binding.gitSocket = git.socket;
     const base = mockLaunchSpec(state);
     child = launch({
       ...base,
@@ -50,6 +53,7 @@ export const startRuntimeMcp = async (
       },
     });
   } catch (error) {
+    await git?.close();
     await Deno.remove(state, { recursive: true });
     throw error;
   }
@@ -70,10 +74,28 @@ export const startRuntimeMcp = async (
         child.terminate();
         await frames.return(undefined).catch(() => {});
         // Covers SIGKILL/crash of the Deno supervisor as well as normal cleanup.
-        await reapVm(binding);
+        try {
+          await reapVm(binding);
+        } finally {
+          await git?.close();
+        }
         await Deno.remove(state, { recursive: true });
       }
     })());
+  // Either worker dying revokes the entire session capability; do not leave a
+  // persistent VM or native Git child behind after supervisor SIGKILL.
+  void child.exited
+    .then(
+      () => close(),
+      () => close(),
+    )
+    .catch(() => {});
+  void git?.exited
+    .then(
+      () => close(),
+      () => close(),
+    )
+    .catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const port = await Promise.race([

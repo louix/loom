@@ -9,7 +9,9 @@ export interface VmBinding {
   workspace: string;
   state: string;
   token: string;
+  gitSocket?: string;
 }
+export const sessionVmName = "loom-session";
 export const vmEnvironment = (state: string) => {
   return {
     HOME: join(state, "home"),
@@ -25,7 +27,7 @@ export const vmArguments = (b: VmBinding) => {
   if (
     !isAbsolute(b.workspace) ||
     b.workspace === "/" ||
-    [b.workspace, b.artifact, b.state].some((p) => /[:,\n\0]/.test(p))
+    [b.workspace, b.artifact, b.state].some((p) => /[:,;|\n\0]/.test(p))
   )
     throw new Error(
       "Unsupported VM mount path (must be absolute, non-root, without colon, comma or newline)",
@@ -50,18 +52,52 @@ export const vmArguments = (b: VmBinding) => {
     `${b.artifact}/nix/store:/nix/store:ro`,
     "-v",
     `${b.workspace}:${b.workspace}`,
+    ...(b.gitSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),
     "-w",
     b.workspace,
     "-e",
     "HOME=/tmp/loom-home",
     "-e",
     "XDG_CACHE_HOME=/tmp/loom-cache",
+    ...(b.gitSocket ? ["-e", "PATH=/run/loom/bin:/usr/bin:/bin"] : []),
     "--",
     b.manifest.entrypoint,
     ...b.manifest.args,
   ];
 };
-export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state">) => {
+export const vmCreateArguments = (b: VmBinding) => {
+  if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket))
+    throw new Error("Git endpoint must be in private VM state");
+  const args = vmArguments(b);
+  return [
+    "machine",
+    "create",
+    "--name",
+    sessionVmName,
+    ...args.slice(2, args.indexOf("--")).filter((a) => a !== "-i"),
+    "--mount-socket",
+    `${b.gitSocket}:/run/loom/git.sock`,
+  ];
+};
+export const vmExecArguments = (b: VmBinding) => [
+  "machine",
+  "exec",
+  "--name",
+  sessionVmName,
+  "-i",
+  "-w",
+  b.workspace,
+  "-e",
+  "HOME=/tmp/loom-home",
+  "-e",
+  "XDG_CACHE_HOME=/tmp/loom-cache",
+  "-e",
+  "PATH=/run/loom/bin:/usr/bin:/bin",
+  "--",
+  b.manifest.entrypoint,
+  ...b.manifest.args,
+];
+export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket">) => {
   const command = async (args: string[]) => {
     const child = new Deno.Command(b.smolvm, {
       args,
@@ -98,10 +134,17 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state">) => {
     const machines = await list();
     if (!machines.length) return;
     for (const m of machines) {
-      if (!m.ephemeral || !/^vm-[a-z0-9]+$/.test(m.name))
+      if (
+        !(m.ephemeral && /^vm-[a-z0-9]+$/.test(m.name)) &&
+        !(b.gitSocket && m.name === sessionVmName)
+      )
         throw new Error("Unexpected VM in private state; refusing to delete it");
       try {
         await command(["machine", "stop", "--name", m.name]);
+      } catch (error) {
+        lastError = error;
+      }
+      try {
         await command(["machine", "delete", "--name", m.name, "--force"]);
       } catch (error) {
         lastError = error;

@@ -1,129 +1,135 @@
-# Guest-to-host Git bridge
+# Session Git bridge
 
-The read-only prototype works with the installed smolvm 1.8.1. Its
-`machine create --mount-socket HOST:GUEST` forwards a chosen host Unix socket
-over vsock, with IP networking disabled. No smolvm patch or SSH forwarding is
-needed. The earlier investigation missed this option because it checked
-`machine run`, where the flag is absent.
+Packaged MCP runtimes now automatically get a read-only Git bridge when their
+workspace is a supported linked worktree. The guest uses an ordinary `git`
+command, supplied by the runtime artifact. Host commits and rebases remain
+immediately visible, preserving the existing host Git/lazygit workflow.
 
-This is opt-in test tooling and a standalone experimental host worker. It does
-not enable Git bridging in normal daemon or packaged MCP launches.
+## Use
 
-## Reproduce
-
-From the repository root with Nix, Deno, Git, smolvm and KVM available:
+Rebuild an existing runtime once to include the guest shim:
 
 ```sh
-nix build path:./packaging/runtimes#bridge-probe --out-link /tmp/loom-bridge-probe-runtime
-deno test -A test/git-bridge.test.ts
-deno run -A scripts/test-git-bridge-vm.ts /tmp/loom-bridge-probe-runtime "$(command -v smolvm)"
+loom runtime update tilth
 ```
 
-The integration test creates two disposable repositories, linked worktrees,
-host workers and VMs. No user repository or SSH agent is involved.
-A non-loopback host IPv4 address is needed for the HTTP positive control.
-Successful runs delete fixtures. Failed runs report retained repository fixture
-paths; VM state is removed only after successful reaping.
+Then start or resume a session using the VM runtime:
 
-## Implementation
+```toml
+[[command-mcp]]
+name = "tilth"
+runtime = "tilth"
+isolation = "vm"
+default_for = ["read", "write", "edit", "find", "grep"]
+```
+
+No socket path or Git bridge configuration is needed. Old prepared artifacts
+produce an actionable update error for Git worktrees. This applies to VM-backed
+MCPs; host connectors and host command MCPs keep their existing Git behavior.
+Directories without `.git` can still run file tools without a Git endpoint.
+A main checkout with a `.git` directory is rejected: enable session worktrees
+instead of exposing the repository metadata to a VM.
+
+## Supported commands
+
+Run commands at the session worktree root (`git -C ROOT ...` also works):
+
+- `git status`, including short/porcelain and branch forms.
+- `git diff`, `git diff HEAD`, `git diff --staged`, simple refs/ranges, selected
+  output flags and literal relative paths after `--`.
+- `git log`, with a bounded count and the short formats used by Tilth.
+- `git show REF:path` and `git show :path` for text blobs.
+- `git branch --show-current`; `git rev-parse --short HEAD`, `--show-toplevel`
+  and `--is-inside-work-tree`.
+
+Tilth's uncommitted/staged/ref diff and log operations use the shim. A small
+packaging patch makes Git failures surface as tool errors instead of looking
+like an empty diff. `git diff --no-index` is rejected because it would read
+arbitrary host files; Tilth can still read guest files directly.
+
+Staging, commits, checkout, rebase, config, remote operations, arbitrary config
+flags and Git aliases are rejected. The sole accepted config flag is Tilth's
+`-c core.quotePath=false`. Other working directories are rejected rather than
+silently returning results for the wrong location. Guest Git writes remain a
+separate policy expansion; code edits through file tools continue to work.
+
+## Isolation and lifecycle
 
 ```text
-guest socket client -> /run/loom/git.sock -> smolvm vsock
-  -> per-session host Unix socket -> standalone Deno worker -> constrained host Git
+guest git shim -> /run/loom/git.sock -> smolvm vsock
+  -> private host Unix socket -> per-session Deno Git worker -> constrained host Git
 ```
 
-`scripts/lib/bridge-vm.ts` uses create/start/exec/stop/delete in private state.
-The socket lives under guest `/run`, outside shared volumes. This avoids the
-shared-path collision described in [smolvm issue 864](https://github.com/smol-machines/smolvm/issues/864).
-Normal packaged runtimes still use ephemeral `machine run`; migrating their
-supervision is a separate change.
+The installed smolvm 1.8.1 already supports the required forwarding through
+`machine create --mount-socket`; it is absent from `machine run`. Git sessions
+therefore use create/start/exec and explicit stop/delete. IP networking remains
+disabled. The guest socket sits outside shared volumes, avoiding the shared-path
+collision described in [smolvm issue 864](https://github.com/smol-machines/smolvm/issues/864).
 
-The host selects the executable, workspace and Git admin/common directories.
-`prepareGitBridge` checks the linked-worktree backlink and common-directory
-relationship without trusting the guest's `.git` pointer. Its private metadata
-view contains trusted config and links to objects and refs. HEAD is refreshed
-atomically per request. Git reads the original worktree index with optional
-locks disabled. Objects are never copied; host ref changes are immediately visible.
+The daemon prepares a private metadata view and starts a separate Git worker.
+It checks the host worktree backlink and common-directory relationship before
+binding the endpoint. Guest requests cannot select a host repository or session.
+The view links objects and refs, refreshes HEAD atomically per request, and reads
+the original index without optional writes. Git objects are never copied.
 
-Original repo/worktree config, includes, hooks and `info/attributes` are excluded.
-The Git child gets a cleared environment, no pager/fsmonitor, no external
-diff/textconv, no replacement objects or lazy fetch, and no configured filters.
-This matters even for read-only commands.
+Original config/includes, worktree config, hooks and info/attributes are not
+loaded by command execution. The Git child gets a cleared environment and
+fixed arguments disabling pager, fsmonitor, external diff/textconv, replacement
+objects and lazy fetch. Configured filters are unavailable in the private view.
+The worker itself gets scoped Deno filesystem grants, the exact Git executable,
+and only its exact Unix socket network grant. Symlink preparation runs in the
+trusted supervisor because Deno requires unscoped grants to create symlinks.
+Native Git is not sandboxed by Deno; its restricted command policy remains an
+important host boundary.
 
-Symlink setup runs in the trusted test supervisor: Deno 2.9.5 requires unscoped
-filesystem grants for creating symlinks. The long-lived worker receives scoped
-read/write grants, a grant for the exact Git executable and a network grant for
-only its exact `unix:` socket. It has no IP grant or inherited host environment.
-These Deno grants do not sandbox the native Git child; the deliberately small
-command policy is the current boundary for that child.
+Parent EOF closes each worker, including during initialization. The VM supervisor
+kills its in-flight smolvm CLI before reaping, preventing a startup race. The
+daemon also kills worker process groups and reaps after supervisor death. A Git
+worker death closes the VM session as well. Cleanup failures retain VM state and
+surface an error; state is deleted only after reaping. After daemon death, the
+surviving supervisors reap the VM and revoke the endpoint; empty state directories
+can remain for later housekeeping. Simultaneous loss of the daemon and its VM
+supervisor still needs an external/restart janitor.
 
-`runtime/src/git-bridge/main.ts` reads a private host binding file, reports its
-socket on stdout and closes it on parent stdin EOF or SIGTERM. EOF during
-initialization leaves no ready endpoint. The directory is mode 0700 and socket 0600. Processes running as the same host user remain trusted.
+The real Git metadata is outside the guest mount. The worktree's small `.git`
+pointer file remains writable through the shared filesystem: replacing it cannot
+retarget an already-bound bridge, but can break ordinary host Git or a later
+resume. This does not yet provide a filesystem-level read-only `.git` pointer.
+Host tools still need to treat guest-written files as untrusted.
 
-## Protocol
+## Validation and limits
 
-One UTF-8 JSON line per connection, version 1:
+Supported repositories use SHA-1, file refs (loose or packed), linked worktrees
+and a normal index (versions 2–4). Startup validates repository format and index
+framing. SHA-256, reftable, split/sparse indexes and unknown extensions fail with
+an explanation. The usual `extensions.worktreeConfig` setting is supported;
+execution ignores its configuration. Submodule status is ignored, and LFS/filter
+semantics are not emulated. Validation describes the layout at startup; host
+changes to an unsupported layout while a session is running may cause Git errors.
 
-| Request                                            | Meaning                                      |
-| -------------------------------------------------- | -------------------------------------------- |
-| `{"version":1,"op":"status"}`                      | Porcelain status at the bound worktree root  |
-| `{"version":1,"op":"diff"}`                        | Unstaged diff                                |
-| `{"version":1,"op":"diff","staged":true}`          | Staged diff                                  |
-| `{"version":1,"op":"log","limit":10,"ref":"main"}` | Short log for a simple ref; defaults to HEAD |
+The socket accepts one version-1 JSON line per connection. Structured status,
+diff and log requests remain available; the shim sends `{version:1,op:"git",
+args:[...],cwd:"..."}`. Every argument is validated again on the host. Execution
+returns `{version:1,ok:true,code,stdout,stderr}`; Git's nonzero exit codes are
+preserved. Policy and limit failures return `ok:false`. Output is UTF-8 text.
 
-Execution returns `{version:1,ok:true,code,stdout,stderr}`; `code` is Git's exit
-code and can be nonzero. Rejections return
-`{version:1,ok:false,error:"invalid-request"}`. Execution/output-limit failures
-return `execution-failed` when the connection is still live. Unknown fields,
-raw arguments, cwd/session selectors, writes and revision expressions are rejected.
+Bounds: 4 KiB requests, 64 KiB combined Git output, eight active requests,
+five seconds per connection/execution, and at most 50 log entries. Larger diffs
+fail visibly; they are not truncated and presented as complete.
 
-Limits: 4 KiB request, 64 KiB combined output, eight active connections, five
-seconds per connection including execution. Oversized/timed-out connections
-close; timed-out Git children are killed. This is a small structured API, not
-yet a drop-in `git` executable. The native probe has its own smaller reply buffer.
+## Verification
 
-## Verified
+```sh
+deno test -A test/git-bridge.test.ts test/git-bridge-integration.test.ts
+# Requires a freshly prepared tilth runtime and KVM:
+deno run -A scripts/test-session-git-vm.ts tilth
+# Existing non-Git VM acceptance checks:
+deno run -A scripts/test-runtime-vm.ts tilth
+```
 
-Real Linux x86_64 VM checks passed with smolvm reporting 1.8.1:
-
-- Concurrent guests at the same guest socket path see their bound worktrees.
-- Status, diff and log work while host metadata and socket paths are unreachable
-  from the guest filesystem.
-- Guest `.git` replacement and request path overrides cannot retarget the service.
-- Host commits and a host-side rebase onto an advanced main are immediately
-  visible, without copying Git objects.
-- IP fails with `Network unreachable` while the socket works. An explicitly
-  IP-enabled VM reaches the same HTTP fixture as a positive control.
-- Closing worker stdin revokes access from the running guest.
-
-Host tests also cover executable config traps, malformed included config,
-external diff/textconv/filter traps, unchanged index, command rejection,
-output limits, idle-client cleanup and parent EOF during startup.
-
-## Remaining scope
-
-The tested layout is a normal SHA-1 linked worktree with loose/packed refs and
-normal index. Reftable, SHA-256, split/sparse indexes, submodule status, LFS
-filters and platform-specific repository settings are not supported by this
-prototype's view. Unsupported layouts need explicit validation before normal
-runtime integration. The private view intentionally changes configured Git
-behavior; it does not transparently implement arbitrary Git commands.
-
-Before enabling this for sessions:
-
-1. Add the guest Git shim and validate supported layouts. Keep actual metadata
-   outside guest mounts and preserve host access to the original worktree.
-2. Integrate explicit VM lifecycle supervision, parent-death cleanup and a reaper
-   for crashes/SIGKILL. The test helper reaps in `finally`; persistent machines
-   can otherwise survive the launching process.
-3. Add staging, commits and non-interactive rebase with adversarial tests for
-   refs, paths and helper execution. Guest-initiated rebase is not implemented.
-   Decide how allowed hooks execute inside the guest.
-
-## Earlier transport experiment
-
-`scripts/test-guest-bridge.ts` remains a separate historical probe. It shows
-that a shared socket inode alone cannot bridge separate kernels, while vsock
-can. That script uses `--ssh-agent` only with a dummy service and cleared
-environment. The Git prototype uses dedicated `--mount-socket` forwarding.
+The tests use disposable repositories. Session acceptance exercises Tilth diffs,
+the native shim, host commits/rebase, inaccessible host metadata, rejected writes,
+normal close, parent EOF, both worker crashes, startup EOF and parent SIGKILL.
+Earlier `test-git-bridge-vm.ts` checks concurrent endpoint routing and vsock with
+IP blocked against a positive control. `test-guest-bridge.ts` preserves the
+original transport experiment, whose SSH relay targets only a dummy endpoint.

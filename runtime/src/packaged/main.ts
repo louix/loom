@@ -2,7 +2,15 @@
 import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { stdioHttp } from "../mcp/stdio-http.ts";
 import { decodeManifest } from "./artifact.ts";
-import { vmArguments, vmEnvironment, reapVm, type VmBinding } from "./vm.ts";
+import {
+  vmArguments,
+  vmCreateArguments,
+  vmExecArguments,
+  sessionVmName,
+  vmEnvironment,
+  reapVm,
+  type VmBinding,
+} from "./vm.ts";
 const writer = new FrameWriter(Deno.stdout.writable);
 const frames = readFrames(Deno.stdin.readable, (v) => v as VmBinding);
 let binding: VmBinding | undefined;
@@ -33,8 +41,26 @@ try {
   const parent = frames.next().then((next) => {
     if (!next.done) throw new Error("VM worker already bound");
   });
+  if (b.gitSocket) {
+    for (const args of [vmCreateArguments(b), ["machine", "start", "--name", sessionVmName]]) {
+      child = new Deno.Command(b.smolvm, {
+        args,
+        cwd: b.state,
+        clearEnv: true,
+        env: vmEnvironment(b.state),
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      const output = child.output();
+      void output.catch(() => {});
+      const result = await Promise.race([output, parent.then(() => undefined)]);
+      if (!result) throw new Error("Parent closed during VM startup");
+      if (!result.success) throw new Error(new TextDecoder().decode(result.stderr));
+    }
+  }
   child = new Deno.Command(b.smolvm, {
-    args: vmArguments(b),
+    args: b.gitSocket ? vmExecArguments(b) : vmArguments(b),
     cwd: b.state,
     clearEnv: true,
     env: vmEnvironment(b.state),

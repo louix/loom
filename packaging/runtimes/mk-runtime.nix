@@ -1,7 +1,8 @@
 # A command MCP artifact contains executable data, never permission grants.
 { pkgs, package, executable, args ? [] }:
 let
-  closure = pkgs.closureInfo { rootPaths = [ package ]; };
+  gitShim = import ./git-shim.nix { inherit pkgs; };
+  closure = pkgs.closureInfo { rootPaths = [ package gitShim ]; };
   manifest = pkgs.writeText "loom-runtime.json" (builtins.toJSON {
     version = 1;
     system = pkgs.stdenv.hostPlatform.system;
@@ -15,5 +16,8 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
     cp -a "$path" "$out/nix/store/"
   done < ${closure}/store-paths
   cp ${closure}/store-paths $out/store-paths
+  mkdir -p $out/bin
+  ln -s ${gitShim}/bin/git $out/bin/git
+  echo 1 > $out/git-bridge-version
   cp ${manifest} $out/manifest.json
 ''
