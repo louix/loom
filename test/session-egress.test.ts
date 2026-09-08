@@ -37,3 +37,57 @@ Deno.test("session egress rejects alternate hosts, ports and IP addresses", asyn
     await Deno.remove(state, { recursive: true });
   }
 });
+
+for (const shutdown of [false, true]) {
+  Deno.test(`session egress aborts pending dial on ${shutdown ? "shutdown" : "deadline"} and holds its connection slot`, async () => {
+    const state = await Deno.makeTempDir({ dir: "/tmp" });
+    const socket = join(state, "proxy.sock");
+    const dialing = Promise.withResolvers<AbortSignal>();
+    let dials = 0;
+    const proxy = startEgress(socket, () => {}, {
+      timeoutMs: shutdown ? 10_000 : 250,
+      maxConnections: 1,
+      dial: (signal) => {
+        dials++;
+        dialing.resolve(signal);
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    });
+    const clients: Deno.Conn[] = [];
+    const request = async () => {
+      const client = await Deno.connect({ transport: "unix", path: socket });
+      clients.push(client);
+      await client.write(
+        new TextEncoder().encode("CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n"),
+      );
+      return client;
+    };
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const first = await request();
+      const signal = await dialing.promise;
+      const second = await request();
+      try {
+        assert.equal(await second.read(new Uint8Array(1024)), null);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.ConnectionReset)) throw error;
+      }
+      assert.equal(dials, 1);
+      await Promise.race([
+        shutdown ? proxy.close() : first.read(new Uint8Array(1024)),
+        new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("dial did not abort")), 2000);
+        }),
+      ]);
+      assert(signal.aborted);
+      await proxy.close(); // idempotent
+    } finally {
+      clearTimeout(deadline);
+      for (const client of clients) client.close();
+      await proxy.close();
+      await Deno.remove(state, { recursive: true });
+    }
+  });
+}

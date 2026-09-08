@@ -27,13 +27,15 @@ The script optionally accepts the smolvm executable as its second argument.
 It uses `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the existing access token
 in `CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude`). It does not print
 credentials or modify the host Claude profile. A private copy is mounted read-only
-and removed on normal cleanup. Claude can read its own guest credentials; this
-experiment does not attempt to hide API credentials from the agent.
+and removed on shutdown, startup failure or parent death. Claude can read its own
+guest credentials; this experiment does not attempt to hide API credentials from
+the agent.
 
 This is a **live** acceptance test that consumes Claude usage: Claude creates a file and commits it
 in a temporary linked worktree. The test also checks that real host metadata and
-the host credential file are absent, direct IP connections fail, and a proxy
-request to `example.com:443` is denied. Failed Git fixtures are retained without
+the host credential file are absent, direct IP connections report an explicit
+network-unreachable error (a timeout is inconclusive and fails the test), and a
+proxy request to `example.com:443` is denied. Failed Git fixtures are retained without
 the temporary credential copy. The normal test suite covers proxy denial cases
 without making API requests.
 
@@ -47,8 +49,35 @@ This is an explicit experiment, not a default connector launcher. Existing
 Claude sessions continue using the current host worker. The Claude artifact is
 not pulled into the default Loom package.
 
+`launchSessionVm` now returns the existing `WorkerProcess` contract. The live test
+uses this launcher rather than owning the VM itself. A detached host supervisor
+owns the Git worker, CONNECT proxy and VM. Parent EOF is observed during startup
+and execution; Git worker or guest-exec failure also stops the session. Normal
+termination requests cleanup, with a bounded grace period before forced termination.
+If the supervisor is killed, the surviving parent stops its process group and reaps
+the VM. If the parent is killed, the supervisor observes EOF and performs cleanup.
+
+Credentials cross a private bootstrap pipe and are written only once the supervisor
+is watching its parent. Cleanup attempts each revocation even if stopping/reaping
+fails: it removes the credential copy and closes the capabilities independently.
+Other state is retained on cleanup failure for diagnosis. Simultaneously killing
+both parent and supervisor, or losing the host, still needs a startup orphan sweep;
+there is no claim of recovery from those cases yet.
+
+Run the lifecycle acceptance checks without live credentials:
+
+```sh
+nix develop --command deno run -A scripts/test-claude-vm-lifecycle.ts \
+  /tmp/loom-claude-session-artifact /path/to/smolvm
+```
+
+These exercise normal close, startup EOF (including after Git startup), guest-exec,
+Git-worker and supervisor SIGKILL, and actual parent SIGKILL during startup and after
+worker initialization. Regression tests cover proxy cancellation/connection limits
+and credential revocation when VM cleanup fails.
+
 Production work remains: per-session durable profile/history and resume; MCP
 endpoint forwarding into the guest; daemon launcher selection; moving the egress
-proxy into a scoped worker; and parent-death/forced-crash cleanup for this combined
-launcher. The test runner currently has host permissions and cleans up on normal
-exit/error; do not treat it as the finished daemon supervision boundary.
+proxy into a scoped worker; and recovery after loss of both owner processes. The
+supervisor is trusted host infrastructure and currently runs with full Deno
+permissions. This does not yet provide the intended network-free daemon boundary.

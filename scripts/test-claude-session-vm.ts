@@ -3,19 +3,10 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { gitFixture } from "./lib/git-bridge-fixture.ts";
-import { startSessionGit } from "../backend/daemon/src/daemon/git-worker.ts";
+import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
-import { inspectArtifact } from "../runtime/src/packaged/artifact.ts";
-import {
-  vmCreateArguments,
-  vmExecArguments,
-  vmEnvironment,
-  sessionVmName,
-  reapVm,
-  type VmBinding,
-} from "../runtime/src/packaged/vm.ts";
-import { startEgress } from "../runtime/src/session-vm/egress.ts";
+import { vmEnvironment, sessionVmName } from "../runtime/src/packaged/vm.ts";
 
 const artifact = await Deno.realPath(Deno.args[0] ?? "/tmp/loom-claude-session-artifact");
 const smolvmPath =
@@ -34,17 +25,10 @@ const smolvmPath =
 assert(smolvmPath, "Run in nix develop, or pass the smolvm executable as the second argument");
 const smolvm = await Deno.realPath(smolvmPath);
 const f = await gitFixture();
-const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-claude-vm-" });
-let git: Awaited<ReturnType<typeof startSessionGit>>;
-let egress: ReturnType<typeof startEgress> | undefined;
+let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
 let session: RemoteWorkerSession | undefined;
-let process: Deno.ChildProcess | undefined;
-let binding: VmBinding | undefined;
 let passed = false;
-const attempts: Array<{ host: string; allowed: boolean }> = [];
 try {
-  for (const name of ["home", "cache", "data", "config", "private"])
-    await Deno.mkdir(join(state, name), { mode: 0o700 });
   const auth: Record<string, string> = {};
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   const token = Deno.env.get("CLAUDE_CODE_OAUTH_TOKEN");
@@ -60,23 +44,9 @@ try {
     );
     auth.CLAUDE_CODE_OAUTH_TOKEN = credentials.claudeAiOauth.accessToken;
   }
-  await Deno.writeTextFile(join(state, "private/auth.json"), JSON.stringify(auth), { mode: 0o600 });
-  egress = startEgress(join(state, "egress.sock"), (host, allowed) => {
-    attempts.push({ host, allowed });
-    console.error(`egress ${allowed ? "allowed" : "denied"}: ${host}`);
-  });
-  git = await startSessionGit(f.workspace, state, artifact);
-  assert(git);
-  binding = {
-    version: 1,
-    artifact,
-    smolvm,
-    manifest: await inspectArtifact(artifact),
-    workspace: f.workspace,
-    state,
-    token: crypto.randomUUID(),
-    gitSocket: git.socket,
-  };
+  worker = await launchSessionVm({ workspace: f.workspace, artifact, smolvm, auth });
+  const { binding } = worker;
+  const state = binding.state;
   const command = async (args: string[]) => {
     const output = await new Deno.Command(smolvm, {
       args,
@@ -89,48 +59,12 @@ try {
     assert.equal(output.code, 0, new TextDecoder().decode(output.stderr));
     return new TextDecoder().decode(output.stdout);
   };
-  const create = vmCreateArguments(binding);
-  create[create.indexOf("--mem") + 1] = "2048";
-  create.push(
-    "-v",
-    `${state}/private:/run/loom/private:ro`,
-    "--mount-socket",
-    `${state}/egress.sock:/run/loom/egress.sock`,
-  );
-  await command(create);
-  await command(["machine", "start", "--name", sessionVmName]);
-  console.error("VM ready: no guest IP networking; starting Claude worker");
   const connected = await RemoteWorkerSession.connect(
     "vm-live-test",
     "claude",
     mockLaunchSpec(f.workspace),
-    () => {
-      process = new Deno.Command(smolvm, {
-        args: vmExecArguments(binding!),
-        clearEnv: true,
-        env: vmEnvironment(state),
-        stdin: "piped",
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
-      // Do not echo raw vendor stderr, which may contain credential-bearing diagnostics.
-      void process.stderr.pipeTo(new WritableStream({ write() {} }));
-      const child = process;
-      return {
-        input: child.stdin,
-        output: child.stdout,
-        exited: child.status,
-        pid: child.pid,
-        terminate: () => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            /* exited */
-          }
-        },
-      };
-    },
-    30_000,
+    () => worker!,
+    120_000,
     {
       connector: "@loom/connector-claude",
       config: { cliPath: "", configDir: "/tmp/loom-home/.claude" },
@@ -149,10 +83,15 @@ try {
     const bytes = new Uint8Array(1024); const n = await conn.read(bytes);
     if (!new TextDecoder().decode(bytes.subarray(0,n)).includes("403 Forbidden")) throw new Error("Unapproved proxy destination accessible");
     conn.close();
-    await Promise.race([
-      Deno.connect({hostname:"1.1.1.1",port:443}).then(c => {c.close(); throw new Error("Direct guest networking accessible");}, () => {}),
-      new Promise(resolve => setTimeout(resolve,1500))
-    ]);
+    let timer;
+    try {
+      await Promise.race([
+        Deno.connect({hostname:"1.1.1.1",port:443}).then(c => {c.close(); throw new Error("Direct guest networking accessible");}, error => {
+          if (!/network is unreachable|networkunreachable/i.test(String(error))) throw error;
+        }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Direct IP probe timed out: isolation result inconclusive")), 1500); })
+      ]);
+    } finally { clearTimeout(timer); }
     console.log("Host metadata, direct IP and unapproved proxy destination blocked");
     Deno.exit(0);
   `;
@@ -196,23 +135,17 @@ try {
     "hello from isolated Claude\n",
   );
   assert.equal(await f.git("-C", f.workspace, "log", "-1", "--format=%s"), "isolated Claude proof");
+  const { network: attempts } = await worker.status();
   assert(attempts.some((a) => a.allowed));
   console.log(JSON.stringify({ passed: true, network: attempts, hostVisibleCommit: true }));
   passed = true;
 } finally {
-  await session?.close().catch(() => {});
-  if (process) {
-    try {
-      process.kill("SIGKILL");
-    } catch {
-      /* exited */
-    }
-    await process.status;
+  try {
+    if (session) await session.close();
+  } finally {
+    worker?.terminate();
+    await worker?.cleanup?.();
   }
-  if (binding) await reapVm(binding);
-  await egress?.close();
-  await git?.close();
-  await Deno.remove(state, { recursive: true });
   if (passed) await f.close();
   else console.error(`Retained non-secret Git fixture: ${f.root}`);
 }
