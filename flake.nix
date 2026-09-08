@@ -46,6 +46,10 @@
         pkgs:
         rec {
           default = loom;
+          claude-session-runtime = import ./packaging/runtimes/claude.nix {
+            inherit pkgs;
+            loom = loom.override { withTilth = false; };
+          };
           tilth-runtime = (import ./packaging/runtimes/tilth.nix {
             inherit tilth;
             system = pkgs.stdenv.hostPlatform.system;
