@@ -71,10 +71,9 @@ export const mcpConfig = (servers: McpServerHandle[], search?: SearchConfig): st
   return `{ ${[...entries.entries()].map(([name, config]) => `${value(name)} = ${config}`).join(", ")} }`;
 };
 
-/** Every spawn always gets an explicit, full environment — the current process
- *  env plus `CODEX_HOME` (so it reads the exact directory Loom resolved) and,
- *  when configured, Kagi's bearer token. Never partial: a merge starting from
- *  `undefined` would silently drop inherited `PATH` et al. */
+/** Preserve the existing native environment, but omit the configured search
+ *  credential and inject the session relay token. Native host authority remains
+ *  until the ChatGPT connector migration and VM isolation. */
 const launchOptions = (
   servers: McpServerHandle[],
   search: SearchConfig | undefined,
@@ -95,7 +94,12 @@ const launchOptions = (
     ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
   ],
   env: {
-    ...Deno.env.toObject(),
+    ...Object.fromEntries(
+      Object.entries(Deno.env.toObject()).filter(
+        ([name]) =>
+          name !== "KAGI_API_KEY" && name !== search?.credentialEnv && name !== KAGI_TOKEN_ENV,
+      ),
+    ),
     CODEX_HOME: codexHome.dir,
     ...(search?.backend === "kagi" ? { [KAGI_TOKEN_ENV]: search.apiKey } : {}),
   },

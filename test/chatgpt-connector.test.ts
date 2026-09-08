@@ -1845,3 +1845,44 @@ const fakeProcess = () => {
   });
   return { proc, stdout, stderr, written };
 };
+
+test("native ChatGPT launch receives a relay token without the configured upstream Kagi env", async () => {
+  const names = ["KAGI_API_KEY", "LOOM_TEST_CUSTOM_SEARCH_KEY"];
+  const saved = names.map((name) => Deno.env.get(name));
+  for (const name of names) Deno.env.set(name, "upstream-secret");
+  const specs: CodexLaunchSpec[] = [];
+  let session: Awaited<ReturnType<typeof CodexAppServerSession.start>> | undefined;
+  try {
+    session = await CodexAppServerSession.start(
+      { sessionId: "relay-env", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+      {
+        dir: "/tmp/loom-codex-launch-injected",
+        authJsonPath: "/tmp/loom-codex-launch-injected/auth.json",
+      },
+      FAKE_CODEX,
+      {
+        backend: "kagi",
+        apiKey: "local-relay-token",
+        apiBase: "http://127.0.0.1:23456",
+        maxResults: 5,
+        credentialEnv: names[1]!,
+      },
+      false,
+      undefined,
+      (spec) => {
+        specs.push(spec);
+        return spawnCodex(spec);
+      },
+    );
+    assert.equal(specs[0]!.env.KAGI_API_KEY, undefined);
+    assert.equal(specs[0]!.env.LOOM_TEST_CUSTOM_SEARCH_KEY, undefined);
+    assert.equal(specs[0]!.env.LOOM_CODEX_KAGI_API_KEY, "local-relay-token");
+    assert.doesNotMatch(JSON.stringify(specs), /upstream-secret/);
+  } finally {
+    await session?.close();
+    for (const [i, name] of names.entries()) {
+      if (saved[i] === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, saved[i]!);
+    }
+  }
+});

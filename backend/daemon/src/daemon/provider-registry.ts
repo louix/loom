@@ -25,6 +25,7 @@ import type {
 } from "@loom/core/connector";
 import type { TranscriptStore } from "@loom/core/transcript";
 import { makeLogger } from "@loom/core/logger";
+import { withExternalMcp } from "./mcp-provider.ts";
 
 const MOCK = "@loom/connector-mock";
 const CLAUDE = "@loom/connector-claude";
@@ -129,7 +130,7 @@ export class ProviderRegistry {
       );
     }
     const { createProvider } = await load();
-    const provider = await createProvider(this.#contextFor(id));
+    const provider = await withExternalMcp(createProvider, this.#contextFor(id));
     this.#loaded.add(pkg);
     return provider;
   }
@@ -217,7 +218,13 @@ export class ProviderRegistry {
     if (s.backend === "none") return undefined;
     const apiKey = resolveApiKey(s);
     if (!apiKey) return undefined;
-    return { backend: s.backend, apiKey, apiBase: s.apiBase, maxResults: s.maxResults };
+    return {
+      backend: s.backend,
+      apiKey,
+      apiBase: s.apiBase,
+      maxResults: s.maxResults,
+      ...(s.apiKeyEnv ? { credentialEnv: s.apiKeyEnv } : {}),
+    };
   }
 
   /** Providers that have actually been constructed (for shutdown / status). */

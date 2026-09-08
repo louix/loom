@@ -55,9 +55,41 @@ discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
 compaction, persisted SDK rewind, resume, profile sharing and process cleanup.
 This does not validate live provider authentication or token refresh.
 
-See [the staged worker plan](connector-worker-plan.md) for subsequent provider,
-external MCP and daemon/TUI network-isolation work. The connector-authoring
+See [the staged worker plan](connector-worker-plan.md) for subsequent provider
+and daemon/TUI network-isolation work. The connector-authoring
 interface below remains the worker-side interface during this migration.
+
+### External MCP workers
+
+The daemon gives each active session a separate Deno relay process for each HTTP
+MCP mount. `[search] backend = "kagi"` uses this path automatically: AI SDK
+sessions retain `web_search` / `web_fetch`, ChatGPT mounts the relay through its
+native MCP client, and Claude receives a `kagi` MCP mount. Discovery and title
+jobs do not start these workers. Local stdio MCP servers retain their existing
+launch behavior; networked stdio servers are a subsequent migration.
+
+Only the relay receives the upstream URL and HTTP credentials, over private
+stdin after a version handshake. Its launch policy grants the configured host
+and port plus an ephemeral loopback listener; it has no inherited environment,
+filesystem, subprocess, FFI or system grants. The connector receives a loopback
+HTTP endpoint and a random per-worker bearer token. This is an MCP transport,
+not a daemon admin endpoint. The URL and upstream credentials cannot be changed
+by requests. Redirects, browser Origin requests and sibling tokens are rejected.
+The proxy forwards MCP session/protocol headers and streams responses with
+backpressure. Requests are limited to 1 MiB, responses to 8 MiB, concurrency to
+32 and request/stream lifetime to 60 seconds.
+
+Close, connector event-stream completion and failed session construction release
+the relay. Unexpected relay exit closes its owning session and emits a fatal
+diagnostic; no tool call is retried. Daemon pipe EOF stops the relay, with a
+one-second shutdown limit. Resume creates fresh endpoints and tokens. The daemon
+supervises processes over stdio and does not perform their upstream HTTP calls.
+
+These are local Deno workers, not containers or microVMs yet. Loopback endpoints
+will need guest routing when the launcher gains VM support. The daemon still
+resolves credentials; unmigrated connectors still share its process, and native
+CLIs still have host authority. Removing the explicit Kagi key from connector
+configuration does not prevent native code from reading host credentials.
 
 A **connector** is a workspace member that teaches Loom to drive one kind of
 model backend:
@@ -226,7 +258,8 @@ Loom replaces the app-server's `mcp_servers` table for every Code Mode session
 with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
 back through Loom's existing permission UI. When `[search] backend = "kagi"`,
-Loom also mounts Kagi's hosted MCP server using its configured key. Codex's
+Loom also mounts a session relay to Kagi's hosted MCP server; the relay holds the
+configured key and Codex receives only its local access token. Codex's
 native web search remains enabled by default; set
 `codex_builtin_web_search = false` to use Kagi alone.
 

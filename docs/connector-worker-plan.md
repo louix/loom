@@ -20,8 +20,11 @@ This is a planning document, not an implemented isolation guarantee.
 
 Implementation status: mock workers and the Claude migration are implemented on
 their review branches. See `docs/connectors.md` for the current execution grants,
-POSIX process-group cleanup and validation limits. Other connector migrations,
-external MCP isolation and daemon/TUI network removal remain subsequent work.
+POSIX process-group cleanup and validation limits. Other connector migrations
+and daemon/TUI network removal remain subsequent work. HTTP MCP mounts and Kagi
+now use per-session Deno relays; networked stdio MCP servers and container/VM
+backends remain subsequent work. See `docs/connectors.md` for their grants and
+the remaining native/ambient-credential limitations.
 
 ## Ownership and topology
 
