@@ -24,6 +24,18 @@
         args = [ "--mcp" "--edit" ];
       };
       tilth = package;
+      # Explicit test artifact; never selected by normal runtime preparation.
+      bridge-probe = import ./mk-runtime.nix {
+        inherit pkgs;
+        executable = "loom-bridge-probe";
+        package = pkgs.runCommand "loom-bridge-probe" {
+          nativeBuildInputs = [ pkgs.stdenv.cc ];
+        } ''
+          mkdir -p $out/bin
+          cp ${./bridge-probe.c} bridge-probe.c
+          cc -std=c11 -O2 -g0 -Wall -Wextra -Werror bridge-probe.c -o $out/bin/loom-bridge-probe
+        '';
+      };
     });
   };
 }
