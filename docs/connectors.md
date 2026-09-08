@@ -1,5 +1,30 @@
 # Connectors
 
+## Worker migration
+
+The CLI's mock/fake connector now runs through `WorkerProvider`: a short-lived
+capability probe followed by one local Deno child per active session. Tests can
+still construct `FakeProvider` directly. Claude and the other production
+connectors retain their existing in-process path until their migration lands.
+
+The private protocol is in `core/src/worker.ts`; the worker entrypoint and framed
+transport live in `runtime/src/worker/`. The daemon owns the remote proxy and
+launcher in `backend/daemon/src/daemon/worker-{provider,launch}.ts`. Stdout carries
+only versioned NDJSON frames. Session snapshots are cached in the proxy, updated
+before command acknowledgements; events are ordered and bounded without silent
+dropping. Worker exit fails pending requests without replaying them.
+
+The mock launcher uses cached dependencies, a clean environment and an explicit
+source-read grant, with no network, write, environment, subprocess or FFI grants.
+It requires the source/runtime artifacts and dependencies to be available locally.
+The supervisor terminates the mock child on close or connection failure; native
+descendant supervision must be implemented before migrating Claude. No microVM
+or native subprocess confinement is claimed by this initial implementation.
+
+See [the staged worker plan](connector-worker-plan.md) for subsequent provider,
+external MCP and daemon/TUI network-isolation work. The connector-authoring
+interface below remains the worker-side interface during this migration.
+
 A **connector** is a workspace member that teaches Loom to drive one kind of
 model backend:
 

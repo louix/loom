@@ -20,6 +20,7 @@
     "./provider-id": "./src/provider-id.ts",
     "./version": "./src/version.ts",
     "./transcript": "./src/transcript.ts",
-    "./connector": "./src/connector.ts"
+    "./connector": "./src/connector.ts",
+    "./worker": "./src/worker.ts"
   }
 }
