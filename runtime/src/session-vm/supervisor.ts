@@ -1,5 +1,6 @@
 /** Trusted host supervisor. Its stdin lifetime owns the VM and both capabilities. */
 import { join } from "node:path";
+import { writeSessionAuth, type SessionAuth } from "./auth.ts";
 import { startSessionGit } from "../../../backend/daemon/src/daemon/git-worker.ts";
 import { startEgress } from "./egress.ts";
 import { cleanupSessionVm } from "./cleanup.ts";
@@ -19,7 +20,7 @@ clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
 const { binding, auth, allowRepoPrograms } = first.value as {
   binding: VmBinding;
-  auth: { ANTHROPIC_API_KEY?: string; CLAUDE_CODE_OAUTH_TOKEN?: string };
+  auth: SessionAuth;
   allowRepoPrograms: boolean;
 };
 let child: Deno.ChildProcess | undefined;
@@ -91,9 +92,7 @@ try {
   for (const name of ["home", "cache", "data", "config", "private"])
     await Deno.mkdir(join(binding.state, name), { mode: 0o700 });
   if (ended) throw new Error("Parent closed before credential setup");
-  await Deno.writeTextFile(join(binding.state, "private/auth.json"), JSON.stringify(auth), {
-    mode: 0o600,
-  });
+  await writeSessionAuth(join(binding.state, "private"), auth);
   git = await startSessionGit(
     binding.workspace,
     binding.state,

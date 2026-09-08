@@ -7,12 +7,20 @@ import { inspectArtifact } from "../../../../runtime/src/packaged/artifact.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
+import {
+  sessionAuth,
+  writeSessionAuth,
+  type SessionAuth,
+} from "../../../../runtime/src/session-vm/auth.ts";
+import type { ClaudeAuthOwner } from "./claude-auth.ts";
 
 export interface SessionVmOptions {
   workspace: string;
   artifact: string;
   smolvm: string;
-  auth: { ANTHROPIC_API_KEY?: string; CLAUDE_CODE_OAUTH_TOKEN?: string };
+  auth?: SessionAuth;
+  /** Shared by sessions using the same provider profile; caller owns its lifetime. */
+  authOwner?: ClaudeAuthOwner;
   allowRepoPrograms?: boolean;
 }
 export interface SessionVmStatus {
@@ -36,6 +44,11 @@ export const launchSessionVm = async (
     status(): Promise<SessionVmStatus>;
   }
 > => {
+  if (options.auth && options.authOwner)
+    throw new Error("Choose static auth or a credential owner");
+  const auth = sessionAuth(
+    options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
+  );
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
   const workspace = await Deno.realPath(options.workspace);
@@ -85,15 +98,20 @@ export const launchSessionVm = async (
     child.stdin.write(
       JSON.stringify({
         binding,
-        auth: {
-          ANTHROPIC_API_KEY: options.auth.ANTHROPIC_API_KEY,
-          CLAUDE_CODE_OAUTH_TOKEN: options.auth.CLAUDE_CODE_OAUTH_TOKEN,
-        },
+        auth,
         allowRepoPrograms: options.allowRepoPrograms ?? false,
       }) + "\n",
     );
     child.stderr.on("data", () => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const ended = new AbortController();
+    void exited.then(
+      () => ended.abort(),
+      () => ended.abort(),
+    );
+    let unsubscribe: (() => Promise<void>) | undefined;
+    let subscribing: Promise<void> | undefined;
+    let publication: Promise<void> = Promise.resolve();
     const killGroup = () => {
       if (!child.pid) return;
       try {
@@ -107,6 +125,8 @@ export const launchSessionVm = async (
       (cleanup ??= (async () => {
         await exited.catch(() => {});
         clearTimeout(timer);
+        await unsubscribe?.();
+        await publication.catch(() => {});
         // A killed supervisor cannot reap: stop its native CLI group before fallback.
         killGroup();
         try {
@@ -126,7 +146,7 @@ export const launchSessionVm = async (
       })());
     void exited.then(clean, clean).catch(() => {});
     let stopping = false;
-    return {
+    const worker = {
       binding,
       status: async () => JSON.parse(await Deno.readTextFile(join(state, "status.json"))),
       input: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
@@ -142,6 +162,34 @@ export const launchSessionVm = async (
       },
       cleanup: clean,
     };
+    if (options.authOwner) {
+      subscribing = (async () => {
+        // Wait until the supervisor has written its initial credential snapshot.
+        const deadline = Date.now() + 15_000;
+        for (;;) {
+          if (ended.signal.aborted) return;
+          try {
+            await Deno.stat(join(state, "private/auth.json"));
+            break;
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          if (Date.now() > deadline) throw new Error("Session credentials were not initialized");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        unsubscribe = await options.authOwner!.subscribe(
+          async (value) => {
+            if (ended.signal.aborted) return;
+            publication = writeSessionAuth(join(state, "private"), value);
+            await publication;
+          },
+          () => worker.terminate(),
+        );
+        if (ended.signal.aborted) await unsubscribe();
+      })();
+      void subscribing.catch(() => worker.terminate());
+    }
+    return worker;
   } catch (error) {
     await remove(state);
     throw error;

@@ -81,3 +81,12 @@ endpoint forwarding into the guest; daemon launcher selection; moving the egress
 proxy into a scoped worker; and recovery after loss of both owner processes. The
 supervisor is trusted host infrastructure and currently runs with full Deno
 permissions. This does not yet provide the intended network-free daemon boundary.
+
+## Renewable authentication
+
+`launchSessionVm` accepts a shared `ClaudeAuthOwner` instead of static `auth`.
+This keeps refresh tokens in the host profile, refreshes through the pinned Claude
+CLI before expiry, and distributes access-only snapshots to active sessions.
+See [the auth implementation and live acceptance check](claude-auth-spike.md#implemented-credential-owner).
+The original live experiment above uses a static snapshot; the auth acceptance
+check exercises renewal and distribution to two VMs.

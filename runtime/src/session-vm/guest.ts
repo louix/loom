@@ -1,6 +1,11 @@
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
-const auth = JSON.parse(await Deno.readTextFile("/run/loom/private/auth.json"));
-for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"])
+import { sessionAuth } from "./auth.ts";
+const auth = sessionAuth(JSON.parse(await Deno.readTextFile("/run/loom/private/auth.json")));
+if (auth.claudeAiOauth) {
+  await Deno.mkdir("/tmp/loom-home/.claude", { recursive: true });
+  await Deno.symlink("/run/loom/private/auth.json", "/tmp/loom-home/.claude/.credentials.json");
+}
+for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] as const)
   if (typeof auth[key] === "string") Deno.env.set(key, auth[key]);
 Deno.env.set("HTTPS_PROXY", "http://127.0.0.1:3128");
 Deno.env.set("HTTP_PROXY", "http://127.0.0.1:3128");
