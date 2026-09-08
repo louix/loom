@@ -7,8 +7,7 @@ worker. Host command MCPs remain available through explicit `command` entries.
 
 ## Use tilth
 
-The Linux development shell (`nix develop`) includes smolvm. Outside that shell,
-install a Nix-packaged smolvm, then configure:
+The default Linux Nix package bundles Tilth's runtime and smolvm. Configure:
 
 ```toml
 [[command-mcp]]
@@ -22,10 +21,24 @@ Replace the old tilth `command` entry; do not keep both with the same name.
 The runtime supplies its own `--mcp --edit` arguments. `default_for` remains a
 capability preference, not a tool-name or schema adapter.
 
+Installed Loom is ready to use this runtime immediately; no separate preparation
+or host Nix invocation happens at session launch. `nix profile upgrade loom` builds
+and selects Loom, Tilth and smolvm together. Profile generations retain the older
+bundle for existing sessions and rollback; restart the daemon/resume sessions to
+use the new package. The package wrapper selects its immutable bundle ahead of any
+older development pin. Bundling does not enable Tilth unless it is configured.
+
+For source-checkout development, the Linux `nix develop` shell includes smolvm:
+
 ```sh
-loom runtime prepare
+deno task runtime:update  # rebuild Tilth and every configured packaged runtime
 loom runtime status
 ```
+
+The task accepts an optional runtime name. It uses the pinned recipes; it does not
+bump upstream source revisions. Custom runtimes can still be prepared explicitly
+with `loom runtime prepare <runtime>`. Bundled runtimes are updated by upgrading
+Loom; `loom runtime update tilth` explains this when invoked from an installed bundle.
 
 Preparation finds smolvm on PATH and pins its real Nix store executable. If it
 isn't on PATH, pass `--smolvm /nix/store/.../bin/smolvm`. You can prepare just one
@@ -34,9 +47,10 @@ repository, using the user config, and never connect to or start the daemon.
 `--json` produces structured results. `status` reports missing artifacts with a
 nonzero exit status. The doctor view includes prepared-runtime diagnostics.
 
-Preparation is the network-enabled step. It invokes Nix, builds/downloads the
+For development/custom runtimes, preparation is the network-enabled step. It invokes Nix, builds/downloads the
 runtime closure, validates its manifest, and roots both the artifact and smolvm
-against Nix garbage collection. Nothing runs Nix or downloads dependencies when
+against Nix garbage collection. Loom passes `--extra-experimental-features "nix-command flakes"`
+for builds, so global feature settings are unnecessary. Nothing runs Nix or downloads dependencies when
 a session starts. If an artifact or backend is missing, the session fails with
 an actionable error; there is no fallback to host execution.
 
@@ -139,8 +153,8 @@ registry removal; unresolved state is retained with its path in the error.
 
 Supported linked Git worktrees automatically get a separate host Git worker and
 a dedicated vsock endpoint. Controlled Git operations use the guest shim; actual
-repository metadata stays outside the mount. Run `loom runtime update tilth` once
-for older prepared artifacts. See [session Git bridge](guest-host-bridge.md) for
+repository metadata stays outside the mount. Upgrade the Loom package, or use `deno task runtime:update` in a development
+checkout, for older artifacts. See [session Git bridge](guest-host-bridge.md) for
 commands, layout checks, lifecycle and remaining limitations. Main checkouts with
 a `.git` directory are rejected rather than mounting their metadata. Workspace
 mounts do not hide secrets already stored inside the workspace itself.

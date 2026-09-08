@@ -173,3 +173,36 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
   assert.ok(!launched[1]?.closed);
   await b.close();
 });
+
+test("bundles take precedence, reject mutable updates, and never hide broken package metadata", async () => {
+  const { bundledRuntime } = await import("../runtime/src/packaged/artifact.ts");
+  const home = await Deno.makeTempDir();
+  const before = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
+  const file = join(home, "bundle.json");
+  try {
+    Deno.env.set("LOOM_BUNDLED_RUNTIMES", file);
+    const lock = {
+      version: 1,
+      source: "tilth",
+      artifact: `/nix/store/${"a".repeat(32)}-missing-bundle`,
+      smolvm: `/nix/store/${"b".repeat(32)}-smolvm/bin/smolvm`,
+      preparedAt: "bundled",
+    };
+    await Deno.writeTextFile(file, JSON.stringify({ tilth: lock }));
+    assert.deepEqual(await bundledRuntime("tilth"), lock);
+    assert.equal(await bundledRuntime("external"), undefined);
+    await assert.rejects(prepareRuntime("tilth", { home, update: true }), /bundled.*upgrade loom/);
+    // A broken bundle is an installation error, not permission to use a mutable pin.
+    const current = join(home, await runtimeKey("tilth"), "current");
+    await Deno.mkdir(current, { recursive: true });
+    await Deno.writeTextFile(join(current, "lock.json"), "invalid development pin");
+    await assert.rejects(resolveRuntime("tilth", home), /Upgrade the Loom Nix package/);
+    await assert.rejects(resolveRuntime("external", home), /Run loom runtime prepare/);
+    await Deno.writeTextFile(file, JSON.stringify({ tilth: null }));
+    await assert.rejects(resolveRuntime("tilth", home), /Invalid bundled runtime entry/);
+  } finally {
+    if (before === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
+    else Deno.env.set("LOOM_BUNDLED_RUNTIMES", before);
+    await Deno.remove(home, { recursive: true });
+  }
+});

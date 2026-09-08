@@ -22,7 +22,7 @@ export const startSessionGit = async (
       throw new Error("missing shim");
   } catch {
     throw new Error(
-      "Prepared runtime lacks the Git bridge shim. Run loom runtime update for this runtime.",
+      "Runtime lacks the current Git bridge shim. Upgrade the Loom Nix package, or run loom runtime update for a development runtime.",
     );
   }
   let git = "";

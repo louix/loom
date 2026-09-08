@@ -6,6 +6,7 @@ import { loadConfig } from "../../backend/daemon/src/config/config.ts";
 import { userConfigPath } from "../../backend/daemon/src/scaffold.ts";
 import {
   inspectArtifact,
+  bundledRuntime,
   resolveRuntime,
   runtimeHome,
   runtimeKey,
@@ -36,6 +37,13 @@ export const prepareRuntime = async (
   source: string,
   opts: { home?: string; smolvm?: string; update?: boolean } = {},
 ) => {
+  if (await bundledRuntime(source)) {
+    if (opts.update)
+      throw new Error(
+        `Runtime ${source} is bundled with Loom; update the Loom Nix package (nix profile upgrade loom) instead.`,
+      );
+    return await resolveRuntime(source);
+  }
   const home = opts.home ?? runtimeHome();
   if (!opts.update) {
     let exists = false;
@@ -97,6 +105,8 @@ export const prepareRuntime = async (
   const generation = await Deno.makeTempDir({ dir: parent, prefix: "generation-" });
   try {
     await checked("nix", [
+      "--extra-experimental-features",
+      "nix-command flakes",
       "build",
       "--no-write-lock-file",
       "--out-link",
@@ -142,8 +152,12 @@ export const runtimeCommand = async (
   const config = loadConfig(join(repoRoot, ".loom/config.toml"), userConfigPath());
   const sources = name
     ? [name]
-    : [...new Set(config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : [])))];
-  if (action === "update" && !name) throw new Error("Usage: loom runtime update <runtime>");
+    : [
+        ...new Set([
+          ...(action === "update" ? ["tilth"] : []),
+          ...config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : [])),
+        ]),
+      ];
   const rows = [];
   for (const source of sources) {
     try {

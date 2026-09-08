@@ -74,10 +74,27 @@ export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest
     throw new Error("Runtime entrypoint is not executable");
   return manifest;
 };
+/** A package-owned manifest takes precedence over mutable development pins. */
+export const bundledRuntime = async (source: string): Promise<RuntimeLock | undefined> => {
+  const file = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
+  if (!file) return undefined;
+  const runtimes = JSON.parse(await Deno.readTextFile(file));
+  if (!runtimes || typeof runtimes !== "object" || Array.isArray(runtimes))
+    throw new Error("Invalid bundled runtime manifest");
+  if (!Object.hasOwn(runtimes, source)) return undefined;
+  const lock = runtimes[source];
+  if (!lock || typeof lock !== "object" || Array.isArray(lock))
+    throw new Error(`Invalid bundled runtime entry for ${source}`);
+  return lock as RuntimeLock;
+};
 export const resolveRuntime = async (source: string, home = runtimeHome()) => {
+  let bundled = false;
   try {
     const current = join(home, await runtimeKey(source), "current");
-    const lock = JSON.parse(await Deno.readTextFile(join(current, "lock.json"))) as RuntimeLock;
+    const bundle = await bundledRuntime(source);
+    bundled = bundle !== undefined;
+    const lock =
+      bundle ?? (JSON.parse(await Deno.readTextFile(join(current, "lock.json"))) as RuntimeLock);
     if (
       lock.version !== 1 ||
       lock.source !== source ||
@@ -90,7 +107,7 @@ export const resolveRuntime = async (source: string, home = runtimeHome()) => {
     return { lock, manifest };
   } catch (cause) {
     throw new Error(
-      `Runtime ${source} is not ready: ${cause instanceof Error ? cause.message : cause}. Run loom runtime prepare.`,
+      `Runtime ${source} is not ready: ${cause instanceof Error ? cause.message : cause}. ${bundled ? "Upgrade the Loom Nix package to repair its bundled runtime." : "Run loom runtime prepare."}`,
       { cause },
     );
   }

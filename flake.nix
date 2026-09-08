@@ -5,8 +5,10 @@
   # This revision packages smolvm 1.8.1; upstream's v1.8.1 tag still packages 1.8.0.
   inputs.smolvm.url = "github:smol-machines/smolvm/703f12b038014fc832dc03f9b7d85669f496acdb";
 
+  inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
+
   outputs =
-    { self, nixpkgs, smolvm }:
+    { self, nixpkgs, smolvm, tilth }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -44,6 +46,19 @@
         pkgs:
         rec {
           default = loom;
+          tilth-runtime = (import ./packaging/runtimes/tilth.nix {
+            inherit tilth;
+            system = pkgs.stdenv.hostPlatform.system;
+          }).tilth-runtime;
+          bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON {
+            tilth = {
+              version = 1;
+              source = "tilth";
+              artifact = "${tilth-runtime}";
+              smolvm = "${smolvm.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/smolvm";
+              preparedAt = "bundled";
+            };
+          });
 
           # A fixed-output derivation holding a populated `DENO_DIR`: every
           # npm tarball + esm module `deno.lock` pins, fetched once under a
@@ -164,7 +179,8 @@
                   --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
-                  --set LOOM_BUILD_VER ${finalAttrs.version}
+                  --set LOOM_BUILD_VER ${finalAttrs.version} \
+                  ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"}
               done
 
               runHook postInstall

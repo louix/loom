@@ -7,10 +7,11 @@ immediately visible, preserving the existing host Git/lazygit workflow.
 
 ## Use
 
-Rebuild an existing runtime once to include the guest shim:
+The Linux Nix package includes a compatible runtime. Upgrade it with
+`nix profile upgrade loom`. In a source checkout, rebuild development runtimes with:
 
 ```sh
-loom runtime update tilth
+deno task runtime:update
 ```
 
 Then start or resume a session using the VM runtime:
