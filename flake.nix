@@ -2,9 +2,11 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # This revision packages smolvm 1.8.1; upstream's v1.8.1 tag still packages 1.8.0.
+  inputs.smolvm.url = "github:smol-machines/smolvm/703f12b038014fc832dc03f9b7d85669f496acdb";
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, smolvm }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -27,6 +29,8 @@
             pkgs.corepack
             pkgs.git
             pkgs.deno
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            smolvm.packages.${pkgs.stdenv.hostPlatform.system}.default
           ];
 
           shellHook = ''

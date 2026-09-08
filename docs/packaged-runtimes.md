@@ -7,7 +7,8 @@ worker. Host command MCPs remain available through explicit `command` entries.
 
 ## Use tilth
 
-Install a Nix-packaged smolvm, then configure:
+The Linux development shell (`nix develop`) includes smolvm. Outside that shell,
+install a Nix-packaged smolvm, then configure:
 
 ```toml
 [[command-mcp]]
