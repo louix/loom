@@ -1,5 +1,11 @@
 # Isolation plan
 
+> Near-term direction: [Connector worker plan](connector-worker-plan.md).
+> Start with one local Deno worker per session, retaining connector filesystem
+> and selected-host access; isolate external MCPs next, then remove daemon/TUI
+> network permissions. The stricter topology and ordering below are deferred
+> and do not describe the current implementation target.
+
 Implement this after [provider parity](chatgpt-provider-plan.md). That change set
 supplies local, session-bound tool dispatch, injectable process launch, explicit
 provider/workspace paths and separate session/thread/process lifetimes. This
