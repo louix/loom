@@ -47,6 +47,12 @@ remains daemon-owned in either topology; there is no silent isolation downgrade.
 
 ## Spike evidence and remaining gates
 
+The [packaged tilth MCP spike](../spikes/tilth-vm/README.md) builds a pinned
+runtime closure on the host, then runs it in a network-disabled smolvm with only
+that closure and a disposable workspace mounted. It records MCP read/edit/write/
+search, host-file denial, network controls, and normal shutdown checks. Production
+worker integration and crash/cancellation cleanup remain separate gates.
+
 Reported spike results (not a complete security proof), using smolvm 1.8.1 and
 the standalone Codex 0.153.2 build. The spike files may need bringing over from
 their development branch: `spikes/microvm-providers/run.sh` and
