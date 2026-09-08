@@ -57,6 +57,8 @@ export interface ConnectorConfig {
   includeUsage?: boolean;
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
   cliPath?: string;
+  /** Operator-selected Deno network hosts for a connector worker. */
+  workerAllowedHosts?: string[];
   /**
    * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
    * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache

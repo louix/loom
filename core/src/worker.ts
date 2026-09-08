@@ -7,9 +7,10 @@ import type {
   CreateSessionOptions,
   ProviderCapabilities,
   SessionRef,
+  DiscoveredModel,
 } from "./types.ts";
 
-export const WORKER_VERSION = 1;
+export const WORKER_VERSION = 2;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
@@ -17,9 +18,14 @@ export interface WorkerBinding {
   generation: string;
   providerId: string;
   sessionId: string;
-  connector: "@loom/connector-mock";
+  connector: "@loom/connector-mock" | "@loom/connector-claude";
   config: ConnectorConfig;
+  role: WorkerRole;
+  baseBranch?: string;
 }
+
+export type WorkerRole = "session" | "title" | "discovery" | "enumeration" | "capabilities";
+export type WorkerProfile = Pick<WorkerBinding, "connector" | "config" | "baseBranch">;
 
 type SessionMethod = Exclude<keyof AgentSession, "id" | "providerRef" | "events" | "snapshot">;
 type SessionCommand = {
@@ -29,6 +35,8 @@ export type WorkerCommand =
   | { method: "initialize"; args: [WorkerBinding] }
   | { method: "create"; args: [CreateSessionOptions] }
   | { method: "resume"; args: [SessionRef] }
+  | { method: "listModels"; args: [] }
+  | { method: "listPersistedSessions"; args: [] }
   | SessionCommand;
 export type WorkerRequest = { kind: "request"; id: number } & WorkerCommand;
 export type WorkerFrame =
@@ -37,6 +45,8 @@ export type WorkerFrame =
   | { kind: "response"; id: number; error?: { code: "operation_failed"; message: string } }
   | { kind: "state"; snapshot: AdapterSnapshot }
   | { kind: "event"; seq: number; event: HarnessEvent }
+  | { kind: "models"; id: number; models: DiscoveredModel[] }
+  | { kind: "sessions"; id: number; sessions: SessionRef[] }
   | { kind: "end" };
 
 const record = (v: unknown): v is Record<string, unknown> =>
@@ -140,9 +150,13 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
         str(b.generation) &&
         str(b.providerId) &&
         str(b.sessionId) &&
-        b.connector === "@loom/connector-mock" &&
+        ["session", "title", "discovery", "enumeration", "capabilities"].includes(String(b.role)) &&
+        optional(b.baseBranch, str) &&
+        ["@loom/connector-mock", "@loom/connector-claude"].includes(String(b.connector)) &&
         record(b.config) &&
-        Object.keys(b.config).length === 0;
+        Object.entries(b.config).every(
+          ([k, v]) => ["cliPath", "configDir", "promptCacheTtl"].includes(k) && str(v),
+        );
       break;
     }
     case "create":
@@ -178,6 +192,8 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
       break;
     case "interrupt":
     case "close":
+    case "listModels":
+    case "listPersistedSessions":
       valid = a.length === 0;
       break;
   }
@@ -199,6 +215,25 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
       valid =
         id(v.id) &&
         optional(v.error, (e) => record(e) && e.code === "operation_failed" && str(e.message));
+      break;
+    case "models":
+      valid =
+        id(v.id) &&
+        Array.isArray(v.models) &&
+        v.models.every(
+          (m) =>
+            record(m) &&
+            str(m.id) &&
+            optional(m.label, str) &&
+            optional(m.context, finite) &&
+            optional(m.supportsEffort, (x) => typeof x === "boolean") &&
+            optional(m.effortLevels, strings) &&
+            optional(m.defaultEffort, str),
+        );
+      break;
+    case "sessions":
+      valid =
+        id(v.id) && Array.isArray(v.sessions) && v.sessions.every((s) => sessionOptions(s, true));
       break;
     case "ready": {
       const c = v.capabilities;
@@ -239,9 +274,8 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
     }
     case "event": {
       const e = v.event;
-      // The initial mock emits this subset. Expand alongside each connector's
-      // migration, with decoders for the fields its consumers actually use.
       if (!id(v.seq) || !record(e) || !str(e.sessionId) || !finite(e.ts)) break;
+      if (!optional(e.agentId, str) || !optional(e.ordinal, finite)) break;
       switch (e.type) {
         case "assistant_text":
         case "thinking":
@@ -270,7 +304,51 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
           valid = state(e.status);
           break;
         case "usage":
-          valid = tokens(e.tokens) && finite(e.contextUsed) && finite(e.contextLimit);
+          valid =
+            tokens(e.tokens) &&
+            finite(e.contextUsed) &&
+            finite(e.contextLimit) &&
+            optional(e.costDeltaUsd, finite) &&
+            optional(e.cacheTtlMinutes, finite);
+          break;
+        case "tool_call":
+          valid = str(e.id) && str(e.name) && "input" in e;
+          break;
+        case "tool_result":
+          valid = str(e.id) && typeof e.ok === "boolean" && "output" in e;
+          break;
+        case "answer":
+          valid = str(e.id) && str(e.text);
+          break;
+        case "context":
+          valid = finite(e.contextUsed) && optional(e.contextLimit, finite);
+          break;
+        case "compact_progress":
+          valid = finite(e.elapsedMs) && finite(e.generated) && finite(e.before);
+          break;
+        case "subagent_started":
+          valid = str(e.subagentId) && str(e.name);
+          break;
+        case "subagent_stopped":
+          valid = str(e.subagentId);
+          break;
+        case "background_tasks":
+          valid =
+            Array.isArray(e.tasks) &&
+            e.tasks.every(
+              (t) =>
+                record(t) &&
+                str(t.id) &&
+                str(t.title) &&
+                ["subagent", "shell", "workflow", "monitor", "other"].includes(String(t.kind)),
+            );
+          break;
+        case "rate_limit":
+          valid =
+            ["allowed", "allowed_warning", "rejected"].includes(String(e.status)) &&
+            optional(e.window, str) &&
+            optional(e.utilization, finite) &&
+            optional(e.resetsAt, finite);
           break;
       }
       break;

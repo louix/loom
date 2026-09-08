@@ -466,6 +466,16 @@ class ClaudeSession implements AgentSession {
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
       env,
+      ...(opts.oneShot
+        ? {
+            tools: [],
+            mcpServers: {},
+            strictMcpConfig: true,
+            settingSources: [],
+            maxTurns: 1,
+            persistSession: false,
+          }
+        : {}),
       ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(queryEffort ? { effort: queryEffort } : {}),
@@ -473,7 +483,7 @@ class ClaudeSession implements AgentSession {
       ...(opts.disableTools && opts.disableTools.length > 0
         ? { disallowedTools: opts.disableTools }
         : {}),
-      ...(opts.settingSources
+      ...(opts.settingSources && !opts.oneShot
         ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
         : {}),
       ...(opts.systemPromptAppend
@@ -485,7 +495,7 @@ class ClaudeSession implements AgentSession {
             },
           }
         : {}),
-      ...(opts.subagents && opts.subagents.length > 0
+      ...(opts.subagents && opts.subagents.length > 0 && !opts.oneShot
         ? {
             agents: Object.fromEntries(
               opts.subagents.map((a) => [
@@ -956,6 +966,7 @@ class ClaudeSession implements AgentSession {
     try {
       await this.#query?.setModel(model);
       this.#model = model;
+      this.#mapper.state.model = model;
     } catch (err) {
       // Keep the old model and give the caller a readable reason (matches
       // setMode / setEffort); an out-of-catalog id otherwise surfaces raw.
@@ -1112,6 +1123,11 @@ export class ClaudeProvider implements AgentProvider {
     const q = sdk.query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
       options: {
+        cwd: Deno.cwd(),
+        settingSources: [],
+        tools: [],
+        mcpServers: {},
+        strictMcpConfig: true,
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
         env,
         stderr: (data) => log.debug("listModels cli stderr", { data: data.slice(0, 500) }),

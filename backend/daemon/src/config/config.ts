@@ -301,6 +301,7 @@ export interface LoomConfig {
       disableBuiltin: string[];
       /** Override the Claude Code executable. Empty = discover `claude` on PATH, else the SDK's bundled binary. */
       cliPath: string;
+      workerAllowedHosts?: string[];
       /**
        * Prompt-cache TTL for the main conversation: "5m", "1h", or "" (the
        * default — let the CLI decide, which is 1h on a subscription within its
@@ -802,6 +803,9 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         settingSources: strArray(claude["setting_sources"], d.providers.claude.settingSources),
         disableBuiltin: strArray(claude["disable_builtin"], d.providers.claude.disableBuiltin),
         cliPath: str(claude["cli_path"], d.providers.claude.cliPath),
+        ...(claude["worker_allowed_hosts"] !== undefined
+          ? { workerAllowedHosts: strArray(claude["worker_allowed_hosts"], []) }
+          : {}),
         promptCacheTtl:
           claude["prompt_cache_ttl"] === "5m" ||
           claude["prompt_cache_ttl"] === "1h" ||

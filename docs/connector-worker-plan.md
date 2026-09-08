@@ -18,6 +18,11 @@ stricter credential/workspace separation is a possible later stage.
 
 This is a planning document, not an implemented isolation guarantee.
 
+Implementation status: mock workers and the Claude migration are implemented on
+their review branches. See `docs/connectors.md` for the current execution grants,
+POSIX process-group cleanup and validation limits. Other connector migrations,
+external MCP isolation and daemon/TUI network removal remain subsequent work.
+
 ## Ownership and topology
 
 - The daemon owns session metadata, Loom's durable event log and transcript
@@ -81,14 +86,14 @@ Define a dedicated discriminated union and runtime decoders in core. Reuse
 domain payloads such as `HarnessEvent`, capabilities and snapshots, but do not
 reuse the TUI administrative dispatcher or expose arbitrary method names.
 
-| Frame | Purpose |
-| --- | --- |
+| Frame                            | Purpose                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `hello` / `initialize` / `ready` | Verify protocol version; bind role, profile and generation; initialize config; report capabilities |
-| `request` | ID, explicit method and typed parameters |
-| `response` | Matching ID and typed result or structured error |
-| `event` | Ordered normalized session event with worker-local sequence |
-| `state` | Adapter snapshot and current provider reference |
-| `log` | Bounded, sanitized diagnostic record |
+| `request`                        | ID, explicit method and typed parameters                                                           |
+| `response`                       | Matching ID and typed result or structured error                                                   |
+| `event`                          | Ordered normalized session event with worker-local sequence                                        |
+| `state`                          | Adapter snapshot and current provider reference                                                    |
+| `log`                            | Bounded, sanitized diagnostic record                                                               |
 
 Exact field names can be finalized in the protocol PR. Required semantics:
 

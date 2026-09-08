@@ -173,7 +173,12 @@ export class ProviderRegistry {
       const configDir = id === "claude" ? "" : this.#claudeProfile(id).dir;
       return {
         id,
-        config: { cliPath: c.cliPath, promptCacheTtl: c.promptCacheTtl, configDir },
+        config: {
+          cliPath: c.cliPath,
+          promptCacheTtl: c.promptCacheTtl,
+          configDir,
+          ...(c.workerAllowedHosts ? { workerAllowedHosts: c.workerAllowedHosts } : {}),
+        },
         baseBranch,
         logger,
         ...(search ? { search } : {}),

@@ -10,6 +10,7 @@ import type {
   ProviderCapabilities,
   SessionMode,
   SessionRef,
+  DiscoveredModel,
 } from "../../../../core/src/types.ts";
 import {
   decodeWorkerFrame,
@@ -18,6 +19,8 @@ import {
   WORKER_VERSION,
   type WorkerCommand,
   type WorkerFrame,
+  type WorkerProfile,
+  type WorkerRole,
 } from "../../../../core/src/worker.ts";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import {
@@ -78,6 +81,7 @@ class EventStream {
 }
 
 interface Pending {
+  expected: WorkerFrame["kind"];
   resolve(frame: WorkerFrame): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
@@ -95,6 +99,7 @@ export class RemoteWorkerSession implements AgentSession {
   readonly #generation = crypto.randomUUID();
   readonly #timeoutMs: number;
   readonly #readDone: Promise<void>;
+  readonly #readStop = new AbortController();
   #snapshot: AdapterSnapshot | undefined;
   #seq = 0;
   #requestId = 0;
@@ -114,7 +119,13 @@ export class RemoteWorkerSession implements AgentSession {
     this.#readDone = this.#read().catch((e) => this.#fail(e));
     void proc.exited.then(
       () => {
-        if (!this.#stopping) this.#fail(new Error("connector worker exited"));
+        if (!this.#stopping) {
+          // Reap descendants, but consume already-written final frames before
+          // interpreting EOF as failure. Descendants may still own the pipes.
+          proc.terminate();
+          const timer = setTimeout(() => this.#readStop.abort(), 1000);
+          void this.#readDone.finally(() => clearTimeout(timer));
+        }
       },
       (e) => this.#fail(e),
     );
@@ -126,8 +137,17 @@ export class RemoteWorkerSession implements AgentSession {
     spec: WorkerLaunchSpec,
     launch: WorkerLauncher = launchLocalWorker,
     timeoutMs = 10_000,
+    profile: WorkerProfile = { connector: "@loom/connector-mock", config: {} },
+    role: WorkerRole = "session",
   ): Promise<{ session: RemoteWorkerSession; capabilities: ProviderCapabilities }> {
-    const s = new RemoteWorkerSession(id, launch(spec), timeoutMs);
+    let process: WorkerProcess;
+    try {
+      process = launch(spec);
+    } catch (e) {
+      for (const path of spec.cleanupPaths ?? []) await Deno.remove(path, { recursive: true });
+      throw e;
+    }
+    const s = new RemoteWorkerSession(id, process, timeoutMs);
     const timer = setTimeout(() => s.#fail(new Error("worker startup timed out")), timeoutMs);
     try {
       await s.#hello.promise;
@@ -138,8 +158,8 @@ export class RemoteWorkerSession implements AgentSession {
             generation: s.#generation,
             providerId,
             sessionId: id,
-            connector: "@loom/connector-mock",
-            config: {},
+            ...profile,
+            role,
           },
         ],
       });
@@ -210,22 +230,35 @@ export class RemoteWorkerSession implements AgentSession {
     await this.#request({ method: "interrupt", args: [] });
   }
 
+  async listModels(): Promise<DiscoveredModel[]> {
+    const frame = await this.#request({ method: "listModels", args: [] }, 20_000);
+    if (frame.kind !== "models") throw new Error("invalid discovery response");
+    return frame.models;
+  }
+  async listPersistedSessions(): Promise<SessionRef[]> {
+    const frame = await this.#request({ method: "listPersistedSessions", args: [] }, 20_000);
+    if (frame.kind !== "sessions") throw new Error("invalid enumeration response");
+    return frame.sessions;
+  }
+
   close(): Promise<void> {
     return (this.#closing ??= this.#close());
   }
   async #close(): Promise<void> {
     this.#stopping = true;
     try {
-      if (!this.#failure && this.#ready) await this.#request({ method: "close", args: [] }, 1000);
+      if (!this.#failure && this.#ready) await this.#request({ method: "close", args: [] }, 5000);
     } catch {
       /* force termination below */
     } finally {
       this.#process.terminate();
-      await this.#process.exited;
+      await this.#process.exited.catch(() => {});
+      this.#readStop.abort();
       await this.#readDone;
       this.#rejectPending(new Error("worker closed"));
       this.#events.end();
       await this.#writer.close().catch(() => {});
+      await this.#process.cleanup?.();
     }
   }
   #rejectPending(error: Error) {
@@ -240,8 +273,9 @@ export class RemoteWorkerSession implements AgentSession {
     this.#failure = error instanceof Error ? error : new Error("worker connection failed");
     this.#hello.reject(this.#failure);
     this.#rejectPending(this.#failure);
-    this.#events.end(this.#failure);
+    this.#events.end(this.#ended ? undefined : this.#failure);
     this.#process.terminate();
+    void this.close().catch(() => {});
   }
   #request(command: WorkerCommand, timeoutMs = this.#timeoutMs): Promise<WorkerFrame> {
     if (this.#failure) return Promise.reject(this.#failure);
@@ -255,12 +289,22 @@ export class RemoteWorkerSession implements AgentSession {
       () => this.#fail(new Error(`worker ${command.method} timed out`)),
       timeoutMs,
     );
-    this.#pending.set(id, { resolve: d.resolve, reject: d.reject, timer });
+    const kinds: Partial<Record<WorkerCommand["method"], WorkerFrame["kind"]>> = {
+      initialize: "ready",
+      listModels: "models",
+      listPersistedSessions: "sessions",
+    };
+    const expected = kinds[command.method] ?? "response";
+    this.#pending.set(id, { resolve: d.resolve, reject: d.reject, timer, expected });
     void this.#writer.send({ kind: "request", id, ...command }).catch((e) => this.#fail(e));
     return d.promise;
   }
   async #read() {
-    for await (const f of readFrames(this.#process.output, decodeWorkerFrame)) {
+    for await (const f of readFrames(
+      this.#process.output,
+      decodeWorkerFrame,
+      this.#readStop.signal,
+    )) {
       if (this.#failure) break;
       if (!this.#sawHello) {
         if (f.kind !== "hello" || f.version !== WORKER_VERSION)
@@ -273,14 +317,19 @@ export class RemoteWorkerSession implements AgentSession {
         case "hello":
           throw new Error("duplicate worker hello");
         case "ready":
+        case "models":
+        case "sessions":
         case "response": {
           const p = this.#pending.get(f.id);
           if (!p) throw new Error("unexpected worker response");
+          if (f.kind !== p.expected && !(f.kind === "response" && f.error))
+            throw new Error("wrong worker response kind");
           if (f.kind === "ready") {
             if (this.#ready || f.id !== 1 || f.generation !== this.#generation)
               throw new Error("unexpected worker ready");
             this.#ready = true;
-          } else if (!this.#ready && !f.error) throw new Error("worker not initialized");
+          } else if (!this.#ready && !(f.kind === "response" && f.error))
+            throw new Error("worker not initialized");
           this.#pending.delete(f.id);
           clearTimeout(p.timer);
           if (f.kind === "response" && f.error) p.reject(new Error(f.error.message));
@@ -316,45 +365,70 @@ export class RemoteWorkerSession implements AgentSession {
 export class WorkerProvider implements AgentProvider {
   readonly id: string;
   readonly capabilities: ProviderCapabilities;
-  readonly spec: (cwd: string) => WorkerLaunchSpec;
+  readonly spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec;
+  readonly profile: WorkerProfile;
   readonly launch: WorkerLauncher;
   private constructor(
     id: string,
     capabilities: ProviderCapabilities,
-    spec: (cwd: string) => WorkerLaunchSpec,
+    spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec,
     launch: WorkerLauncher,
+    profile: WorkerProfile,
   ) {
     this.id = id;
     this.capabilities = capabilities;
     this.spec = spec;
     this.launch = launch;
+    this.profile = profile;
   }
   static async create(
     id: string,
-    spec: (cwd: string) => WorkerLaunchSpec,
+    spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec,
     launch: WorkerLauncher = launchLocalWorker,
+    profile: WorkerProfile = { connector: "@loom/connector-mock", config: {} },
   ): Promise<WorkerProvider> {
     const probe = await RemoteWorkerSession.connect(
       crypto.randomUUID(),
       id,
-      spec(Deno.cwd()),
+      spec(Deno.cwd(), "capabilities"),
       launch,
+      10_000,
+      profile,
+      "capabilities",
     );
     await probe.session.close();
-    return new WorkerProvider(id, probe.capabilities, spec, launch);
+    return new WorkerProvider(id, probe.capabilities, spec, launch, profile);
   }
   async #start(
     command: Extract<WorkerCommand, { method: "create" | "resume" }>,
   ): Promise<AgentSession> {
     const opts = command.args[0];
+    const role = command.method === "create" && command.args[0].oneShot ? "title" : "session";
+    const spec = this.spec(opts.cwd, role);
     const { session } = await RemoteWorkerSession.connect(
       opts.sessionId,
       this.id,
-      this.spec(opts.cwd),
+      spec,
       this.launch,
+      10_000,
+      this.profile,
+      role,
     );
     try {
-      await session.start(command);
+      if (role === "title" && command.method === "create") {
+        const {
+          workspaceRoot: _workspace,
+          repoInstructions: _instructions,
+          subagents: _agents,
+          ...title
+        } = command.args[0];
+        await session.start({
+          method: "create",
+          args: [
+            { ...title, cwd: spec.cwd, mcpServers: [], loomServer: false, settingSources: [] },
+          ],
+        });
+      } else await session.start(command);
       return session;
     } catch (e) {
       await session.close();
@@ -368,6 +442,28 @@ export class WorkerProvider implements AgentProvider {
     return this.#start({ method: "resume", args: [ref] });
   }
   async listPersistedSessions(): Promise<SessionRef[]> {
-    return [];
-  } // Mock has no durable threads.
+    return this.#utility("enumeration", (s) => s.listPersistedSessions());
+  }
+  async listModels(): Promise<DiscoveredModel[]> {
+    return this.#utility("discovery", (s) => s.listModels());
+  }
+  async #utility<T>(
+    role: WorkerRole,
+    run: (session: RemoteWorkerSession) => Promise<T>,
+  ): Promise<T> {
+    const { session } = await RemoteWorkerSession.connect(
+      crypto.randomUUID(),
+      this.id,
+      this.spec(Deno.cwd(), role),
+      this.launch,
+      10_000,
+      this.profile,
+      role,
+    );
+    try {
+      return await run(session);
+    } finally {
+      await session.close();
+    }
+  }
 }

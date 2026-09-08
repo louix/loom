@@ -9,13 +9,14 @@
 import type { ConnectorManifest } from "@loom/core/connector";
 import { WorkerProvider } from "@loom/daemon/daemon/worker-provider";
 import { mockLaunchSpec } from "@loom/daemon/daemon/worker-launch";
+import { createClaudeWorkerProvider } from "@loom/daemon/daemon/claude-worker";
 
 export const CONNECTORS: ConnectorManifest = {
   // The daemon loads only the proxy; the mock package is imported in the child.
   "@loom/connector-mock": async () => ({
     createProvider: (ctx) => WorkerProvider.create(ctx.id, mockLaunchSpec),
   }),
-  "@loom/connector-claude": () => import("@loom/connector-claude"),
+  "@loom/connector-claude": async () => ({ createProvider: createClaudeWorkerProvider }),
   "@loom/connector-generic": () => import("@loom/connector-generic"),
   "@loom/connector-gemini": () => import("@loom/connector-gemini"),
   "@loom/connector-chatgpt": () => import("@loom/connector-chatgpt"),

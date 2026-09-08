@@ -2,10 +2,12 @@
 
 ## Worker migration
 
-The CLI's mock/fake connector now runs through `WorkerProvider`: a short-lived
-capability probe followed by one local Deno child per active session. Tests can
-still construct `FakeProvider` directly. Claude and the other production
-connectors retain their existing in-process path until their migration lands.
+The CLI's mock/fake and Claude connectors run through `WorkerProvider`: a
+short-lived capability probe followed by one local Deno child per active session.
+Tests can still construct providers directly. Other connectors retain their
+existing in-process path until their migration lands. Claude model discovery,
+persisted-session enumeration and titling also run in dedicated short-lived
+workers; enumeration preserves the adapter's current empty-result behavior.
 
 The private protocol is in `core/src/worker.ts`; the worker entrypoint and framed
 transport live in `runtime/src/worker/`. The daemon owns the remote proxy and
@@ -17,9 +19,41 @@ dropping. Worker exit fails pending requests without replaying them.
 The mock launcher uses cached dependencies, a clean environment and an explicit
 source-read grant, with no network, write, environment, subprocess or FFI grants.
 It requires the source/runtime artifacts and dependencies to be available locally.
-The supervisor terminates the mock child on close or connection failure; native
-descendant supervision must be implemented before migrating Claude. No microVM
-or native subprocess confinement is claimed by this initial implementation.
+Claude's launcher uses a clean, allowlisted environment and explicit runtime,
+workspace and profile paths. Each native worker leads a POSIX process group.
+Close allows up to five seconds for graceful cleanup, then kills the group;
+worker failure also kills the group. On daemon pipe EOF, the worker cleans up
+its own group, with a five-second watchdog for a stuck adapter. Ordinary CLI
+descendants are covered; deliberately detached descendants require a stronger
+boundary such as a cgroup or VM. This backend is supported on POSIX platforms.
+
+Session workers keep filesystem tools, local MCP servers, package installation,
+and Loom Git tools. Native provider state stays in its existing profile directory;
+no credential copies are made. Named profiles do not receive Deno grants for the
+default profile's files. Existing same-profile concurrent CLI state/refresh
+semantics are retained. Workers have private scratch directories, removed after
+normal shutdown or supervised failure; an abrupt daemon death can leave scratch
+directories behind. Neither provider state nor worktrees are removed on close.
+
+Claude utility workers use private working directories without an additional
+workspace grant. Titling explicitly disables tools, MCP servers, inherited
+settings and session persistence. Model discovery disables tools and inherited
+MCP/settings as well. The SDK enumerates its environment, so Claude workers have
+Deno environment permission over the curated child environment; unrelated
+provider/search keys are not copied. Native launch and existing Git tools require
+subprocess permission. FFI stays disabled.
+
+`[providers.claude] worker_allowed_hosts` replaces the Deno network allowlist.
+Defaults are `api.anthropic.com`, `claude.ai`, `platform.claude.com`,
+`registry.npmjs.org` and `npmjs.com`; an empty list denies worker network access.
+Additional proxy/API endpoints must be configured explicitly. These Deno grants
+do not constrain native subprocess filesystem or network access. No microVM or
+native execution confinement is claimed yet.
+
+Validation uses the installed real Claude SDK with a local CLI fixture, including
+discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
+compaction, persisted SDK rewind, resume, profile sharing and process cleanup.
+This does not validate live provider authentication or token refresh.
 
 See [the staged worker plan](connector-worker-plan.md) for subsequent provider,
 external MCP and daemon/TUI network-isolation work. The connector-authoring

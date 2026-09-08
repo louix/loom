@@ -408,6 +408,7 @@ test(
         args: [
           {
             generation: "test",
+            role: "session",
             providerId: "fake",
             sessionId: "bound",
             connector: "@loom/connector-mock",

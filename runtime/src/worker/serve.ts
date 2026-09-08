@@ -13,6 +13,7 @@ export const serveWorker = async (
   input: ReadableStream<Uint8Array>,
   output: WritableStream<Uint8Array>,
   load: (binding: WorkerBinding) => Promise<AgentProvider>,
+  onShutdown: () => void = () => {},
 ): Promise<void> => {
   const writer = new FrameWriter(output);
   const stop = new AbortController();
@@ -26,23 +27,39 @@ export const serveWorker = async (
   let seq = 0;
   let failure: unknown;
   const active = new Set<Promise<void>>();
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let lastState = "";
   const fail = (error: unknown) => {
     failure ??= error;
     closing = true;
     stop.abort();
   };
   const publish = async () => {
-    if (session && !closing) await writer.send({ kind: "state", snapshot: session.snapshot() });
+    if (!session || closing) return;
+    const snapshot = session.snapshot();
+    const state = JSON.stringify(snapshot);
+    if (state !== lastState) {
+      lastState = state;
+      await writer.send({ kind: "state", snapshot });
+    }
   };
   const pump = async (s: AgentSession) => {
-    for await (const event of s.events()) {
+    const stream = s.events();
+    for await (const event of stream) {
       if (closing) break;
+      if ("dropped" in stream && stream.dropped !== 0) throw new Error("connector event overflow");
       if (event.sessionId !== binding?.sessionId)
         throw new Error("connector emitted wrong session");
       await publish();
       if (!closing) await writer.send({ kind: "event", seq: ++seq, event });
     }
-    if (!closing) await writer.send({ kind: "end" });
+    if (!closing) {
+      await writer.send({ kind: "end" });
+      if (binding?.connector === "@loom/connector-claude") {
+        closing = true;
+        stop.abort();
+      }
+    }
   };
   const handle = async (r: WorkerRequest) => {
     if (r.method === "initialize") {
@@ -60,6 +77,16 @@ export const serveWorker = async (
     }
     if (!provider || !binding) throw new Error("worker not ready");
     if (r.method === "create" || r.method === "resume") {
+      if (binding.role !== "session" && binding.role !== "title")
+        throw new Error("worker role cannot create a session");
+      if (
+        binding.role === "title" &&
+        (r.method !== "create" ||
+          !r.args[0].oneShot ||
+          r.args[0].mcpServers.length ||
+          r.args[0].loomServer)
+      )
+        throw new Error("invalid title session");
       if (started || r.args[0].sessionId !== binding.sessionId)
         throw new Error("invalid session binding");
       started = true;
@@ -73,6 +100,9 @@ export const serveWorker = async (
       }
       if (session.id !== binding.sessionId) throw new Error("connector returned wrong session");
       await publish();
+      poll = setInterval(() => {
+        void publish().catch(fail);
+      }, 100);
       await writer.send({ kind: "response", id: r.id });
       void pump(session).catch(fail);
       return;
@@ -82,6 +112,19 @@ export const serveWorker = async (
       await session?.close();
       await writer.send({ kind: "response", id: r.id });
       stop.abort();
+      return;
+    }
+    if (r.method === "listModels" || r.method === "listPersistedSessions") {
+      if (started || binding.role !== (r.method === "listModels" ? "discovery" : "enumeration"))
+        throw new Error("invalid utility worker role");
+      started = true;
+      if (r.method === "listModels") {
+        const models = (await provider.listModels?.()) ?? [];
+        if (!closing) await writer.send({ kind: "models", id: r.id, models });
+      } else {
+        const sessions = await provider.listPersistedSessions();
+        if (!closing) await writer.send({ kind: "sessions", id: r.id, sessions });
+      }
       return;
     }
     if (!session) throw new Error("session not started");
@@ -141,6 +184,8 @@ export const serveWorker = async (
     }
   } finally {
     closing = true;
+    onShutdown();
+    clearInterval(poll);
     stop.abort();
     await session?.close();
   }
