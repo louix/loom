@@ -1,3 +1,5 @@
+import type { McpServerHandle } from "@loom/core/types";
+
 /**
  * Connector-neutral pieces of a session's system-prompt append: the standalone
  * base prompt for engines with no vendor preset (aisdk / OpenAI-compatible),
@@ -28,19 +30,16 @@ export const AISDK_SYSTEM = [
 ].join("\n");
 
 /**
- * Appended to a session's system prompt to steer it onto the mounted MCP
- * tools: tilth for reading and editing code, fff for file finding and text
- * search, and whichever of Loom's own `ask_user`/`commit`/`status` tools this
+ * Appended to a session's system prompt for whichever of Loom's own
+ * `ask_user`/`commit`/`status` tools this
  * session actually has (a Codex Code Mode session, for one, only gets
  * `commit`). Also pins the session's worktree as the one tree to touch, so
  * absolute-path tools land in the branch.
  */
 export const toolSteer = (cwd: string, mounted: MountedLoomTools): string =>
   [
-    "This session runs under Loom, which mounts a few MCP tools you should reach for first:",
-    "- Use tilth for working with code — locating a symbol or its references, reading source structurally, and editing (`tilth_write` creates or replaces a file, `tilth_edit` makes in-place changes). It understands code structure via tree-sitter, so prefer it over the built-in Read / Write / Edit for source files.",
-    "- Use fff for file-level work — finding files by name or glob, and plain-text search across the tree.",
-    `- All of this session's work stays inside the worktree at ${cwd}. Build every file path — Read, Edit, Write, tilth's \`root\`, \`cd\` targets — from there, not from memory of where the repo "usually" lives. A path outside it, such as a parent checkout of the same repo, is a *different* working tree: reads come back stale and writes never reach your branch.${mounted.status ? " The `status` tool reprints this root." : ""}`,
+    "This session runs under Loom:",
+    `- All of this session's work stays inside the worktree at ${cwd}. Build every file path — Read, Edit, Write, MCP root arguments, \`cd\` targets — from there, not from memory of where the repo "usually" lives. A path outside it, such as a parent checkout of the same repo, is a *different* working tree: reads come back stale and writes never reach your branch.${mounted.status ? " The `status` tool reprints this root." : ""}`,
     ...(mounted.commit
       ? [
           "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",
@@ -52,3 +51,21 @@ export const toolSteer = (cwd: string, mounted: MountedLoomTools): string =>
         ]
       : []),
   ].join("\n");
+
+/** Capability preferences, not tool aliases: each server owns its names and schemas. */
+export const mcpToolPreferences = (servers: McpServerHandle[]): string => {
+  const preferred = servers.filter((s) => s.defaultFor?.length);
+  if (!preferred.length) return "";
+  return [
+    "Default tool providers for this session:",
+    ...preferred.map(
+      (s) =>
+        "- For " +
+        s.defaultFor!.join(", ") +
+        ", prefer the tools advertised by MCP server " +
+        s.name +
+        ". Use their actual tool names and argument schemas.",
+    ),
+    "Use built-in tools as fallbacks when the preferred server is unavailable or does not support the operation. All tool calls remain subject to the session's permission policy.",
+  ].join("\n");
+};

@@ -223,7 +223,6 @@ export class ProviderRegistry {
       apiKey,
       apiBase: s.apiBase,
       maxResults: s.maxResults,
-      ...(s.apiKeyEnv ? { credentialEnv: s.apiKeyEnv } : {}),
     };
   }
 

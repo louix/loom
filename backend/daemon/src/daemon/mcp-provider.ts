@@ -7,7 +7,7 @@ import type {
   McpServerHandle,
   SessionRef,
 } from "@loom/core/types";
-import { isClaudeId } from "@loom/core/provider-id";
+import { mcpToolPreferences } from "@loom/runtime/instructions";
 import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
 
 export const withExternalMcp = async (
@@ -15,11 +15,7 @@ export const withExternalMcp = async (
   context: ConnectorContext,
   start = startMcpWorker,
 ): Promise<AgentProvider> => {
-  const { search, ...withoutSearch } = context;
-  const kagi = search?.backend === "kagi" ? search : undefined;
-  // Catalog/title providers never receive an external MCP credential.
-  const baseContext: ConnectorContext = kagi ? withoutSearch : context;
-  const base = await create(baseContext);
+  const base = await create(context);
   const open = async (
     input: CreateSessionOptions | SessionRef,
     resume: boolean,
@@ -33,41 +29,22 @@ export const withExternalMcp = async (
         if (handle.spec.transport !== "http") return handle;
         const worker = await start(handle.name, handle.spec);
         workers.push(worker);
-        return worker.handle;
+        return { ...handle, spec: worker.handle.spec };
       };
       const servers: McpServerHandle[] = [];
       const oneShot = "oneShot" in input && input.oneShot;
       if (!oneShot) for (const handle of input.mcpServers ?? []) servers.push(await mount(handle));
-      let scopedContext = baseContext;
-      if (kagi && !oneShot) {
-        const handle = await mount({
-          name: "kagi",
-          spec: {
-            transport: "http",
-            url: `${(kagi.apiBase || "https://mcp.kagi.com").replace(/\/$/, "")}/mcp`,
-            headers: { Authorization: `Bearer ${kagi.apiKey}` },
-          },
-        });
-        if (handle.spec.transport !== "http") throw new Error("invalid Kagi worker handle");
-        if (isClaudeId(context.id)) {
-          if (servers.some((s) => s.name === "kagi"))
-            throw new Error("Kagi MCP name is already configured");
-          servers.push(handle);
-        } else {
-          scopedContext = {
-            ...baseContext,
-            search: {
-              ...kagi,
-              apiBase: handle.spec.url.replace(/\/mcp$/, ""),
-              apiKey: handle.spec.headers!.Authorization!.replace(/^Bearer /, ""),
-            },
-          };
-        }
-      }
-      const provider = scopedContext === baseContext ? base : await create(scopedContext);
+      const provider = base;
+      const options = {
+        ...input,
+        mcpServers: servers,
+        systemPromptAppend: [input.systemPromptAppend, mcpToolPreferences(servers)]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
       const session = resume
-        ? await provider.resumeSession({ ...input, mcpServers: servers } as SessionRef)
-        : await provider.createSession({ ...input, mcpServers: servers } as CreateSessionOptions);
+        ? await provider.resumeSession(options as SessionRef)
+        : await provider.createSession(options as CreateSessionOptions);
       if (workers.length === 0) return session;
       let closing: Promise<void> | undefined;
       let failed = false;

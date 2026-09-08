@@ -192,17 +192,13 @@ test("ChatGPTCatalog auth errors are actionable and never fall back to an API ke
   }
 });
 
-test("Code Mode serializes Loom MCP mounts and configured Kagi into app-server config", () => {
+test("Code Mode serializes command and HTTP MCP mounts into app-server config", () => {
   assert.equal(
     mcpConfig([
       { name: "tilth", spec: { transport: "stdio", command: "tilth", args: ["--mcp", "--edit"] } },
       { name: "remote", spec: { transport: "http", url: "https://example.invalid/mcp" } },
     ]),
     '{ "tilth" = { command = "tilth", args = ["--mcp", "--edit"] }, "remote" = { url = "https://example.invalid/mcp" } }',
-  );
-  assert.equal(
-    mcpConfig([], { backend: "kagi", apiKey: "secret", apiBase: "", maxResults: 6 }),
-    '{ "kagi" = { url = "https://mcp.kagi.com/mcp", bearer_token_env_var = "LOOM_CODEX_KAGI_API_KEY" } }',
   );
 });
 
@@ -1846,27 +1842,37 @@ const fakeProcess = () => {
   return { proc, stdout, stderr, written };
 };
 
-test("native ChatGPT launch receives a relay token without the configured upstream Kagi env", async () => {
-  const names = ["KAGI_API_KEY", "LOOM_TEST_CUSTOM_SEARCH_KEY"];
+test("native ChatGPT launch receives a relay token without the configured upstream MCP env", async () => {
+  const names = ["LOOM_TEST_CUSTOM_SEARCH_KEY"];
   const saved = names.map((name) => Deno.env.get(name));
   for (const name of names) Deno.env.set(name, "upstream-secret");
   const specs: CodexLaunchSpec[] = [];
   let session: Awaited<ReturnType<typeof CodexAppServerSession.start>> | undefined;
   try {
     session = await CodexAppServerSession.start(
-      { sessionId: "relay-env", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+      {
+        sessionId: "relay-env",
+        cwd: "/tmp",
+        prompt: "",
+        mode: "default",
+        mcpServers: [
+          {
+            name: "search",
+            credentialEnv: names[0]!,
+            spec: {
+              transport: "http",
+              url: "http://127.0.0.1:23456/mcp",
+              headers: { Authorization: "Bearer local-relay-token" },
+            },
+          },
+        ],
+      },
       {
         dir: "/tmp/loom-codex-launch-injected",
         authJsonPath: "/tmp/loom-codex-launch-injected/auth.json",
       },
       FAKE_CODEX,
-      {
-        backend: "kagi",
-        apiKey: "local-relay-token",
-        apiBase: "http://127.0.0.1:23456",
-        maxResults: 5,
-        credentialEnv: names[1]!,
-      },
+      undefined,
       false,
       undefined,
       (spec) => {
@@ -1874,9 +1880,8 @@ test("native ChatGPT launch receives a relay token without the configured upstre
         return spawnCodex(spec);
       },
     );
-    assert.equal(specs[0]!.env.KAGI_API_KEY, undefined);
     assert.equal(specs[0]!.env.LOOM_TEST_CUSTOM_SEARCH_KEY, undefined);
-    assert.equal(specs[0]!.env.LOOM_CODEX_KAGI_API_KEY, "local-relay-token");
+    assert.match(specs[0]!.args.join(" "), /local-relay-token/);
     assert.doesNotMatch(JSON.stringify(specs), /upstream-secret/);
   } finally {
     await session?.close();

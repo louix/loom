@@ -1,6 +1,6 @@
 # Copy to .loom/config.toml to override. Every key below is optional and shown
 # with its built-in default. Consumed so far (milestones 1-5): db, run_isolation,
-# daemon.*, base_branch, worktree_dir, providers.claude.* and the [[mcp]] list
+# daemon.*, base_branch, worktree_dir, providers.claude.* and the [[command-mcp]] list
 # (mounted into every session, alongside the built-in in-process `loom` server:
 # ask_user + commit). The terminal UI (`loom` with no command in a TTY) reads no
 # config of its own; its `Ctrl-E` handoff uses $VISUAL / $EDITOR. The rest is
@@ -51,7 +51,7 @@ model = "claude-sonnet-5"
 # asks the Claude CLI for its catalog at start-up.
 permission_default = "manual" # manual (aka default) | plan | acceptEdits | auto
 setting_sources = ["project"] # loads CLAUDE.md / project settings
-disable_builtin = ["Grep", "Glob"]
+disable_builtin = [] # keep native tools available as fallbacks
 cli_path = "" # "" = use `claude` on PATH, else the SDK's bundled
 # binary. Set this where the bundled ELF won't run
 # (NixOS, musl, minimal containers).
@@ -76,7 +76,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # This file is the per-repo layer. A user-level file at
 # $XDG_CONFIG_HOME/loom/config.toml (→ ~/.config/loom/config.toml) is loaded
 # *under* it — put provider profiles + credentials there and let each repo
-# override model / base_branch / [[mcp]]. Same schema; a per-repo key wins.
+# override model / base_branch / [[command-mcp]]. Same schema; a per-repo key wins.
 
 # default_provider = "claude"       # which provider new sessions use when the
 # client doesn't name one (must be configured)
@@ -131,7 +131,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # `codex login` once; the connector reads ~/.codex/auth.json and refreshes its
 # OAuth token when needed. Loom auto-detects this account-specific catalogue.
 # `code_mode_only` models additionally require the `codex` binary on PATH;
-# Loom launches `codex app-server` and supplies this config's [[mcp]] mounts.
+# Loom launches `codex app-server` and supplies this config's [[command-mcp]] mounts.
 # [chatgpt]
 # model     = "gpt-5.6-terra"       # optional pin / default
 # models    = ["gpt-5.6-terra"]     # optional curated picker list
@@ -146,13 +146,26 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # optional `connector = "@scope/pkg"` to route the profile at a connector
 # package other than the built-in generic / gemini ones (see docs/connectors.md).
 
-[[mcp]] # mounted into every session, in order, after the
-name = "tilth" # built-in `loom` server. The system prompt steers
-command = "tilth --mcp --edit" # code reading + editing to tilth and file finding
-# / text search to fff; Claude's own Grep / Glob
-[[mcp]] # are disabled below (providers.claude.disable_builtin).
+# Each group replaces its defaults when specified. To disable all MCP mounts,
+# put command-mcp = [] and http-mcp = [] at the top level of this file.
+# default_for selects preferred capabilities, without renaming tools or schemas.
+[[command-mcp]]
+name = "tilth"
+command = "tilth"
+args = ["--mcp", "--edit"]
+default_for = ["read", "write", "edit"]
+
+[[command-mcp]]
 name = "fff"
 command = "fff-mcp"
+default_for = ["find", "grep"]
+
+# HTTP MCP servers use isolated per-session relays. Uncomment to enable Kagi.
+# [[http-mcp]]
+# name = "kagi"
+# url = "https://mcp.kagi.com/mcp"
+# bearer_token_env = "KAGI_API_KEY"
+# default_for = ["web_search", "web_fetch"]
 
 [titles]
 enabled = true # summarise the first message into a title after turn 1
@@ -181,13 +194,8 @@ table = ".loom/models.toml"
 webhook = "" # best-effort POST on awaiting_input / error when no client attached
 
 [search] # web_search tool for aisdk sessions (Claude
-backend = "none" # has its own). "none" | "brave" | "tavily" | "kagi".
+backend = "none" # has its own). "none" | "brave" | "tavily".
 api_key_env = "" # env var with the API key; tool is off if unset
 # api_base  = ""                   # override the backend URL (proxy / self-host)
 max_results = 5
-# kagi dials Kagi's hosted MCP server (https://mcp.kagi.com/mcp, the key sent
-# as a bearer token — grab one at kagi.com/api/keys); nothing to install.
-# api_base points it at a self-hosted kagimcp instead. Kagi formats the
-# results itself (its server-side default is 10, so max_results doesn't apply),
-# and kagi sessions also get web_fetch — a page's full content as markdown
-# (their kagi_extract) — so a search hit can be read in full.
+# Hosted MCP search services belong in [[http-mcp]], as shown above.

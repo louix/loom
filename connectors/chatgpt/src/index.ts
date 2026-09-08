@@ -8,7 +8,7 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import type { ConnectorContext } from "@loom/core/connector";
-import { toolSteer } from "@loom/runtime/instructions";
+import { toolSteer, mcpToolPreferences } from "@loom/runtime/instructions";
 import { ChatGPTCatalog } from "./catalog.ts";
 import { CodexAppServerSession } from "./app-server.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
@@ -70,6 +70,7 @@ export const codeModeInstructions = (
   mountsLoomTools: boolean,
   askUserMounted: boolean,
   repoInstructions: string | null,
+  toolPreferences = "",
 ): string =>
   [
     toolSteer(workspaceRoot, {
@@ -77,6 +78,7 @@ export const codeModeInstructions = (
       commit: mountsLoomTools,
       status: mountsLoomTools,
     }),
+    toolPreferences,
     repoInstructions,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -150,6 +152,7 @@ class ChatGPTProvider implements AgentProvider {
           mounted,
           mounted,
           opts.repoInstructions ?? null,
+          mcpToolPreferences(opts.mcpServers),
         ),
       },
       this.#codexHome,
@@ -176,6 +179,7 @@ class ChatGPTProvider implements AgentProvider {
           true,
           false,
           ref.repoInstructions ?? null,
+          mcpToolPreferences(ref.mcpServers ?? []),
         ),
       },
       this.#codexHome,

@@ -102,7 +102,9 @@ export class McpHub {
         for (const [name, t] of Object.entries(discovered)) {
           // First server to claim a bare name keeps it; the rest are namespaced.
           const key = name in tools ? `${h.name}__${name}` : name;
-          tools[key] = t;
+          tools[key] = Object.assign(t, {
+            description: `MCP server ${h.name}. ${t.description ?? ""}`,
+          });
           const hint = declared.get(name);
           if (hint !== undefined) readOnlyHints.set(key, hint);
         }

@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { onPath } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
+import { MCP_CAPABILITIES, type McpCapability } from "@loom/core/types";
 import type { PriceRow } from "./pricing.ts";
 
 /**
@@ -323,7 +324,13 @@ export interface LoomConfig {
      */
     aisdk: Record<string, AisdkProfile>;
   };
-  mcp: Array<{ name: string; command: string }>;
+  mcp: Array<{ name: string; command: string; args?: string[]; defaultFor?: McpCapability[] }>;
+  httpMcp: Array<{
+    name: string;
+    url: string;
+    bearerTokenEnv: string;
+    defaultFor: McpCapability[];
+  }>;
   titles: {
     /** Auto-summarise the first message into a session title after turn 1. */
     enabled: boolean;
@@ -344,11 +351,11 @@ export interface LoomConfig {
   hooks: HookConfig[];
   /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
-   * backend is chosen and its key env var is set. `kagi` dials Kagi's hosted
-   * MCP server with the key as a bearer token.
+   * backend is chosen and its key env var is set. Hosted search MCP servers
+   * are configured with [[http-mcp]].
    */
   search: {
-    backend: "none" | "brave" | "tavily" | "kagi";
+    backend: "none" | "brave" | "tavily";
     /** Env var holding the API key. */
     apiKeyEnv: string;
     /** Literal API key; wins over `apiKeyEnv`. Prefer the env var. */
@@ -380,16 +387,22 @@ export const DEFAULT_CONFIG: LoomConfig = {
       models: [],
       permissionDefault: "default",
       settingSources: ["project"],
-      disableBuiltin: ["Grep", "Glob"],
+      disableBuiltin: [],
       cliPath: "",
       promptCacheTtl: "",
     },
     aisdk: {},
   },
   mcp: [
-    { name: "tilth", command: "tilth --mcp --edit" },
-    { name: "fff", command: "fff-mcp" },
+    {
+      name: "tilth",
+      command: "tilth",
+      args: ["--mcp", "--edit"],
+      defaultFor: ["read", "write", "edit"],
+    },
+    { name: "fff", command: "fff-mcp", defaultFor: ["find", "grep"] },
   ],
+  httpMcp: [],
   titles: { enabled: true, model: "" },
   pricing: { table: ".loom/models.toml" },
   notify: { webhook: "" },
@@ -710,6 +723,10 @@ export const lintConfig = (
       w.push(`search: $${cfg.search.apiKeyEnv} is not set — web_search stays disabled`);
     }
   }
+  for (const m of cfg.httpMcp) {
+    if (m.bearerTokenEnv && !env[m.bearerTokenEnv])
+      w.push(`MCP "${m.name}": $${m.bearerTokenEnv} is not set — session creation will fail`);
+  }
   return w;
 };
 
@@ -756,15 +773,77 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       ? permDefault
       : d.providers.claude.permissionDefault;
 
-  const mcpRaw = Array.isArray(r["mcp"]) ? (r["mcp"] as unknown[]) : null;
-  const mcp = mcpRaw
-    ? mcpRaw
-        .map((entry) => {
-          const e = asRecord(entry);
-          return { name: str(e["name"], ""), command: str(e["command"], "") };
-        })
-        .filter((e) => e.name !== "" && e.command !== "")
-    : d.mcp;
+  if ("mcp" in r)
+    throw new Error("[[mcp]] is no longer supported; use [[command-mcp]] or [[http-mcp]]");
+  if (search["backend"] === "kagi")
+    throw new Error(
+      'Configure Kagi as [[http-mcp]] with default_for = ["web_search", "web_fetch"]',
+    );
+  const entries = (key: string): Record<string, unknown>[] | undefined => {
+    if (!(key in r)) return undefined;
+    if (!Array.isArray(r[key])) throw new Error(key + " must be an array of tables");
+    return (r[key] as unknown[]).map(asRecord);
+  };
+  const required = (e: Record<string, unknown>, key: string): string => {
+    if (typeof e[key] !== "string" || !(e[key] as string).trim())
+      throw new Error("MCP requires " + key);
+    return e[key] as string;
+  };
+  const defaults = (e: Record<string, unknown>): McpCapability[] => {
+    if ("override" in e) throw new Error("Use MCP default_for to declare capability preferences");
+    const value = e["default_for"] ?? [];
+    if (!Array.isArray(value) || !value.every((v) => MCP_CAPABILITIES.includes(v)))
+      throw new Error("Invalid MCP default_for capability");
+    return value as McpCapability[];
+  };
+  const mcp =
+    entries("command-mcp")?.map((e) => {
+      const args = e["args"] ?? [];
+      if (!Array.isArray(args) || !args.every((a) => typeof a === "string"))
+        throw new Error("command-mcp args must be strings");
+      return {
+        name: required(e, "name"),
+        command: required(e, "command"),
+        args: args as string[],
+        defaultFor: defaults(e),
+      };
+    }) ?? d.mcp;
+  const httpMcp =
+    entries("http-mcp")?.map((e) => {
+      if (e["bearer_token_env"] !== undefined && typeof e["bearer_token_env"] !== "string")
+        throw new Error("http-mcp bearer_token_env must be a string");
+      const url = required(e, "url");
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new Error("http-mcp requires a valid URL");
+      }
+      if (
+        !["https:", "http:"].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.hash
+      )
+        throw new Error("http-mcp URL must be HTTP(S), without embedded credentials or a fragment");
+      return {
+        name: required(e, "name"),
+        url,
+        bearerTokenEnv: str(e["bearer_token_env"], ""),
+        defaultFor: defaults(e),
+      };
+    }) ?? d.httpMcp;
+  const names = new Set<string>();
+  const roles = new Set<string>();
+  for (const m of [...mcp, ...httpMcp]) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(m.name) || m.name === "loom" || names.has(m.name))
+      throw new Error("Invalid, reserved or duplicate MCP name: " + m.name);
+    names.add(m.name);
+    for (const role of m.defaultFor ?? []) {
+      if (roles.has(role)) throw new Error("Multiple MCP defaults for " + role);
+      roles.add(role);
+    }
+  }
 
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
@@ -816,6 +895,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       aisdk,
     },
     mcp,
+    httpMcp,
     titles: {
       enabled: typeof titles["enabled"] === "boolean" ? titles["enabled"] : d.titles.enabled,
       model: str(titles["model"], d.titles.model),
@@ -825,9 +905,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     hooks: parseHooks(r["hooks"]),
     search: {
       backend:
-        search["backend"] === "brave" ||
-        search["backend"] === "tavily" ||
-        search["backend"] === "kagi"
+        search["backend"] === "brave" || search["backend"] === "tavily"
           ? search["backend"]
           : "none",
       apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),

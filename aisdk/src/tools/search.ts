@@ -1,14 +1,13 @@
 /**
  * A `web_search` tool for aisdk sessions — Claude has its own built-in, this
  * fills the gap for OpenAI-compatible / Gemini / Anthropic-via-aisdk sessions.
- * Pluggable backend (`[search] backend`): Brave Search API, Tavily, or Kagi —
- * Kagi dials their hosted MCP server (see `kagi.ts`), so there's nothing to
- * install. Off unless a backend + key are configured.
+ * Pluggable backend (`[search] backend`): Brave Search API or Tavily.
+ * Hosted search MCPs are configured separately. Off unless a backend + key
+ * are configured.
  */
 import { tool } from "ai";
 import { z } from "zod";
 import type { SearchConfig } from "@loom/core/connector";
-import { kagiSearch } from "./kagi.ts";
 
 const DEFAULT_BASE = {
   brave: "https://api.search.brave.com/res/v1",
@@ -36,14 +35,11 @@ export const runSearch = async (
   const n = Number.isFinite(want) ? Math.min(20, Math.max(1, want)) : 5;
   const signal = AbortSignal.timeout(15_000); // a hung backend must not stall the turn
   try {
-    const output =
-      cfg.backend === "kagi"
-        ? await kagiSearch(cfg, query)
-        : hitsToText(
-            cfg.backend === "brave"
-              ? await brave(baseOf(cfg, "brave"), cfg.apiKey, query, n, signal)
-              : await tavily(baseOf(cfg, "tavily"), cfg.apiKey, query, n, signal),
-          );
+    const output = hitsToText(
+      cfg.backend === "brave"
+        ? await brave(baseOf(cfg, "brave"), cfg.apiKey, query, n, signal)
+        : await tavily(baseOf(cfg, "tavily"), cfg.apiKey, query, n, signal),
+    );
     if (output === "") return { ok: true, output: "(no results)" };
     return { ok: true, output };
   } catch (err) {
@@ -113,9 +109,7 @@ export const searchTool = (cfg: SearchConfig) => {
   return tool({
     description:
       "Search the web. Returns a numbered list of results (title, URL, snippet). " +
-      (cfg.backend === "kagi"
-        ? "Use web_fetch afterwards to read a result in full."
-        : "Use a fetch tool afterwards to read a page in full."),
+      "Use a fetch tool afterwards to read a page in full.",
     inputSchema: z.object({
       query: z.string().describe("The search query."),
       max_results: z

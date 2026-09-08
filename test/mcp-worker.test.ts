@@ -15,7 +15,8 @@ import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import type { ConnectorContext } from "@loom/core/connector";
 import { FakeProvider } from "@loom/connector-mock";
 import { makeLogger } from "@loom/core/logger";
-import { runSearch } from "@loom/aisdk/tools/search";
+import { McpHub } from "../aisdk/src/mcp.ts";
+import type { CreateSessionOptions, McpServerHandle } from "@loom/core/types";
 
 const fixture = () => {
   const requests: Array<{ auth: string | null; method: string; path: string }> = [];
@@ -179,52 +180,75 @@ test("launch policy has only the upstream and local listener, no env, filesystem
   assert.throws(() => mcpWorkerSpec("https://user:secret@example.com/mcp"));
 });
 
-test("session wrapper keeps Kagi secrets out of connectors and closes isolated session workers", async () => {
+test("generic HTTP mounts preserve advertised tools and preferences without leaking upstream credentials", async () => {
   const s = fixture();
-  const contexts: ConnectorContext[] = [];
+  const options: CreateSessionOptions[] = [];
   const workers: ManagedMcp[] = [];
+  const fake = new FakeProvider();
   const provider = await withExternalMcp(
-    (ctx) => {
-      contexts.push(ctx);
-      return new FakeProvider();
-    },
-    {
-      id: "generic",
-      config: {},
-      logger: makeLogger("test"),
-      search: {
-        backend: "kagi",
-        apiKey: "original-secret",
-        apiBase: s.url.replace("/mcp", ""),
-        maxResults: 5,
-      },
-    },
+    () =>
+      new Proxy(fake, {
+        get(target, prop) {
+          if (prop === "createSession")
+            return (opts: CreateSessionOptions) => {
+              options.push(opts);
+              return target.createSession(opts);
+            };
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    { id: "generic", config: {}, logger: makeLogger("test") },
     async (...args) => {
       const w = await startMcpWorker(...args);
       workers.push(w);
       return w;
     },
   );
-  const opts = {
+  const opts: CreateSessionOptions = {
     sessionId: "one",
     cwd: "/tmp",
     prompt: "",
-    mode: "default" as const,
-    mcpServers: [],
+    mode: "default",
+    mcpServers: [
+      {
+        name: "research",
+        defaultFor: ["web_search"],
+        spec: {
+          transport: "http",
+          url: s.url,
+          headers: { Authorization: "Bearer original-secret" },
+        },
+      },
+    ],
   };
   const a = await provider.createSession(opts);
   const b = await provider.createSession({ ...opts, sessionId: "two" });
   try {
-    assert.equal(contexts[0]?.search, undefined);
-    assert.doesNotMatch(JSON.stringify(contexts), /original-secret/);
-    assert.notEqual(contexts[1]?.search?.apiKey, contexts[2]?.search?.apiKey);
-    const result = await runSearch(contexts[1]!.search!, "worker boundary");
-    assert.equal(result.ok, true);
-    assert.match(result.output, /found worker boundary/);
+    assert.doesNotMatch(JSON.stringify(options), /original-secret/);
+    assert.match(options[0]!.systemPromptAppend!, /web_search.*research/);
+    const hub = await McpHub.connect(options[0]!.mcpServers, makeLogger("test"));
+    try {
+      assert.ok(hub.tools.kagi_search_fetch);
+      assert.equal(hub.tools.web_search, undefined);
+      const result = await hub.tools.kagi_search_fetch!.execute!(
+        { query: "worker boundary" },
+        { toolCallId: "1", messages: [], context: undefined },
+      );
+      assert.match(JSON.stringify(result), /found worker boundary/);
+    } finally {
+      await hub.close();
+    }
+    assert.notEqual(
+      http(workers[0]!).headers?.Authorization,
+      http(workers[1]!).headers?.Authorization,
+    );
     await a.close();
     await assert.rejects(fetch(http(workers[0]!).url));
-    const peer = await runSearch(contexts[2]!.search!, "peer");
-    assert.equal(peer.ok, true);
+    assert.equal(
+      (await fetch(http(workers[1]!).url, { headers: http(workers[1]!).headers! })).status,
+      405,
+    );
   } finally {
     await Promise.all([a.close(), b.close()]);
     await s.close();
@@ -253,12 +277,6 @@ test("session construction failure, native stream end and worker crash release M
     id: "claude",
     config: {},
     logger: makeLogger("test"),
-    search: {
-      backend: "kagi",
-      apiKey: "secret",
-      apiBase: s.url.replace("/mcp", ""),
-      maxResults: 5,
-    },
   };
   const start = async (...args: Parameters<typeof startMcpWorker>) => {
     const w = await startMcpWorker(...args);
@@ -273,7 +291,9 @@ test("session construction failure, native stream end and worker crash release M
       cwd: "/tmp",
       prompt: "",
       mode: "default" as const,
-      mcpServers: [],
+      mcpServers: [
+        { name: "remote", spec: { transport: "http", url: s.url } },
+      ] as McpServerHandle[],
     };
     const crashed = await provider.createSession(options);
     const events = Array.fromAsync(crashed.events());
@@ -303,6 +323,7 @@ test("session construction failure, native stream end and worker crash release M
       sessionId: "resumed",
       providerRef: "old",
       cwd: "/tmp",
+      mcpServers: options.mcpServers,
     });
     assert.equal(workers.length, 3);
     assert.notEqual(

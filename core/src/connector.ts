@@ -10,11 +10,9 @@ import type { Logger } from "./logger.ts";
 
 /** A resolved `web_search` backend. `[search] backend = "none"` yields no config at all. */
 export interface SearchConfig {
-  backend: "brave" | "tavily" | "kagi";
-  /** The resolved key, or a local session relay token. */
+  backend: "brave" | "tavily";
+  /** The resolved search API key. */
   apiKey: string;
-  /** Original credential env name; native launchers must omit it when using a relay. */
-  credentialEnv?: string;
   /** Backend URL override; "" uses the backend default. */
   apiBase: string;
   maxResults: number;
@@ -40,7 +38,7 @@ export interface ConnectorConfig {
   authPath?: string;
   /** ChatGPT: explicit `codex` executable. Empty / omitted uses PATH. */
   codexCliPath?: string;
-  /** Keep Codex's own web search alongside Loom's configured Kagi MCP server. Default false. */
+  /** Expose Codex's own web search alongside configured MCP servers. Default false. */
   codexBuiltinWebSearch?: boolean;
   /** Per-segment tool-call ceiling for a turn. */
   maxSteps?: number;

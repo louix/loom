@@ -61,12 +61,42 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-The daemon gives each active session a separate Deno relay process for each HTTP
-MCP mount. `[search] backend = "kagi"` uses this path automatically: AI SDK
-sessions retain `web_search` / `web_fetch`, ChatGPT mounts the relay through its
-native MCP client, and Claude receives a `kagi` MCP mount. Discovery and title
-jobs do not start these workers. Local stdio MCP servers retain their existing
-launch behavior; networked stdio servers are a subsequent migration.
+Configure local processes with `[[command-mcp]]` (`name`, `command`, `args`) and
+remote servers with `[[http-mcp]]` (`name`, `url`, optional `bearer_token_env`).
+Each active session gets a separate Deno relay for each HTTP mount. Command
+servers retain their existing launch behavior; networked stdio isolation is
+subsequent work. Both groups replace their own defaults when present; top-level
+`command-mcp = []` disables the default tilth/fff mounts. There are no default
+HTTP mounts. Names must be unique across both groups; `loom` is reserved.
+
+`default_for` declares capability preferences, not tool aliases. Supported values
+are `read`, `write`, `edit`, `find`, `grep`, `web_search` and `web_fetch`.
+Only one server may be the default for each capability. Omit it to mount a server
+without making it a default. Agents see the actual advertised tool names and
+schemas and instructions to prefer that server for the selected capabilities.
+Built-ins remain fallbacks where available, subject to the connector's existing
+tool settings. Permission checks are unchanged. This is agent guidance, not a
+guarantee that every call uses the preferred server.
+
+```toml
+[[http-mcp]]
+name = "kagi"
+url = "https://mcp.kagi.com/mcp"
+bearer_token_env = "KAGI_API_KEY"
+default_for = ["web_search", "web_fetch"]
+
+[[command-mcp]]
+name = "tilth"
+command = "tilth"
+args = ["--mcp", "--edit"]
+default_for = ["read", "write", "edit"]
+```
+
+Kagi is a normal MCP server: its tools keep their advertised names, such as
+`kagi_search_fetch` and `kagi_extract`. Loom supplies no Kagi-specific wrappers
+or argument translations. `[[mcp]]` and `[search] backend = "kagi"` are rejected;
+edit existing configuration to use the new tables. Brave and Tavily remain
+optional first-party `[search]` backends.
 
 Only the relay receives the upstream URL and HTTP credentials, over private
 stdin after a version handshake. Its launch policy grants the configured host
@@ -88,7 +118,7 @@ supervises processes over stdio and does not perform their upstream HTTP calls.
 These are local Deno workers, not containers or microVMs yet. Loopback endpoints
 will need guest routing when the launcher gains VM support. The daemon still
 resolves credentials; unmigrated connectors still share its process, and native
-CLIs still have host authority. Removing the explicit Kagi key from connector
+CLIs still have host authority. Removing explicit upstream keys from connector
 configuration does not prevent native code from reading host credentials.
 
 A **connector** is a workspace member that teaches Loom to drive one kind of
@@ -257,11 +287,9 @@ codex_cli_path = "/absolute/path/to/codex"
 Loom replaces the app-server's `mcp_servers` table for every Code Mode session
 with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
-back through Loom's existing permission UI. When `[search] backend = "kagi"`,
-Loom also mounts a session relay to Kagi's hosted MCP server; the relay holds the
-configured key and Codex receives only its local access token. Codex's
-native web search remains enabled by default; set
-`codex_builtin_web_search = false` to use Kagi alone.
+back through Loom's existing permission UI. HTTP MCP mounts use session relays;
+the native client receives a local access token rather than the upstream key.
+Set `codex_builtin_web_search = true` to also expose Codex's native web search.
 
 This is a vendored compatibility connector over the private Codex backend,
 rather than the public OpenAI API. That backend and its accepted model IDs can

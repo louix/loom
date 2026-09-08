@@ -5,7 +5,7 @@ import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
-import { resolveMcpCommand } from "./mcp-fallback.ts";
+import { resolveMcpSpec } from "./mcp-fallback.ts";
 import { findClaudeOwner } from "./provider-recovery.ts";
 import {
   claudeProfileId,
@@ -1865,7 +1865,8 @@ export class Daemon {
       next.db !== before.db ||
       next.runIsolation !== before.runIsolation ||
       next.daemon.eventBufferSize !== before.daemon.eventBufferSize ||
-      JSON.stringify(next.mcp) !== JSON.stringify(before.mcp);
+      JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
+      JSON.stringify(next.httpMcp) !== JSON.stringify(before.httpMcp);
 
     this.#log.info("config reloaded", { needsRestart });
     this.#emitNotice(
@@ -1906,7 +1907,7 @@ export class Daemon {
       runningSessions: this.#sessions.count,
       providers: this.#providers.live().map((p) => p.id),
       loomTools: ["ask_user", "commit"],
-      mcpMounts: this.config.mcp.map((m) => m.name),
+      mcpMounts: [...this.config.mcp, ...this.config.httpMcp].map((m) => m.name),
       clients: this.#server.clientCount,
       connections: this.#server.connectionCount,
       eventSeq: this.#events.head,
@@ -3187,14 +3188,34 @@ export class Daemon {
 
   /** Vendor-neutral MCP handles from config; mounted into every session. */
   #mcpHandles(): McpServerHandle[] {
-    return this.config.mcp.map((m) => {
-      const { command, args, note } = resolveMcpCommand(m.command);
+    const commands: McpServerHandle[] = this.config.mcp.map((m) => {
+      const { command, args, note } = resolveMcpSpec(m);
       if (note && !this.#tilthFallbackLogged) {
         this.#log.info("mcp command resolved", { name: m.name, note });
         this.#tilthFallbackLogged = true;
       }
-      return { name: m.name, spec: { transport: "stdio", command, args } };
+      return {
+        name: m.name,
+        ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
+        spec: { transport: "stdio", command, args },
+      };
     });
+    const http: McpServerHandle[] = this.config.httpMcp.map((m) => {
+      const token = m.bearerTokenEnv ? Deno.env.get(m.bearerTokenEnv) : undefined;
+      if (m.bearerTokenEnv && !token)
+        throw new Error("MCP " + m.name + ": " + m.bearerTokenEnv + " is not set");
+      return {
+        name: m.name,
+        defaultFor: m.defaultFor,
+        ...(m.bearerTokenEnv ? { credentialEnv: m.bearerTokenEnv } : {}),
+        spec: {
+          transport: "http",
+          url: m.url,
+          ...(token ? { headers: { Authorization: "Bearer " + token } } : {}),
+        },
+      };
+    });
+    return [...commands, ...http];
   }
 
   /**
@@ -3230,7 +3251,7 @@ export class Daemon {
    */
   #doctorReport(): DoctorReport {
     const mcp: DoctorMcpServer[] = this.config.mcp.map((m) => {
-      const { command, args, note } = resolveMcpCommand(m.command);
+      const { command, args, note } = resolveMcpSpec(m);
       return {
         name: m.name,
         command: m.command,
@@ -3240,6 +3261,18 @@ export class Daemon {
       };
     });
 
+    for (const m of this.config.httpMcp) {
+      const missing = m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);
+      mcp.push({
+        name: m.name,
+        command: "HTTP MCP",
+        resolved: new URL(m.url).origin,
+        status: missing ? "missing" : "ok",
+        note: missing
+          ? m.bearerTokenEnv + " is not set"
+          : "Isolated HTTP relay; preferred for: " + (m.defaultFor.join(", ") || "none"),
+      });
+    }
     const s = this.config.search;
     const searchKey = s.backend === "none" ? "" : resolveApiKey(s);
 
@@ -3264,7 +3297,7 @@ export class Daemon {
         loom: ["ask_user", "commit"],
         claude: ["Read", "Write", "Edit", "Bash", "Task", "TodoWrite", "WebFetch"],
         aisdk: ["bash", "edit", "grep"],
-        claudeDisabled: ["Grep", "Glob"],
+        claudeDisabled: [...this.config.providers.claude.disableBuiltin],
       },
       webSearch: {
         backend: s.backend,
@@ -3280,9 +3313,7 @@ export class Daemon {
 // daemon.doctor helpers
 // ---------------------------------------------------------------------------
 
-/** MCP command health for {@link DoctorReport}: whether the resolved binary
- *  is on `$PATH`. {@link resolveMcpCommand} sets `note` only when it rewrote
- *  the legacy `tilth mcp` spelling. */
+/** MCP command health for {@link DoctorReport}: whether the configured binary is executable. */
 const mcpStatusOf = (command: string): DoctorMcpServer["status"] =>
   onPath(command) ? "ok" : "missing";
 

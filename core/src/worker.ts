@@ -1,5 +1,6 @@
 /** Private connector protocol. Never route these messages through daemon admin RPC. */
 import type { HarnessEvent } from "./events.ts";
+import { MCP_CAPABILITIES } from "./types.ts";
 import type { ConnectorConfig } from "./connector.ts";
 import type {
   AdapterSnapshot,
@@ -110,7 +111,17 @@ const plan = (v: unknown) =>
 
 const stringMap = (v: unknown) => record(v) && Object.values(v).every(str);
 const mcp = (v: unknown): boolean => {
-  if (!record(v) || !str(v.name) || !record(v.spec)) return false;
+  if (
+    !record(v) ||
+    !str(v.name) ||
+    !record(v.spec) ||
+    !optional(
+      v.defaultFor,
+      (x) => Array.isArray(x) && x.every((c) => MCP_CAPABILITIES.includes(c)),
+    ) ||
+    !optional(v.credentialEnv, str)
+  )
+    return false;
   const s = v.spec;
   if (s.transport === "stdio")
     return str(s.command) && optional(s.args, strings) && optional(s.env, stringMap);

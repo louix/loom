@@ -12,6 +12,15 @@
  */
 import { onPath } from "@loom/core/paths";
 
+/** Structured command-mcp entries name one executable; args never undergo shell parsing. */
+export const resolveMcpSpec = (m: { command: string; args?: string[] }): ResolvedCommand => ({
+  command: m.command,
+  args: m.args ?? [],
+  ...(m.command === "tilth" && !onPath("tilth")
+    ? { note: "tilth is not installed — its tools won't be available this session" }
+    : {}),
+});
+
 export interface ResolvedCommand {
   command: string;
   args: string[];

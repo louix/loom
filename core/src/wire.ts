@@ -465,12 +465,12 @@ export interface DoctorConnector {
   loaded: boolean;
 }
 
-/** One MCP server mounted into every session, and whether its command resolves. */
+/** One configured MCP mount and its local configuration health. */
 export interface DoctorMcpServer {
   name: string;
-  /** As written in `config.toml`'s `[[mcp]]`. */
+  /** Configured command, or "HTTP MCP" for a remote mount. */
   command: string;
-  /** What actually gets spawned — the legacy `tilth mcp` heal rewrites this. */
+  /** Executable plus arguments, or the HTTP origin (without credentials/query). */
   resolved: string;
   /** `ok` on PATH · `missing` unrunnable. */
   status: "ok" | "missing";
@@ -515,7 +515,7 @@ export interface DoctorReport {
     claudeDisabled: string[];
   };
   webSearch: {
-    backend: "none" | "brave" | "tavily" | "kagi";
+    backend: "none" | "brave" | "tavily";
     /** Backend set and its key resolved — aisdk sessions then get `web_search`. */
     enabled: boolean;
     note: string;

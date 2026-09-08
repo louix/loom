@@ -12,7 +12,6 @@
     "./tools/edit": "./src/tools/edit.ts",
     "./tools/grep": "./src/tools/grep.ts",
     "./tools/search": "./src/tools/search.ts",
-    "./tools/kagi": "./src/tools/kagi.ts",
     "./tools/background": "./src/tools/background.ts",
     "./tools/builtins": "./src/tools/builtins.ts"
   }

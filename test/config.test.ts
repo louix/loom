@@ -470,10 +470,7 @@ max_results = 8
   assert.equal(c.search.apiBase, "http://localhost:7777");
   assert.equal(c.search.maxResults, 8);
 
-  assert.equal(
-    cfg(`[search]\nbackend = "kagi"\napi_key_env = "KAGI_API_KEY"\n`).search.backend,
-    "kagi",
-  );
+  assert.throws(() => cfg(`[search]\nbackend = "kagi"\n`), /http-mcp/);
   assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);

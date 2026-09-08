@@ -509,7 +509,7 @@ test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () 
   }
 
   assert.deepEqual(rep.tools.loom, ["ask_user", "commit"]);
-  assert.deepEqual(rep.tools.claudeDisabled, ["Grep", "Glob"]);
+  assert.deepEqual(rep.tools.claudeDisabled, []);
   assert.equal(rep.webSearch.backend, "none");
   assert.equal(rep.webSearch.enabled, false);
   assert.ok(Array.isArray(rep.configWarnings));
@@ -2371,6 +2371,39 @@ test("a mode notification for a session with no live adapter writes nothing", as
     assert.equal(row?.status.kind, "done");
   } finally {
     await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("doctor reflects configured HTTP mounts, preferences and disabled native tools", async () => {
+  const hh = await makeHarness({
+    config: `
+command-mcp = []
+[[http-mcp]]
+name = "research"
+url = "https://example.invalid/mcp?private=do-not-display"
+default_for = ["web_search"]
+[providers.claude]
+disable_builtin = ["Read"]
+`,
+  });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+    reconnect: false,
+  });
+  try {
+    const report = await c.request<DoctorReport>("daemon.doctor");
+    assert.deepEqual(report.tools.claudeDisabled, ["Read"]);
+    assert.deepEqual(
+      report.mcp.map((m) => m.name),
+      ["research"],
+    );
+    assert.match(report.mcp[0]!.note, /Isolated HTTP relay.*web_search/);
+    assert.doesNotMatch(JSON.stringify(report.mcp), /do-not-display/);
+  } finally {
+    c.close();
     await hh.cleanup();
   }
 });

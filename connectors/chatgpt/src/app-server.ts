@@ -33,10 +33,8 @@ import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
 
-const KAGI_TOKEN_ENV = "LOOM_CODEX_KAGI_API_KEY";
-
 /** Serialize Loom's MCP mounts as a TOML inline table for `codex -c`. */
-export const mcpConfig = (servers: McpServerHandle[], search?: SearchConfig): string => {
+export const mcpConfig = (servers: McpServerHandle[]): string => {
   const value = (v: string): string => JSON.stringify(v); // JSON strings are TOML basic strings.
   const table = (entries: Record<string, string>): string =>
     `{ ${Object.entries(entries)
@@ -61,22 +59,15 @@ export const mcpConfig = (servers: McpServerHandle[], search?: SearchConfig): st
       return [s.name, `{ ${fields.join(", ")} }`] as const;
     }),
   );
-  if (search?.backend === "kagi") {
-    const base = (search.apiBase || "https://mcp.kagi.com").replace(/\/$/, "");
-    entries.set(
-      "kagi",
-      `{ url = ${value(`${base}/mcp`)}, bearer_token_env_var = ${value(KAGI_TOKEN_ENV)} }`,
-    );
-  }
   return `{ ${[...entries.entries()].map(([name, config]) => `${value(name)} = ${config}`).join(", ")} }`;
 };
 
-/** Preserve the existing native environment, but omit the configured search
- *  credential and inject the session relay token. Native host authority remains
+/** Preserve the existing native environment, but omit upstream MCP credentials.
+ *  Relay tokens arrive in the MCP mount configuration. Native host authority remains
  *  until the ChatGPT connector migration and VM isolation. */
 const launchOptions = (
   servers: McpServerHandle[],
-  search: SearchConfig | undefined,
+  _search: SearchConfig | undefined,
   builtinWebSearch: boolean,
   codexHome: CodexHome,
 ): { args: string[]; env: NodeJS.ProcessEnv } => ({
@@ -89,19 +80,17 @@ const launchOptions = (
     // would otherwise select — the two credential paths must agree.
     'cli_auth_credentials_store="file"',
     "-c",
-    `mcp_servers=${mcpConfig(servers, search)}`,
-    // Loom's Kagi server is the configured search source for Code Mode too.
+    `mcp_servers=${mcpConfig(servers)}`,
+    // MCP search defaults are independent of the native web-search setting.
     ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
   ],
   env: {
     ...Object.fromEntries(
       Object.entries(Deno.env.toObject()).filter(
-        ([name]) =>
-          name !== "KAGI_API_KEY" && name !== search?.credentialEnv && name !== KAGI_TOKEN_ENV,
+        ([name]) => !servers.some((s) => s.credentialEnv === name),
       ),
     ),
     CODEX_HOME: codexHome.dir,
-    ...(search?.backend === "kagi" ? { [KAGI_TOKEN_ENV]: search.apiKey } : {}),
   },
 });
 

@@ -50,9 +50,25 @@ export interface ProviderCapabilities {
   models: string[];
 }
 
-/** A vendor-neutral MCP server description. The Claude adapter maps it to `mcpServers`. */
+/** Capability preferences are independent of server tool names and schemas. */
+export const MCP_CAPABILITIES = [
+  "read",
+  "write",
+  "edit",
+  "find",
+  "grep",
+  "web_search",
+  "web_fetch",
+] as const;
+export type McpCapability = (typeof MCP_CAPABILITIES)[number];
+
+/** A vendor-neutral MCP server description. */
 export interface McpServerHandle {
   name: string;
+  /** Preferred capabilities; tools retain their own names and input schemas. */
+  defaultFor?: McpCapability[];
+  /** Upstream credential env name to omit from native child environments. */
+  credentialEnv?: string;
   spec:
     | { transport: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
     | { transport: "http"; url: string; headers?: Record<string, string> };
