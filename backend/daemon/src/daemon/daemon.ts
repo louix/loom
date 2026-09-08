@@ -207,6 +207,7 @@ export class Daemon {
   /** Set once the start-up catalog probe has settled (any outcome) — drives
    *  `ProviderInfo.modelsLoading`, so the TUI shows a loader, not a stub list. */
   #claudeProbeDone = false;
+  #claudeModelsError: string | undefined;
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   /** Prompt-cache TTL last *observed* per session, in minutes — the dedupe key
@@ -856,6 +857,7 @@ export class Daemon {
   }
 
   async #probeClaudeCatalog(): Promise<void> {
+    this.#claudeModelsError = undefined;
     if (this.#standalone) return;
     if (this.config.providers.claude.models.length > 0) return;
     try {
@@ -882,12 +884,11 @@ export class Daemon {
       this.config.providers.claude.models = this.#claudeChoices.map((c) => c.id);
       this.#log.info("claude models discovered", { count: models.length });
     } catch (err) {
-      this.#log.warn(
-        "claude model discovery failed — set `[providers.claude] models` to pin a list",
-        {
-          err: err instanceof Error ? err.message : String(err),
-        },
-      );
+      this.#claudeModelsError =
+        err instanceof Error ? err.message : "Claude model discovery failed";
+      this.#log.warn("claude model discovery failed", {
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -928,6 +929,7 @@ export class Daemon {
         models: claudeModels,
         ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
         ...(this.#claudeCatalogPending ? { modelsLoading: true } : {}),
+        ...(this.#claudeModelsError ? { modelsError: this.#claudeModelsError } : {}),
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,

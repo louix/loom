@@ -415,6 +415,8 @@ export interface ProviderInfo {
    * state snapshot carries the settled list when it lands.
    */
   modelsLoading?: boolean;
+  /** Actionable diagnostic when automatic model discovery fails. */
+  modelsError?: string;
   /**
    * Model a new session gets when none is chosen: the last one run on this
    * provider (remembered across restarts), else a config pin, else the first

@@ -59,6 +59,25 @@ const fixture = async () => {
     },
   };
 };
+
+test("Claude discovery preserves an actionable CLI diagnostic across the worker boundary", async () => {
+  const f = await fixture();
+  try {
+    const provider = await createClaudeWorkerProvider({
+      ...f.ctx,
+      config: { ...f.ctx.config, cliPath: join(f.root, "missing-secret-path") },
+    });
+    await assert.rejects(provider.listModels(), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /providers.claude.cli_path is not an executable file/);
+      assert.match(error.message, /restart the daemon/);
+      assert.doesNotMatch(error.message, /missing-secret-path/);
+      return true;
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
 const reader = (s: AgentSession) => {
   const events: HarnessEvent[] = [];
   const done = (async () => {

@@ -858,6 +858,8 @@ export const modelPickEmptyText = (s: TuiState, providerId: string): string => {
   if (providerInfo(s, providerId)?.modelsLoading) {
     return "loading the model catalog — the list fills in when detection completes";
   }
+  const error = providerInfo(s, providerId)?.modelsError;
+  if (error) return error;
   if (isClaudeId(providerId)) return "claude uses its configured model — enter to continue";
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };

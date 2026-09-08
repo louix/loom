@@ -25,6 +25,7 @@ import type { HarnessEvent } from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
+import { WorkerDiagnostic } from "@loom/core/worker";
 import { ClaudeEventMapper, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildLoomMcpServer } from "./loom-mcp.ts";
@@ -1119,6 +1120,17 @@ export class ClaudeProvider implements AgentProvider {
    */
   async listModels(): Promise<DiscoveredModel[]> {
     const cli = this.#resolveCli();
+    try {
+      return await this.#discoverModels(cli);
+    } catch (error) {
+      if (!cli && error instanceof Error && error.message.includes("exists but failed to launch")) {
+        throw new WorkerDiagnostic("claudeBundledCli");
+      }
+      throw new WorkerDiagnostic("claudeDiscovery");
+    }
+  }
+
+  async #discoverModels(cli: string | undefined): Promise<DiscoveredModel[]> {
     const env = queryEnv({ configDir: this.#configDir });
     const q = sdk.query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),

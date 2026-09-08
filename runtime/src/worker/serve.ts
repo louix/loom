@@ -2,6 +2,7 @@ import {
   decodeWorkerRequest,
   MAX_PENDING,
   WORKER_VERSION,
+  WorkerDiagnostic,
   type WorkerBinding,
   type WorkerRequest,
 } from "../../../core/src/worker.ts";
@@ -170,13 +171,19 @@ export const serveWorker = async (
       if (request.id <= lastId || active.size >= MAX_PENDING)
         throw new Error("invalid request sequence or request overflow");
       lastId = request.id;
-      const task = handle(request).catch(async () => {
+      const task = handle(request).catch(async (error: unknown) => {
         // Connector exceptions can contain credentials; keep wire errors generic.
         if (!closing)
           await writer.send({
             kind: "response",
             id: request.id,
-            error: { code: "operation_failed", message: `worker ${request.method} failed` },
+            error: {
+              code: "operation_failed",
+              message:
+                error instanceof WorkerDiagnostic
+                  ? error.message
+                  : `worker ${request.method} failed`,
+            },
           });
       });
       active.add(task);

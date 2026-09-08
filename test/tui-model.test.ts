@@ -2915,6 +2915,21 @@ test("a model picker opened while the catalog loads resolves when the fresh list
   );
   assert.equal(pickerOf(opened)?.items.length, 0);
 
+  const diagnostic = "Claude could not start. Install Claude or set providers.claude.cli_path.";
+  const failed = reduce(
+    opened,
+    fleet(
+      [],
+      loading.map((p) => ({
+        ...p,
+        modelsLoading: false,
+        modelsError: diagnostic,
+      })),
+    ),
+  );
+  assert.equal(modelPickEmptyText(failed, "claude"), diagnostic);
+  assert.equal(pickerOf(failed)?.emptyText, diagnostic);
+
   // …then the daemon's settle push lands — the same picker fills in.
   const settled = reduce(opened, fleet([], PROVIDERS));
   assert.deepEqual(

@@ -13,6 +13,34 @@ import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
 
+test("model discovery explains a bundled CLI launch failure without exposing SDK error details", async () => {
+  const path = Deno.env.get("PATH");
+  Deno.env.set("PATH", "");
+  try {
+    for (const synchronous of [true, false]) {
+      const failure = new Error(
+        "Claude Code native binary at /private/token exists but failed to launch. secret",
+      );
+      __setClaudeSdk({
+        query: () => {
+          if (synchronous) throw failure;
+          return { initializationResult: () => Promise.reject(failure), close: () => {} } as never;
+        },
+      });
+      await assert.rejects(new ClaudeProvider().listModels(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /No claude executable was found on the daemon's PATH/);
+        assert.match(error.message, /providers.claude.cli_path/);
+        assert.doesNotMatch(error.message, /private|secret/);
+        return true;
+      });
+    }
+  } finally {
+    if (path === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", path);
+  }
+});
+
 // Structural stand-in for the SDK's `CanUseTool` — the real type isn't a root
 // dependency, and only its shape matters here.
 type PermissionResult = { behavior: "allow" | "deny"; message?: string } | null;

@@ -14,6 +14,22 @@ export const WORKER_VERSION = 2;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
+const diagnostics = {
+  claudeCliPath:
+    "providers.claude.cli_path is not an executable file. Set it to an installed Claude executable and restart the daemon.",
+  claudeBundledCli:
+    "Claude could not start. No claude executable was found on the daemon's PATH, and the SDK's bundled binary failed to launch. Install Claude or set providers.claude.cli_path, then restart the daemon.",
+  claudeDiscovery:
+    "Claude model discovery failed. Check that Claude can start and is authenticated; set providers.claude.cli_path if needed, then restart the daemon.",
+} as const;
+
+/** Only fixed, credential-free diagnostics may cross the worker boundary. */
+export class WorkerDiagnostic extends Error {
+  constructor(code: keyof typeof diagnostics) {
+    super(diagnostics[code]);
+  }
+}
+
 export interface WorkerBinding {
   generation: string;
   providerId: string;

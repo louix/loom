@@ -8,6 +8,7 @@
  */
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { WorkerDiagnostic } from "@loom/core/worker";
 
 const isExecutableFile = (path: string): boolean => {
   try {
@@ -38,7 +39,7 @@ const onPath = (name: string): string | undefined => {
 export const resolveClaudeCli = (explicit: string): string | undefined => {
   if (explicit) {
     if (isExecutableFile(explicit)) return explicit;
-    throw new Error(`providers.claude.cli_path is not an executable file: ${explicit}`);
+    throw new WorkerDiagnostic("claudeCliPath");
   }
   return onPath("claude");
 };
