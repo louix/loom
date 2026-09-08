@@ -13,6 +13,7 @@ export const startRuntimeMcp = async (
   workspace: string,
   launch: WorkerLauncher = launchLocalWorker,
   startGit = startSessionGit,
+  allowRepoPrograms = false,
 ): Promise<ManagedMcp> => {
   if (Deno.build.os !== "linux")
     throw new Error("Packaged MCP VMs currently require Linux with KVM");
@@ -35,7 +36,7 @@ export const startRuntimeMcp = async (
     vmArguments(binding);
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
-    git = await startGit(cwd, state, lock.artifact);
+    git = await startGit(cwd, state, lock.artifact, allowRepoPrograms);
     if (git) binding.gitSocket = git.socket;
     const base = mockLaunchSpec(state);
     child = launch({

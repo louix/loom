@@ -6,12 +6,17 @@ import { prepareGitBridge } from "../../../../runtime/src/git-bridge/service.ts"
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec } from "./worker-launch.ts";
 
-export const startSessionGit = async (workspace: string, state: string, artifact: string) => {
+export const startSessionGit = async (
+  workspace: string,
+  state: string,
+  artifact: string,
+  allowRepoPrograms = false,
+) => {
   const layout = await discoverGitWorktree(workspace);
   if (!layout) return undefined;
   try {
     if (
-      (await Deno.readTextFile(join(artifact, "git-bridge-version"))).trim() !== "1" ||
+      (await Deno.readTextFile(join(artifact, "git-bridge-version"))).trim() !== "2" ||
       !(await Deno.stat(join(artifact, "bin/git"))).isFile
     )
       throw new Error("missing shim");
@@ -34,7 +39,14 @@ export const startSessionGit = async (workspace: string, state: string, artifact
     }
   }
   if (!git) throw new Error("Host Git is required for VM worktree sessions; install Git on PATH");
-  const prepared = await prepareGitBridge({ workspace, state, git, ...layout });
+  const prepared = await prepareGitBridge({
+    workspace,
+    state,
+    git,
+    writable: true,
+    allowRepoPrograms,
+    ...layout,
+  });
   const socket = join(prepared.dir, "git.sock");
   const child = launchLocalWorker({
     ...mockLaunchSpec(state),
@@ -44,7 +56,7 @@ export const startSessionGit = async (workspace: string, state: string, artifact
     ),
     permissions: {
       read: [state, workspace, git, layout.gitDir, layout.commonDir],
-      write: [state],
+      write: [state, prepared.control],
       run: [git],
       env: [],
       net: [`unix:${socket}`],

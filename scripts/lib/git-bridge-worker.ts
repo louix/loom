@@ -15,7 +15,7 @@ export const gitBridgeWorker = async function (options: GitBridgeOptions) {
       "run",
       "--no-prompt",
       `--allow-read=${paths.join(",")}`,
-      `--allow-write=${options.state}`,
+      `--allow-write=${options.state},${prepared.control}`,
       `--allow-run=${options.git}`,
       `--allow-net=unix:${join(prepared.dir, "git.sock")}`,
       main,

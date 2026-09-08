@@ -1,6 +1,6 @@
 # Session Git bridge
 
-Packaged MCP runtimes now automatically get a read-only Git bridge when their
+Packaged MCP runtimes now automatically get a controlled Git bridge when their
 workspace is a supported linked worktree. The guest uses an ordinary `git`
 command, supplied by the runtime artifact. Host commits and rebases remain
 immediately visible, preserving the existing host Git/lazygit workflow.
@@ -47,11 +47,17 @@ packaging patch makes Git failures surface as tool errors instead of looking
 like an empty diff. `git diff --no-index` is rejected because it would read
 arbitrary host files; Tilth can still read guest files directly.
 
-Staging, commits, checkout, rebase, config, remote operations, arbitrary config
+Writes support `git add` (including `-A`/`-u`), `git restore --staged`,
+`git commit -m` (including amend), `git rebase REF`, `git rebase --onto NEW OLD`,
+and rebase `--continue`, `--skip`, `--abort`. Only the branch attached when the
+bridge starts can be changed. Rebase targets supply history; their branches are
+not moved. Conflict state lives in real host metadata and survives session close.
+Resume the session to continue a bridge-owned rebase, or finish it using host Git.
+Interactive rebases, checkout, config, remote operations, arbitrary config
 flags and Git aliases are rejected. The sole accepted config flag is Tilth's
 `-c core.quotePath=false`. Other working directories are rejected rather than
-silently returning results for the wrong location. Guest Git writes remain a
-separate policy expansion; code edits through file tools continue to work.
+silently returning results for the wrong location. Bridge operations serialize per worktree; ordinary host tools do not take this
+bridge lock, so avoid simultaneous host and guest Git mutations.
 
 ## Isolation and lifecycle
 
@@ -69,18 +75,31 @@ collision described in [smolvm issue 864](https://github.com/smol-machines/smolv
 The daemon prepares a private metadata view and starts a separate Git worker.
 It checks the host worktree backlink and common-directory relationship before
 binding the endpoint. Guest requests cannot select a host repository or session.
-The view links objects and refs, refreshes HEAD atomically per request, and reads
-the original index without optional writes. Git objects are never copied.
+Production bridge operations use the real host metadata, so commits, reflogs and
+rebase state are immediately available to host Git and lazygit. A private read-only
+view remains available for the original bridge tests. Native Git is not sandboxed
+by Deno; its restricted command policy is the host boundary.
 
-Original config/includes, worktree config, hooks and info/attributes are not
-loaded by command execution. The Git child gets a cleared environment and
-fixed arguments disabling pager, fsmonitor, external diff/textconv, replacement
-objects and lazy fetch. Configured filters are unavailable in the private view.
-The worker itself gets scoped Deno filesystem grants, the exact Git executable,
-and only its exact Unix socket network grant. Symlink preparation runs in the
-trusted supervisor because Deno requires unscoped grants to create symlinks.
-Native Git is not sandboxed by Deno; its restricted command policy remains an
-important host boundary.
+By default, each invocation disables hooks and fsmonitor, and configuration with
+includes, executable filters or merge drivers is rejected with an actionable error.
+The bridge checks this policy again before operations. To trust repository programs:
+
+```toml
+[isolation.git]
+allow_repo_programs = true
+```
+
+This permits configured hooks, filters, merge drivers and fsmonitor to execute on
+the **host**, outside the VM. Bridge requests still enforce the command and
+session-branch restrictions; programs themselves run as trusted host code without
+those restrictions. Signing, editors, automatic maintenance and rebase updates to
+other refs remain disabled in either mode. Global/system Git config and ambient
+environment are excluded; configure required identity and integrations locally.
+The program opt-in preserves host PATH. Without local user.name/user.email, new
+commits use `Loom <loom@localhost>`; rebases preserve the original author.
+These overrides never rewrite repository configuration or affect normal host Git.
+The option applies when a provider is created; restart the daemon after changing it.
+Configuration is trusted host state, not protected against concurrent host edits.
 
 Parent EOF closes each worker, including during initialization. The VM supervisor
 kills its in-flight smolvm CLI before reaping, preventing a startup race. The
@@ -103,9 +122,9 @@ Supported repositories use SHA-1, file refs (loose or packed), linked worktrees
 and a normal index (versions 2–4). Startup validates repository format and index
 framing. SHA-256, reftable, split/sparse indexes and unknown extensions fail with
 an explanation. The usual `extensions.worktreeConfig` setting is supported;
-execution ignores its configuration. Submodule status is ignored, and LFS/filter
-semantics are not emulated. Validation describes the layout at startup; host
-changes to an unsupported layout while a session is running may cause Git errors.
+execution validates its configuration. Submodule status is ignored, and LFS/filter
+semantics require the repository-program opt-in and installed host helpers.
+The production bridge revalidates configuration and index framing before operations.
 
 The socket accepts one version-1 JSON line per connection. Structured status,
 diff and log requests remain available; the shim sends `{version:1,op:"git",
@@ -114,13 +133,13 @@ returns `{version:1,ok:true,code,stdout,stderr}`; Git's nonzero exit codes are
 preserved. Policy and limit failures return `ok:false`. Output is UTF-8 text.
 
 Bounds: 4 KiB requests, 64 KiB combined Git output, eight active requests,
-five seconds per connection/execution, and at most 50 log entries. Larger diffs
+65 seconds per connection/execution, and at most 50 log entries. Larger diffs
 fail visibly; they are not truncated and presented as complete.
 
 ## Verification
 
 ```sh
-deno test -A test/git-bridge.test.ts test/git-bridge-integration.test.ts
+deno test -A test/git-bridge.test.ts test/git-bridge-integration.test.ts test/git-bridge-writes.test.ts
 # Requires a freshly prepared tilth runtime and KVM:
 deno run -A scripts/test-session-git-vm.ts tilth
 # Existing non-Git VM acceptance checks:
@@ -128,7 +147,7 @@ deno run -A scripts/test-runtime-vm.ts tilth
 ```
 
 The tests use disposable repositories. Session acceptance exercises Tilth diffs,
-the native shim, host commits/rebase, inaccessible host metadata, rejected writes,
+the native shim, host commits/rebase, inaccessible host metadata, guest staging/commits/rebase, rejected commands,
 normal close, parent EOF, both worker crashes, startup EOF and parent SIGKILL.
 Earlier `test-git-bridge-vm.ts` checks concurrent endpoint routing and vsock with
 IP blocked against a positive control. `test-guest-bridge.ts` preserves the

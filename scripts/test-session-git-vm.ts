@@ -104,8 +104,24 @@ for (const mode of [
         const diff = await exec([binary, "diff", "main"]);
         assert.equal(diff.code, 0, new TextDecoder().decode(diff.stderr));
         assert.match(new TextDecoder().decode(diff.stdout), /\+guest edit/);
+        const guestGit = async (...args: string[]) => {
+          const result = await exec([binary, ...args]);
+          assert.equal(result.code, 0, new TextDecoder().decode(result.stderr));
+        };
+        await Deno.writeTextFile(join(f.workspace, "guest.txt"), "from guest\n");
+        await guestGit("add", "guest.txt");
+        await guestGit("commit", "-m", "guest commit");
+        assert.equal(await f.git("-C", f.workspace, "log", "-1", "--format=%s"), "guest commit");
+        await Deno.writeTextFile(join(f.repo, "new-base.txt"), "new base\n");
+        await f.git("-C", f.repo, "add", "new-base.txt");
+        await f.git("-C", f.repo, "commit", "-m", "advance again");
+        await guestGit("rebase", "main");
+        assert.equal(
+          await f.git("-C", f.workspace, "rev-parse", "HEAD~2"),
+          await f.git("-C", f.repo, "rev-parse", "HEAD"),
+        );
         for (const args of [
-          [binary, "commit", "-m", "forbidden"],
+          [binary, "push"],
           ["/bin/busybox", "cat", join(f.commonDir, "config")],
         ])
           assert.notEqual((await exec(args)).code, 0);

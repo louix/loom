@@ -1,4 +1,4 @@
-/* Read-only guest Git client. Host policy validates every argument independently. */
+/* Controlled guest Git client. Host policy validates every argument independently. */
 #include <jansson.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -17,7 +17,7 @@ static int write_all(int fd, const char *p, size_t n) {
     return 0;
 }
 int main(int argc, char **argv) {
-    alarm(10);
+    alarm(70);
     int first = 1;
     if (argc > 3 && !strcmp(argv[1], "-C")) {
         if (chdir(argv[2])) return fail("cannot enter requested directory");
@@ -57,8 +57,10 @@ int main(int argc, char **argv) {
     free(buffer);
     if (!reply || json_integer_value(json_object_get(reply, "version")) != 1)
         return fail("invalid or incomplete bridge reply");
-    if (!json_is_true(json_object_get(reply, "ok")))
-        return fail("command rejected or limit exceeded; supported: read-only status, diff, log, show, branch --show-current and limited rev-parse, at the session root");
+    if (!json_is_true(json_object_get(reply, "ok"))) {
+        const char *message = json_string_value(json_object_get(reply, "message"));
+        return fail(message ? message : "command rejected or limit exceeded; use supported Git commands at the session root; config, hooks, interactive commands and remote operations are unavailable");
+    }
     json_t *out = json_object_get(reply, "stdout"), *err = json_object_get(reply, "stderr"), *code = json_object_get(reply, "code");
     if (!json_is_string(out) || !json_is_string(err) || !json_is_integer(code)) return fail("invalid bridge result");
     if (write_all(STDOUT_FILENO, json_string_value(out), json_string_length(out)) ||

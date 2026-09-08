@@ -1,13 +1,16 @@
-/** Read-only Git capability served by a separate, session-scoped host worker. */
+/** Controlled Git capability served by a separate, session-scoped host worker. */
 import { isAbsolute, join, resolve } from "node:path";
-import { readOnlyGitArgs } from "./arguments.ts";
+import { sessionGitArgs, isGitWrite } from "./arguments.ts";
 import { validateGitLayout } from "./layout.ts";
+import { boundBranch, checkWriteState, finishWriteState } from "./write-state.ts";
 
 const MAX_REQUEST = 4096;
 const MAX_OUTPUT = 64 * 1024;
 const MAX_CONNECTIONS = 8;
-const REQUEST_TIMEOUT = 5000;
+const REQUEST_TIMEOUT = 65_000;
 const encoder = new TextEncoder();
+// Serialize requests locally as well as across Git worker processes.
+const operations = new Map<string, Promise<void>>();
 
 export const gitArguments = function (value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -22,7 +25,7 @@ export const gitArguments = function (value: unknown): string[] {
     case "git":
       keys(["args", "cwd"]);
       if (typeof r.cwd !== "string") throw new Error("Missing Git cwd");
-      return readOnlyGitArgs(r.args);
+      return sessionGitArgs(r.args);
     case "status":
       keys([]);
       return ["status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all"];
@@ -81,6 +84,9 @@ export interface GitBridgeOptions {
   git: string;
   /** Existing private supervisor directory outside the guest workspace. */
   state: string;
+  writable?: boolean;
+  /** Permit configured programs to execute on the host. Host policy only. */
+  allowRepoPrograms?: boolean;
 }
 
 /** Trusted supervisor setup. Deno restricts symlink creation to unscoped grants. */
@@ -117,7 +123,24 @@ export const prepareGitBridge = async function (options: GitBridgeOptions) {
     );
     for (const name of ["objects", "refs", "packed-refs"])
       await Deno.symlink(join(commonDir, name), join(shadow, name));
-    return { workspace, gitDir, commonDir, state, git, dir, shadow };
+    const control = join(gitDir, "loom-bridge");
+    await Deno.mkdir(control, { recursive: true, mode: 0o700 });
+    const writable = options.writable === true;
+    const allowRepoPrograms = options.allowRepoPrograms === true;
+    const programPath = allowRepoPrograms ? (Deno.env.get("PATH") ?? "") : "";
+    return {
+      workspace,
+      gitDir,
+      commonDir,
+      state,
+      git,
+      dir,
+      shadow,
+      control,
+      writable,
+      allowRepoPrograms,
+      programPath,
+    };
   } catch (error) {
     await Deno.remove(dir, { recursive: true });
     throw error;
@@ -134,11 +157,19 @@ export const startGitBridge = async function (options: GitBridgeOptions) {
 export const startPreparedGitBridge = async function (prepared: PreparedGitBridge) {
   const { workspace, gitDir, git, dir, shadow } = prepared;
   try {
-    await validateGitLayout(prepared);
+    const identity = await validateGitLayout(prepared);
+    await Deno.writeTextFile(
+      join(shadow, "config"),
+      `[core]\nrepositoryformatversion=0\nbare=false\n[user]\nname=${JSON.stringify(identity.name)}\nemail=${JSON.stringify(identity.email)}\n`,
+    );
+    const branch = await boundBranch(prepared);
+    const gitPath = prepared.writable ? git.slice(0, git.lastIndexOf("/")) : dir;
     const env = {
       HOME: dir,
       XDG_CONFIG_HOME: dir,
-      PATH: dir,
+      PATH: prepared.allowRepoPrograms ? prepared.programPath : gitPath,
+      GIT_EDITOR: ":",
+      GIT_SEQUENCE_EDITOR: ":",
       LC_ALL: "C",
       TZ: "UTC",
       GIT_CONFIG_NOSYSTEM: "1",
@@ -148,11 +179,11 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
       GIT_TERMINAL_PROMPT: "0",
       GIT_PAGER: "cat",
       GIT_INDEX_FILE: join(gitDir, "index"),
-      GIT_EXEC_PATH: dir,
+      ...(!prepared.writable ? { GIT_EXEC_PATH: dir } : {}),
       GIT_NO_REPLACE_OBJECTS: "1",
       GIT_NO_LAZY_FETCH: "1",
     };
-    const execute = async (args: string[], signal: AbortSignal) => {
+    const run = async (args: string[], signal: AbortSignal) => {
       signal.throwIfAborted();
       // Git treats a symlink HEAD as a symbolic ref, not a file to dereference.
       // Refresh its tiny contents atomically so host checkout/rebase is visible.
@@ -160,24 +191,39 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
       await Deno.copyFile(join(gitDir, "HEAD"), head);
       await Deno.rename(head, join(shadow, "HEAD"));
       signal.throwIfAborted();
+      const commandArgs = [
+        "--no-pager",
+        "--literal-pathspecs",
+        `--git-dir=${prepared.writable ? gitDir : shadow}`,
+        `--work-tree=${workspace}`,
+        ...(!prepared.allowRepoPrograms
+          ? ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
+          : []),
+        ...[
+          "commit.gpgSign=false",
+          "gc.auto=0",
+          "maintenance.auto=false",
+          "rebase.updateRefs=false",
+          "rebase.autoStash=false",
+          "rebase.autoSquash=false",
+          "rebase.rebaseMerges=false",
+          "rebase.instructionFormat=%s",
+          "rebase.abbreviateCommands=false",
+          "rerere.enabled=false",
+          "submodule.recurse=false",
+          `user.name=${identity.name}`,
+          `user.email=${identity.email}`,
+        ].flatMap((value) => ["-c", value]),
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.quotePath=true",
+        ...args,
+      ];
       const child = new Deno.Command(git, {
-        args: [
-          "--no-pager",
-          "--literal-pathspecs",
-          `--git-dir=${shadow}`,
-          `--work-tree=${workspace}`,
-          "-c",
-          "core.fsmonitor=false",
-          "-c",
-          "core.hooksPath=/dev/null",
-          "-c",
-          "core.attributesFile=/dev/null",
-          "-c",
-          "core.untrackedCache=false",
-          "-c",
-          "core.quotePath=true",
-          ...args,
-        ],
+        args: commandArgs,
         clearEnv: true,
         env,
         cwd: workspace,
@@ -230,6 +276,38 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
         await child.status;
       }
     };
+    const execute = async (args: string[], signal: AbortSignal) => {
+      const previous = operations.get(prepared.control);
+      const turn = Promise.withResolvers<void>();
+      operations.set(prepared.control, turn.promise);
+      await previous;
+      let lock: Deno.FsFile | undefined;
+      let started = false;
+      try {
+        lock = await Deno.open(join(prepared.control, "operation.lock"), {
+          create: true,
+          read: true,
+          write: true,
+        });
+        await lock.lock(true);
+        signal.throwIfAborted();
+        if (prepared.writable) await validateGitLayout(prepared);
+        if (isGitWrite(args)) {
+          await checkWriteState(prepared, branch, args);
+          started = true;
+        }
+        return await run(args, signal);
+      } finally {
+        try {
+          if (started) await finishWriteState(prepared);
+        } finally {
+          lock?.close();
+          turn.resolve();
+          if (operations.get(prepared.control) === turn.promise)
+            operations.delete(prepared.control);
+        }
+      }
+    };
     const socket = join(dir, "git.sock");
     const listener = Deno.listen({ transport: "unix", path: socket });
     await Deno.chmod(socket, 0o600);
@@ -272,8 +350,15 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
           if (args.length) {
             try {
               response = await execute(args, controller.signal);
-            } catch {
-              response = { version: 1, ok: false, error: "execution-failed" };
+            } catch (error) {
+              response = {
+                version: 1,
+                ok: false,
+                error: "execution-failed",
+                ...(isGitWrite(args)
+                  ? { message: error instanceof Error ? error.message : "Git operation failed" }
+                  : {}),
+              };
             }
           }
           const reply = encoder.encode(JSON.stringify(response) + "\n");
@@ -282,7 +367,7 @@ export const startPreparedGitBridge = async function (prepared: PreparedGitBridg
           return;
         }
       } catch {
-        /* Disconnects/timeouts have no host effect beyond cancelling this request. */
+        /* A cancelled write can leave normal Git recovery state; never replay it. */
       } finally {
         clearTimeout(timer);
         controller.abort();

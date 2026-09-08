@@ -1,6 +1,6 @@
-/** Guest argv is data. Only these read-only forms become host Git arguments. */
+/** Guest argv is data. Only these controlled forms become host Git arguments. */
 const fail = (): never => {
-  throw new Error("Unsupported read-only Git command");
+  throw new Error("Unsupported Git command");
 };
 export const gitRef = (value: string): boolean => {
   if (value.length > 200) return false;
@@ -27,6 +27,77 @@ const path = (p: string) =>
   !p.includes("\0") &&
   !p.includes("\n") &&
   !p.split("/").some((s) => s === ".." || s === ".git");
+export const writeGitArgs = (input: unknown): string[] | undefined => {
+  if (!Array.isArray(input) || !input.every((a) => typeof a === "string")) return undefined;
+  const [command, ...args] = input as string[];
+  if (!["add", "restore", "commit", "rebase"].includes(command ?? "")) return undefined;
+  if (input.length > 32 || args.some((a) => a.length >= 2048 || a.includes("\0"))) return fail();
+  if (command === "add" || command === "restore") {
+    const flags: string[] = [],
+      paths: string[] = [];
+    let literal = false;
+    for (const a of args) {
+      if (!literal && a === "--") {
+        literal = true;
+        continue;
+      }
+      if (
+        !literal &&
+        (command === "add" ? ["-A", "--all", "-u", "--update"] : ["--staged"]).includes(a)
+      ) {
+        flags.push(a);
+        continue;
+      }
+      if ((!literal && a.startsWith("-")) || !path(a)) return fail();
+      paths.push(a);
+    }
+    if (command === "restore" && (!flags.includes("--staged") || !paths.length)) return fail();
+    if (command === "add" && !flags.length && !paths.length) return fail();
+    return [command, ...flags, "--", ...paths];
+  }
+  if (command === "commit") {
+    let message = false,
+      amend = false,
+      noEdit = false;
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === "-m" || a === "--message") {
+        const text = args[++i];
+        if (!text?.trim()) return fail();
+        out.push("-m", text);
+        message = true;
+      } else if (["--amend", "--no-edit", "--allow-empty", "-a", "--all"].includes(a)) {
+        out.push(a);
+        amend ||= a === "--amend";
+        noEdit ||= a === "--no-edit";
+      } else return fail();
+    }
+    if (!message && !(amend && noEdit)) return fail();
+    return ["commit", "--no-gpg-sign", ...out];
+  }
+  if (args.length === 1 && ["--continue", "--abort", "--skip"].includes(args[0]!))
+    return ["rebase", args[0]!];
+  const singleRef = (r: string) => gitRef(r) && !r.includes("..");
+  if (
+    (args.length === 1 && singleRef(args[0]!)) ||
+    (args.length === 3 && args[0] === "--onto" && singleRef(args[1]!) && singleRef(args[2]!))
+  )
+    return [
+      "rebase",
+      "--merge",
+      "--no-autostash",
+      "--no-update-refs",
+      "--no-autosquash",
+      "--no-fork-point",
+      "--no-gpg-sign",
+      ...args,
+    ];
+  return fail();
+};
+export const isGitWrite = (args: string[]) =>
+  ["add", "restore", "commit", "rebase"].includes(args[0] ?? "");
+export const sessionGitArgs = (input: unknown) => writeGitArgs(input) ?? readOnlyGitArgs(input);
 export const readOnlyGitArgs = (input: unknown): string[] => {
   if (
     !Array.isArray(input) ||

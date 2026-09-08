@@ -233,6 +233,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
+  isolation: { git: { allowRepoPrograms: boolean } };
   baseBranch: string;
   worktreeDir: string;
   /**
@@ -376,6 +377,7 @@ export interface LoomConfig {
 export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
+  isolation: { git: { allowRepoPrograms: false } },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
@@ -748,6 +750,12 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
 
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
+  const gitIsolation = asRecord(asRecord(r["isolation"])["git"]);
+  if (
+    gitIsolation["allow_repo_programs"] !== undefined &&
+    typeof gitIsolation["allow_repo_programs"] !== "boolean"
+  )
+    throw new Error("isolation.git.allow_repo_programs must be a boolean");
   const autoRebase = asRecord(r["auto_rebase"]);
   const autoResume = asRecord(r["auto_resume"]);
   const commitReminder = asRecord(r["commit_reminder"]);
@@ -876,6 +884,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
+    isolation: { git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true } },
     claudeProfiles,
     worktree: {
       enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,

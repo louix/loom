@@ -84,7 +84,7 @@ packages.x86_64-linux.loom-runtime = loom.lib.mkRuntime {
 Package the executable's complete runtime dependencies, including programs it
 launches. Nix cannot discover arbitrary subprocesses looked up on PATH: wrap the
 executable to add those dependencies. Tilth uses real Git for upstream tests and
-Loom's read-only Git shim at runtime, with tests left enabled. The artifact helper
+Loom's controlled Git shim at runtime, with tests left enabled. The artifact helper
 includes that shim and its closure; packages should preserve `/run/loom/bin` on
 PATH or explicitly wrap their Git calls with the shim.
 
@@ -137,7 +137,7 @@ reaps after supervisor death. Cleanup has bounded retries for smolvm's asynchron
 registry removal; unresolved state is retained with its path in the error.
 
 Supported linked Git worktrees automatically get a separate host Git worker and
-a dedicated vsock endpoint. Read-only Git operations use the guest shim; actual
+a dedicated vsock endpoint. Controlled Git operations use the guest shim; actual
 repository metadata stays outside the mount. Run `loom runtime update tilth` once
 for older prepared artifacts. See [session Git bridge](guest-host-bridge.md) for
 commands, layout checks, lifecycle and remaining limitations. Main checkouts with

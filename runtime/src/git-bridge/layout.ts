@@ -72,6 +72,7 @@ export const validateIndex = (bytes: Uint8Array) => {
 };
 
 export const validateGitLayout = async (b: PreparedGitBridge) => {
+  const identity = { name: "Loom", email: "loom@localhost" };
   for (const file of [join(b.commonDir, "config"), join(b.gitDir, "config.worktree")]) {
     try {
       if ((await Deno.stat(file)).size > 1024 * 1024)
@@ -109,6 +110,25 @@ export const validateGitLayout = async (b: PreparedGitBridge) => {
       const [key, value = ""] = entry.split("\n");
       if (!key) continue;
       if (
+        b.writable &&
+        !b.allowRepoPrograms &&
+        (key === "include.path" ||
+          key.startsWith("includeif.") ||
+          /^filter\..*\.(clean|smudge|process)$/.test(key) ||
+          /^merge\..*\.driver$/.test(key))
+      )
+        throw new Error(
+          `Git bridge blocks repository setting ${key}; remove it or explicitly enable isolation.git.allow_repo_programs (executes programs on the host)`,
+        );
+      if (
+        ["user.name", "user.email"].includes(key) &&
+        value.trim() &&
+        // Git identity must remain a single printable config value.
+        // eslint-disable-next-line no-control-regex
+        !/[\x00-\x1f\x7f]/.test(value)
+      )
+        identity[key === "user.name" ? "name" : "email"] = value;
+      if (
         (key.startsWith("extensions.") &&
           !["extensions.worktreeconfig"].includes(key) &&
           !(key === "extensions.objectformat" && value === "sha1")) ||
@@ -129,4 +149,5 @@ export const validateGitLayout = async (b: PreparedGitBridge) => {
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
+  return identity;
 };

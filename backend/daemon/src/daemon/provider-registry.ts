@@ -130,7 +130,13 @@ export class ProviderRegistry {
       );
     }
     const { createProvider } = await load();
-    const provider = await withExternalMcp(createProvider, this.#contextFor(id));
+    const provider = await withExternalMcp(
+      createProvider,
+      this.#contextFor(id),
+      undefined,
+      undefined,
+      this.#config.isolation.git.allowRepoPrograms,
+    );
     this.#loaded.add(pkg);
     return provider;
   }

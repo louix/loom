@@ -18,6 +18,6 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
   cp ${closure}/store-paths $out/store-paths
   mkdir -p $out/bin
   ln -s ${gitShim}/bin/git $out/bin/git
-  echo 1 > $out/git-bridge-version
+  echo 2 > $out/git-bridge-version
   cp ${manifest} $out/manifest.json
 ''

@@ -83,7 +83,7 @@ Deno.test("Git worker validates extensions and services only the bound root with
     assert.equal((await request(["show", ":file.txt"])).stdout, "staged\n");
     assert.match((await request(["diff", "--staged"])).stdout, /\+staged/);
     assert.equal((await request(["status"], f.repo)).error, "invalid-request");
-    assert.equal((await request(["commit", "-m", "not allowed"])).error, "invalid-request");
+    assert.equal((await request(["commit", "-m", "not allowed"])).error, "execution-failed");
     assert.equal((await request(["log", "--format=%H %at %s%x00%an"])).code, 0);
   } finally {
     await bridge?.close();

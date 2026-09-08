@@ -205,3 +205,9 @@ api_key_env = "" # env var with the API key; tool is off if unset
 # api_base  = ""                   # override the backend URL (proxy / self-host)
 max_results = 5
 # Hosted MCP search services belong in [[http-mcp]], as shown above.
+
+# VM Git bridge: opt in only if repository hooks, filters, merge drivers and
+# fsmonitor programs may execute on the host, outside the VM. Normal host Git
+# is unaffected. Bridge command/branch restrictions remain enforced either way.
+[isolation.git]
+allow_repo_programs = false
