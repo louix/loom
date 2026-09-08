@@ -1,3 +1,4 @@
+import { stoppedSessionVm } from "./session-vm-state.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
@@ -291,7 +292,12 @@ export class Daemon {
       baseBranch: this.config.baseBranch,
       log: this.#log.child("worktrees"),
     });
-    this.#providers = new ProviderRegistry(this.config, this.#pmsgs, opts.connectors);
+    this.#providers = new ProviderRegistry(
+      this.config,
+      this.#pmsgs,
+      opts.connectors,
+      opts.repoRoot,
+    );
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,
       log: this.#log.child("hooks"),
@@ -542,6 +548,9 @@ export class Daemon {
         this.#sessions.shutdown(),
         new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS).unref()),
       ]);
+      await this.#providers.close().catch((error) => {
+        this.#log.warn("provider shutdown failed", { error: String(error) });
+      });
       // Give in-flight auto-title jobs (one-shot titler sessions live outside
       // the SessionManager) a brief window to finish before the DB closes.
       if (this.#titleJobs.size > 0) {
@@ -1861,6 +1870,7 @@ export class Daemon {
     const needsRestart =
       JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
       JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
+      JSON.stringify(next.isolation) !== JSON.stringify(before.isolation) ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       next.db !== before.db ||
@@ -2919,7 +2929,8 @@ export class Daemon {
           );
         }
         this.#hooks.forget(id);
-        if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
+        if (this.#sessions.has(id)) await this.#sessions.close(id);
+        await stoppedSessionVm(this.repoRoot, id);
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#lastSend.delete(id);
         this.#cacheTtlSeen.delete(id);
@@ -2929,6 +2940,7 @@ export class Daemon {
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
+            throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
           }
           this.#worktrees.prune();
           this.#registry.setFields(id, { worktree: null });
@@ -2971,7 +2983,8 @@ export class Daemon {
           );
         }
         this.#hooks.forget(id);
-        if (this.#sessions.has(id)) await this.#sessions.close(id).catch(() => {});
+        if (this.#sessions.has(id)) await this.#sessions.close(id);
+        await stoppedSessionVm(this.repoRoot, id);
         this.#lastSend.delete(id);
         this.#cacheTtlSeen.delete(id);
         if (s.worktree) {
@@ -2997,6 +3010,7 @@ export class Daemon {
           this.#worktrees.prune(); // release the worktree's hold on the branch first
           branchDeleted = this.#worktrees.deleteBranch(s.branch);
         }
+        await stoppedSessionVm(this.repoRoot, id, true);
         this.#registry.remove(id);
         this.#hooks.forget(id);
         this.#publishState();
@@ -3040,7 +3054,8 @@ export class Daemon {
             // A `done` session was only interrupted, not closed — its provider
             // process is still registered with this worktree as its cwd. Close
             // it before pulling the directory out from under it.
-            if (this.#sessions.has(s.id)) await this.#sessions.close(s.id).catch(() => {});
+            if (this.#sessions.has(s.id)) await this.#sessions.close(s.id);
+            await stoppedSessionVm(this.repoRoot, s.id);
             this.#worktrees.remove(s.worktree, { force });
             const snap = this.#registry.setFields(s.id, { worktree: null });
             this.#publishState(snap.id);

@@ -15,4 +15,4 @@ let
     exec ${pkgs.deno}/bin/deno run -A --cached-only --node-modules-dir=manual \
       ${loom}/libexec/loom/runtime/src/session-vm/guest.ts
   '';
-in import ./mk-runtime.nix { inherit pkgs package; executable = "loom-claude-session"; }
+in import ./mk-runtime.nix { inherit pkgs package; executable = "loom-claude-session"; sessionVersion = 1; }

@@ -233,7 +233,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
-  isolation: { git: { allowRepoPrograms: boolean } };
+  isolation: { git: { allowRepoPrograms: boolean }; claude?: { artifact: string; smolvm: string } };
   baseBranch: string;
   worktreeDir: string;
   /**
@@ -750,6 +750,17 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
 
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
+  const claudeVm = asRecord(asRecord(r["isolation"])["claude"]);
+  if (
+    asRecord(r["isolation"])["claude"] !== undefined &&
+    (typeof claudeVm["artifact"] !== "string" || !claudeVm["artifact"].trim())
+  )
+    throw new Error("isolation.claude requires an artifact path");
+  if (
+    claudeVm["smolvm"] !== undefined &&
+    (typeof claudeVm["smolvm"] !== "string" || !claudeVm["smolvm"].trim())
+  )
+    throw new Error("isolation.claude.smolvm must name an executable");
   const gitIsolation = asRecord(asRecord(r["isolation"])["git"]);
   if (
     gitIsolation["allow_repo_programs"] !== undefined &&
@@ -884,7 +895,17 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
-    isolation: { git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true } },
+    isolation: {
+      git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true },
+      ...(typeof claudeVm["artifact"] === "string"
+        ? {
+            claude: {
+              artifact: expandTilde(claudeVm["artifact"]),
+              smolvm: expandTilde(str(claudeVm["smolvm"], "smolvm")),
+            },
+          }
+        : {}),
+    },
     claudeProfiles,
     worktree: {
       enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,

@@ -613,3 +613,16 @@ test("Git bridge programs require an explicit boolean opt-in", () => {
   );
   assert.throws(() => cfg('[isolation.git]\nallow_repo_programs = "true"'), /must be a boolean/);
 });
+
+test("Claude VM routing is opt-in and requires explicit runtime paths", () => {
+  assert.equal(cfg("").isolation.claude, undefined);
+  assert.deepEqual(cfg('[isolation.claude]\nartifact="/runtime"').isolation.claude, {
+    artifact: "/runtime",
+    smolvm: "smolvm",
+  });
+  assert.throws(() => cfg('[isolation.claude]\nsmolvm="/bin/smolvm"'), /requires an artifact/);
+  assert.throws(
+    () => cfg('[isolation.claude]\nartifact="/runtime"\nsmolvm=false'),
+    /must name an executable/,
+  );
+});

@@ -244,6 +244,7 @@ export interface AgentSession {
 }
 
 export interface AgentProvider {
+  close?(): Promise<void>;
   readonly id: string;
   readonly capabilities: ProviderCapabilities;
   createSession(opts: CreateSessionOptions): Promise<AgentSession>;

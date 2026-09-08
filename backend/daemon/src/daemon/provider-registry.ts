@@ -35,6 +35,7 @@ const CHATGPT = "@loom/connector-chatgpt";
 
 export class ProviderRegistry {
   readonly #config: LoomConfig;
+  readonly #repoRoot: string;
   readonly #transcript: TranscriptStore;
   readonly #manifest: ConnectorManifest;
   readonly #ids: Set<string>;
@@ -47,7 +48,13 @@ export class ProviderRegistry {
   /** Connector packages whose `createProvider` has run at least once (for `daemon.doctor`). */
   readonly #loaded = new Set<string>();
 
-  constructor(config: LoomConfig, transcript: TranscriptStore, manifest: ConnectorManifest) {
+  constructor(
+    config: LoomConfig,
+    transcript: TranscriptStore,
+    manifest: ConnectorManifest,
+    repoRoot = Deno.cwd(),
+  ) {
+    this.#repoRoot = repoRoot;
     this.#config = config;
     this.#transcript = transcript;
     this.#manifest = manifest;
@@ -182,6 +189,15 @@ export class ProviderRegistry {
         id,
         config: {
           cliPath: c.cliPath,
+          ...(this.#config.isolation.claude
+            ? {
+                sessionVm: {
+                  ...this.#config.isolation.claude,
+                  repoRoot: this.#repoRoot,
+                  allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
+                },
+              }
+            : {}),
           promptCacheTtl: c.promptCacheTtl,
           configDir,
           ...(c.workerAllowedHosts ? { workerAllowedHosts: c.workerAllowedHosts } : {}),
@@ -235,6 +251,14 @@ export class ProviderRegistry {
   /** Providers that have actually been constructed (for shutdown / status). */
   live(): AgentProvider[] {
     return [...this.#live];
+  }
+
+  async close(): Promise<void> {
+    const results = await Promise.allSettled(this.#live.map((provider) => provider.close?.()));
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length) throw new AggregateError(errors, "Provider shutdown failed");
   }
 
   get config(): LoomConfig {

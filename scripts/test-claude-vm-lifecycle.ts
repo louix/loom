@@ -51,6 +51,7 @@ const gone = async (state: string) => {
   }
 };
 const f = await gitFixture();
+const sessionDirectory = join(f.root, "persistent");
 try {
   for (const mode of [
     "close",
@@ -65,6 +66,7 @@ try {
       artifact,
       smolvm,
       workspace: f.workspace,
+      sessionDirectory,
       auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
     });
     let session: RemoteWorkerSession | undefined;
@@ -97,6 +99,34 @@ try {
           120_000,
         ));
         const ready = await worker.status();
+        if (mode === "close") {
+          const duplicate = await launchSessionVm({
+            artifact,
+            smolvm,
+            workspace: f.workspace,
+            sessionDirectory,
+            auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
+          });
+          try {
+            await assert.rejects(
+              RemoteWorkerSession.connect(
+                "duplicate",
+                "mock",
+                mockLaunchSpec(f.workspace),
+                () => duplicate,
+                120_000,
+              ),
+            );
+            const active = JSON.parse(
+              await Deno.readTextFile(join(sessionDirectory, "active.json")),
+            );
+            assert.equal(active.token, worker.binding.token);
+            assert.equal((await worker.status()).phase, "running");
+          } finally {
+            duplicate.terminate();
+            await duplicate.cleanup?.();
+          }
+        }
         if (ready.gitPid) pids.push(ready.gitPid);
         if (ready.execPid) pids.push(ready.execPid);
         if (mode === "supervisor SIGKILL") Deno.kill(worker.pid, "SIGKILL");
@@ -119,6 +149,7 @@ try {
       ]);
       await worker.cleanup?.();
       await gone(worker.binding.state);
+      await gone(join(sessionDirectory, "active.json"));
       await processesGone(pids);
     } finally {
       await session?.close();
@@ -136,6 +167,7 @@ try {
         artifact,
         smolvm,
         f.workspace,
+        sessionDirectory,
       ],
       stdin: "null",
       stdout: "piped",
@@ -162,6 +194,7 @@ try {
       parent.kill("SIGKILL");
       await parent.status;
       await gone(state);
+      await gone(join(sessionDirectory, "active.json"));
       await processesGone(pids);
     } finally {
       try {

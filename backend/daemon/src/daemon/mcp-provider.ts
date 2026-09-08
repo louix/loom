@@ -75,7 +75,10 @@ export const withExternalMcp = async (
           } finally {
             await cleanup();
           }
-        })());
+        })().catch((error) => {
+          closing = undefined;
+          throw error;
+        }));
       // Unexpected MCP death closes only its owning session. Never replay a tool call.
       const died = () => {
         if (!closing) failed = true;

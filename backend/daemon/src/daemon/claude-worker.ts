@@ -3,6 +3,7 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ConnectorContext } from "../../../../core/src/connector.ts";
 import type { WorkerRole } from "../../../../core/src/worker.ts";
 import { mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
+import { withClaudeVmSessions } from "./claude-vm-provider.ts";
 import { WorkerProvider } from "./worker-provider.ts";
 
 // Native descendants are not constrained by these Deno host grants. Keep this
@@ -98,8 +99,8 @@ export const claudeWorkerSpec = (
   };
 };
 
-export const createClaudeWorkerProvider = (ctx: ConnectorContext) =>
-  WorkerProvider.create(
+export const createClaudeWorkerProvider = async (ctx: ConnectorContext) => {
+  const base = await WorkerProvider.create(
     ctx.id,
     (cwd, role = "session") => claudeWorkerSpec(ctx, cwd, role),
     undefined,
@@ -113,3 +114,6 @@ export const createClaudeWorkerProvider = (ctx: ConnectorContext) =>
       ...(ctx.baseBranch ? { baseBranch: ctx.baseBranch } : {}),
     },
   );
+
+  return ctx.config.sessionVm ? withClaudeVmSessions(base, ctx) : base;
+};

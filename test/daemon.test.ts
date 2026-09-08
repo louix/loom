@@ -2407,3 +2407,38 @@ disable_builtin = ["Read"]
     await hh.cleanup();
   }
 });
+
+test("archive and delete retain the worktree and session when adapter cleanup fails", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "cleanup failure",
+      provider: "fake",
+    });
+    const live = provider.session(s.id)!;
+    const close = live.close.bind(live);
+    live.close = async () => {
+      throw new Error("reaper failed");
+    };
+    for (const method of ["session.markDone", "session.remove"]) {
+      await assert.rejects(c.request(method, { id: s.id, force: true }), /reaper failed/);
+      assert(hh.daemon.sessions.has(s.id));
+      assert(hh.daemon.registry.get(s.id));
+      assert(s.worktree && existsSync(s.worktree));
+    }
+    live.close = close;
+    await c.request("session.markDone", { id: s.id, force: true });
+    assert(!existsSync(s.worktree!));
+    await c.request("session.remove", { id: s.id });
+    assert.equal(hh.daemon.registry.get(s.id), null);
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});

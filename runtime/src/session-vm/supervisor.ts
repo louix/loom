@@ -12,6 +12,8 @@ import {
   vmExecArguments,
   type VmBinding,
 } from "../packaged/vm.ts";
+import { lockSessionState, assertNoActiveVm, finishSessionState } from "./persistence.ts";
+import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 const bootstrap = setTimeout(() => Deno.exit(1), 10_000);
 const frames = readFrames(Deno.stdin.readable, (value) => value);
@@ -24,6 +26,9 @@ const { binding, auth, allowRepoPrograms } = first.value as {
   allowRepoPrograms: boolean;
 };
 let child: Deno.ChildProcess | undefined;
+let persistentLock: Deno.FsFile | undefined;
+let ownsPersistent = false;
+const relays: ReturnType<typeof startMcpRelay>[] = [];
 let git: Awaited<ReturnType<typeof startSessionGit>>;
 let egress: ReturnType<typeof startEgress> | undefined;
 let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
@@ -89,6 +94,20 @@ const command = async (args: string[]) => {
   if (!result?.success) throw new Error("Session VM startup interrupted or failed");
 };
 try {
+  if (binding.sessionDirectory) {
+    persistentLock = await lockSessionState(binding.sessionDirectory);
+    await assertNoActiveVm(binding.sessionDirectory);
+    const profile = join(binding.sessionDirectory, "profile");
+    await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
+    if ((await Deno.lstat(profile)).isSymlink)
+      throw new Error("Session profile must not be a symlink");
+    await Deno.writeTextFile(
+      join(binding.sessionDirectory, "active.json"),
+      JSON.stringify(binding),
+      { mode: 0o600, createNew: true },
+    );
+    ownsPersistent = true;
+  }
   for (const name of ["home", "cache", "data", "config", "private"])
     await Deno.mkdir(join(binding.state, name), { mode: 0o700 });
   if (ended) throw new Error("Parent closed before credential setup");
@@ -110,12 +129,27 @@ try {
     status();
   });
   const create = vmCreateArguments(binding);
+  // Claude already puts the closure's Git shim on PATH; no separate mount needed.
+  const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);
+  if (shimMount !== -1) create.splice(shimMount - 1, 2);
   create[create.indexOf("--mem") + 1] = "2048";
   create.push(
     "-v",
     `${binding.state}/private:/run/loom/private:ro`,
     "--mount-socket",
     `${binding.state}/egress.sock:/run/loom/egress.sock`,
+  );
+  if (binding.sessionDirectory)
+    create.push("-v", `${binding.sessionDirectory}/profile:/tmp/loom-home/.claude`);
+  for (const [index, relay] of (binding.mcpRelays ?? []).entries()) {
+    const socket = join(binding.state, `mcp-${index}.sock`);
+    relays.push(startMcpRelay(socket, relay.port));
+    create.push("--mount-socket", `${socket}:/run/loom/mcp-${index}.sock`);
+  }
+  await Deno.writeTextFile(
+    join(binding.state, "private/mcp.json"),
+    JSON.stringify(binding.mcpRelays ?? []),
+    { mode: 0o600 },
   );
   await command(create);
   await command(["machine", "start", "--name", sessionVmName]);
@@ -155,7 +189,7 @@ try {
         await child.status;
       },
       egress: async () => {
-        await egress?.close();
+        await Promise.all([egress?.close(), ...relays.map((relay) => relay.close())]);
       },
       credentials: async () => {
         try {
@@ -168,12 +202,17 @@ try {
       git: async () => {
         await git?.close();
       },
-      state: () => Deno.remove(binding.state, { recursive: true }),
+      state: async () => {
+        await Deno.remove(binding.state, { recursive: true });
+        if (binding.sessionDirectory && ownsPersistent)
+          await finishSessionState(binding.sessionDirectory, binding.token);
+      },
     });
   } catch {
     Deno.exitCode = 1;
     console.error(`Session VM cleanup incomplete; state: ${binding.state}`);
   }
   // stdin and the parent can still be alive when a guest or capability dies.
+  persistentLock?.close();
   Deno.exit(Deno.exitCode);
 }

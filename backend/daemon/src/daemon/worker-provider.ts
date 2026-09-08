@@ -242,7 +242,10 @@ export class RemoteWorkerSession implements AgentSession {
   }
 
   close(): Promise<void> {
-    return (this.#closing ??= this.#close());
+    return (this.#closing ??= this.#close().catch((error) => {
+      this.#closing = undefined;
+      throw error;
+    }));
   }
   async #close(): Promise<void> {
     this.#stopping = true;

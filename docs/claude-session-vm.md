@@ -1,9 +1,10 @@
-# Claude session VM experiment
+# Claude session VMs
 
 The opt-in runtime runs the existing Claude connector worker and native Claude
 inside one smolvm guest. The normal framed worker protocol travels through
 smolvm's exec/vsock transport. The guest mounts only the prepared closure,
-a disposable session worktree and a private credential snapshot. Git operations
+a disposable session worktree, a private persistent Claude profile and a private
+credential snapshot. Git operations
 use the existing host bridge; commits exist immediately in host Git.
 
 IP networking stays disabled. A loopback proxy in the guest relays through a
@@ -40,14 +41,13 @@ the temporary credential copy. The normal test suite covers proxy denial cases
 without making API requests.
 
 Verified using smolvm 1.8.1 and native Claude 2.1.245: an existing OAuth token,
-only the allowed Anthropic API endpoint, and a host-visible commit. Fresh login,
-OAuth refresh, extended conversations and other models have not been validated.
+only the allowed Anthropic API endpoint, and a host-visible commit. Fresh interactive login remains a host operation. Renewable authentication has
+a separate live acceptance check below.
 
-## Before normal session integration
+## Supervised lifecycle
 
-This is an explicit experiment, not a default connector launcher. Existing
-Claude sessions continue using the current host worker. The Claude artifact is
-not pulled into the default Loom package.
+VM routing is opt-in. Without the configuration below, Claude uses the host
+worker. The Claude artifact is not pulled into the default Loom package.
 
 `launchSessionVm` now returns the existing `WorkerProcess` contract. The live test
 uses this launcher rather than owning the VM itself. A detached host supervisor
@@ -76,9 +76,8 @@ Git-worker and supervisor SIGKILL, and actual parent SIGKILL during startup and 
 worker initialization. Regression tests cover proxy cancellation/connection limits
 and credential revocation when VM cleanup fails.
 
-Production work remains: per-session durable profile/history and resume; MCP
-endpoint forwarding into the guest; daemon launcher selection; moving the egress
-proxy into a scoped worker; and recovery after loss of both owner processes. The
+Remaining work includes recovery after loss of both owner processes and further
+restriction of host infrastructure. The
 supervisor is trusted host infrastructure and currently runs with full Deno
 permissions. This does not yet provide the intended network-free daemon boundary.
 
@@ -90,3 +89,52 @@ CLI before expiry, and distributes access-only snapshots to active sessions.
 See [the auth implementation and live acceptance check](claude-auth-spike.md#implemented-credential-owner).
 The original live experiment above uses a static snapshot; the auth acceptance
 check exercises renewal and distribution to two VMs.
+
+## Daemon integration
+
+Build the artifact above, then opt in for Claude sessions:
+
+```toml
+[isolation.claude]
+artifact = "/absolute/path/to/claude-session-runtime"
+smolvm = "/absolute/path/to/smolvm" # defaults to smolvm on PATH
+```
+
+Each regular Claude session gets its own VM. Discovery and one-shot title jobs
+still use host workers. The host Claude executable is also needed for OAuth
+refresh; initial login stays on the host. API-key and explicit OAuth-token
+environment overrides use static snapshots instead of managed refresh.
+
+The private profile lives under
+`$XDG_STATE_HOME/loom/session-vms/<repository-hash>/<session-id>/profile`
+(default `~/.local/state`). It contains native history and guest settings, without
+copying the host profile. Only this subdirectory is mounted into the guest.
+Credential snapshots remain separate and read-only. Native history uses a fixed
+project directory name so resume survives a changed worktree path.
+
+Archive stops the VM before removing the worktree, retaining native history for
+resume. Delete also removes the saved profile. Cleanup failure aborts these
+operations and retains the session for retry. A host-only lock prevents overlapping
+VMs for the same session. An `active.json` marker blocks resume and destructive
+cleanup if ownership was lost before reaping could be confirmed; recovery from
+that case still requires operator intervention. Empty directories and lock files
+remain after deletion to avoid races caused by replacing lock inodes.
+
+Existing host-worker history is not imported automatically: those sessions report
+a clear missing-VM-history error when resumed under this configuration.
+
+Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
+through individual Unix/vsock endpoints. Each relay connects only to its assigned
+host loopback port and preserves HTTP authentication. Guest IP networking stays
+disabled. Arbitrary host stdio commands are rejected for VM sessions; package them
+as a runtime first.
+
+Live daemon acceptance (consumes Claude usage):
+
+```sh
+nix develop --command deno run -A scripts/test-claude-vm-daemon.ts \
+  /path/to/claude-session-runtime /path/to/smolvm /path/to/claude
+```
+
+This checks an MCP tool call, daemon restart, archive/resume at a different
+worktree path, and deletion of persistent history.

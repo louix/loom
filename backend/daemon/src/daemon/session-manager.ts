@@ -877,14 +877,10 @@ export class SessionManager {
   async close(id: string): Promise<void> {
     const run = this.#running.get(id);
     if (!run) return;
+    await run.session.close();
     this.#running.delete(id);
     this.#keepWarm.delete(id);
     this.#warmPings.delete(id);
-    try {
-      await run.session.close();
-    } catch {
-      // best effort
-    }
     // Let any queued `send` / `compact` / `rewind` unwind against the now-closed
     // adapter before we drop the run — otherwise `#enqueue`'s `finally` fires
     // after teardown.

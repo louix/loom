@@ -4,6 +4,7 @@ import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectArtifact } from "../../../../runtime/src/packaged/artifact.ts";
+import { finishSessionState } from "../../../../runtime/src/session-vm/persistence.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
@@ -22,6 +23,8 @@ export interface SessionVmOptions {
   /** Shared by sessions using the same provider profile; caller owns its lifetime. */
   authOwner?: ClaudeAuthOwner;
   allowRepoPrograms?: boolean;
+  sessionDirectory?: string;
+  mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export interface SessionVmStatus {
   phase: string;
@@ -53,6 +56,25 @@ export const launchSessionVm = async (
   const smolvm = await Deno.realPath(options.smolvm);
   const workspace = await Deno.realPath(options.workspace);
   const manifest = await inspectArtifact(artifact);
+  try {
+    if ((await Deno.readTextFile(join(artifact, "claude-session-version"))).trim() !== "1")
+      throw new Error("incompatible runtime");
+  } catch {
+    throw new Error(
+      "Claude VM runtime is missing or incompatible; rebuild .#claude-session-runtime with this Loom version",
+    );
+  }
+  let sessionDirectory: string | undefined;
+  if (options.sessionDirectory) {
+    await Deno.mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
+    sessionDirectory = await Deno.realPath(options.sessionDirectory);
+    if (
+      sessionDirectory === workspace ||
+      sessionDirectory.startsWith(workspace + "/") ||
+      /[:,;|\n\0]/.test(sessionDirectory)
+    )
+      throw new Error("Session history must be outside the worktree");
+  }
   const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-session-vm-" });
   const binding = {
     version: 1 as const,
@@ -63,6 +85,8 @@ export const launchSessionVm = async (
     state,
     token: crypto.randomUUID(),
     gitSocket: join(state, "git.sock"),
+    ...(sessionDirectory ? { sessionDirectory } : {}),
+    ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
   };
   try {
     const root = new URL("../../../../", import.meta.url);
@@ -132,7 +156,10 @@ export const launchSessionVm = async (
         try {
           await Deno.stat(state);
         } catch (error) {
-          if (error instanceof Deno.errors.NotFound) return;
+          if (error instanceof Deno.errors.NotFound) {
+            if (sessionDirectory) await finishSessionState(sessionDirectory, binding.token);
+            return;
+          }
           throw error;
         }
         await cleanupSessionVm({
@@ -141,9 +168,15 @@ export const launchSessionVm = async (
           git: async () => {},
           credentials: () => remove(join(state, "private")),
           reap: () => reapVm(binding),
-          state: () => remove(state),
+          state: async () => {
+            await remove(state);
+            if (sessionDirectory) await finishSessionState(sessionDirectory, binding.token);
+          },
         });
-      })());
+      })().catch((error) => {
+        cleanup = undefined;
+        throw error;
+      }));
     void exited.then(clean, clean).catch(() => {});
     let stopping = false;
     const worker = {

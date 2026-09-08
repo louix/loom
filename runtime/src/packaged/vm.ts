@@ -10,6 +10,8 @@ export interface VmBinding {
   state: string;
   token: string;
   gitSocket?: string;
+  sessionDirectory?: string;
+  mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export const sessionVmName = "loom-session";
 export const vmEnvironment = (state: string) => {

@@ -211,3 +211,10 @@ max_results = 5
 # is unaffected. Bridge command/branch restrictions remain enforced either way.
 [isolation.git]
 allow_repo_programs = false
+
+# Opt in to one VM per regular Claude session. Build .#claude-session-runtime
+# separately; native Claude remains on the host for login/credential renewal.
+# History persists outside the worktree; archive retains it, delete removes it.
+# [isolation.claude]
+# artifact = "/absolute/path/to/claude-session-runtime"
+# smolvm = "/absolute/path/to/smolvm" # defaults to smolvm on PATH
