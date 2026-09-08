@@ -7,7 +7,13 @@ worker. Host command MCPs remain available through explicit `command` entries.
 
 ## Use tilth
 
-The default Linux Nix package bundles Tilth's runtime and smolvm. Configure:
+The default Linux Nix package bundles Tilth's runtime and smolvm.
+
+Nix configurations can opt out with `loom.override { withTilth = false; }`, which
+omits both bundled Tilth and smolvm from Loom's package closure. The exposed `loom`
+and default flake outputs keep `withTilth = true`; the development shell is unchanged.
+
+Configure Tilth with:
 
 ```toml
 [[command-mcp]]

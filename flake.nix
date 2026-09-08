@@ -132,7 +132,8 @@
             outputHash = "sha256-owMiJzg2obrdhloRDQ5TDEAwtZY0wrr5lLzFlmnKNm0=";
           };
 
-          loom = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
+          loom = pkgs.lib.makeOverridable ({ withTilth ? true }:
+            pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
             pname = "loom";
             version = revFor;
             src = ./.;
@@ -180,7 +181,9 @@
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
-                  ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"}
+                  ${if withTilth && pkgs.stdenv.hostPlatform.isLinux
+                    then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
+                    else "--unset LOOM_BUNDLED_RUNTIMES"}
               done
 
               runHook postInstall
@@ -193,7 +196,7 @@
               # cross-platform (`--force`) so the others are plausible, untested.
               platforms = pkgs.lib.platforms.unix;
             };
-          });
+          })) {};
         }
       );
     };
