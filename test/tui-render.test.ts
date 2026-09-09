@@ -2840,7 +2840,7 @@ test("help fits short and narrow viewports and keeps the last bindings reachable
   }
 });
 
-test("cold send keeps its draft visible, shows progress, and retains a rejection inline", async () => {
+test("cold send dismisses the prompt for startup and recovers an unaccepted draft on rejection", async () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
   const teardown = handle.effectStart();
@@ -2849,26 +2849,28 @@ test("cold send keeps its draft visible, shows progress, and retains a rejection
     handle.handleKey("", { return: true } as Key);
     handle.handleKey("hello", {} as Key);
     handle.handleKey("", { return: true } as Key);
-    let p = openPrompt(handle.getView().ui.overlay);
-    assert.equal(p?.buffer.text, "hello");
-    assert.equal(p?.feedback?.pending, true);
-    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    fake.deliver(fleetOf(testSession({ id: "a", status: { kind: "starting" } })));
+    assert.equal(handle.getView().sel?.status.kind, "starting");
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
     assert.equal(fake.of("session.send").length, 1);
     fake.of("session.send")[0]!.reject(new Error("Could not resume session: history missing"));
     await delay(0);
-    p = openPrompt(handle.getView().ui.overlay);
-    assert.equal(p?.buffer.text, "hello");
-    assert.equal(p?.feedback?.pending, false);
     const ui = handle.getView().ui;
-    const frame = renderToString(createElement(PromptPane, { state: ui, width: 65 }));
-    assert.match(frame, /history missing/);
-    assert.match(frame, /hello/);
+    assert.equal(openPrompt(ui.overlay), null);
+    assert.equal(ui.drafts.last, "hello");
+    assert.match(ui.notice?.text ?? "", /history missing.*draft saved/);
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    await delay(110); // A new keypress, past the batched double-Enter guard.
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "hello");
+    assert.equal(fake.of("session.send").length, 1);
   } finally {
     teardown();
   }
 });
 
-test("an ambiguous prompt send stays visible and cannot be resent with Enter", async () => {
+test("an ambiguous send saves the draft and warns without retrying automatically", async () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
   const teardown = handle.effectStart();
@@ -2879,11 +2881,59 @@ test("an ambiguous prompt send stays visible and cannot be resent with Enter", a
     handle.handleKey("", { return: true } as Key);
     fake.of("session.send")[0]!.reject(Object.assign(new Error("timeout"), { code: "timeout" }));
     await delay(0);
-    assert.equal(openPrompt(handle.getView().ui.overlay)?.feedback?.uncertain, true);
+    const ui = handle.getView().ui;
+    assert.equal(openPrompt(ui.overlay), null);
+    assert.equal(ui.drafts.last, "hello");
+    assert.match(ui.notice?.text ?? "", /No confirmation.*Check the session before retrying/);
+    assert.doesNotMatch(ui.notice?.text ?? "", /Press Esc/);
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 1 })));
+    await delay(110); // Deliberately reopening the draft, not a repeated submit.
     handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "hello");
     assert.equal(fake.of("session.send").length, 1);
     handle.handleKey("", { escape: true } as Key);
     assert.equal(openPrompt(handle.getView().ui.overlay), null);
+  } finally {
+    teardown();
+  }
+});
+
+test("an accepted send failure stays on the session without restoring a duplicate draft", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("hello", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    // Repeated Enter in the same input burst must not reopen or resend.
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    assert.equal(fake.of("session.send").length, 1);
+    fake.deliver(
+      fleetOf(
+        testSession({
+          id: "a",
+          status: {
+            kind: "error",
+            message: "Provider startup failed",
+          },
+        }),
+      ),
+    );
+    fake.of("session.send")[0]!.reject(
+      Object.assign(new Error("Provider startup failed"), {
+        data: { sessionId: "a" },
+      }),
+    );
+    await delay(0);
+    const view = handle.getView();
+    assert.equal(view.ui.selectedId, "a");
+    assert.equal(view.sel?.status.kind, "error");
+    assert.equal(openPrompt(view.ui.overlay), null);
+    assert.equal(view.ui.drafts.last, "");
+    assert.equal(fake.of("session.send").length, 1);
   } finally {
     teardown();
   }

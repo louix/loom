@@ -1584,11 +1584,11 @@ export const mkFleetHandle = ({
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to
-        // completion. Keep the uncertainty visible and require leaving the
-        // prompt to review the session before any explicit retry.
+        // completion. Keep the uncertainty visible and direct the user to
+        // review the session before any explicit retry.
         if (isAmbiguousFailure(e)) {
-          const message =
-            "No confirmation — the action may still be running. Press Esc, check the session before retrying. Your draft is saved.";
+          const review = stillOpen() ? "Press Esc, check" : "Check";
+          const message = `No confirmation — the action may still be running. ${review} the session before retrying. Your draft is saved.`;
           dispatch({ t: "recoverDraft", text: p.buffer.text });
           if (stillOpen())
             show({
