@@ -1,3 +1,4 @@
+import type { CacheCreation } from "@loom/core/cache";
 import type { TokenUsage } from "@loom/core/events";
 import {
   parseSessionState,
@@ -91,6 +92,8 @@ export interface UsageDelta {
   lastCacheWrite?: number;
   /** The TTL the provider was observed writing at this turn, in minutes (absolute). */
   lastCacheTtlMinutes?: number;
+  /** Observed per-TTL write counts, used to price mixed cache writes. */
+  cacheCreation?: CacheCreation;
 }
 
 /** A session that was mid-run when the previous daemon instance exited. */

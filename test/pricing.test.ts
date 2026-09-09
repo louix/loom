@@ -111,3 +111,12 @@ test("derivedCacheWrite is inert without both an input price and a TTL", () => {
   // carries the 2x premium.
   assert.equal(derivedCacheWrite(3, 59), 3.75);
 });
+
+test("mixed ephemeral cache writes use both rates", () => {
+  const table = parsePriceTable({ model: { input: 4 } });
+  const cost = costOf(table, "model", { input: 0, output: 0, cacheRead: 0, cacheWrite: 1000 }, 5, {
+    ephemeral_5m_input_tokens: 800,
+    ephemeral_1h_input_tokens: 200,
+  });
+  assert.equal(cost, 0.0056);
+});

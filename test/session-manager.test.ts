@@ -429,6 +429,19 @@ describe("session-manager", { concurrency: 4 }, () => {
     // and nothing in the turn reported one either
     assert.equal(snap.cache.ttlMinutes, 0);
     assert.equal(snap.cache.ttlSource, "none");
+    fs.emit({
+      type: "usage",
+      tokens: { input: 0, output: 20, cacheRead: 0, cacheWrite: 0 },
+      contextUsed: 50,
+      contextLimit: 100,
+    });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).contextUsed === 50,
+    );
+    assert.equal(
+      (await c.request<SessionSnapshot>("session.get", { id })).cache.lastTurnAt,
+      snap.cache.lastTurnAt,
+    );
     await c.close();
   });
 

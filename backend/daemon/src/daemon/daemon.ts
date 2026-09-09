@@ -1614,6 +1614,10 @@ export class Daemon {
    * the delta with `costSource` so a client can flag an estimate.
    */
   #priceUsage(id: string, delta: UsageDelta): UsageDelta {
+    // Claude reports costs across subagents and internal calls, which may
+    // use different models. Repricing everything at the main model is wrong.
+    const owner = this.#registry.get(id)?.provider;
+    if (owner && isClaudeId(owner) && delta.costSource === "provider") return delta;
     const tokens =
       (delta.input ?? 0) + (delta.output ?? 0) + (delta.cacheRead ?? 0) + (delta.cacheWrite ?? 0);
     if (tokens <= 0) return delta; // a bare { turns: 1 } — nothing to price
@@ -1630,6 +1634,7 @@ export class Daemon {
         cacheWrite: delta.cacheWrite ?? 0,
       },
       delta.lastCacheTtlMinutes ?? 0,
+      delta.cacheCreation,
     );
     if (tableCost != null) return { ...delta, costUsd: tableCost, costSource: "table" };
     if ((delta.costUsd ?? 0) > 0) return { ...delta, costSource: "provider" };

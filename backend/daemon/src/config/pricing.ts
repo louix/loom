@@ -1,3 +1,4 @@
+import type { CacheCreation } from "@loom/core/cache";
 /**
  * Per-model price table (M7b). Loaded from `[pricing] table` (default
  * `.loom/models.toml`); a missing file is not an error — the daemon just falls
@@ -103,16 +104,24 @@ export const costOf = (
   model: string | null | undefined,
   delta: TokenUsage,
   cacheTtlMinutes = 0,
+  cacheCreation?: CacheCreation,
 ): number | null => {
   if (!model) return null;
   const row = lookupRow(table, model);
   if (!row) return null;
   const cacheWrite = row.cacheWrite || derivedCacheWrite(row.input, cacheTtlMinutes);
+  const short = num(cacheCreation?.ephemeral_5m_input_tokens);
+  const long = num(cacheCreation?.ephemeral_1h_input_tokens);
+  // Use the split only when it accounts for the reported writes in full.
+  const writeCost =
+    !row.cacheWrite && short + long === delta.cacheWrite && short + long > 0
+      ? short * derivedCacheWrite(row.input, 5) + long * derivedCacheWrite(row.input, 60)
+      : delta.cacheWrite * cacheWrite;
   return (
     (delta.input * row.input +
       delta.output * row.output +
       delta.cacheRead * row.cacheRead +
-      delta.cacheWrite * cacheWrite) /
+      writeCost) /
     1_000_000
   );
 };

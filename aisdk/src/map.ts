@@ -7,7 +7,7 @@
 import type { LanguageModelUsage, ProviderMetadata, TextStreamPart, ToolSet } from "ai";
 import type { HarnessEvent } from "@loom/core/events";
 import { contextLimitFor } from "@loom/core/tokens";
-import { ephemeralTtlMinutes } from "@loom/core/cache";
+import { ephemeralTtlMinutes, type CacheCreation } from "@loom/core/cache";
 
 type Part = TextStreamPart<ToolSet>;
 
@@ -168,9 +168,10 @@ export class AisdkEventMapper {
     // Several OpenAI-compatible endpoints omit usage on streamed responses.
     // Report the last real prompt-token count for `contextUsed` rather than 0,
     // so the meter holds steady instead of flapping after each such step.
-    const hasData = prompt > 0 || output > 0;
+    const hasData = prompt > 0;
     if (hasData) this.#lastContextUsed = prompt;
-    const ttlMinutes = anthropicCacheTtl(meta);
+    const cacheCreation = anthropicCacheCreation(meta);
+    const ttlMinutes = ephemeralTtlMinutes(cacheCreation);
     return {
       type: "usage",
       sessionId: this.#sessionId,
@@ -180,7 +181,7 @@ export class AisdkEventMapper {
       tokens: { input, output, cacheRead, cacheWrite },
       contextUsed: hasData ? prompt : this.#lastContextUsed,
       contextLimit: this.#limitFor(this.#model),
-      ...(ttlMinutes > 0 ? { cacheTtlMinutes: ttlMinutes } : {}),
+      ...(ttlMinutes > 0 && cacheCreation ? { cacheTtlMinutes: ttlMinutes, cacheCreation } : {}),
     };
   }
 }
@@ -200,7 +201,7 @@ const numOf = (v: unknown): number => (typeof v === "number" && Number.isFinite(
  * `usage` block it passes through untouched. `0` for every other vendor, and
  * for an Anthropic turn that wrote nothing.
  */
-const anthropicCacheTtl = (meta: ProviderMetadata | undefined): number => {
+const anthropicCacheCreation = (meta: ProviderMetadata | undefined): CacheCreation | undefined => {
   const a = meta?.["anthropic"];
   // Structural, not by name: the key is the provider id, and an
   // OpenAI-compatible profile can legitimately be called "anthropic"
@@ -208,11 +209,11 @@ const anthropicCacheTtl = (meta: ProviderMetadata | undefined): number => {
   // metadata as Anthropic's would attach a TTL to a step that has none. The
   // `cache_creation` split inside the raw usage is what nobody else emits.
   const cc = isObj(a) && isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;
-  if (!isObj(cc)) return 0;
-  return ephemeralTtlMinutes({
-    ephemeral_5m_input_tokens: numOf(cc["ephemeral_5m_input_tokens"]),
-    ephemeral_1h_input_tokens: numOf(cc["ephemeral_1h_input_tokens"]),
-  });
+  if (!isObj(cc)) return undefined;
+  return {
+    ephemeral_5m_input_tokens: Math.max(0, numOf(cc["ephemeral_5m_input_tokens"])),
+    ephemeral_1h_input_tokens: Math.max(0, numOf(cc["ephemeral_1h_input_tokens"])),
+  };
 };
 
 /** Subscription-window readings sent by the vendored ChatGPT provider. */

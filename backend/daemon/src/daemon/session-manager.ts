@@ -492,10 +492,14 @@ export class SessionManager {
         output: ev.tokens.output,
         cacheRead: ev.tokens.cacheRead,
         cacheWrite: ev.tokens.cacheWrite,
-        costUsd: Number.isFinite(cost) ? cost : 0,
+        costUsd: Number.isFinite(cost) && cost >= 0 ? cost : 0,
+        ...(ev.costDeltaUsd !== undefined && Number.isFinite(cost) && cost >= 0
+          ? { costSource: "provider" as const }
+          : {}),
+        ...(ev.cacheCreation ? { cacheCreation: ev.cacheCreation } : {}),
         contextUsed: ev.contextUsed,
         contextLimit: ev.contextLimit,
-        lastTurnAt: ev.ts,
+        ...(ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0 ? { lastTurnAt: ev.ts } : {}),
         lastCacheRead: ev.tokens.cacheRead,
         lastCacheWrite: ev.tokens.cacheWrite,
         ...(ev.cacheTtlMinutes ? { lastCacheTtlMinutes: ev.cacheTtlMinutes } : {}),

@@ -1,3 +1,4 @@
+import type { CacheCreation } from "@loom/core/cache";
 /**
  * The normalized event union every provider adapter emits (design spec §3).
  * Milestone 1 has no adapter yet, but the daemon's event log, persistence and
@@ -109,6 +110,8 @@ export interface UsageEvent extends HarnessEventBase {
    * Absent when the turn wrote no cache, or the provider reports no split.
    */
   cacheTtlMinutes?: number;
+  /** Observed per-TTL write counts, used to price mixed cache writes. */
+  cacheCreation?: CacheCreation;
 }
 
 /**

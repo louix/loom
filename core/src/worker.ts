@@ -336,7 +336,20 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
             finite(e.contextUsed) &&
             finite(e.contextLimit) &&
             optional(e.costDeltaUsd, finite) &&
-            optional(e.cacheTtlMinutes, finite);
+            optional(e.cacheTtlMinutes, finite) &&
+            optional(
+              e.cacheCreation,
+              (value) =>
+                record(value) &&
+                optional(
+                  value.ephemeral_5m_input_tokens,
+                  (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+                ) &&
+                optional(
+                  value.ephemeral_1h_input_tokens,
+                  (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+                ),
+            );
           break;
         case "tool_call":
           valid = str(e.id) && str(e.name) && "input" in e;

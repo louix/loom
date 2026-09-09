@@ -1983,3 +1983,13 @@ test("AisdkSession.rewind truncates the transcript in memory and in the store", 
     cleanup();
   }
 });
+
+test("output-only steps preserve the last known context size", () => {
+  const m = new AisdkEventMapper("s1", "gpt-5");
+  const step = (usage: unknown) =>
+    m.map({ type: "finish-step", finishReason: "stop", usage, response: {} } as never)[0];
+  step(stepUsage({ noCache: 100, output: 10 }));
+  const event = step(stepUsage({ noCache: 0, output: 20 }));
+  assert.equal(event?.type, "usage");
+  if (event?.type === "usage") assert.equal(event.contextUsed, 100);
+});

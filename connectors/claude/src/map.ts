@@ -194,6 +194,9 @@ const asyncAgentIdOf = (content: unknown): string | null => {
   return /\bagentId:\s*([A-Za-z0-9._-]+)/.exec(text)?.[1] ?? null;
 };
 
+const nonnegative = (v: number | undefined): number =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+
 const sumModelUsage = (
   mu: Record<string, ModelUsageEntry> | undefined,
 ): {
@@ -206,12 +209,12 @@ const sumModelUsage = (
 } => {
   const acc = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, contextLimit: 0 };
   for (const e of Object.values(mu ?? {})) {
-    acc.input += e.inputTokens ?? 0;
-    acc.output += e.outputTokens ?? 0;
-    acc.cacheRead += e.cacheReadInputTokens ?? 0;
-    acc.cacheWrite += e.cacheCreationInputTokens ?? 0;
-    acc.costUsd += e.costUSD ?? 0;
-    acc.contextLimit = Math.max(acc.contextLimit, e.contextWindow ?? 0);
+    acc.input += nonnegative(e.inputTokens);
+    acc.output += nonnegative(e.outputTokens);
+    acc.cacheRead += nonnegative(e.cacheReadInputTokens);
+    acc.cacheWrite += nonnegative(e.cacheCreationInputTokens);
+    acc.costUsd += nonnegative(e.costUSD);
+    acc.contextLimit = Math.max(acc.contextLimit, nonnegative(e.contextWindow));
   }
   return acc;
 };
@@ -590,6 +593,27 @@ export class ClaudeEventMapper {
           contextLimit: this.state.contextLimit,
         };
 
+    // Partial/error reports must not lower the baseline and double-count the
+    // next healthy report. A new SDK query resets the baseline explicitly.
+    cum.input = Math.max(this.#queryUsage.input, nonnegative(cum.input));
+    cum.output = Math.max(this.#queryUsage.output, nonnegative(cum.output));
+    cum.cacheRead = Math.max(this.#queryUsage.cacheRead, nonnegative(cum.cacheRead));
+    cum.cacheWrite = Math.max(this.#queryUsage.cacheWrite, nonnegative(cum.cacheWrite));
+    const reportedCost =
+      typeof m.total_cost_usd === "number" &&
+      Number.isFinite(m.total_cost_usd) &&
+      m.total_cost_usd >= 0;
+    const hasCost =
+      reportedCost ||
+      Object.values(m.modelUsage ?? {}).some(
+        (entry) =>
+          typeof entry.costUSD === "number" && Number.isFinite(entry.costUSD) && entry.costUSD >= 0,
+      );
+    cum.costUsd = Math.max(
+      this.#queryCostUsd,
+      nonnegative(reportedCost ? m.total_cost_usd : cum.costUsd),
+    );
+
     const delta: TokenUsage = {
       input: Math.max(0, cum.input - this.#queryUsage.input),
       output: Math.max(0, cum.output - this.#queryUsage.output),
@@ -628,7 +652,7 @@ export class ClaudeEventMapper {
       tokens: delta,
       contextUsed,
       contextLimit,
-      ...(costDeltaUsd > 0 ? { costDeltaUsd } : {}),
+      ...(hasCost ? { costDeltaUsd } : {}),
       ...(this.#cacheTtlMinutes > 0 ? { cacheTtlMinutes: this.#cacheTtlMinutes } : {}),
     });
 

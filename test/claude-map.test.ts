@@ -847,3 +847,21 @@ test("the observed TTL is sticky across read-only turns and across a rewind", ()
   m.onQuerySwap();
   assert.equal(byType(m.map(RESULT), "usage")[0]?.cacheTtlMinutes, 5);
 });
+
+test("partial cumulative reports cannot double-count tokens or cost", () => {
+  const m = new ClaudeEventMapper(SID);
+  const report = (input: number, cost: number) =>
+    m.map({
+      type: "result",
+      subtype: "success",
+      total_cost_usd: cost,
+      modelUsage: { x: { inputTokens: input, costUSD: cost / 2 } },
+    });
+  report(100, 0.1);
+  report(20, 0.02);
+  const usage = byType(report(150, 0.15), "usage")[0]!;
+  assert.equal(usage.tokens.input, 50);
+  assert.ok(Math.abs(usage.costDeltaUsd! - 0.05) < 1e-9);
+  assert.equal(m.state.usage.input, 150);
+  assert.equal(m.state.costUsd, 0.15);
+});
