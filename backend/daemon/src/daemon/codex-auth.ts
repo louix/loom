@@ -84,6 +84,9 @@ export class CodexAuthOwner extends CredentialOwner<CodexAccess, CodexAuthSnapsh
   }) {
     super({
       ...options,
+      // Native Codex starts proactive refresh five minutes before expiry.
+      // Publish first, leaving time for refresh retries and guest propagation.
+      refreshAheadMs: options.refreshAheadMs ?? 10 * 60_000,
       read: readCodexAccess,
       snapshot: (codexOauth) => ({ codexOauth }),
       expiresAt: (s) => s.codexOauth.expiresAt,

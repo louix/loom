@@ -21,7 +21,8 @@ test("Codex credential owner renews once and publishes access-only snapshots", a
       }),
     );
   };
-  await write(Date.now() + 1000, "old");
+  // Refresh before native Codex enters its own five-minute refresh window.
+  await write(Date.now() + 8 * 60_000, "old");
   let refreshes = 0;
   const owner = new CodexAuthOwner({
     profile,
