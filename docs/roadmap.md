@@ -642,7 +642,7 @@ Five stacked commits on `feat/pnpm-monorepo`; typecheck + 305 tests green at eac
   the OpenAI-compatible case drops `adapter` / `sdk`; `[providers.<id>]
 adapter = "aisdk"` stays as the escape hatch and wins a duplicate id.
   `custom-provider` is the future plugin seam.
-- **Live config reload** — the daemon watches repo + user config.toml;
+- **Live config reload** — the daemon watches user config.toml, including `[[repo]]` overrides;
   `[worktree] enabled` / `[budget]` / `[notify]` / `[titles]` / idle minutes
   hot-apply, anything structural pushes a "press R to restart" `NoticePush`.
 - **Version-mismatch auto-respawn** — the TUI bounces the daemon once when

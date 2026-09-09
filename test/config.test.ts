@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import {
@@ -358,54 +358,91 @@ test("deepMerge: over wins, objects merge, arrays/scalars replace", () => {
   assert.deepEqual(merged, { a: 2, nested: { x: 1, y: 3, z: 4 }, list: [9], keep: "me" });
 });
 
-test("loadConfig layers the per-repo file over the user file", () => {
+test("loadConfig merges an exact repo override from the user file and ignores repo files", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
   try {
-    const userPath = join(dir, "user.toml");
-    const repoPath = join(dir, "repo.toml");
+    const user = join(dir, "user.toml");
+    mkdirSync(join(dir, ".loom"));
+    writeFileSync(join(dir, ".loom/config.toml"), "invalid TOML [ never read");
     writeFileSync(
-      userPath,
+      user,
       `
-default_provider = "deepseek"
 base_branch = "trunk"
-
+default_provider = "deepseek"
+command-mcp = []
 [providers.deepseek]
-adapter     = "aisdk"
-base_url    = "https://api.deepseek.com/v1"
-api_key_env = "DEEPSEEK_API_KEY"
-model       = "deepseek-chat"
-`,
-    );
-    writeFileSync(
-      repoPath,
-      `
+adapter = "aisdk"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+[[repo]]
+path = ${JSON.stringify(dir)}
 base_branch = "main"
-
-[providers.deepseek]
+command-mcp = [{ name = "local", command = "tool" }]
+[repo.providers.deepseek]
 model = "deepseek-reasoner"
+[[repo]]
+path = ${JSON.stringify(join(dir, "other"))}
+base_branch = "other"
 `,
     );
-
-    const c = loadConfig(repoPath, userPath);
-    // repo wins on the scalar it sets
+    const c = loadConfig(dir, user);
     assert.equal(c.baseBranch, "main");
-    // user-only scalar survives
     assert.equal(c.defaultProvider, "deepseek");
-    // the profile is merged: user's base_url + repo's model override
     assert.equal(c.providers.aisdk["deepseek"]?.baseUrl, "https://api.deepseek.com/v1");
     assert.equal(c.providers.aisdk["deepseek"]?.model, "deepseek-reasoner");
+    assert.deepEqual(
+      c.mcp.map((m) => m.name),
+      ["local"],
+    );
+    const other = loadConfig(join(dir, "elsewhere"), user);
+    assert.equal(other.baseBranch, "trunk");
+    assert.equal(other.providers.aisdk["deepseek"]?.model, "deepseek-chat");
+    assert.deepEqual(other.mcp, []);
+    // A parent repo entry is not a prefix grant to nested repositories/worktrees.
+    assert.equal(loadConfig(join(dir, "child"), user).baseBranch, "trunk");
+    assert.equal(loadConfig(dir, join(dir, "missing.toml")).baseBranch, "main");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("loadConfig works when the user file is absent", () => {
+test("repo paths support home expansion and canonical symlink identity; duplicates are rejected", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
   try {
-    const repoPath = join(dir, "repo.toml");
-    writeFileSync(repoPath, `base_branch = "dev"\n`);
-    const c = loadConfig(repoPath, join(dir, "does-not-exist.toml"));
-    assert.equal(c.baseBranch, "dev");
+    const repo = join(dir, "repo");
+    const alias = join(dir, "alias");
+    const user = join(dir, "user.toml");
+    mkdirSync(repo);
+    symlinkSync(repo, alias);
+    const homePath = "~/" + relative(homedir(), repo);
+    writeFileSync(user, `[[repo]]\npath=${JSON.stringify(homePath)}\nbase_branch="dev"\n`);
+    assert.equal(loadConfig(alias, user).baseBranch, "dev");
+    writeFileSync(
+      user,
+      `[[repo]]\npath=${JSON.stringify(repo)}\n[[repo]]\npath=${JSON.stringify(alias)}\n`,
+    );
+    assert.throws(() => loadConfig(repo, user), /Duplicate repo.path/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("invalid repo override shapes fail explicitly, including unmatched entries", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
+  const user = join(dir, "user.toml");
+  try {
+    for (const content of [
+      'repo="bad"',
+      '[repo]\npath="/repo"',
+      "[[repo]]",
+      "[[repo]]\npath=12",
+      '[[repo]]\npath="relative/path"',
+      '[[repo]]\npath=""',
+      '[[repo]]\npath="/elsewhere"\nrepo=[]',
+    ]) {
+      writeFileSync(user, content);
+      assert.throws(() => loadConfig(dir, user), /repo/);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

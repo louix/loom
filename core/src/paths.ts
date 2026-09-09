@@ -59,8 +59,6 @@ export interface LoomPaths {
   tuiLog: string;
   /** TUI preference file — the persisted theme, read on boot / written on `t`. */
   tuiState: string;
-  /** `<repoRoot>/.loom/config.toml` */
-  config: string;
   /** Directory holding one git worktree per session. */
   trees: string;
 }
@@ -76,7 +74,6 @@ export const loomPaths = (repoRoot: string): LoomPaths => {
     log: join(dir, "daemon.log"),
     tuiLog: join(dir, "tui.log"),
     tuiState: join(dir, "tui.json"),
-    config: join(dir, "config.toml"),
     trees: join(dir, "trees"),
   };
 };

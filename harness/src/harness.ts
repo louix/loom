@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConnectorManifest } from "@loom/core/connector";
@@ -20,11 +20,12 @@ setLogLevel("error"); // keep test output quiet
 // Isolate the user-level config: without this, the developer's real
 // ~/.config/loom/config.toml is deep-merged into every harness daemon (extra
 // providers, live credentials, start-up network probes). Point XDG at an empty
-// dir so tests see only the per-repo config they pass in.
+// dir; each harness also supplies its own trusted config file.
 Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
 
 export interface Harness {
   repoRoot: string;
+  configPath: string;
   sockPath: string;
   daemon: Daemon;
   restart(): Promise<Daemon>;
@@ -36,10 +37,9 @@ export const makeHarness = async (
   opts: { git?: boolean; config?: string } = {},
 ): Promise<Harness> => {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
-  if (opts.config !== undefined) {
-    mkdirSync(join(repoRoot, ".loom"), { recursive: true });
-    writeFileSync(join(repoRoot, ".loom", "config.toml"), opts.config);
-  }
+  const configDir = mkdtempSync(join(tmpdir(), "loom-h-config-"));
+  const configPath = join(configDir, "config.toml");
+  writeFileSync(configPath, opts.config ?? "");
   if (opts.git !== false) {
     execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
     execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);
@@ -52,21 +52,33 @@ export const makeHarness = async (
   }
   const { sock } = loomPaths(repoRoot);
 
-  let daemon = await Daemon.start({ repoRoot, standalone: true, connectors: CONNECTORS });
+  let daemon = await Daemon.start({
+    repoRoot,
+    configFile: configPath,
+    standalone: true,
+    connectors: CONNECTORS,
+  });
 
   const h: Harness = {
     repoRoot,
+    configPath,
     sockPath: sock,
     get daemon() {
       return daemon;
     },
     async restart() {
       await daemon.stop("test-restart");
-      daemon = await Daemon.start({ repoRoot, standalone: true, connectors: CONNECTORS });
+      daemon = await Daemon.start({
+        repoRoot,
+        configFile: configPath,
+        standalone: true,
+        connectors: CONNECTORS,
+      });
       return daemon;
     },
     async cleanup() {
       await daemon.stop("test-cleanup").catch(() => {});
+      rmSync(configDir, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     },
   } as Harness;

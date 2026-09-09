@@ -1,4 +1,4 @@
-# Copy to .loom/config.toml to override. Every key below is optional and shown
+# User config: ~/.config/loom/config.toml (or $XDG_CONFIG_HOME/loom/config.toml). Every key below is optional and shown
 # with its built-in default. Consumed so far (milestones 1-5): db, run_isolation,
 # daemon.*, base_branch, worktree_dir, providers.claude.* and the [[command-mcp]] list
 # (mounted into every session, alongside the built-in in-process `loom` server:
@@ -73,10 +73,8 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # name  = "Work"                      # → id "claude:work", Detail-pane label
 # color = "yellow"                    # Fleet-row id colour; "" → auto from a palette
 
-# This file is the per-repo layer. A user-level file at
-# $XDG_CONFIG_HOME/loom/config.toml (→ ~/.config/loom/config.toml) is loaded
-# *under* it — put provider profiles + credentials there and let each repo
-# override model / base_branch / [[command-mcp]]. Same schema; a per-repo key wins.
+# This file holds global defaults and optional path-scoped [[repo]] overrides.
+# Repository files are never loaded as configuration. See the example at the end.
 
 # default_provider = "claude"       # which provider new sessions use when the
 # client doesn't name one (must be configured)
@@ -218,3 +216,16 @@ allow_repo_programs = false
 # [isolation.claude]
 # artifact = "/absolute/path/to/claude-session-runtime"
 # smolvm = "/absolute/path/to/smolvm" # defaults to smolvm on PATH
+
+# Per-repo overrides belong in this file. Use an absolute path or ~/path.
+# Matching uses the daemon repo root's canonical path, not a session worktree.
+# Nested tables merge with global defaults; arrays replace them. No prefix/glob
+# matching. Moving a repo requires updating its path. Duplicate paths are errors.
+#
+# [[repo]]
+# path = "~/dev/my-project"
+# base_branch = "main"
+# [repo.worktree]
+# enabled = true
+# [repo.isolation.git]
+# allow_repo_programs = false

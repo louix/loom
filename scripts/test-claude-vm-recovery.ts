@@ -21,9 +21,9 @@ setLogLevel("error");
 const f = await gitFixture();
 Deno.env.set("XDG_STATE_HOME", join(f.root, "persistent"));
 Deno.env.set("XDG_CONFIG_HOME", join(f.root, "config"));
-await Deno.mkdir(join(f.repo, ".loom"));
+await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
 await Deno.writeTextFile(
-  join(f.repo, ".loom/config.toml"),
+  join(f.root, "config/loom/config.toml"),
   "command-mcp=[]\nhttp-mcp=[]\n[titles]\nenabled=false\n",
 );
 let daemon: Daemon | undefined;

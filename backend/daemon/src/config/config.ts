@@ -1,14 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { onPath } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import { MCP_CAPABILITIES, type McpCapability } from "@loom/core/types";
+import { userConfigPath } from "../scaffold.ts";
 import type { PriceRow } from "./pricing.ts";
 
 /**
- * Loom configuration. Mirrors the `.loom/config.toml` sketch in the design spec.
+ * Loom configuration, loaded only from the trusted user config file.
  * Milestone 1 only reads a handful of these; the rest are carried so the shape
  * is stable for later milestones.
  */
@@ -213,11 +214,10 @@ interface HookFields {
    * Restrict the hook to one repo. A glob against the daemon's absolute
    * repo root (`~` expanded, `**` crosses `/`), so `~/dev/loom` pins one
    * project and `~/dev/**` covers everything under a directory. "" = every
-   * repo — which is what a hook in a per-repo `.loom/config.toml` normally
-   * wants, since that file already only applies to its own project.
+   * repo. Hooks inside a matching `[[repo]]` override already apply only there.
    *
-   * This exists because config layering replaces arrays wholesale: a repo-level
-   * `[[hooks]]` would otherwise shadow every user-level one, so per-project
+   * This exists because config layering replaces arrays wholesale: a `[[repo]]` override
+   * containing hooks would otherwise shadow every user-level one, so per-project
    * hooks have to be expressible in the user-level file itself.
    */
   project: string;
@@ -996,8 +996,7 @@ export const deepMerge = (
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...base };
   for (const [k, v] of Object.entries(over)) {
-    // `.loom/config.toml` comes from whatever repo the daemon runs against — an
-    // untrusted input. A TOML `[__proto__]` table parses to an own key that
+    // A TOML `[__proto__]` table parses to an own key that
     // would otherwise walk the prototype on assignment.
     if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
     const b = out[k];
@@ -1017,19 +1016,47 @@ export const deepMerge = (
   return out;
 };
 
-/**
- * Load and normalize config. The per-repo `.loom/config.toml` is layered on top
- * of the user-level `userConfigPath` (when given); either may be absent.
- */
-export const loadConfig = (repoConfigPath: string, userConfigPath?: string): LoomConfig => {
-  let raw: Record<string, unknown> = {};
-  if (userConfigPath) {
-    const u = readTomlIfPresent(userConfigPath);
-    if (u) raw = u;
+/** Canonical directory identity; missing repo entries may remain configured after a move. */
+const configRepoPath = (path: string): string => {
+  let expanded = path;
+  if (path === "~") expanded = homedir();
+  else if (path.startsWith("~/")) expanded = join(homedir(), path.slice(2));
+  if (!isAbsolute(expanded)) throw new Error("repo.path must be an absolute path or start with ~/");
+  try {
+    return realpathSync(expanded);
+  } catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    return resolve(expanded);
   }
-  const r = readTomlIfPresent(repoConfigPath);
-  if (r) raw = deepMerge(raw, r);
-  return normalizeConfig(raw);
+};
+
+/** User defaults plus one exact path-scoped [[repo]] override. Never reads repository files. */
+export const loadConfig = (repoRoot: string, configFile = userConfigPath()): LoomConfig => {
+  const raw = readTomlIfPresent(configFile) ?? {};
+  const { repo = [], ...defaults } = raw;
+  if (!Array.isArray(repo)) throw new Error("repo must be an array of [[repo]] tables");
+  const target = configRepoPath(resolve(repoRoot));
+  const seen = new Set<string>();
+  let selected: Record<string, unknown> = {};
+  for (const entry of repo) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      typeof entry.path !== "string" ||
+      !entry.path.trim()
+    )
+      throw new Error("Every [[repo]] requires a nonempty path");
+    if ("repo" in entry) throw new Error("Nested repo overrides are not supported");
+    const path = configRepoPath(entry.path);
+    if (seen.has(path)) throw new Error(`Duplicate repo.path: ${path}`);
+    seen.add(path);
+    if (path === target) {
+      const { path: _, ...overrides } = entry;
+      selected = overrides;
+    }
+  }
+  return normalizeConfig(deepMerge(defaults, selected));
 };
 
 /** Resolve a possibly-relative config path against the repo root. */

@@ -44,9 +44,9 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
   }
   return Response.json({ jsonrpc: "2.0", id: message.id, result });
 });
-await Deno.mkdir(join(f.repo, ".loom"));
+await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
 await Deno.writeTextFile(
-  join(f.repo, ".loom/config.toml"),
+  join(f.root, "config/loom/config.toml"),
   `
 command-mcp=[]
 [providers.claude]

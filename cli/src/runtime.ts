@@ -3,7 +3,6 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { onPath } from "@loom/core/paths";
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
-import { userConfigPath } from "../../backend/daemon/src/scaffold.ts";
 import {
   inspectArtifact,
   requireVmHost,
@@ -151,7 +150,7 @@ export const runtimeCommand = async (
   const [action, name, ...rest] = args;
   if (!action || !["prepare", "status", "update"].includes(action) || rest.length)
     throw new Error("Usage: loom runtime prepare|status|update [runtime] [--smolvm PATH] [--json]");
-  const config = loadConfig(join(repoRoot, ".loom/config.toml"), userConfigPath());
+  const config = loadConfig(repoRoot);
   const sources = name
     ? [name]
     : [

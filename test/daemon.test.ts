@@ -1712,7 +1712,7 @@ test("session.rebase: a conflict leaves the branch untouched and does not nudge"
 
 test("editing config.toml hot-applies [worktree] enabled and pushes a notice", async () => {
   const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
-  const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
+  const cfgPath = hh.configPath;
   try {
     const c = await LoomClient.connect({
       repoRoot: hh.repoRoot,
@@ -1731,7 +1731,10 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
     });
     assert.ok(a.worktree && !a.inPlace);
 
-    writeFileSync(cfgPath, `[worktree]\nenabled = false\n`);
+    writeFileSync(
+      cfgPath,
+      `[[repo]]\npath = ${JSON.stringify(hh.repoRoot)}\n[repo.worktree]\nenabled = false\n`,
+    );
     await delay(500); // debounce (250ms) + reload
 
     assert.ok(
@@ -1755,7 +1758,7 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
 
 test("a provider-set change on disk asks for a restart rather than applying live", async () => {
   const hh = await makeHarness({ config: `base_branch = "main"\n` });
-  const cfgPath = join(hh.repoRoot, ".loom", "config.toml");
+  const cfgPath = hh.configPath;
   try {
     const c = await LoomClient.connect({
       repoRoot: hh.repoRoot,
@@ -1871,9 +1874,9 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
   execFileSync("git", ["-C", repoRoot, "config", "commit.gpgsign", "false"]);
   execFileSync("git", ["-C", repoRoot, "config", "tag.gpgsign", "false"]);
   execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
-  mkdirSync(join(repoRoot, ".loom"), { recursive: true });
+  mkdirSync(join(xdg, "loom"), { recursive: true });
   writeFileSync(
-    join(repoRoot, ".loom", "config.toml"),
+    join(xdg, "loom", "config.toml"),
     `[providers.claude]\ncli_path = "/nonexistent/loom-test-claude"\n`,
   );
   let daemon: Daemon | null = null;

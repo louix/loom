@@ -439,7 +439,7 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
 
     // re-point it at this repo; the reload is debounced 250ms
     writeFileSync(
-      join(hh.repoRoot, ".loom", "config.toml"),
+      hh.configPath,
       `[[hooks]]\non = "turn_end"\nproject = "${hh.repoRoot}"\nrun = "touch ${log}"\n`,
     );
     await delay(600);

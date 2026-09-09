@@ -199,8 +199,7 @@ still stops for anything it judges unsafe (the Claude SDK's own `auto` — not
 the flag-gated `bypassPermissions`, which Loom never uses).
 
 **Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
-in the user-level `~/.config/loom/config.toml` (the per-repo `.loom/config.toml`
-layers on top); credentials go in as env-var _names_ via `api_key_env`, or
+in `~/.config/loom/config.toml`; credentials go in as env-var _names_ via `api_key_env`, or
 inline with `api_key`.
 
 - `[custom-provider.<id>]` — an OpenAI-compatible endpoint (OpenAI, GLM,
@@ -356,9 +355,33 @@ leaving it at zero made the bulk of a caching agent's prompt spend free. An
 explicit `cache_write` always wins, and a provider that reports no TTL (the
 OpenAI-compatible ones, which have no write premium) stays at zero.
 
+**Repository configuration.** All configuration lives in
+`$XDG_CONFIG_HOME/loom/config.toml` (default `~/.config/loom/config.toml`).
+Add exact path-scoped overrides there:
+
+```toml
+[[repo]]
+path = "~/dev/my-project"
+base_branch = "main"
+
+[repo.worktree]
+enabled = true
+
+[repo.isolation.git]
+allow_repo_programs = false
+```
+
+Matching uses the canonical daemon repository path, resolving symlinks; it does
+not match prefixes or individual session worktrees. Nested tables merge with
+global defaults; arrays replace them. Duplicate paths and malformed repo entries
+are errors. Update the path if you move a repository. Only the user config is
+watched for reloads; settings that require a daemon restart still report that.
+Repository-local config files are not read or created. `.loom/LOOM.md` remains
+available for project instructions.
+
 **Hooks (`[[hooks]]`).** Commands run asynchronously in the session's worktree.
-Declare them in `~/.config/loom/config.toml` or `.loom/config.toml`. Repository
-arrays replace user arrays; use `project` to scope entries in the user config.
+Declare them in `~/.config/loom/config.toml`. Use `[[repo]]` overrides or the
+hook’s `project` field to scope them; override arrays replace global arrays.
 Changes hot-apply; changing hooks cancels old runs and clears their feedback state.
 
 | key       | meaning                                                                           |
@@ -649,6 +672,5 @@ gitignored:
 | `loom.db`        | SQLite: sessions, history, usage                                        |
 | `trees/<id>/`    | one git worktree per session                                            |
 | `hooks/pre-push` | the push-blocking hook, shared by every worktree                        |
-| `config.toml`    | optional; falls back to built-in defaults                               |
 | `models.toml`    | optional per-model price table (`pricing.reload`)                       |
 | `LOOM.md`        | optional repo instructions, injected into every session's system prompt |

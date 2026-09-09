@@ -65,8 +65,8 @@ aisdk-only. `aisdk/src/tools/background.ts`:
 
 User decision: valuable, but deferred because the config plumbing wasn't obvious
 ("config doesn't know about any specific repo atm"). Resolution for whoever picks
-it up: the daemon already loads the per-repo `.loom/config.toml` (deep-merged over
-the user-level file) and routes per-feature config to tools through
+it up: the daemon loads matching `[[repo]]` overrides from the user config
+(deep-merged over global defaults) and routes per-feature config to tools through
 `ConnectorContext` — `[search]` → `web_search` is the working proof. A `[check]`
 section needs no new infrastructure:
 

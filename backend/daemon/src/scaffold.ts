@@ -3,10 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
- * The user-level config file, layered *under* the per-repo `.loom/config.toml`.
- * `$XDG_CONFIG_HOME/loom/config.toml`, falling back to `~/.config/loom/config.toml`.
- * Provider profiles, credentials (env-var names), and keybindings live here;
- * the per-repo file overrides model defaults, base branch, `[[mcp]]`, etc.
+ * The only config file: `$XDG_CONFIG_HOME/loom/config.toml`, falling back to
+ * `~/.config/loom/config.toml`. Includes global defaults and [[repo]] overrides.
  */
 export const userConfigPath = (): string => {
   const base = Deno.env.get("XDG_CONFIG_HOME")?.trim() || join(homedir(), ".config");

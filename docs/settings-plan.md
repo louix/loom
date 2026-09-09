@@ -31,8 +31,8 @@ permissionDefault`, is fully parsed but **read nowhere** — dead since inceptio
   in Phase 1 (model/provider/effort "remember" logic is TODO 5, left untouched).
 - **Storage: a new daemon-owned `~/.config/loom/settings.toml`** — machine-managed
   (not the comment-rich `config.toml`), read _and_ written by the daemon. Phase-1
-  settings are all user-global; Phase 2's git behavior stays per-repo in
-  `.loom/config.toml`. Must survive: missing file, unparseable file (→ defaults,
+  settings are all user-global; Phase 2's git behavior uses `[[repo]]` overrides
+  in `~/.config/loom/config.toml`. Must survive: missing file, unparseable file (→ defaults,
   never crash — unlike `config.toml` which rethrows), file deleted under a running
   daemon (in-memory copy is authoritative), unknown keys, out-of-enum values.
 - No dedicated keybind — reached via the `Space` command palette.
@@ -203,7 +203,7 @@ falls through to the daemon's setting. Optional: add `--keep-branch` to force
 - `core`: `WorktreeMode = "worktree" | "branch-only" | "in-place"`.
 - `config.ts`: `worktree.enabled: boolean` → `worktree.mode: WorktreeMode`;
   `normalizeConfig` back-compat (`true`→`"worktree"`, `false`→`"in-place"`).
-  Stays in `.loom/config.toml`. Surface in the Settings screen as a repo-scoped,
+  Stays in user config via `[[repo]]` overrides. Surface in the Settings screen as a repo-scoped,
   read-only section, or a narrow `config.setWorktreeMode` RPC (a general
   `config.set` is a much larger surface — that file has user comments to preserve).
 - `worktrees.ts`: new `createBranchOnly(prompt, id)` — `git branch <name> <base>`

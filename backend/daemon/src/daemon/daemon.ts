@@ -5,7 +5,7 @@ import {
 } from "./session-vm-state.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
@@ -178,6 +178,8 @@ export const keepWarmMove = (
 
 export interface DaemonStartOptions {
   repoRoot: string;
+  /** Explicit trusted config file for embedded daemons/tests; otherwise the XDG user config. */
+  configFile?: string;
   /** Connector packages this daemon can load, keyed by package name. Supplied by the CLI. */
   connectors: ConnectorManifest;
   /** Skip pidfile acquisition and signal handlers (used by tests). */
@@ -188,6 +190,7 @@ export class Daemon {
   readonly repoRoot: string;
   readonly paths: LoomPaths;
   readonly config: LoomConfig;
+  readonly #configFile: string;
   readonly epoch: string = randomUUID();
   readonly startedAt: number = Date.now();
 
@@ -256,6 +259,7 @@ export class Daemon {
 
   private constructor(opts: DaemonStartOptions) {
     this.repoRoot = opts.repoRoot;
+    this.#configFile = resolve(opts.configFile ?? userConfigPath());
     this.#standalone = opts.standalone ?? false;
     // Standalone (test / embedded) daemons never probe — nothing is "loading".
     this.#claudeProbeDone = this.#standalone;
@@ -267,11 +271,11 @@ export class Daemon {
     // First real launch on a machine with no user config: leave an annotated
     // starter at ~/.config/loom/config.toml. Skipped for standalone (test /
     // embedded) daemons so an isolated XDG dir stays empty.
-    if (!this.#standalone) {
+    if (!this.#standalone && !opts.configFile) {
       const created = scaffoldUserConfig();
       if (created) this.#log.info("wrote a starter config", { path: created });
     }
-    this.config = loadConfig(this.paths.config, userConfigPath());
+    this.config = loadConfig(this.repoRoot, this.#configFile);
     this.#pricing = loadPriceTable(resolveAgainstRepo(opts.repoRoot, this.config.pricing.table));
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
@@ -1808,22 +1812,18 @@ export class Daemon {
   // live config reload
   // -------------------------------------------------------------------------
 
-  /** Watch the repo and user config files for changes; debounce into a reload. */
+  /** Watch only the trusted config directory, including atomic file replacement. */
   #watchConfig(): void {
-    const dirs = new Set<string>();
-    for (const file of [this.paths.config, userConfigPath()]) {
-      const dir = dirname(file);
-      if (dirs.has(dir) || !existsSync(dir)) continue;
-      dirs.add(dir);
-      try {
-        const w = watch(dir, (_evt, name) => {
-          if (name && name.toString() === "config.toml") this.#scheduleReload();
-        });
-        w.unref();
-        this.#configWatchers.push(w);
-      } catch (err) {
-        this.#log.warn("config watch failed", { dir, err: String(err) });
-      }
+    const dir = dirname(this.#configFile);
+    if (!existsSync(dir)) return;
+    try {
+      const w = watch(dir, (_evt, name) => {
+        if (name && join(dir, name.toString()) === this.#configFile) this.#scheduleReload();
+      });
+      w.unref();
+      this.#configWatchers.push(w);
+    } catch (err) {
+      this.#log.warn("config watch failed", { dir, err: String(err) });
     }
   }
 
@@ -1845,7 +1845,7 @@ export class Daemon {
     if (this.#stopping) return;
     let next: LoomConfig;
     try {
-      next = loadConfig(this.paths.config, userConfigPath());
+      next = loadConfig(this.repoRoot, this.#configFile);
     } catch (err) {
       this.#log.warn("config reload failed — keeping the running config", { err: String(err) });
       this.#emitNotice(`config reload failed — kept the running one: ${String(err)}`, "warn");
