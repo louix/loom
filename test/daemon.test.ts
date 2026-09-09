@@ -2609,3 +2609,97 @@ test("disabled and missing providers stay read-only and can fork to an enabled p
     await hh.cleanup();
   }
 });
+
+test("failed startup keeps the opening message and error on the session", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    provider.createSession = async () => {
+      throw new Error("fixture startup failed");
+    };
+    let id = "";
+    await assert.rejects(
+      c.request("session.create", { provider: "fake", prompt: "keep my opening message" }),
+      (error: unknown) => {
+        id = (error as { data: { sessionId: string } }).data.sessionId;
+        return !!id;
+      },
+    );
+    const page = await c.request<HistoryPage>("session.events", { id });
+    assert.deepEqual(
+      page.items.map(({ event }) => event.type),
+      ["user_message", "error"],
+    );
+    assert.equal((page.items[0]!.event as { text: string }).text, "keep my opening message");
+    assert.match((page.items[1]!.event as { message: string }).message, /fixture startup failed/);
+    await waitFor(() => {
+      const state = c.getState();
+      return (
+        state.tag === "data" &&
+        state.value.sessions.some((s) => s.id === id && s.status.kind === "error")
+      );
+    });
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("failed cold send keeps the attempted message and error in history", async () => {
+  const c = await client();
+  try {
+    const row = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "cold",
+      status: "idle",
+    });
+    await assert.rejects(
+      c.request("session.send", { id: row.id, text: "keep my follow-up" }),
+      (error: unknown) => (error as { data: { sessionId: string } }).data.sessionId === row.id,
+    );
+    const page = await c.request<HistoryPage>("session.events", { id: row.id });
+    const events = page.items.slice(-2).map(({ event }) => event);
+    assert.equal(events[0]!.type, "user_message");
+    assert.equal((events[0] as { text: string }).text, "keep my follow-up");
+    assert.equal(events[1]!.type, "error");
+    assert.match((events[1] as { message: string }).message, /no provider ref/);
+  } finally {
+    await c.close();
+  }
+});
+
+test("failed live send records the error beside the attempted message", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const row = await c.request<SessionSnapshot>("session.create", {
+      provider: "fake",
+      prompt: "hello",
+    });
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    provider.session(row.id)!.send = async () => {
+      throw new Error("fixture send failed");
+    };
+    await assert.rejects(
+      c.request("session.send", { id: row.id, text: "follow-up" }),
+      (error: unknown) => (error as { data: { sessionId: string } }).data.sessionId === row.id,
+    );
+    const page = await c.request<HistoryPage>("session.events", { id: row.id });
+    const events = page.items.slice(-2).map(({ event }) => event);
+    assert.equal(events[0]!.type, "user_message");
+    assert.equal((events[0] as { text: string }).text, "follow-up");
+    assert.equal(events[1]!.type, "error");
+    assert.equal((events[1] as { message: string }).message, "fixture send failed");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});

@@ -1435,7 +1435,7 @@ export const mkFleetHandle = ({
     if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
     submittingPrompt = true;
     // Let the session's STARTING state show while create/resume runs. Keep
-    // the submitted draft in this closure for recovery if the request fails.
+    // the submitted draft only for failures before a session accepts it.
     if (p.t === "new" || sendTo !== null) dispatch({ t: "closePrompt" });
     else show({ t: "prompt", prompt: pendingPrompt });
 
@@ -1564,6 +1564,13 @@ export const mkFleetHandle = ({
             composer.enqueue(sendTo, text);
             note("queued until compaction finishes", "dim");
           }
+          return;
+        }
+        // The daemon saved both the message and error on this session.
+        // Select it so the failure stays visible in its detail / event history.
+        const failedSession = (e as { data?: { sessionId?: unknown } })?.data?.sessionId;
+        if ((p.t === "new" || sendTo !== null) && typeof failedSession === "string") {
+          dispatch({ t: "select", id: failedSession });
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to

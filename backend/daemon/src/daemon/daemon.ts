@@ -1143,38 +1143,49 @@ export class Daemon {
       this.#providerDefaults.rememberMode(o.mode);
       this.#publishState();
 
-      const isClaude = isClaudeId(o.providerId);
-      const isAisdk = aisdkProfile !== undefined;
-      const mcpHandles = this.#mcpHandles();
-      const promptAppend = systemPromptAppendFor(
-        isAisdk,
-        mcpHandles.length > 0,
-        cwd,
-        this.repoRoot,
-      );
-      const opts: CreateSessionOptions = {
+      // The opening prompt is a user message like any follow-up — put it on the
+      // event stream so it's in the log / transcript and survives a reconnect
+      // (clients no longer local-echo it).
+      this.emitEvent({
+        type: "user_message",
         sessionId: id,
-        cwd,
-        prompt: o.prompt,
-        mode: o.mode,
-        mcpServers: mcpHandles,
-        disableTools: this.config.providers.claude.disableBuiltin,
-        settingSources: this.config.providers.claude.settingSources,
-        ...(isClaude || isAisdk
-          ? {
-              loomServer: true,
-              systemPromptAppend: promptAppend,
-              repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
-              workspaceRoot: cwd,
-            }
-          : {}),
-        ...(o.model ? { model: o.model } : {}),
-        ...(o.effort ? { effort: o.effort } : {}),
-        ...(o.parentId ? { parentId: o.parentId } : {}),
-      };
+        ts: Date.now(),
+        text: o.prompt,
+        injected: false,
+      });
 
-      this.#lastSend.set(id, o.prompt);
       try {
+        const isClaude = isClaudeId(o.providerId);
+        const isAisdk = aisdkProfile !== undefined;
+        const mcpHandles = this.#mcpHandles();
+        const promptAppend = systemPromptAppendFor(
+          isAisdk,
+          mcpHandles.length > 0,
+          cwd,
+          this.repoRoot,
+        );
+        const opts: CreateSessionOptions = {
+          sessionId: id,
+          cwd,
+          prompt: o.prompt,
+          mode: o.mode,
+          mcpServers: mcpHandles,
+          disableTools: this.config.providers.claude.disableBuiltin,
+          settingSources: this.config.providers.claude.settingSources,
+          ...(isClaude || isAisdk
+            ? {
+                loomServer: true,
+                systemPromptAppend: promptAppend,
+                repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+                workspaceRoot: cwd,
+              }
+            : {}),
+          ...(o.model ? { model: o.model } : {}),
+          ...(o.effort ? { effort: o.effort } : {}),
+          ...(o.parentId ? { parentId: o.parentId } : {}),
+        };
+
+        this.#lastSend.set(id, o.prompt);
         await this.#sessions.create(await this.#providers.get(o.providerId), opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1190,20 +1201,18 @@ export class Daemon {
           }
           this.#registry.setFields(id, { worktree: null });
         }
-        this.#registry.setStatus(id, stateError(message.slice(0, 120)));
-        throw new RpcError("provider_error", `could not start session: ${message}`);
+        const failure = `could not start session: ${message}`;
+        this.#registry.setStatus(id, stateError(failure));
+        this.emitEvent({
+          type: "error",
+          sessionId: id,
+          ts: Date.now(),
+          message: failure,
+          fatal: true,
+        });
+        this.#publishState(id);
+        throw new RpcError("provider_error", failure, { sessionId: id });
       }
-    });
-
-    // The opening prompt is a user message like any follow-up — put it on the
-    // event stream so it's in the log / transcript and survives a reconnect
-    // (clients no longer local-echo it).
-    this.emitEvent({
-      type: "user_message",
-      sessionId: id,
-      ts: Date.now(),
-      text: o.prompt,
-      injected: false,
     });
 
     const snap = this.#registry.mustGet(id);
@@ -2241,38 +2250,57 @@ export class Daemon {
     d.register("session.send", async (params) => {
       const id = reqString(params, "id");
       const text = reqString(params, "text");
-      // A cold session (daemon restarted, or a turn that ended) is brought back
-      // transparently — `send` is the one verb for "talk to this session", it
-      // doesn't need a separate resume step.
-      if (!this.#sessions.has(id)) {
-        const revived = await this.#reviveSession(id);
-        // An archived session's revive restores a worktree and flips it off
-        // `done` — push that before the turn's own updates so clients don't
-        // briefly show a running session with no tree.
-        this.#publishState(revived.id);
-        this.#onActivityChange("session-resumed");
+      this.#registry.mustGet(id);
+      try {
+        // A cold session (daemon restarted, or a turn that ended) is brought back
+        // transparently — `send` is the one verb for "talk to this session", it
+        // doesn't need a separate resume step.
+        if (!this.#sessions.has(id)) {
+          const revived = await this.#reviveSession(id);
+          // An archived session's revive restores a worktree and flips it off
+          // `done` — push that before the turn's own updates so clients don't
+          // briefly show a running session with no tree.
+          this.#publishState(revived.id);
+          this.#onActivityChange("session-resumed");
+        }
+        // A `compact` / `rewind` holds the session's op gate — a straight send
+        // would park behind it (a compaction can run for minutes). Fast-fail with
+        // a distinct `code` the TUI recognises and re-routes to its own outgoing
+        // queue (which drains when the compaction boundary lands).
+        const restructuring = this.#sessions.isRestructuring(id);
+        if (restructuring) {
+          const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
+          throw new RpcError(
+            "busy",
+            `session is ${doing} — the message was not sent, retry in a moment`,
+          );
+        }
+        const { injected } = await this.#sessions.send(id, text);
+        // Always emit the message so every client renders it from one source
+        // (clients don't local-echo sends). `injected: true` = it landed in a
+        // live turn (aisdk splices after the current tool result; Claude queues
+        // for the next boundary); false = it started a fresh turn.
+        this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
+        // Only the text that *starts* a turn is the checkpoint / auto-title seed.
+        if (!injected) this.#lastSend.set(id, text);
+        return { ...this.#registry.mustGet(id), injected };
+      } catch (error) {
+        // Busy sends are queued by the client and have not been accepted yet.
+        if (error instanceof RpcError && error.code === "busy") throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        this.emitEvent({
+          type: "user_message",
+          sessionId: id,
+          ts: Date.now(),
+          text,
+          injected: false,
+        });
+        this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
+        this.#publishState(id);
+        throw new RpcError(error instanceof RpcError ? error.code : "provider_error", message, {
+          sessionId: id,
+        });
       }
-      // A `compact` / `rewind` holds the session's op gate — a straight send
-      // would park behind it (a compaction can run for minutes). Fast-fail with
-      // a distinct `code` the TUI recognises and re-routes to its own outgoing
-      // queue (which drains when the compaction boundary lands).
-      const restructuring = this.#sessions.isRestructuring(id);
-      if (restructuring) {
-        const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
-        throw new RpcError(
-          "busy",
-          `session is ${doing} — the message was not sent, retry in a moment`,
-        );
-      }
-      const { injected } = await this.#sessions.send(id, text);
-      // Always emit the message so every client renders it from one source
-      // (clients don't local-echo sends). `injected: true` = it landed in a
-      // live turn (aisdk splices after the current tool result; Claude queues
-      // for the next boundary); false = it started a fresh turn.
-      this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
-      // Only the text that *starts* a turn is the checkpoint / auto-title seed.
-      if (!injected) this.#lastSend.set(id, text);
-      return { ...this.#registry.mustGet(id), injected };
     });
 
     d.register("session.checkpoints", (params) => {
