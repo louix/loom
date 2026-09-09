@@ -2442,3 +2442,44 @@ test("archive and delete retain the worktree and session when adapter cleanup fa
     await hh.cleanup();
   }
 });
+
+test("startup recovery failure leaves the daemon usable and retains the affected session", async () => {
+  const hh = await makeHarness();
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  const state = await Deno.makeTempDir();
+  Deno.env.set("XDG_STATE_HOME", state);
+  let c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const { sessionVmDirectory } = await import("../backend/daemon/src/daemon/session-vm-state.ts");
+    const s = await c.request<SessionSnapshot>("session.createStub", {
+      prompt: "orphan",
+      status: "idle",
+    });
+    const dir = sessionVmDirectory(hh.repoRoot, s.id);
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.writeTextFile(join(dir, "active.json"), "{");
+    await c.close();
+    await hh.restart();
+    c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const after = await c.request<SessionSnapshot>("session.get", { id: s.id });
+    assert.equal(after.status.kind, "error");
+    await assert.rejects(c.request("session.remove", { id: s.id, force: true }));
+    assert(hh.daemon.registry.get(s.id));
+    assert((await Deno.stat(join(dir, "active.json"))).isFile);
+    await c.request("session.createStub", { prompt: "unrelated" });
+  } finally {
+    await c.close();
+    await hh.cleanup();
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(state, { recursive: true });
+  }
+});

@@ -27,7 +27,7 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
     await assert.rejects(stoppedSessionVm(root, "session-1", true), /still running/);
     lock.close();
     lock = undefined;
-    await assert.rejects(stoppedSessionVm(root, "session-1", true), /cleanup is incomplete/);
+    await assert.rejects(stoppedSessionVm(root, "session-1", true), /manual recovery required/);
     await finishSessionState(dir, "other");
     await assert.rejects(assertNoActiveVm(dir), /cleanup is incomplete/);
     await finishSessionState(dir, "first");

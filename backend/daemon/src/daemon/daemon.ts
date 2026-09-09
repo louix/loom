@@ -1,4 +1,8 @@
-import { stoppedSessionVm } from "./session-vm-state.ts";
+import {
+  withStoppedSessionVm,
+  removeSessionVmProfile,
+  recoverRepositoryVms,
+} from "./session-vm-state.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
@@ -460,6 +464,13 @@ export class Daemon {
       this.#pidfile = acquirePidfile(this.paths.pid, this.epoch);
     }
 
+    const recoveredVms = await recoverRepositoryVms(this.repoRoot, (id, error) => {
+      const message = `VM recovery for ${id} failed: ${error instanceof Error ? error.message : String(error)}. Retry resume/archive/delete after fixing the reported problem.`;
+      this.#log.warn("session VM recovery", { id, message });
+      if (this.#registry.get(id))
+        this.#registry.setStatus(id, stateError(message), "vm_recovery_failed");
+    });
+
     this.#hygiene = runStartupHygiene({
       paths: this.paths,
       registry: this.#registry,
@@ -502,7 +513,9 @@ export class Daemon {
     // and bring-up must not wait on them. Failures are logged per session —
     // one that can't be re-mounted (no provider ref, provider gone) simply
     // stays interrupted.
-    const interrupted = this.#hygiene?.interruptedSessions ?? [];
+    const interrupted = (this.#hygiene?.interruptedSessions ?? []).filter(
+      ({ id }) => !recoveredVms.has(id),
+    );
     if (this.config.autoResume.enabled && interrupted.length > 0) {
       void this.#autoResumeInterrupted(interrupted);
     }
@@ -2930,32 +2943,33 @@ export class Daemon {
         }
         this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id);
-        await stoppedSessionVm(this.repoRoot, id);
-        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-        this.#lastSend.delete(id);
-        this.#cacheTtlSeen.delete(id);
-        if (row.worktree && !row.inPlace) {
-          try {
-            this.#worktrees.remove(row.worktree, { force: true });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
-            throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+        return await withStoppedSessionVm(this.repoRoot, id, async () => {
+          if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+          this.#lastSend.delete(id);
+          this.#cacheTtlSeen.delete(id);
+          if (row.worktree && !row.inPlace) {
+            try {
+              this.#worktrees.remove(row.worktree, { force: true });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
+              throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+            }
+            this.#worktrees.prune();
+            this.#registry.setFields(id, { worktree: null });
           }
-          this.#worktrees.prune();
-          this.#registry.setFields(id, { worktree: null });
-        }
-        const snap = this.#registry.setStatus(id, stateDone, "marked_done");
-        this.emitEvent({
-          type: "status_changed",
-          sessionId: id,
-          status: stateDone,
-          ts: Date.now(),
-          note: "marked_done",
+          const snap = this.#registry.setStatus(id, stateDone, "marked_done");
+          this.emitEvent({
+            type: "status_changed",
+            sessionId: id,
+            status: stateDone,
+            ts: Date.now(),
+            note: "marked_done",
+          });
+          this.#publishState(snap.id);
+          this.#onActivityChange("marked-done");
+          return this.#enrich(snap);
         });
-        this.#publishState(snap.id);
-        this.#onActivityChange("marked-done");
-        return this.#enrich(snap);
       });
     });
 
@@ -2984,39 +2998,40 @@ export class Daemon {
         }
         this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id);
-        await stoppedSessionVm(this.repoRoot, id);
-        this.#lastSend.delete(id);
-        this.#cacheTtlSeen.delete(id);
-        if (s.worktree) {
-          try {
-            this.#worktrees.remove(s.worktree, { force: true });
-          } catch (err) {
-            // The tree is still on disk. Dropping the row now would orphan it —
-            // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
-            // flip it to `error` so `session.gc {id}` can retry, and surface it.
-            const msg = err instanceof Error ? err.message : String(err);
-            this.#log.warn("session.remove: worktree removal failed", { id, error: msg });
-            const errSnap = this.#registry.setStatus(
-              id,
-              stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
-              "remove_failed",
-            );
-            this.#publishState(errSnap.id);
-            throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+        return await withStoppedSessionVm(this.repoRoot, id, async () => {
+          this.#lastSend.delete(id);
+          this.#cacheTtlSeen.delete(id);
+          if (s.worktree) {
+            try {
+              this.#worktrees.remove(s.worktree, { force: true });
+            } catch (err) {
+              // The tree is still on disk. Dropping the row now would orphan it —
+              // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
+              // flip it to `error` so `session.gc {id}` can retry, and surface it.
+              const msg = err instanceof Error ? err.message : String(err);
+              this.#log.warn("session.remove: worktree removal failed", { id, error: msg });
+              const errSnap = this.#registry.setStatus(
+                id,
+                stateError(`worktree removal failed: ${msg}`.slice(0, 200)),
+                "remove_failed",
+              );
+              this.#publishState(errSnap.id);
+              throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+            }
           }
-        }
-        let branchDeleted = false;
-        if (alsoBranch && s.branch && !s.inPlace) {
-          this.#worktrees.prune(); // release the worktree's hold on the branch first
-          branchDeleted = this.#worktrees.deleteBranch(s.branch);
-        }
-        await stoppedSessionVm(this.repoRoot, id, true);
-        this.#registry.remove(id);
-        this.#hooks.forget(id);
-        this.#publishState();
-        this.#worktrees.prune();
-        this.#onActivityChange("session-removed");
-        return { removed: id, branchDeleted };
+          let branchDeleted = false;
+          if (alsoBranch && s.branch && !s.inPlace) {
+            this.#worktrees.prune(); // release the worktree's hold on the branch first
+            branchDeleted = this.#worktrees.deleteBranch(s.branch);
+          }
+          await removeSessionVmProfile(this.repoRoot, id);
+          this.#registry.remove(id);
+          this.#hooks.forget(id);
+          this.#publishState();
+          this.#worktrees.prune();
+          this.#onActivityChange("session-removed");
+          return { removed: id, branchDeleted };
+        });
       });
     });
 
@@ -3055,11 +3070,12 @@ export class Daemon {
             // process is still registered with this worktree as its cwd. Close
             // it before pulling the directory out from under it.
             if (this.#sessions.has(s.id)) await this.#sessions.close(s.id);
-            await stoppedSessionVm(this.repoRoot, s.id);
-            this.#worktrees.remove(s.worktree, { force });
-            const snap = this.#registry.setFields(s.id, { worktree: null });
-            this.#publishState(snap.id);
-            removed.push(s.id);
+            await withStoppedSessionVm(this.repoRoot, s.id, async () => {
+              this.#worktrees.remove(s.worktree!, { force });
+              const snap = this.#registry.setFields(s.id, { worktree: null });
+              this.#publishState(snap.id);
+              removed.push(s.id);
+            });
           } catch (err) {
             failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) });
           }

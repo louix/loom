@@ -10,7 +10,7 @@ import type {
 } from "@loom/core/types";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
 import { launchSessionVm } from "./session-vm-worker.ts";
-import { sessionVmDirectory } from "./session-vm-state.ts";
+import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
 const executable = async (name: string) => {
@@ -48,6 +48,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
         });
   const start = async (input: CreateSessionOptions | SessionRef, resume: boolean) => {
     const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
+    await stoppedSessionVm(vm.repoRoot, input.sessionId);
     if (resume) {
       const ref = (input as SessionRef).providerRef;
       if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error("Invalid Claude resume reference");

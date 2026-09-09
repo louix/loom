@@ -60,9 +60,8 @@ the VM. If the parent is killed, the supervisor observes EOF and performs cleanu
 Credentials cross a private bootstrap pipe and are written only once the supervisor
 is watching its parent. Cleanup attempts each revocation even if stopping/reaping
 fails: it removes the credential copy and closes the capabilities independently.
-Other state is retained on cleanup failure for diagnosis. Simultaneously killing
-both parent and supervisor, or losing the host, still needs a startup orphan sweep;
-there is no claim of recovery from those cases yet.
+Other state is retained on cleanup failure for diagnosis. If both owners die, daemon startup recovers the abandoned session using the
+host-only ownership record described below.
 
 Run the lifecycle acceptance checks without live credentials:
 
@@ -76,8 +75,7 @@ Git-worker and supervisor SIGKILL, and actual parent SIGKILL during startup and 
 worker initialization. Regression tests cover proxy cancellation/connection limits
 and credential revocation when VM cleanup fails.
 
-Remaining work includes recovery after loss of both owner processes and further
-restriction of host infrastructure. The
+Further restriction of host infrastructure remains. The
 supervisor is trusted host infrastructure and currently runs with full Deno
 permissions. This does not yet provide the intended network-free daemon boundary.
 
@@ -116,8 +114,8 @@ Archive stops the VM before removing the worktree, retaining native history for
 resume. Delete also removes the saved profile. Cleanup failure aborts these
 operations and retains the session for retry. A host-only lock prevents overlapping
 VMs for the same session. An `active.json` marker blocks resume and destructive
-cleanup if ownership was lost before reaping could be confirmed; recovery from
-that case still requires operator intervention. Empty directories and lock files
+cleanup if ownership was lost before reaping could be confirmed. Startup and
+session operations now attempt recovery before releasing that block. Empty directories and lock files
 remain after deletion to avoid races caused by replacing lock inodes.
 
 Existing host-worker history is not imported automatically: those sessions report
@@ -138,3 +136,44 @@ nix develop --command deno run -A scripts/test-claude-vm-daemon.ts \
 
 This checks an MCP tool call, daemon restart, archive/resume at a different
 worktree path, and deletion of persistent history.
+
+## Abandoned VM recovery
+
+On Linux, startup scans this repository's persistent session directories. A held
+ownership lock is left alone. For an abandoned active marker, recovery validates
+its version, directory identity, ownership stamp and pinned smolvm executable.
+Helpers are recorded with the host boot ID and process start time. Native smolvm
+commands wait behind a pipe gate until that record is durable, closing the window
+between spawning a helper and recording it. Git workers likewise receive their
+capability only after their process identity has been recorded.
+
+On the same boot, recovery uses libc pidfd functions to signal verified helpers,
+revokes credentials, and reaps the VM through its private smolvm state. It retains
+the worktree and Claude history. A durable `reaped` marker makes interrupted state
+removal retryable. On a different boot, old PIDs are never signalled: those VMs
+cannot have survived the reboot. Missing temporary state on the same boot is
+ambiguous unless shutdown was already recorded, so recovery fails closed.
+
+Archive/delete hold the ownership lock through recovery and filesystem removal.
+Resume retries recovery before launching. Startup stops admitting further cleanup
+after 30 seconds; individual process waits and smolvm commands are also bounded.
+Failures are logged and recorded as a session error when a matching row exists;
+they do not prevent the rest of the daemon from starting. Retrying resume/archive/
+delete attempts recovery again. Recovery never restarts a conversation, including
+through auto-resume for sessions handled by the startup sweep.
+
+An old or malformed marker, missing executable, substituted path, or unverifiable
+surviving helper leaves the session blocked for inspection. Records created before
+this recovery format are not guessed at. Automatic process recovery currently
+requires Linux `/proc` and libc pidfd support; no PID-only fallback is used.
+
+The credential-free live check kills both owners during startup and while a VM is
+ready, then verifies daemon recovery, history retention and a new VM owner:
+
+```sh
+nix develop --command deno run -A scripts/test-claude-vm-recovery.ts \
+  /path/to/claude-session-runtime /path/to/smolvm
+```
+
+Unit tests also simulate reboot/missing-state cases and interrupted recovery, and
+check process identity mismatch, ownership substitution and cleanup locking.

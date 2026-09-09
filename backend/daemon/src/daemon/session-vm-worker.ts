@@ -4,7 +4,11 @@ import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectArtifact } from "../../../../runtime/src/packaged/artifact.ts";
-import { finishSessionState } from "../../../../runtime/src/session-vm/persistence.ts";
+import { readRecovery, recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
+import {
+  finishSessionState,
+  lockSessionState,
+} from "../../../../runtime/src/session-vm/persistence.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
@@ -151,8 +155,20 @@ export const launchSessionVm = async (
         clearTimeout(timer);
         await unsubscribe?.();
         await publication.catch(() => {});
+        if (sessionDirectory && (await readRecovery(sessionDirectory))?.token === binding.token) {
+          const lock = await lockSessionState(sessionDirectory);
+          try {
+            const record = await readRecovery(sessionDirectory);
+            if (record?.token === binding.token) {
+              await recoverSessionVm(sessionDirectory);
+              return;
+            }
+          } finally {
+            lock.close();
+          }
+        }
         // A killed supervisor cannot reap: stop its native CLI group before fallback.
-        killGroup();
+        if (!sessionDirectory) killGroup();
         try {
           await Deno.stat(state);
         } catch (error) {

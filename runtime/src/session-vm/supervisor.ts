@@ -10,9 +10,16 @@ import {
   vmCreateArguments,
   vmEnvironment,
   vmExecArguments,
-  type VmBinding,
 } from "../packaged/vm.ts";
-import { lockSessionState, assertNoActiveVm, finishSessionState } from "./persistence.ts";
+import {
+  lockSessionState,
+  assertNoActiveVm,
+  finishSessionState,
+  writeRecoveryFile,
+  removeSessionRuntimeState,
+} from "./persistence.ts";
+import { bootId, processIdentity } from "./process.ts";
+import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 const bootstrap = setTimeout(() => Deno.exit(1), 10_000);
@@ -21,7 +28,7 @@ const first = await frames.next();
 clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
 const { binding, auth, allowRepoPrograms } = first.value as {
-  binding: VmBinding;
+  binding: RecoverableBinding;
   auth: SessionAuth;
   allowRepoPrograms: boolean;
 };
@@ -80,16 +87,40 @@ const parent = (async () => {
   }
 })();
 void parent;
+const persist = async () => {
+  if (binding.sessionDirectory && ownsPersistent)
+    await writeRecoveryFile(binding.sessionDirectory, "active.json", binding);
+};
+const track = async (pid: number) => {
+  if (!binding.sessionDirectory) return;
+  const identity = await processIdentity(pid);
+  if (identity) binding.recovery.processes.push(identity);
+  await persist();
+};
+// The shell cannot exec smolvm until its PID identity is durably recorded.
+// Positional arguments keep paths/arguments out of shell syntax.
+const gated = (args: string[]) => [
+  "-c",
+  'read -r loom_ready && [ "$loom_ready" = go ] && exec "$@"',
+  "loom-session",
+  binding.smolvm,
+  ...args,
+];
 const command = async (args: string[]) => {
   if (ended) throw new Error("Session closed during startup");
-  child = new Deno.Command(binding.smolvm, {
-    args,
+  child = new Deno.Command("/bin/sh", {
+    args: gated(args),
     clearEnv: true,
     env: vmEnvironment(binding.state),
-    stdin: "null",
+    stdin: "piped",
     stdout: "null",
     stderr: "null",
   }).spawn();
+  await track(child.pid);
+  if (ended) throw new Error("Session closed before command release");
+  const gate = child.stdin.getWriter();
+  await gate.write(new TextEncoder().encode("go\n"));
+  await gate.close();
   const result = await Promise.race([child.status, done.promise.then(() => undefined)]);
   if (!result?.success) throw new Error("Session VM startup interrupted or failed");
 };
@@ -101,12 +132,13 @@ try {
     await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
     if ((await Deno.lstat(profile)).isSymlink)
       throw new Error("Session profile must not be a symlink");
-    await Deno.writeTextFile(
-      join(binding.sessionDirectory, "active.json"),
-      JSON.stringify(binding),
-      { mode: 0o600, createNew: true },
-    );
+    binding.recovery = { version: 1, bootId: await bootId(), processes: [], reaped: false };
+    await writeRecoveryFile(binding.state, "owner.json", {
+      token: binding.token,
+      bootId: binding.recovery.bootId,
+    });
     ownsPersistent = true;
+    await track(Deno.pid);
   }
   for (const name of ["home", "cache", "data", "config", "private"])
     await Deno.mkdir(join(binding.state, name), { mode: 0o700 });
@@ -117,6 +149,7 @@ try {
     binding.state,
     binding.artifact,
     allowRepoPrograms,
+    track,
   );
   if (!git) throw new Error("Session VM requires a linked Git worktree");
   binding.gitSocket = git.socket;
@@ -154,15 +187,18 @@ try {
   await command(create);
   await command(["machine", "start", "--name", sessionVmName]);
   if (ended) throw new Error("Session closed during VM startup");
-  child = new Deno.Command(binding.smolvm, {
-    args: vmExecArguments(binding),
+  child = new Deno.Command("/bin/sh", {
+    args: gated(vmExecArguments(binding)),
     clearEnv: true,
     env: vmEnvironment(binding.state),
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
   }).spawn();
+  await track(child.pid);
   input = child.stdin.getWriter();
+  if (ended) throw new Error("Session closed before guest release");
+  await input.write(new TextEncoder().encode("go\n"));
   // Never expose raw vendor stderr: it can contain credentials.
   void child.stderr.pipeTo(new WritableStream({ write() {} })).catch(stop);
   const output = child.stdout.pipeTo(Deno.stdout.writable, { preventClose: true });
@@ -203,7 +239,11 @@ try {
         await git?.close();
       },
       state: async () => {
-        await Deno.remove(binding.state, { recursive: true });
+        if (ownsPersistent) {
+          binding.recovery.reaped = true;
+          await persist();
+        }
+        await removeSessionRuntimeState(binding.state);
         if (binding.sessionDirectory && ownsPersistent)
           await finishSessionState(binding.sessionDirectory, binding.token);
       },
