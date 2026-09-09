@@ -709,3 +709,16 @@ test("project provider allow/deny lists and explicit VM disable override inherit
   assert.throws(() => cfg('[provider_access]\ndisabled="claude"'), /array/);
   assert.throws(() => cfg('[isolation.claude]\nenabled="no"'), /boolean/);
 });
+
+test("AISDK VM routing accepts an artifact and can be explicitly disabled", () => {
+  const enabled = normalizeConfig({
+    isolation: { aisdk: { artifact: "/runtime", smolvm: "/bin/smolvm" } },
+  });
+  assert.deepEqual(enabled.isolation.aisdk, { artifact: "/runtime", smolvm: "/bin/smolvm" });
+  assert.equal(
+    normalizeConfig({ isolation: { aisdk: { enabled: false, artifact: "/runtime" } } }).isolation
+      .aisdk,
+    undefined,
+  );
+  assert.throws(() => normalizeConfig({ isolation: { aisdk: { enabled: true } } }));
+});

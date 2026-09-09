@@ -7,7 +7,7 @@ configuration live in [README](../README.md), [connectors](connectors.md) and
 
 ## Isolation
 
-- AISDK and Codex session workers/VMs, including durable transcript ownership.
+- Codex session VMs and credential ownership; wider live validation of AISDK VMs.
 - Remaining daemon catalog/title network paths, then daemon/TUI Deno isolation.
 - macOS runtime support; Linux guest packaging is already separated from the
   host launcher.

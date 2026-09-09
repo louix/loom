@@ -1,5 +1,6 @@
 import { forkContext } from "./fork-context.ts";
 import {
+  sessionVmDirectory,
   vmResumeBlockedReason,
   withStoppedSessionVm,
   removeSessionVmProfile,
@@ -1687,6 +1688,17 @@ export class Daemon {
       this.#registry.store.historyBackend(row.id) === "aisdk"
     )
       return "This session used the old ChatGPT backend. Start a new session; its history remains viewable.";
+    if (
+      this.#isAisdk(row.provider) &&
+      this.config.providers.aisdk[row.provider]?.sdk !== "chatgpt" &&
+      this.#registry.store.providerRef(row.id)
+    ) {
+      const savedVm = existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "aisdk"));
+      const vm = !!this.config.isolation.aisdk;
+      if (vm && row.inPlace) return "VM isolation requires a worktree. Fork to continue.";
+      if (savedVm !== vm)
+        return "This session used a different isolation mode. Fork to continue with the current policy.";
+    }
     if (isClaudeId(row.provider)) {
       const ref = this.#registry.store.providerRef(row.id);
       if (ref)

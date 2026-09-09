@@ -1,3 +1,4 @@
+import type { TranscriptMessage } from "./transcript.ts";
 /** Private connector protocol. Never route these messages through daemon admin RPC. */
 import type { HarnessEvent } from "./events.ts";
 import { MCP_CAPABILITIES } from "./types.ts";
@@ -35,7 +36,11 @@ export interface WorkerBinding {
   generation: string;
   providerId: string;
   sessionId: string;
-  connector: "@loom/connector-mock" | "@loom/connector-claude";
+  connector:
+    | "@loom/connector-mock"
+    | "@loom/connector-claude"
+    | "@loom/connector-generic"
+    | "@loom/connector-gemini";
   config: ConnectorConfig;
   role: WorkerRole;
   baseBranch?: string;
@@ -49,6 +54,7 @@ type SessionCommand = {
   [K in SessionMethod]: { method: K; args: Parameters<AgentSession[K]> };
 }[SessionMethod];
 export type WorkerCommand =
+  | { method: "seedTranscript"; args: [TranscriptMessage[]] }
   | { method: "initialize"; args: [WorkerBinding] }
   | { method: "create"; args: [CreateSessionOptions] }
   | { method: "resume"; args: [SessionRef] }
@@ -57,6 +63,7 @@ export type WorkerCommand =
   | SessionCommand;
 export type WorkerRequest = { kind: "request"; id: number } & WorkerCommand;
 export type WorkerFrame =
+  | { kind: "transcript"; from: number; messages: TranscriptMessage[] }
   | { kind: "hello"; version: number }
   | { kind: "ready"; id: number; generation: string; capabilities: ProviderCapabilities }
   | { kind: "response"; id: number; error?: { code: "operation_failed"; message: string } }
@@ -76,6 +83,8 @@ const optional = (v: unknown, check: (v: unknown) => boolean) => v === undefined
 const strings = (v: unknown) => Array.isArray(v) && v.every(str);
 const tokens = (v: unknown) =>
   record(v) && ["input", "output", "cacheRead", "cacheWrite"].every((k) => finite(v[k]));
+const transcriptMessages = (v: unknown) =>
+  Array.isArray(v) && v.every((m) => record(m) && str(m.role) && "content" in m);
 const nullableString = (v: unknown) => v === null || str(v);
 const state = (v: unknown): boolean => {
   if (!record(v)) return false;
@@ -179,13 +188,37 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
         str(b.sessionId) &&
         ["session", "title", "discovery", "enumeration", "capabilities"].includes(String(b.role)) &&
         optional(b.baseBranch, str) &&
-        ["@loom/connector-mock", "@loom/connector-claude"].includes(String(b.connector)) &&
+        [
+          "@loom/connector-mock",
+          "@loom/connector-claude",
+          "@loom/connector-generic",
+          "@loom/connector-gemini",
+        ].includes(String(b.connector)) &&
         record(b.config) &&
-        Object.entries(b.config).every(
-          ([k, v]) => ["cliPath", "configDir", "promptCacheTtl"].includes(k) && str(v),
-        );
+        Object.entries(b.config).every(([k, v]) => {
+          if (
+            [
+              "cliPath",
+              "configDir",
+              "promptCacheTtl",
+              "model",
+              "baseUrl",
+              "apiKey",
+              "sdk",
+            ].includes(k)
+          )
+            return str(v);
+          if (k === "models") return strings(v);
+          if (k === "includeUsage") return typeof v === "boolean";
+          if (k === "maxSteps") return finite(v);
+          if (k === "modelContext") return record(v) && Object.values(v).every(finite);
+          return false;
+        });
       break;
     }
+    case "seedTranscript":
+      valid = a.length === 1 && transcriptMessages(a[0]);
+      break;
     case "create":
     case "resume":
       valid = a.length === 1 && sessionOptions(a[0], v.method === "resume");
@@ -232,6 +265,9 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
   if (!record(v)) throw new Error("invalid worker frame");
   let valid = false;
   switch (v.kind) {
+    case "transcript":
+      valid = Number.isSafeInteger(v.from) && Number(v.from) >= 0 && transcriptMessages(v.messages);
+      break;
     case "hello":
       valid = Number.isSafeInteger(v.version);
       break;

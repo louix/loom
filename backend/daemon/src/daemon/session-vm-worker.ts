@@ -29,6 +29,7 @@ export interface SessionVmOptions {
   authOwner?: ClaudeAuthOwner;
   allowRepoPrograms?: boolean;
   extraAllowedHosts?: string[];
+  providerHosts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
@@ -130,6 +131,7 @@ export const launchSessionVm = async (
       JSON.stringify({
         binding,
         extraAllowedHosts,
+        providerHosts: normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
         auth,
         allowRepoPrograms: options.allowRepoPrograms ?? false,
       }) + "\n",

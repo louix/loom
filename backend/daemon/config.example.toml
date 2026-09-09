@@ -246,3 +246,9 @@ allow_repo_programs = false
 # Existing incompatible sessions become read-only and can be forked.
 # [repo.isolation.claude]
 # enabled = false
+
+# Optional AISDK session VMs (OpenAI-compatible, Anthropic, Google; not Codex).
+# Build with nix build .#aisdk-session-runtime. May also be set per repo.
+# [isolation.aisdk]
+# artifact = "/absolute/path/to/aisdk-session-runtime"
+# smolvm = "/absolute/path/to/smolvm"

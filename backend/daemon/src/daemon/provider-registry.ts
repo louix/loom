@@ -1,3 +1,4 @@
+import { withAisdkVmSessions } from "./aisdk-vm-provider.ts";
 /**
  * Instantiates providers by id, on demand, from a {@link ConnectorManifest} of
  * lazy thunks the CLI supplies. Nothing in the daemon's graph imports a vendor
@@ -151,7 +152,10 @@ export class ProviderRegistry {
     }
     const { createProvider } = await load();
     const provider = await withExternalMcp(
-      createProvider,
+      async (ctx) => {
+        const base = await createProvider(ctx);
+        return !isClaudeId(id) && ctx.config.sessionVm ? withAisdkVmSessions(base, ctx) : base;
+      },
       this.#contextFor(id),
       undefined,
       undefined,
@@ -224,6 +228,16 @@ export class ProviderRegistry {
     const p = this.#config.providers.aisdk[id];
     if (!p) throw new Error(`unknown provider: ${id}`);
     const config: ConnectorConfig = {
+      ...(this.#config.isolation.aisdk && p.sdk !== "chatgpt"
+        ? {
+            sessionVm: {
+              ...this.#config.isolation.aisdk,
+              repoRoot: this.#repoRoot,
+              extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
+              allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
+            },
+          }
+        : {}),
       model: p.model,
       models: p.models,
       baseUrl: p.baseUrl,

@@ -39,9 +39,9 @@ forking into an enabled provider with the current isolation policy.
 
 ## Remaining work
 
-1. Move AISDK and Codex sessions across the worker/VM boundary. AISDK needs a
-   session-scoped transcript persistence channel; Codex needs packaged native
-   execution, private durable history and credential lifecycle handling.
+1. Move Codex sessions across the VM boundary with packaged native execution,
+   private durable history and credential lifecycle handling. AISDK session VMs
+   now use a session-scoped host transcript channel; see [AISDK VMs](aisdk-session-vm.md).
 2. Move remaining catalog/title network calls out of the daemon, then remove
    daemon/TUI network grants.
 3. Implement the macOS host runtime backend while preserving Linux guest

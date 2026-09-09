@@ -26,15 +26,17 @@ export const startEgress = (
   report: (host: string, allowed: boolean) => void,
   options: {
     extraAllowedHosts?: string[];
+    providerHosts?: string[];
     timeoutMs?: number;
     maxConnections?: number;
     dial?: (signal: AbortSignal, host: string) => Promise<Tunnel>;
   } = {},
 ) => {
   const permitted = new Set(
-    ["api.anthropic.com", ...normalizeExtraHosts(options.extraAllowedHosts)].map(
-      (host) => `${host}:443`,
-    ),
+    [
+      ...normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
+      ...normalizeExtraHosts(options.extraAllowedHosts),
+    ].map((host) => `${host}:443`),
   );
   const listener = Deno.listen({ transport: "unix", path: socket });
   const active = new Map<Deno.Conn, AbortController>();

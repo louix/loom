@@ -1,3 +1,4 @@
+import type { TranscriptStore } from "../../../../core/src/transcript.ts";
 import type { HarnessEvent } from "../../../../core/src/events.ts";
 import type {
   AdapterSnapshot,
@@ -100,6 +101,7 @@ export class RemoteWorkerSession implements AgentSession {
   readonly #timeoutMs: number;
   readonly #readDone: Promise<void>;
   readonly #readStop = new AbortController();
+  #transcript: TranscriptStore | undefined;
   #snapshot: AdapterSnapshot | undefined;
   #seq = 0;
   #requestId = 0;
@@ -173,6 +175,13 @@ export class RemoteWorkerSession implements AgentSession {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async attachTranscript(store: TranscriptStore): Promise<void> {
+    if (this.#snapshot || this.#transcript) throw new Error("transcript already attached");
+    this.#transcript = store;
+    for (const message of store.load(this.id))
+      await this.#request({ method: "seedTranscript", args: [[message]] });
   }
 
   get providerRef(): string | null {
@@ -317,6 +326,16 @@ export class RemoteWorkerSession implements AgentSession {
         continue;
       }
       switch (f.kind) {
+        case "transcript":
+          if (
+            !this.#ready ||
+            !this.#transcript ||
+            this.#ended ||
+            f.from > this.#transcript.count(this.id)
+          )
+            throw new Error("invalid transcript mutation");
+          this.#transcript.replaceFrom(this.id, f.from, f.messages);
+          break;
         case "hello":
           throw new Error("duplicate worker hello");
         case "ready":

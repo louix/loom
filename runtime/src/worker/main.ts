@@ -7,14 +7,18 @@ import { armWorkerShutdown, exitWorker } from "./shutdown.ts";
 await serveWorker(
   Deno.stdin.readable,
   Deno.stdout.writable,
-  async (binding) => {
-    const { createProvider } =
-      binding.connector === "@loom/connector-claude"
-        ? await import("../../../connectors/claude/src/index.ts")
-        : await import("../../../connectors/mock/src/index.ts");
+  async (binding, transcript) => {
+    const loaders = {
+      "@loom/connector-claude": () => import("../../../connectors/claude/src/index.ts"),
+      "@loom/connector-generic": () => import("../../../connectors/generic/src/index.ts"),
+      "@loom/connector-gemini": () => import("../../../connectors/gemini/src/index.ts"),
+      "@loom/connector-mock": () => import("../../../connectors/mock/src/index.ts"),
+    };
+    const { createProvider } = await loaders[binding.connector]();
     return createProvider({
       id: binding.providerId,
       config: binding.config,
+      transcript,
       logger: makeLogger("worker"),
       ...(binding.baseBranch ? { baseBranch: binding.baseBranch } : {}),
     });

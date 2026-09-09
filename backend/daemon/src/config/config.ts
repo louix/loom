@@ -238,6 +238,7 @@ export interface LoomConfig {
   isolation: {
     git: { allowRepoPrograms: boolean };
     claude?: { artifact: string; smolvm: string };
+    aisdk?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
   };
   baseBranch: string;
@@ -784,6 +785,20 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     (typeof claudeVm["smolvm"] !== "string" || !claudeVm["smolvm"].trim())
   )
     throw new Error("isolation.claude.smolvm must name an executable");
+  const aisdkVm = asRecord(asRecord(r["isolation"])["aisdk"]);
+  if (aisdkVm["enabled"] !== undefined && typeof aisdkVm["enabled"] !== "boolean")
+    throw new Error("isolation.aisdk.enabled must be a boolean");
+  if (
+    aisdkVm["enabled"] !== false &&
+    asRecord(r["isolation"])["aisdk"] !== undefined &&
+    (typeof aisdkVm["artifact"] !== "string" || !aisdkVm["artifact"].trim())
+  )
+    throw new Error("isolation.aisdk requires an artifact path");
+  if (
+    aisdkVm["smolvm"] !== undefined &&
+    (typeof aisdkVm["smolvm"] !== "string" || !aisdkVm["smolvm"].trim())
+  )
+    throw new Error("isolation.aisdk.smolvm must name an executable");
   const gitIsolation = asRecord(asRecord(r["isolation"])["git"]);
   if (
     gitIsolation["allow_repo_programs"] !== undefined &&
@@ -933,6 +948,14 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
             claude: {
               artifact: expandTilde(claudeVm["artifact"]),
               smolvm: expandTilde(str(claudeVm["smolvm"], "smolvm")),
+            },
+          }
+        : {}),
+      ...(aisdkVm["enabled"] !== false && typeof aisdkVm["artifact"] === "string"
+        ? {
+            aisdk: {
+              artifact: expandTilde(aisdkVm["artifact"]),
+              smolvm: expandTilde(str(aisdkVm["smolvm"], "smolvm")),
             },
           }
         : {}),

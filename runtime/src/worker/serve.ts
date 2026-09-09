@@ -1,3 +1,4 @@
+import { WorkerTranscript } from "./transcript.ts";
 import {
   decodeWorkerRequest,
   MAX_PENDING,
@@ -13,13 +14,14 @@ import { FrameWriter, readFrames } from "./transport.ts";
 export const serveWorker = async (
   input: ReadableStream<Uint8Array>,
   output: WritableStream<Uint8Array>,
-  load: (binding: WorkerBinding) => Promise<AgentProvider>,
+  load: (binding: WorkerBinding, transcript: WorkerTranscript) => Promise<AgentProvider>,
   onShutdown: () => void = () => {},
 ): Promise<void> => {
   const writer = new FrameWriter(output);
   const stop = new AbortController();
   let binding: WorkerBinding | undefined;
   let provider: AgentProvider | undefined;
+  let transcript: WorkerTranscript | undefined;
   let session: AgentSession | undefined;
   let initialized = false;
   let started = false;
@@ -67,7 +69,10 @@ export const serveWorker = async (
       if (initialized) throw new Error("worker already initialized");
       initialized = true;
       binding = r.args[0];
-      provider = await load(binding);
+      transcript = new WorkerTranscript(binding.sessionId, (from, messages) => {
+        void writer.send({ kind: "transcript", from, messages }).catch(fail);
+      });
+      provider = await load(binding, transcript);
       await writer.send({
         kind: "ready",
         id: r.id,
@@ -77,6 +82,16 @@ export const serveWorker = async (
       return;
     }
     if (!provider || !binding) throw new Error("worker not ready");
+    if (r.method === "seedTranscript") {
+      if (
+        started ||
+        !["@loom/connector-generic", "@loom/connector-gemini"].includes(binding.connector)
+      )
+        throw new Error("invalid transcript bootstrap");
+      transcript!.seed(r.args[0]);
+      await writer.send({ kind: "response", id: r.id });
+      return;
+    }
     if (r.method === "create" || r.method === "resume") {
       if (binding.role !== "session" && binding.role !== "title")
         throw new Error("worker role cannot create a session");
