@@ -17,16 +17,25 @@
       guestSystemFor = system: builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
       guestRuntimes = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
         codex-session-runtime = import ./packaging/runtimes/codex.nix {
-          pkgs = nixpkgs.legacyPackages.${system};
-          loom = self.packages.${system}.loom.override { withTilth = false; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+          };
+          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
         };
         aisdk-session-runtime = import ./packaging/runtimes/aisdk.nix {
-          pkgs = nixpkgs.legacyPackages.${system};
-          loom = self.packages.${system}.loom.override { withTilth = false; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+          };
+          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
         };
         claude-session-runtime = import ./packaging/runtimes/claude.nix {
-          pkgs = nixpkgs.legacyPackages.${system};
-          loom = self.packages.${system}.loom.override { withTilth = false; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+          };
+          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
         };
         tilth-runtime = (import ./packaging/runtimes/tilth.nix {
           inherit tilth system;
@@ -73,15 +82,7 @@
         in rec {
           default = loom;
           inherit (guestRuntimes.${guestSystem}) claude-session-runtime aisdk-session-runtime codex-session-runtime tilth-runtime;
-          bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON {
-            tilth = {
-              version = 1;
-              source = "tilth";
-              artifact = "${tilth-runtime}";
-              smolvm = "${hostSmolvm}/bin/smolvm";
-              preparedAt = "bundled";
-            };
-          });
+
 
           # A fixed-output derivation holding a populated `DENO_DIR`: every
           # npm tarball + esm module `deno.lock` pins, fetched once under a
@@ -155,7 +156,21 @@
             outputHash = "sha256-owMiJzg2obrdhloRDQ5TDEAwtZY0wrr5lLzFlmnKNm0=";
           };
 
-          loom = pkgs.lib.makeOverridable ({ withTilth ? true }:
+          loom = pkgs.lib.makeOverridable ({ withTilth ? true, withClaude ? true, withCodex ? true, withAisdk ? true }:
+            let
+              entry = source: artifact: {
+                version = 1;
+                inherit source artifact;
+                smolvm = "${hostSmolvm}/bin/smolvm";
+                preparedAt = "bundled";
+              };
+              bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON (
+                pkgs.lib.optionalAttrs withTilth { tilth = entry "tilth" "${tilth-runtime}"; }
+                // pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${claude-session-runtime}"; }
+                // pkgs.lib.optionalAttrs withCodex { codex = entry "codex" "${codex-session-runtime}"; }
+                // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk" "${aisdk-session-runtime}"; }
+              ));
+            in
             pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
             pname = "loom";
             version = revFor;
@@ -204,7 +219,7 @@
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
-                  ${if withTilth && bundleSupported
+                  ${if (withTilth || withClaude || withCodex || withAisdk) && bundleSupported
                     then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
                     else "--unset LOOM_BUNDLED_RUNTIMES"}
               done

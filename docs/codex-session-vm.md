@@ -11,8 +11,7 @@ nix build .#codex-session-runtime --out-link /tmp/loom-codex-runtime
 ```toml
 # ~/.config/loom/config.toml; also valid under [repo.isolation.codex]
 [isolation.codex]
-artifact = "/absolute/path/to/loom-codex-runtime"
-smolvm = "/absolute/path/to/smolvm"
+enabled = true # use the runtime bundled with the Linux Nix package
 ```
 
 `enabled = false` disables an inherited policy. Restart the daemon after changes.

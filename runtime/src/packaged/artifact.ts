@@ -1,4 +1,5 @@
 /** Read-only runtime resolution. Session launch never invokes Nix or fetches. */
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -81,10 +82,10 @@ export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest
   return manifest;
 };
 /** A package-owned manifest takes precedence over mutable development pins. */
-export const bundledRuntime = async (source: string): Promise<RuntimeLock | undefined> => {
+export const bundledRuntime = (source: string): RuntimeLock | undefined => {
   const file = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
   if (!file) return undefined;
-  const runtimes = JSON.parse(await Deno.readTextFile(file));
+  const runtimes = JSON.parse(readFileSync(file, "utf8"));
   if (!runtimes || typeof runtimes !== "object" || Array.isArray(runtimes))
     throw new Error("Invalid bundled runtime manifest");
   if (!Object.hasOwn(runtimes, source)) return undefined;

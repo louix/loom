@@ -735,3 +735,47 @@ test("Codex VM policy is independent of AISDK and Claude", () => {
   assert.equal(config.isolation.aisdk, undefined);
   assert.equal(config.isolation.claude, undefined);
 });
+
+test("enabled session VMs resolve package bundles while explicit paths and disable win", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-bundle-config-"));
+  const previous = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
+  try {
+    const manifest = join(dir, "bundles.json");
+    writeFileSync(
+      manifest,
+      JSON.stringify(
+        Object.fromEntries(
+          ["claude", "codex", "aisdk"].map((source) => [
+            source,
+            {
+              version: 1,
+              source,
+              artifact: `/bundle/${source}`,
+              smolvm: "/bundle/smolvm",
+              preparedAt: "bundled",
+            },
+          ]),
+        ),
+      ),
+    );
+    Deno.env.set("LOOM_BUNDLED_RUNTIMES", manifest);
+    for (const name of ["claude", "codex", "aisdk"] as const) {
+      assert.deepEqual(cfg(`[isolation.${name}]\nenabled=true`).isolation[name], {
+        artifact: `/bundle/${name}`,
+        smolvm: "/bundle/smolvm",
+      });
+      assert.equal(cfg(`[isolation.${name}]\nenabled=false`).isolation[name], undefined);
+      assert.deepEqual(
+        cfg(`[isolation.${name}]\nenabled=true\nartifact="/custom"\nsmolvm="/custom/smolvm"`)
+          .isolation[name],
+        { artifact: "/custom", smolvm: "/custom/smolvm" },
+      );
+    }
+    Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
+    assert.throws(() => cfg("[isolation.claude]\nenabled=true"), /package bundled with claude/);
+  } finally {
+    if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
+    else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

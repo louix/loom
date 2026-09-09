@@ -1,3 +1,4 @@
+import { bundledRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -772,7 +773,19 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   };
   const only = ids("only");
   const disabled = ids("disabled") ?? [];
-  const claudeVm = asRecord(asRecord(r["isolation"])["claude"]);
+  const sessionVmConfig = (name: string) => {
+    const value = asRecord(asRecord(r["isolation"])[name]);
+    if (value["enabled"] === true && value["artifact"] === undefined) {
+      const bundle = bundledRuntime(name);
+      if (!bundle)
+        throw new Error(
+          `isolation.${name} requires an artifact path or a Loom package bundled with ${name}`,
+        );
+      return { ...value, artifact: bundle.artifact, smolvm: value["smolvm"] ?? bundle.smolvm };
+    }
+    return value;
+  };
+  const claudeVm = sessionVmConfig("claude");
   if (claudeVm["enabled"] !== undefined && typeof claudeVm["enabled"] !== "boolean")
     throw new Error("isolation.claude.enabled must be a boolean");
   if (
@@ -786,7 +799,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     (typeof claudeVm["smolvm"] !== "string" || !claudeVm["smolvm"].trim())
   )
     throw new Error("isolation.claude.smolvm must name an executable");
-  const aisdkVm = asRecord(asRecord(r["isolation"])["aisdk"]);
+  const aisdkVm = sessionVmConfig("aisdk");
   if (aisdkVm["enabled"] !== undefined && typeof aisdkVm["enabled"] !== "boolean")
     throw new Error("isolation.aisdk.enabled must be a boolean");
   if (
@@ -800,7 +813,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     (typeof aisdkVm["smolvm"] !== "string" || !aisdkVm["smolvm"].trim())
   )
     throw new Error("isolation.aisdk.smolvm must name an executable");
-  const codexVm = asRecord(asRecord(r["isolation"])["codex"]);
+  const codexVm = sessionVmConfig("codex");
   if (codexVm["enabled"] !== undefined && typeof codexVm["enabled"] !== "boolean")
     throw new Error("isolation.codex.enabled must be a boolean");
   if (

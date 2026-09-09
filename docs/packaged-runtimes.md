@@ -7,11 +7,19 @@ worker. Host command MCPs remain available through explicit `command` entries.
 
 ## Use tilth
 
-The default Linux Nix package bundles Tilth's runtime and smolvm.
+The default Linux Nix package bundles Tilth, Claude, Codex and AISDK runtimes
+and smolvm. Session isolation remains opt-in through configuration.
 
-Nix configurations can opt out with `loom.override { withTilth = false; }`, which
-omits both bundled Tilth and smolvm from Loom's package closure. The exposed `loom`
-and default flake outputs keep `withTilth = true`; the development shell is unchanged.
+Nix configurations can omit individual runtimes with `loom.override {
+withTilth = false; withClaude = false; withCodex = false; withAisdk = false;
+}`. All four default to true on Linux. The development shell is unchanged.
+`withClaude` includes the proprietary Claude Code executable.
+
+For session VMs, configure `[isolation.claude]`, `[isolation.codex]` or
+`[isolation.aisdk]` with `enabled = true`. Loom resolves the runtime and smolvm
+from its package, so `nix profile upgrade loom` updates them together. Remove old
+`artifact` and `smolvm` pins to use these package defaults; explicit paths remain
+available for development builds.
 
 Configure Tilth with:
 

@@ -170,8 +170,7 @@ Build the artifact above, then opt in for Claude sessions:
 
 ```toml
 [isolation.claude]
-artifact = "/absolute/path/to/claude-session-runtime"
-smolvm = "/absolute/path/to/smolvm" # defaults to smolvm on PATH
+enabled = true # use the runtime bundled with the Linux Nix package
 ```
 
 Each regular Claude session gets its own VM. Discovery and one-shot title jobs
@@ -270,14 +269,14 @@ substitution and locking.
 
 Use exact `[[repo]] path = "~/dev/project"` entries in the user config.
 `[repo.isolation.claude] enabled = false` disables inherited Claude VM isolation;
-`enabled = true` uses the inherited artifact/smolvm paths (or project overrides).
+`enabled = true` uses the package-bundled runtime unless artifact/smolvm paths
+are explicitly configured or inherited. Remove development pins to follow package upgrades.
 `[repo.provider_access] only = ["claude:work"]` restricts the project to that
 provider; `disabled = ["claude:work"]` leaves other providers available. An omitted
 `only` allows all configured providers; `only = []` allows none. Restart the daemon
 after changing provider or isolation policy. Missing and disabled providers leave
 their sessions read-only, with an explanation and a continuation fork using an
 enabled provider. `session.fork` accepts an explicit `provider` override.
-
 
 ## Startup timing
 

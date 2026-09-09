@@ -210,12 +210,13 @@ max_results = 5
 [isolation.git]
 allow_repo_programs = false
 
-# Opt in to one VM per regular Claude session. Build .#claude-session-runtime
-# separately; native Claude remains on the host for login/credential renewal.
+# Opt in to one VM per regular Claude session. The Linux Nix package bundles
+# the runtime; native Claude remains on the host for login/credential renewal.
 # History persists outside the worktree; archive retains it, delete removes it.
 # [isolation.claude]
-# artifact = "/absolute/path/to/claude-session-runtime"
-# smolvm = "/absolute/path/to/smolvm" # defaults to smolvm on PATH
+# enabled = true
+# The same applies to [isolation.codex] and [isolation.aisdk].
+# Optional development overrides: artifact = "/path/to/runtime", smolvm = "/path/to/smolvm"
 
 # Per-repo overrides belong in this file. Use an absolute path or ~/path.
 # Matching uses the daemon repo root's canonical path, not a session worktree.

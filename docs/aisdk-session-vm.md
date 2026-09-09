@@ -11,8 +11,7 @@ nix build .#aisdk-session-runtime --out-link /tmp/loom-aisdk-runtime
 ```toml
 # ~/.config/loom/config.toml; also valid under [repo.isolation.aisdk]
 [isolation.aisdk]
-artifact = "/absolute/path/to/loom-aisdk-runtime"
-smolvm = "/absolute/path/to/smolvm"
+enabled = true # use the runtime bundled with the Linux Nix package
 ```
 
 `enabled = false` disables an inherited policy. Restart the daemon after changing
