@@ -1,8 +1,9 @@
 # Packaged MCP runtimes
 
 Loom can run prepared command MCP packages in per-session smolvm guests. This
-first backend supports Linux/KVM, a writable session workspace, and **no guest
-network access or credentials**. HTTP MCPs continue to use the external HTTP
+backend supports Linux/KVM, a writable session workspace, and optional HTTPS
+egress to explicitly configured hosts. Network access defaults to off; host
+credentials are not passed into MCP guests. HTTP MCPs continue to use the external HTTP
 worker. Host command MCPs remain available through explicit `command` entries.
 
 ## Use tilth
@@ -119,6 +120,47 @@ Its default output is the same runtime artifact; `#tilth` is the binary package.
 Installing the base Loom package does not build or install these optional outputs.
 The helper is available as `lib.mkRuntime` from both Loom and the runtime flake.
 
+## Optional HTTPS egress
+
+```toml
+[[command-mcp]]
+name = "external-tools"
+runtime = "github:your-org/your-tools/<revision>#loom-runtime"
+isolation = "vm"
+allowed_hosts = ["api.example.com"]
+```
+
+Omitting `allowed_hosts` (or setting it to `[]`) keeps egress disabled. Entries are
+exact DNS names, normalized to lowercase, with HTTPS port 443 only. URLs, IP
+addresses, wildcards and alternate ports are rejected. Subdomains and redirect
+destinations must each be listed explicitly. Host `command` entries cannot use
+this setting: their native binaries are not confined by this VM policy.
+
+The guest still has no IP network access. A packaged loopback proxy forwards
+HTTPS CONNECT requests over a mounted Unix/vsock endpoint to the MCP supervisor.
+The supervisor checks the exact destination before resolving or connecting, and
+its Deno network permissions contain only the configured hosts on port 443 plus
+its local MCP listener and private Unix socket. TLS remains end-to-end. Shutdown closes active tunnels;
+failed or denied requests never fall back to host execution or unrestricted IP
+networking.
+
+MCP binaries must honor `HTTPS_PROXY`/`https_proxy`. The launcher also sets the
+HTTP proxy variables, but plain HTTP requests are denied. The package includes
+the adapter, not the allowlist. Rebuild older artifacts with the current
+`mkRuntime` helper before enabling egress. Environment/credential injection for
+packaged MCPs is still unsupported; this change only grants selected-host access.
+
+Credential-free live test (uses public HTTPS at example.com):
+
+```sh
+nix build ./packaging/runtimes#network-probe -o /tmp/loom-network-probe
+nix develop --command deno run -A scripts/test-runtime-egress.ts \
+  /tmp/loom-network-probe /path/to/smolvm
+```
+
+It checks the offline default, allowed/denied hosts, alternate-port denial,
+direct-IP denial, and cleanup after supervisor termination.
+
 ## Artifact and execution contracts
 
 An artifact contains `manifest.json`, `store-paths`, and a staged `nix/store/`
@@ -135,8 +177,8 @@ containing only the complete selected runtime closure. The manifest shape is:
 ```
 
 Manifests cannot grant permissions. Unknown manifest fields are rejected. This
-version rejects per-runtime environment, network, host and mount options rather
-than silently ignoring them. Runtime and host command configurations are mutually
+version rejects per-runtime environment, arbitrary network and mount options
+rather than silently ignoring them; `allowed_hosts` belongs only in VM MCP config. Runtime and host command configurations are mutually
 exclusive.
 
 Each session gets its own Deno supervisor, authenticated loopback HTTP endpoint,
@@ -190,7 +232,7 @@ Host firewall rules can make the positive control fail. Failed runs retain their
 fixture paths for diagnosis. These checks replace the removed tilth spike suite.
 
 Tested here with Linux x86_64, tilth 0.10.1 and smolvm 1.8.1. Other architectures,
-networked command MCPs and packaged connector CLIs remain follow-up work.
+additional provider runtimes and macOS execution remain follow-up work.
 
 ## Host and guest packaging boundary
 

@@ -3225,7 +3225,12 @@ export class Daemon {
         return {
           name: m.name,
           ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
-          spec: { transport: "runtime", runtime: m.runtime, isolation: m.isolation },
+          spec: {
+            transport: "runtime",
+            runtime: m.runtime,
+            isolation: m.isolation,
+            ...(m.allowedHosts ? { allowedHosts: m.allowedHosts } : {}),
+          },
         };
       const { command, args, note } = resolveMcpSpec(m);
       if (note && !this.#tilthFallbackLogged) {

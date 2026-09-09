@@ -19,6 +19,7 @@ in rec {
     args = [ "--mcp" "--edit" ];
   };
   tilth = package;
+  network-probe = import ./network-probe.nix { inherit pkgs; };
   # Explicit test artifact; never selected by normal runtime preparation.
   bridge-probe = import ./mk-runtime.nix {
     inherit pkgs;

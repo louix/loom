@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { writeSessionAuth, type SessionAuth } from "./auth.ts";
 import { startSessionGit } from "../../../backend/daemon/src/daemon/git-worker.ts";
-import { startEgress } from "./egress.ts";
+import { startEgress } from "../egress.ts";
 import { cleanupSessionVm } from "./cleanup.ts";
 import {
   reapVm,
@@ -132,11 +132,15 @@ try {
   void git.exited.then(stop, stop);
   if (ended) throw new Error("Session closed during Git startup");
   status();
-  egress = startEgress(join(binding.state, "egress.sock"), (host, allowed) => {
-    network.push({ host, allowed });
-    if (network.length > 32) network.shift();
-    status();
-  });
+  egress = startEgress(
+    join(binding.state, "egress.sock"),
+    ["api.anthropic.com"],
+    (host, allowed) => {
+      network.push({ host, allowed });
+      if (network.length > 32) network.shift();
+      status();
+    },
+  );
   const create = vmCreateArguments(binding);
   // Claude already puts the closure's Git shim on PATH; no separate mount needed.
   const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);

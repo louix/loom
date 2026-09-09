@@ -1,4 +1,5 @@
 /** HTTPS CONNECT capability: the guest supplies no IP addresses or DNS settings. */
+import { allowedHosts } from "./egress-policy.ts";
 import { createConnection } from "node:net";
 import { Readable, Writable } from "node:stream";
 
@@ -8,9 +9,9 @@ interface Tunnel {
   close(): void;
 }
 // Aborting destroys the socket, including while DNS lookup/connect is pending.
-const dialApi = (signal: AbortSignal): Promise<Tunnel> =>
+const dialHost = (signal: AbortSignal, host: string): Promise<Tunnel> =>
   new Promise((resolve, reject) => {
-    const socket = createConnection({ host: "api.anthropic.com", port: 443, signal });
+    const socket = createConnection({ host, port: 443, signal });
     socket.once("error", reject);
     socket.once("connect", () =>
       resolve({
@@ -22,13 +23,15 @@ const dialApi = (signal: AbortSignal): Promise<Tunnel> =>
   });
 export const startEgress = (
   socket: string,
+  hosts: readonly string[],
   report: (host: string, allowed: boolean) => void,
   options: {
     timeoutMs?: number;
     maxConnections?: number;
-    dial?: (signal: AbortSignal) => Promise<Tunnel>;
+    dial?: (signal: AbortSignal, host: string) => Promise<Tunnel>;
   } = {},
 ) => {
+  const permitted = new Set(allowedHosts(hosts).map((host) => `${host}:443`));
   const listener = Deno.listen({ transport: "unix", path: socket });
   const active = new Map<Deno.Conn, AbortController>();
   const tasks = new Set<Promise<void>>();
@@ -73,8 +76,8 @@ export const startEgress = (
           }
       }
       const header = new TextDecoder().decode(buffer.subarray(0, end < 0 ? size : end + 4));
-      const authority = /^CONNECT ([^\s]+) HTTP\/1\.[01]\r\n/.exec(header)?.[1];
-      const allowed = end >= 0 && authority === "api.anthropic.com:443";
+      const authority = /^CONNECT ([^\s]+) HTTP\/1\.[01]\r\n/.exec(header)?.[1]?.toLowerCase();
+      const allowed = end >= 0 && authority !== undefined && permitted.has(authority);
       report(
         (authority ?? "invalid CONNECT").replace(/[^a-zA-Z0-9.:[\]-]/g, "?").slice(0, 200),
         allowed,
@@ -83,7 +86,7 @@ export const startEgress = (
         await write(client, encoder.encode("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"));
         return;
       }
-      upstream = await (options.dial ?? dialApi)(controller.signal);
+      upstream = await (options.dial ?? dialHost)(controller.signal, authority!.slice(0, -4));
       controller.signal.throwIfAborted();
       clearTimeout(timer);
       await write(client, encoder.encode("HTTP/1.1 200 Connection Established\r\n\r\n"));

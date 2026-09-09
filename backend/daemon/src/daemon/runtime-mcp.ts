@@ -1,3 +1,4 @@
+import { allowedHosts } from "../../../../runtime/src/egress-policy.ts";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
@@ -14,15 +15,18 @@ export const startRuntimeMcp = async (
   launch: WorkerLauncher = launchLocalWorker,
   startGit = startSessionGit,
   allowRepoPrograms = false,
+  hosts: string[] = [],
 ): Promise<ManagedMcp> => {
   if (Deno.build.os !== "linux")
     throw new Error("Packaged MCP VMs currently require Linux with KVM");
+  const destinations = allowedHosts(hosts);
   const { lock, manifest } = await resolveRuntime(runtime);
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
   const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" });
   const binding: VmBinding = {
     version: 1,
+    allowedHosts: destinations,
     artifact: lock.artifact,
     smolvm: lock.smolvm,
     manifest,
@@ -33,6 +37,14 @@ export const startRuntimeMcp = async (
   let child: ReturnType<WorkerLauncher>;
   let git: Awaited<ReturnType<typeof startSessionGit>>;
   try {
+    if (destinations.length) {
+      if (
+        (await Deno.readTextFile(join(lock.artifact, "egress-version")).catch(() => "")).trim() !==
+        "1"
+      )
+        throw new Error("Runtime needs egress support; rebuild or upgrade its package");
+      binding.egressSocket = join(state, "egress.sock");
+    }
     vmArguments(binding);
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
@@ -50,7 +62,11 @@ export const startRuntimeMcp = async (
         write: [state],
         env: [],
         run: [lock.smolvm],
-        net: ["127.0.0.1:0"],
+        net: [
+          "127.0.0.1:0",
+          ...(binding.egressSocket ? [`unix:${binding.egressSocket}`] : []),
+          ...destinations.map((host) => `${host}:443`),
+        ],
       },
     });
   } catch (error) {

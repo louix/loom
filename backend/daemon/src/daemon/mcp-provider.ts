@@ -46,6 +46,7 @@ export const withExternalMcp = async (
                 undefined,
                 undefined,
                 allowRepoPrograms,
+                handle.spec.allowedHosts,
               )
             : await start(handle.name, handle.spec);
         workers.push(worker);

@@ -10,6 +10,8 @@ export interface VmBinding {
   state: string;
   token: string;
   gitSocket?: string;
+  egressSocket?: string;
+  allowedHosts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
@@ -54,7 +56,7 @@ export const vmArguments = (b: VmBinding) => {
     `${b.artifact}/nix/store:/nix/store:ro`,
     "-v",
     `${b.workspace}:${b.workspace}`,
-    ...(b.gitSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),
+    ...(b.gitSocket || b.egressSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),
     "-w",
     b.workspace,
     "-e",
@@ -68,8 +70,9 @@ export const vmArguments = (b: VmBinding) => {
   ];
 };
 export const vmCreateArguments = (b: VmBinding) => {
-  if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket))
-    throw new Error("Git endpoint must be in private VM state");
+  for (const socket of [b.gitSocket, b.egressSocket])
+    if (socket && (!socket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(socket)))
+      throw new Error("VM endpoint must be in private VM state");
   const args = vmArguments(b);
   return [
     "machine",
@@ -77,8 +80,8 @@ export const vmCreateArguments = (b: VmBinding) => {
     "--name",
     sessionVmName,
     ...args.slice(2, args.indexOf("--")).filter((a) => a !== "-i"),
-    "--mount-socket",
-    `${b.gitSocket}:/run/loom/git.sock`,
+    ...(b.gitSocket ? ["--mount-socket", `${b.gitSocket}:/run/loom/git.sock`] : []),
+    ...(b.egressSocket ? ["--mount-socket", `${b.egressSocket}:/run/loom/egress.sock`] : []),
   ];
 };
 export const vmExecArguments = (b: VmBinding) => [
@@ -96,10 +99,13 @@ export const vmExecArguments = (b: VmBinding) => [
   "-e",
   "PATH=/run/loom/bin:/usr/bin:/bin",
   "--",
+  ...(b.egressSocket ? ["/run/loom/bin/loom-network-exec"] : []),
   b.manifest.entrypoint,
   ...b.manifest.args,
 ];
-export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket">) => {
+export const reapVm = async (
+  b: Pick<VmBinding, "smolvm" | "state" | "gitSocket" | "egressSocket">,
+) => {
   const command = async (args: string[]) => {
     const child = Deno.spawn(b.smolvm, args, {
       clearEnv: true,
@@ -137,7 +143,7 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket"
     for (const m of machines) {
       if (
         !(m.ephemeral && /^vm-[a-z0-9]+$/.test(m.name)) &&
-        !(b.gitSocket && m.name === sessionVmName)
+        !((b.gitSocket || b.egressSocket) && m.name === sessionVmName)
       )
         throw new Error("Unexpected VM in private state; refusing to delete it");
       try {
