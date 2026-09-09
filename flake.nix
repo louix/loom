@@ -13,6 +13,18 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # Guests always run Linux, independently of the machine running Loom/smolvm.
+      guestSystemFor = system: builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
+      guestRuntimes = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+        claude-session-runtime = import ./packaging/runtimes/claude.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+          loom = self.packages.${system}.loom.override { withTilth = false; };
+        };
+        tilth-runtime = (import ./packaging/runtimes/tilth.nix {
+          inherit tilth system;
+        }).tilth-runtime;
+      });
+
       # Short commit for `loom --version` when built from a checkout; a tag
       # would surface as the full ref. The flake sandbox has no `.git`, so the
       # daemon/CLI can't `git describe` at runtime — we stamp it here instead
@@ -44,22 +56,21 @@
 
       packages = forAll (
         pkgs:
-        rec {
+        let
+          hostSystem = pkgs.stdenv.hostPlatform.system;
+          guestSystem = guestSystemFor hostSystem;
+          hostSmolvm = smolvm.packages.${hostSystem}.default;
+          # Packaging aliases are not a declaration of macOS runtime support.
+          bundleSupported = pkgs.stdenv.hostPlatform.isLinux;
+        in rec {
           default = loom;
-          claude-session-runtime = import ./packaging/runtimes/claude.nix {
-            inherit pkgs;
-            loom = loom.override { withTilth = false; };
-          };
-          tilth-runtime = (import ./packaging/runtimes/tilth.nix {
-            inherit tilth;
-            system = pkgs.stdenv.hostPlatform.system;
-          }).tilth-runtime;
+          inherit (guestRuntimes.${guestSystem}) claude-session-runtime tilth-runtime;
           bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON {
             tilth = {
               version = 1;
               source = "tilth";
               artifact = "${tilth-runtime}";
-              smolvm = "${smolvm.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/smolvm";
+              smolvm = "${hostSmolvm}/bin/smolvm";
               preparedAt = "bundled";
             };
           });
@@ -185,7 +196,7 @@
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
-                  ${if withTilth && pkgs.stdenv.hostPlatform.isLinux
+                  ${if withTilth && bundleSupported
                     then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
                     else "--unset LOOM_BUNDLED_RUNTIMES"}
               done

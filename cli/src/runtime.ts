@@ -6,6 +6,7 @@ import { loadConfig } from "../../backend/daemon/src/config/config.ts";
 import { userConfigPath } from "../../backend/daemon/src/scaffold.ts";
 import {
   inspectArtifact,
+  requireVmHost,
   bundledRuntime,
   resolveRuntime,
   runtimeHome,
@@ -37,6 +38,7 @@ export const prepareRuntime = async (
   source: string,
   opts: { home?: string; smolvm?: string; update?: boolean } = {},
 ) => {
+  requireVmHost();
   if (await bundledRuntime(source)) {
     if (opts.update)
       throw new Error(

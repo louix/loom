@@ -191,3 +191,23 @@ fixture paths for diagnosis. These checks replace the removed tilth spike suite.
 
 Tested here with Linux x86_64, tilth 0.10.1 and smolvm 1.8.1. Other architectures,
 networked command MCPs and packaged connector CLIs remain follow-up work.
+
+## Host and guest packaging boundary
+
+The root flake selects Loom and smolvm for the host system, and builds guest
+artifacts separately with Linux packages for the matching CPU architecture.
+Both Tilth and Claude guest artifacts use this boundary; the Claude guest depends
+on the Linux Loom package without bundled Tilth.
+
+Darwin runtime package attributes refer to Linux guest artifacts. They would need
+a Linux builder or binary cache; they do not enable macOS VM support. Bundling and
+VM launch remain Linux-only. Artifact validation checks the Linux guest system
+separately from host support.
+
+Deferred macOS work: native smolvm packaging/validation, canonical host temporary
+paths and socket handling, a guest bridge smoke test, Linux artifact distribution,
+and the full session lifecycle tests on a Mac. Installation remains a Nix package
+operation; no runtime updater or builder VM is introduced here.
+
+The pinned nixpkgs currently rejects `x86_64-darwin`; Intel Mac support also
+requires a separate package-support decision.

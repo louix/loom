@@ -23,7 +23,12 @@ export const runtimeKey = async (source: string) =>
     new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))),
     (b) => b.toString(16).padStart(2, "0"),
   ).join("");
-export const runtimeSystem = () => `${Deno.build.arch}-${Deno.build.os}`;
+/** Artifact system is the Linux guest target, never the native smolvm host. */
+export const guestSystem = () => `${Deno.build.arch}-linux`;
+export const requireVmHost = () => {
+  if (Deno.build.os !== "linux")
+    throw new Error("VM isolation currently supports Linux hosts only; macOS support is deferred");
+};
 const storePath = /^\/nix\/store\/[a-z0-9]{32}-[^/\s]+$/;
 export const decodeManifest = (value: unknown): RuntimeManifest => {
   const v = value as Partial<RuntimeManifest> | null;
@@ -48,13 +53,14 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
   return v as RuntimeManifest;
 };
 export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest> => {
+  requireVmHost();
   if (!storePath.test(artifact))
     throw new Error("Runtime artifact must be an immutable Nix store path");
   const manifest = decodeManifest(
     JSON.parse(await Deno.readTextFile(join(artifact, "manifest.json"))),
   );
-  if (manifest.system !== runtimeSystem())
-    throw new Error(`Runtime architecture ${manifest.system} does not match ${runtimeSystem()}`);
+  if (manifest.system !== guestSystem())
+    throw new Error(`Runtime guest system ${manifest.system} does not match ${guestSystem()}`);
   const paths = (await Deno.readTextFile(join(artifact, "store-paths"))).trim().split("\n");
   if (
     !paths.length ||
