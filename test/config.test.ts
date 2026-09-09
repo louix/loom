@@ -663,3 +663,34 @@ test("Claude VM routing is opt-in and requires explicit runtime paths", () => {
     /must name an executable/,
   );
 });
+
+test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or alternate-port access", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
+  const file = join(dir, "user.toml");
+  try {
+    writeFileSync(
+      file,
+      `[isolation.claude]\nartifact="/runtime"\n[[repo]]\npath=${JSON.stringify(dir)}\n[repo.isolation]\nextra_allowed_hosts=["Registry.Npmjs.Org", "registry.npmjs.org"]\n`,
+    );
+    assert.deepEqual(loadConfig(dir, file).isolation.extraAllowedHosts, ["registry.npmjs.org"]);
+    assert.deepEqual(loadConfig(join(dir, "other"), file).isolation.extraAllowedHosts, []);
+    for (const hosts of [
+      true,
+      "example.com",
+      ["*.npmjs.org"],
+      ["https://registry.npmjs.org"],
+      ["registry.npmjs.org:443"],
+      ["127.0.0.1"],
+      ["::1"],
+    ])
+      assert.throws(
+        () =>
+          normalizeConfig({
+            isolation: { extra_allowed_hosts: hosts },
+          }),
+        /extra_allowed_hosts/,
+      );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -60,7 +60,13 @@ export interface ConnectorConfig {
   /** Operator-selected Deno network hosts for a connector worker. */
   workerAllowedHosts?: string[];
   /** Host-selected Claude session VM policy. */
-  sessionVm?: { artifact: string; smolvm: string; repoRoot: string; allowRepoPrograms: boolean };
+  sessionVm?: {
+    artifact: string;
+    smolvm: string;
+    repoRoot: string;
+    allowRepoPrograms: boolean;
+    extraAllowedHosts?: string[];
+  };
   /**
    * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
    * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache

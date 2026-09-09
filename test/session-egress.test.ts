@@ -91,3 +91,52 @@ for (const shutdown of [false, true]) {
     }
   });
 }
+
+Deno.test("extra hosts grant only exact HTTPS destinations and retain the provider endpoint", async () => {
+  for (const extraAllowedHosts of [[], ["registry.npmjs.org"]]) {
+    const state = await Deno.makeTempDir({ dir: "/tmp" });
+    const socket = join(state, "proxy.sock");
+    const dialed: string[] = [];
+    const proxy = startEgress(socket, () => {}, {
+      extraAllowedHosts,
+      dial: async (_signal, host) => {
+        dialed.push(host);
+        return {
+          readable: new ReadableStream(),
+          writable: new WritableStream(),
+          close() {},
+        };
+      },
+    });
+    try {
+      for (const target of [
+        "api.anthropic.com:443",
+        "REGISTRY.NPMJS.ORG:443",
+        "registry.npmjs.org:80",
+        "evil.registry.npmjs.org:443",
+        "registry.npmjs.org.evil.test:443",
+        "1.1.1.1:443",
+      ]) {
+        const client = await Deno.connect({ transport: "unix", path: socket });
+        try {
+          await client.write(new TextEncoder().encode(`CONNECT ${target} HTTP/1.1\r\n\r\n`));
+          const bytes = new Uint8Array(1024);
+          const size = await client.read(bytes);
+          const allowed =
+            target === "api.anthropic.com:443" ||
+            (extraAllowedHosts.length > 0 && target === "REGISTRY.NPMJS.ORG:443");
+          assert.match(
+            new TextDecoder().decode(bytes.subarray(0, size!)),
+            allowed ? /200 Connection Established/ : /403 Forbidden/,
+          );
+        } finally {
+          client.close();
+        }
+      }
+      assert.deepEqual(dialed, ["api.anthropic.com", ...extraAllowedHosts]);
+    } finally {
+      await proxy.close();
+      await Deno.remove(state, { recursive: true });
+    }
+  }
+});

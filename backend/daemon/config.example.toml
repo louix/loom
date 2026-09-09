@@ -229,3 +229,9 @@ allow_repo_programs = false
 # enabled = true
 # [repo.isolation.git]
 # allow_repo_programs = false
+
+# Additional HTTPS hosts for commands inside this repo's session/worktree VMs.
+# Required provider API hosts are added separately. Exact DNS names, port 443 only.
+# Restart the daemon and resume sessions after changes; packaged MCPs stay offline.
+# [repo.isolation]
+# extra_allowed_hosts = ["registry.npmjs.org"]

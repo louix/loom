@@ -1,3 +1,4 @@
+import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -233,7 +234,11 @@ interface HookFields {
 }
 
 export interface LoomConfig {
-  isolation: { git: { allowRepoPrograms: boolean }; claude?: { artifact: string; smolvm: string } };
+  isolation: {
+    git: { allowRepoPrograms: boolean };
+    claude?: { artifact: string; smolvm: string };
+    extraAllowedHosts: string[];
+  };
   baseBranch: string;
   worktreeDir: string;
   /**
@@ -377,7 +382,7 @@ export interface LoomConfig {
 export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
-  isolation: { git: { allowRepoPrograms: false } },
+  isolation: { git: { allowRepoPrograms: false }, extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
@@ -901,6 +906,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
     isolation: {
       git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true },
+      extraAllowedHosts: normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
       ...(typeof claudeVm["artifact"] === "string"
         ? {
             claude: {

@@ -87,6 +87,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
       smolvm,
       sessionDirectory,
       mcpRelays: relays,
+      ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
       allowRepoPrograms: vm.allowRepoPrograms,
       ...(owner
         ? { authOwner: owner }

@@ -194,6 +194,7 @@ export class ProviderRegistry {
                 sessionVm: {
                   ...this.#config.isolation.claude,
                   repoRoot: this.#repoRoot,
+                  extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
                   allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
                 },
               }

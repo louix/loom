@@ -8,8 +8,8 @@ credential snapshot. Git operations
 use the existing host bridge; commits exist immediately in host Git.
 
 IP networking stays disabled. A loopback proxy in the guest relays through a
-separate Unix/vsock endpoint to a host CONNECT proxy. The only permitted target
-is exactly `api.anthropic.com:443`. The host resolves this fixed name; requests
+separate Unix/vsock endpoint to a host CONNECT proxy. The default permitted target
+is `api.anthropic.com:443`; trusted repo policy can add exact HTTPS hosts. The host resolves this fixed name; requests
 cannot supply an IP, alternative port or DNS server. TLS remains end-to-end.
 The diagnostic stream records bounded destination names and allow/deny decisions,
 never proxy headers or TLS payloads. Optional Deno/Claude update traffic is disabled.
@@ -43,6 +43,40 @@ without making API requests.
 Verified using smolvm 1.8.1 and native Claude 2.1.245: an existing OAuth token,
 only the allowed Anthropic API endpoint, and a host-visible commit. Fresh interactive login remains a host operation. Renewable authentication has
 a separate live acceptance check below.
+
+## Extra hosts for worktree commands
+
+The repo's session/worktree VM can receive additional HTTPS destinations from the
+trusted user config. This applies to commands the agent runs, such as `deno install`,
+inside the same VM; it is not a grant limited to the Claude process.
+
+```toml
+# ~/.config/loom/config.toml
+[[repo]]
+path = "~/dev/loom"
+
+[repo.isolation]
+extra_allowed_hosts = ["registry.npmjs.org"]
+```
+
+The setting belongs to repo isolation, independently of provider authentication.
+The current Claude-backed session VM adds it to the required Anthropic API host.
+Other repo entries retain their own policy; packaged MCPs stay offline.
+Entries are exact DNS names (case-insensitive), HTTPS port 443 only: no URLs,
+wildcards, IP literals or alternate ports. Redirects to another host need their
+own entry. Direct guest IP networking remains disabled. Subprocesses inherit the
+local proxy settings, and must use that proxy for external connections.
+
+Policy is captured at launch. Restart the daemon and resume affected sessions to
+apply changes, including revocations. Existing VM connections are not hot-updated.
+
+Credential-free acceptance test, using the selected repo policy in a disposable
+worktree: installs an npm dependency with a fresh Deno cache, then checks denied
+hosts, ports and direct IP access.
+
+```sh
+nix develop --command deno run -A scripts/test-claude-vm-egress.ts ~/dev/loom
+```
 
 ## Supervised lifecycle
 

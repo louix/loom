@@ -1,3 +1,4 @@
+import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -27,6 +28,7 @@ export interface SessionVmOptions {
   /** Shared by sessions using the same provider profile; caller owns its lifetime. */
   authOwner?: ClaudeAuthOwner;
   allowRepoPrograms?: boolean;
+  extraAllowedHosts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
@@ -51,6 +53,7 @@ export const launchSessionVm = async (
     status(): Promise<SessionVmStatus>;
   }
 > => {
+  const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
   if (options.auth && options.authOwner)
     throw new Error("Choose static auth or a credential owner");
   const auth = sessionAuth(
@@ -126,6 +129,7 @@ export const launchSessionVm = async (
     child.stdin.write(
       JSON.stringify({
         binding,
+        extraAllowedHosts,
         auth,
         allowRepoPrograms: options.allowRepoPrograms ?? false,
       }) + "\n",

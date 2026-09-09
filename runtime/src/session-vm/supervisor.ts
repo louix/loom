@@ -26,10 +26,11 @@ const frames = readFrames(Deno.stdin.readable, (value) => value);
 const first = await frames.next();
 clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
-const { binding, auth, allowRepoPrograms } = first.value as {
+const { binding, auth, allowRepoPrograms, extraAllowedHosts } = first.value as {
   binding: RecoverableBinding;
   auth: SessionAuth;
   allowRepoPrograms: boolean;
+  extraAllowedHosts?: string[];
 };
 let child: Deno.ChildProcess | undefined;
 let persistentLock: Deno.FsFile | undefined;
@@ -132,11 +133,15 @@ try {
   void git.exited.then(stop, stop);
   if (ended) throw new Error("Session closed during Git startup");
   status();
-  egress = startEgress(join(binding.state, "egress.sock"), (host, allowed) => {
-    network.push({ host, allowed });
-    if (network.length > 32) network.shift();
-    status();
-  });
+  egress = startEgress(
+    join(binding.state, "egress.sock"),
+    (host, allowed) => {
+      network.push({ host, allowed });
+      if (network.length > 32) network.shift();
+      status();
+    },
+    { extraAllowedHosts: extraAllowedHosts ?? [] },
+  );
   const create = vmCreateArguments(binding);
   // Claude already puts the closure's Git shim on PATH; no separate mount needed.
   const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);
