@@ -369,13 +369,18 @@ const FleetRow = ({
   compacting?: boolean;
 }): ReactNode => {
   const look = statusLook(s.status.kind);
-  const glyph = s.status.kind === "running" ? spinnerFrame(tick) : look.glyph;
+  const blocked = s.resumable === false;
+  let glyph = look.glyph;
+  if (["running", "starting"].includes(s.status.kind)) glyph = spinnerFrame(tick);
+  if (blocked) glyph = "○";
+  let titleColor = selected ? C.text : C.dim;
+  if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
   const cost = money(s.costUsd);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? cacheHeatColor(heat) : null;
-  const idColor = pcolor.get(s.provider) || C.faint;
+  const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
   const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + 2 + cost.length + 1));
@@ -392,7 +397,7 @@ const FleetRow = ({
         <Text color={cacheColor ?? C.faint}>{cacheColor ? "⟢ " : "  "}</Text>
       )}
       <Text color={C.faint}>{s.comment ? "✎ " : "  "}</Text>
-      <Text color={selected ? C.text : C.dim} bold={selected}>
+      <Text color={titleColor} bold={selected && !blocked}>
         {title}
       </Text>
       <Text color={C.faint}>{` ${cost}`}</Text>
@@ -653,6 +658,16 @@ export const Detail = memo(
             {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
           </Text>
         ) : null}
+        {s.resumable === false
+          ? wrapText(
+              `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
+              w,
+            ).map((line, i) => (
+              <Text key={`blocked-${i}`} color={C.warn}>
+                {line}
+              </Text>
+            ))
+          : null}
         {(s.subagents ?? []).length > 0
           ? (() => {
               const subs = s.subagents ?? [];
@@ -691,6 +706,7 @@ export const detailRows = (
   session: SessionSnapshot | null,
   opts: {
     /** `<login method> (<org>)` line — claude profiles only. */
+    width?: number;
     account?: string;
     /** Compaction-in-flight row. */
     compacting?: { startedAt: number; before: number } | null;
@@ -704,6 +720,11 @@ export const detailRows = (
   if (opts.account) rows += 1;
   if (s.parentId && s.forkTurn != null) rows += 1;
   rows += 2; // status row + its marginTop
+  if (s.resumable === false)
+    rows += wrapText(
+      `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
+      inside(opts.width ?? 80),
+    ).length;
   rows += 1; // context
   if (opts.compacting) rows += 1;
   // cache row: appears once cache data exists (warm → cold with age, but the
@@ -961,6 +982,8 @@ const promptHints = (
   sessionMode?: string | null,
   pendingMode?: SessionMode | null,
 ): string => {
+  if (p.feedback?.uncertain) return "esc close and review session — draft saved";
+  if (p.feedback?.pending) return "Starting / sending… · esc hide (operation continues)";
   const bits = [`enter ${MODE_HINT[promptKind(p)]}`, "⌥⏎ newline", "⌥e editor"];
   // a new-session prompt has no session / log yet; an AskUserQuestion answer
   // opens the formatted question sheet rather than the event log
@@ -1003,6 +1026,24 @@ const noticeGlyph = (tone: Tone): string => {
       return "·";
   }
 };
+
+const feedbackLines = (p: Prompt, width: number): string[] => {
+  if (!p.feedback) return [];
+  const room = Math.max(8, width);
+  const lines = wrapText(p.feedback.text, room);
+  // Provider diagnostics can be very long. Keep the editor inside the frame.
+  if (lines.length > 4) return [...lines.slice(0, 3), truncate("… more in daemon log", room)];
+  return lines;
+};
+const PromptFeedback = ({ p, width }: { p: Prompt; width: number }): ReactNode => (
+  <>
+    {feedbackLines(p, width).map((line, i) => (
+      <Text key={i} color={p.feedback?.pending ? C.accent : C.bad}>
+        {line}
+      </Text>
+    ))}
+  </>
+);
 
 export const FooterArea = ({
   state,
@@ -1053,6 +1094,7 @@ export const FooterArea = ({
           <Text color={C.faint}>{"⌥p change"}</Text>
         </Box>
         <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={PROMPT_PLACEHOLDER.new} />
+        <PromptFeedback p={p} width={width - 2} />
         {/* Truncate, never wrap — this row is budgeted as exactly one line
             (see promptRows); wrapping it grows the frame past the terminal. */}
         <Text color={C.faint} wrap="truncate-end">
@@ -1118,7 +1160,7 @@ export const promptRows = (state: TuiState, cols: number): number => {
   // the footer carries just its hints row.
   if (p.t !== "new") return 1;
   const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, editorRoom(cols)).rows.length);
-  return 1 /* label */ + editor + 1; /* hints */
+  return 1 /* label */ + editor + 1 + feedbackLines(p, cols - 2).length; /* hints + feedback */
 };
 
 /** Columns the pane prompt wraps to: the right column minus its padding (2+2)
@@ -1132,7 +1174,7 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
   const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return 0;
   const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, paneRoom(width)).rows.length);
-  return 1 /* label */ + editor;
+  return 1 /* label */ + editor + feedbackLines(p, width - 4).length;
 };
 
 /** The input group for a session-targeted prompt — label + the session's mode
@@ -1166,6 +1208,7 @@ export const PromptPane = ({
         room={paneRoom(width)}
         placeholder={PROMPT_PLACEHOLDER[promptKind(p)]}
       />
+      <PromptFeedback p={p} width={width - 4} />
     </Box>
   );
 };

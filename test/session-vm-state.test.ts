@@ -9,8 +9,31 @@ import {
 import {
   sessionVmDirectory,
   stoppedSessionVm,
+  vmResumeBlockedReason,
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { startMcpRelay } from "../runtime/src/session-vm/mcp-relay.ts";
+
+test("VM resume preflight blocks both isolation changes without touching history", async () => {
+  const root = await Deno.makeTempDir();
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", root);
+  try {
+    const ref = "12345678-1234-1234-1234-123456789abc";
+    assert.equal(vmResumeBlockedReason(root, "host", ref, false, false), undefined);
+    assert.match(vmResumeBlockedReason(root, "host", ref, false, true)!, /Fork/);
+    assert.match(vmResumeBlockedReason(root, "host", ref, true, true)!, /worktree/);
+    const dir = join(sessionVmDirectory(root, "guest"), "profile/projects/loom-session");
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.writeTextFile(join(dir, `${ref}.jsonl`), "history");
+    assert.equal(vmResumeBlockedReason(root, "guest", ref, false, true), undefined);
+    assert.match(vmResumeBlockedReason(root, "guest", ref, false, false)!, /without VM/);
+    assert.equal(await Deno.readTextFile(join(dir, `${ref}.jsonl`)), "history");
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 test("persistent VM ownership blocks cleanup and preserves a newer owner's marker", async () => {
   const root = await Deno.makeTempDir();

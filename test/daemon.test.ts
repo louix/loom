@@ -2486,3 +2486,84 @@ test("startup recovery failure leaves the daemon usable and retains the affected
     await Deno.remove(state, { recursive: true });
   }
 });
+
+test("isolation mismatch blocks resume before loading provider, but forks through fresh create", async () => {
+  const hh = await makeHarness();
+  let daemon: Daemon | undefined;
+  let client: LoomClient | undefined;
+  try {
+    await hh.daemon.stop("replace-manifest");
+    writeFileSync(
+      hh.configPath,
+      '[isolation.claude]\nartifact="/tmp/test-artifact"\nsmolvm="smolvm"\n',
+    );
+    const { FakeProvider } = await import("@loom/connector-mock");
+    const fake = new FakeProvider();
+    let loads = 0;
+    let createdPrompt = "";
+    let resumes = 0;
+    daemon = await Daemon.start({
+      repoRoot: hh.repoRoot,
+      configFile: hh.configPath,
+      standalone: true,
+      connectors: {
+        "@loom/connector-claude": async () => ({
+          createProvider: () => {
+            loads++;
+            return {
+              id: "claude",
+              capabilities: fake.capabilities,
+              listPersistedSessions: () => fake.listPersistedSessions(),
+              createSession: (opts) => {
+                createdPrompt = opts.prompt;
+                return fake.createSession(opts);
+              },
+              resumeSession: (ref) => {
+                resumes++;
+                return fake.resumeSession(ref);
+              },
+            };
+          },
+        }),
+      },
+    });
+    client = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const parent = await client.request<SessionSnapshot>("session.createStub", {
+      provider: "claude",
+      status: "idle",
+      prompt: "old task",
+    });
+    daemon.registry.setFields(parent.id, { providerRef: parent.id });
+    daemon.emitEvent({
+      type: "user_message",
+      sessionId: parent.id,
+      ts: Date.now(),
+      text: "Remember the blue widget",
+      injected: false,
+    });
+    const before = loads;
+    const blocked = await client.request<SessionSnapshot>("session.get", { id: parent.id });
+    assert.equal(blocked.resumable, false);
+    assert.match(blocked.resumeBlockedReason!, /Fork/);
+    await assert.rejects(client.request("session.send", { id: parent.id, text: "hello" }), /Fork/);
+    assert.equal(loads, before, "preflight must not instantiate the provider");
+    const fork = await client.request<SessionSnapshot>("session.fork", { id: parent.id });
+    assert.equal(fork.parentId, parent.id);
+    assert.ok(fork.worktree);
+    assert.match(createdPrompt, /blue widget/);
+    assert.match(createdPrompt, /not a native provider history/);
+    assert.equal(resumes, 0);
+    assert.equal(
+      (await client.request<SessionSnapshot>("session.get", { id: parent.id })).resumable,
+      false,
+    );
+  } finally {
+    await client?.close();
+    await daemon?.stop("test-finished");
+    await hh.cleanup();
+  }
+});

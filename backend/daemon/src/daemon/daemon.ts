@@ -1,4 +1,6 @@
+import { forkContext } from "./fork-context.ts";
 import {
+  vmResumeBlockedReason,
   withStoppedSessionVm,
   removeSessionVmProfile,
   recoverRepositoryVms,
@@ -34,6 +36,7 @@ import {
   stateDone,
   stateError,
   stateIdle,
+  stateStarting,
 } from "@loom/core/session-state";
 import {
   isTranscriptId,
@@ -252,6 +255,7 @@ export class Daemon {
    *  sessions (untracked by SessionManager) don't outlive the daemon. */
   readonly #titleJobs = new Set<Promise<void>>();
 
+  readonly #revivals = new Map<string, Promise<SessionSnapshot>>();
   #stopping = false;
   #closed: Promise<void>;
   #resolveClosed!: () => void;
@@ -747,8 +751,8 @@ export class Daemon {
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
     const canRewind = this.#canRewind(s.provider);
     if (canRewind !== out.canRewind) out = { ...out, canRewind };
-    const resumable = this.#resumable(s.provider, s.id);
-    if (resumable !== out.resumable) out = { ...out, resumable };
+    const reason = this.#resumeBlockedReason(s);
+    out = { ...out, resumable: !reason, ...(reason ? { resumeBlockedReason: reason } : {}) };
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
     if (gitPath) {
@@ -1208,7 +1212,38 @@ export class Daemon {
    * have checked `!#sessions.has(id)`. Returns the fresh snapshot; the caller
    * publishes it.
    */
-  async #reviveSession(id: string): Promise<SessionSnapshot> {
+  #reviveSession(id: string): Promise<SessionSnapshot> {
+    const pending = this.#revivals.get(id);
+    if (pending) return pending;
+    const row = this.#registry.get(id);
+    if (!row) return Promise.reject(new RpcError("not_found", `no such session: ${id}`));
+    if (!this.#registry.store.providerRef(id))
+      return Promise.reject(
+        new RpcError("bad_request", "session has no provider ref to resume from"),
+      );
+    const reason = this.#resumeBlockedReason(row);
+    if (reason) return Promise.reject(new RpcError("resume_blocked", reason));
+    const operation = Promise.resolve()
+      .then(() => this.#doReviveSession(id))
+      .catch((error: unknown) => {
+        if (this.#registry.get(id)?.status.kind === "starting")
+          this.#registry.setStatus(
+            id,
+            stateError(error instanceof Error ? error.message : String(error)),
+          );
+        throw error;
+      })
+      .finally(() => {
+        this.#revivals.delete(id);
+        this.#publishState(id);
+      });
+    this.#revivals.set(id, operation);
+    this.#registry.setStatus(id, stateStarting, "resuming");
+    this.#publishState(id);
+    return operation;
+  }
+
+  async #doReviveSession(id: string): Promise<SessionSnapshot> {
     // Held for the whole rebuild: the adapter is constructed from the row's
     // mode / model / effort, so a configuration command must not slip into the
     // window where the session still looks inactive — it would write the row
@@ -1224,7 +1259,7 @@ export class Daemon {
     // on it. An in-place archived session has no branch to restore; it just
     // resumes in the repo root.
     let worktree = row.worktree;
-    if (row.status.kind === "done" && !worktree && row.branch && !row.inPlace) {
+    if (!worktree && row.branch && !row.inPlace) {
       try {
         const wt = this.#worktrees.reattach(id, row.branch, { model: row.model || row.provider });
         worktree = wt.path;
@@ -1240,13 +1275,6 @@ export class Daemon {
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
-    if (!this.#resumable(row.provider, id)) {
-      throw new RpcError(
-        "bad_request",
-        `session ${id.slice(0, 8)} used ChatGPT's old direct backend, which Loom no longer supports; ` +
-          "its history stays viewable but it cannot be resumed — start a new session to continue",
-      );
-    }
     if (!this.#providers.has(row.provider)) {
       const owners = isClaudeId(row.provider)
         ? findClaudeOwner(this.config.claudeProfiles, providerRef)
@@ -1659,9 +1687,26 @@ export class Daemon {
    *  readable; only resuming is blocked. Checked against *live* config, not
    *  a name literal, so a custom chatgpt-sdk profile is covered exactly like
    *  the built-in `chatgpt` id. */
-  #resumable(providerId: string, id: string): boolean {
-    if (this.config.providers.aisdk[providerId]?.sdk !== "chatgpt") return true;
-    return this.#registry.store.historyBackend(id) !== "aisdk";
+  #resumeBlockedReason(row: SessionSnapshot): string | undefined {
+    if (this.#sessions.has(row.id) || this.#revivals.has(row.id) || row.status.kind === "starting")
+      return;
+    if (
+      this.config.providers.aisdk[row.provider]?.sdk === "chatgpt" &&
+      this.#registry.store.historyBackend(row.id) === "aisdk"
+    )
+      return "This session used the old ChatGPT backend. Start a new session; its history remains viewable.";
+    if (isClaudeId(row.provider)) {
+      const ref = this.#registry.store.providerRef(row.id);
+      if (ref)
+        return vmResumeBlockedReason(
+          this.repoRoot,
+          row.id,
+          ref,
+          row.inPlace,
+          !!this.config.isolation.claude,
+        );
+    }
+    return undefined;
   }
 
   /** Effort strings `providerId`/`model` actually advertises, beyond Loom's own
@@ -2388,13 +2433,14 @@ export class Daemon {
       // conservatively `false` (it may route through Codex's own thread),
       // so a config-membership guess would wrongly authorize a hard fork.
       const parentProvider = await this.#providers.get(parent.provider);
-      if (!parentProvider.capabilities.ownsTranscript) {
+      const continuation = isClaudeId(parent.provider) && !!this.#resumeBlockedReason(parent);
+      if (!parentProvider.capabilities.ownsTranscript && !continuation) {
         throw new RpcError(
           "bad_request",
           "hard fork needs a provider whose transcript Loom owns (aisdk-only for now — Claude support is fork-tree F3)",
         );
       }
-      if (parent.inPlace) {
+      if (parent.inPlace && !continuation) {
         throw new RpcError(
           "bad_request",
           "the parent runs in-place (no worktree) — hard fork needs an isolated branch",
@@ -2409,11 +2455,18 @@ export class Daemon {
       const p = isObj(params) ? params : {};
       const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
 
+      const context = continuation
+        ? forkContext(id, this.#sessionEvents.page(id, { limit: 5000 }))
+        : "";
+      const source = parent.inPlace ? this.repoRoot : parent.worktree;
+      if (source && !this.#worktrees.headSha(source))
+        throw new RpcError("worktree_error", "The parent worktree is missing or has no HEAD");
+      const baseRef = source ? this.#worktrees.headSha(source)! : parent.branch;
       const newId = randomUUID();
       let wt;
       try {
         wt = this.#worktrees.create(newId, {
-          ...(parent.branch ? { baseRef: parent.branch } : {}),
+          ...(baseRef ? { baseRef } : {}),
           model: parent.model || parent.provider,
         });
       } catch (err) {
@@ -2429,6 +2482,7 @@ export class Daemon {
         // the adapter — an omitted mode stored `default` while the adapter
         // actually resumed in the parent's mode.
         const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
+        if (source) this.#worktrees.copyChanges(source, wt.path);
         this.#registry.create({
           id: newId,
           provider: parent.provider,
@@ -2442,29 +2496,64 @@ export class Daemon {
           baseBranch: wt.baseRef,
         });
         this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
-        this.#pmsgs.copyTo(id, newId);
+        if (!continuation) this.#pmsgs.copyTo(id, newId);
+        this.#publishState(newId);
 
         const mcpHandles = this.#mcpHandles();
-        await this.#sessions.resume(parentProvider, {
-          sessionId: newId,
-          providerRef: newId,
-          cwd: wt.path,
-          mode,
-          mcpServers: mcpHandles,
-          systemPromptAppend: systemPromptAppendFor(
-            true,
-            mcpHandles.length > 0,
-            wt.path,
-            this.repoRoot,
-          ),
-          ...(parent.model ? { model: parent.model } : {}),
-          ...(parent.effort ? { effort: parent.effort } : {}),
-        });
+        if (continuation) {
+          const prompt = context + (forkPrompt ? `\n\nNew user instruction: ${forkPrompt}` : "");
+          this.#lastSend.set(newId, prompt);
+          await this.#sessions.create(parentProvider, {
+            sessionId: newId,
+            cwd: wt.path,
+            prompt,
+            mode,
+            parentId: id,
+            mcpServers: mcpHandles,
+            loomServer: true,
+            disableTools: this.config.providers.claude.disableBuiltin,
+            settingSources: this.config.providers.claude.settingSources,
+            systemPromptAppend: systemPromptAppendFor(
+              false,
+              mcpHandles.length > 0,
+              wt.path,
+              this.repoRoot,
+            ),
+            repoInstructions: repoInstructionsFor(wt.path, this.repoRoot),
+            workspaceRoot: wt.path,
+            ...(parent.model ? { model: parent.model } : {}),
+            ...(parent.effort ? { effort: parent.effort } : {}),
+          });
+          this.emitEvent({
+            type: "user_message",
+            sessionId: newId,
+            ts: Date.now(),
+            text: prompt,
+            injected: false,
+          });
+        } else
+          await this.#sessions.resume(parentProvider, {
+            sessionId: newId,
+            providerRef: newId,
+            cwd: wt.path,
+            mode,
+            mcpServers: mcpHandles,
+            systemPromptAppend: systemPromptAppendFor(
+              true,
+              mcpHandles.length > 0,
+              wt.path,
+              this.repoRoot,
+            ),
+            ...(parent.model ? { model: parent.model } : {}),
+            ...(parent.effort ? { effort: parent.effort } : {}),
+          });
       } catch (err) {
         await this.#sessions.close(newId).catch(() => {});
         let removed = false;
         try {
-          this.#worktrees.remove(wt.path, { force: true });
+          await withStoppedSessionVm(this.repoRoot, newId, () =>
+            this.#worktrees.remove(wt.path, { force: true }),
+          );
           removed = true;
         } catch (rmErr) {
           this.#log.warn("fork cleanup: could not remove the worktree", {
@@ -2479,15 +2568,24 @@ export class Daemon {
           // The tree is still on disk — keep the row (worktree path intact) and
           // mark it error so a later `session.gc { id }` can still reclaim it,
           // rather than deleting the row and orphaning the directory.
+          if (!this.#registry.get(newId))
+            this.#registry.create({
+              id: newId,
+              provider: parent.provider,
+              parentId: id,
+              worktree: wt.path,
+              branch: wt.branch,
+            });
           this.#registry.setStatus(newId, stateError("fork start failed"));
         }
+        this.#publishState();
         this.#lastSend.delete(newId);
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("provider_error", `could not start the fork: ${m}`);
       }
 
-      this.#registry.setStatus(newId, stateIdle, "forked");
-      if (forkPrompt) {
+      if (!continuation) this.#registry.setStatus(newId, stateIdle, "forked");
+      if (forkPrompt && !continuation) {
         this.#lastSend.set(newId, forkPrompt);
         await this.#sessions.send(newId, forkPrompt);
       }

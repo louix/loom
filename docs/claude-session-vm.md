@@ -152,8 +152,23 @@ cleanup if ownership was lost before reaping could be confirmed. Startup and
 session operations now attempt recovery before releasing that block. Empty directories and lock files
 remain after deletion to avoid races caused by replacing lock inodes.
 
-Existing host-worker history is not imported automatically: those sessions report
-a clear missing-VM-history error when resumed under this configuration.
+Sessions whose saved history cannot resume under the current isolation setting
+are read-only in the TUI, with the reason in DETAIL. This covers host sessions
+after enabling VM isolation and VM sessions after disabling it. Press `F` to
+continue in a fresh session using the current configuration. The parent stays
+untouched and its history remains readable.
+
+This continuation fork copies the parent's current HEAD, staged and unstaged
+changes, and non-ignored untracked files into a separate worktree. Ignored files
+are omitted; submodules and unfinished Git operations are refused. Archived
+sessions fork from their retained branch. It supplies the most recent saved
+conversation and tool events as context (up to 120,000 characters from the latest
+5,000 events, with an omission notice when truncated). This is not a native Claude
+history fork. The new agent acknowledges the context and waits for instructions.
+
+New-session and cold-resume sends keep the draft visible while startup is pending.
+Failures remain beside the draft. A lost connection or timeout requires leaving
+the prompt to review the session before retrying, since the send may have succeeded.
 
 Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
 through individual Unix/vsock endpoints. Each relay connects only to its assigned

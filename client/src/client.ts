@@ -304,6 +304,7 @@ export class LoomClient {
     "session.create": 120_000,
     "session.fork": 120_000,
     "session.resume": 120_000,
+    "session.send": 120_000, // A cold send includes provider/VM resume.
   };
 
   async request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {

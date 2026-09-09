@@ -7,8 +7,16 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
 
@@ -358,6 +366,83 @@ export class WorktreeManager {
     if (!path || !existsSync(path)) return null;
     const sha = this.#gitOut(["rev-parse", "HEAD"], path);
     return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  }
+
+  /** Copy a stopped parent's changes into a fresh worktree at the same HEAD.
+   * Ignored files and submodule working trees are deliberately not copied. */
+  copyChanges(source: string, target: string): void {
+    if (this.pendingGitOp(source))
+      throw new Error("Finish the parent's Git operation before forking");
+    const run = (args: string[], cwd = source, input?: string): string => {
+      const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
+        encoding: "utf8",
+        timeout: 30_000,
+        maxBuffer: GIT_MAX_BUFFER,
+        ...(input === undefined ? {} : { input }),
+      });
+      if (r.error || r.status !== 0)
+        throw new Error(r.error?.message || r.stderr || "Could not copy worktree changes");
+      return r.stdout;
+    };
+    if (
+      run(["ls-files", "--stage"])
+        .split("\n")
+        .some((line) => line.startsWith("160000 "))
+    )
+      throw new Error("Forking worktrees with submodules is not supported yet");
+    // Apply the index and working-tree deltas separately to preserve staging.
+    // Never invoke external diff drivers, hooks, or mutate the parent's index.
+    for (const cached of [true, false]) {
+      const patch = run([
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        ...(cached ? ["--cached"] : []),
+      ]);
+      if (patch)
+        run(
+          ["apply", "--binary", "--whitespace=nowarn", ...(cached ? ["--index"] : []), "-"],
+          target,
+          patch,
+        );
+    }
+    for (const name of run(["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\0")
+      .filter(Boolean)) {
+      // In-place parents contain Loom's own database, sockets and worktrees.
+      // These are runtime state, even in a repo that forgot to ignore them.
+      const from = join(source, name);
+      if (
+        source === this.#repoRoot &&
+        [this.#treesDir, this.#hooksDir, join(this.#repoRoot, ".loom")].some(
+          (dir) => from === dir || from.startsWith(dir + "/"),
+        )
+      )
+        continue;
+      if (name.split("/").some((part) => part === ".." || part === ".git"))
+        throw new Error("Unsafe untracked path");
+      const dest = join(target, name);
+      let dir = target;
+      for (const part of dirname(name).split("/")) {
+        if (part === ".") continue;
+        dir = join(dir, part);
+        try {
+          mkdirSync(dir);
+        } catch (error) {
+          if ((error as { code?: string }).code !== "EEXIST") throw error;
+        }
+        if (!lstatSync(dir).isDirectory())
+          throw new Error("Untracked path escapes the fork worktree");
+      }
+      cpSync(from, dest, {
+        dereference: false,
+        verbatimSymlinks: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
   }
 
   /** Whether the worktree has uncommitted (tracked or untracked) changes. */

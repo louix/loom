@@ -2839,3 +2839,86 @@ test("help fits short and narrow viewports and keeps the last bindings reachable
     assert.match(end, /remotes/);
   }
 });
+
+test("cold send keeps its draft visible, shows progress, and retains a rejection inline", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("hello", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    let p = openPrompt(handle.getView().ui.overlay);
+    assert.equal(p?.buffer.text, "hello");
+    assert.equal(p?.feedback?.pending, true);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.send").length, 1);
+    fake.of("session.send")[0]!.reject(new Error("Could not resume session: history missing"));
+    await delay(0);
+    p = openPrompt(handle.getView().ui.overlay);
+    assert.equal(p?.buffer.text, "hello");
+    assert.equal(p?.feedback?.pending, false);
+    const ui = handle.getView().ui;
+    const frame = renderToString(createElement(PromptPane, { state: ui, width: 65 }));
+    assert.match(frame, /history missing/);
+    assert.match(frame, /hello/);
+  } finally {
+    teardown();
+  }
+});
+
+test("an ambiguous prompt send stays visible and cannot be resent with Enter", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("hello", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    fake.of("session.send")[0]!.reject(Object.assign(new Error("timeout"), { code: "timeout" }));
+    await delay(0);
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.feedback?.uncertain, true);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.send").length, 1);
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+  } finally {
+    teardown();
+  }
+});
+
+test("isolation-incompatible Claude session is read-only with a visible reason and fork action", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const session = testSession({
+      id: "a",
+      provider: "claude",
+      status: stateIdle,
+      resumable: false,
+      resumeBlockedReason: "No VM history. Fork to continue.",
+    });
+    fake.deliver(fleetOf(session));
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    assert.equal(fake.of("session.send").length, 0);
+    const frame = renderToString(
+      createElement(Detail, {
+        session,
+        fleet: fleetOf(session),
+        box: outboxOf({}, "a"),
+        mode: null,
+        width: 70,
+        now: Date.now(),
+      }),
+    );
+    assert.match(frame, /Read-only: No VM history/);
+    handle.handleKey("F", {} as Key);
+    assert.equal(fake.of("session.fork").length, 1);
+  } finally {
+    teardown();
+  }
+});

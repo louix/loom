@@ -417,3 +417,49 @@ test("remove drops the worktree", () => {
     cleanup();
   }
 });
+
+test("fork copies staged, unstaged, binary, deleted and untracked files without changing parent", () => {
+  const { root, cleanup } = repo();
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args]);
+  try {
+    const m = mgr(root);
+    const parent = m.create("parent");
+    writeFileSync(join(parent.path, "file"), "base\n");
+    writeFileSync(join(parent.path, "deleted"), "base\n");
+    git(parent.path, "add", ".");
+    git(parent.path, "commit", "-qm", "files");
+    writeFileSync(join(parent.path, "file"), "staged\n");
+    writeFileSync(join(parent.path, "binary"), new Uint8Array([0, 1, 255]));
+    git(parent.path, "add", ".");
+    writeFileSync(join(parent.path, "file"), "unstaged\n");
+    rmSync(join(parent.path, "deleted"));
+    writeFileSync(join(parent.path, "untracked"), "new\n");
+    const status = git(parent.path, "status", "--porcelain").toString();
+    const fork = m.create("fork", { baseRef: m.headSha(parent.path)! });
+    m.copyChanges(parent.path, fork.path);
+    assert.equal(git(fork.path, "status", "--porcelain").toString(), status);
+    assert.deepEqual(git(fork.path, "diff", "--binary"), git(parent.path, "diff", "--binary"));
+    assert.deepEqual(
+      git(fork.path, "diff", "--binary", "--cached"),
+      git(parent.path, "diff", "--binary", "--cached"),
+    );
+    assert.equal(Deno.readTextFileSync(join(fork.path, "untracked")), "new\n");
+    assert.equal(git(parent.path, "status", "--porcelain").toString(), status);
+  } finally {
+    cleanup();
+  }
+});
+
+test("forking in-place changes omits Loom runtime state even if not gitignored", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    writeFileSync(join(root, "untracked"), "keep me");
+    const fork = m.create("in-place-fork");
+    m.copyChanges(root, fork.path);
+    assert.equal(Deno.readTextFileSync(join(fork.path, "untracked")), "keep me");
+    assert.equal(existsSync(join(fork.path, ".loom")), false);
+  } finally {
+    cleanup();
+  }
+});

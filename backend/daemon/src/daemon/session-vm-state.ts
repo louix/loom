@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -78,4 +79,23 @@ export const recoverRepositoryVms = async (
     if (!(error instanceof Deno.errors.NotFound)) report("repository", error);
   }
   return handled;
+};
+
+/** Read-only preflight; never import or move native provider history across boundaries. */
+export const vmResumeBlockedReason = (
+  repo: string,
+  id: string,
+  ref: string,
+  inPlace: boolean,
+  vm: boolean,
+): string | undefined => {
+  const profile = join(sessionVmDirectory(repo, id), "profile");
+  if (vm && inPlace) return "VM isolation requires a worktree. Fork to continue.";
+  const savedVm =
+    /^[0-9a-f-]{36}$/i.test(ref) &&
+    existsSync(join(profile, "projects/loom-session", `${ref}.jsonl`));
+  if (vm && !savedVm) return "No VM history for this session. Fork to continue with VM isolation.";
+  if (!vm && existsSync(profile))
+    return "This session has VM history. Fork to continue without VM isolation.";
+  return undefined;
 };

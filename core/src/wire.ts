@@ -299,13 +299,10 @@ export interface SessionSnapshot {
    * providers support it. Runtime-only, not persisted.
    */
   canRewind: boolean;
-  /**
-   * The session can be `session.resume`d. False only for a ChatGPT session
-   * created under the pre-Phase-4 direct backend, whose `provider_ref` is a
-   * Loom transcript id rather than a Codex thread id — its history stays
-   * readable but it can never be resumed. Runtime-only, not persisted.
-   */
+  /** Whether the session can be used under the current provider/isolation configuration. */
   resumable: boolean;
+  /** Persistent, actionable reason for a read-only session. Runtime-only. */
+  resumeBlockedReason?: string;
   /**
    * Blocking requests the turn is parked on, oldest first — complete enough to
    * render and answer without any transcript. Non-empty iff

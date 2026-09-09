@@ -115,7 +115,7 @@ export const due = (b: Outbox, s: SessionSnapshot): string | null =>
 
 /** Nothing can ever be sent to a session in this state. */
 export const stranded = (s: SessionSnapshot | undefined): boolean =>
-  s === undefined || s.status.kind === "done" || s.status.kind === "error";
+  s === undefined || s.resumable === false || s.status.kind === "done" || s.status.kind === "error";
 
 /** Opening the editor does not release the held message's tail. */
 export const release = (b: Outbox): { text: string; box: Outbox } | null =>

@@ -19,7 +19,7 @@ import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
-import type { ClientState } from "@loom/client";
+import { isAmbiguousFailure, type ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type {
   DaemonInfo,
@@ -96,6 +96,7 @@ import {
   unwind,
   type Confirm,
   type Overlay,
+  type Prompt,
   type NewSessionSettings,
   type Picker,
   type PickerDest,
@@ -378,6 +379,7 @@ const deriveView = (
   // (detailRows), not a hardcoded guess, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
   const detailH = detailRows(sel, {
+    width: body.t === "sessionPane" ? cols : rightW,
     account: account,
     compacting: sel?.compacting ?? null,
     queued,
@@ -819,7 +821,9 @@ export const mkFleetHandle = ({
   // ---- session actions ------------------------------------------
   const perform = (fn: () => Promise<string>): void => {
     fn()
-      .then((m) => m && note(m, "good"))
+      .then((m) => {
+        if (m) note(m, "good");
+      })
       .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
   };
 
@@ -936,6 +940,11 @@ export const mkFleetHandle = ({
         return note("no question pending", "dim");
       }
       case "send": {
+        if (s.resumable === false)
+          return note(
+            s.resumeBlockedReason ?? "This session is read-only; fork to continue.",
+            "bad",
+          );
         // A send held back because its reply never came is this session's text
         // and outranks the global cancelled-prompt draft. Opening the prompt is
         // the explicit action that releases it — it is editable from here, is
@@ -1367,7 +1376,10 @@ export const mkFleetHandle = ({
     );
   };
 
+  const forkingSessions = new Set<string>();
+  let submittingPrompt = false;
   const submitPrompt = (): void => {
+    if (submittingPrompt) return;
     const p = openPrompt(state.overlay);
     if (!p) return;
     const text = p.buffer.text.trim();
@@ -1389,11 +1401,29 @@ export const mkFleetHandle = ({
       return;
     }
 
-    const reopen = (): void =>
-      show({ t: "prompt", prompt: { ...p, buffer: buffer(p.buffer.text), histIdx: 0, draft: "" } });
+    const pendingPrompt: Prompt = {
+      ...p,
+      feedback: {
+        pending: true,
+        text:
+          p.t === "new"
+            ? "Starting session… your draft is kept here."
+            : "Sending / resuming session… your draft is kept here.",
+      },
+    };
+    const stillOpen = () => openPrompt(state.overlay) === pendingPrompt;
+    const reopen = (message: string): void => {
+      if (stillOpen())
+        show({ t: "prompt", prompt: { ...p, feedback: { pending: false, text: message } } });
+      else {
+        dispatch({ t: "recoverDraft", text: p.buffer.text });
+        note(message + " — draft saved", "bad");
+      }
+    };
 
     if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
-    dispatch({ t: "closePrompt" });
+    submittingPrompt = true;
+    show({ t: "prompt", prompt: pendingPrompt });
 
     const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
       switch (k) {
@@ -1507,24 +1537,40 @@ export const mkFleetHandle = ({
     };
 
     run()
-      .then((m) => m && note(m, "good"))
+      .then((m) => {
+        if (stillOpen()) dispatch({ t: "closePrompt" });
+        if (m) note(m, "good");
+      })
       .catch((e: unknown) => {
         // Lost the race with a compaction that started between the pre-check
         // above and the RPC — queue rather than error.
         if (sendTo !== null && text && (e as { code?: unknown })?.code === "busy") {
-          queueSend(sendTo, text, "queued until compaction finishes");
+          if (stillOpen()) queueSend(sendTo, text, "queued until compaction finishes");
+          else {
+            composer.enqueue(sendTo, text);
+            note("queued until compaction finishes", "dim");
+          }
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to
-        // completion. Don't reopen the prompt and don't retry (either invites a
-        // double submit); the snapshot that lands on reconnect says what
-        // actually happened, whichever way it went.
-        if ((e as { code?: unknown })?.code === "disconnected") {
-          note("connection dropped — the action may still be running", "bad");
+        // completion. Keep the uncertainty visible and require leaving the
+        // prompt to review the session before any explicit retry.
+        if (isAmbiguousFailure(e)) {
+          const message =
+            "No confirmation — the action may still be running. Press Esc, check the session before retrying. Your draft is saved.";
+          dispatch({ t: "recoverDraft", text: p.buffer.text });
+          if (stillOpen())
+            show({
+              t: "prompt",
+              prompt: { ...p, feedback: { pending: false, uncertain: true, text: message } },
+            });
+          else note(message, "bad");
           return;
         }
-        note(e instanceof Error ? e.message : String(e), "bad");
-        reopen(); // retryable — the text comes back so it can be edited and re-sent
+        reopen(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        submittingPrompt = false;
       });
   };
 
@@ -1767,14 +1813,14 @@ export const mkFleetHandle = ({
       }
       case "fork": {
         if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        if (isClaudeId(sel.provider)) {
+        if (isClaudeId(sel.provider) && sel.resumable !== false) {
           return void dispatch({
             t: "notice",
             text: "hard fork isn't available for Claude sessions yet",
             tone: "dim",
           });
         }
-        if (sel.inPlace) {
+        if (sel.inPlace && sel.resumable !== false) {
           return void dispatch({
             t: "notice",
             text: "hard fork needs a worktree — this session runs in-place",
@@ -1788,11 +1834,18 @@ export const mkFleetHandle = ({
             tone: "dim",
           });
         }
+        if (forkingSessions.has(sel.id)) return;
+        forkingSessions.add(sel.id);
+        note("Starting fork…", "dim");
         client
           .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
           .then((r) => {
             dispatch({ t: "select", id: r.id });
-            dispatch({ t: "notice", text: `forked → ${shortId(r.id)}`, tone: "good" });
+            dispatch({
+              t: "notice",
+              text: `forked → ${shortId(r.id)}${sel.resumable === false ? " — fresh session with saved context" : ""}`,
+              tone: "good",
+            });
           })
           .catch((e: unknown) =>
             dispatch({
@@ -1800,7 +1853,8 @@ export const mkFleetHandle = ({
               text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
               tone: "bad",
             }),
-          );
+          )
+          .finally(() => forkingSessions.delete(sel.id));
         return;
       }
       case "approve":
@@ -1903,6 +1957,10 @@ export const mkFleetHandle = ({
     const openP = openPrompt(state.overlay);
     if (openP) {
       const p = openP;
+      if (p.feedback?.pending || p.feedback?.uncertain) {
+        if (key.escape) dispatch({ t: "closePrompt", saveDraft: true });
+        return;
+      }
       // The live session a `send` prompt is composing at — the only prompt whose
       // ⌥ actions retarget an existing session rather than the one being made.
       const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;

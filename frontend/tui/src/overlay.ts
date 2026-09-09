@@ -13,6 +13,8 @@ import { buffer, type Buffer } from "./editor.ts";
 
 /** The editor fields every prompt shares — the text and its ↑/↓ history walk. */
 export interface PromptEditor {
+  /** Submission stays visible with its draft; failures remain until dismissed or retried. */
+  feedback?: { pending: boolean; uncertain?: boolean; text: string };
   /** Bold caption above the input ("send", "deny req-3", a question header). */
   label: string;
   buffer: Buffer;

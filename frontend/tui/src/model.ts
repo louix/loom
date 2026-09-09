@@ -1270,7 +1270,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // `send` is the one "talk to this session" verb, bound to Enter — it works
     // while running (injects), idle, or stopped (interrupted / errored → the
     // daemon revives the session first). No separate "resume" step.
-    if (status.kind !== "starting") {
+    if (status.kind !== "starting" && session.resumable !== false) {
       local.push({ keys: "⏎", label: "send", act: "send", footer: true });
     }
     // `compact` is legal on any live session — the half-full meter is when it's
@@ -1322,7 +1322,10 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     ) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    if (!isClaudeId(session.provider) && !session.inPlace) {
+    if (
+      (!isClaudeId(session.provider) && !session.inPlace) ||
+      (isClaudeId(session.provider) && session.resumable === false)
+    ) {
       local.push({ keys: "F", label: "fork", act: "fork" });
     }
     local.push({ keys: "e", label: "rename", act: "title" });
@@ -1354,7 +1357,24 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // deny-only now, never delete.
     local.push({ keys: "X", label: "delete", act: "delete" });
   }
-  return [...local, ...GLOBAL_HINTS];
+  const usable =
+    session?.resumable === false
+      ? local.filter(
+          (hint) =>
+            ![
+              "send",
+              "compact",
+              "undo",
+              "mode",
+              "model",
+              "effort",
+              "provider",
+              "keepwarm",
+              "rebase",
+            ].includes(hint.act),
+        )
+      : local;
+  return [...usable, ...GLOBAL_HINTS];
 };
 
 /** Convenience for tests / keymap: the bare set of permitted act names. */
