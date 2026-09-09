@@ -112,8 +112,7 @@ try {
           mcpServers: [],
           model: "haiku",
           settingSources: [],
-          prompt:
-            "Isolation acceptance test. Create vm-proof.txt containing exactly hello from isolated Claude followed by a newline. Then run git add vm-proof.txt and git commit -m 'isolated Claude proof'. Do not inspect credentials or other files. Report success briefly.",
+          prompt: `Isolation acceptance test. The worktree is ${f.workspace}. Create the exact absolute path ${join(f.workspace, "vm-proof.txt")} containing exactly hello from isolated Claude followed by a newline. Then run git -C ${f.workspace} add vm-proof.txt and git -C ${f.workspace} commit -m 'isolated Claude proof'. Do not write outside this worktree, inspect credentials or other files. Report success briefly.`,
         },
       ],
     });
