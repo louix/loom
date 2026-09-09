@@ -154,8 +154,10 @@ Ink parses as a meta keypress. If your terminal instead sends the high-bit form
 (`Meta sends 8-bit`), the `⌥` prompt actions won't register — switch it to
 "`Esc`+" / "meta sends escape".
 
-
 The permission-mode chip also accepts mouse clicks in DETAIL and in the new-session
 and reply composers, using the same cycle as `⇧⇥`. It is disabled while a send is
 pending or its outcome needs review. Starting or resuming a session displays
-`starting session…`; send errors remain visible with the draft.
+the session's STARTING state after closing the composer. Accepted startup/send
+errors appear in session events beside the attempted message. In an open composer,
+↑ recalls submitted text (at the first line of a multiline buffer); saved user
+messages enter this history as the chat's transcript pages load.

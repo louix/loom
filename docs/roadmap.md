@@ -7,7 +7,8 @@ configuration live in [README](../README.md), [connectors](connectors.md) and
 
 ## Isolation
 
-- Wider live validation of AISDK/Codex VMs, especially long-running token renewal.
+- Live AISDK Google/native Anthropic checks. Codex controlled rotation/expiry VM
+  checks pass; natural live OAuth expiry remains untested.
 - Remaining daemon catalog/title network paths, then daemon/TUI Deno isolation.
 - macOS runtime support; Linux guest packaging is already separated from the
   host launcher.
@@ -26,3 +27,5 @@ configuration live in [README](../README.md), [connectors](connectors.md) and
 Run `deno task typecheck`, `deno task lint`, and `deno task test:silent`. Native
 VM and live-auth acceptance commands are documented with the runtime they test.
 Live checks are separate from deterministic tests and may consume provider usage.
+
+Latest bounded review: [isolation and TUI follow-ups](review-2026-09/session-isolation-followups.md).

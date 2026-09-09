@@ -74,7 +74,7 @@ export const launchSessionVm = async (
       throw new Error("incompatible runtime");
   } catch {
     throw new Error(
-      "Claude VM runtime is missing or incompatible; rebuild .#claude-session-runtime with this Loom version",
+      "Session VM runtime is missing or incompatible; upgrade the Loom package, or rebuild the configured provider runtime with this Loom version",
     );
   }
   let sessionDirectory: string | undefined;

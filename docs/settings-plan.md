@@ -1,4 +1,8 @@
-# TODO 0 — Settings
+# Settings proposal
+
+Historical design notes: descriptions and source line numbers below are not a
+current-state audit. Mode memory and provider profiles already exist; remaining
+settings work is summarized in [the backlog](todo.md).
 
 ## Context
 
@@ -232,11 +236,11 @@ designed.
 
 ## Verification
 
-- `pnpm typecheck` — the `absurd(...)` guards in `applyPush`, `footerHints`, and
+- `deno task typecheck` — the `absurd(...)` guards in `applyPush`, `footerHints`, and
   `app.tsx`'s body switch make every missed extension point a compile error.
-- `pnpm test` — the suites above; new `test/settings.test.ts` +
+- `deno task test` — the suites above; new `test/settings.test.ts` +
   `test/tui-render.test.ts` overlay case.
-- Manual (`pnpm loom` against a scratch repo):
+- Manual (`deno task loom` against a scratch repo):
   1. `Space` → "settings" opens the overlay; `↑/↓` + `←/→` cycle each row; the
      footer shows the overlay's keys; `Esc` closes.
   2. Set verbosity to `chat`, quit, relaunch → log opens filtered to `chat`

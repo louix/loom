@@ -5,9 +5,15 @@ separate from selected-session transcript loading, and transcripts use bounded
 history pages rather than embedding the whole log in fleet updates.
 
 Session startup and cold resume publish `starting` before launching a worker or
-VM. The TUI shows `starting session…`. A send keeps its draft while pending and
-shows failures in the composer. Ambiguous timeout/disconnect outcomes require
-review before resending; the client does not automatically replay the request.
+VM. Submitting a new message closes the composer so the STARTING state is visible.
+Once a session exists, startup/send failures are persisted with the attempted
+message in session events; the TUI selects that session without restoring a draft.
+Pre-acceptance failures retain draft recovery. Ambiguous timeout/disconnect outcomes
+require review before resending; the client does not automatically replay the request.
+
+Up-arrow recall combines local submissions with saved user messages as transcript
+pages load. It is deduplicated and capped at 50 entries; it is separate from the
+cancelled-message draft and from the complete durable chat history.
 
 Missing/disabled providers and incompatible isolation histories remain readable.
 The DETAIL pane explains the reason; continuation forks use an enabled provider

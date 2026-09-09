@@ -29,7 +29,7 @@ It uses `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the existing access t
 in `CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude`). It does not print
 credentials or modify the host Claude profile. A private copy is mounted read-only
 and removed on shutdown, startup failure or parent death. Claude can read its own
-guest credentials; this experiment does not attempt to hide API credentials from
+guest credentials; this boundary does not attempt to hide API credentials from
 the agent.
 
 This is a **live** acceptance test that consumes Claude usage: Claude creates a file and commits it
@@ -166,7 +166,7 @@ Claude profile** using the CLI's normal credential persistence. The narrow
 
 ## Daemon integration
 
-Build the artifact above, then opt in for Claude sessions:
+The Linux Nix package bundles the runtime. Opt in for Claude sessions:
 
 ```toml
 [isolation.claude]
@@ -207,9 +207,12 @@ conversation and tool events as context (up to 120,000 characters from the lates
 5,000 events, with an omission notice when truncated). This is not a native Claude
 history fork. The new agent acknowledges the context and waits for instructions.
 
-New-session and cold-resume sends keep the draft visible while startup is pending.
-Failures remain beside the draft. A lost connection or timeout requires leaving
-the prompt to review the session before retrying, since the send may have succeeded.
+Submitting a new message closes the composer, exposing the session's STARTING
+state. Accepted startup/send failures are saved beside the attempted message in
+session events; the TUI selects that chat without restoring a draft. Up-arrow
+history includes saved user messages as transcript pages load. Failures before a
+session accepts the message still preserve a draft. A timeout or lost connection
+requires reviewing the session before retrying: the send may have succeeded.
 
 Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
 through individual Unix/vsock endpoints. Each relay connects only to its assigned

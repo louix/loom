@@ -1,4 +1,4 @@
-# Opt-in experiment: the normal connector worker plus native Claude in a guest.
+# Session runtime: the connector worker plus native Claude in a Linux guest.
 { pkgs, loom }:
 let
   gitShim = import ./git-shim.nix { inherit pkgs; };

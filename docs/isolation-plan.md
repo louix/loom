@@ -39,8 +39,10 @@ forking into an enabled provider with the current isolation policy.
 
 ## Remaining work
 
-1. Broaden live-provider validation of [AISDK VMs](aisdk-session-vm.md) and
-   [Codex VMs](codex-session-vm.md), particularly long-running token renewal.
+1. Broaden live-provider validation: AISDK Google/native Anthropic have not had
+   VM smoke tests. Codex native VM rotation, 401 recovery and failed-renewal expiry
+   shutdown are verified against local fixtures; natural live OAuth expiry remains
+   untested. See [AISDK](aisdk-session-vm.md) and [Codex](codex-session-vm.md).
 2. Move remaining catalog/title network calls out of the daemon, then remove
    daemon/TUI network grants.
 3. Implement the macOS host runtime backend while preserving Linux guest
@@ -50,3 +52,5 @@ forking into an enabled provider with the current isolation policy.
 
 Earlier worker and shared-provider-VM proposals are retained in Git history.
 They are not the current topology or an additional implementation requirement.
+
+Latest bounded review: [isolation and TUI follow-ups](review-2026-09/session-isolation-followups.md).
