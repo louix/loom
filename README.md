@@ -7,7 +7,7 @@ OpenAI-compatible models (GLM, DeepSeek, OpenRouter, vLLM, Ollama, OpenAI) via
 the Vercel AI SDK.
 
 > Codename "Loom" — rename freely. The design is whatever's written here and in
-> `docs/roadmap.md` / `docs/m10-plan.md`. This repo implements **milestones 1-10**:
+> `docs/roadmap.md`. This repo implements **milestones 1-10**:
 > the Claude adapter plus a full OpenAI-compatible provider (streaming, tools
 > through the permission gate, a first-party bash/edit/grep suite, plan mode,
 > Loom-side compaction, `task` sub-agents) and the TUI to pick and switch

@@ -118,9 +118,51 @@ permissions. This does not yet provide the intended network-free daemon boundary
 `launchSessionVm` accepts a shared `ClaudeAuthOwner` instead of static `auth`.
 This keeps refresh tokens in the host profile, refreshes through the pinned Claude
 CLI before expiry, and distributes access-only snapshots to active sessions.
-See [the auth implementation and live acceptance check](claude-auth-spike.md#implemented-credential-owner).
-The original live experiment above uses a static snapshot; the auth acceptance
-check exercises renewal and distribution to two VMs.
+The follow-up implementation is `ClaudeAuthOwner` in the daemon package. Callers
+share one owner per provider profile and pass it as `authOwner` to
+`launchSessionVm`. Close the owner when its provider shuts down. The VM launcher
+unsubscribes on exit and waits for an in-flight publication before fallback cleanup;
+publication cannot recreate a removed session directory.
+
+The owner reads the host Claude profile, refreshes five minutes before expiry,
+and polls once per second for credentials updated by other host Claude processes.
+`current(true)` requests an immediate refresh. It invokes the pinned CLI's
+`claude auth login --claudeai` with the refresh token and scopes in the child
+environment; the CLI persists any rotated refresh token. It never logs raw CLI
+output or passes a refresh token into a VM. A per-profile OS file lock serializes
+Loom owners across processes, with a second credential read after locking to avoid
+repeating a completed refresh. This lock does not coordinate unrelated Claude
+processes; the owner rereads persisted credentials after failures to recognize
+concurrent or partially completed rotations.
+
+Refresh attempts have a 60-second timeout; waiting for the profile lock has a
+70-second timeout and is cancellable. Transient failures retain a still-valid
+token and retry with exponential backoff up to 60 seconds. A rejected refresh
+token requires login instead of repeated automatic exchanges. A changed host
+credential is picked up automatically. Independent per-subscriber expiry timers
+stop a session whose last published credential expires, even during a blocked
+refresh or failed publication. Closing the owner revokes its attached sessions.
+
+The guest bootstrap links its local `.credentials.json` to the read-only
+access-token snapshot. No fixed OAuth environment variable is set in managed
+mode. Refreshed snapshots are atomically replaced with mode 0600. Host publication
+is not an acknowledgement from Claude itself; refreshing five minutes early
+provides margin for the measured guest propagation delay. Automatic recovery from
+an early API 401 is not yet connected to `current(true)` at the daemon layer.
+
+Real refresh and two-VM distribution have now been verified: Claude returned a
+fresh token with eight hours of validity, both VMs observed the updated snapshot,
+and the same native Claude process completed another turn. Run this acceptance
+check with the rebuilt artifact:
+
+```sh
+deno run -A scripts/test-claude-auth-vm.ts \
+  /path/to/claude-artifact /path/to/smolvm /path/to/host-claude
+```
+
+Unlike the earlier replacement-only spikes, this command **does refresh the host
+Claude profile** using the CLI's normal credential persistence. The narrow
+`spike-claude-refresh.ts /path/to/host-claude` command exercises just that exchange.
 
 ## Daemon integration
 
@@ -235,3 +277,13 @@ provider; `disabled = ["claude:work"]` leaves other providers available. An omit
 after changing provider or isolation policy. Missing and disabled providers leave
 their sessions read-only, with an explanation and a continuation fork using an
 enabled provider. `session.fork` accepts an explicit `provider` override.
+
+
+## Startup timing
+
+The host retains immutable smolvm base disk templates in a private cache keyed
+by the resolved smolvm executable. Session overlays, credentials and worktrees
+remain private. With the current Linux artifact, connector-worker readiness
+measured about 9.6 seconds on the first boot and 0.7 seconds with cached templates.
+These measurements exclude native Claude initialization and the first API reply.
+The cache is disposable and a missing or unusable cache falls back to normal boot.

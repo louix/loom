@@ -47,16 +47,16 @@ subprocess permission. FFI stays disabled.
 Defaults are `api.anthropic.com`, `claude.ai`, `platform.claude.com`,
 `registry.npmjs.org` and `npmjs.com`; an empty list denies worker network access.
 Additional proxy/API endpoints must be configured explicitly. These Deno grants
-do not constrain native subprocess filesystem or network access. No microVM or
-native execution confinement is claimed yet.
+do not constrain native subprocess filesystem or network access. For native confinement, enable [Claude session VMs](claude-session-vm.md).
+The Deno-only backend makes no native confinement claim.
 
 Validation uses the installed real Claude SDK with a local CLI fixture, including
 discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
 compaction, persisted SDK rewind, resume, profile sharing and process cleanup.
 This does not validate live provider authentication or token refresh.
 
-See [the staged worker plan](connector-worker-plan.md) for subsequent provider
-and daemon/TUI network-isolation work. The connector-authoring
+See [isolation](isolation-plan.md) for current boundaries and remaining provider
+and daemon/TUI work. The connector-authoring
 interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
@@ -67,8 +67,7 @@ use `runtime = "tilth"` with `isolation = "vm"` for an optional
 remote servers with `[[http-mcp]]` (`name`, `url`, optional `bearer_token_env`).
 An inline `bearer_token` is also supported and takes precedence over the env var.
 Each active session gets a separate Deno relay for each HTTP mount. Command
-servers retain their existing launch behavior; networked stdio isolation is
-subsequent work. Both groups replace their own defaults when present; top-level
+servers retain their existing launch behavior; networked services should use HTTP MCP mounts. Both groups replace their own defaults when present; top-level
 `command-mcp = []` disables the default tilth/fff mounts. There are no default
 HTTP mounts. Names must be unique across both groups; `loom` is reserved.
 
