@@ -252,3 +252,9 @@ allow_repo_programs = false
 # [isolation.aisdk]
 # artifact = "/absolute/path/to/aisdk-session-runtime"
 # smolvm = "/absolute/path/to/smolvm"
+
+# Optional native Codex/ChatGPT session VMs.
+# Build with nix build .#codex-session-runtime.
+# [isolation.codex]
+# artifact = "/absolute/path/to/codex-session-runtime"
+# smolvm = "/absolute/path/to/smolvm"

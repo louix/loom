@@ -159,7 +159,10 @@ try {
     `${binding.state}/egress.sock:/run/loom/egress.sock`,
   );
   if (binding.sessionDirectory)
-    create.push("-v", `${binding.sessionDirectory}/profile:/tmp/loom-home/.claude`);
+    create.push(
+      "-v",
+      `${binding.sessionDirectory}/profile:/tmp/loom-home/${auth.codexOauth ? ".codex" : ".claude"}`,
+    );
   for (const [index, relay] of (binding.mcpRelays ?? []).entries()) {
     const socket = join(binding.state, `mcp-${index}.sock`);
     relays.push(startMcpRelay(socket, relay.port));

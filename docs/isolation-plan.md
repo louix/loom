@@ -5,7 +5,7 @@
 - Claude and mock connectors run in session-bound Deno workers. Claude utility
   jobs (models, titles, enumeration) use short-lived host workers. Deno grants
   do not confine native subprocesses.
-- With `[isolation.claude]` configured, each Claude session gets a separate
+- With its provider VM policy configured, each Claude, AISDK or Codex session gets a separate
   smolvm with its own writable profile and its own worktree. It can read and
   modify code. There is no shared provider VM mounting several worktrees.
 - The host owns OAuth refresh and sends access-only credentials to those VMs.
@@ -39,9 +39,8 @@ forking into an enabled provider with the current isolation policy.
 
 ## Remaining work
 
-1. Move Codex sessions across the VM boundary with packaged native execution,
-   private durable history and credential lifecycle handling. AISDK session VMs
-   now use a session-scoped host transcript channel; see [AISDK VMs](aisdk-session-vm.md).
+1. Broaden live-provider validation of [AISDK VMs](aisdk-session-vm.md) and
+   [Codex VMs](codex-session-vm.md), particularly long-running token renewal.
 2. Move remaining catalog/title network calls out of the daemon, then remove
    daemon/TUI network grants.
 3. Implement the macOS host runtime backend while preserving Linux guest

@@ -12,6 +12,14 @@ if (auth.claudeAiOauth) {
   }
   await Deno.symlink("/run/loom/private/auth.json", "/tmp/loom-home/.claude/.credentials.json");
 }
+if (auth.codexOauth) {
+  Deno.env.set("CODEX_HOME", "/tmp/loom-home/.codex");
+  await Deno.mkdir("/tmp/loom-home/.codex", { recursive: true });
+  await Deno.remove("/tmp/loom-home/.codex/auth.json").catch((e) => {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+  });
+  await Deno.symlink("/run/loom/private/codex.json", "/tmp/loom-home/.codex/auth.json");
+}
 for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] as const)
   if (typeof auth[key] === "string") Deno.env.set(key, auth[key]);
 Deno.env.set("HTTPS_PROXY", "http://127.0.0.1:3128");

@@ -40,7 +40,8 @@ export interface WorkerBinding {
     | "@loom/connector-mock"
     | "@loom/connector-claude"
     | "@loom/connector-generic"
-    | "@loom/connector-gemini";
+    | "@loom/connector-gemini"
+    | "@loom/connector-chatgpt";
   config: ConnectorConfig;
   role: WorkerRole;
   baseBranch?: string;
@@ -193,6 +194,7 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
           "@loom/connector-claude",
           "@loom/connector-generic",
           "@loom/connector-gemini",
+          "@loom/connector-chatgpt",
         ].includes(String(b.connector)) &&
         record(b.config) &&
         Object.entries(b.config).every(([k, v]) => {
@@ -204,12 +206,13 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
               "model",
               "baseUrl",
               "apiKey",
+              "codexCliPath",
               "sdk",
             ].includes(k)
           )
             return str(v);
           if (k === "models") return strings(v);
-          if (k === "includeUsage") return typeof v === "boolean";
+          if (k === "includeUsage" || k === "codexBuiltinWebSearch") return typeof v === "boolean";
           if (k === "maxSteps") return finite(v);
           if (k === "modelContext") return record(v) && Object.values(v).every(finite);
           return false;

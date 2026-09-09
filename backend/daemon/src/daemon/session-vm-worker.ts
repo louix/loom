@@ -18,7 +18,6 @@ import {
   writeSessionAuth,
   type SessionAuth,
 } from "../../../../runtime/src/session-vm/auth.ts";
-import type { ClaudeAuthOwner } from "./claude-auth.ts";
 
 export interface SessionVmOptions {
   workspace: string;
@@ -26,7 +25,13 @@ export interface SessionVmOptions {
   smolvm: string;
   auth?: SessionAuth;
   /** Shared by sessions using the same provider profile; caller owns its lifetime. */
-  authOwner?: ClaudeAuthOwner;
+  authOwner?: {
+    current(force?: boolean): Promise<SessionAuth>;
+    subscribe(
+      write: (value: SessionAuth) => Promise<void>,
+      expired: () => void,
+    ): Promise<() => Promise<void>>;
+  };
   allowRepoPrograms?: boolean;
   extraAllowedHosts?: string[];
   providerHosts?: string[];

@@ -1699,6 +1699,22 @@ export class Daemon {
       if (savedVm !== vm)
         return "This session used a different isolation mode. Fork to continue with the current policy.";
     }
+    if (
+      this.config.providers.aisdk[row.provider]?.sdk === "chatgpt" &&
+      this.#registry.store.providerRef(row.id)
+    ) {
+      const savedVm = existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "codex-ref"));
+      const vm = !!this.config.isolation.codex;
+      if (
+        vm &&
+        savedVm &&
+        !existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "profile/sessions"))
+      )
+        return "No saved Codex VM history. Fork to continue.";
+      if (vm && row.inPlace) return "VM isolation requires a worktree. Fork to continue.";
+      if (savedVm !== vm)
+        return "This session used a different isolation mode. Fork to continue with the current policy.";
+    }
     if (isClaudeId(row.provider)) {
       const ref = this.#registry.store.providerRef(row.id);
       if (ref)

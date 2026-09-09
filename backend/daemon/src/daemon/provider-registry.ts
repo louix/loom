@@ -1,3 +1,4 @@
+import { withCodexVmSessions } from "./codex-vm-provider.ts";
 import { withAisdkVmSessions } from "./aisdk-vm-provider.ts";
 /**
  * Instantiates providers by id, on demand, from a {@link ConnectorManifest} of
@@ -150,13 +151,20 @@ export class ProviderRegistry {
           `failed or hasn't run; set \`model\` or \`models\` in the config`,
       );
     }
+    const context = this.#contextFor(id);
+    if (context.config.sessionVm && ![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(pkg))
+      throw new Error(
+        `Connector ${pkg} has no VM backend; choose a supported connector or disable its VM policy`,
+      );
     const { createProvider } = await load();
     const provider = await withExternalMcp(
       async (ctx) => {
         const base = await createProvider(ctx);
+        if (ctx.config.sessionVm && ctx.config.sdk === "chatgpt")
+          return withCodexVmSessions(base, ctx);
         return !isClaudeId(id) && ctx.config.sessionVm ? withAisdkVmSessions(base, ctx) : base;
       },
-      this.#contextFor(id),
+      context,
       undefined,
       undefined,
       this.#config.isolation.git.allowRepoPrograms,
@@ -227,11 +235,13 @@ export class ProviderRegistry {
     }
     const p = this.#config.providers.aisdk[id];
     if (!p) throw new Error(`unknown provider: ${id}`);
+    const vmPolicy =
+      p.sdk === "chatgpt" ? this.#config.isolation.codex : this.#config.isolation.aisdk;
     const config: ConnectorConfig = {
-      ...(this.#config.isolation.aisdk && p.sdk !== "chatgpt"
+      ...(vmPolicy
         ? {
             sessionVm: {
-              ...this.#config.isolation.aisdk,
+              ...vmPolicy,
               repoRoot: this.#repoRoot,
               extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
               allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,

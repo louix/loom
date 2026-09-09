@@ -16,6 +16,10 @@
       # Guests always run Linux, independently of the machine running Loom/smolvm.
       guestSystemFor = system: builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
       guestRuntimes = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+        codex-session-runtime = import ./packaging/runtimes/codex.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+          loom = self.packages.${system}.loom.override { withTilth = false; };
+        };
         aisdk-session-runtime = import ./packaging/runtimes/aisdk.nix {
           pkgs = nixpkgs.legacyPackages.${system};
           loom = self.packages.${system}.loom.override { withTilth = false; };
@@ -68,7 +72,7 @@
           bundleSupported = pkgs.stdenv.hostPlatform.isLinux;
         in rec {
           default = loom;
-          inherit (guestRuntimes.${guestSystem}) claude-session-runtime aisdk-session-runtime tilth-runtime;
+          inherit (guestRuntimes.${guestSystem}) claude-session-runtime aisdk-session-runtime codex-session-runtime tilth-runtime;
           bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON {
             tilth = {
               version = 1;

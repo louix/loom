@@ -722,3 +722,16 @@ test("AISDK VM routing accepts an artifact and can be explicitly disabled", () =
   );
   assert.throws(() => normalizeConfig({ isolation: { aisdk: { enabled: true } } }));
 });
+
+test("Codex VM policy is independent of AISDK and Claude", () => {
+  const config = normalizeConfig({
+    isolation: {
+      codex: { artifact: "/codex" },
+      aisdk: { enabled: false },
+      claude: { enabled: false },
+    },
+  });
+  assert.equal(config.isolation.codex?.artifact, "/codex");
+  assert.equal(config.isolation.aisdk, undefined);
+  assert.equal(config.isolation.claude, undefined);
+});
