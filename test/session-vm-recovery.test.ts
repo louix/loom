@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { bootId, processIdentity, stopProcess } from "../runtime/src/session-vm/process.ts";
 import { recoverSessionVm } from "../runtime/src/session-vm/recovery.ts";
 import { lockSessionState, writeRecoveryFile } from "../runtime/src/session-vm/persistence.ts";
 import {
@@ -16,19 +15,17 @@ const fixture = async () => {
     token: crypto.randomUUID(),
     state,
     sessionDirectory: dir,
-    gitSocket: join(state, "git.sock"),
+    gitSocket: join(state, "git-bridge-test/git.sock"),
     smolvm: "/nix/store/00000000000000000000000000000000-smolvm/bin/smolvm",
-    recovery: { version: 1, bootId: await bootId(), processes: [], reaped: false },
+    recovery: { version: 2, ready: true, reaped: false },
   };
   await Deno.mkdir(join(dir, "profile"));
   await Deno.writeTextFile(join(dir, "profile/history"), "keep");
   await Deno.mkdir(join(state, "private"));
   await Deno.writeTextFile(join(state, "private/auth.json"), "disposable");
+  await Deno.writeTextFile(join(state, "git-bridge-test.stopped"), "");
   const save = async () => {
-    await writeRecoveryFile(state, "owner.json", {
-      token: record.token,
-      bootId: record.recovery.bootId,
-    });
+    await writeRecoveryFile(state, "owner.json", { token: record.token });
     await writeRecoveryFile(dir, "active.json", record);
   };
   await save();
@@ -45,10 +42,10 @@ const fixture = async () => {
     },
   };
 };
-test("previous-boot recovery retains history and never executes the old reaper", async () => {
+test("confirmed cleanup is retryable and retains history", async () => {
   const f = await fixture();
   try {
-    f.record.recovery.bootId = crypto.randomUUID();
+    f.record.recovery.reaped = true;
     await f.save();
     assert.equal(await recoverSessionVm(f.dir), true);
     assert.equal(await recoverSessionVm(f.dir), false);
@@ -58,34 +55,35 @@ test("previous-boot recovery retains history and never executes the old reaper",
     await f.close();
   }
 });
-test("missing current-boot state fails closed; reboot or a durable reaped marker permits recovery", async () => {
-  for (const reaped of [false, true]) {
-    const f = await fixture();
-    try {
-      f.record.recovery.reaped = reaped;
-      await f.save();
-      await Deno.remove(f.state, { recursive: true });
-      if (reaped) assert.equal(await recoverSessionVm(f.dir), true);
-      else {
-        await assert.rejects(recoverSessionVm(f.dir), /shutdown cannot be confirmed/);
-        f.record.recovery.bootId = crypto.randomUUID();
-        await writeRecoveryFile(f.dir, "active.json", f.record);
-        assert.equal(await recoverSessionVm(f.dir), true);
-      }
-    } finally {
-      await f.close();
-    }
+test("missing state is blocked unless shutdown was already confirmed", async () => {
+  const f = await fixture();
+  try {
+    await Deno.remove(f.state, { recursive: true });
+    await assert.rejects(recoverSessionVm(f.dir), /shutdown cannot be confirmed/);
+    f.record.recovery.reaped = true;
+    await writeRecoveryFile(f.dir, "active.json", f.record);
+    assert.equal(await recoverSessionVm(f.dir), true);
+  } finally {
+    await f.close();
   }
 });
-test("failed reaping still revokes credentials and retains recovery metadata for retry", async () => {
+test("failed reaping still revokes credentials and keeps the marker", async () => {
   const f = await fixture();
   try {
     await assert.rejects(recoverSessionVm(f.dir), /cleanup incomplete/);
     await assert.rejects(Deno.stat(join(f.state, "private")), Deno.errors.NotFound);
     assert((await Deno.stat(join(f.dir, "active.json"))).isFile);
-    f.record.recovery.reaped = true;
+  } finally {
+    await f.close();
+  }
+});
+test("interrupted startup stays blocked even with a Git shutdown acknowledgement", async () => {
+  const f = await fixture();
+  try {
+    f.record.recovery.ready = false;
     await f.save();
-    await recoverSessionVm(f.dir);
+    await assert.rejects(recoverSessionVm(f.dir), /startup was interrupted/);
+    assert((await Deno.stat(join(f.dir, "active.json"))).isFile);
   } finally {
     await f.close();
   }
@@ -93,12 +91,9 @@ test("failed reaping still revokes credentials and retains recovery metadata for
 test("mismatched ownership and substituted paths are never removed", async () => {
   const f = await fixture();
   try {
-    f.record.recovery.bootId = crypto.randomUUID();
+    f.record.recovery.reaped = true;
     await f.save();
-    await writeRecoveryFile(f.state, "owner.json", {
-      token: "someone-else",
-      bootId: f.record.recovery.bootId,
-    });
+    await writeRecoveryFile(f.state, "owner.json", { token: "another-owner" });
     await assert.rejects(recoverSessionVm(f.dir), /another owner/);
     assert((await Deno.stat(join(f.state, "private/auth.json"))).isFile);
     await f.save();
@@ -113,30 +108,7 @@ test("mismatched ownership and substituted paths are never removed", async () =>
     await f.close();
   }
 });
-test("process start-time mismatch leaves the process alive; matching identity is reaped", async () => {
-  const child = new Deno.Command(Deno.execPath(), {
-    args: ["eval", "await new Promise(()=>{})"],
-    stdout: "null",
-    stderr: "null",
-  }).spawn();
-  try {
-    const identity = await processIdentity(child.pid);
-    assert(identity);
-    await stopProcess({ ...identity, start: String(BigInt(identity.start) + 1n) });
-    assert(await processIdentity(child.pid));
-    await stopProcess(identity);
-    await child.status;
-    assert.equal(await processIdentity(child.pid), undefined);
-  } finally {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /*gone*/
-    }
-    await child.status;
-  }
-});
-test("destructive actions retain the same ownership lock until they finish", async () => {
+test("destructive actions retain their ownership lock until they finish", async () => {
   const root = await Deno.makeTempDir();
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", root);
@@ -153,50 +125,16 @@ test("destructive actions retain the same ownership lock until they finish", asy
     await Deno.remove(root, { recursive: true });
   }
 });
-
-test("a crash after removing the ownership stamp can finish removing an empty reaped directory", async () => {
+test("a crash after removing the stamp can finish removing an empty reaped directory", async () => {
   const f = await fixture();
   try {
     f.record.recovery.reaped = true;
     await f.save();
-    await Deno.remove(join(f.state, "private"), { recursive: true });
-    await Deno.remove(join(f.state, "owner.json"));
+    for await (const e of Deno.readDir(f.state))
+      await Deno.remove(join(f.state, e.name), { recursive: true });
     assert.equal(await recoverSessionVm(f.dir), true);
     await assert.rejects(Deno.stat(f.state), Deno.errors.NotFound);
   } finally {
     await f.close();
-  }
-});
-
-test("verified helper group cleanup also stops native descendants", async () => {
-  const { spawn } = await import("node:child_process");
-  const parent = spawn(
-    Deno.execPath(),
-    [
-      "eval",
-      'const child=new Deno.Command(Deno.execPath(),{args:["eval","await new Promise(()=>{})"],stdout:"null",stderr:"null"}).spawn();console.log(child.pid);await child.status;',
-    ],
-    { detached: true, stdio: ["ignore", "pipe", "ignore"] },
-  );
-  const exited = new Promise<void>((resolve) => parent.once("exit", () => resolve()));
-  const pid = Number(
-    await new Promise<string>((resolve, reject) => {
-      parent.stdout.once("data", (data) => resolve(String(data).trim()));
-      parent.once("error", reject);
-    }),
-  );
-  const owner = await processIdentity(parent.pid!);
-  const descendant = await processIdentity(pid);
-  assert(owner && descendant);
-  assert.equal(owner.group, owner.pid);
-  assert.equal(descendant.group, owner.group);
-  try {
-    await stopProcess(owner);
-    await exited;
-    assert.equal(await processIdentity(pid), undefined);
-  } finally {
-    await stopProcess(descendant);
-    await stopProcess(owner);
-    await exited;
   }
 });

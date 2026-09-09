@@ -101,14 +101,13 @@ export const vmExecArguments = (b: VmBinding) => [
 ];
 export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket">) => {
   const command = async (args: string[]) => {
-    const child = new Deno.Command(b.smolvm, {
-      args,
+    const child = Deno.spawn(b.smolvm, args, {
       clearEnv: true,
       env: vmEnvironment(b.state),
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
-    }).spawn();
+    });
     const timer = setTimeout(() => {
       try {
         child.kill("SIGKILL");

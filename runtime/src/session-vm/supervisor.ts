@@ -18,7 +18,6 @@ import {
   writeRecoveryFile,
   removeSessionRuntimeState,
 } from "./persistence.ts";
-import { bootId, processIdentity } from "./process.ts";
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
@@ -91,36 +90,15 @@ const persist = async () => {
   if (binding.sessionDirectory && ownsPersistent)
     await writeRecoveryFile(binding.sessionDirectory, "active.json", binding);
 };
-const track = async (pid: number) => {
-  if (!binding.sessionDirectory) return;
-  const identity = await processIdentity(pid);
-  if (identity) binding.recovery.processes.push(identity);
-  await persist();
-};
-// The shell cannot exec smolvm until its PID identity is durably recorded.
-// Positional arguments keep paths/arguments out of shell syntax.
-const gated = (args: string[]) => [
-  "-c",
-  'read -r loom_ready && [ "$loom_ready" = go ] && exec "$@"',
-  "loom-session",
-  binding.smolvm,
-  ...args,
-];
 const command = async (args: string[]) => {
   if (ended) throw new Error("Session closed during startup");
-  child = new Deno.Command("/bin/sh", {
-    args: gated(args),
+  child = Deno.spawn(binding.smolvm, args, {
     clearEnv: true,
     env: vmEnvironment(binding.state),
-    stdin: "piped",
+    stdin: "null",
     stdout: "null",
     stderr: "null",
-  }).spawn();
-  await track(child.pid);
-  if (ended) throw new Error("Session closed before command release");
-  const gate = child.stdin.getWriter();
-  await gate.write(new TextEncoder().encode("go\n"));
-  await gate.close();
+  });
   const result = await Promise.race([child.status, done.promise.then(() => undefined)]);
   if (!result?.success) throw new Error("Session VM startup interrupted or failed");
 };
@@ -132,13 +110,12 @@ try {
     await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
     if ((await Deno.lstat(profile)).isSymlink)
       throw new Error("Session profile must not be a symlink");
-    binding.recovery = { version: 1, bootId: await bootId(), processes: [], reaped: false };
+    binding.recovery = { version: 2, ready: false, reaped: false };
     await writeRecoveryFile(binding.state, "owner.json", {
       token: binding.token,
-      bootId: binding.recovery.bootId,
     });
     ownsPersistent = true;
-    await track(Deno.pid);
+    await persist();
   }
   for (const name of ["home", "cache", "data", "config", "private"])
     await Deno.mkdir(join(binding.state, name), { mode: 0o700 });
@@ -149,7 +126,6 @@ try {
     binding.state,
     binding.artifact,
     allowRepoPrograms,
-    track,
   );
   if (!git) throw new Error("Session VM requires a linked Git worktree");
   binding.gitSocket = git.socket;
@@ -187,21 +163,29 @@ try {
   await command(create);
   await command(["machine", "start", "--name", sessionVmName]);
   if (ended) throw new Error("Session closed during VM startup");
-  child = new Deno.Command("/bin/sh", {
-    args: gated(vmExecArguments(binding)),
+  child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,
     env: vmEnvironment(binding.state),
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
-  }).spawn();
-  await track(child.pid);
+  });
   input = child.stdin.getWriter();
-  if (ended) throw new Error("Session closed before guest release");
-  await input.write(new TextEncoder().encode("go\n"));
   // Never expose raw vendor stderr: it can contain credentials.
   void child.stderr.pipeTo(new WritableStream({ write() {} })).catch(stop);
-  const output = child.stdout.pipeTo(Deno.stdout.writable, { preventClose: true });
+  const output = child.stdout
+    .pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        async transform(chunk, controller) {
+          if (ownsPersistent && !binding.recovery.ready) {
+            binding.recovery.ready = true;
+            await persist();
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    )
+    .pipeTo(Deno.stdout.writable, { preventClose: true });
   void output.catch(stop);
   phase = "running";
   status();

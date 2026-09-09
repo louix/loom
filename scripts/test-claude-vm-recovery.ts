@@ -1,4 +1,4 @@
-/** Real abandoned VM recovery, no live credentials or API usage. */
+/** Ready VM recovery after both owners die; no credentials or API usage. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,8 @@ import {
   sessionVmDirectory,
   stoppedSessionVm,
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
+import { lockSessionState, SessionVmBusyError } from "../runtime/src/session-vm/persistence.ts";
 import { readRecovery } from "../runtime/src/session-vm/recovery.ts";
-import { processIdentity } from "../runtime/src/session-vm/process.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
@@ -29,7 +29,7 @@ await Deno.writeTextFile(
 let daemon: Daemon | undefined;
 let success = false;
 try {
-  for (const phase of ["starting", "ready"]) {
+  for (const phase of ["ready"]) {
     const dir = sessionVmDirectory(f.repo, `orphan-${phase}`);
     const parent = new Deno.Command(Deno.execPath(), {
       args: [
@@ -56,27 +56,24 @@ try {
         if (frame.kind === phase) break;
       }
       assert(supervisor);
-      if (phase === "starting") {
-        const deadline = Date.now() + 20_000;
-        for (;;) {
-          const record = await readRecovery(dir);
-          if (record && record.recovery.processes.length >= 2) break; // Git helper recorded, boot may be underway.
-          assert(Date.now() < deadline, "Supervisor did not publish ownership");
-          await new Promise((r) => setTimeout(r, 10));
-        }
-      }
       // Freeze the parent first so it cannot race in and perform fallback cleanup.
       Deno.kill(parent.pid, "SIGSTOP");
       Deno.kill(supervisor, "SIGKILL");
       parent.kill("SIGKILL");
       await parent.status;
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        try {
+          (await lockSessionState(dir)).close();
+          break;
+        } catch (error) {
+          if (!(error instanceof SessionVmBusyError)) throw error;
+          assert(Date.now() < deadline);
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
       const record = await readRecovery(dir);
       assert(record);
-      const deadline = Date.now() + 10_000;
-      while (await processIdentity(supervisor)) {
-        assert(Date.now() < deadline);
-        await new Promise((r) => setTimeout(r, 20));
-      }
       await Deno.writeTextFile(join(dir, "profile/acceptance-history"), "retained");
       daemon = await Daemon.start({
         repoRoot: f.repo,
@@ -86,12 +83,6 @@ try {
       assert.equal(await readRecovery(dir), undefined, "Startup did not recover abandoned VM");
       await assert.rejects(Deno.stat(record.state), Deno.errors.NotFound);
       assert.equal(await Deno.readTextFile(join(dir, "profile/acceptance-history")), "retained");
-      for (const identity of record.recovery.processes)
-        assert.notEqual(
-          (await processIdentity(identity.pid))?.start,
-          identity.start,
-          "Recorded helper survived",
-        );
       await daemon.stop("recovery-test");
       daemon = undefined;
       // A new owner can use the preserved profile after recovery.

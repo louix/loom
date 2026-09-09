@@ -3,6 +3,7 @@ import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { startPreparedGitBridge, type PreparedGitBridge } from "./service.ts";
 const writer = new FrameWriter(Deno.stdout.writable);
 const frames = readFrames(Deno.stdin.readable, (value) => value as PreparedGitBridge);
+let prepared: PreparedGitBridge | undefined;
 let server: Awaited<ReturnType<typeof startPreparedGitBridge>> | undefined;
 const timer = setTimeout(() => Deno.exit(1), 10_000);
 try {
@@ -10,6 +11,7 @@ try {
   const first = await frames.next();
   if (first.done) throw new Error("Missing Git binding");
   clearTimeout(timer);
+  prepared = first.value;
   let gone = false;
   const parent = frames.next().then(() => {
     gone = true;
@@ -29,4 +31,6 @@ try {
 } finally {
   clearTimeout(timer);
   await server?.close();
+  // A recovery owner can confirm that all host Git operations have drained.
+  if (prepared) await Deno.writeTextFile(`${prepared.dir}.stopped`, "", { mode: 0o600 });
 }

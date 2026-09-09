@@ -139,41 +139,38 @@ worktree path, and deletion of persistent history.
 
 ## Abandoned VM recovery
 
-On Linux, startup scans this repository's persistent session directories. A held
-ownership lock is left alone. For an abandoned active marker, recovery validates
-its version, directory identity, ownership stamp and pinned smolvm executable.
-Helpers are recorded with the host boot ID and process start time. Native smolvm
-commands wait behind a pipe gate until that record is durable, closing the window
-between spawning a helper and recording it. Git workers likewise receive their
-capability only after their process identity has been recorded.
+The daemon handles SIGINT/SIGTERM; each TypeScript supervisor also watches its
+parent pipe for EOF. Signals, parent death and guest exit all trigger the same
+cleanup path. Recovery delegates VM process management to smolvm's list/stop/delete
+commands. There is no host process scanner, pidfd FFI, boot-ID lookup or shell gate.
 
-On the same boot, recovery uses libc pidfd functions to signal verified helpers,
-revokes credentials, and reaps the VM through its private smolvm state. It retains
-the worktree and Claude history. A durable `reaped` marker makes interrupted state
-removal retryable. On a different boot, old PIDs are never signalled: those VMs
-cannot have survived the reboot. Missing temporary state on the same boot is
-ambiguous unless shutdown was already recorded, so recovery fails closed.
+Startup scans this repository's private session directories and leaves held
+ownership locks alone. For an abandoned marker, it validates the state ownership
+stamp, revokes credentials and asks smolvm to reap the machine. A fully started
+session also requires the Git worker's shutdown acknowledgement: its pipe EOF
+handler writes that only after host Git operations have drained. History and
+worktrees are retained; recovery does not restart the conversation.
 
-Archive/delete hold the ownership lock through recovery and filesystem removal.
-Resume retries recovery before launching. Startup stops admitting further cleanup
-after 30 seconds; individual process waits and smolvm commands are also bounded.
-Failures are logged and recorded as a session error when a matching row exists;
-they do not prevent the rest of the daemon from starting. Retrying resume/archive/
-delete attempts recovery again. Recovery never restarts a conversation, including
-through auto-resume for sessions handled by the startup sweep.
+Archive/delete hold the ownership lock through recovery and removal. Resume retries
+recovery before launching. A durable completion marker makes interrupted state
+removal retryable. Startup stops admitting cleanup after 30 seconds, and individual
+commands/waits are bounded. Failures are reported on the affected session without
+preventing the rest of the daemon from starting.
 
-An old or malformed marker, missing executable, substituted path, or unverifiable
-surviving helper leaves the session blocked for inspection. Records created before
-this recovery format are not guessed at. Automatic process recovery currently
-requires Linux `/proc` and libc pidfd support; no PID-only fallback is used.
+If both owners die during startup, temporary state is missing, the Git worker
+cannot confirm shutdown, or a record is incompatible/corrupt, the session stays
+blocked for inspection. We deliberately do not guess which host PIDs to kill.
+Records from the earlier process-tracking implementation require manual recovery.
 
-The credential-free live check kills both owners during startup and while a VM is
-ready, then verifies daemon recovery, history retention and a new VM owner:
+This removes the Linux-specific recovery implementation. macOS runtime packaging,
+path handling and actual Mac lifecycle validation remain separate work.
+
+Credential-free acceptance test for a ready VM whose two owners are killed:
 
 ```sh
 nix develop --command deno run -A scripts/test-claude-vm-recovery.ts \
   /path/to/claude-session-runtime /path/to/smolvm
 ```
 
-Unit tests also simulate reboot/missing-state cases and interrupted recovery, and
-check process identity mismatch, ownership substitution and cleanup locking.
+Unit tests cover blocked startup/missing-state cases, retryable cleanup, ownership
+substitution and locking.

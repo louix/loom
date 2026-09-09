@@ -11,7 +11,6 @@ export const startSessionGit = async (
   state: string,
   artifact: string,
   allowRepoPrograms = false,
-  onSpawn?: (pid: number) => Promise<void>,
 ) => {
   const layout = await discoverGitWorktree(workspace);
   if (!layout) return undefined;
@@ -83,7 +82,6 @@ export const startSessionGit = async (
     })());
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await onSpawn?.(child.pid);
     await Promise.race([
       (async () => {
         const hello = await frames.next();

@@ -1,13 +1,11 @@
 /** Called only while holding the persistent session's ownership lock. */
 import { cleanupSessionVm } from "./cleanup.ts";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { reapVm, type VmBinding } from "../packaged/vm.ts";
-import { bootId, stopProcess, type OwnedProcess } from "./process.ts";
 import { finishSessionState, writeRecoveryFile, removeSessionRuntimeState } from "./persistence.ts";
 export interface RecoveryRecord {
-  version: 1;
-  bootId: string;
-  processes: OwnedProcess[];
+  version: 2;
+  ready: boolean;
   reaped: boolean;
 }
 export type RecoverableBinding = VmBinding & { recovery: RecoveryRecord };
@@ -44,25 +42,13 @@ export const readRecovery = async (dir: string): Promise<RecoverableBinding | un
     typeof b.smolvm !== "string" ||
     !/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/smolvm$/.test(b.smolvm) ||
     !b.recovery ||
-    b.recovery.version !== 1 ||
-    !/^[0-9a-f-]{36}$/.test(b.recovery.bootId) ||
-    typeof b.recovery.reaped !== "boolean" ||
-    !Array.isArray(b.recovery.processes) ||
-    b.recovery.processes.length > 16 ||
-    b.recovery.processes.some(
-      (p) =>
-        !p ||
-        !Number.isSafeInteger(p.pid) ||
-        p.pid <= 1 ||
-        !Number.isSafeInteger(p.group) ||
-        p.group <= 1 ||
-        typeof p.start !== "string" ||
-        !/^\d+$/.test(p.start),
-    )
+    b.recovery.version !== 2 ||
+    typeof b.recovery.ready !== "boolean" ||
+    typeof b.recovery.reaped !== "boolean"
   )
     throw new Error("VM recovery marker is incomplete or incompatible; manual recovery required");
   if (
-    b.gitSocket !== join(b.state, "git.sock") &&
+    (b.recovery.ready || b.gitSocket !== join(b.state, "git.sock")) &&
     !(
       typeof b.gitSocket === "string" &&
       b.gitSocket.startsWith(b.state + "/git-bridge-") &&
@@ -75,7 +61,6 @@ export const readRecovery = async (dir: string): Promise<RecoverableBinding | un
 export const recoverSessionVm = async (dir: string): Promise<boolean> => {
   const b = await readRecovery(dir);
   if (!b) return false;
-  const previousBoot = b.recovery.bootId !== (await bootId());
   const present = await exists(b.state);
   if (present) {
     await directory(b.state);
@@ -89,16 +74,15 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
       if (!stat.isFile || stat.isSymlink || stat.size > 1024)
         throw new Error("Invalid VM state ownership stamp");
       const owner = JSON.parse(await Deno.readTextFile(stamp));
-      if (owner.token !== b.token || owner.bootId !== b.recovery.bootId)
-        throw new Error("VM state belongs to another owner");
+      if (owner.token !== b.token) throw new Error("VM state belongs to another owner");
     }
     // These are host-only paths. Never follow substituted cleanup targets.
     for (const name of ["private", "home", "cache", "data", "config"]) {
       const path = join(b.state, name);
       if (await exists(path)) await directory(path);
     }
-  } else if (!previousBoot && !b.recovery.reaped) {
-    throw new Error("VM state is missing on the current boot; shutdown cannot be confirmed");
+  } else if (!b.recovery.reaped) {
+    throw new Error("VM state is missing; shutdown cannot be confirmed");
   }
   const finish = async () => {
     b.recovery.reaped = true;
@@ -106,18 +90,9 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
     if (present) await removeSessionRuntimeState(b.state);
     await finishSessionState(dir, b.token);
   };
-  if (!previousBoot && !b.recovery.reaped) {
+  if (!b.recovery.reaped) {
     await cleanupSessionVm({
-      stop: async () => {
-        const errors: unknown[] = [];
-        for (const process of b.recovery.processes.slice(1).reverse())
-          try {
-            await stopProcess(process);
-          } catch (error) {
-            errors.push(error);
-          }
-        if (errors.length) throw new AggregateError(errors, "Could not stop recorded VM helpers");
-      },
+      stop: async () => {},
       egress: async () => {}, // Socket relays belonged to the now-dead supervisor.
       credentials: async () => {
         await Deno.remove(join(b.state, "private"), { recursive: true }).catch((error) => {
@@ -130,7 +105,18 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
         await reapVm(b);
       },
       git: async () => {
-        if (b.recovery.processes[0]) await stopProcess(b.recovery.processes[0]);
+        if (!b.recovery.ready)
+          throw new Error("VM startup was interrupted; cleanup cannot be confirmed automatically");
+        const stopped = `${dirname(b.gitSocket!)}.stopped`;
+        const deadline = Date.now() + 7000;
+        while (!(await exists(stopped))) {
+          if (Date.now() > deadline)
+            throw new Error("Git worker shutdown was not confirmed; retained for inspection");
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        const stamp = await Deno.lstat(stopped);
+        if (!stamp.isFile || stamp.isSymlink)
+          throw new Error("Invalid Git shutdown acknowledgement");
       },
       state: finish,
     }).catch((error) => {
@@ -144,8 +130,7 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
       );
     });
   } else {
-    // Another boot cannot contain any old VM. Never interpret old monitor PIDs
-    // against the new boot; a durable reaped marker also makes retries safe.
+    // A durable completion marker makes interrupted state removal retryable.
     await finish();
   }
   return true;
