@@ -3003,3 +3003,43 @@ test("mode chips in new and reply prompts are clickable without losing the draft
     teardown();
   }
 });
+
+test("cold send closes the composer and selects the session on a durable rejection", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("hello", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    assert.equal(fake.of("session.send").length, 1);
+    fake
+      .of("session.send")[0]!
+      .reject(Object.assign(new Error("history missing"), { data: { sessionId: "a" } }));
+    await delay(0);
+    const ui = handle.getView().ui;
+    assert.equal(openPrompt(ui.overlay), null);
+    assert.equal(ui.selectedId, "a");
+    assert.equal(ui.drafts.last, "");
+  } finally {
+    teardown();
+  }
+});
+
+test("reply recall queries user messages independently of transcript loading", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    fake.of("session.messages")[0]!.resolve(["opening", "failed follow-up"]);
+    await delay(0);
+    handle.handleKey("", { upArrow: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "failed follow-up");
+  } finally {
+    teardown();
+  }
+});

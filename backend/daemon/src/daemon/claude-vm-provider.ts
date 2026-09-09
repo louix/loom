@@ -1,3 +1,4 @@
+import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -116,7 +117,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
           ? { method: "resume", args: [options as SessionRef] }
           : { method: "create", args: [options as CreateSessionOptions] },
       );
-      return session;
+      return owner ? refreshOnAuthFailure(session, () => owner.current(true)) : session;
     } catch (error) {
       worker.terminate();
       await worker.cleanup?.();

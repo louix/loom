@@ -31,8 +31,9 @@ current private protocol has a 1 MiB frame limit and a 4 MiB pending-write limit
 
 Changing isolation makes existing sessions read-only; fork to continue under the
 new policy. Native Claude history is separate from this Loom-owned history.
-Title and catalog utilities still use their existing host path; removing those
-remaining daemon-side connector imports is follow-up work.
+Title and catalog utilities use host workers. The daemon imports worker facades;
+provider SDKs run in the child or the session VM. Standard daemon/TUI launches
+permit only the repository's Unix IPC socket.
 
 ## Verification
 

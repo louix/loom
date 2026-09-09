@@ -229,9 +229,9 @@ export const mkComposer = ({ send, fleet, recover, note }: ComposerDeps): Compos
 /**
  * Unsent text with no session behind it yet: the last cancelled `new` / `send`
  * buffer, and the submitted messages `↑` / `↓` walk back through. Both are
- * global rather than per-session on purpose — a message typed at `new` and
- * abandoned should come back at `send`, because the user's next move is often
- * the other prompt.
+ * global for new prompts/cancelled text. Reply prompts load their session's
+ * durable user messages separately; cancelling `new` can still recover its draft
+ * at `send`.
  */
 export interface Drafts {
   /** The last unsubmitted `new` / `send` buffer; "" = nothing stashed. */

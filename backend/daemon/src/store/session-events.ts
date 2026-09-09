@@ -37,6 +37,19 @@ export class SessionEventStore {
     return Number(info.lastInsertRowid);
   }
 
+  /** Message recall is independent of intervening tool traffic. Newest 50,
+   * distinct texts, returned oldest-first for the editor's Up-arrow walk. */
+  messages(sessionId: string): string[] {
+    const rows = this.#db
+      .prepare(`
+      SELECT json_extract(payload, '$.text') AS text FROM session_events
+      WHERE session_id = ? AND type = 'user_message'
+      GROUP BY json_extract(payload, '$.text') ORDER BY MAX(id) DESC LIMIT 50
+    `)
+      .all(sessionId) as unknown as { text: string }[];
+    return rows.reverse().map((row) => row.text);
+  }
+
   /**
    * One page of `sessionId`'s transcript, oldest-first, ending at the newest
    * row (or at `olderThan`, exclusive, when paging backwards). Both queries

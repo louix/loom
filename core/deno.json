@@ -11,6 +11,7 @@
     "./cache": "./src/cache.ts",
     "./types": "./src/types.ts",
     "./channel": "./src/channel.ts",
+    "./network-permissions": "./src/network-permissions.ts",
     "./logger": "./src/logger.ts",
     "./commit": "./src/commit.ts",
     "./status": "./src/status.ts",

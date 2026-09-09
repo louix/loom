@@ -214,7 +214,7 @@
               # must be writable, unlike the build-time dependency store.
               for bin in loom loomd; do
                 makeWrapper ${pkgs.deno}/bin/deno $out/bin/$bin \
-                  --add-flags "run -A --cached-only --node-modules-dir=manual" \
+                  --add-flags "run -A --deny-net --cached-only --node-modules-dir=manual" \
                   --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \

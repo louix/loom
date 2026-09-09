@@ -23,6 +23,7 @@
     "./daemon/titler": "./src/daemon/titler.ts",
     "./daemon/worktrees": "./src/daemon/worktrees.ts",
     "./daemon/worker-launch": "./src/daemon/worker-launch.ts",
+    "./daemon/provider-worker": "./src/daemon/provider-worker.ts",
     "./daemon/claude-worker": "./src/daemon/claude-worker.ts",
     "./daemon/worker-provider": "./src/daemon/worker-provider.ts",
     "./store/db": "./src/store/db.ts",

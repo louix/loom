@@ -1,3 +1,4 @@
+import { makeLogger } from "@loom/core/logger";
 import type { TranscriptStore } from "../../../../core/src/transcript.ts";
 import type { HarnessEvent } from "../../../../core/src/events.ts";
 import type {
@@ -142,6 +143,7 @@ export class RemoteWorkerSession implements AgentSession {
     profile: WorkerProfile = { connector: "@loom/connector-mock", config: {} },
     role: WorkerRole = "session",
   ): Promise<{ session: RemoteWorkerSession; capabilities: ProviderCapabilities }> {
+    const started = performance.now();
     let process: WorkerProcess;
     try {
       process = launch(spec);
@@ -167,6 +169,11 @@ export class RemoteWorkerSession implements AgentSession {
       });
       if (ready.kind !== "ready" || ready.generation !== s.#generation)
         throw new Error("invalid worker ready");
+      makeLogger("session-timing").info("worker_ready", {
+        sessionId: id,
+        providerId,
+        elapsedMs: Math.round(performance.now() - started),
+      });
       return { session: s, capabilities: ready.capabilities };
     } catch (e) {
       s.#fail(e);
@@ -390,24 +397,28 @@ export class WorkerProvider implements AgentProvider {
   readonly spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec;
   readonly profile: WorkerProfile;
   readonly launch: WorkerLauncher;
+  readonly transcript: TranscriptStore | undefined;
   private constructor(
     id: string,
     capabilities: ProviderCapabilities,
     spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec,
     launch: WorkerLauncher,
     profile: WorkerProfile,
+    transcript: TranscriptStore | undefined,
   ) {
     this.id = id;
     this.capabilities = capabilities;
     this.spec = spec;
     this.launch = launch;
     this.profile = profile;
+    this.transcript = transcript;
   }
   static async create(
     id: string,
     spec: (cwd: string, role?: WorkerRole) => WorkerLaunchSpec,
     launch: WorkerLauncher = launchLocalWorker,
     profile: WorkerProfile = { connector: "@loom/connector-mock", config: {} },
+    transcript?: TranscriptStore,
   ): Promise<WorkerProvider> {
     const probe = await RemoteWorkerSession.connect(
       crypto.randomUUID(),
@@ -419,7 +430,7 @@ export class WorkerProvider implements AgentProvider {
       "capabilities",
     );
     await probe.session.close();
-    return new WorkerProvider(id, probe.capabilities, spec, launch, profile);
+    return new WorkerProvider(id, probe.capabilities, spec, launch, profile, transcript);
   }
   async #start(
     command: Extract<WorkerCommand, { method: "create" | "resume" }>,
@@ -427,6 +438,11 @@ export class WorkerProvider implements AgentProvider {
     const opts = command.args[0];
     const role = command.method === "create" && command.args[0].oneShot ? "title" : "session";
     const spec = this.spec(opts.cwd, role);
+    // Only assigned MCP loopback endpoints are added to this session's grant.
+    for (const server of opts.mcpServers ?? []) {
+      if (server.spec.transport === "http")
+        spec.permissions.net.push(new URL(server.spec.url).host);
+    }
     const { session } = await RemoteWorkerSession.connect(
       opts.sessionId,
       this.id,
@@ -437,6 +453,7 @@ export class WorkerProvider implements AgentProvider {
       role,
     );
     try {
+      if (this.transcript && role === "session") await session.attachTranscript(this.transcript);
       if (role === "title" && command.method === "create") {
         const {
           workspaceRoot: _workspace,

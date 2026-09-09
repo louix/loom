@@ -1,3 +1,6 @@
+import { fileURLToPath } from "node:url";
+import { launchLocalWorker, mockLaunchSpec } from "./worker-launch.ts";
+import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 /**
  * Parsing for OpenAI-compatible `/models` rows. Endpoints agree on
  * `data[].id` and little else — OpenRouter uses `context_length` plus
@@ -178,10 +181,28 @@ export const probeOpenAiModels = async (
   baseUrl: string,
   apiKey: string,
 ): Promise<ProbedModel[]> => {
-  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-    signal: AbortSignal.timeout(8_000), // a black-hole base_url must not hang the RPC
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return parseModelRows(await res.json());
+  const endpoint = new URL(baseUrl);
+  if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password)
+    throw new Error("Model catalog requires an HTTP(S) endpoint without URL credentials");
+  const spec = mockLaunchSpec(fileURLToPath(new URL("../../../../", import.meta.url)));
+  spec.entrypoint = fileURLToPath(
+    new URL("../../../../runtime/src/worker/model-catalog.ts", import.meta.url),
+  );
+  spec.permissions.net = [endpoint.host];
+  const child = launchLocalWorker(spec);
+  const timeout = setTimeout(() => child.terminate(), 10_000);
+  const frames = readFrames(child.output, (value) => value);
+  try {
+    await new FrameWriter(child.input).send({ baseUrl, apiKey });
+    const result = await frames.next();
+    if (result.done) throw new Error("Model catalog worker stopped before replying");
+    const value = result.value as { models?: ProbedModel[]; error?: string };
+    if (!Array.isArray(value.models)) throw new Error(value.error || "Invalid catalog response");
+    return value.models;
+  } finally {
+    clearTimeout(timeout);
+    child.terminate();
+    await frames.return(undefined);
+    await child.exited;
+  }
 };

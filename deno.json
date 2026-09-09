@@ -43,8 +43,8 @@
   },
   "tasks": {
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
-    "loom": "deno run -A cli/src/loom.ts",
-    "daemon": "deno run -A cli/src/loomd.ts",
+    "loom": "deno run -A --deny-net cli/src/loom.ts",
+    "daemon": "deno run -A --deny-net cli/src/loomd.ts",
     "typecheck": "deno check core client aisdk runtime harness backend/daemon frontend/tui connectors/generic connectors/claude connectors/gemini connectors/mock connectors/chatgpt cli scripts test",
     "typecheck:silent": "deno task typecheck",
     "watch": "deno task typecheck --watch",

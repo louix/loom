@@ -103,6 +103,7 @@ interface Running {
   backgroundTasks: BackgroundTaskInfo[];
   ended: boolean;
   refReported: boolean;
+  firstOutputSince: number | null;
   pump: Promise<void>;
   /** Per-session op chain — `send` / `compact` / `rewind` run one at a time through {@link SessionManager.#enqueue}. */
   gate: Promise<unknown>;
@@ -188,12 +189,26 @@ export class SessionManager {
   // --- lifecycle --------------------------------------------------------
 
   async create(provider: AgentProvider, opts: CreateSessionOptions): Promise<void> {
+    const started = performance.now();
     const session = await provider.createSession(opts);
-    this.#attach(provider.id, opts.sessionId, session);
+    this.#hooks.log.info("adapter_ready", {
+      sessionId: opts.sessionId,
+      providerId: provider.id,
+      operation: "create",
+      elapsedMs: Math.round(performance.now() - started),
+    });
+    this.#attach(provider.id, opts.sessionId, session, stateStarting, started);
   }
 
   async resume(provider: AgentProvider, ref: SessionRef): Promise<void> {
+    const started = performance.now();
     const session = await provider.resumeSession(ref);
+    this.#hooks.log.info("adapter_ready", {
+      sessionId: ref.sessionId,
+      providerId: provider.id,
+      operation: "resume",
+      elapsedMs: Math.round(performance.now() - started),
+    });
     // A resume re-mounts the adapter with the prior transcript but no turn in
     // flight (both adapters park until the next send), so the tracked state
     // seeds `idle`, not `starting`. Seeding a live state here made the first
@@ -208,9 +223,11 @@ export class SessionManager {
     id: string,
     session: AgentSession,
     state: SessionState = stateStarting,
+    started = performance.now(),
   ): void {
     const run: Running = {
       provider: providerId,
+      firstOutputSince: state.kind === "starting" ? started : null,
       session,
       state,
       // S11: seed from wall-clock, not 0 — a session resumed after a restart
@@ -246,6 +263,15 @@ export class SessionManager {
     try {
       for await (const raw of run.session.events()) {
         const ev = { ...raw, ordinal: run.ordinal++ } as HarnessEvent;
+        if (ev.type === "assistant_text" && run.firstOutputSince !== null) {
+          this.#hooks.log.info("first_output", {
+            sessionId: id,
+            providerId: run.provider,
+            elapsedMs: Math.round(performance.now() - run.firstOutputSince),
+          });
+          run.firstOutputSince = null;
+        }
+        if (ev.type === "result" || (ev.type === "error" && ev.fatal)) run.firstOutputSince = null;
         if (ev.type === "error" && ev.fatal) {
           this.#hooks.log.warn("session error", { id, message: ev.message });
         }
@@ -591,6 +617,7 @@ export class SessionManager {
       opts.signal?.throwIfAborted();
       const injected = isLiveState(run.state);
       const before = run.state;
+      if (!injected) run.firstOutputSince = performance.now();
       await run.session.send(text);
       // Closed out from under us mid-send — let teardown settle the state.
       if (this.#running.get(id) !== run) return { injected };

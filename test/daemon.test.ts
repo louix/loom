@@ -1426,11 +1426,11 @@ test("[auto_rebase]: a clean idle replays the branch onto an advanced base, sile
 
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
     fs?.emit({ type: "assistant_text", text: "…" }); // → running
-    await delay(40);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     notices.length = 0;
     userMsgs.length = 0; // drop the opening-prompt echo
     fs?.finishTurn(); // → idle → auto-rebase
-    await delay(120);
+    await waitFor(() => notices.some((t) => /rebased onto main/.test(t)), 3000);
 
     assert.ok(
       existsSync(join(snap.worktree as string, "upstream.txt")),
@@ -1482,10 +1482,10 @@ test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to inte
 
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(40);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     userMsgs.length = 0; // drop the opening-prompt echo
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => userMsgs.length === 1, 3000);
 
     // branch HEAD is untouched, no rebase left in progress
     assert.equal(
@@ -2698,6 +2698,74 @@ test("failed live send records the error beside the attempted message", async ()
     assert.equal((events[0] as { text: string }).text, "follow-up");
     assert.equal(events[1]!.type, "error");
     assert.equal((events[1] as { message: string }).message, "fixture send failed");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
+test("unavailable provider failures create a durable chat before returning the error", async () => {
+  const c = await client();
+  try {
+    let id = "";
+    await assert.rejects(
+      c.request("session.create", { provider: "missing-fixture", prompt: "remember this" }),
+      (error: unknown) => {
+        id = (error as { data: { sessionId: string } }).data.sessionId;
+        return !!id;
+      },
+    );
+    const row = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(row.status.kind, "error");
+    assert.equal(row.worktree, null);
+    assert.deepEqual(await c.request("session.messages", { id }), ["remember this"]);
+  } finally {
+    await c.close();
+  }
+});
+
+test("message recall is session-scoped and ignores long tool transcripts", async () => {
+  const c = await client();
+  try {
+    const row = await c.request<SessionSnapshot>("session.createStub", { prompt: "recall" });
+    await c.request("dev.emit", {
+      event: { sessionId: row.id, type: "user_message", text: "full\nmessage", injected: false },
+    });
+    for (let i = 0; i < 510; i++)
+      await c.request("dev.emit", {
+        event: { sessionId: row.id, type: "assistant_text", text: "tool noise" },
+      });
+    assert.deepEqual(await c.request("session.messages", { id: row.id }), ["full\nmessage"]);
+    const other = await c.request<SessionSnapshot>("session.createStub", { prompt: "other" });
+    assert.deepEqual(await c.request("session.messages", { id: other.id }), []);
+  } finally {
+    await c.close();
+  }
+});
+
+test("worktree creation failure keeps an error chat and opening message", async () => {
+  const hh = await makeHarness({ config: 'worktree_dir = "blocked/trees"\n' });
+  writeFileSync(join(hh.repoRoot, "blocked"), "not a directory");
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    let id = "";
+    await assert.rejects(
+      c.request("session.create", { provider: "fake", prompt: "keep despite bad base" }),
+      (error: unknown) => {
+        const e = error as { code: string; data: { sessionId: string } };
+        id = e.data.sessionId;
+        return e.code === "worktree_error";
+      },
+    );
+    const row = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(row.status.kind, "error");
+    assert.equal(row.worktree, null);
+    assert.equal(row.inPlace, false);
+    assert.deepEqual(await c.request("session.messages", { id }), ["keep despite bad base"]);
   } finally {
     await c.close();
     await hh.cleanup();

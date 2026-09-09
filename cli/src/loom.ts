@@ -1,4 +1,5 @@
-#!/usr/bin/env -S deno run -A
+#!/usr/bin/env -S deno run -A --deny-net
+import { relaunchForIpc } from "@loom/core/network-permissions";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
@@ -207,6 +208,7 @@ const main = async (): Promise<void> => {
         throw error;
       }
     })();
+  await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
   if (cmd === "runtime") {
     const { runtimeCommand } = await import("./runtime.ts");
     writeOut(

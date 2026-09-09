@@ -159,5 +159,5 @@ and reply composers, using the same cycle as `⇧⇥`. It is disabled while a se
 pending or its outcome needs review. Starting or resuming a session displays
 the session's STARTING state after closing the composer. Accepted startup/send
 errors appear in session events beside the attempted message. In an open composer,
-↑ recalls submitted text (at the first line of a multiline buffer); saved user
-messages enter this history as the chat's transcript pages load.
+↑ recalls that session's latest user messages (at the first line of a multiline
+buffer), independent of transcript loading. New-session prompts use local history.

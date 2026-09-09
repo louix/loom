@@ -228,7 +228,7 @@ export type Action =
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
-  | { t: "restoreHistory"; texts: readonly string[] }
+  | { t: "restoreHistory"; sessionId: string; texts: readonly string[] }
   | { t: "recoverDraft"; text: string }
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
@@ -361,16 +361,15 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "promptHistoryNav": {
       const p = openPrompt(s.overlay);
-      if (!p || s.drafts.history.length === 0) return s;
+      if (!p) return s;
+      const history = p.history ?? s.drafts.history;
+      if (history.length === 0) return s;
       // At the live buffer there is nothing newer — ↓ must not clobber it
       // with the stashed draft.
       if (p.histIdx === 0 && a.dir === 1) return s;
       const draft = p.histIdx === 0 ? p.buffer.text : p.draft;
-      const idx = Math.max(
-        0,
-        Math.min(s.drafts.history.length, p.histIdx + (a.dir === -1 ? 1 : -1)),
-      );
-      const text = idx === 0 ? draft : recalled(s.drafts, idx);
+      const idx = Math.max(0, Math.min(history.length, p.histIdx + (a.dir === -1 ? 1 : -1)));
+      const text = idx === 0 ? draft : recalled({ ...s.drafts, history }, idx);
       return withPrompt(s, { ...p, histIdx: idx, draft, buffer: buffer(text) });
     }
 
@@ -381,12 +380,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       };
 
     case "restoreHistory": {
-      // Keep local submissions newest, including requests still in flight.
-      const restored = [...a.texts, ...s.drafts.history].reduce(recorded, {
-        ...s.drafts,
-        history: [],
-      });
-      return { ...s, drafts: restored };
+      const p = openPrompt(s.overlay);
+      if (p?.t !== "session" || p.kind !== "send" || p.sessionId !== a.sessionId || p.histIdx !== 0)
+        return s;
+      return withPrompt(s, { ...p, history: a.texts });
     }
 
     case "pushHistory":

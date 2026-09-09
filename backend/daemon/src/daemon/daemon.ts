@@ -1099,19 +1099,10 @@ export class Daemon {
     by: string | undefined;
   }): Promise<SessionSnapshot> {
     const id = randomUUID();
+    this.#log.info("session_start", { sessionId: id, providerId: o.providerId });
     const aisdkProfile = this.config.providers.aisdk[o.providerId];
 
     let wt: { path: string; branch: string; baseRef: string } | null = null;
-    if (o.wantWorktree) {
-      try {
-        wt = this.#worktrees.create(id, { model: o.model || o.providerId });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError("worktree_error", `could not create worktree: ${message}`);
-      }
-    }
-    const cwd = wt ? wt.path : this.repoRoot;
-
     // The row and the adapter are created under one hold on the session queue.
     // Between them the session is in the registry but has no run attached, so a
     // `session.setMode` landing in that window would take the inactive path and
@@ -1127,10 +1118,10 @@ export class Daemon {
         mode: o.mode,
         parentId: o.parentId,
         title: o.prompt.slice(0, 200),
-        worktree: wt ? wt.path : null,
-        branch: wt ? wt.branch : null,
-        baseBranch: wt ? wt.baseRef : this.config.baseBranch,
-        ...(wt ? {} : { inPlace: true }),
+        worktree: null,
+        branch: null,
+        baseBranch: this.config.baseBranch,
+        inPlace: !o.wantWorktree,
         // Every ChatGPT session created from here on runs on Codex's app-server
         // (a provider-owned thread) — explicit so a future `grep` for
         // `history_backend = 'codex'` finds real rows, not just the absence of
@@ -1138,14 +1129,6 @@ export class Daemon {
         ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
       });
 
-      // Remember what this session was created with, so the next `new`
-      // defaults here without any of it being pinned in config.
-      if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
-        this.#providerDefaults.remember(o.providerId, o.model);
-      }
-      if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
-      this.#providerDefaults.rememberProvider(o.providerId);
-      this.#providerDefaults.rememberMode(o.mode);
       this.#publishState();
 
       // The opening prompt is a user message like any follow-up — put it on the
@@ -1160,6 +1143,39 @@ export class Daemon {
       });
 
       try {
+        const unavailable = this.#providers.unavailableReason(o.providerId);
+        if (unavailable) throw new RpcError("provider_unavailable", unavailable);
+        if (aisdkProfile && !o.model)
+          throw new RpcError(
+            "bad_request",
+            `provider "${o.providerId}" has no model; set model/models in config or choose an explicit model`,
+          );
+        // Remember what this session was created with, so the next `new`
+        // defaults here without any of it being pinned in config.
+        if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
+          this.#providerDefaults.remember(o.providerId, o.model);
+        }
+        if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
+        this.#providerDefaults.rememberProvider(o.providerId);
+        this.#providerDefaults.rememberMode(o.mode);
+
+        if (o.wantWorktree) {
+          try {
+            wt = this.#worktrees.create(id, { model: o.model || o.providerId });
+          } catch (cause) {
+            throw new RpcError(
+              "worktree_error",
+              `could not create worktree: ${cause instanceof Error ? cause.message : cause}`,
+            );
+          }
+          this.#registry.setFields(id, {
+            worktree: wt.path,
+            branch: wt.branch,
+            baseBranch: wt.baseRef,
+          });
+          this.#publishState(id);
+        }
+        const cwd = wt ? wt.path : this.repoRoot;
         const isClaude = isClaudeId(o.providerId);
         const isAisdk = aisdkProfile !== undefined;
         const mcpHandles = this.#mcpHandles();
@@ -1216,7 +1232,9 @@ export class Daemon {
           fatal: true,
         });
         this.#publishState(id);
-        throw new RpcError("provider_error", failure, { sessionId: id });
+        throw new RpcError(err instanceof RpcError ? err.code : "provider_error", failure, {
+          sessionId: id,
+        });
       }
     });
 
@@ -1258,6 +1276,7 @@ export class Daemon {
         this.#publishState(id);
       });
     this.#revivals.set(id, operation);
+    this.#log.info("session_resume_start", { sessionId: id, providerId: row.provider });
     this.#registry.setStatus(id, stateStarting, "resuming");
     this.#publishState(id);
     return operation;
@@ -2168,6 +2187,12 @@ export class Daemon {
     // The durable counterpart to the cross-session `EventLog` ring — lets a
     // client backfill a session's own history once it's fallen out of that
     // ring (busy neighbour sessions, or a daemon restart).
+    d.register("session.messages", (params) => {
+      const id = reqString(params, "id");
+      this.#registry.mustGet(id);
+      return this.#sessionEvents.messages(id);
+    });
+
     d.register("session.events", (params) => {
       const id = reqString(params, "id");
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
@@ -2222,8 +2247,6 @@ export class Daemon {
 
       const providerId =
         typeof p["provider"] === "string" ? p["provider"] : this.#defaultProviderId();
-      const unavailable = this.#providers.unavailableReason(providerId);
-      if (unavailable) throw new RpcError("provider_unavailable", unavailable);
       const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? this.#defaultMode();
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
@@ -2249,13 +2272,6 @@ export class Daemon {
       const explicitEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : null;
       const effort =
         explicitEffort ?? (this.#defaultEffortFor(providerId, model ?? undefined) || null);
-      if (aisdkProfile && !model) {
-        throw new RpcError(
-          "bad_request",
-          `provider "${providerId}" has no model — auto-detection from ${aisdkProfile.baseUrl}/models ` +
-            "failed; set `model` / `models` in the config, or pass an explicit model",
-        );
-      }
       const parentId = typeof p["parentId"] === "string" ? (p["parentId"] as string) : null;
       if (parentId && !this.#registry.get(parentId)) {
         throw new RpcError("not_found", `no such parent session: ${parentId}`);

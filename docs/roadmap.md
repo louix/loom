@@ -9,7 +9,8 @@ configuration live in [README](../README.md), [connectors](connectors.md) and
 
 - Live AISDK Google/native Anthropic checks. Codex controlled rotation/expiry VM
   checks pass; natural live OAuth expiry remains untested.
-- Remaining daemon catalog/title network paths, then daemon/TUI Deno isolation.
+- Standard daemon/TUI launches now allow only Unix IPC; provider/catalog/title
+  network calls run in children. Native subprocess confinement still requires VMs.
 - macOS runtime support; Linux guest packaging is already separated from the
   host launcher.
 

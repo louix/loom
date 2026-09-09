@@ -13,7 +13,7 @@ import { buffer, type Buffer } from "./editor.ts";
 
 /** The editor fields every prompt shares — the text and its ↑/↓ history walk. */
 export interface PromptEditor {
-  /** Submission stays visible with its draft; failures remain until dismissed or retried. */
+  /** Feedback for non-chat actions and failures before a request was accepted. */
   feedback?: { pending: boolean; uncertain?: boolean; text: string };
   /** Bold caption above the input ("send", "deny req-3", a question header). */
   label: string;
@@ -21,6 +21,8 @@ export interface PromptEditor {
   /** History cursor: 0 = the live buffer, 1..N = {@link TuiState.promptHistory}
    *  counted from the newest. */
   histIdx: number;
+  /** Scoped recall loaded independently of the visible transcript. */
+  history?: readonly string[];
   /** Live buffer text, stashed while browsing history. */
   draft: string;
 }

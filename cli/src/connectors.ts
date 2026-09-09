@@ -1,3 +1,4 @@
+import { createProviderWorker } from "@loom/daemon/daemon/provider-worker";
 /**
  * The connector manifest the daemon runs with. Static `import()` specifiers,
  * each resolved by its workspace member's `deno.json` name; every thunk is
@@ -17,7 +18,13 @@ export const CONNECTORS: ConnectorManifest = {
     createProvider: (ctx) => WorkerProvider.create(ctx.id, mockLaunchSpec),
   }),
   "@loom/connector-claude": async () => ({ createProvider: createClaudeWorkerProvider }),
-  "@loom/connector-generic": () => import("@loom/connector-generic"),
-  "@loom/connector-gemini": () => import("@loom/connector-gemini"),
-  "@loom/connector-chatgpt": () => import("@loom/connector-chatgpt"),
+  "@loom/connector-generic": async () => ({
+    createProvider: (ctx) => createProviderWorker("@loom/connector-generic", ctx),
+  }),
+  "@loom/connector-gemini": async () => ({
+    createProvider: (ctx) => createProviderWorker("@loom/connector-gemini", ctx),
+  }),
+  "@loom/connector-chatgpt": async () => ({
+    createProvider: (ctx) => createProviderWorker("@loom/connector-chatgpt", ctx),
+  }),
 };

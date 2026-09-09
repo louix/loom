@@ -3037,26 +3037,19 @@ test("a deadline fires once, moves when re-armed, and cancels on null", async ()
   d.dispose();
 });
 
-test("saved chat messages restore Up-arrow history without restoring a draft", () => {
-  let s = initialState();
-  s = reduce(s, { t: "restoreHistory", texts: ["opening message", "failed\nfollow-up"] });
+test("session recall restores persisted messages independently of global history", () => {
+  let s = reduce(initialState(), { t: "pushHistory", text: "other chat" });
+  s = reduce(
+    s,
+    open({ t: "prompt", prompt: { ...sessionPrompt("send", "a", "send"), history: [] } }),
+  );
+  s = reduce(s, { t: "restoreHistory", sessionId: "a", texts: ["opening", "failed\nfollow-up"] });
   assert.equal(s.drafts.last, "");
-  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(promptOf(s)?.buffer.text, "failed\nfollow-up");
+  s = reduce(s, { t: "restoreHistory", sessionId: "b", texts: ["wrong chat"] });
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(promptOf(s)?.buffer.text, "opening message");
-});
-
-test("loading older chat history preserves local submissions and the current history walk", () => {
-  let s = initialState();
-  s = reduce(s, { t: "pushHistory", text: "just submitted" });
-  s = reduce(s, { t: "restoreHistory", texts: ["recent"] });
-  s = reduce(s, open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
+  assert.equal(promptOf(s)?.buffer.text, "opening");
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  s = reduce(s, { t: "restoreHistory", texts: ["older", "recent"] });
-  assert.deepEqual(s.drafts.history, ["older", "recent", "just submitted"]);
-  assert.equal(promptOf(s)?.buffer.text, "just submitted");
-  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
-  assert.equal(promptOf(s)?.buffer.text, "recent");
+  assert.equal(promptOf(s)?.buffer.text, "opening");
 });

@@ -605,12 +605,6 @@ export const mkFleetHandle = ({
         limit: HISTORY_PAGE,
         ...(cursor === null ? {} : { cursor }),
       });
-      dispatch({
-        t: "restoreHistory",
-        texts: page.items.flatMap(({ event }) =>
-          event.type === "user_message" ? [event.text] : [],
-        ),
-      });
       return page;
     },
     connected,
@@ -741,8 +735,30 @@ export const mkFleetHandle = ({
       : null;
   };
 
+  let historyRequest = 0;
   /** Put an overlay up, or take one down (`browse`). */
-  const show = (overlay: Overlay): void => void dispatch({ t: "overlay", overlay });
+  const show = (overlay: Overlay): void => {
+    const request = ++historyRequest;
+    const p = openPrompt(overlay);
+    if (
+      overlay.t === "prompt" &&
+      p?.t === "session" &&
+      p.kind === "send" &&
+      p.history === undefined
+    ) {
+      dispatch({ t: "overlay", overlay: { ...overlay, prompt: { ...p, history: [] } } });
+      void client
+        .request<string[]>("session.messages", { id: p.sessionId })
+        .then((texts) => {
+          if (request === historyRequest)
+            dispatch({ t: "restoreHistory", sessionId: p.sessionId, texts });
+        })
+        .catch(() => {
+          if (request === historyRequest)
+            note("Could not load this session's message history", "bad");
+        });
+    } else dispatch({ t: "overlay", overlay });
+  };
 
   const quitTui = (): void => {
     client.close().catch(() => {});

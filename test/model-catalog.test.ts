@@ -124,3 +124,25 @@ test("parseModelRows reads reasoning-effort metadata: flat and OpenRouter-nested
     defaultEffort: "bogus",
   });
 });
+
+test("catalog worker is limited to the configured endpoint, including redirects", async () => {
+  const { probeOpenAiModels } = await import("../backend/daemon/src/daemon/model-catalog.ts");
+  let escaped = 0;
+  const target = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () => {
+    escaped++;
+    return Response.json({ data: [] });
+  });
+  const origin = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () =>
+    Response.redirect(`http://127.0.0.1:${target.addr.port}/models`),
+  );
+  try {
+    await assert.rejects(
+      probeOpenAiModels(`http://127.0.0.1:${origin.addr.port}`, "fixture-secret"),
+      /Model catalog request failed/,
+    );
+    assert.equal(escaped, 0);
+  } finally {
+    await origin.shutdown();
+    await target.shutdown();
+  }
+});

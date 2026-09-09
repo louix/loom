@@ -6,14 +6,16 @@ history pages rather than embedding the whole log in fleet updates.
 
 Session startup and cold resume publish `starting` before launching a worker or
 VM. Submitting a new message closes the composer so the STARTING state is visible.
-Once a session exists, startup/send failures are persisted with the attempted
-message in session events; the TUI selects that session without restoring a draft.
-Pre-acceptance failures retain draft recovery. Ambiguous timeout/disconnect outcomes
+A structurally valid create request gets a row and opening message before provider,
+model or worktree setup. Startup/send failures are persisted in session events;
+the TUI selects that session without restoring a draft. Malformed requests and
+transport failures still retain draft recovery. Ambiguous timeout/disconnect outcomes
 require review before resending; the client does not automatically replay the request.
 
-Up-arrow recall combines local submissions with saved user messages as transcript
-pages load. It is deduplicated and capped at 50 entries; it is separate from the
-cancelled-message draft and from the complete durable chat history.
+Reply Up-arrow recall queries the selected session's latest 50 distinct user
+messages directly, independently of loaded transcript pages and intervening tool
+traffic. Other sessions cannot replace its recall list. New-session prompts retain
+local submission history. Cancelled-message drafts remain separate.
 
 Missing/disabled providers and incompatible isolation histories remain readable.
 The DETAIL pane explains the reason; continuation forks use an enabled provider

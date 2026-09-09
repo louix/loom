@@ -1,6 +1,8 @@
-#!/usr/bin/env -S deno run -A
+#!/usr/bin/env -S deno run -A --deny-net
+import { relaunchForIpc } from "@loom/core/network-permissions";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { findRepoRoot } from "@loom/core/paths";
+import { findRepoRoot, loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
 import { Daemon } from "@loom/daemon/daemon/daemon";
 import { DaemonAlreadyRunning } from "@loom/daemon/daemon/lifecycle";
@@ -37,6 +39,7 @@ const main = async (): Promise<void> => {
   setLogLevel((values["log-level"] as "debug" | "info" | "warn" | "error") ?? "info");
   const repoRoot = values.repo ? values.repo : findRepoRoot();
 
+  await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
   let daemon: Daemon;
   try {
     daemon = await Daemon.start({ repoRoot, connectors: CONNECTORS });

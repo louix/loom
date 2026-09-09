@@ -111,7 +111,8 @@ and credential revocation when VM cleanup fails.
 
 Further restriction of host infrastructure remains. The
 supervisor is trusted host infrastructure and currently runs with full Deno
-permissions. This does not yet provide the intended network-free daemon boundary.
+permissions. Standard daemon/TUI launch paths now grant only the daemon Unix
+socket; networked provider, catalog and title work runs in children.
 
 ## Renewable authentication
 
@@ -147,8 +148,9 @@ The guest bootstrap links its local `.credentials.json` to the read-only
 access-token snapshot. No fixed OAuth environment variable is set in managed
 mode. Refreshed snapshots are atomically replaced with mode 0600. Host publication
 is not an acknowledgement from Claude itself; refreshing five minutes early
-provides margin for the measured guest propagation delay. Automatic recovery from
-an early API 401 is not yet connected to `current(true)` at the daemon layer.
+provides margin for the measured guest propagation delay. An early provider 401
+requests one forced host refresh per mounted session. The error remains visible
+immediately; Loom never automatically replays the turn, which may have run tools.
 
 Real refresh and two-VM distribution have now been verified: Claude returned a
 fresh token with eight hours of validity, both VMs observed the updated snapshot,
@@ -210,8 +212,9 @@ history fork. The new agent acknowledges the context and waits for instructions.
 Submitting a new message closes the composer, exposing the session's STARTING
 state. Accepted startup/send failures are saved beside the attempted message in
 session events; the TUI selects that chat without restoring a draft. Up-arrow
-history includes saved user messages as transcript pages load. Failures before a
-session accepts the message still preserve a draft. A timeout or lost connection
+history queries that session's latest user messages independently of transcript
+pages. Provider/model/worktree setup failures already have a chat row; malformed
+requests and uncertain transport outcomes still retain draft recovery. A timeout or lost connection
 requires reviewing the session before retrying: the send may have succeeded.
 
 Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
@@ -289,3 +292,10 @@ remain private. With the current Linux artifact, connector-worker readiness
 measured about 9.6 seconds on the first boot and 0.7 seconds with cached templates.
 These measurements exclude native Claude initialization and the first API reply.
 The cache is disposable and a missing or unusable cache falls back to normal boot.
+
+Logs now distinguish `session_start` / `session_resume_start`, `worker_ready`,
+`adapter_ready` and `first_output` by session id. Worker readiness measures its
+connect/initialize phase; adapter readiness includes provider create/resume (and
+VM/auth setup); first output measures from create or the latest idle-session send.
+They are observable software boundaries, not separate DNS/TLS/model-inference
+timers. Durations use a monotonic clock. No provider request bodies are logged.

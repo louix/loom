@@ -1,3 +1,4 @@
+import { ipcPermissions } from "@loom/core/network-permissions";
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,7 +26,7 @@ export interface ConnectOptions {
   repoRoot: string;
   sockPath: string;
   /**
-   * Absolute path to the `loomd` entry script, run as `deno run -A <daemonEntry> --repo …`
+   * Absolute path to the `loomd` entry script, run with filesystem/process grants and access only to the daemon Unix socket
    * when `autospawn` fires. Required unless `autospawn` is false.
    */
   daemonEntry?: string;
@@ -499,10 +500,23 @@ export class LoomClient {
     const stderr = openSync(logPath, "w", 0o600);
     const child = (() => {
       try {
-        return spawn(Deno.execPath(), ["run", "-A", entry, "--repo", this.#opts.repoRoot], {
-          detached: true,
-          stdio: ["ignore", "ignore", stderr],
-        });
+        return spawn(
+          Deno.execPath(),
+          [
+            "run",
+            "--cached-only",
+            "--frozen",
+            "--node-modules-dir=manual",
+            ...ipcPermissions(this.#opts.sockPath),
+            entry,
+            "--repo",
+            this.#opts.repoRoot,
+          ],
+          {
+            detached: true,
+            stdio: ["ignore", "ignore", stderr],
+          },
+        );
       } finally {
         closeSync(stderr);
       }
