@@ -1420,13 +1420,7 @@ export const mkFleetHandle = ({
 
     const pendingPrompt: Prompt = {
       ...p,
-      feedback: {
-        pending: true,
-        text:
-          p.t === "new"
-            ? "Starting session… your draft is kept here."
-            : "Sending / resuming session… your draft is kept here.",
-      },
+      feedback: { pending: true, text: "Submitting…" },
     };
     const stillOpen = () => openPrompt(state.overlay) === pendingPrompt;
     const reopen = (message: string): void => {
@@ -1440,7 +1434,10 @@ export const mkFleetHandle = ({
 
     if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
     submittingPrompt = true;
-    show({ t: "prompt", prompt: pendingPrompt });
+    // Let the session's STARTING state show while create/resume runs. Keep
+    // the submitted draft in this closure for recovery if the request fails.
+    if (p.t === "new" || sendTo !== null) dispatch({ t: "closePrompt" });
+    else show({ t: "prompt", prompt: pendingPrompt });
 
     const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
       switch (k) {
