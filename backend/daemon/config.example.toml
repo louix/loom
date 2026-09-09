@@ -175,8 +175,8 @@ default_for = ["find", "grep"]
 enabled = true # summarise the first message into a title after turn 1
 model = "" # "" = a per-provider cheap default (Haiku for claude)
 
-[pricing]
-table = ".loom/models.toml"
+# Costs prefer provider reports, then fresh endpoint-advertised pricing.
+# Legacy [pricing].table is accepted for compatibility but no longer used.
 
 # Hooks: see README for events, environment variables, and cancellation semantics.
 # "notify" is the default and never messages the agent, including on turn_end.

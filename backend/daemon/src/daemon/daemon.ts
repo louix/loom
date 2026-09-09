@@ -6,7 +6,7 @@ import {
   removeSessionVmProfile,
   recoverRepositoryVms,
 } from "./session-vm-state.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
@@ -25,7 +25,8 @@ import {
 } from "../config/config.ts";
 import { readClaudeAccount } from "../config/claude-profile.ts";
 import { isClaudeId } from "@loom/core/provider-id";
-import { loadPriceTable, costOf, type PriceRow, type PriceTable } from "../config/pricing.ts";
+import { costOf, type PriceRow, type PriceTable } from "../config/pricing.ts";
+import { EndpointPricing } from "./endpoint-pricing.ts";
 import { LOOM_VERSION } from "@loom/core/version";
 import type { HarnessEvent } from "@loom/core/events";
 import {
@@ -65,7 +66,7 @@ import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { SessionEventStore } from "../store/session-events.ts";
 import { SessionSearchStore } from "../store/session-search.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
-import { mergeAdvertisedPricing, probeOpenAiModels } from "./model-catalog.ts";
+import { probeOpenAiModels } from "./model-catalog.ts";
 import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
@@ -236,7 +237,7 @@ export class Daemon {
   #worktrees: WorktreeManager;
   #hooks: HookRunner;
   #idle: IdleTimer;
-  #pricing: PriceTable;
+  readonly #pricing = new EndpointPricing();
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
@@ -280,7 +281,6 @@ export class Daemon {
       if (created) this.#log.info("wrote a starter config", { path: created });
     }
     this.config = loadConfig(this.repoRoot, this.#configFile);
-    this.#pricing = loadPriceTable(resolveAgainstRepo(opts.repoRoot, this.config.pricing.table));
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
     this.#registry = new Registry(this.#db);
@@ -327,6 +327,10 @@ export class Daemon {
     this.#hooks.setHooks(this.config.hooks);
     this.#sessions = new SessionManager({
       emitEvent: (ev) => {
+        if (ev.type === "rate_limit" && !this.#stopping) {
+          const provider = this.#registry.get(ev.sessionId)?.provider;
+          if (provider) this.#registry.store.recordAccountUsage(this.#accountScope(provider), ev);
+        }
         if (ev.type === "compact" && !this.#stopping) {
           // A compaction rewrote the transcript; the absolute message offsets
           // stored in the checkpoints no longer point anywhere sane, so undo
@@ -507,6 +511,7 @@ export class Daemon {
     // session event.
     const preProbe = JSON.stringify(this.#providerList());
     await this.#resolveAutoModels();
+    await this.#refreshEndpointPricing();
     await this.#resolveClaudeModels();
     if (JSON.stringify(this.#providerList()) !== preProbe) this.#publishState();
     // Lint after detection so an auto-detect provider that resolved fine isn't
@@ -711,7 +716,7 @@ export class Daemon {
     if (subs.length > 0) out = { ...out, subagents: subs };
     const bgTasks = this.#sessions.backgroundTasksOf(s.id);
     if (bgTasks.length > 0) out = { ...out, backgroundTasks: bgTasks };
-    const rateLimits = this.#sessions.rateLimitsOf(s.id);
+    const rateLimits = this.#registry.store.accountUsage(this.#accountScope(s.provider));
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
     // A compaction holds the op gate for its whole (multi-minute) run; surface
     // it on the snapshot so a freshly attached client (reopened TUI, second
@@ -850,7 +855,7 @@ export class Daemon {
           p.modelEfforts = probedEfforts;
           p.modelDefaultEffort = probedDefaultEffort;
           p.autoModels = false;
-          this.#mergeEndpointPricing();
+          this.#pricing.record(this.#pricingScope(id), models);
           this.#log.info("auto-detected models", {
             provider: id,
             count: models.length,
@@ -1610,24 +1615,49 @@ export class Daemon {
   }
 
   /**
-   * Fold endpoint-advertised pricing into the cost table for models the user's
-   * `models.toml` doesn't price. Runs after the `/models` probes and again on
-   * `pricing.reload`, so a re-read TOML stays authoritative.
+   * Isolate advertised rates by provider, endpoint, and credential identity.
    */
-  #mergeEndpointPricing(): void {
-    mergeAdvertisedPricing(this.#pricing, Object.values(this.config.providers.aisdk));
+  #pricingScope(provider: string): string {
+    const p = this.config.providers.aisdk[provider];
+    return createHash("sha256")
+      .update(JSON.stringify([provider, p?.sdk, p?.baseUrl, p ? resolveApiKey(p) : ""]))
+      .digest("hex");
+  }
+
+  async #refreshEndpointPricing(force = false): Promise<void> {
+    await Promise.all(
+      Object.entries(this.config.providers.aisdk).map(async ([id, p]) => {
+        if (p.sdk !== "openai" || !p.baseUrl) return;
+        try {
+          await this.#pricing.refresh(this.#pricingScope(id), p.baseUrl, resolveApiKey(p), force);
+        } catch (err) {
+          this.#log.debug("endpoint pricing unavailable", { provider: id, err: String(err) });
+        }
+      }),
+    );
+  }
+
+  #priceTable(provider: string): PriceTable {
+    const p = this.config.providers.aisdk[provider];
+    if (p?.sdk === "openai" && p.baseUrl) {
+      void this.#pricing
+        .refresh(this.#pricingScope(provider), p.baseUrl, resolveApiKey(p))
+        .catch((err) =>
+          this.#log.debug("endpoint pricing unavailable", { provider, err: String(err) }),
+        );
+    }
+    return this.#pricing.table(this.#pricingScope(provider));
   }
 
   /**
-   * Recompute a usage delta's dollar cost from the local price table when the
-   * session's model is priced there; otherwise keep the provider's figure. Tags
-   * the delta with `costSource` so a client can flag an estimate.
+   * Reported costs always win. Otherwise use fresh endpoint prices, or mark
+   * the delta unpriced. Never reinterpret an unknown rate as a free request.
    */
   #priceUsage(id: string, delta: UsageDelta): UsageDelta {
     // Claude reports costs across subagents and internal calls, which may
     // use different models. Repricing everything at the main model is wrong.
     const owner = this.#registry.get(id)?.provider;
-    if (owner && isClaudeId(owner) && delta.costSource === "provider") return delta;
+    if (delta.costSource === "provider") return delta;
     const tokens =
       (delta.input ?? 0) + (delta.output ?? 0) + (delta.cacheRead ?? 0) + (delta.cacheWrite ?? 0);
     if (tokens <= 0) return delta; // a bare { turns: 1 } — nothing to price
@@ -1635,7 +1665,7 @@ export class Daemon {
     // The TTL this turn wrote at, so a table that prices no cache write can
     // still charge the right ephemeral multiple for it rather than nothing.
     const tableCost = costOf(
-      this.#pricing,
+      this.#priceTable(owner ?? ""),
       model,
       {
         input: delta.input ?? 0,
@@ -1648,11 +1678,24 @@ export class Daemon {
     );
     if (tableCost != null) return { ...delta, costUsd: tableCost, costSource: "table" };
     if ((delta.costUsd ?? 0) > 0) return { ...delta, costSource: "provider" };
-    return delta;
+    return { ...delta, costSource: "none" };
   }
 
   #isAisdk(providerId: string): boolean {
     return this.config.providers.aisdk[providerId] !== undefined;
+  }
+
+  #accountScope(provider: string): string {
+    const profile = this.config.claudeProfiles.find((p) => claudeProfileId(p) === provider);
+    const account = profile ? readClaudeAccount(profile.dir) : null;
+    const p = this.config.providers.aisdk[provider];
+    // Hash the identity; never put an API key or account email in the database.
+    // Unknown identities stay isolated to their configured profile.
+    let identity: Array<string | undefined> = [provider];
+    if (account?.email) identity = ["claude", account.email, account.org, account.loginMethod];
+    else if (profile) identity = ["claude-profile", profile.dir, account?.loginMethod];
+    else if (p) identity = [p.sdk, p.baseUrl, p.authPath || provider, resolveApiKey(p)];
+    return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   }
 
   /** Whether `providerId`'s adapter can `undo` — its real `capabilities.rewind`
@@ -1790,7 +1833,7 @@ export class Daemon {
     const ttl = this.#registry.get(id)?.cache.ttlMinutes ?? 0;
     return (
       costOf(
-        this.#pricing,
+        this.#priceTable(this.#registry.get(id)?.provider ?? ""),
         model,
         { input: 0, output: 0, cacheRead: 0, cacheWrite: tokens },
         ttl,
@@ -2019,18 +2062,18 @@ export class Daemon {
       return { ok: true };
     });
 
-    d.register("pricing.reload", () => {
-      const path = resolveAgainstRepo(this.repoRoot, this.config.pricing.table);
-      try {
-        this.#pricing = loadPriceTable(path);
-      } catch (err) {
-        // Malformed models.toml — keep the running table, mirror #reloadConfig.
-        this.#log.warn("price table reload failed — keeping the running one", { err: String(err) });
-        this.#emitNotice("price table has a syntax error — kept the running one", "warn");
-        return { models: [...this.#pricing.keys()], reloaded: false };
-      }
-      this.#mergeEndpointPricing();
-      return { models: [...this.#pricing.keys()], reloaded: true };
+    d.register("pricing.reload", async () => {
+      await this.#refreshEndpointPricing(true);
+      return {
+        models: [
+          ...new Set(
+            Object.keys(this.config.providers.aisdk).flatMap((id) => [
+              ...this.#pricing.table(this.#pricingScope(id)).keys(),
+            ]),
+          ),
+        ],
+        reloaded: true,
+      };
     });
 
     d.register("providers.list", () => this.#providerList());
@@ -2073,6 +2116,7 @@ export class Daemon {
       if (profile.sdk !== "openai") return { models: profile.models };
       try {
         const probed = await probeOpenAiModels(profile.baseUrl, resolveApiKey(profile));
+        this.#pricing.record(this.#pricingScope(id), probed);
         return { models: probed.map((m) => m.id) };
       } catch (err) {
         throw new RpcError(

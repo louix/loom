@@ -86,13 +86,6 @@ export interface RespondResult {
  */
 export type SetModeResult = { ok: true } | { ok: false; reason: "plan_pending" };
 
-/** One account-plan usage window, e.g. Claude's `five_hour` / `seven_day`. */
-export interface RateLimitWindow {
-  status: "allowed" | "allowed_warning" | "rejected";
-  utilization?: number;
-  resetsAt?: number;
-}
-
 interface Running {
   provider: string;
   session: AgentSession;
@@ -108,8 +101,6 @@ interface Running {
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
   /** Live, non-ambient background tasks — last `background_tasks` event's set. */
   backgroundTasks: BackgroundTaskInfo[];
-  /** Latest reading per window (`rate_limit` events carry one window each — merge, don't overwrite). */
-  rateLimits: Map<string, RateLimitWindow>;
   ended: boolean;
   refReported: boolean;
   pump: Promise<void>;
@@ -230,7 +221,6 @@ export class SessionManager {
       pending: new Map(),
       subagents: new Map(),
       backgroundTasks: [],
-      rateLimits: new Map(),
       ended: false,
       refReported: false,
       pump: Promise.resolve(),
@@ -291,7 +281,7 @@ export class SessionManager {
             this.#trackCompaction(run, ev),
             this.#trackSubagents(run, ev),
             this.#trackBackgroundTasks(run, ev),
-            this.#trackRateLimit(run, ev),
+            ev.type === "rate_limit",
             this.#trackUsage(id, ev),
           ].some((c) => c);
           this.#trackRef(id, run);
@@ -447,37 +437,6 @@ export class SessionManager {
     return this.#running.get(id)?.backgroundTasks ?? [];
   }
 
-  /** Returns whether it changed the snapshot — a rate-limit window moving is
-   *  the whole of some events, and nothing else would publish them. */
-  #trackRateLimit(run: Running, ev: HarnessEvent): boolean {
-    if (ev.type !== "rate_limit") return false;
-    run.rateLimits.set(ev.window ?? "default", {
-      status: ev.status,
-      ...(ev.utilization != null ? { utilization: ev.utilization } : {}),
-      ...(ev.resetsAt != null ? { resetsAt: ev.resetsAt } : {}),
-    });
-    return true;
-  }
-
-  /** The provider's account-plan usage windows last reported for this session, keyed by window name. */
-  rateLimitsOf(id: string): Record<string, RateLimitWindow> {
-    const run = this.#running.get(id);
-    if (!run || run.rateLimits.size === 0) return {};
-    const now = Date.now();
-    const out: Record<string, RateLimitWindow> = {};
-    for (const [window, rl] of run.rateLimits) {
-      // A window past its reset carries last period's utilization and nothing
-      // refreshes an idle, non-binding one — drop it rather than show a stale
-      // percentage with a negative countdown.
-      if (rl.resetsAt != null && rl.resetsAt <= now) {
-        run.rateLimits.delete(window);
-        continue;
-      }
-      out[window] = rl;
-    }
-    return out;
-  }
-
   /** Returns whether it moved the session's totals. `onUsage` accumulates and
    *  does not publish — this event's publication happens once, above. */
   #trackUsage(id: string, ev: HarnessEvent): boolean {
@@ -500,6 +459,9 @@ export class SessionManager {
         contextUsed: ev.contextUsed,
         contextLimit: ev.contextLimit,
         ...(ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0 ? { lastTurnAt: ev.ts } : {}),
+        ...(ev.tokens.input > 0 || ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0
+          ? { requestAt: ev.ts }
+          : {}),
         lastCacheRead: ev.tokens.cacheRead,
         lastCacheWrite: ev.tokens.cacheWrite,
         ...(ev.cacheTtlMinutes ? { lastCacheTtlMinutes: ev.cacheTtlMinutes } : {}),

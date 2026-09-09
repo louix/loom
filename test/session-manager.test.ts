@@ -816,11 +816,13 @@ describe("session-manager", { concurrency: 4 }, () => {
 
     const snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.deepEqual(snap.rateLimits.five_hour, {
+      observedAt: snap.rateLimits.five_hour?.observedAt,
       status: "allowed",
       utilization: 42,
       resetsAt: fiveReset,
     });
     assert.deepEqual(snap.rateLimits.seven_day, {
+      observedAt: snap.rateLimits.seven_day?.observedAt,
       status: "allowed_warning",
       utilization: 88,
       resetsAt: weekReset,
@@ -878,14 +880,14 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
-  test("a price table overrides the provider's cost, tagged costSource=table", async () => {
+  test("reported cost wins over a legacy local price table", async () => {
     writeFileSync(
       join(harness().repoRoot, ".loom", "models.toml"),
       `["fake-1"]\ninput = 3.0\noutput = 15.0\n`,
     );
     const c = await client();
     const reloaded = await c.request<{ models: string[] }>("pricing.reload");
-    assert.ok(reloaded.models.includes("fake-1"));
+    assert.ok(!reloaded.models.includes("fake-1"));
 
     const snap = await c.request<SessionSnapshot>("session.create", {
       prompt: "priced work",
@@ -901,13 +903,13 @@ describe("session-manager", { concurrency: 4 }, () => {
     );
 
     const got = await c.request<SessionSnapshot>("session.get", { id: snap.id });
-    // (1000*3 + 500*15) / 1e6 = 0.0105  — not the provider's 0.99
-    assert.ok(Math.abs(got.costUsd - 0.0105) < 1e-9);
-    assert.equal(got.costSource, "table");
+    // Reported cost is authoritative.
+    assert.ok(Math.abs(got.costUsd - 0.99) < 1e-9);
+    assert.equal(got.costSource, "provider");
     await c.close();
   });
 
-  test("a turn's cache writes are priced at the TTL the turn wrote at", async () => {
+  test("missing reported or endpoint prices remain unknown despite a legacy table", async () => {
     // The table prices input but no cache write — the normal case, since no
     // endpoint catalogue advertises one. The turn reports the ephemeral bucket
     // it wrote into, and that is what sets the multiple.
@@ -926,15 +928,22 @@ describe("session-manager", { concurrency: 4 }, () => {
     await waitFor(() => fake().session(snap.id) !== undefined);
     const fs = fake().session(snap.id) as FakeSession;
 
-    fs.finishTurn({ usage: { input: 0, output: 0, cacheWrite: 1_000_000 }, cacheTtlMinutes: 60 });
+    fs.emit({
+      type: "usage",
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000 },
+      contextUsed: 1_000_000,
+      contextLimit: 2_000_000,
+      cacheTtlMinutes: 60,
+    });
+    fs.emit({ type: "result", kind: "ok" });
     await waitFor(
       async () => (await c.request<SessionSnapshot>("session.get", { id: snap.id })).turns === 1,
     );
 
     const got = await c.request<SessionSnapshot>("session.get", { id: snap.id });
-    // 1M write at a 1h TTL = 2 x the 3.00 input rate. Was 0 before.
-    assert.ok(Math.abs(got.costUsd - 6.0) < 1e-9, `got ${got.costUsd}`);
-    assert.equal(got.costSource, "table");
+    // A provider-reported zero is known, but no report must remain unknown.
+    assert.equal(got.costUsd, 0);
+    assert.equal(got.costSource, "none");
     await c.close();
   });
 
@@ -1611,4 +1620,57 @@ nodeTest("a failing emitEvent does not stop the session's state advancing", asyn
   );
 
   await mgr.shutdown();
+});
+
+test("account usage is shared with sibling and new sessions and survives daemon restart", async () => {
+  let c = await client();
+  const a = await createFake(c);
+  const b = await createFake(c);
+  const resetsAt = Date.now() + 60_000;
+  a.fs.emit({
+    type: "rate_limit",
+    window: "five_hour",
+    status: "allowed",
+    utilization: 37,
+    resetsAt,
+  });
+  await waitFor(
+    async () =>
+      (await c.request<SessionSnapshot>("session.get", { id: b.id })).rateLimits.five_hour
+        ?.utilization === 37,
+  );
+  const d = await createFake(c);
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id: d.id })).rateLimits.five_hour
+      ?.utilization,
+    37,
+  );
+  await c.close();
+  await harness().restart();
+  c = await client();
+  assert.equal(
+    (await c.request<SessionSnapshot>("session.get", { id: b.id })).rateLimits.five_hour
+      ?.utilization,
+    37,
+  );
+  await c.close();
+});
+
+test("reported zero cost remains authoritative", async () => {
+  const c = await client();
+  const { id, fs } = await createFake(c);
+  fs.emit({
+    type: "usage",
+    tokens: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+    contextUsed: 100,
+    contextLimit: 1000,
+    costDeltaUsd: 0,
+  });
+  await waitFor(
+    async () => (await c.request<SessionSnapshot>("session.get", { id })).usage.input === 100,
+  );
+  const s = await c.request<SessionSnapshot>("session.get", { id });
+  assert.equal(s.costSource, "provider");
+  assert.equal(s.costUsd, 0);
+  await c.close();
 });

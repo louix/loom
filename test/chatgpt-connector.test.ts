@@ -1891,3 +1891,66 @@ test("native ChatGPT launch receives a relay token without the configured upstre
     }
   }
 });
+
+test("Codex usage counts deltas, ignores duplicates and other threads, and resumes without rebilling", async () => {
+  const usage = (input: number, cached: number, output: number) => ({
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: output,
+    reasoningOutputTokens: output,
+    totalTokens: input + output,
+  });
+  for (const resumed of [false, true]) {
+    const baseline = usage(1000, 600, 200);
+    const total = resumed ? usage(1100, 640, 220) : usage(100, 40, 20);
+    const update = { total, last: usage(100, 40, 20), modelContextWindow: 10000 };
+    Deno.env.set(
+      "LOOM_TEST_USAGE_UPDATES",
+      JSON.stringify([{ ...update, threadId: "unrelated-thread" }, update, update]),
+    );
+    if (resumed)
+      Deno.env.set(
+        "LOOM_TEST_USAGE_REPLAY",
+        JSON.stringify({
+          total: baseline,
+          last: usage(300, 200, 50),
+          modelContextWindow: 10000,
+        }),
+      );
+    let s: CodexAppServerSession | undefined;
+    try {
+      const home = {
+        dir: "/tmp/loom-usage-codex",
+        authJsonPath: "/tmp/loom-usage-codex/auth.json",
+      };
+      if (resumed) {
+        s = await CodexAppServerSession.resume(
+          { sessionId: "usage", providerRef: "fake-thread-1", cwd: "/tmp" },
+          home,
+          FAKE_CODEX,
+        );
+        await s.send("go");
+      } else {
+        s = await CodexAppServerSession.start(
+          { sessionId: "usage", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+          home,
+          FAKE_CODEX,
+        );
+      }
+      const events = [];
+      for await (const ev of s.events()) {
+        if (ev.type === "usage") events.push(ev);
+        if (ev.type === "result") break;
+      }
+      assert.equal(events.length, 1);
+      assert.deepEqual(events[0]?.tokens, { input: 60, output: 20, cacheRead: 40, cacheWrite: 0 });
+      assert.equal(events[0]?.contextUsed, 120);
+      assert.equal(events[0]?.costDeltaUsd, undefined);
+      assert.deepEqual(s.snapshot().usage, events[0]?.tokens);
+    } finally {
+      await s?.close();
+      Deno.env.delete("LOOM_TEST_USAGE_UPDATES");
+      Deno.env.delete("LOOM_TEST_USAGE_REPLAY");
+    }
+  }
+});

@@ -340,4 +340,17 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE session_events DROP COLUMN seq;
   ALTER TABLE session_events DROP COLUMN epoch;
   `,
+  /* sql */ `
+  CREATE TABLE account_usage (
+    scope TEXT NOT NULL,
+    window TEXT NOT NULL,
+    status TEXT NOT NULL,
+    utilization REAL,
+    resets_at INTEGER,
+    observed_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, window)
+  );
+  ALTER TABLE model_usage ADD COLUMN min_miss_gap_sec INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE model_usage ADD COLUMN last_cache_active INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

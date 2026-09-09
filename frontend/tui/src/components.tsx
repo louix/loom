@@ -52,7 +52,6 @@ import {
   modeChipText,
   modeLabel,
   modeText,
-  money,
   shortId,
   spinnerFrame,
   statusLook,
@@ -376,7 +375,10 @@ const FleetRow = ({
   let titleColor = selected ? C.text : C.dim;
   if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
-  const cost = money(s.costUsd);
+  const cost =
+    s.costSource === "none" || s.costSource === "partial"
+      ? "--"
+      : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`;
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? cacheHeatColor(heat) : null;
@@ -506,6 +508,10 @@ export const Detail = memo(
     }
 
     const queued = pending(box);
+    const planWindows = Object.entries(s.rateLimits).filter(
+      ([, r]) =>
+        (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) > now,
+    );
     const engineColor = providerColorOf({ fleet }, s.provider);
     const account = providerAccountOf({ fleet }, s.provider);
     const compacting = s.compacting ?? null;
@@ -614,13 +620,17 @@ export const Detail = memo(
             </Text>
           </Box>
           <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
-            {` ${(s.costSource === "table" ? "~" : "") + money(s.costUsd)}`}
+            {` ${
+              s.costSource === "none" || s.costSource === "partial"
+                ? "--"
+                : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`
+            }`}
           </Text>
         </Box>
-        {Object.keys(s.rateLimits).length > 0 ? (
+        {planWindows.length > 0 ? (
           <Field label="plan">
             <Text wrap="truncate-end">
-              {Object.entries(s.rateLimits).map(([window, rl], i) => {
+              {planWindows.map(([window, rl], i) => {
                 let col: string = C.faint;
                 if (rl.status === "rejected") col = C.bad;
                 else if (rl.status === "allowed_warning") col = C.warn;

@@ -75,8 +75,27 @@ const advertisedPricing = (row: Record<string, unknown>): PriceRow | undefined =
   const input = perMillion(r["input_per_million_usd"]);
   const output = perMillion(r["output_per_million_usd"]);
   const cacheRead = perMillion(r["cached_input_per_million_usd"]);
+  const cacheWrite = perMillion(r["cache_write_per_million_usd"]);
+  const rates = (
+    input: number | undefined,
+    output: number | undefined,
+    cacheRead: number | undefined,
+    cacheWrite: number | undefined,
+  ): PriceRow => {
+    const values = { input, output, cacheRead, cacheWrite };
+    const missing = (Object.keys(values) as Array<keyof typeof values>).filter(
+      (key) => values[key] === undefined,
+    );
+    return {
+      input: input ?? 0,
+      output: output ?? 0,
+      cacheRead: cacheRead ?? 0,
+      cacheWrite: cacheWrite ?? 0,
+      missing,
+    };
+  };
   if (input !== undefined || output !== undefined) {
-    return { input: input ?? 0, output: output ?? 0, cacheRead: cacheRead ?? 0, cacheWrite: 0 };
+    return rates(input, output, cacheRead, cacheWrite);
   }
   // OpenRouter-style: USD per token, as strings.
   const perToken = (v: unknown): number | undefined => {
@@ -87,7 +106,7 @@ const advertisedPricing = (row: Record<string, unknown>): PriceRow | undefined =
   const pOutput = perToken(r["completion"]);
   const pCache = perToken(r["input_cache_read"] ?? r["cache"]);
   if (pInput !== undefined || pOutput !== undefined) {
-    return { input: pInput ?? 0, output: pOutput ?? 0, cacheRead: pCache ?? 0, cacheWrite: 0 };
+    return rates(pInput, pOutput, pCache, perToken(r["input_cache_write"]));
   }
   return undefined;
 };
@@ -165,19 +184,4 @@ export const probeOpenAiModels = async (
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return parseModelRows(await res.json());
-};
-
-/**
- * Feed advertised pricing into the daemon's cost table for models the user's
- * `models.toml` doesn't price — the file always wins. Mutates `table`.
- */
-export const mergeAdvertisedPricing = (
-  table: Map<string, PriceRow>,
-  profiles: Array<{ modelPricing: Record<string, PriceRow> }>,
-): void => {
-  for (const p of profiles) {
-    for (const [model, row] of Object.entries(p.modelPricing)) {
-      if (!table.has(model)) table.set(model, row);
-    }
-  }
 };

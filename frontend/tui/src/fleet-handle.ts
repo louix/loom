@@ -494,7 +494,9 @@ export const animationNeed = (v: FleetView, now = Date.now()): Beat => {
     session &&
     v.sel &&
     (cacheStatus(v.sel, now).state === "warm" ||
-      Object.values(v.sel.rateLimits).some((r) => r.resetsAt != null && r.resetsAt > now))
+      Object.values(v.sel.rateLimits).some(
+        (r) => (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : 0)) > now,
+      ))
   )
     return "age";
   return null;

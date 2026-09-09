@@ -21,6 +21,8 @@ export interface PriceRow {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** An endpoint omitted these rates; zero placeholders must not imply free usage. */
+  missing?: Array<"input" | "output" | "cacheRead" | "cacheWrite">;
 }
 
 export type PriceTable = Map<string, PriceRow>;
@@ -109,12 +111,17 @@ export const costOf = (
   if (!model) return null;
   const row = lookupRow(table, model);
   if (!row) return null;
-  const cacheWrite = row.cacheWrite || derivedCacheWrite(row.input, cacheTtlMinutes);
+  if (row.missing?.some((key) => delta[key] > 0 && !(key === "cacheWrite" && cacheTtlMinutes > 0)))
+    return null;
+  const explicitWrite =
+    row.cacheWrite > 0 || (row.missing !== undefined && !row.missing.includes("cacheWrite"));
+  if (delta.cacheWrite > 0 && !explicitWrite && row.missing?.includes("input")) return null;
+  const cacheWrite = explicitWrite ? row.cacheWrite : derivedCacheWrite(row.input, cacheTtlMinutes);
   const short = num(cacheCreation?.ephemeral_5m_input_tokens);
   const long = num(cacheCreation?.ephemeral_1h_input_tokens);
   // Use the split only when it accounts for the reported writes in full.
   const writeCost =
-    !row.cacheWrite && short + long === delta.cacheWrite && short + long > 0
+    !explicitWrite && short + long === delta.cacheWrite && short + long > 0
       ? short * derivedCacheWrite(row.input, 5) + long * derivedCacheWrite(row.input, 60)
       : delta.cacheWrite * cacheWrite;
   return (

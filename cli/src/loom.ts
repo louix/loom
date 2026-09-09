@@ -340,7 +340,7 @@ const main = async (): Promise<void> => {
           // longest idle gap we've seen it still hit after (a lower bound, and
           // the only signal for endpoints that report no TTL).
           const ttl = m.ttlMinutes > 0 ? `${m.ttlMinutes}m ttl` : "- ttl";
-          const seen = m.maxHitGapSec > 0 ? `  ≥${Math.round(m.maxHitGapSec / 60)}m warm` : "";
+          const seen = m.maxHitGapSec > 0 ? `  ≥${Math.floor(m.maxHitGapSec / 60)}m warm` : "";
           writeOut(
             `${`${m.provider}/${m.model}`.padEnd(pad)}  ` +
               `${(rate == null ? "n/a" : `${Math.round(rate * 100)}%`).padStart(4)} cached  ` +
@@ -644,7 +644,10 @@ const printSessions = (rows: SessionSnapshot[]): void => {
       writeOut(`\n${group.toUpperCase()}\n`);
     }
     const id = s.id.slice(0, 8);
-    const cost = s.costUsd ? `$${s.costUsd.toFixed(2)}` : "—";
+    const cost =
+      s.costSource === "none" || s.costSource === "partial"
+        ? "--"
+        : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`;
     const title = s.title ? s.title.slice(0, 44) : "(untitled)";
     const reason = s.status.kind === "awaiting_input" ? ` · ${s.status.on}` : "";
     writeOut(`  ${id}  ${s.provider.padEnd(7)} ${title.padEnd(46)} ${cost}${reason}\n`);

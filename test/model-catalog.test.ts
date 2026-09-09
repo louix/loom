@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergeAdvertisedPricing, parseModelRows } from "@loom/daemon/daemon/model-catalog";
-import type { PriceRow } from "@loom/daemon/config/pricing";
+import { parseModelRows } from "@loom/daemon/daemon/model-catalog";
 
 test("parseModelRows reads sference-style rows: context_tokens, per-million pricing, display_name", () => {
   const rows = parseModelRows({
@@ -23,7 +22,7 @@ test("parseModelRows reads sference-style rows: context_tokens, per-million pric
     id: "zai-org/GLM-5.3-Flash",
     context: 1_048_576,
     label: "GLM 5.3 Flash",
-    pricing: { input: 0.2, output: 0.5, cacheRead: 0.07, cacheWrite: 0 },
+    pricing: { input: 0.2, output: 0.5, cacheRead: 0.07, cacheWrite: 0, missing: ["cacheWrite"] },
   });
 });
 
@@ -42,7 +41,7 @@ test("parseModelRows reads OpenRouter-style rows: context_length, per-token stri
     id: "deepseek/deepseek-chat",
     context: 128_000,
     label: "DeepSeek Chat",
-    pricing: { input: 1.5, output: 2, cacheRead: 0.15, cacheWrite: 0 },
+    pricing: { input: 1.5, output: 2, cacheRead: 0.15, cacheWrite: 0, missing: ["cacheWrite"] },
   });
 });
 
@@ -124,25 +123,4 @@ test("parseModelRows reads reasoning-effort metadata: flat and OpenRouter-nested
     efforts: ["low"],
     defaultEffort: "bogus",
   });
-});
-
-test("mergeAdvertisedPricing fills gaps in the table; the TOML row wins", () => {
-  const tomlRow: PriceRow = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-  const table = new Map<string, PriceRow>([["claude-sonnet-5", tomlRow]]);
-  mergeAdvertisedPricing(table, [
-    {
-      modelPricing: {
-        "zai-org/GLM-5.3-Flash": { input: 0.2, output: 0.5, cacheRead: 0.07, cacheWrite: 0 },
-        // same key as a TOML row → must NOT overwrite
-        "claude-sonnet-5": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-    },
-  ]);
-  assert.deepEqual(table.get("zai-org/GLM-5.3-Flash"), {
-    input: 0.2,
-    output: 0.5,
-    cacheRead: 0.07,
-    cacheWrite: 0,
-  });
-  assert.equal(table.get("claude-sonnet-5"), tomlRow);
 });

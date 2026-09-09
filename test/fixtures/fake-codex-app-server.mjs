@@ -256,12 +256,33 @@ const handle = (req) => {
       ? `${base.thread.id}-with-instructions`
       : base.thread.id;
     send({ jsonrpc: "2.0", id, result: { thread: { id: id_ } } });
+    startedThreadId = id_;
+    const replay = process.env["LOOM_TEST_USAGE_REPLAY"];
+    if (replay)
+      send({
+        jsonrpc: "2.0",
+        method: "thread/tokenUsage/updated",
+        params: { threadId: id_, turnId: "historical-turn", tokenUsage: JSON.parse(replay) },
+      });
     return;
   }
   if (method === "turn/start") {
     turnStartCount++;
     const respondToTurnStart = () => {
       send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
+      const usage = process.env["LOOM_TEST_USAGE_UPDATES"];
+      if (usage)
+        for (const update of JSON.parse(usage)) {
+          send({
+            jsonrpc: "2.0",
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: update.threadId ?? startedThreadId,
+              turnId: "fake-turn-1",
+              tokenUsage: update,
+            },
+          });
+        }
       // A real turn finishes asynchronously via a notification, not the reply.
       // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
       // `setMode`) while the turn is still genuinely open.

@@ -251,8 +251,8 @@ export interface SessionSnapshot {
   contextUsed: number;
   contextLimit: number;
   costUsd: number;
-  /** Where `costUsd` was computed — a local price table, the provider, or nothing yet. */
-  costSource: "table" | "provider" | "none";
+  /** Lifetime provenance; `table` denotes an endpoint estimate, `partial` unpriced spend. */
+  costSource: "table" | "provider" | "none" | "mixed" | "partial";
   turns: number;
   /** Sub-agents this session has spawned (Claude's Task tool). Runtime-only, not persisted. */
   subagents: Array<{ id: string; name: string; active: boolean }>;
@@ -265,11 +265,16 @@ export interface SessionSnapshot {
   /**
    * The provider's account-plan usage windows (Claude: `five_hour` / `seven_day`),
    * keyed by window name. Empty for API-key sessions, which have no such plan.
-   * Runtime-only, not persisted.
+   * Persisted per account/profile; expired observations are omitted.
    */
   rateLimits: Record<
     string,
-    { status: "allowed" | "allowed_warning" | "rejected"; utilization?: number; resetsAt?: number }
+    {
+      status: "allowed" | "allowed_warning" | "rejected";
+      utilization?: number;
+      resetsAt?: number;
+      observedAt?: number;
+    }
   >;
   /**
    * Prompt-cache liveness inputs. `ttlMinutes` is the TTL the countdown runs
@@ -352,15 +357,12 @@ export interface ModelUsage {
    */
   ttlMinutes: number;
   /**
-   * The longest idle gap after which this pair was still observed *hitting*
-   * cache, in seconds; 0 = never seen. A sound lower bound on the real TTL —
-   * a hit proves the entry survived that long — and the only lifetime signal
-   * available from providers that report no TTL at all (OpenAI-compatible
-   * endpoints, which cache implicitly server-side). Deliberately one-sided:
-   * a *miss* may be expiry or may be prefix invalidation, so misses are not
-   * counted and this never shrinks.
+   * Longest observed gap followed by a cache hit, in seconds; 0 = unseen.
+   * Evidence only: aggregated reports can contain writes followed by hits.
    */
   maxHitGapSec: number;
+  /** Shortest observed gap followed by a miss after cache activity; not a TTL ceiling. */
+  minMissGapSec: number;
   /** Sessions that contributed — 1 for a per-session row. */
   sessions: number;
   updatedAt: number;

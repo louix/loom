@@ -280,8 +280,8 @@ nothing can be pinned per provider with
 
 **Advertised pricing and names.** `/models` rows that carry per-model pricing
 (sference's `input_per_million_usd`, OpenRouter's per-token `pricing`) feed the
-cost table for models `.loom/models.toml` doesn't price — the file always wins,
-and these still show as `~` estimates. Display names (`display_name`) label the
+provider-scoped fallback estimates, shown with `~`. Reported cost always wins.
+Rates are fetched at startup, expire after one hour, and refresh on demand. Display names (`display_name`) label the
 model picker.
 
 **Streaming usage.** Loom asks endpoints to include token usage in streamed
@@ -342,18 +342,24 @@ windows (`five_hour`, `seven_day`, …) as Claude itself reports them — the sa
 data behind Claude Code's own `/usage`. API-key / Bedrock / Vertex sessions
 have no such window and show nothing here.
 
-**Price-table cost.** Drop a `.loom/models.toml` with per-model USD-per-million
-prices (`input` / `output` / `cache_read` / `cache_write`) and the daemon costs
-each usage delta from it instead of trusting the provider's figure; the snapshot
-carries `costSource` (`table` / `provider` / `none`) and the UI shows a `~` in
-front of a table estimate. `pricing.reload` re-reads the file without a restart.
+**Cost.** Provider-reported cost, including an explicit zero, is authoritative.
+When absent, Loom uses fresh prices advertised by that provider's `/models`
+endpoint. Prices are isolated by provider, endpoint and credentials; no embedded
+or local `models.toml` table participates. `pricing.reload` refreshes endpoint
+prices without a restart. An unavailable rate is unknown, not free.
 
-A row that prices no `cache_write` gets one derived from the TTL the turn was
-measured writing at — Anthropic bills an ephemeral write at 1.25x base input for
-5m and 2x for 1h — because no endpoint catalogue advertises a write price, and
-leaving it at zero made the bulk of a caching agent's prompt spend free. An
-explicit `cache_write` always wins, and a provider that reports no TTL (the
-OpenAI-compatible ones, which have no write premium) stays at zero.
+Unknown or incomplete lifetime cost displays as `--`; a known zero displays as
+`$0.00`. Estimates and mixed reported/estimated totals carry `~`. The snapshot's
+`costSource` is `provider`, `table` (endpoint estimate), `mixed`, `none`, or
+`partial` (some spend is unpriced). Stored totals are not retrospectively repriced.
+Reported ephemeral cache-write splits can supply the five-minute/hour write
+multipliers when the endpoint advertises base input but omits the write rate.
+
+Account-plan readings are stored separately from session spend. Sessions on the
+same account/profile share the latest reading, including across daemon restarts.
+Readings expire at their reported reset; those without a reset expire after five
+minutes. Claude refreshes on initialization and after completed turns, throttled
+to once per minute. These are last observed values, not a live account balance.
 
 **Repository configuration.** All configuration lives in
 `$XDG_CONFIG_HOME/loom/config.toml` (default `~/.config/loom/config.toml`).
@@ -497,15 +503,14 @@ last observed writing at; a session that switched models blends into one row in
 the pane but stays separate here. A long session sitting at a low hit rate means
 something is invalidating the prefix between turns.
 
-Each row also carries `≥Nm warm`: the longest idle gap after which that pair was
-still seen _hitting_ cache. That's a lower bound, not a TTL — a hit proves the
-entry survived the gap, whereas a miss might be expiry or might be prefix
-invalidation, so misses are never counted and the bound only grows. It's the
-only lifetime signal available from endpoints that report no TTL (the
-OpenAI-compatible ones, which cache implicitly server-side), and a sanity check
-against the measured TTL where there is one. It deliberately does not feed the
-cache countdown: a lower bound isn't a lifetime, and a gauge implies precision
-this doesn't have.
+Each row also carries `≥Nm warm`: the longest observed gap followed by a cache
+hit, rounded down. Only prompt-usage observations move that clock; context
+updates and turn bookkeeping do not. `minMissGapSec` in `loom cache --json`
+records the shortest gap followed by a miss after observed cache activity.
+Neither is a guaranteed TTL: misses can mean prefix changes or eviction, and
+aggregated turn reports can include fresh writes followed by hits. The figures
+are observational evidence, kept per session/provider/model and aggregated for
+comparison. They do not drive the cache countdown.
 
 **Context compaction.** `c` on a running or idle session opens a one-line prompt
 — blank gives a best-effort summary of everything; text is the advanced path,
@@ -672,5 +677,5 @@ gitignored:
 | `loom.db`        | SQLite: sessions, history, usage                                        |
 | `trees/<id>/`    | one git worktree per session                                            |
 | `hooks/pre-push` | the push-blocking hook, shared by every worktree                        |
-| `models.toml`    | optional per-model price table (`pricing.reload`)                       |
+| `models.toml`    | legacy price table; no longer used for runtime costs                    |
 | `LOOM.md`        | optional repo instructions, injected into every session's system prompt |

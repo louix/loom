@@ -1,5 +1,5 @@
 import type { CacheCreation } from "@loom/core/cache";
-import type { TokenUsage } from "@loom/core/events";
+import type { TokenUsage, RateLimitEvent } from "@loom/core/events";
 import {
   parseSessionState,
   type SessionState,
@@ -87,6 +87,8 @@ export interface UsageDelta {
   contextLimit?: number;
   /** Wall-clock of the turn this delta closed — arms the cache countdown. */
   lastTurnAt?: number;
+  /** Request usage observation time, including misses; separate from cache liveness. */
+  requestAt?: number;
   /** This turn's cache read / write token split (absolute, not accumulated). */
   lastCacheRead?: number;
   lastCacheWrite?: number;
@@ -334,7 +336,13 @@ export class SessionStore {
            cache_read = cache_read + ?,
            cache_write = cache_write + ?,
            cost_usd = cost_usd + ?,
-           cost_source = COALESCE(?, cost_source),
+           cost_source = CASE
+             WHEN ? IS NULL THEN cost_source
+             WHEN cost_source = 'partial' THEN 'partial'
+             WHEN input + output + cache_read + cache_write = 0 AND cost_usd = 0 THEN ?
+             WHEN cost_source = ? THEN cost_source
+             WHEN cost_source = 'none' OR ? = 'none' THEN 'partial'
+             ELSE 'mixed' END,
            turns = turns + ?,
            context_used = COALESCE(?, context_used),
            context_limit = COALESCE(?, context_limit),
@@ -352,6 +360,9 @@ export class SessionStore {
         acc(d.cacheWrite),
         accFloat(d.costUsd),
         d.costSource ?? null,
+        d.costSource ?? null,
+        d.costSource ?? null,
+        d.costSource ?? null,
         acc(d.turns),
         abs(d.contextUsed),
         abs(d.contextLimit),
@@ -365,6 +376,42 @@ export class SessionStore {
     // Also bump the sessions row: `updated_at` is the fleet's recency sort key,
     // so a turn that only moved usage still has to reorder the list.
     this.#db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, id);
+  }
+
+  recordAccountUsage(scope: string, ev: RateLimitEvent): void {
+    this.#db
+      .prepare(`INSERT INTO account_usage
+      (scope, window, status, utilization, resets_at, observed_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope, window) DO UPDATE SET status = excluded.status,
+        utilization = excluded.utilization, resets_at = excluded.resets_at,
+        observed_at = excluded.observed_at
+      WHERE excluded.observed_at >= observed_at`)
+      .run(
+        scope,
+        ev.window ?? "default",
+        ev.status,
+        ev.utilization ?? null,
+        ev.resetsAt ?? null,
+        ev.ts,
+      );
+  }
+
+  accountUsage(scope: string, now = Date.now()): SessionSnapshot["rateLimits"] {
+    const rows = this.#db
+      .prepare(`SELECT * FROM account_usage WHERE scope = ?
+      AND (resets_at > ? OR (resets_at IS NULL AND observed_at > ?))`)
+      .all(scope, now, now - 5 * 60_000);
+    return Object.fromEntries(
+      rows.map((r) => [
+        String(r["window"]),
+        {
+          status: r["status"] as RateLimitEvent["status"],
+          ...(r["utilization"] !== null ? { utilization: Number(r["utilization"]) } : {}),
+          ...(r["resets_at"] !== null ? { resetsAt: Number(r["resets_at"]) } : {}),
+          observedAt: Number(r["observed_at"]),
+        },
+      ]),
+    );
   }
 
   /**
@@ -383,24 +430,21 @@ export class SessionStore {
     const accFloat = (v: number | undefined): number =>
       typeof v === "number" && Number.isFinite(v) ? v : 0;
     const ttl = acc(d.lastCacheTtlMinutes);
-    // A read means the prefix written before the gap was still alive. Only a
-    // hit is evidence: a miss could equally be prefix invalidation, so it says
-    // nothing about the lifetime and is not recorded. `last_turn_at` on the
-    // right-hand side is the pre-update value (SQLite evaluates SET against the
-    // old row), so the gap is measured before it is overwritten.
+    // Keep hit and cold-gap evidence separately: a miss can be invalidation,
+    // and an aggregated turn can write then hit. Neither proves a TTL.
+    // SQLite evaluates SET against the old row, before advancing the clock.
     const hit = acc(d.cacheRead) > 0 ? 1 : 0;
     // The turn's own wall-clock, matching what `usage.last_turn_at` records —
     // not "now", which drifts by however long the rollup took to arrive.
+    const requestAt = d.requestAt ?? d.lastTurnAt;
     const at =
-      typeof d.lastTurnAt === "number" && Number.isFinite(d.lastTurnAt)
-        ? Math.trunc(d.lastTurnAt)
-        : now;
+      typeof requestAt === "number" && Number.isFinite(requestAt) ? Math.trunc(requestAt) : 0;
     this.#db
       .prepare(
         `INSERT INTO model_usage
            (session_id, provider, model, input, output, cache_read, cache_write,
-            cost_usd, turns, ttl_minutes, last_turn_at, max_hit_gap_sec, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            cost_usd, turns, ttl_minutes, last_turn_at, max_hit_gap_sec, updated_at, last_cache_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
          ON CONFLICT(session_id, provider, model) DO UPDATE SET
            input       = input + excluded.input,
            output      = output + excluded.output,
@@ -416,7 +460,15 @@ export class SessionStore {
                   AND (excluded.last_turn_at - last_turn_at) / 1000 > max_hit_gap_sec
              THEN (excluded.last_turn_at - last_turn_at) / 1000
              ELSE max_hit_gap_sec END,
-           last_turn_at = excluded.last_turn_at,
+           last_turn_at = CASE WHEN ? = 1 THEN excluded.last_turn_at ELSE last_turn_at END,
+           min_miss_gap_sec = CASE
+             WHEN ? = 1 AND last_cache_active = 1 AND last_turn_at > 0
+               AND excluded.last_turn_at > last_turn_at
+               AND (min_miss_gap_sec = 0 OR (excluded.last_turn_at - last_turn_at) / 1000 < min_miss_gap_sec)
+             THEN MAX(1, (excluded.last_turn_at - last_turn_at) / 1000)
+             ELSE min_miss_gap_sec END,
+           last_cache_active = CASE WHEN excluded.last_turn_at > 0
+             THEN excluded.last_cache_active ELSE last_cache_active END,
            updated_at   = excluded.updated_at`,
       )
       .run(
@@ -432,7 +484,10 @@ export class SessionStore {
         ttl,
         at,
         now,
+        acc(d.cacheRead) > 0 || acc(d.cacheWrite) > 0 ? 1 : 0,
         hit,
+        at > 0 ? 1 : 0,
+        at > 0 && acc(d.input) + acc(d.cacheWrite) > 0 && !hit ? 1 : 0,
       );
   }
 
@@ -452,9 +507,11 @@ export class SessionStore {
                 -- the freshest observation across the grouped sessions
                 (SELECT m2.ttl_minutes FROM model_usage m2
                   WHERE m2.provider = m.provider AND m2.model = m.model
+                    ${sessionId ? "AND m2.session_id = m.session_id" : ""}
                     AND m2.ttl_minutes > 0
                   ORDER BY m2.updated_at DESC LIMIT 1) AS ttl_minutes,
                 MAX(max_hit_gap_sec) AS max_hit_gap_sec,
+                COALESCE(MIN(NULLIF(min_miss_gap_sec, 0)), 0) AS min_miss_gap_sec,
                 COUNT(*) AS sessions, MAX(updated_at) AS updated_at
            FROM model_usage m
            ${where}
@@ -473,6 +530,7 @@ export class SessionStore {
       turns: Number(r["turns"] ?? 0),
       ttlMinutes: Number(r["ttl_minutes"] ?? 0),
       maxHitGapSec: Number(r["max_hit_gap_sec"] ?? 0),
+      minMissGapSec: Number(r["min_miss_gap_sec"] ?? 0),
       sessions: Number(r["sessions"] ?? 0),
       updatedAt: Number(r["updated_at"] ?? 0),
     }));

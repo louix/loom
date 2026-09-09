@@ -274,6 +274,10 @@ export class CodexAppServerSession implements AgentSession {
   #closing = false;
   #status = stateRunning;
   #usage = zeroUsage();
+  #usageBaseline: ReturnType<typeof zeroUsage> | null = zeroUsage();
+  #startedUsageTurn = false;
+  #startingUsageTurn = false;
+  #pendingUsage: Record<string, unknown>[] = [];
   #contextUsed = 0;
   #contextLimit = 0;
   #turns = 0;
@@ -374,6 +378,8 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch);
     try {
       await s.#initialize();
+      s.#usageBaseline = null;
+      s.#threadId = ref.providerRef;
       const resumed = await s.#rpc.requestStartup("thread/resume", {
         threadId: ref.providerRef,
         cwd: ref.cwd,
@@ -448,6 +454,7 @@ export class CodexAppServerSession implements AgentSession {
     if (instructions?.trim()) {
       throw new Error("Codex Code Mode compaction does not support custom instructions");
     }
+    this.#startedUsageTurn = true;
     await this.#rpc.request("thread/compact/start", { threadId: this.#threadId });
   }
 
@@ -741,6 +748,7 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   async #startTurn(input: string): Promise<void> {
+    this.#startedUsageTurn = true;
     // Replace only an already-spent controller (aborted by a *previous*
     // turn's end) — never one that's still live, which is exactly the case
     // for this turn's own controller when a dynamic tool call for it
@@ -750,16 +758,24 @@ export class CodexAppServerSession implements AgentSession {
     // which "only replace once spent" also guarantees, since that previous
     // turn's dispatch captured the now-aborted controller, not this one.
     if (this.#turnAbort.signal.aborted) this.#turnAbort = new AbortController();
-    const result = await this.#rpc.request("turn/start", {
-      threadId: this.#threadId,
-      input: [textInput(input)],
-      model: this.#model || undefined,
-      effort: this.#effort ?? undefined,
-      approvalPolicy: policyFor(this.#mode),
-      approvalsReviewer: approvalsReviewerFor(this.#mode),
-      sandboxPolicy: this.#sandboxPolicy(),
-    });
+    this.#startingUsageTurn = true;
+    let result: unknown;
+    try {
+      result = await this.#rpc.request("turn/start", {
+        threadId: this.#threadId,
+        input: [textInput(input)],
+        model: this.#model || undefined,
+        effort: this.#effort ?? undefined,
+        approvalPolicy: policyFor(this.#mode),
+        approvalsReviewer: approvalsReviewerFor(this.#mode),
+        sandboxPolicy: this.#sandboxPolicy(),
+      });
+    } finally {
+      this.#startingUsageTurn = false;
+    }
     this.#turnId = (result as any)?.turn?.id ?? this.#turnId;
+    for (const update of this.#pendingUsage.splice(0))
+      this.#notification("thread/tokenUsage/updated", update);
     this.#status = stateRunning;
     this.#events.push({
       type: "status_changed",
@@ -989,11 +1005,76 @@ export class CodexAppServerSession implements AgentSession {
   }
   #notification(method: string, p: Record<string, unknown>): void {
     if (method === "thread/tokenUsage/updated") {
+      if (this.#startingUsageTurn) {
+        this.#pendingUsage.push(p);
+        return;
+      }
+      if (p["threadId"] !== this.#threadId) return;
       const usage = p["tokenUsage"] as Record<string, unknown> | undefined;
       const limit = usage?.["modelContextWindow"];
-      if (typeof limit === "number") this.#contextLimit = limit;
+      if (typeof limit === "number" && Number.isFinite(limit) && limit > 0)
+        this.#contextLimit = limit;
       const total = usage?.["total"] as Record<string, unknown> | undefined;
-      if (typeof total?.["totalTokens"] === "number") this.#contextUsed = total.totalTokens;
+      if (!total) return;
+      const num = (v: unknown): number =>
+        typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.trunc(v)) : 0;
+      const normalize = (u: Record<string, unknown>) => ({
+        input: Math.max(
+          0,
+          num(u["inputTokens"]) - num(u["cachedInputTokens"]) - num(u["cacheWriteInputTokens"]),
+        ),
+        output: num(u["outputTokens"]), // already includes reasoning
+        cacheRead: num(u["cachedInputTokens"]),
+        cacheWrite: num(u["cacheWriteInputTokens"]),
+      });
+      const last = usage?.["last"] as Record<string, unknown> | undefined;
+      if (last) this.#contextUsed = num(last["totalTokens"]);
+      const current = normalize(total);
+      const replay =
+        !this.#startedUsageTurn ||
+        (this.#turnId !== null && typeof p["turnId"] === "string" && p["turnId"] !== this.#turnId);
+      if (replay && this.#usageBaseline !== null) return;
+      // A resumed thread replays its historical cumulative before any new
+      // turn. Seed the baseline without charging that history a second time.
+      let previous = this.#usageBaseline;
+      if (previous === null && !replay && last) {
+        // Older servers may not replay usage on resume. In that case only
+        // the last request is safely attributable to this new runtime.
+        const step = normalize(last);
+        previous = {
+          input: Math.max(0, current.input - step.input),
+          output: Math.max(0, current.output - step.output),
+          cacheRead: Math.max(0, current.cacheRead - step.cacheRead),
+          cacheWrite: Math.max(0, current.cacheWrite - step.cacheWrite),
+        };
+      }
+      this.#usageBaseline = current;
+      if (previous === null) {
+        this.#events.push({
+          type: "context",
+          sessionId: this.id,
+          ts: now(),
+          contextUsed: this.#contextUsed,
+          contextLimit: this.#contextLimit,
+        });
+        return;
+      }
+      const tokens = zeroUsage();
+      for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+        tokens[key] = Math.max(0, current[key] - previous[key]);
+        this.#usageBaseline[key] = Math.max(current[key], previous[key]);
+        this.#usage[key] += tokens[key];
+      }
+      if (Object.values(tokens).some((n) => n > 0)) {
+        this.#events.push({
+          type: "usage",
+          sessionId: this.id,
+          ts: now(),
+          tokens,
+          contextUsed: this.#contextUsed,
+          contextLimit: this.#contextLimit,
+        });
+      }
       return;
     }
     const item = p["item"] as Record<string, unknown> | undefined;
