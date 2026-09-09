@@ -1,3 +1,7 @@
+import {
+  attachDiskTemplates,
+  retainDiskTemplates,
+} from "../../../../runtime/src/packaged/disk-templates.ts";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
@@ -36,6 +40,7 @@ export const startRuntimeMcp = async (
     vmArguments(binding);
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
+    await attachDiskTemplates(state, lock.smolvm);
     git = await startGit(cwd, state, lock.artifact, allowRepoPrograms);
     if (git) binding.gitSocket = git.socket;
     const base = mockLaunchSpec(state);
@@ -126,6 +131,7 @@ export const startRuntimeMcp = async (
         );
       }),
     ]);
+    await retainDiskTemplates(state, lock.smolvm);
     return {
       handle: {
         name,

@@ -1,5 +1,6 @@
 /** Trusted host supervisor. Its stdin lifetime owns the VM and both capabilities. */
 import { join } from "node:path";
+import { attachDiskTemplates, retainDiskTemplates } from "../packaged/disk-templates.ts";
 import { writeSessionAuth, type SessionAuth } from "./auth.ts";
 import { startSessionGit } from "../../../backend/daemon/src/daemon/git-worker.ts";
 import { startEgress } from "./egress.ts";
@@ -165,8 +166,10 @@ try {
     JSON.stringify(binding.mcpRelays ?? []),
     { mode: 0o600 },
   );
+  await attachDiskTemplates(binding.state, binding.smolvm);
   await command(create);
   await command(["machine", "start", "--name", sessionVmName]);
+  await retainDiskTemplates(binding.state, binding.smolvm);
   if (ended) throw new Error("Session closed during VM startup");
   child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,
