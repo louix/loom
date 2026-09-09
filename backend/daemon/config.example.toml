@@ -1,5 +1,5 @@
 # User config: ~/.config/loom/config.toml (or $XDG_CONFIG_HOME/loom/config.toml). Every key below is optional and shown
-# with its built-in default. Consumed so far (milestones 1-5): db, run_isolation,
+# with its built-in default. Consumed so far (milestones 1-5): db,
 # daemon.*, base_branch, worktree_dir, providers.claude.* and the [[command-mcp]] list
 # (mounted into every session, alongside the built-in in-process `loom` server:
 # ask_user + commit). The terminal UI (`loom` with no command in a TTY) reads no
@@ -10,7 +10,6 @@ base_branch = "main" # each session branches loom/<slug> off this
 # (falls back to HEAD if the branch is missing)
 worktree_dir = ".loom/trees"
 db = ".loom/loom.db"
-run_isolation = "in-process" # or "subprocess" (later milestones)
 
 [worktree]
 enabled = true # true: each session gets its own git worktree + branch.

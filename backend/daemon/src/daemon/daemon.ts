@@ -2024,7 +2024,6 @@ export class Daemon {
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       next.db !== before.db ||
-      next.runIsolation !== before.runIsolation ||
       next.daemon.eventBufferSize !== before.daemon.eventBufferSize ||
       JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
       JSON.stringify(next.httpMcp) !== JSON.stringify(before.httpMcp);

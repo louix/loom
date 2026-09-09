@@ -286,7 +286,6 @@ export interface LoomConfig {
    */
   commitReminder: { enabled: boolean };
   db: string;
-  runIsolation: "in-process" | "subprocess";
   /** Provider id new sessions use when the client doesn't name one. */
   defaultProvider: string;
   daemon: {
@@ -394,7 +393,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoResume: { enabled: true },
   commitReminder: { enabled: true },
   db: ".loom/loom.db",
-  runIsolation: "in-process",
   defaultProvider: "claude",
   daemon: {
     idleShutdownMinutes: 30,
@@ -844,8 +842,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const notify = asRecord(r["notify"]);
   const search = asRecord(r["search"]);
 
-  const runIsolation = r["run_isolation"] === "subprocess" ? "subprocess" : "in-process";
-
   const claudeProfiles = parseClaudeProfiles(r["claude_profiles"]);
   const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
 
@@ -1016,7 +1012,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
           : d.commitReminder.enabled,
     },
     db: str(r["db"], d.db),
-    runIsolation,
     defaultProvider,
     daemon: {
       idleShutdownMinutes: nonNeg(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
