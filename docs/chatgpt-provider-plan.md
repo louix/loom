@@ -1,5 +1,9 @@
 # ChatGPT provider parity plan
 
+Native VM execution now exists: see [Codex session VMs](codex-session-vm.md).
+This document tracks provider parity and historical design decisions, not the
+current isolation implementation schedule.
+
 ## Goal and agreed direction
 
 Make ChatGPT a first-class Loom provider: changing models must not change

@@ -18,8 +18,8 @@ permissionDefault`, is fully parsed but **read nowhere** — dead since inceptio
 4. **Delete-branch-on-session-delete default** — TUI pre-checks it **on**
    (`fleet-handle.ts:1146`), CLI `--delete-branch` defaults **off**
    (`cli/src/loom.ts:119`). Divergent.
-5. **Enable/disable connector plugins** — no mechanism exists; connectors are
-   per-provider config carrying secrets.
+5. **Enable/disable connector plugins** — implemented through `provider_access`
+   in user config and per-repo overrides. A future Settings UI can edit that policy.
 
 **Decisions taken with the user:**
 

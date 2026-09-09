@@ -1,3 +1,6 @@
+> Historical review of an earlier checkout. Completed state-sync and TUI plans
+> are retained in Git history; current behavior is in [TUI state](tui-state.md).
+
 # Robustness through reduction — review
 
 Reviewed `loom/start-chatgpt-provider-plan-document` at `10ac15b`, in

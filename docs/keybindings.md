@@ -153,3 +153,9 @@ Each overlay owns the screen and shows its own fixed key set on the footer:
 Ink parses as a meta keypress. If your terminal instead sends the high-bit form
 (`Meta sends 8-bit`), the `⌥` prompt actions won't register — switch it to
 "`Esc`+" / "meta sends escape".
+
+
+The permission-mode chip also accepts mouse clicks in DETAIL and in the new-session
+and reply composers, using the same cycle as `⇧⇥`. It is disabled while a send is
+pending or its outcome needs review. Starting or resuming a session displays
+`starting session…`; send errors remain visible with the draft.
