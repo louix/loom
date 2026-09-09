@@ -597,12 +597,20 @@ export const mkFleetHandle = ({
    * than lost between the two sources.
    */
   const transcripts = mkTranscript({
-    fetch: (id, cursor) =>
-      client.request<HistoryPage>("session.events", {
+    fetch: async (id, cursor) => {
+      const page = await client.request<HistoryPage>("session.events", {
         id,
         limit: HISTORY_PAGE,
         ...(cursor === null ? {} : { cursor }),
-      }),
+      });
+      dispatch({
+        t: "restoreHistory",
+        texts: page.items.flatMap(({ event }) =>
+          event.type === "user_message" ? [event.text] : [],
+        ),
+      });
+      return page;
+    },
     connected,
     shown: (transcript) => shownLog({ ...state, transcript, outbox: composer.get() }),
     // Width the log pane renders at for the current body (see app.tsx): the

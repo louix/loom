@@ -228,6 +228,7 @@ export type Action =
   | { t: "promptCycleMode" }
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
+  | { t: "restoreHistory"; texts: readonly string[] }
   | { t: "recoverDraft"; text: string }
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
@@ -378,6 +379,15 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
         ...s,
         drafts: { ...s.drafts, last: [s.drafts.last, a.text].filter(Boolean).join("\n\n") },
       };
+
+    case "restoreHistory": {
+      // Keep local submissions newest, including requests still in flight.
+      const restored = [...a.texts, ...s.drafts.history].reduce(recorded, {
+        ...s.drafts,
+        history: [],
+      });
+      return { ...s, drafts: restored };
+    }
 
     case "pushHistory":
       return { ...s, drafts: recorded(s.drafts, a.text) };
