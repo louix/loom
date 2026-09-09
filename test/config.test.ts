@@ -694,3 +694,18 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("project provider allow/deny lists and explicit VM disable override inherited defaults", () => {
+  const base = cfg(
+    '[provider_access]\nonly=["claude:work"]\ndisabled=[]\n[isolation.claude]\nartifact="/tmp/runtime"',
+  );
+  assert.deepEqual(base.providerAccess, { only: ["claude:work"], disabled: [] });
+  const raw = deepMerge(
+    { isolation: { claude: { artifact: "/tmp/runtime" } } },
+    { isolation: { claude: { enabled: false } } },
+  );
+  assert.equal(normalizeConfig(raw).isolation.claude, undefined);
+  assert.deepEqual(cfg("[provider_access]\nonly=[]").providerAccess.only, []);
+  assert.throws(() => cfg('[provider_access]\ndisabled="claude"'), /array/);
+  assert.throws(() => cfg('[isolation.claude]\nenabled="no"'), /boolean/);
+});

@@ -235,3 +235,14 @@ allow_repo_programs = false
 # Restart the daemon and resume sessions after changes; packaged MCPs stay offline.
 # [repo.isolation]
 # extra_allowed_hosts = ["registry.npmjs.org"]
+
+# Optional project provider restrictions. Omit `only` to allow every configured
+# provider; an empty list allows none. `disabled` takes precedence over `only`.
+# [repo.provider_access]
+# only = ["claude:work"]
+# disabled = []
+#
+# Override inherited VM isolation for this project; restart the daemon to apply.
+# Existing incompatible sessions become read-only and can be forked.
+# [repo.isolation.claude]
+# enabled = false

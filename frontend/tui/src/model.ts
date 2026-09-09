@@ -1014,7 +1014,7 @@ export type FleetHit =
   | { kind: "session"; y: number; x0: number; x1: number; id: string }
   | { kind: "child"; y: number; x0: number; x1: number; sessionId: string; key: string }
   | { kind: "childMore"; y: number; x0: number; x1: number; sessionId: string }
-  | { kind: "mode"; y: number; x0: number; x1: number };
+  | { kind: "mode" | "promptMode"; y: number; x0: number; x1: number };
 
 /**
  * One row of the FLEET list, in the exact order `Fleet` draws it: a blank
@@ -1322,11 +1322,13 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     ) {
       local.push({ keys: "u", label: "undo", act: "undo" });
     }
-    if (
-      (!isClaudeId(session.provider) && !session.inPlace) ||
-      (isClaudeId(session.provider) && session.resumable === false)
-    ) {
-      local.push({ keys: "F", label: "fork", act: "fork" });
+    if ((!isClaudeId(session.provider) && !session.inPlace) || session.resumable === false) {
+      local.push({
+        keys: "F",
+        label: "fork",
+        act: "fork",
+        ...(session.resumable === false ? { footer: true } : {}),
+      });
     }
     local.push({ keys: "e", label: "rename", act: "title" });
     // Palette-only, like keepwarm — a rarely-used per-session note, not a

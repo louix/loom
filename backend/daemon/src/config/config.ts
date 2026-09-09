@@ -234,6 +234,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
+  providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
     git: { allowRepoPrograms: boolean };
     claude?: { artifact: string; smolvm: string };
@@ -382,6 +383,7 @@ export interface LoomConfig {
 export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
+  providerAccess: { disabled: [] },
   isolation: { git: { allowRepoPrograms: false }, extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
@@ -755,8 +757,24 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
 
   const daemon = asRecord(r["daemon"]);
   const worktree = asRecord(r["worktree"]);
+  const access = asRecord(r["provider_access"]);
+  const ids = (key: string): string[] | undefined => {
+    const value = access[key];
+    if (value === undefined) return;
+    if (
+      !Array.isArray(value) ||
+      !value.every((id) => typeof id === "string" && id.trim() === id && id.length > 0)
+    )
+      throw new Error(`provider_access.${key} must be an array of provider ids`);
+    return [...new Set(value as string[])];
+  };
+  const only = ids("only");
+  const disabled = ids("disabled") ?? [];
   const claudeVm = asRecord(asRecord(r["isolation"])["claude"]);
+  if (claudeVm["enabled"] !== undefined && typeof claudeVm["enabled"] !== "boolean")
+    throw new Error("isolation.claude.enabled must be a boolean");
   if (
+    claudeVm["enabled"] !== false &&
     asRecord(r["isolation"])["claude"] !== undefined &&
     (typeof claudeVm["artifact"] !== "string" || !claudeVm["artifact"].trim())
   )
@@ -791,7 +809,9 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   // The default provider must actually be configured; fall back to claude.
   const wantDefault = str(r["default_provider"], d.defaultProvider);
   const defaultProvider =
-    claudeIds.has(wantDefault) || wantDefault in aisdk ? wantDefault : "claude";
+    claudeIds.has(wantDefault) || wantDefault in aisdk || ["fake", "mock"].includes(wantDefault)
+      ? wantDefault
+      : "claude";
 
   // "manual" is the user-facing name for "default" (you approve everything).
   const permDefault =
@@ -904,10 +924,11 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
+    providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
       git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true },
       extraAllowedHosts: normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
-      ...(typeof claudeVm["artifact"] === "string"
+      ...(claudeVm["enabled"] !== false && typeof claudeVm["artifact"] === "string"
         ? {
             claude: {
               artifact: expandTilde(claudeVm["artifact"]),

@@ -297,10 +297,14 @@ const DetailArea = ({ view, handle, width }: PaneProps): ReactNode => {
   );
 };
 
-const Working = ({ handle }: { handle: FleetHandle }): ReactNode => {
+const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean }): ReactNode => {
   const { tick } = useSyncExternalStore(handle.animation.subscribe, handle.animation.get);
   const palette = useContext(PaletteContext);
-  return <Text color={palette.accentDim}>{`  ${spinnerFrame(tick)} working…`}</Text>;
+  return (
+    <Text
+      color={palette.accentDim}
+    >{`  ${spinnerFrame(tick)} ${starting ? "starting session…" : "working…"}`}</Text>
+  );
 };
 
 const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
@@ -322,7 +326,11 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
       logView(tr.transcript, box, id, logFilter, child, spinning, width, view.splitLogH, tr.scroll),
     [tr, box, id, logFilter, child, spinning, width, view.splitLogH],
   );
-  const spinner = useMemo(() => <Working handle={handle} />, [handle]);
+  const starting = !child && view.sel?.status.kind === "starting";
+  const spinner = useMemo(
+    () => <Working handle={handle} starting={starting} />,
+    [handle, starting],
+  );
   return <EventLog view={pane} width={width} spinner={spinner} />;
 };
 

@@ -32,7 +32,7 @@ import type {
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { setThemeMode, shortId, truncate } from "./theme.ts";
+import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailRows,
@@ -421,6 +421,23 @@ const deriveView = (
       pending: mode,
     });
     if (chip) hits.push({ kind: "mode", ...chip });
+  }
+
+  const prompt = openPrompt(state.overlay);
+  if (prompt && !prompt.feedback?.pending && !prompt.feedback?.uncertain) {
+    const isNew = prompt.t === "new";
+    const isSend = prompt.t === "session" && prompt.kind === "send";
+    if (isNew || (isSend && body.t !== "fleetOnly" && sel?.resumable !== false)) {
+      const width = isNew ? cols : eventsW;
+      const originX = isNew || body.t === "sessionPane" ? 1 : leftW + 2;
+      const padding = isNew ? 1 : 2;
+      const x0 = originX + padding + [...prompt.label].length + 1;
+      const chip = isNew ? modeChipText(prompt.settings.mode) : modeChipText(sel?.mode, mode);
+      const y = isNew ? rows - footerH + 1 : 3 + detailH + splitLogH;
+      const right = originX + width - padding - 1;
+      if (x0 <= right)
+        hits.push({ kind: "promptMode", y, x0, x1: Math.min(right, x0 + chip.length - 1) });
+    }
   }
 
   return {
@@ -1938,9 +1955,16 @@ export const mkFleetHandle = ({
       if (base === 65) return transcripts.scrollBy(-3); // wheel down → toward the tail
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
       // or the mode chip. Only in browse — overlays own the screen.
-      if (base === 0 && mouse[4] === "M" && (rawBtn & 32) === 0 && state.overlay.t === "browse") {
+      if (
+        base === 0 &&
+        mouse[4] === "M" &&
+        (rawBtn & 32) === 0 &&
+        (state.overlay.t === "browse" || state.overlay.t === "prompt")
+      ) {
         const hit = store.get().hits.find((h) => row === h.y && col >= h.x0 && col <= h.x1);
         if (!hit) return;
+        if (hit.kind === "promptMode") return handleKey("", { tab: true, shift: true } as Key);
+        if (state.overlay.t !== "browse") return;
         if (hit.kind === "session") return void dispatch({ t: "select", id: hit.id });
         if (hit.kind === "child")
           return void dispatch({ t: "selectChild", sessionId: hit.sessionId, key: hit.key });

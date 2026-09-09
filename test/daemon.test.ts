@@ -2567,3 +2567,45 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
     await hh.cleanup();
   }
 });
+
+test("disabled and missing providers stay read-only and can fork to an enabled provider", async () => {
+  const hh = await makeHarness({
+    config: 'default_provider="fake"\n[provider_access]\ndisabled=["claude"]\n',
+  });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const providers = await c.request<Array<{ id: string }>>("providers.list");
+    assert(!providers.some((p) => p.id === "claude"));
+    await assert.rejects(
+      c.request("session.create", { provider: "claude", prompt: "no" }),
+      /disabled for this project/,
+    );
+    await assert.rejects(
+      c.request("session.create", { provider: "retired", prompt: "no" }),
+      /no longer configured/,
+    );
+    for (const provider of ["claude", "retired"]) {
+      const parent = await c.request<SessionSnapshot>("session.createStub", {
+        provider,
+        status: "idle",
+        prompt: "old",
+      });
+      hh.daemon.registry.setFields(parent.id, { providerRef: parent.id });
+      const snap = await c.request<SessionSnapshot>("session.get", { id: parent.id });
+      assert.equal(snap.resumable, false);
+      assert.match(snap.resumeBlockedReason!, /Provider/);
+      await assert.rejects(c.request("session.send", { id: parent.id, text: "no" }), /Provider/);
+      const fork = await c.request<SessionSnapshot>("session.fork", { id: parent.id });
+      assert.equal(fork.provider, "fake");
+      assert.equal(fork.parentId, parent.id);
+      assert.ok(fork.worktree);
+    }
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});

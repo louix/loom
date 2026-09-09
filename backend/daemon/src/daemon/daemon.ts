@@ -14,7 +14,6 @@ import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/pat
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import { resolveMcpSpec } from "./mcp-fallback.ts";
-import { findClaudeOwner } from "./provider-recovery.ts";
 import {
   claudeProfileId,
   lintConfig,
@@ -810,7 +809,9 @@ export class Daemon {
    * the registry (which reads the profile by reference) sees the result.
    */
   async #resolveAutoModels(): Promise<void> {
-    const pending = Object.entries(this.config.providers.aisdk).filter(([, p]) => p.autoModels);
+    const pending = Object.entries(this.config.providers.aisdk).filter(
+      ([id, p]) => p.autoModels && this.#providers.has(id),
+    );
     if (pending.length === 0) return;
     await Promise.all(
       pending.map(async ([id, p]) => {
@@ -889,7 +890,7 @@ export class Daemon {
 
   async #probeClaudeCatalog(): Promise<void> {
     this.#claudeModelsError = undefined;
-    if (this.#standalone) return;
+    if (this.#standalone || !this.#claudeCatalogId) return;
     if (this.config.providers.claude.models.length > 0) return;
     try {
       const provider = await this.#providers.get(this.#claudeCatalogId);
@@ -925,7 +926,9 @@ export class Daemon {
 
   /** The Claude provider id that owns the shared model catalog — profile 0. */
   get #claudeCatalogId(): string {
-    return claudeProfileId(this.config.claudeProfiles[0] ?? { name: "" });
+    return (
+      this.config.claudeProfiles.map(claudeProfileId).find((id) => this.#providers.has(id)) ?? ""
+    );
   }
 
   /** The catalog probe is still running and nothing is pinned — the picker
@@ -952,24 +955,26 @@ export class Daemon {
     const autoColor = (explicit: string): string =>
       explicit || (PROVIDER_PALETTE[paletteIx++ % PROVIDER_PALETTE.length] ?? "");
 
-    const out: ProviderInfo[] = this.config.claudeProfiles.map((profile) => {
-      const id = claudeProfileId(profile);
-      const account = readClaudeAccount(profile.dir);
-      return {
-        id,
-        models: claudeModels,
-        ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
-        ...(this.#claudeCatalogPending ? { modelsLoading: true } : {}),
-        ...(this.#claudeModelsError ? { modelsError: this.#claudeModelsError } : {}),
-        defaultModel: this.#defaultModelFor(id),
-        defaultEffort: this.#defaultEffortFor(id),
-        defaultMode: mode,
-        tag: profile.name || "Claude",
-        color: id === "claude" ? profile.color : autoColor(profile.color),
-        isDefault: def === id,
-        ...(account ? { account: { loginMethod: account.loginMethod, org: account.org } } : {}),
-      };
-    });
+    const out: ProviderInfo[] = this.config.claudeProfiles
+      .filter((profile) => this.#providers.has(claudeProfileId(profile)))
+      .map((profile) => {
+        const id = claudeProfileId(profile);
+        const account = readClaudeAccount(profile.dir);
+        return {
+          id,
+          models: claudeModels,
+          ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
+          ...(this.#claudeCatalogPending ? { modelsLoading: true } : {}),
+          ...(this.#claudeModelsError ? { modelsError: this.#claudeModelsError } : {}),
+          defaultModel: this.#defaultModelFor(id),
+          defaultEffort: this.#defaultEffortFor(id),
+          defaultMode: mode,
+          tag: profile.name || "Claude",
+          color: id === "claude" ? profile.color : autoColor(profile.color),
+          isDefault: def === id,
+          ...(account ? { account: { loginMethod: account.loginMethod, org: account.org } } : {}),
+        };
+      });
 
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
       // Picker rows carry what the endpoint (or a pin) actually says — display
@@ -1012,7 +1017,7 @@ export class Daemon {
         isDefault: def === id,
       });
     }
-    return out;
+    return out.filter((provider) => this.#providers.has(provider.id));
   }
 
   /**
@@ -1275,26 +1280,6 @@ export class Daemon {
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
-    if (!this.#providers.has(row.provider)) {
-      const owners = isClaudeId(row.provider)
-        ? findClaudeOwner(this.config.claudeProfiles, providerRef)
-        : [];
-      if (owners.length === 1) {
-        const newId = claudeProfileId(owners[0]!);
-        this.#registry.setFields(id, { provider: newId });
-        this.#emitNotice(
-          `session ${id.slice(0, 8)}: provider "${row.provider}" no longer exists — relinked to "${newId}" (found its transcript there)`,
-          "warn",
-        );
-        row.provider = newId;
-      } else {
-        throw new RpcError(
-          "bad_request",
-          `unknown provider: ${row.provider}` +
-            (owners.length > 1 ? ` (ambiguous — matches ${owners.length} profiles)` : ""),
-        );
-      }
-    }
     const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
     // If the model this session ran on has since dropped out of the endpoint's
     // list, revive on the current default instead of failing the first turn.
@@ -1690,6 +1675,8 @@ export class Daemon {
   #resumeBlockedReason(row: SessionSnapshot): string | undefined {
     if (this.#sessions.has(row.id) || this.#revivals.has(row.id) || row.status.kind === "starting")
       return;
+    const unavailable = this.#providers.unavailableReason(row.provider);
+    if (unavailable) return unavailable;
     if (
       this.config.providers.aisdk[row.provider]?.sdk === "chatgpt" &&
       this.#registry.store.historyBackend(row.id) === "aisdk"
@@ -1928,6 +1915,7 @@ export class Daemon {
     const needsRestart =
       JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
       JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
+      JSON.stringify(next.providerAccess) !== JSON.stringify(before.providerAccess) ||
       JSON.stringify(next.isolation) !== JSON.stringify(before.isolation) ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
@@ -2147,9 +2135,9 @@ export class Daemon {
       if (prompt === "") throw new RpcError("bad_request", "prompt is required");
 
       const providerId =
-        typeof p["provider"] === "string" && this.#providers.has(p["provider"] as string)
-          ? (p["provider"] as string)
-          : this.#defaultProviderId();
+        typeof p["provider"] === "string" ? p["provider"] : this.#defaultProviderId();
+      const unavailable = this.#providers.unavailableReason(providerId);
+      if (unavailable) throw new RpcError("provider_unavailable", unavailable);
       const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? this.#defaultMode();
       const aisdkProfile = this.config.providers.aisdk[providerId];
       const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
@@ -2432,8 +2420,17 @@ export class Daemon {
       // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
       // conservatively `false` (it may route through Codex's own thread),
       // so a config-membership guess would wrongly authorize a hard fork.
-      const parentProvider = await this.#providers.get(parent.provider);
-      const continuation = isClaudeId(parent.provider) && !!this.#resumeBlockedReason(parent);
+      const p = isObj(params) ? params : {};
+      const fallback = this.#providers.has(parent.provider)
+        ? parent.provider
+        : this.#defaultProviderId();
+      const providerId = typeof p["provider"] === "string" ? p["provider"] : fallback;
+      const parentProvider = await this.#providers.get(providerId);
+      const continuation = providerId !== parent.provider || !!this.#resumeBlockedReason(parent);
+      const model =
+        providerId === parent.provider ? parent.model : this.#defaultModelFor(providerId);
+      const effort =
+        providerId === parent.provider ? parent.effort : this.#defaultEffortFor(providerId);
       if (!parentProvider.capabilities.ownsTranscript && !continuation) {
         throw new RpcError(
           "bad_request",
@@ -2452,7 +2449,6 @@ export class Daemon {
         // request would 400 on most endpoints.
         throw new RpcError("bad_request", "the parent is mid-turn — interrupt it before forking");
       }
-      const p = isObj(params) ? params : {};
       const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
 
       const context = continuation
@@ -2467,7 +2463,7 @@ export class Daemon {
       try {
         wt = this.#worktrees.create(newId, {
           ...(baseRef ? { baseRef } : {}),
-          model: parent.model || parent.provider,
+          model: model || providerId,
         });
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
@@ -2485,9 +2481,9 @@ export class Daemon {
         if (source) this.#worktrees.copyChanges(source, wt.path);
         this.#registry.create({
           id: newId,
-          provider: parent.provider,
-          model: parent.model,
-          effort: parent.effort,
+          provider: providerId,
+          model,
+          effort,
           mode,
           parentId: id,
           title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
@@ -2495,7 +2491,10 @@ export class Daemon {
           branch: wt.branch,
           baseBranch: wt.baseRef,
         });
-        this.#registry.setFields(newId, { forkTurn: parent.turns, providerRef: newId });
+        this.#registry.setFields(newId, {
+          forkTurn: parent.turns,
+          ...(!continuation ? { providerRef: newId } : {}),
+        });
         if (!continuation) this.#pmsgs.copyTo(id, newId);
         this.#publishState(newId);
 
@@ -2514,15 +2513,15 @@ export class Daemon {
             disableTools: this.config.providers.claude.disableBuiltin,
             settingSources: this.config.providers.claude.settingSources,
             systemPromptAppend: systemPromptAppendFor(
-              false,
+              !!this.config.providers.aisdk[providerId],
               mcpHandles.length > 0,
               wt.path,
               this.repoRoot,
             ),
             repoInstructions: repoInstructionsFor(wt.path, this.repoRoot),
             workspaceRoot: wt.path,
-            ...(parent.model ? { model: parent.model } : {}),
-            ...(parent.effort ? { effort: parent.effort } : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
           });
           this.emitEvent({
             type: "user_message",
@@ -2544,8 +2543,8 @@ export class Daemon {
               wt.path,
               this.repoRoot,
             ),
-            ...(parent.model ? { model: parent.model } : {}),
-            ...(parent.effort ? { effort: parent.effort } : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
           });
       } catch (err) {
         await this.#sessions.close(newId).catch(() => {});
@@ -2571,7 +2570,7 @@ export class Daemon {
           if (!this.#registry.get(newId))
             this.#registry.create({
               id: newId,
-              provider: parent.provider,
+              provider: providerId,
               parentId: id,
               worktree: wt.path,
               branch: wt.branch,

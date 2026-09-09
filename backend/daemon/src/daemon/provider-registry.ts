@@ -77,11 +77,22 @@ export class ProviderRegistry {
 
   get defaultId(): string {
     const want = this.#config.defaultProvider;
-    return this.#ids.has(want) ? want : "claude";
+    if (this.has(want)) return want;
+    return [...this.#ids].find((id) => id !== "fake" && id !== "mock" && this.has(id)) ?? "";
   }
 
   has(id: string): boolean {
-    return this.#ids.has(id);
+    return this.unavailableReason(id) === undefined;
+  }
+
+  unavailableReason(id: string): string | undefined {
+    if (!this.#ids.has(id))
+      return `Provider ${id} is no longer configured. Fork to an enabled provider to continue.`;
+    const { only, disabled } = this.#config.providerAccess;
+    if ((only && !only.includes(id)) || disabled.includes(id))
+      return `Provider ${id} is disabled for this project. Fork to an enabled provider to continue.`;
+    if (!this.#manifest[this.#packageFor(id)])
+      return `Provider ${id}'s connector is missing from this build. Fork to an available provider to continue.`;
   }
 
   /** Capabilities of `id` if its provider has already been constructed this
@@ -92,6 +103,8 @@ export class ProviderRegistry {
 
   /** Construct (or return the cached) provider for `id`, loading its connector lazily. */
   get(id: string): Promise<AgentProvider> {
+    const reason = this.unavailableReason(id);
+    if (reason) return Promise.reject(new Error(reason));
     const cached = this.#cache.get(id);
     if (cached) return cached;
     if (!this.#ids.has(id)) return Promise.reject(new Error(`unknown provider: ${id}`));

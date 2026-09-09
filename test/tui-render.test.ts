@@ -2922,3 +2922,34 @@ test("isolation-incompatible Claude session is read-only with a visible reason a
     teardown();
   }
 });
+
+test("mode chips in new and reply prompts are clickable without losing the draft", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  const clickChip = () => {
+    const chip = handle.getView().hits.find((hit) => hit.kind === "promptMode");
+    assert.ok(chip);
+    handle.handleKey(`[<0;${chip.x0};${chip.y}M`, {} as Key);
+  };
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, mode: "default" })));
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("new draft", {} as Key);
+    const before = openPrompt(handle.getView().ui.overlay);
+    assert.equal(before?.t, "new");
+    clickChip();
+    const after = openPrompt(handle.getView().ui.overlay);
+    assert.equal(after?.buffer.text, "new draft");
+    assert(after?.t === "new" && before?.t === "new");
+    assert.notEqual(after.settings.mode, before.settings.mode);
+    assert.equal(fake.of("session.setMode").length, 0);
+    handle.handleKey("", { escape: true } as Key);
+    handle.handleKey("", { return: true } as Key);
+    clickChip();
+    assert.equal(handle.modes.get()["a"]?.t, "choosing");
+    assert.ok(openPrompt(handle.getView().ui.overlay));
+  } finally {
+    teardown();
+  }
+});
