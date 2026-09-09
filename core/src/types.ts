@@ -70,7 +70,7 @@ export interface McpServerHandle {
   /** Upstream credential env name to omit from native child environments. */
   credentialEnv?: string;
   spec:
-    | { transport: "runtime"; runtime: string; isolation: "vm"; allowedHosts?: string[] }
+    | { transport: "runtime"; runtime: string; isolation: "vm" }
     | { transport: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
     | { transport: "http"; url: string; headers?: Record<string, string> };
 }

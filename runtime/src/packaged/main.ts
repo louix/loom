@@ -1,6 +1,3 @@
-import { startEgress } from "../egress.ts";
-import { allowedHosts } from "../egress-policy.ts";
-import { join } from "node:path";
 /** One session's VM supervisor. Parent EOF owns its lifetime, including startup. */
 import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { stdioHttp } from "../mcp/stdio-http.ts";
@@ -16,7 +13,6 @@ import {
 } from "./vm.ts";
 const writer = new FrameWriter(Deno.stdout.writable);
 const frames = readFrames(Deno.stdin.readable, (v) => v as VmBinding);
-let egress: ReturnType<typeof startEgress> | undefined;
 let binding: VmBinding | undefined;
 let child: Deno.ChildProcess | undefined;
 let bridge: Awaited<ReturnType<typeof stdioHttp>> | undefined;
@@ -45,14 +41,7 @@ try {
   const parent = frames.next().then((next) => {
     if (!next.done) throw new Error("VM worker already bound");
   });
-  const hosts = allowedHosts(b.allowedHosts);
-  if (hosts.length) {
-    if (b.egressSocket !== join(b.state, "egress.sock")) throw new Error("Invalid egress endpoint");
-    egress = startEgress(b.egressSocket, hosts, (host, allowed) => {
-      if (!allowed) console.error(`MCP egress denied: ${host}`);
-    });
-  } else if (b.egressSocket) throw new Error("Egress endpoint without allowed hosts");
-  if (b.gitSocket || b.egressSocket) {
+  if (b.gitSocket) {
     for (const args of [vmCreateArguments(b), ["machine", "start", "--name", sessionVmName]]) {
       child = new Deno.Command(b.smolvm, {
         args,
@@ -71,7 +60,7 @@ try {
     }
   }
   child = new Deno.Command(b.smolvm, {
-    args: b.gitSocket || b.egressSocket ? vmExecArguments(b) : vmArguments(b),
+    args: b.gitSocket ? vmExecArguments(b) : vmArguments(b),
     cwd: b.state,
     clearEnv: true,
     env: vmEnvironment(b.state),
@@ -106,7 +95,6 @@ try {
     .catch(() => {});
 } finally {
   clearTimeout(bootstrap);
-  await egress?.close();
   // Give cooperative MCP EOF a short grace, then explicitly stop the private VM.
   const closing = bridge?.close();
   void closing?.catch(() => {});

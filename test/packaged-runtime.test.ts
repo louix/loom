@@ -31,6 +31,7 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
     '\nenv={TOKEN="secret"}',
     "\nnetwork=true",
     '\nhosts=["example.com"]',
+    '\nallowed_hosts=["example.com"]',
     "\nmounts=[]",
   ])
     assert.throws(() => normalizeConfig(parse(base + extra)));
@@ -44,7 +45,6 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     { hosts: ["evil"] },
     { mounts: ["/"] },
     { env: { TOKEN: "secret" } },
-    { allowed_hosts: ["example.com"] },
     { version: 2 },
     { entrypoint: "/bin/sh" },
     { args: [1] },
@@ -134,9 +134,8 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
       }),
     { id: "mock", config: {}, logger: makeLogger("test") },
     undefined,
-    async (name, runtime, cwd, _launch, _git, _repo, hosts) => {
+    async (name, runtime, cwd) => {
       assert.equal(runtime, "tilth");
-      assert.deepEqual(hosts, ["api.example.com"]);
       const record = { cwd, closed: false };
       launched.push(record);
       return {
@@ -158,12 +157,7 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
       {
         name: "code",
         defaultFor: ["read"],
-        spec: {
-          transport: "runtime",
-          runtime: "tilth",
-          isolation: "vm",
-          allowedHosts: ["api.example.com"],
-        },
+        spec: { transport: "runtime", runtime: "tilth", isolation: "vm" },
       },
     ],
   };
@@ -212,37 +206,4 @@ test("bundles take precedence, reject mutable updates, and never hide broken pac
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", before);
     await Deno.remove(home, { recursive: true });
   }
-});
-
-test("VM MCP allowed_hosts are explicit, normalized and never accepted for host commands", () => {
-  const base = '[[command-mcp]]\nname="network"\nruntime="probe"\nisolation="vm"';
-  const config = normalizeConfig(
-    parse(base + '\nallowed_hosts=["API.Example.com", "api.example.com"]'),
-  );
-  assert.deepEqual(config.mcp[0], {
-    name: "network",
-    runtime: "probe",
-    isolation: "vm",
-    defaultFor: [],
-    allowedHosts: ["api.example.com"],
-  });
-  for (const value of [
-    "true",
-    '"example.com"',
-    '["*.example.com"]',
-    '["https://example.com"]',
-    '["example.com:443"]',
-    '["127.0.0.1"]',
-    '["::1"]',
-    '["example.com."]',
-    '["example.bad-"]',
-  ])
-    assert.throws(() => normalizeConfig(parse(base + "\nallowed_hosts=" + value)), /allowed_hosts/);
-  assert.throws(
-    () =>
-      normalizeConfig(
-        parse('[[command-mcp]]\nname="host"\ncommand="probe"\nallowed_hosts=["example.com"]'),
-      ),
-    /VM-backed/,
-  );
 });

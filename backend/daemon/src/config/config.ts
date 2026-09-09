@@ -1,4 +1,3 @@
-import { allowedHosts } from "../../../../runtime/src/egress-policy.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -329,7 +328,7 @@ export interface LoomConfig {
   mcp: Array<
     { name: string; defaultFor?: McpCapability[] } & (
       | { command: string; args?: string[] }
-      | { runtime: string; isolation: "vm"; allowedHosts?: string[] }
+      | { runtime: string; isolation: "vm" }
     )
   >;
   httpMcp: Array<{
@@ -828,22 +827,21 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       if ("runtime" in e) {
         if (e["isolation"] !== "vm")
           throw new Error('Packaged command-mcp requires isolation = "vm"');
-        if (["command", "args", "env", "network", "hosts", "mounts"].some((k) => k in e))
+        if (
+          ["command", "args", "env", "network", "hosts", "allowed_hosts", "mounts"].some(
+            (k) => k in e,
+          )
+        )
           throw new Error(
-            "Packaged command-mcp uses manifest arguments, session workspace and allowed_hosts; command/args/env/network/hosts/mounts are unsupported",
+            "Packaged command-mcp uses manifest arguments, session workspace and no network; command/args/env/network/hosts/allowed_hosts/mounts are unsupported",
           );
         return {
           name: required(e, "name"),
           runtime: required(e, "runtime"),
-          ...(e["allowed_hosts"] !== undefined
-            ? { allowedHosts: allowedHosts(e["allowed_hosts"]) }
-            : {}),
           isolation: "vm" as const,
           defaultFor: defaults(e),
         };
       }
-      if ("allowed_hosts" in e)
-        throw new Error("allowed_hosts requires a VM-backed command-mcp runtime");
       if ("isolation" in e && e["isolation"] !== "host")
         throw new Error(
           'Host command-mcp supports only isolation = "host"; VM execution requires runtime',
