@@ -18,7 +18,7 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
   cp ${closure}/store-paths $out/store-paths
   ${pkgs.lib.optionalString (sessionVersion != null) ''
     cp ${closure}/registration $out/registration
-    echo 1 > $out/session-environment-version
+    echo 2 > $out/session-environment-version
   ''}
   mkdir -p $out/bin
   ln -s ${gitShim}/bin/git $out/bin/git

@@ -46,6 +46,8 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
     lock = await lockSessionState(dir);
     await Deno.mkdir(join(dir, "profile"));
     await Deno.writeTextFile(join(dir, "profile/history"), "retained");
+    await Deno.mkdir(join(dir, "disks"));
+    await Deno.writeTextFile(join(dir, "disks/storage.raw"), "retained disk");
     await Deno.writeTextFile(join(dir, "active.json"), JSON.stringify({ token: "first" }));
     await assert.rejects(stoppedSessionVm(root, "session-1", true), /still running/);
     lock.close();
@@ -56,8 +58,10 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
     await finishSessionState(dir, "first");
     await stoppedSessionVm(root, "session-1");
     assert.equal(await Deno.readTextFile(join(dir, "profile/history")), "retained");
+    assert.equal(await Deno.readTextFile(join(dir, "disks/storage.raw")), "retained disk");
     await stoppedSessionVm(root, "session-1", true);
     await assert.rejects(Deno.stat(join(dir, "profile")), Deno.errors.NotFound);
+    await assert.rejects(Deno.stat(join(dir, "disks")), Deno.errors.NotFound);
     assert((await Deno.stat(join(dir, "owner.lock"))).isFile);
   } finally {
     lock?.close();

@@ -40,10 +40,12 @@ export const withStoppedSessionVm = async <T>(
   }
 };
 export const removeSessionVmProfile = async (repo: string, id: string) => {
-  try {
-    await Deno.remove(join(sessionVmDirectory(repo, id), "profile"), { recursive: true });
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  for (const name of ["profile", "disks", "disk-runtime-root", "disk-backend-root"]) {
+    try {
+      await Deno.remove(join(sessionVmDirectory(repo, id), name), { recursive: true });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
   }
 };
 export const stoppedSessionVm = async (repo: string, id: string, remove = false) =>

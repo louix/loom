@@ -95,6 +95,15 @@ export const initializeGuestNix = async (signal: AbortSignal): Promise<void> => 
   const registration = await Deno.open("/run/loom/runtime/registration");
   await registration.readable.pipeTo(child.stdin);
   if (!(await child.status).success) throw new WorkerDiagnostic("sessionEnvironmentFailed");
-  for (const path of (await Deno.readTextFile("/run/loom/runtime/store-paths")).trim().split("\n"))
-    await Deno.symlink(path, "/nix/var/nix/gcroots/loom/" + path.split("/").at(-1));
+  for (const path of (await Deno.readTextFile("/run/loom/runtime/store-paths"))
+    .trim()
+    .split("\n")) {
+    const root = "/nix/var/nix/gcroots/loom/" + path.split("/").at(-1);
+    try {
+      await Deno.symlink(path, root);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists) || (await Deno.readLink(root)) !== path)
+        throw error;
+    }
+  }
 };

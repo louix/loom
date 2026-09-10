@@ -16,6 +16,7 @@ import {
 } from "../../../../runtime/src/session-vm/persistence.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
+import { readSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -84,7 +85,7 @@ export const launchSessionVm = async (
   }
   if (environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "1")
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "2")
         throw new Error();
     } catch {
       throw new Error(
@@ -93,6 +94,7 @@ export const launchSessionVm = async (
     }
   }
   let sessionDirectory: string | undefined;
+  let savedDisks = false;
   if (options.sessionDirectory) {
     await Deno.mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
     sessionDirectory = await Deno.realPath(options.sessionDirectory);
@@ -102,6 +104,11 @@ export const launchSessionVm = async (
       /[:,;|\n\0]/.test(sessionDirectory)
     )
       throw new Error("Session history must be outside the worktree");
+    savedDisks = await readSessionDisks(join(sessionDirectory, "disks"), {
+      artifact,
+      smolvm,
+      writableNix: options.environment?.nix === true,
+    });
   }
   const state = await Deno.realPath(
     await Deno.makeTempDir({
@@ -122,6 +129,9 @@ export const launchSessionVm = async (
     ...(options.environment?.nix ? { writableNix: true } : {}),
     gitSocket: join(state, "git.sock"),
     ...(sessionDirectory ? { sessionDirectory } : {}),
+    ...(sessionDirectory && (savedDisks || environmentEnabled(options.environment))
+      ? { persistentDisks: true }
+      : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
   };
   try {

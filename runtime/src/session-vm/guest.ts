@@ -3,6 +3,16 @@ import { sessionAuth } from "./auth.ts";
 import { prepareEnvironment, initializeGuestNix } from "./environment.ts";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
+// Cache package downloads on ext4, alongside the private Nix store. Worktree
+// outputs still live on the host mount; HOME holds only launch-time bootstrap.
+for (const [key, path] of Object.entries({
+  XDG_CACHE_HOME: "/storage/loom-cache",
+  XDG_DATA_HOME: "/storage/loom-data",
+  DENO_DIR: "/storage/loom-cache/deno",
+})) {
+  await Deno.mkdir(path, { recursive: true });
+  Deno.env.set(key, path);
+}
 const auth = sessionAuth(JSON.parse(await Deno.readTextFile("/run/loom/private/auth.json")));
 Deno.env.set("CLAUDE_CONFIG_DIR", "/tmp/loom-home/.claude");
 Deno.env.set("CLAUDE_CODE_PROJECT_DIR_NAME", "loom-session");

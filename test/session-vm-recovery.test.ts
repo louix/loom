@@ -28,6 +28,8 @@ const fixture = async () => {
   };
   await Deno.mkdir(join(dir, "profile"));
   await Deno.writeTextFile(join(dir, "profile/history"), "keep");
+  await Deno.mkdir(join(dir, "disks"));
+  await Deno.writeTextFile(join(dir, "disks/storage.raw"), "keep disk");
   await Deno.mkdir(join(state, "private"));
   await Deno.writeTextFile(join(state, "private/auth.json"), "disposable");
   await Deno.writeTextFile(join(state, "git-bridge-test.stopped"), "");
@@ -58,6 +60,7 @@ test("confirmed cleanup is retryable and retains history", async () => {
     assert.equal(await recoverSessionVm(f.dir), false);
     await assert.rejects(Deno.stat(f.state), Deno.errors.NotFound);
     assert.equal(await Deno.readTextFile(join(f.dir, "profile/history")), "keep");
+    assert.equal(await Deno.readTextFile(join(f.dir, "disks/storage.raw")), "keep disk");
   } finally {
     await f.close();
   }

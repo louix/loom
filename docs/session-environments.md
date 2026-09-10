@@ -58,11 +58,13 @@ startup, cleans up the VM and reports a fixed diagnostic. Raw command output is
 discarded so it cannot corrupt the worker protocol or expose credentials in logs.
 Setup has no interactive stdin and should be repeatable.
 
-This MVP runs setup on both create and resume, because Loom currently deletes
-the VM disk on shutdown. Worktree outputs such as `node_modules` survive in the
-host-mounted session worktree. The private Nix store and global guest caches do
-not survive. There is no automatic image publication or file-based invalidation
-yet; the separate preparation step leaves room for these later.
+Setup runs on both create and resume. Environment-enabled sessions retain their
+private guest disks across shutdown, including the Nix store and caches under
+`/storage/loom-cache` and `/storage/loom-data`. Worktree outputs such as
+`node_modules` remain in the host-mounted session worktree. Archiving retains
+the disks; deleting a session removes them. A runtime/backend or Nix-setting
+change blocks reuse and asks you to fork, preserving the existing worktree and
+history. Exact runtime/backend packages are retained as Nix GC roots.
 
 ## Network presets
 
@@ -98,7 +100,8 @@ credentials or provider requests:
 deno run -A scripts/test-session-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm
 ```
 
-Verified on Linux with smolvm 1.8.1: a fresh store entered this repo's dev shell,
-installed its locked Deno dependencies, and reached worker readiness in about
-184 seconds without provider credentials. Cold dependency downloads dominate
-that time; this MVP does not cache them across VM launches.
+Verified on Linux with smolvm 1.8.1: this repo's first launch reached readiness
+in 188 seconds; a complete VM relaunch took 4.7 seconds. Both launches activated
+Nix and ran the locked dependency installation without provider credentials.
+The test checks a guest-side counter to verify disk persistence. These timings
+measure reuse of a session disk, not cloning a prepared repo base.

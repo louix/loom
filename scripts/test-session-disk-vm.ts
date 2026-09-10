@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import { vmEnvironment } from "../runtime/src/packaged/vm.ts";
 import { attachDiskTemplates } from "../runtime/src/packaged/disk-templates.ts";
+import { attachSessionDisks, copyDisk, sessionDiskSizes } from "../runtime/src/session-vm/disks.ts";
 
 const [binary] = Deno.args;
 assert(binary, "Pass the pinned smolvm executable");
@@ -49,10 +50,7 @@ const create = async (id: string, workspace: string) => {
     "2048",
     // Explicit non-default sizes use the documented raw-disk fallback in 1.8.1.
     // Default Linux disks are qcow2 and cannot be independently copied this way.
-    "--storage",
-    "32",
-    "--overlay",
-    "8",
+    ...sessionDiskSizes,
     "-v",
     `${workspace}:/workspace`,
     "-w",
@@ -72,15 +70,7 @@ const copyDisks = async (source: string, target: string) => {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       });
     }
-    const result = await new Deno.Command("cp", {
-      args:
-        Deno.build.os === "darwin"
-          ? ["-c", from, to]
-          : ["--reflink=auto", "--sparse=always", "--", from, to],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assert(result.success, new TextDecoder().decode(result.stderr));
+    await copyDisk(from, to);
     await Deno.copyFile(join(source, `${stem}.formatted`), join(target, `${stem}.formatted`));
     const info = await stat(to);
     assert(info.blocks * 512 < info.size / 4, "Disk copy lost sparseness");
@@ -133,6 +123,24 @@ try {
   assert.equal(await exec(left.state, "cat /storage/dependency /workspace/dirty"), "left\ndirty");
   assert.equal(await Deno.readTextFile(join(second, "dirty")), "dirty\n");
   await assert.rejects(Deno.stat(join(first, "dirty")), Deno.errors.NotFound);
+  phase("Recreating a launch around durable disk links");
+  await machine(left.state, "stop");
+  const durable = join(root, "durable");
+  await copyDisks(left.disks, durable);
+  await attachSessionDisks(durable, left.disks, left.state);
+  await machine(left.state, "start");
+  assert.equal(await exec(left.state, "cat /storage/dependency"), "left");
+  await exec(left.state, "echo linked > /storage/dependency; sync");
+  await machine(left.state, "stop");
+  await machine(left.state, "delete", "--force");
+  states.splice(states.indexOf(left.state), 1);
+  const resumed = await create("resumed", first);
+  await attachSessionDisks(durable, resumed.disks, resumed.state);
+  await machine(resumed.state, "start");
+  assert.equal(
+    await exec(resumed.state, "cat /storage/dependency /workspace/identity"),
+    "linked\nfirst",
+  );
   phase(
     "Passed: restart, sparse copies, independent writes, source deletion, and fresh workspace binding",
   );

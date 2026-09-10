@@ -26,6 +26,12 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
+import {
+  readSessionDisks,
+  saveSessionDisks,
+  attachSessionDisks,
+  sessionDiskSizes,
+} from "./disks.ts";
 const bootstrap = setTimeout(() => Deno.exit(1), 10_000);
 const frames = readFrames(Deno.stdin.readable, (value) => value);
 const first = await frames.next();
@@ -48,9 +54,11 @@ let git: Awaited<ReturnType<typeof startSessionGit>>;
 let egress: ReturnType<typeof startEgress> | undefined;
 let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
 let ended = false;
+const cancelled = new AbortController();
 const done = Promise.withResolvers<void>();
 const stop = () => {
   ended = true;
+  cancelled.abort();
   done.resolve();
 };
 Deno.addSignalListener("SIGTERM", stop);
@@ -105,11 +113,12 @@ const command = async (args: string[]) => {
     clearEnv: true,
     env: vmEnvironment(binding.state),
     stdin: "null",
-    stdout: "null",
+    stdout: "piped",
     stderr: "null",
   });
-  const result = await Promise.race([child.status, done.promise.then(() => undefined)]);
+  const result = await Promise.race([child.output(), done.promise.then(() => undefined)]);
   if (!result?.success) throw new Error("Session VM startup interrupted or failed");
+  return new TextDecoder().decode(result.stdout).trim();
 };
 try {
   if (binding.sessionDirectory) {
@@ -163,6 +172,7 @@ try {
   const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);
   if (shimMount !== -1) create.splice(shimMount - 1, 2);
   create[create.indexOf("--mem") + 1] = "2048";
+  if (binding.persistentDisks) create.push(...sessionDiskSizes);
   create.push(
     "-v",
     `${binding.state}/private:/run/loom/private:ro`,
@@ -186,8 +196,25 @@ try {
   );
   await attachDiskTemplates(binding.state, binding.smolvm);
   await command(create);
+  const diskDirectory =
+    binding.persistentDisks && binding.sessionDirectory
+      ? join(binding.sessionDirectory, "disks")
+      : undefined;
+  const machineDirectory = diskDirectory
+    ? await command(["machine", "data-dir", "--name", sessionVmName])
+    : undefined;
+  const saved = diskDirectory ? await readSessionDisks(diskDirectory, binding) : false;
+  if (saved) await attachSessionDisks(diskDirectory!, machineDirectory!, binding.state);
   await command(["machine", "start", "--name", sessionVmName]);
   await retainDiskTemplates(binding.state, binding.smolvm);
+  if (diskDirectory && !saved) {
+    // Let the backend format its own disks once, then attach the durable pair.
+    // No repo command or credential-consuming worker has run at this point.
+    await command(["machine", "stop", "--name", sessionVmName]);
+    await saveSessionDisks(diskDirectory, machineDirectory!, binding, cancelled.signal);
+    await attachSessionDisks(diskDirectory, machineDirectory!, binding.state);
+    await command(["machine", "start", "--name", sessionVmName]);
+  }
   if (ended) throw new Error("Session closed during VM startup");
   child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,

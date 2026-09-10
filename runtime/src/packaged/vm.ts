@@ -11,6 +11,8 @@ export interface VmBinding {
   token: string;
   /** Private guest OverlayFS upper, never a writable host store. */
   writableNix?: boolean;
+  /** Raw disks owned by sessionDirectory; launch-local links are disposable. */
+  persistentDisks?: boolean;
   gitSocket?: string;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
