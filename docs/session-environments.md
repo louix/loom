@@ -115,6 +115,13 @@ exhausted guest memory. Increasing `timeout_seconds` does not increase RAM.
 The signal alone is not proof of an out-of-memory kill; guest kernel diagnostics
 are needed to confirm that cause.
 
+Explicit preparation prints its configured RAM and CPU allocation. On failure,
+Loom prints the last 16 KiB of the VM console before cleanup, when available.
+This can reveal guest kernel OOM or crash messages even when the guest-control
+connection closes before setup reports an exit status. An empty console does
+not rule out a host-side VM kill. Console excerpts are emitted only for explicit
+preparation, which does not attach provider credentials.
+
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend
 or Nix setting start cold; prepare again for that runtime to replace the base.

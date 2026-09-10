@@ -27,6 +27,7 @@ import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 import { seedRepoBase } from "./repo-base.ts";
+import { preparationConsoleTail } from "./prepare-diagnostics.ts";
 import {
   readSessionDisks,
   saveSessionDisks,
@@ -55,6 +56,7 @@ let git: Awaited<ReturnType<typeof startSessionGit>>;
 let egress: ReturnType<typeof startEgress> | undefined;
 let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
 let ended = false;
+let machineDirectory: string | undefined;
 const cancelled = new AbortController();
 const done = Promise.withResolvers<void>();
 const stop = () => {
@@ -202,9 +204,10 @@ try {
     binding.persistentDisks && binding.sessionDirectory
       ? join(binding.sessionDirectory, "disks")
       : undefined;
-  const machineDirectory = diskDirectory
-    ? await command(["machine", "data-dir", "--name", sessionVmName])
-    : undefined;
+  machineDirectory =
+    diskDirectory || binding.preparationOnly
+      ? await command(["machine", "data-dir", "--name", sessionVmName])
+      : undefined;
   let saved = diskDirectory ? await readSessionDisks(diskDirectory, binding) : false;
   if (!saved && diskDirectory && binding.repoBaseDirectory) {
     saved = await seedRepoBase(
@@ -214,10 +217,14 @@ try {
       cancelled.signal,
     );
   }
-  if (binding.preparationOnly)
+  if (binding.preparationOnly) {
     console.error(
       saved ? "Starting VM from a warm disk…" : "Starting VM from the generic runtime (cold)…",
     );
+    console.error(
+      `VM resources: ${environment?.memoryMiB ?? 2048} MiB RAM, ${environment?.cpus ?? 1} CPU(s).`,
+    );
+  }
   if (saved) await attachSessionDisks(diskDirectory!, machineDirectory!, binding.state);
   await command(["machine", "start", "--name", sessionVmName]);
   await retainDiskTemplates(binding.state, binding.smolvm);
@@ -274,6 +281,9 @@ try {
 } finally {
   clearTimeout(deadline);
   stop();
+  if (binding.preparationOnly && Deno.exitCode !== 0 && machineDirectory) {
+    console.error(await preparationConsoleTail(machineDirectory));
+  }
   try {
     await cleanupSessionVm({
       stop: async () => {
