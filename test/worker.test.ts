@@ -32,6 +32,48 @@ const next = async <T>(iterator: AsyncIterator<T>): Promise<T> => {
   return result.value;
 };
 
+test(
+  "slow environment initialization has its own budget; later requests keep their deadline",
+  { timeout: 15_000 },
+  async () => {
+    const fixture = await Deno.makeTempFile({ dir: cwd + "test/fixtures", suffix: ".ts" });
+    await Deno.writeTextFile(
+      fixture,
+      `
+    import { FakeProvider } from "../../connectors/mock/src/fake.ts";
+    import { readFrames, FrameWriter } from "../../runtime/src/worker/transport.ts";
+    import { decodeWorkerRequest, WORKER_VERSION } from "../../core/src/worker.ts";
+    const writer = new FrameWriter(Deno.stdout.writable);
+    await writer.send({kind:"hello", version:WORKER_VERSION});
+    for await (const r of readFrames(Deno.stdin.readable, decodeWorkerRequest)) {
+      if (r.method !== "initialize") continue;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await writer.send({kind:"ready", id:r.id, generation:r.args[0].generation, capabilities:new FakeProvider().capabilities});
+    }
+  `,
+    );
+    try {
+      const { session } = await RemoteWorkerSession.connect(
+        "setup-budget",
+        "fake",
+        { ...mockLaunchSpec(cwd), entrypoint: fixture },
+        launchLocalWorker,
+        { startupMs: 3000, requestMs: 100 },
+      );
+      try {
+        await assert.rejects(
+          session.start({ method: "create", args: [opts("setup-budget")] }),
+          /timed out/,
+        );
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await Deno.remove(fixture);
+    }
+  },
+);
+
 test("worker decoders reject admin methods, malformed arguments and payloads", () => {
   assert.throws(() =>
     decodeWorkerRequest({ kind: "request", id: 1, method: "session.delete", args: ["peer"] }),

@@ -1,4 +1,30 @@
 /** Extra authority comes only from trusted host configuration. */
+export const networkPresets = {
+  nix: [
+    "cache.nixos.org",
+    "channels.nixos.org",
+    "releases.nixos.org",
+    "tarballs.nixos.org",
+    "github.com",
+    "api.github.com",
+    "codeload.github.com",
+    "raw.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+  ],
+  javascript: ["registry.npmjs.org", "jsr.io", "npm.jsr.io"],
+} as const;
+
+export const expandNetworkPresets = (value: unknown): string[] => {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > 16 ||
+    !value.every((v) => typeof v === "string" && Object.hasOwn(networkPresets, v))
+  )
+    throw new Error("network_presets must contain only nix or javascript");
+  return [...new Set(value.flatMap((v) => networkPresets[v as keyof typeof networkPresets]))];
+};
+
 export const normalizeExtraHosts = (value: unknown): string[] => {
   if (value === undefined) return [];
   if (

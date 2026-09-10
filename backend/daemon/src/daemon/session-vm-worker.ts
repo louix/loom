@@ -1,3 +1,7 @@
+import {
+  environmentEnabled,
+  type SessionEnvironment,
+} from "../../../../core/src/session-environment.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -34,6 +38,7 @@ export interface SessionVmOptions {
   };
   allowRepoPrograms?: boolean;
   extraAllowedHosts?: string[];
+  environment?: SessionEnvironment;
   providerHosts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
@@ -77,6 +82,16 @@ export const launchSessionVm = async (
       "Session VM runtime is missing or incompatible; upgrade the Loom package, or rebuild the configured provider runtime with this Loom version",
     );
   }
+  if (environmentEnabled(options.environment)) {
+    try {
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "1")
+        throw new Error();
+    } catch {
+      throw new Error(
+        "Session environment requires a rebuilt provider runtime; upgrade Loom or run loom runtime update",
+      );
+    }
+  }
   let sessionDirectory: string | undefined;
   if (options.sessionDirectory) {
     await Deno.mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
@@ -104,6 +119,7 @@ export const launchSessionVm = async (
     manifest,
     state,
     token: crypto.randomUUID(),
+    ...(options.environment?.nix ? { writableNix: true } : {}),
     gitSocket: join(state, "git.sock"),
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
@@ -143,6 +159,7 @@ export const launchSessionVm = async (
       JSON.stringify({
         binding,
         extraAllowedHosts,
+        environment: options.environment,
         providerHosts: normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
         auth,
         allowRepoPrograms: options.allowRepoPrograms ?? false,

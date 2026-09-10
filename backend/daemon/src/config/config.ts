@@ -1,5 +1,12 @@
+import {
+  normalizeSessionEnvironment,
+  type SessionEnvironment,
+} from "../../../../core/src/session-environment.ts";
 import { bundledRuntime } from "../../../../runtime/src/packaged/artifact.ts";
-import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
+import {
+  normalizeExtraHosts,
+  expandNetworkPresets,
+} from "../../../../runtime/src/session-vm/network-policy.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -242,6 +249,7 @@ export interface LoomConfig {
     aisdk?: { artifact: string; smolvm: string };
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
+    environment?: SessionEnvironment;
   };
   baseBranch: string;
   worktreeDir: string;
@@ -966,7 +974,13 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
       git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true },
-      extraAllowedHosts: normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
+      extraAllowedHosts: [
+        ...new Set([
+          ...normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
+          ...expandNetworkPresets(asRecord(r["isolation"])["network_presets"]),
+        ]),
+      ],
+      environment: normalizeSessionEnvironment(asRecord(r["isolation"])["environment"]),
       ...(claudeVm["enabled"] !== false && typeof claudeVm["artifact"] === "string"
         ? {
             claude: {

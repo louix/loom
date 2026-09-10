@@ -1,3 +1,4 @@
+import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { join, resolve } from "node:path";
 import type { ConnectorContext } from "@loom/core/connector";
@@ -82,6 +83,7 @@ export const withAisdkVmSessions = async <T extends AgentProvider>(
       sessionDirectory,
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
+      ...(vm.environment ? { environment: vm.environment } : {}),
       allowRepoPrograms: vm.allowRepoPrograms,
       providerHosts: [endpoint.hostname],
       auth: {},
@@ -92,7 +94,7 @@ export const withAisdkVmSessions = async <T extends AgentProvider>(
         ctx.id,
         mockLaunchSpec(input.cwd),
         () => worker,
-        120_000,
+        { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
         {
           connector: sdk === "google" ? "@loom/connector-gemini" : "@loom/connector-generic",
           config: {

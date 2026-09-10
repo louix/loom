@@ -1,3 +1,4 @@
+import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -87,6 +88,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       sessionDirectory,
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
+      ...(vm.environment ? { environment: vm.environment } : {}),
       allowRepoPrograms: vm.allowRepoPrograms,
       authOwner: owner,
       providerHosts: ["chatgpt.com"],
@@ -97,7 +99,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
         ctx.id,
         mockLaunchSpec(input.cwd),
         () => worker,
-        120_000,
+        { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
         {
           connector: "@loom/connector-chatgpt",
           config: {

@@ -1,3 +1,4 @@
+import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { homedir } from "node:os";
@@ -89,6 +90,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
       sessionDirectory,
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
+      ...(vm.environment ? { environment: vm.environment } : {}),
       allowRepoPrograms: vm.allowRepoPrograms,
       ...(owner
         ? { authOwner: owner }
@@ -100,7 +102,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
         ctx.id,
         mockLaunchSpec(input.cwd),
         () => worker,
-        120_000,
+        { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
         {
           connector: "@loom/connector-claude",
           config: {

@@ -16,6 +16,10 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
     cp -a "$path" "$out/nix/store/"
   done < ${closure}/store-paths
   cp ${closure}/store-paths $out/store-paths
+  ${pkgs.lib.optionalString (sessionVersion != null) ''
+    cp ${closure}/registration $out/registration
+    echo 1 > $out/session-environment-version
+  ''}
   mkdir -p $out/bin
   ln -s ${gitShim}/bin/git $out/bin/git
   echo 2 > $out/git-bridge-version

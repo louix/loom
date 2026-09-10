@@ -46,6 +46,10 @@ a separate live acceptance check below.
 
 ## Extra hosts for worktree commands
 
+For automatic environment activation and dependency setup, see
+[session environments](session-environments.md). These settings also apply to
+Codex and AISDK session VMs.
+
 The repo's session/worktree VM can receive additional HTTPS destinations from the
 trusted user config. This applies to commands the agent runs, such as `deno install`,
 inside the same VM; it is not a grant limited to the Claude process.

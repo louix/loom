@@ -220,6 +220,9 @@ export class ProviderRegistry {
                   ...this.#config.isolation.claude,
                   repoRoot: this.#repoRoot,
                   extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
+                  ...(this.#config.isolation.environment
+                    ? { environment: this.#config.isolation.environment }
+                    : {}),
                   allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
                 },
               }
@@ -244,6 +247,9 @@ export class ProviderRegistry {
               ...vmPolicy,
               repoRoot: this.#repoRoot,
               extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
+              ...(this.#config.isolation.environment
+                ? { environment: this.#config.isolation.environment }
+                : {}),
               allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
             },
           }

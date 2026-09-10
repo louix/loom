@@ -1,3 +1,4 @@
+import type { SessionEnvironment } from "./session-environment.ts";
 /**
  * The plugin seam. A connector package (`@loom/connector-*`) exports
  * `createProvider`; the CLI hands the daemon a {@link ConnectorManifest} of lazy
@@ -66,6 +67,7 @@ export interface ConnectorConfig {
     repoRoot: string;
     allowRepoPrograms: boolean;
     extraAllowedHosts?: string[];
+    environment?: SessionEnvironment;
   };
   /**
    * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with

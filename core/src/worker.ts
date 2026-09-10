@@ -17,6 +17,10 @@ export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
 const diagnostics = {
+  sessionEnvironmentFailed:
+    "VM environment preparation failed. Check isolation.environment.command_prefix, prepare and network presets. The session has not started.",
+  sessionEnvironmentTimeout:
+    "VM environment preparation timed out. Check the network policy or increase isolation.environment.timeout_seconds. The session has not started.",
   claudeCliPath:
     "providers.claude.cli_path is not an executable file. Set it to an installed Claude executable and restart the daemon.",
   claudeBundledCli:

@@ -44,6 +44,9 @@ let
     shim=$(readlink "$result/bin/git")
     cp -a "$result/nix/store/$(basename "$(dirname "$(dirname "$shim")")")" /tmp/artifact/nix/store/
     cp "$result/store-paths" "$result/git-bridge-version" /tmp/artifact/
+    if [ -f "$result/session-environment-version" ]; then
+      cp "$result/session-environment-version" "$result/registration" /tmp/artifact/
+    fi
     if [ -f "$result/claude-session-version" ]; then
       cp "$result/claude-session-version" /tmp/artifact/
     fi

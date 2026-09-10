@@ -1,3 +1,7 @@
+import {
+  sessionStartupTimeout,
+  type SessionEnvironment,
+} from "../../../core/src/session-environment.ts";
 /** Trusted host supervisor. Its stdin lifetime owns the VM and both capabilities. */
 import { join } from "node:path";
 import { attachDiskTemplates, retainDiskTemplates } from "../packaged/disk-templates.ts";
@@ -27,13 +31,15 @@ const frames = readFrames(Deno.stdin.readable, (value) => value);
 const first = await frames.next();
 clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
-const { binding, auth, allowRepoPrograms, extraAllowedHosts, providerHosts } = first.value as {
-  binding: RecoverableBinding;
-  auth: SessionAuth;
-  allowRepoPrograms: boolean;
-  extraAllowedHosts?: string[];
-  providerHosts?: string[];
-};
+const { binding, auth, allowRepoPrograms, extraAllowedHosts, providerHosts, environment } =
+  first.value as {
+    binding: RecoverableBinding;
+    auth: SessionAuth;
+    allowRepoPrograms: boolean;
+    extraAllowedHosts?: string[];
+    providerHosts?: string[];
+    environment?: SessionEnvironment;
+  };
 let child: Deno.ChildProcess | undefined;
 let persistentLock: Deno.FsFile | undefined;
 let ownsPersistent = false;
@@ -49,7 +55,7 @@ const stop = () => {
 };
 Deno.addSignalListener("SIGTERM", stop);
 Deno.addSignalListener("SIGINT", stop);
-const deadline = setTimeout(stop, 120_000);
+const deadline = setTimeout(stop, sessionStartupTimeout(environment));
 const network: Array<{ host: string; allowed: boolean }> = [];
 let phase = "starting";
 const status = () => {
@@ -124,6 +130,11 @@ try {
     await Deno.mkdir(join(binding.state, name), { mode: 0o700 });
   if (ended) throw new Error("Parent closed before credential setup");
   await writeSessionAuth(join(binding.state, "private"), auth);
+  await Deno.writeTextFile(
+    join(binding.state, "private/environment.json"),
+    JSON.stringify(environment ?? null),
+    { mode: 0o600 },
+  );
   git = await startSessionGit(
     binding.workspace,
     binding.state,

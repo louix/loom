@@ -1,5 +1,8 @@
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
 import { sessionAuth } from "./auth.ts";
+import { prepareEnvironment, initializeGuestNix } from "./environment.ts";
+import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
+import { runWorker } from "../worker/main.ts";
 const auth = sessionAuth(JSON.parse(await Deno.readTextFile("/run/loom/private/auth.json")));
 Deno.env.set("CLAUDE_CONFIG_DIR", "/tmp/loom-home/.claude");
 Deno.env.set("CLAUDE_CODE_PROJECT_DIR_NAME", "loom-session");
@@ -25,6 +28,8 @@ for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] as const)
 Deno.env.set("HTTPS_PROXY", "http://127.0.0.1:3128");
 Deno.env.set("HTTP_PROXY", "http://127.0.0.1:3128");
 Deno.env.set("NO_PROXY", "localhost,127.0.0.1");
+for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"])
+  Deno.env.set(name.toLowerCase(), Deno.env.get(name)!);
 Deno.env.set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
 Deno.env.set("DISABLE_AUTOUPDATER", "1");
 Deno.env.set("IS_SANDBOX", "1");
@@ -70,5 +75,47 @@ for (const [index, spec] of mcp.entries()) {
     for await (const conn of endpoint) void relay(conn, `/run/loom/mcp-${index}.sock`);
   })();
 }
-// The launcher binds the native CLI by its fixed guest PATH name.
-await import("../worker/main.ts");
+// Setup happens during initialize, before provider loading/readiness. The proxy
+// stays alive while the environment subprocess downloads its dependencies.
+await runWorker(async () => {
+  let config: SessionEnvironment | undefined;
+  try {
+    config = JSON.parse(await Deno.readTextFile("/run/loom/private/environment.json")) ?? undefined;
+  } catch (error) {
+    // Older launchers do not provide environment configuration.
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
+  const before = Deno.env.toObject();
+  const env = await prepareEnvironment(config, {
+    shell: before.LOOM_GUEST_SHELL!,
+    initializeNix: initializeGuestNix,
+  });
+  if (!env) return;
+  for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
+  // The dev shell supplies tools and exports; Loom's bridge and provider
+  // executables retain precedence and bootstrap settings remain available.
+  Deno.env.set("PATH", before.LOOM_GUEST_CONTROL_PATH + ":" + (env.PATH ?? "") + ":" + before.PATH);
+  for (const key of Object.keys(before))
+    if (
+      key.startsWith("LOOM_") ||
+      [
+        "HOME",
+        "TMPDIR",
+        "DENO_DIR",
+        "DENO_NO_UPDATE_CHECK",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+      ].includes(key)
+    )
+      Deno.env.set(key, before[key]!);
+  // nix develop removes its build-temporary directory when activation exits.
+  if (!before.TMPDIR) Deno.env.delete("TMPDIR");
+});

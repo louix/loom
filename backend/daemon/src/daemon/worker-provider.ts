@@ -139,7 +139,7 @@ export class RemoteWorkerSession implements AgentSession {
     providerId: string,
     spec: WorkerLaunchSpec,
     launch: WorkerLauncher = launchLocalWorker,
-    timeoutMs = 10_000,
+    timeoutMs: number | { startupMs: number; requestMs: number } = 10_000,
     profile: WorkerProfile = { connector: "@loom/connector-mock", config: {} },
     role: WorkerRole = "session",
   ): Promise<{ session: RemoteWorkerSession; capabilities: ProviderCapabilities }> {
@@ -151,22 +151,27 @@ export class RemoteWorkerSession implements AgentSession {
       for (const path of spec.cleanupPaths ?? []) await Deno.remove(path, { recursive: true });
       throw e;
     }
-    const s = new RemoteWorkerSession(id, process, timeoutMs);
-    const timer = setTimeout(() => s.#fail(new Error("worker startup timed out")), timeoutMs);
+    const startupMs = typeof timeoutMs === "number" ? timeoutMs : timeoutMs.startupMs;
+    const requestMs = typeof timeoutMs === "number" ? timeoutMs : timeoutMs.requestMs;
+    const s = new RemoteWorkerSession(id, process, requestMs);
+    const timer = setTimeout(() => s.#fail(new Error("worker startup timed out")), startupMs);
     try {
       await s.#hello.promise;
-      const ready = await s.#request({
-        method: "initialize",
-        args: [
-          {
-            generation: s.#generation,
-            providerId,
-            sessionId: id,
-            ...profile,
-            role,
-          },
-        ],
-      });
+      const ready = await s.#request(
+        {
+          method: "initialize",
+          args: [
+            {
+              generation: s.#generation,
+              providerId,
+              sessionId: id,
+              ...profile,
+              role,
+            },
+          ],
+        },
+        startupMs,
+      );
       if (ready.kind !== "ready" || ready.generation !== s.#generation)
         throw new Error("invalid worker ready");
       makeLogger("session-timing").info("worker_ready", {

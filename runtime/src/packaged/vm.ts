@@ -9,23 +9,38 @@ export interface VmBinding {
   workspace: string;
   state: string;
   token: string;
+  /** Private guest OverlayFS upper, never a writable host store. */
+  writableNix?: boolean;
   gitSocket?: string;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export const sessionVmName = "loom-session";
-const runtimeCommand = (b: VmBinding) => [
-  ...(b.manifest.closureFormat === "erofs"
-    ? [
-        "/bin/sh",
-        "-c",
-        'set -eu; mkdir -p /nix/store; mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /nix/store; exec "$@"',
-        "loom-runtime",
-      ]
-    : []),
-  b.manifest.entrypoint,
-  ...b.manifest.args,
-];
+const runtimeCommand = (b: VmBinding) => {
+  let mount: string | undefined;
+  if (b.writableNix) {
+    mount = [
+      "set -eu",
+      // /storage is smolvm's ext4 disk; its overlay-backed root cannot
+      // itself be an OverlayFS upper. Keep the DB and build temp files here too.
+      "mkdir -p /nix/store /nix/var /run/loom/store-lower /storage/loom-nix/upper /storage/loom-nix/work /storage/loom-nix/var /storage/loom-nix/tmp",
+      b.manifest.closureFormat === "erofs"
+        ? "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower"
+        : "mount --bind /run/loom/runtime/nix/store /run/loom/store-lower",
+      "mount -t overlay overlay -o lowerdir=/run/loom/store-lower,upperdir=/storage/loom-nix/upper,workdir=/storage/loom-nix/work /nix/store",
+      "mount --bind /storage/loom-nix/var /nix/var",
+      'exec "$@"',
+    ].join("; ");
+  } else if (b.manifest.closureFormat === "erofs") {
+    mount =
+      'set -eu; mkdir -p /nix/store; mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /nix/store; exec "$@"';
+  }
+  return [
+    ...(mount ? ["/bin/sh", "-c", mount, "loom-runtime"] : []),
+    b.manifest.entrypoint,
+    ...b.manifest.args,
+  ];
+};
 export const vmEnvironment = (state: string) => {
   return {
     HOME: join(state, "home"),
@@ -66,7 +81,7 @@ export const vmArguments = (b: VmBinding) => {
     "512",
     "-i",
     "-v",
-    b.manifest.closureFormat === "erofs"
+    b.writableNix || b.manifest.closureFormat === "erofs"
       ? `${b.artifact}:/run/loom/runtime:ro`
       : `${b.artifact}/nix/store:/nix/store:ro`,
     "-v",
