@@ -1,5 +1,7 @@
 # Session environments
 
+The next-stage design is in [prepared environments and persistent session VMs](prepared-environments-plan.md).
+
 Session VMs can enter a configured environment and run a setup command before
 the provider becomes ready. Commands are configured in the trusted user config,
 and execute inside the VM, in the session worktree. Claude, Codex and AISDK use
