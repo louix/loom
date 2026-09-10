@@ -130,6 +130,10 @@ the original VM process's state and resident memory, and checks that process
 again before failure cleanup. These diagnostics do not restart a stopped VM.
 An increase in the guest OOM counter is evidence of a guest OOM kill; a missing
 host process identifies VM termination but does not establish its cause.
+If the original process is still a Linux zombie, Loom also decodes its saved
+wait status into an exit code or terminating signal before cleanup. A SIGKILL
+does not by itself identify who sent it; the core-dump flag does not guarantee
+that the host saved a core file.
 
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend

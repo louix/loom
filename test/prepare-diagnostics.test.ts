@@ -4,7 +4,19 @@ import {
   preparationConsoleTail,
   hostPreparationResources,
   monitorPreparation,
+  linuxWaitStatus,
 } from "../runtime/src/session-vm/prepare-diagnostics.ts";
+
+test("Linux zombie exit diagnostics distinguish exit codes from fatal signals", () => {
+  assert.equal(linuxWaitStatus("0"), "wait_status=0 exit_code=0");
+  assert.equal(linuxWaitStatus("256"), "wait_status=256 exit_code=1");
+  assert.equal(linuxWaitStatus("35072"), "wait_status=35072 exit_code=137");
+  assert.equal(linuxWaitStatus("9"), "wait_status=9 signal=9 (SIGKILL) core_dump_flag=false");
+  assert.equal(linuxWaitStatus("139"), "wait_status=139 signal=11 (SIGSEGV) core_dump_flag=true");
+  assert.match(linuxWaitStatus("127"), /not a terminal status/);
+  for (const value of [undefined, "", "bad", "-1", "65536"])
+    assert.equal(linuxWaitStatus(value), "exit status unavailable");
+});
 
 test("resource monitoring stops without waiting for a blocked sample", async () => {
   let finish!: (text: string) => void;

@@ -1,6 +1,24 @@
 import { join } from "node:path";
 import { statfs } from "node:fs/promises";
 
+/** Linux /proc/PID/stat field 52 uses waitpid's encoded status, not a shell exit code. */
+export const linuxWaitStatus = (value: string | undefined): string => {
+  if (value === undefined || !/^\d+$/.test(value)) return "exit status unavailable";
+  const status = Number(value);
+  if (!Number.isSafeInteger(status) || status > 65535) return "exit status unavailable";
+  const signal = status & 127;
+  if (signal === 127) return `wait_status=${status} (not a terminal status)`;
+  if (signal === 0) return `wait_status=${status} exit_code=${(status >> 8) & 255}`;
+  const names: Record<number, string> = {
+    6: "SIGABRT",
+    7: "SIGBUS",
+    9: "SIGKILL",
+    11: "SIGSEGV",
+    15: "SIGTERM",
+  };
+  return `wait_status=${status} signal=${signal}${names[signal] ? ` (${names[signal]})` : ""} core_dump_flag=${(status & 128) !== 0}`;
+};
+
 /** Serialized samples: diagnostics never queue up behind a slow filesystem. */
 export const monitorPreparation = (sample: () => Promise<string>): (() => void) => {
   let stopped = false;
@@ -65,6 +83,10 @@ export const hostPreparationResources = async (
       try {
         const stat = await readStat();
         if (stat[19] !== identity) return `host VM pid=${pid}: original process gone (PID reused)`;
+        // State is field 3, so field 52 is index 49 in the suffix. Capture
+        // this before reading status: a zombie may be reaped between reads.
+        if (stat[0] === "Z" || stat[0] === "X")
+          return `host VM pid=${pid} state=${stat[0]} ${linuxWaitStatus(stat[49])}`;
         const status = await Deno.readTextFile(`/proc/${pid}/status`);
         const rss = status.match(/^VmRSS:\s+(\d+)/m)?.[1] ?? "?";
         return `host VM pid=${pid} state=${stat[0]} RSS_kB=${rss}`;
