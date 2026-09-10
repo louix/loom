@@ -123,6 +123,14 @@ connection closes before setup reports an exit status. An empty console does
 not rule out a host-side VM kill. Console excerpts are emitted only for explicit
 preparation, which does not attach provider credentials.
 
+During explicit preparation, `[prepare resources]` lines sample guest available
+memory, swap, the cumulative kernel OOM-kill counter, and free space/inodes on
+the storage disk and worktree every 30 seconds. On Linux hosts, Loom also samples
+the original VM process's state and resident memory, and checks that process
+again before failure cleanup. These diagnostics do not restart a stopped VM.
+An increase in the guest OOM counter is evidence of a guest OOM kill; a missing
+host process identifies VM termination but does not establish its cause.
+
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend
 or Nix setting start cold; prepare again for that runtime to replace the base.

@@ -27,7 +27,11 @@ import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 import { seedRepoBase } from "./repo-base.ts";
-import { preparationConsoleTail } from "./prepare-diagnostics.ts";
+import {
+  preparationConsoleTail,
+  hostPreparationResources,
+  monitorPreparation,
+} from "./prepare-diagnostics.ts";
 import {
   readSessionDisks,
   saveSessionDisks,
@@ -57,6 +61,8 @@ let egress: ReturnType<typeof startEgress> | undefined;
 let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
 let ended = false;
 let machineDirectory: string | undefined;
+let sampleHost: (() => Promise<string>) | undefined;
+let stopMonitor: (() => void) | undefined;
 const cancelled = new AbortController();
 const done = Promise.withResolvers<void>();
 const stop = () => {
@@ -237,6 +243,10 @@ try {
     await command(["machine", "start", "--name", sessionVmName]);
   }
   if (ended) throw new Error("Session closed during VM startup");
+  if (binding.preparationOnly && machineDirectory) {
+    sampleHost = await hostPreparationResources(machineDirectory);
+    stopMonitor = monitorPreparation(sampleHost);
+  }
   child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,
     env: vmEnvironment(binding.state),
@@ -281,7 +291,9 @@ try {
 } finally {
   clearTimeout(deadline);
   stop();
+  stopMonitor?.();
   if (binding.preparationOnly && Deno.exitCode !== 0 && machineDirectory) {
+    if (sampleHost) console.error(`[prepare resources at failure] ${await sampleHost()}`);
     console.error(await preparationConsoleTail(machineDirectory));
   }
   try {

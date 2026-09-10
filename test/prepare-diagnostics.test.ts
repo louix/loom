@@ -1,6 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { preparationConsoleTail } from "../runtime/src/session-vm/prepare-diagnostics.ts";
+import {
+  preparationConsoleTail,
+  hostPreparationResources,
+  monitorPreparation,
+} from "../runtime/src/session-vm/prepare-diagnostics.ts";
+
+test("resource monitoring stops without waiting for a blocked sample", async () => {
+  let finish!: (text: string) => void;
+  const stop = monitorPreparation(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  stop();
+  finish("late sample must not schedule another timer");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test("host sampling follows the original VM process after it exits", async () => {
+  if (Deno.build.os !== "linux") return;
+  const directory = await Deno.makeTempDir();
+  const child = new Deno.Command("/bin/sh", {
+    args: ["-c", "read value"],
+    stdin: "piped",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  try {
+    await Deno.writeTextFile(directory + "/agent.pid", String(child.pid));
+    const sample = await hostPreparationResources(directory);
+    assert.match(await sample(), /RSS_kB=/);
+    await child.stdin.close();
+    await child.status;
+    assert.match(await sample(), /process gone/);
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already exited */
+    }
+    await child.status;
+    await Deno.remove(directory, { recursive: true });
+  }
+});
 
 test("preparation diagnostics survive missing logs and bound guest-controlled console output", async () => {
   const directory = await Deno.makeTempDir();

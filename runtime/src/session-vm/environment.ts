@@ -4,6 +4,7 @@ import {
 } from "../../../core/src/session-environment.ts";
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
+import { guestPreparationResources, monitorPreparation } from "./prepare-diagnostics.ts";
 
 /** Resolve once per VM launch; setup output never enters the framed worker protocol.
  * Kept separate from activation so a future prepared image can skip preparation.
@@ -23,6 +24,7 @@ export const prepareEnvironment = async (
   let child: Deno.ChildProcess | undefined;
   let timedOut = false;
   const stop = new AbortController();
+  const stopMonitor = options.output ? monitorPreparation(guestPreparationResources) : undefined;
   const timer = setTimeout(() => {
     timedOut = true;
     stop.abort();
@@ -85,6 +87,7 @@ export const prepareEnvironment = async (
     if (error instanceof WorkerDiagnostic) throw error;
     throw new WorkerDiagnostic(timedOut ? "sessionEnvironmentTimeout" : "sessionEnvironmentFailed");
   } finally {
+    stopMonitor?.();
     clearTimeout(timer);
     await Deno.remove(directory, { recursive: true });
   }
