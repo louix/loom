@@ -29,6 +29,7 @@ import { readFrames } from "../worker/transport.ts";
 import { seedRepoBase } from "./repo-base.ts";
 import {
   preparationConsoleTail,
+  preparationBackendTail,
   hostPreparationResources,
   monitorPreparation,
 } from "./prepare-diagnostics.ts";
@@ -118,9 +119,19 @@ const persist = async () => {
 };
 const command = async (args: string[]) => {
   if (ended) throw new Error("Session closed during startup");
+  const captureBackend = binding.preparationOnly && args[0] === "machine" && args[1] === "start";
   child = Deno.spawn(binding.smolvm, args, {
     clearEnv: true,
-    env: vmEnvironment(binding.state),
+    env: {
+      ...vmEnvironment(binding.state),
+      // The boot process writes backend stderr to agent-startup-error.log.
+      ...(captureBackend
+        ? {
+            SMOLVM_KRUN_LOG_LEVEL: "3",
+            RUST_LOG: "warn,vmm=info,krun_vmm=info,krun_devices::virtio::vsock=error",
+          }
+        : {}),
+    },
     stdin: "null",
     stdout: "piped",
     stderr: "null",
@@ -295,6 +306,7 @@ try {
   if (binding.preparationOnly && Deno.exitCode !== 0 && machineDirectory) {
     if (sampleHost) console.error(`[prepare resources at failure] ${await sampleHost()}`);
     console.error(await preparationConsoleTail(machineDirectory));
+    console.error(await preparationBackendTail(machineDirectory));
   }
   try {
     await cleanupSessionVm({

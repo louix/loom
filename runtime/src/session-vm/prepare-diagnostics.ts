@@ -6,6 +6,9 @@ export const linuxWaitStatus = (value: string | undefined): string => {
   if (value === undefined || !/^\d+$/.test(value)) return "exit status unavailable";
   const status = Number(value);
   if (!Number.isSafeInteger(status) || status > 65535) return "exit status unavailable";
+  // smolvm sets PR_SET_DUMPABLE=0. Procfs may replace this ptrace-protected
+  // field with zero; do not claim that a zero proves a successful VM exit.
+  if (status === 0) return "wait_status=0 (exit code zero or masked by procfs access restrictions)";
   const signal = status & 127;
   if (signal === 127) return `wait_status=${status} (not a terminal status)`;
   if (signal === 0) return `wait_status=${status} exit_code=${(status >> 8) & 255}`;
@@ -104,12 +107,17 @@ export const hostPreparationResources = async (
 /** Read before reaping: smolvm deletes the console along with the machine.
  * Only explicit, credential-free preparation may expose this raw guest output.
  */
-export const preparationConsoleTail = async (machineDirectory: string): Promise<string> => {
+export const preparationConsoleTail = (machineDirectory: string): Promise<string> =>
+  logTail(join(machineDirectory, "agent-console.log"), "VM console log");
+
+export const preparationBackendTail = (machineDirectory: string): Promise<string> =>
+  logTail(join(machineDirectory, "agent-startup-error.log"), "VM backend log");
+
+const logTail = async (path: string, label: string): Promise<string> => {
   const limit = 16 * 1024;
-  const path = join(machineDirectory, "agent-console.log");
   let file: Deno.FsFile | undefined;
   try {
-    if (!(await Deno.lstat(path)).isFile) return "VM console log unavailable.";
+    if (!(await Deno.lstat(path)).isFile) return `${label} unavailable.`;
     file = await Deno.open(path, { read: true });
     const size = (await file.stat()).size;
     const start = Math.max(0, size - limit);
@@ -128,10 +136,10 @@ export const preparationConsoleTail = async (machineDirectory: string): Promise<
       (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`,
     );
     return text
-      ? `VM console log${start ? " (last 16 KiB)" : ""}:\n${text}`
-      : "VM console log is empty; a host-side VM kill may leave no guest diagnostic.";
+      ? `${label}${start ? " (last 16 KiB)" : ""}:\n${text}`
+      : `${label} is empty; a host-side VM kill may leave no guest diagnostic.`;
   } catch {
-    return "VM console log unavailable.";
+    return `${label} unavailable.`;
   } finally {
     file?.close();
   }

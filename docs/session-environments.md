@@ -134,6 +134,13 @@ If the original process is still a Linux zombie, Loom also decodes its saved
 wait status into an exit code or terminating signal before cleanup. A SIGKILL
 does not by itself identify who sent it; the core-dump flag does not guarantee
 that the host saved a core file.
+Zero is ambiguous: smolvm disables process dumpability, and Linux may mask this
+protected procfs field to zero. It must not be read as proof of a normal exit.
+Explicit preparation enables backend lifecycle logging and includes the last
+16 KiB of smolvm's `agent-startup-error.log` on failure, separately from the guest
+console. Despite its name, that file also receives backend errors after boot.
+`scripts/test-preparation-backend-vm.ts` checks capture with a deliberate reboot
+of an isolated, credential-free test guest.
 
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend

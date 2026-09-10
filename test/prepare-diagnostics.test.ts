@@ -8,7 +8,10 @@ import {
 } from "../runtime/src/session-vm/prepare-diagnostics.ts";
 
 test("Linux zombie exit diagnostics distinguish exit codes from fatal signals", () => {
-  assert.equal(linuxWaitStatus("0"), "wait_status=0 exit_code=0");
+  assert.equal(
+    linuxWaitStatus("0"),
+    "wait_status=0 (exit code zero or masked by procfs access restrictions)",
+  );
   assert.equal(linuxWaitStatus("256"), "wait_status=256 exit_code=1");
   assert.equal(linuxWaitStatus("35072"), "wait_status=35072 exit_code=137");
   assert.equal(linuxWaitStatus("9"), "wait_status=9 signal=9 (SIGKILL) core_dump_flag=false");
