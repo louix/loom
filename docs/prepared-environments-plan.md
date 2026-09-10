@@ -1,6 +1,7 @@
 # Warm repo bases and persistent session VMs
 
-Status: proposed. This extends the implemented [session environment MVP](session-environments.md).
+Status: implementation started; Linux storage spike verified. This extends the
+implemented [session environment MVP](session-environments.md).
 The command and TUI action below are not implemented yet.
 
 ## Scope
@@ -156,6 +157,45 @@ Keep one current base, rather than a user-facing generation catalogue. Prefer
 independent reflink copies when supported. If the backend's clones depend on
 parent disk files, retain those backing files until no session references them;
 “one current base” must not delete data still needed by an existing session.
+
+### Storage spike results (smolvm 1.8.1)
+
+The Linux check is executable:
+
+```sh
+deno run -A scripts/test-session-disk-vm.ts /path/to/pinned/smolvm
+```
+
+It verifies clean stop/restart, sparse copies of both disks into fresh machines,
+independent writes while both clones run, deletion of the source before starting
+clones, and mounting a different host workspace. It also verifies that workspace
+edits are immediately visible on the host and survive a guest restart. The full
+check took about eight seconds on the development Linux host; this is a storage
+test, not a measurement of Nix or dependency installation. Apple Silicon remains
+to be tested; the script uses APFS cloning there.
+
+Backend details that affect implementation:
+
+- Default-size Linux disks are qcow2 overlays over templates. Copying their files
+  does not remove the backing-file dependency. The test explicitly selects
+  non-default sizes (32 GiB storage, 8 GiB root overlay) to exercise smolvm's raw
+  disk path. Production sizing remains a separate decision.
+- Independent raw copies preserve sparseness and use reflinks where supported.
+  Copy both `storage.raw` and `overlay.raw`, along with their `.formatted`
+  markers, only while the machine is stopped. A fresh machine's data directory
+  is allocated lazily. Recreate machine configuration so mounts and socket
+  capabilities come from the new launch, not the source VM.
+- `pack create --from-vm` is **not suitable on this pin**: a separate export/import
+  experiment lost the file written to `/storage`. Inspection of the pinned
+  `src/pack_export.rs` confirms that bare-VM export collects the root overlay but
+  not the existing storage disk. Export also took roughly two minutes for an
+  almost-empty VM. The passing acceptance script therefore uses raw copies
+  rather than this export path.
+
+The next implementation step is to integrate disk ownership and runtime
+compatibility into the existing session lifecycle before exposing base
+preparation. Do not wire a disk copy into shutdown without extending crash
+recovery and deletion together. The CLI command and TUI action are still pending.
 
 ## Checks before shipping
 
