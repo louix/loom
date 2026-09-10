@@ -35,7 +35,12 @@ export const finishSessionState = async (dir: string, token: string) => {
 };
 
 /** Publish recovery metadata atomically, including across host power loss. */
-export const writeRecoveryFile = async (dir: string, name: string, value: unknown) => {
+export const writeRecoveryFile = async (
+  dir: string,
+  name: string,
+  value: unknown,
+  signal?: AbortSignal,
+) => {
   const tmp = join(dir, `.${name}-${crypto.randomUUID()}`);
   try {
     const file = await Deno.open(tmp, { write: true, createNew: true, mode: 0o600 });
@@ -47,6 +52,7 @@ export const writeRecoveryFile = async (dir: string, name: string, value: unknow
     } finally {
       file.close();
     }
+    signal?.throwIfAborted();
     await Deno.rename(tmp, join(dir, name));
     const directory = await Deno.open(dir, { read: true });
     try {

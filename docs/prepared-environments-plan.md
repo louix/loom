@@ -1,8 +1,8 @@
 # Warm repo bases and persistent session VMs
 
-Status: implementation started; Linux storage spike verified. This extends the
-implemented [session environment MVP](session-environments.md).
-The command and TUI action below are not implemented yet.
+Status: implemented and verified on Linux. Apple Silicon disk validation and
+runtime hash regeneration remain pending. See [session environments](session-environments.md)
+for commands and current behavior.
 
 ## Scope
 
@@ -22,7 +22,7 @@ explicit base preparation, with incremental work for subsequent sessions.
 
 ## Prepare or refresh the repo base
 
-Proposed command: `loom environment prepare`.
+Command: `loom environment prepare`.
 
 1. Create a disposable host worktree from the repo's HEAD. Report that revision;
    preparation does not include uncommitted changes from the active checkout.
@@ -192,10 +192,18 @@ Backend details that affect implementation:
   almost-empty VM. The passing acceptance script therefore uses raw copies
   rather than this export path.
 
-The next implementation step is to integrate disk ownership and runtime
-compatibility into the existing session lifecycle before exposing base
-preparation. Do not wire a disk copy into shutdown without extending crash
-recovery and deletion together. The CLI command and TUI action are still pending.
+Disk ownership and runtime compatibility are integrated with session locking,
+recovery, and deletion. Persistent disk files live outside disposable launch
+state; smolvm attaches them through launch-local links. New sessions make
+independent copies of the current compatible repo base. The CLI and TUI action
+share the same foreground preparation path.
+
+Linux acceptance measured this repo at 188 seconds cold and 4.7 seconds on
+relaunch, rerunning Nix activation and Deno installation. A separate tiny Deno
+fixture verifies cached installation with no network into a new worktree,
+live CLI stdout/stderr, failed and cancelled refresh, successful replacement,
+and preservation of an existing session disk. TUI tests cover the repo-scoped
+palette action and terminal suspension/restoration for all exit outcomes.
 
 ## Checks before shipping
 

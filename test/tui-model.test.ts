@@ -1469,6 +1469,7 @@ test("commandsFor lists every action valid now — session verbs plus the app co
     selectedId: "s1",
   };
   const ids = commandsFor(base).map((c) => c.id);
+  assert(commandsFor(initialState()).some((c) => c.id === "prepareEnvironment"));
   // contextual session verbs (idle aisdk session, >1 turn)
   for (const v of ["send", "done", "mode", "model", "undo", "fork", "title", "delete"]) {
     assert.ok(ids.includes(v as any), `missing ${v}`);

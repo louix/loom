@@ -46,9 +46,11 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
     } catch {}
   };
   Deno.addSignalListener("SIGTERM", terminate);
+  Deno.addSignalListener("SIGINT", terminate);
   try {
     Deno.exit((await child.status).code);
   } finally {
     Deno.removeSignalListener("SIGTERM", terminate);
+    Deno.removeSignalListener("SIGINT", terminate);
   }
 };

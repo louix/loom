@@ -87,7 +87,7 @@ for (const [index, spec] of mcp.entries()) {
 }
 // Setup happens during initialize, before provider loading/readiness. The proxy
 // stays alive while the environment subprocess downloads its dependencies.
-await runWorker(async () => {
+const prepare = async (output?: "inherit") => {
   let config: SessionEnvironment | undefined;
   try {
     config = JSON.parse(await Deno.readTextFile("/run/loom/private/environment.json")) ?? undefined;
@@ -97,9 +97,11 @@ await runWorker(async () => {
   }
   if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
   const before = Deno.env.toObject();
+  if (output) console.error("Entering repo environment…");
   const env = await prepareEnvironment(config, {
     shell: before.LOOM_GUEST_SHELL!,
     initializeNix: initializeGuestNix,
+    ...(output ? { output } : {}),
   });
   if (!env) return;
   for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
@@ -128,4 +130,19 @@ await runWorker(async () => {
       Deno.env.set(key, before[key]!);
   // nix develop removes its build-temporary directory when activation exits.
   if (!before.TMPDIR) Deno.env.delete("TMPDIR");
-});
+};
+let preparationOnly = false;
+try {
+  preparationOnly = (await Deno.readTextFile("/run/loom/private/prepare-only")) === "1";
+} catch (error) {
+  if (!(error instanceof Deno.errors.NotFound)) throw error;
+}
+if (preparationOnly) {
+  try {
+    await prepare("inherit");
+    Deno.exit(0);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    Deno.exit(1);
+  }
+} else await runWorker(() => prepare());

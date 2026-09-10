@@ -1218,6 +1218,7 @@ export type ActName =
   | "filter"
   | "help"
   | "doctor"
+  | "prepareEnvironment"
   | "quit";
 
 export interface KeyHint {
@@ -1406,6 +1407,7 @@ export const commandsFor = (s: TuiState & { outbox?: Outboxes }): PickItem[] => 
   }
   const extra: Array<[ActName, string, string]> = [
     ["doctor", "doctor — tools, connectors, daemon", ""],
+    ["prepareEnvironment", "Prepare repo environment — refresh base for future sessions", ""],
     ["viewlog", "view the log in $EDITOR", "o"],
     ["logs", "view the daemon + TUI logs in $EDITOR", ""],
     ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],

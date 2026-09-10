@@ -86,6 +86,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       artifact: vm.artifact,
       smolvm,
       sessionDirectory,
+      repoRoot: vm.repoRoot,
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
       ...(vm.environment ? { environment: vm.environment } : {}),

@@ -25,7 +25,11 @@ export const runTui = async (
   client: LoomClient,
   /** `logs` — absolute daemon + TUI log paths for the "view logs" command;
    *  `themeState` — the TUI preference file the `t` theme choice persists to. */
-  opts: { logs?: { daemon: string; tui: string }; themeState?: string } = {},
+  opts: {
+    logs?: { daemon: string; tui: string };
+    themeState?: string;
+    prepareEnvironment?: () => Promise<number>;
+  } = {},
 ): Promise<void> => {
   try {
     // Ask the terminal to bracket pastes so a multi-line paste arrives as one
@@ -40,6 +44,7 @@ export const runTui = async (
         client={client}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
+        {...(opts.prepareEnvironment ? { prepareEnvironment: opts.prepareEnvironment } : {})}
       />,
       {
         exitOnCtrlC: false,

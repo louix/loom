@@ -242,6 +242,8 @@ allow_repo_programs = false
 # command_prefix = ["nix", "develop", "path:.", "--no-write-lock-file", "--command"]
 # prepare = "deno install --frozen" # arbitrary repo-specific shell command
 # timeout_seconds = 900
+# Run `loom environment prepare` (or use the Space palette) to warm a repo base.
+# Sessions keep independent guest disks across resume; setup still runs each time.
 
 # Optional project provider restrictions. Omit `only` to allow every configured
 # provider; an empty list allows none. `disabled` takes precedence over `only`.

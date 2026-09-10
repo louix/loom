@@ -13,6 +13,8 @@ export interface VmBinding {
   writableNix?: boolean;
   /** Raw disks owned by sessionDirectory; launch-local links are disposable. */
   persistentDisks?: boolean;
+  preparationOnly?: boolean;
+  repoBaseDirectory?: string;
   gitSocket?: string;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;

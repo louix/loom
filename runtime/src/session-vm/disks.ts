@@ -6,6 +6,7 @@ import { writeRecoveryFile } from "./persistence.ts";
 export const sessionDiskSizes = ["--storage", "32", "--overlay", "8"];
 const stems = ["storage", "overlay"];
 type Identity = Pick<VmBinding, "artifact" | "smolvm" | "writableNix">;
+export class SavedDiskCompatibilityError extends Error {}
 const identity = (b: Identity) => ({
   version: 1,
   artifact: b.artifact,
@@ -31,9 +32,11 @@ export const readSessionDisks = async (dir: string, b: Identity): Promise<boolea
   if (!info.isFile || info.isSymlink || info.size > 16384)
     throw new Error("Invalid saved VM disk identity");
   const saved = JSON.parse(await Deno.readTextFile(file));
+  if (!saved || typeof saved !== "object" || Array.isArray(saved))
+    throw new Error("Invalid saved VM disk identity");
   for (const [key, value] of Object.entries(identity(b))) {
     if (saved[key] !== value)
-      throw new Error(
+      throw new SavedDiskCompatibilityError(
         "Saved VM disks require a different runtime or Nix setting. Fork the session to start with the current runtime; existing worktree and history are retained.",
       );
   }

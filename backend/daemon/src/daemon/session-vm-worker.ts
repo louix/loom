@@ -17,6 +17,7 @@ import {
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import { readSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
+import { repoBaseDirectory } from "../../../../runtime/src/session-vm/repo-base.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -42,6 +43,9 @@ export interface SessionVmOptions {
   environment?: SessionEnvironment;
   providerHosts?: string[];
   sessionDirectory?: string;
+  /** Foreground repo preparation: no provider capabilities, raw setup output. */
+  preparationOnly?: boolean;
+  repoRoot?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export interface SessionVmStatus {
@@ -63,9 +67,16 @@ export const launchSessionVm = async (
   WorkerProcess & {
     binding: VmBinding;
     status(): Promise<SessionVmStatus>;
+    exitCode: Promise<number>;
+    diagnostics?: ReadableStream<Uint8Array>;
   }
 > => {
   const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
+  if (
+    options.preparationOnly &&
+    (options.authOwner || Object.keys(options.auth ?? {}).length || options.mcpRelays?.length)
+  )
+    throw new Error("Repo preparation must not receive provider credentials or MCP endpoints");
   if (options.auth && options.authOwner)
     throw new Error("Choose static auth or a credential owner");
   const auth = sessionAuth(
@@ -133,6 +144,8 @@ export const launchSessionVm = async (
       ? { persistentDisks: true }
       : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
+    ...(options.preparationOnly ? { preparationOnly: true } : {}),
+    ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),
   };
   try {
     const root = new URL("../../../../", import.meta.url);
@@ -175,7 +188,7 @@ export const launchSessionVm = async (
         allowRepoPrograms: options.allowRepoPrograms ?? false,
       }) + "\n",
     );
-    child.stderr.on("data", () => {});
+    if (!options.preparationOnly) child.stderr.on("data", () => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ended = new AbortController();
     void exited.then(
@@ -247,6 +260,10 @@ export const launchSessionVm = async (
       output: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
       exited,
       pid: child.pid ?? -1,
+      exitCode: exited.then(() => child.exitCode ?? 1),
+      ...(options.preparationOnly
+        ? { diagnostics: Readable.toWeb(child.stderr) as ReadableStream<Uint8Array> }
+        : {}),
       terminate() {
         if (stopping) return;
         stopping = true;

@@ -28,6 +28,7 @@ commands:
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
   runtime prepare|status|update [runtime]  manage optional packaged MCP runtimes
+  environment prepare    warm the repo's VM environment for future sessions
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -59,6 +60,12 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
+  environment: `loom environment prepare [--provider P]
+
+  Enter the configured environment and run its prepare command in a disposable
+  VM/worktree at committed HEAD, streaming setup output. Save an independent base
+  for future sessions. Rerun to refresh; failures leave the previous base intact.
+  --provider P   select the session runtime (default: configured default provider)`,
   runtime: `loom runtime prepare|status|update [runtime]
 
   prepare                      fetch/build configured runtimes outside the daemon
@@ -209,6 +216,13 @@ const main = async (): Promise<void> => {
       }
     })();
   await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
+  if (cmd === "environment") {
+    if (positionals.length !== 2 || positionals[1] !== "prepare")
+      throw new Error(USAGE.environment);
+    const { prepareRepoEnvironment } = await import("./environment.ts");
+    await prepareRepoEnvironment(repoRoot, values.provider);
+    return;
+  }
   if (cmd === "runtime") {
     const { runtimeCommand } = await import("./runtime.ts");
     writeOut(
@@ -259,6 +273,10 @@ const main = async (): Promise<void> => {
     await runTui(client, {
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
+      prepareEnvironment: async () => {
+        const { prepareEnvironmentInTerminal } = await import("./environment.ts");
+        return prepareEnvironmentInTerminal(fileURLToPath(import.meta.url), logRoot);
+      },
     });
     return;
   }

@@ -304,6 +304,7 @@ export interface MkFleetHandleInput {
   /** Path to the TUI preference file — the `t` theme persists there across
    *  restarts. Absent in tests, where nothing touches disk. */
   readonly themeState?: string;
+  readonly prepareEnvironment?: () => Promise<number>;
   /** Test seam: stands in for the real `$EDITOR` handoff. */
   readonly openEditorOverride?: EditorHandoff;
   /** Test seam: rows per durable-history page (default 500). Lets a test drive
@@ -507,6 +508,7 @@ export const mkFleetHandle = ({
   term,
   logs,
   themeState,
+  prepareEnvironment,
   openEditorOverride,
   historyPageSize,
 }: MkFleetHandleInput): FleetHandle => {
@@ -792,6 +794,29 @@ export const mkFleetHandle = ({
     }
     if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
     return saved;
+  };
+
+  let preparingRepo = false;
+  const prepareRepo = async () => {
+    if (preparingRepo) return;
+    if (!prepareEnvironment)
+      return note("Environment preparation is unavailable in this client", "bad");
+    preparingRepo = true;
+    try {
+      let code = 1;
+      await term.suspendTerminal(async () => {
+        code = await prepareEnvironment();
+      });
+      let message = "Environment preparation failed";
+      if (code === 0) message = "Repo environment prepared";
+      else if (code === 130) message = "Preparation cancelled";
+      note(message, code === 0 ? "dim" : "bad");
+    } catch (error) {
+      note(error instanceof Error ? error.message : String(error), "bad");
+    } finally {
+      preparingRepo = false;
+      if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+    }
   };
 
   /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
@@ -1811,6 +1836,8 @@ export const mkFleetHandle = ({
         return void viewLogs();
       case "doctor":
         return void openDoctor();
+      case "prepareEnvironment":
+        return void prepareRepo();
       case "model":
         return void switchModel();
       case "effort":

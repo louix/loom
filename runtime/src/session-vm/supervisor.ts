@@ -26,6 +26,7 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
+import { seedRepoBase } from "./repo-base.ts";
 import {
   readSessionDisks,
   saveSessionDisks,
@@ -144,6 +145,8 @@ try {
     JSON.stringify(environment ?? null),
     { mode: 0o600 },
   );
+  if (binding.preparationOnly)
+    await Deno.writeTextFile(join(binding.state, "private/prepare-only"), "1", { mode: 0o600 });
   git = await startSessionGit(
     binding.workspace,
     binding.state,
@@ -179,7 +182,7 @@ try {
     "--mount-socket",
     `${binding.state}/egress.sock:/run/loom/egress.sock`,
   );
-  if (binding.sessionDirectory)
+  if (binding.sessionDirectory && !binding.preparationOnly)
     create.push(
       "-v",
       `${binding.sessionDirectory}/profile:/tmp/loom-home/${auth.codexOauth ? ".codex" : ".claude"}`,
@@ -203,7 +206,19 @@ try {
   const machineDirectory = diskDirectory
     ? await command(["machine", "data-dir", "--name", sessionVmName])
     : undefined;
-  const saved = diskDirectory ? await readSessionDisks(diskDirectory, binding) : false;
+  let saved = diskDirectory ? await readSessionDisks(diskDirectory, binding) : false;
+  if (!saved && diskDirectory && binding.repoBaseDirectory) {
+    saved = await seedRepoBase(
+      binding.repoBaseDirectory,
+      binding.sessionDirectory!,
+      binding,
+      cancelled.signal,
+    );
+  }
+  if (binding.preparationOnly)
+    console.error(
+      saved ? "Starting VM from a warm disk…" : "Starting VM from the generic runtime (cold)…",
+    );
   if (saved) await attachSessionDisks(diskDirectory!, machineDirectory!, binding.state);
   await command(["machine", "start", "--name", sessionVmName]);
   await retainDiskTemplates(binding.state, binding.smolvm);
@@ -225,7 +240,11 @@ try {
   });
   input = child.stdin.getWriter();
   // Never expose raw vendor stderr: it can contain credentials.
-  void child.stderr.pipeTo(new WritableStream({ write() {} })).catch(stop);
+  const diagnostics = child.stderr.pipeTo(
+    binding.preparationOnly ? Deno.stderr.writable : new WritableStream({ write() {} }),
+    { preventClose: true },
+  );
+  void diagnostics.catch(stop);
   const output = child.stdout
     .pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
@@ -244,6 +263,12 @@ try {
   status();
   clearTimeout(deadline);
   await Promise.race([done.promise, child.status, output]);
+  if (binding.preparationOnly) {
+    if (ended) throw new Error("Preparation cancelled");
+    const result = await child.status;
+    await Promise.all([output, diagnostics]);
+    Deno.exitCode = result.code;
+  }
 } catch {
   Deno.exitCode = 1;
   console.error(`Session VM stopped during ${phase}; state: ${binding.state}`);

@@ -54,8 +54,9 @@ then Loom captures exported variables for the worker and its subprocesses.
 Shell-local functions, aliases, and activation processes are not retained.
 The Git bridge/provider executable paths and proxy/bootstrap settings are retained.
 Setup must succeed before initialization completes; failure or timeout aborts
-startup, cleans up the VM and reports a fixed diagnostic. Raw command output is
-discarded so it cannot corrupt the worker protocol or expose credentials in logs.
+startup, cleans up the VM and reports a fixed diagnostic. Normal session startup
+discards raw command output. Explicit repo preparation streams it separately
+from the worker protocol, without attaching provider credentials.
 Setup has no interactive stdin and should be repeatable.
 
 Setup runs on both create and resume. Environment-enabled sessions retain their
@@ -65,6 +66,32 @@ private guest disks across shutdown, including the Nix store and caches under
 the disks; deleting a session removes them. A runtime/backend or Nix-setting
 change blocks reuse and asks you to fork, preserving the existing worktree and
 history. Exact runtime/backend packages are retained as Nix GC roots.
+
+## Prepare a warm base
+
+Run `loom environment prepare` before starting sessions in a slow repo. It
+creates a disposable worktree at committed HEAD, enters the configured shell,
+runs the arbitrary `prepare` command, and saves a private copy of both VM disks.
+Activation and setup output stream directly to the terminal. For a shell taking
+30 minutes to build, set `timeout_seconds = 3600` to cover activation and setup.
+
+Rerun the same command to refresh, reusing the previous compatible base. Failed
+or cancelled preparation retains the previous selection. New sessions clone
+the base and rerun setup in their own host worktree; existing session disks stay
+independent. The worktree's `node_modules` is not baked into the base: package
+stores/caches supply the new installation. Package managers must support copying
+across the guest disk and host mount; configure this in your setup command when
+necessary. Exports from that command also let you choose custom guest cache paths.
+
+The command uses the configured default provider's runtime, or `--provider ID`.
+There is one current base per repo. Sessions using a different runtime/backend
+or Nix setting start cold; prepare again for that runtime to replace the base.
+This version has no automatic input invalidation or background preparation.
+
+In the TUI, press `Space`, choose **Prepare repo environment**, and press Enter.
+The TUI hands over the terminal to the same CLI command. Press Enter after it
+finishes to return, or Ctrl-C during preparation to cancel and return after cleanup.
+Running sessions continue on their own disks.
 
 ## Network presets
 
@@ -105,3 +132,9 @@ in 188 seconds; a complete VM relaunch took 4.7 seconds. Both launches activated
 Nix and ran the locked dependency installation without provider credentials.
 The test checks a guest-side counter to verify disk persistence. These timings
 measure reuse of a session disk, not cloning a prepared repo base.
+
+`scripts/test-prepared-environment-vm.ts` verifies the real CLI's live output,
+offline Deno installation in a fresh worktree cloned from the base, refresh,
+failed setup, cancellation, and isolation from an existing session. Linux is
+verified; Apple Silicon disk cloning and runtime hash regeneration still need
+validation on a Mac.

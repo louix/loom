@@ -52,6 +52,7 @@ export const App = ({
   client,
   logs,
   themeState,
+  prepareEnvironment,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
   historyPageSize,
@@ -61,6 +62,7 @@ export const App = ({
   logs?: { daemon: string; tui: string };
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
+  prepareEnvironment?: () => Promise<number>;
   openEditor?: EditorHandoff;
   /** Test seam: rows per durable-history page (see {@link mkFleetHandle}). */
   historyPageSize?: number;
@@ -83,6 +85,7 @@ export const App = ({
         },
       },
       ...(logs ? { logs } : {}),
+      ...(prepareEnvironment ? { prepareEnvironment } : {}),
       ...(themeState ? { themeState } : {}),
       ...(openEditorOverride ? { openEditorOverride } : {}),
       ...(historyPageSize !== undefined ? { historyPageSize } : {}),

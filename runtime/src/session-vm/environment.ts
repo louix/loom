@@ -10,7 +10,12 @@ import { fileURLToPath } from "node:url";
  */
 export const prepareEnvironment = async (
   config: SessionEnvironment | undefined,
-  options: { shell: string; cwd?: string; initializeNix?: (signal: AbortSignal) => Promise<void> },
+  options: {
+    shell: string;
+    cwd?: string;
+    initializeNix?: (signal: AbortSignal) => Promise<void>;
+    output?: "inherit";
+  },
 ): Promise<Record<string, string> | undefined> => {
   if (!environmentEnabled(config)) return;
   const directory = await Deno.makeTempDir({ prefix: "loom-environment-" });
@@ -36,8 +41,9 @@ export const prepareEnvironment = async (
       ...config!.commandPrefix,
       options.shell,
       "-c",
-      'set -e\nif [ -n "$1" ]; then export PATH="$1:$PATH"; fi\nshift\neval "$1"\nshift\nexec "$@"',
+      'set -e\nif [ -n "$1" ]; then printf "\\nRunning repo setup…\\n" >&2; fi\nshift\nif [ -n "$1" ]; then export PATH="$1:$PATH"; fi\nshift\neval "$1"\nshift\nexec "$@"',
       "loom-prepare",
+      options.output ?? "",
       Deno.env.get("LOOM_GUEST_CONTROL_PATH") ?? "",
       config!.prepare,
       Deno.execPath(),
@@ -53,12 +59,15 @@ export const prepareEnvironment = async (
       args: argv.slice(1),
       ...(options.cwd ? { cwd: options.cwd } : {}),
       stdin: "null",
-      stdout: "null",
-      stderr: "null",
+      stdout: options.output ?? "null",
+      stderr: options.output ?? "null",
     }).spawn();
     const result = await child.status;
     if (timedOut) throw new WorkerDiagnostic("sessionEnvironmentTimeout");
-    if (!result.success) throw new WorkerDiagnostic("sessionEnvironmentFailed");
+    if (!result.success) {
+      if (options.output) console.error(`Repo setup exited with status ${result.code}.`);
+      throw new WorkerDiagnostic("sessionEnvironmentFailed");
+    }
     if ((await Deno.stat(snapshot)).size > 1024 * 1024)
       throw new WorkerDiagnostic("sessionEnvironmentFailed");
     const env: unknown = JSON.parse(await Deno.readTextFile(snapshot));

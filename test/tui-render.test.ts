@@ -2240,6 +2240,50 @@ const fakeTerm: Term = {
   onResize: () => () => {},
 };
 
+test("repo preparation palette action suspends and restores the terminal without session RPCs", async () => {
+  for (const code of [0, 1, 130]) {
+    const fake = mkFakeClient();
+    const steps: string[] = [];
+    const handle = mkFleetHandle({
+      client: fake.client,
+      term: {
+        ...fakeTerm,
+        suspendTerminal: async (fn) => {
+          steps.push("suspend");
+          try {
+            await fn();
+          } finally {
+            steps.push("restore");
+          }
+        },
+      },
+      prepareEnvironment: async () => {
+        steps.push("prepare");
+        return code;
+      },
+    });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf());
+      handle.handleKey(" ", {} as Key);
+      handle.handleKey("Prepare repo environment", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      await delay(0);
+      assert.deepEqual(steps, ["suspend", "prepare", "restore"]);
+      assert.match(
+        handle.getView().ui.notice?.text ?? "",
+        new Map([
+          [0, /prepared/],
+          [130, /cancelled/],
+        ]).get(code) ?? /failed/,
+      );
+      assert(!fake.calls.some((call) => call.method.startsWith("session.")));
+    } finally {
+      teardown();
+    }
+  }
+});
+
 const testDaemon: DaemonInfo = {
   pid: 1,
   version: LOOM_VERSION,

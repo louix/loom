@@ -253,7 +253,7 @@
                   --add-flags "run -A --deny-net --cached-only --node-modules-dir=manual" \
                   --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
                   --set DENO_NO_UPDATE_CHECK 1 \
-                  --prefix PATH : ${pkgs.lib.makeBinPath ([ pkgs.git pkgs.bash pkgs.ripgrep ] ++ pkgs.lib.optional withClaude hostClaude ++ pkgs.lib.optional withCodex pkgs.codex)} \
+                  --prefix PATH : ${pkgs.lib.makeBinPath ([ pkgs.git pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.nix ] ++ pkgs.lib.optional withClaude hostClaude ++ pkgs.lib.optional withCodex pkgs.codex)} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
                   ${if (withTilth || withClaude || withCodex || withAisdk) && bundleSupported
                     then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
