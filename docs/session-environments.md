@@ -48,6 +48,12 @@ directory costs more to snapshot. Prepared source/environment caching is future 
   environment. Nothing in the launcher assumes a package manager. For example,
   another repo could use `pnpm install --frozen-lockfile` or `./scripts/setup`.
 - `timeout_seconds`: total preparation budget, from 1 to 3600 (default 900).
+- `memory_mib`: guest RAM in MiB, from 512 to 65536 (default 2048).
+- `cpus`: guest virtual CPUs, from 1 to 64 (default 1).
+
+Resource settings apply to both explicit preparation and session VMs on their
+next launch. They do not themselves invalidate saved disks or warm bases.
+Choose values that leave enough host resources for your concurrent sessions.
 
 Environment activation runs once per VM launch. The setup script runs next,
 then Loom captures exported variables for the worker and its subprocesses.
@@ -82,6 +88,32 @@ independent. The worktree's `node_modules` is not baked into the base: package
 stores/caches supply the new installation. Package managers must support copying
 across the guest disk and host mount; configure this in your setup command when
 necessary. Exports from that command also let you choose custom guest cache paths.
+
+For a large pnpm workspace, for example, add these settings to the existing
+`[repo.isolation.environment]` table, keeping its Nix activation configuration:
+
+```toml
+memory_mib = 8192
+cpus = 2
+timeout_seconds = 3600
+prepare = """
+pnpm install --frozen-lockfile --store-dir=/storage/pnpm-store --package-import-method=copy --network-concurrency=8 --child-concurrency=2
+"""
+```
+
+The explicit store path retains downloads on the guest disk. A `.pnpm-store`
+inside the disposable preparation worktree is removed with that worktree and
+does not warm the base. Copy imports support the separate host worktree mount;
+see [pnpm's store settings](https://pnpm.io/settings). Lower concurrency can
+reduce resource pressure and competition for the proxy's 32 simultaneous tunnels.
+These are repo-configured commands, not package-manager defaults imposed by Loom.
+Failed preparation discards its candidate disks, including newly downloaded
+packages; only the previous successfully prepared base is retained.
+
+A child process reporting `SIGKILL` before the preparation deadline may have
+exhausted guest memory. Increasing `timeout_seconds` does not increase RAM.
+The signal alone is not proof of an out-of-memory kill; guest kernel diagnostics
+are needed to confirm that cause.
 
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend

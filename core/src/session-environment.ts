@@ -4,6 +4,8 @@ export interface SessionEnvironment {
   commandPrefix: string[];
   prepare: string;
   timeoutMs: number;
+  memoryMiB: number;
+  cpus: number;
 }
 
 export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment => {
@@ -12,7 +14,10 @@ export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment 
     throw new Error("isolation.environment must be a table");
   const r = v as Record<string, unknown>;
   if (
-    Object.keys(r).some((k) => !["nix", "command_prefix", "prepare", "timeout_seconds"].includes(k))
+    Object.keys(r).some(
+      (k) =>
+        !["nix", "command_prefix", "prepare", "timeout_seconds", "memory_mib", "cpus"].includes(k),
+    )
   )
     throw new Error("Unknown isolation.environment setting");
   if (r.nix !== undefined && typeof r.nix !== "boolean")
@@ -32,7 +37,15 @@ export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment 
   const seconds = r.timeout_seconds ?? 900;
   if (!Number.isInteger(seconds) || Number(seconds) < 1 || Number(seconds) > 3600)
     throw new Error("isolation.environment.timeout_seconds must be an integer from 1 to 3600");
+  const memoryMiB = r.memory_mib ?? 2048;
+  if (!Number.isInteger(memoryMiB) || Number(memoryMiB) < 512 || Number(memoryMiB) > 65536)
+    throw new Error("isolation.environment.memory_mib must be an integer from 512 to 65536");
+  const cpus = r.cpus ?? 1;
+  if (!Number.isInteger(cpus) || Number(cpus) < 1 || Number(cpus) > 64)
+    throw new Error("isolation.environment.cpus must be an integer from 1 to 64");
   return {
+    memoryMiB: Number(memoryMiB),
+    cpus: Number(cpus),
     nix: r.nix === true,
     commandPrefix: [...prefix],
     prepare,

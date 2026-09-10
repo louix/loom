@@ -7,7 +7,7 @@ import {
 import { prepareEnvironment } from "../runtime/src/session-vm/environment.ts";
 import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
 import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
-import { vmArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
+import { vmArguments, vmCreateArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
 
 test("network presets compose with exact hosts and reject unknown grants", () => {
   const config = normalizeConfig({
@@ -42,6 +42,14 @@ test("environment configuration validates commands and bounded setup time", () =
     { timeout_seconds: 3601 },
     { timeout_seconds: 1.5 },
     { typo: true },
+    { memory_mib: 511 },
+    { memory_mib: 65537 },
+    { memory_mib: "8192" },
+    { memory_mib: 1024.5 },
+    { cpus: 0 },
+    { cpus: 65 },
+    { cpus: "2" },
+    { cpus: 1.5 },
   ])
     assert.throws(() => normalizeSessionEnvironment(invalid), /isolation.environment/);
   assert.equal(sessionStartupTimeout(normalizeSessionEnvironment(undefined)), 120_000);
@@ -119,6 +127,7 @@ test("writable Nix uses a read-only artifact and private ext4 upper on both clos
     state: "/tmp/session",
     token: "test",
     writableNix: true,
+    gitSocket: "/tmp/session/git.sock",
     manifest: {
       version: 1,
       system: "x86_64-linux",
@@ -127,6 +136,14 @@ test("writable Nix uses a read-only artifact and private ext4 upper on both clos
       args: [],
     },
   };
+  for (const environment of [
+    undefined,
+    normalizeSessionEnvironment({ memory_mib: 8192, cpus: 2 }),
+  ]) {
+    const args = vmCreateArguments(binding, environment);
+    assert.equal(args[args.indexOf("--mem") + 1], environment ? "8192" : "2048");
+    assert.equal(args[args.indexOf("--cpus") + 1], environment ? "2" : "1");
+  }
   for (const erofs of [false, true]) {
     const args = vmArguments({
       ...binding,

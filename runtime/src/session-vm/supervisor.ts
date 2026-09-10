@@ -170,11 +170,10 @@ try {
       providerHosts: providerHosts ?? ["api.anthropic.com"],
     },
   );
-  const create = vmCreateArguments(binding);
+  const create = vmCreateArguments(binding, environment);
   // Claude already puts the closure's Git shim on PATH; no separate mount needed.
   const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);
   if (shimMount !== -1) create.splice(shimMount - 1, 2);
-  create[create.indexOf("--mem") + 1] = "2048";
   if (binding.persistentDisks) create.push(...sessionDiskSizes);
   create.push(
     "-v",

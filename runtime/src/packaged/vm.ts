@@ -1,5 +1,6 @@
 /** Fixed-policy VM launch and reaping, shared by supervisor and daemon fallback. */
 import { isAbsolute, join } from "node:path";
+import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import type { RuntimeManifest } from "./artifact.ts";
 export interface VmBinding {
   version: 1;
@@ -102,11 +103,16 @@ export const vmArguments = (b: VmBinding) => {
     ...runtimeCommand(b),
   ];
 };
-export const vmCreateArguments = (b: VmBinding) => {
+export const vmCreateArguments = (
+  b: VmBinding,
+  resources?: Pick<SessionEnvironment, "memoryMiB" | "cpus">,
+) => {
   if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket)) {
     throw new Error("Git endpoint must be in private VM state");
   }
   const args = vmArguments(b);
+  args[args.indexOf("--mem") + 1] = String(resources?.memoryMiB ?? 2048);
+  args[args.indexOf("--cpus") + 1] = String(resources?.cpus ?? 1);
   return [
     "machine",
     "create",
