@@ -19,16 +19,23 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
   const exact = await Deno.permissions.query({ name: "net", host: `unix:${resolve(socket)}` });
   const broad = await Deno.permissions.query({ name: "net" });
   if (exact.state === "granted" && broad.state !== "granted") return;
-  const child = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "--cached-only",
-      "--frozen",
-      "--node-modules-dir=manual",
-      ...ipcPermissions(socket),
-      entry,
-      ...Deno.args,
-    ],
+  const args = [
+    "run",
+    "--cached-only",
+    "--frozen",
+    "--node-modules-dir=manual",
+    ...ipcPermissions(socket),
+    entry,
+    ...Deno.args,
+  ];
+  // Reopen the inherited terminal before starting permission-scoped Deno.
+  // This gives stdin independent file flags from stdout even when /dev/pts
+  // is hidden. Opening /proc from inside Deno would require --allow-all.
+  const reopenStdin = Deno.build.os === "linux" && Deno.stdin.isTerminal();
+  const child = new Deno.Command(reopenStdin ? "/bin/sh" : Deno.execPath(), {
+    args: reopenStdin
+      ? ["-c", 'exec "$@" < /proc/self/fd/0', "loom-ipc", Deno.execPath(), ...args]
+      : args,
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",

@@ -14,8 +14,6 @@
  * buffer around a `suspendTerminal` `$EDITOR` handoff and re-enters on return.
  * The option is a no-op when stdout isn't an interactive TTY (tests included).
  */
-import { openSync } from "node:fs";
-import { ReadStream } from "node:tty";
 import { render } from "ink";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
@@ -29,15 +27,6 @@ export const runTui = async (
    *  `themeState` — the TUI preference file the `t` theme choice persists to. */
   opts: { logs?: { daemon: string; tui: string }; themeState?: string } = {},
 ): Promise<void> => {
-  // Deno cannot reopen /dev/pts/N when that path is hidden by a container.
-  // Its fallback shares file flags with stdout, which can make stdin block
-  // the event loop until the next key. Opening proc's fd link gives Ink an
-  // independent file description even when the original device path is hidden.
-  const stdin =
-    Deno.build.os === "linux" && Deno.stdin.isTerminal()
-      ? new ReadStream(openSync("/proc/self/fd/0", "r"))
-      : undefined;
-
   try {
     // Ask the terminal to bracket pastes so a multi-line paste arrives as one
     // chunk instead of a stream of Enter-looking carriage returns. Also turn on
@@ -53,7 +42,6 @@ export const runTui = async (
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
       />,
       {
-        ...(stdin ? { stdin } : {}),
         exitOnCtrlC: false,
         alternateScreen: true,
         // Only rewrite the lines that actually changed. A spinner tick or one
@@ -67,7 +55,6 @@ export const runTui = async (
     );
     await instance.waitUntilExit();
   } finally {
-    stdin?.destroy();
     if (Deno.stdout.isTerminal()) writeStdout("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
     await client.close();
   }
