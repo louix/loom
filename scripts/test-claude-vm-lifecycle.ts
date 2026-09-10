@@ -27,8 +27,12 @@ const processesGone = async (pids: number[]) => {
   for (const pid of pids)
     for (;;) {
       try {
-        const stat = await Deno.readTextFile(`/proc/${pid}/stat`);
-        if (/\) Z /.test(stat)) break; // terminated, awaiting the host init's reap
+        if (Deno.build.os === "linux") {
+          const stat = await Deno.readTextFile(`/proc/${pid}/stat`);
+          if (/\) Z /.test(stat)) break; // terminated, awaiting the host init's reap
+        } else {
+          Deno.kill(pid, 0);
+        }
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) break;
         throw error;

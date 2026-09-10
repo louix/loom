@@ -607,7 +607,7 @@ models   = ["m1", "m2"]
       stdin.feed("doctor");
       await delay(80);
       stdin.feed("\r");
-      await waitFor(stdout, /loom — doctor/);
+      await waitFor(stdout, (text) => /loom — doctor/.test(text) && /connectors/.test(text));
       assert.match(stdout.last, /connectors/);
       assert.match(stdout.last, /tilth/); // an mcp mount is listed
       assert.match(stdout.last, /ask_user, commit/); // the loom tools row
@@ -949,7 +949,7 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
       fs?.finishTurn(); // -> idle: the queued message goes
-      await delay(300);
+      await waitFor(stdout, (text) => fs?.sends.length === 2 && !/▸ \d+ queued/.test(text));
       assert.deepEqual(fs?.sends, ["hold that thought", "and another"]);
       assert.doesNotMatch(stdout.last, /▸ \d+ queued/);
     } finally {

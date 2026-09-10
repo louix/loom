@@ -120,7 +120,7 @@ test(
       const r = reader(session);
       const first = await r.until("assistant_text");
       const details = JSON.parse(first.text);
-      assert.equal(details.cwd, f.workspace);
+      assert.equal(details.cwd, await Deno.realPath(f.workspace));
       assert.equal(details.profile, f.profile);
       assert.equal(details.inheritedSearchKey, null);
       assert.ok(JSON.stringify(details.initialization).includes("loom"), JSON.stringify(details));

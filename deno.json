@@ -42,6 +42,7 @@
     "erasableSyntaxOnly": true
   },
   "tasks": {
+    "runtime:hashes": "deno run -A scripts/update-runtime-hashes.ts",
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
     "loom": "deno run -A --deny-net cli/src/loom.ts",
     "daemon": "deno run -A --deny-net cli/src/loomd.ts",

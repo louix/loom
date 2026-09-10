@@ -38,14 +38,14 @@ Should be able to enable/disable connector plugins via settings. Perhaps they al
 
 # 1) Packaging
 
-The Nix package runs Deno with pinned, cached dependencies. On Linux it bundles
+The Nix package runs Deno with pinned, cached dependencies. On Linux and Apple Silicon it bundles
 Tilth, Claude, Codex and AISDK VM runtimes, individually optional through package
 overrides. See [packaged runtimes](packaged-runtimes.md) for configuration and
 upgrade behavior. The former Node/oxnode and fetchPnpmDeps packaging is gone.
 
 Remaining ideas:
 
-- Verify aarch64 Linux builds and implement/test macOS VM execution.
+- Complete the remaining [macOS validation](review-2026-09/macos.md).
 - Measure package size before choosing dependency pruning or bundling work.
 - Consider a standalone distribution, Nix overlay/channel or Guix package as
   separate efforts. Native provider executables and VM artifacts still need

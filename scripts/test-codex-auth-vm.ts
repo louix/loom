@@ -248,7 +248,7 @@ try {
       const deadline = Date.now() + 10000;
       for (;;) {
         const ready = await guest(
-          `const a=JSON.parse(await Deno.readTextFile("/tmp/loom-home/.codex/auth.json"));console.log(a.tokens.access_token===${JSON.stringify(replacement)} && a.tokens.refresh_token==="");`,
+          `try { const a=JSON.parse(await Deno.readTextFile("/tmp/loom-home/.codex/auth.json"));console.log(a.tokens.access_token===${JSON.stringify(replacement)} && a.tokens.refresh_token===""); } catch(e) { if (!(e instanceof Deno.errors.NotFound)) throw e; console.log(false); }`,
         );
         if (ready === "true") break;
         assert(Date.now() < deadline, "guest credential propagation timed out");

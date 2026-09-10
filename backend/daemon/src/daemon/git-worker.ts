@@ -1,6 +1,7 @@
 /** Host-selected Git capability, kept out of the VM and connector workers. */
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { inspectGitShim } from "../../../../runtime/src/packaged/artifact.ts";
 import { discoverGitWorktree } from "../../../../runtime/src/git-bridge/layout.ts";
 import { prepareGitBridge } from "../../../../runtime/src/git-bridge/service.ts";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
@@ -15,11 +16,7 @@ export const startSessionGit = async (
   const layout = await discoverGitWorktree(workspace);
   if (!layout) return undefined;
   try {
-    if (
-      (await Deno.readTextFile(join(artifact, "git-bridge-version"))).trim() !== "2" ||
-      !(await Deno.stat(join(artifact, "bin/git"))).isFile
-    )
-      throw new Error("missing shim");
+    await inspectGitShim(artifact);
   } catch {
     throw new Error(
       "Runtime lacks the current Git bridge shim. Upgrade the Loom Nix package, or run loom runtime update for a development runtime.",

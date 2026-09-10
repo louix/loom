@@ -1,3 +1,4 @@
+import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 /**
  * Per-session git worktrees (design spec §6). On session create we branch a
  * fresh worktree off the configured base; each tree gets a distinct commit
@@ -110,9 +111,9 @@ export class WorktreeManager {
   #factsCache = new Map<string, { at: number; facts: GitFacts }>();
 
   constructor(opts: WorktreeManagerOptions) {
-    this.#repoRoot = opts.repoRoot;
-    this.#treesDir = opts.treesDir;
-    this.#hooksDir = opts.hooksDir;
+    this.#repoRoot = canonicalHostPath(opts.repoRoot);
+    this.#treesDir = canonicalHostPath(opts.treesDir);
+    this.#hooksDir = canonicalHostPath(opts.hooksDir);
     this.#baseBranch = opts.baseBranch;
     this.#log = opts.log;
   }
@@ -371,6 +372,8 @@ export class WorktreeManager {
   /** Copy a stopped parent's changes into a fresh worktree at the same HEAD.
    * Ignored files and submodule working trees are deliberately not copied. */
   copyChanges(source: string, target: string): void {
+    source = canonicalHostPath(source);
+    target = canonicalHostPath(target);
     if (this.pendingGitOp(source))
       throw new Error("Finish the parent's Git operation before forking");
     const run = (args: string[], cwd = source, input?: string): string => {

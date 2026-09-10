@@ -1,7 +1,7 @@
 /** Guest-root acceptance probes using the production mount and environment policy. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { vmArguments, vmEnvironment, reapVm, type VmBinding } from "../runtime/src/packaged/vm.ts";
+import { reapVm, vmArguments, type VmBinding, vmEnvironment } from "../runtime/src/packaged/vm.ts";
 import type { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
 
 export const checkRuntimeIsolation = async (
@@ -9,7 +9,7 @@ export const checkRuntimeIsolation = async (
   workspace: string,
   hostOnly: string,
 ) => {
-  const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" });
+  const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" }));
   const binding: VmBinding = {
     version: 1,
     artifact: prepared.lock.artifact,
@@ -20,16 +20,23 @@ export const checkRuntimeIsolation = async (
     token: "acceptance-test-only".repeat(2),
   };
   try {
-    for (const dir of ["home", "cache", "data", "config"]) await Deno.mkdir(join(state, dir));
+    for (const dir of ["home", "cache", "data", "config"]) {
+      await Deno.mkdir(join(state, dir));
+    }
     const args = vmArguments(binding);
     const prefix = [
       ...args.slice(0, args.indexOf("--")).filter((arg) => arg !== "-i"),
       "--timeout",
       "30s",
     ];
+    // Retain the production image mount wrapper when substituting probe commands.
+    const runtimePrefix = args.slice(
+      args.indexOf("--") + 1,
+      args.indexOf(binding.manifest.entrypoint),
+    );
     const run = (extra: string[], command: string[]) =>
       new Deno.Command(binding.smolvm, {
-        args: [...prefix, ...extra, "--", ...command],
+        args: [...prefix, ...extra, "--", ...runtimePrefix, ...command],
         clearEnv: true,
         env: vmEnvironment(state),
         cwd: state,

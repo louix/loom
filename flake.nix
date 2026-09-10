@@ -10,7 +10,7 @@
   outputs =
     { self, nixpkgs, smolvm, tilth }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
       # Guests always run Linux, independently of the machine running Loom/smolvm.
@@ -42,6 +42,16 @@
         }).tilth-runtime;
       });
 
+      # Exclude output hashes to avoid a source/hash cycle. Tests, docs and
+      # maintainer scripts are not part of the executable guest closure.
+      guestSource = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          ./aisdk ./backend ./cli ./client ./connectors ./core ./frontend
+          ./harness ./runtime ./packaging/runtimes
+          ./deno.json ./deno.lock ./flake.nix ./flake.lock
+        ];
+      };
       # Short commit for `loom --version` when built from a checkout; a tag
       # would surface as the full ref. The flake sandbox has no `.git`, so the
       # daemon/CLI can't `git describe` at runtime — we stamp it here instead
@@ -49,6 +59,8 @@
       revFor = "0.0.0-g" + (self.shortRev or self.dirtyShortRev or "unknown");
     in
     {
+      lib.guestRuntimeSource = guestSource;
+      lib.guestRuntimeRecipe = builtins.hashFile "sha256" ./packaging/macos/runtime.nix;
       lib.mkRuntime = import ./packaging/runtimes/mk-runtime.nix;
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
@@ -59,8 +71,10 @@
             pkgs.nodejs_24
             pkgs.corepack
             pkgs.git
+            pkgs.bash
+            pkgs.ripgrep
             pkgs.deno
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          ] ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux || pkgs.stdenv.hostPlatform.system == "aarch64-darwin") [
             smolvm.packages.${pkgs.stdenv.hostPlatform.system}.default
           ];
 
@@ -77,11 +91,29 @@
           hostSystem = pkgs.stdenv.hostPlatform.system;
           guestSystem = guestSystemFor hostSystem;
           hostSmolvm = smolvm.packages.${hostSystem}.default;
-          # Packaging aliases are not a declaration of macOS runtime support.
-          bundleSupported = pkgs.stdenv.hostPlatform.isLinux;
+          hostClaude = (import nixpkgs {
+            system = hostSystem;
+            config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "claude-code";
+          }).claude-code;
+          runtimeHashes = builtins.fromJSON (builtins.readFile ./packaging/macos/runtime-hashes.json);
+          hostRuntimes = if hostSystem == "aarch64-darwin" then
+            if runtimeHashes.source != toString guestSource ||
+               (runtimeHashes.recipe or "") != self.lib.guestRuntimeRecipe then
+              throw "macOS guest runtime hashes are stale; run deno task runtime:hashes on Apple Silicon and commit the updated manifest"
+            else pkgs.lib.mapAttrs (runtime: hash: import ./packaging/macos/runtime.nix {
+              inherit pkgs runtime hash;
+              smolvm = hostSmolvm;
+              source = guestSource;
+            }) runtimeHashes.runtimes
+          else guestRuntimes.${guestSystem};
+          # smolvm ships native binaries for Linux and Apple Silicon macOS.
+          bundleSupported = pkgs.stdenv.hostPlatform.isLinux || hostSystem == "aarch64-darwin";
         in rec {
           default = loom;
-          inherit (guestRuntimes.${guestSystem}) claude-session-runtime aisdk-session-runtime codex-session-runtime tilth-runtime;
+          claude-session-runtime = hostRuntimes.claude-session-runtime;
+          aisdk-session-runtime = hostRuntimes.aisdk-session-runtime;
+          codex-session-runtime = hostRuntimes.codex-session-runtime;
+          tilth-runtime = hostRuntimes.tilth-runtime;
 
 
           # A fixed-output derivation holding a populated `DENO_DIR`: every
@@ -153,7 +185,11 @@
 
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-owMiJzg2obrdhloRDQ5TDEAwtZY0wrr5lLzFlmnKNm0=";
+            outputHash = {
+              x86_64-linux = "sha256-owMiJzg2obrdhloRDQ5TDEAwtZY0wrr5lLzFlmnKNm0=";
+              aarch64-linux = "sha256-hfMzELv7/d87lx85lqG6aGPalAx4RpSVN9MHBCHwCRA=";
+              aarch64-darwin = "sha256-k57nuWsJm1hJSqciFWsoOlqiOCzumTDBEYzNMKCgFOQ=";
+            }.${hostSystem};
           };
 
           loom = pkgs.lib.makeOverridable ({ withTilth ? true, withClaude ? true, withCodex ? true, withAisdk ? true }:
@@ -217,7 +253,7 @@
                   --add-flags "run -A --deny-net --cached-only --node-modules-dir=manual" \
                   --add-flags "$out/libexec/loom/cli/src/$bin.ts" \
                   --set DENO_NO_UPDATE_CHECK 1 \
-                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]} \
+                  --prefix PATH : ${pkgs.lib.makeBinPath ([ pkgs.git pkgs.bash pkgs.ripgrep ] ++ pkgs.lib.optional withClaude hostClaude ++ pkgs.lib.optional withCodex pkgs.codex)} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
                   ${if (withTilth || withClaude || withCodex || withAisdk) && bundleSupported
                     then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
@@ -230,9 +266,7 @@
             meta = {
               description = "Per-repo daemon that supervises a fleet of coding agents, each in its own git worktree";
               mainProgram = "loom";
-              # Only x86_64-linux has actually been built/run; the deps fetch is
-              # cross-platform (`--force`) so the others are plausible, untested.
-              platforms = pkgs.lib.platforms.unix;
+              platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
             };
           })) {};
         }

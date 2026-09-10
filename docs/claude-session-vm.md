@@ -258,8 +258,10 @@ cannot confirm shutdown, or a record is incompatible/corrupt, the session stays
 blocked for inspection. We deliberately do not guess which host PIDs to kill.
 Records from the earlier process-tracking implementation require manual recovery.
 
-This removes the Linux-specific recovery implementation. macOS runtime packaging,
-path handling and actual Mac lifecycle validation remain separate work.
+Recovery uses the same supervisor contract on Linux and Apple Silicon macOS.
+On macOS, temporary state uses canonical paths and a short directory name to
+leave room for smolvm's Unix sockets. See [packaging](packaged-runtimes.md) and
+the [macOS validation record](review-2026-09/macos.md).
 
 Credential-free acceptance test for a ready VM whose two owners are killed:
 
@@ -299,3 +301,11 @@ connect/initialize phase; adapter readiness includes provider create/resume (and
 VM/auth setup); first output measures from create or the latest idle-session send.
 They are observable software boundaries, not separate DNS/TLS/model-inference
 timers. Durations use a monotonic clock. No provider request bodies are logged.
+
+## macOS credentials
+
+The host credential owner reads Claude Code's macOS Keychain entry, falling back
+to the profile's `.credentials.json` when no usable Keychain entry is available.
+Named profiles use their own service names; they never borrow the default
+profile's credentials. Claude's native host CLI owns refresh and persistence.
+Only access-token snapshots enter session VMs.

@@ -98,7 +98,7 @@ for (const mode of [
             stderr: "piped",
             stdin: "null",
           }).output();
-        const binary = await Deno.realPath(join(lock.artifact, "bin/git"));
+        const binary = await Deno.readLink(join(lock.artifact, "bin/git"));
         const status = await exec([binary, "status", "--porcelain"]);
         assert.equal(status.code, 0, new TextDecoder().decode(status.stderr));
         const diff = await exec([binary, "diff", "main"]);
@@ -212,11 +212,18 @@ for (const phase of ["starting", "ready"] as const) {
         stdout: "piped",
         stderr: "piped",
       }).output();
-      const entries = [...Deno.readDirSync(state)].filter((e) => e.name.startsWith("git-bridge-"));
+      const entries = [...Deno.readDirSync(state)].filter(
+        (e) => e.isDirectory && e.name.startsWith("git-bridge-"),
+      );
       let exited = false;
       try {
-        exited =
-          (await Deno.readTextFile(`/proc/${vmPid}/stat`)).split(") ")[1]?.startsWith("Z") ?? false;
+        if (Deno.build.os === "linux") {
+          exited =
+            (await Deno.readTextFile(`/proc/${vmPid}/stat`)).split(") ")[1]?.startsWith("Z") ??
+            false;
+        } else {
+          Deno.kill(vmPid, 0);
+        }
       } catch (e) {
         if (e instanceof Deno.errors.NotFound) exited = true;
         else throw e;

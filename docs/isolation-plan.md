@@ -45,8 +45,9 @@ forking into an enabled provider with the current isolation policy.
    VM smoke tests. Codex native VM rotation, 401 recovery and failed-renewal expiry
    shutdown are verified against local fixtures; natural live OAuth expiry remains
    untested. See [AISDK](aisdk-session-vm.md) and [Codex](codex-session-vm.md).
-2. Implement the macOS host runtime backend while preserving Linux guest
-   artifacts. Current production VM execution is Linux/KVM.
+2. Finish the live macOS acceptance checks recorded in the
+   [validation record](review-2026-09/macos.md). Linux guest artifacts are built
+   separately from the native host launcher.
 3. Consider removing provider filesystem and registry access only as a separate
    policy change. It is intentionally available today.
 

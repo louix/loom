@@ -4,7 +4,7 @@ import {
 } from "../../../../runtime/src/packaged/disk-templates.ts";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
+import { resolveRuntime, requireVmHost } from "../../../../runtime/src/packaged/artifact.ts";
 import { vmArguments, reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
@@ -19,12 +19,11 @@ export const startRuntimeMcp = async (
   startGit = startSessionGit,
   allowRepoPrograms = false,
 ): Promise<ManagedMcp> => {
-  if (Deno.build.os !== "linux")
-    throw new Error("Packaged MCP VMs currently require Linux with KVM");
+  requireVmHost();
   const { lock, manifest } = await resolveRuntime(runtime);
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
-  const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" });
+  const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" }));
   const binding: VmBinding = {
     version: 1,
     artifact: lock.artifact,

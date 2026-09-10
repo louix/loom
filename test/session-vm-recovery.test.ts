@@ -8,8 +8,15 @@ import {
   withStoppedSessionVm,
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
 const fixture = async () => {
-  const dir = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-recovery-test-" });
-  const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-session-vm-" });
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-recovery-test-" }),
+  );
+  const state = await Deno.realPath(
+    await Deno.makeTempDir({
+      dir: "/tmp",
+      prefix: Deno.build.os === "darwin" ? "loom-svm-" : "loom-session-vm-",
+    }),
+  );
   const record = {
     version: 1,
     token: crypto.randomUUID(),

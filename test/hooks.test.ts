@@ -293,7 +293,13 @@ run   = "sh -c true"
   assert.match(warnings, /definitely-not-a-real-binary` is not on PATH/);
   assert.match(warnings, /dead-filter.*match.* does nothing for waiting/s);
   // a pipeline / absolute path is the user's business — not probed
-  assert.deepEqual(lintConfig(cfg('[[hooks]]\non="waiting"\nrun="X=1 foo | bar"\n'), {}), []);
+  assert.deepEqual(
+    lintConfig(
+      { ...cfg('[[hooks]]\non="waiting"\nrun="X=1 foo | bar"\n'), claudeProfiles: [] },
+      {},
+    ),
+    [],
+  );
 });
 
 // --- end to end ---------------------------------------------------------------

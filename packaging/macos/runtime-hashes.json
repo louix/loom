@@ -1,0 +1,10 @@
+{
+  "source": "/nix/store/m46fd458k1my057k6dkrsh3l42slfl12-source",
+  "recipe": "cae8909aff281d31cd971c11ead953b54802a2bff1ce5abcffcb93aa309a247d",
+  "runtimes": {
+    "tilth-runtime": "sha256-q3bmD4m+ZX41C+3T80jfUuT/1LUfx2Xd8yxs3Qlsrl0=",
+    "claude-session-runtime": "sha256-sTIyaOeDqXDTUFX1f9V7jZkChHa8iFwpQzh9/S764YI=",
+    "codex-session-runtime": "sha256-FTNTCfM0L/IICKYNdOalJtYMO4t9c0nqpoZ4RZkh/ns=",
+    "aisdk-session-runtime": "sha256-idN7WOgchLDRXnFisDGD+w5gxqgb7UVy4mFrGECMPKA="
+  }
+}

@@ -11,8 +11,8 @@ configuration live in [README](../README.md), [connectors](connectors.md) and
   checks pass; natural live OAuth expiry remains untested.
 - Standard daemon/TUI launches now allow only Unix IPC; provider/catalog/title
   network calls run in children. Native subprocess confinement still requires VMs.
-- macOS runtime support; Linux guest packaging is already separated from the
-  host launcher.
+- Complete the remaining [macOS validation](review-2026-09/macos.md); Intel Mac
+  packaging remains unsupported.
 
 ## Follow-up reviews
 

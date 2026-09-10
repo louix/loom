@@ -5,7 +5,12 @@ import { normalizeConfig } from "@loom/daemon/config/config";
 import { decodeManifest, resolveRuntime, runtimeKey } from "../runtime/src/packaged/artifact.ts";
 import { prepareRuntime } from "../cli/src/runtime.ts";
 import { join } from "node:path";
-import { vmArguments, vmEnvironment, type VmBinding } from "../runtime/src/packaged/vm.ts";
+import {
+  vmArguments,
+  type VmBinding,
+  vmEnvironment,
+  vmExecArguments,
+} from "../runtime/src/packaged/vm.ts";
 import { decodeWorkerRequest } from "../core/src/worker.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import { FakeProvider } from "@loom/connector-mock";
@@ -23,7 +28,12 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
   const base =
     '[[command-mcp]]\nname="code"\nruntime="tilth"\nisolation="vm"\ndefault_for=["read","edit"]';
   assert.deepEqual(normalizeConfig(parse(base)).mcp, [
-    { name: "code", runtime: "tilth", isolation: "vm", defaultFor: ["read", "edit"] },
+    {
+      name: "code",
+      runtime: "tilth",
+      isolation: "vm",
+      defaultFor: ["read", "edit"],
+    },
   ]);
   for (const extra of [
     '\ncommand="tilth"',
@@ -33,8 +43,9 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
     '\nhosts=["example.com"]',
     '\nallowed_hosts=["example.com"]',
     "\nmounts=[]",
-  ])
+  ]) {
     assert.throws(() => normalizeConfig(parse(base + extra)));
+  }
   assert.throws(() => normalizeConfig(parse(base.replace('isolation="vm"', 'isolation="host"'))));
   assert.throws(() => normalizeConfig(parse(base.replace('runtime="tilth"', 'command="tilth"'))));
   assert.throws(() => normalizeConfig(parse(base.replace('isolation="vm"', ""))));
@@ -48,8 +59,10 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     { version: 2 },
     { entrypoint: "/bin/sh" },
     { args: [1] },
-  ])
+    { closureFormat: "ext4" },
+  ]) {
     assert.throws(() => decodeManifest({ ...manifest, ...extra }));
+  }
   const b: VmBinding = {
     version: 1,
     manifest,
@@ -63,6 +76,23 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
   assert.ok(args.includes(`${b.workspace}:${b.workspace}`));
   assert.ok(args.includes(`${b.artifact}/nix/store:/nix/store:ro`));
   assert.ok(!args.some((a) => /^--(net|allow|dns)/.test(a)));
+  const imageBinding: VmBinding = {
+    ...b,
+    manifest: {
+      ...manifest,
+      closureFormat: "erofs",
+      args: ["$(touch /tmp/unsafe)", "a b"],
+    },
+  };
+  assert.deepEqual(decodeManifest(imageBinding.manifest), imageBinding.manifest);
+  const imageArgs = vmArguments(imageBinding);
+  assert.ok(imageArgs.includes(`${b.artifact}:/run/loom/runtime:ro`));
+  assert.ok(!imageArgs.includes(`${b.artifact}/nix/store:/nix/store:ro`));
+  for (const command of [imageArgs, vmExecArguments(imageBinding)]) {
+    // Provider arguments remain argv entries, never interpolated into the mount script.
+    assert.deepEqual(command.slice(-3), [manifest.entrypoint, "$(touch /tmp/unsafe)", "a b"]);
+    assert.match(command[command.indexOf("-c") + 1]!, /mount -t erofs -o loop,ro/);
+  }
   assert.deepEqual(Object.keys(vmEnvironment(b.state)).sort(), [
     "HOME",
     "PATH",
@@ -70,8 +100,9 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
   ]);
-  for (const workspace of ["/", "/nix/store", "/tmp/a:b", "/tmp/a,b", "/proc/self", "/etc"])
+  for (const workspace of ["/", "/nix/store", "/tmp/a:b", "/tmp/a,b", "/proc/self", "/etc"]) {
     assert.throws(() => vmArguments({ ...b, workspace }));
+  }
   assert.throws(() =>
     decodeWorkerRequest({
       kind: "request",
@@ -84,7 +115,10 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
           prompt: "",
           mode: "default",
           mcpServers: [
-            { name: "tilth", spec: { transport: "runtime", runtime: "tilth", isolation: "vm" } },
+            {
+              name: "tilth",
+              spec: { transport: "runtime", runtime: "tilth", isolation: "vm" },
+            },
           ],
         },
       ],
@@ -123,11 +157,12 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
     () =>
       new Proxy(fake, {
         get(t, p) {
-          if (p === "createSession")
+          if (p === "createSession") {
             return (o: CreateSessionOptions) => {
               seen.push(o);
               return t.createSession(o);
             };
+          }
           const v = Reflect.get(t, p, t);
           return typeof v === "function" ? v.bind(t) : v;
         },
@@ -139,7 +174,10 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
       const record = { cwd, closed: false };
       launched.push(record);
       return {
-        handle: { name, spec: { transport: "http", url: "http://127.0.0.1:1234/mcp" } },
+        handle: {
+          name,
+          spec: { transport: "http", url: "http://127.0.0.1:1234/mcp" },
+        },
         pid: 1,
         exited: new Promise(() => {}),
         close: async () => {
@@ -162,7 +200,11 @@ test("runtime mounts are session-scoped, preserve preferences, and never reach c
     ],
   };
   const a = await provider.createSession(opts);
-  const b = await provider.createSession({ ...opts, sessionId: "b", cwd: "/repo/session-b" });
+  const b = await provider.createSession({
+    ...opts,
+    sessionId: "b",
+    cwd: "/repo/session-b",
+  });
   assert.deepEqual(
     launched.map((x) => x.cwd),
     ["/repo/session-a", "/repo/session-b"],

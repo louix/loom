@@ -67,7 +67,7 @@ test("create makes a worktree + branch off base, with identity and a push block"
       execFileSync("git", ["-C", path, "config", "--worktree", k], { encoding: "utf8" }).trim();
     assert.equal(cfg(wt.path, "user.name"), "Loom (claude-sonnet-5)");
     assert.equal(cfg(wt.path, "user.email"), "loom+claude-sonnet-5@localhost");
-    assert.equal(cfg(wt.path, "core.hooksPath"), join(root, ".loom", "hooks"));
+    assert.equal(cfg(wt.path, "core.hooksPath"), Deno.realPathSync(join(root, ".loom", "hooks")));
     // no model → the bare fallback identity
     const bare = m.create(fakeId("bbbbbbbb"));
     assert.equal(cfg(bare.path, "user.name"), "Loom");

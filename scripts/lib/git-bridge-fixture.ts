@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 export const gitFixture = async function () {
-  const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-git-test-" });
+  const root = await Deno.realPath(
+    await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-git-test-" }),
+  );
   const repo = join(root, "repo");
   const workspace = join(root, "worktree");
   const state = join(root, "state");

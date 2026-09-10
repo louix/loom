@@ -1,6 +1,7 @@
+import { canonicalHostPath } from "../../../core/src/host-path.ts";
 /** Called only while holding the persistent session's ownership lock. */
 import { cleanupSessionVm } from "./cleanup.ts";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { reapVm, type VmBinding } from "../packaged/vm.ts";
 import { finishSessionState, writeRecoveryFile, removeSessionRuntimeState } from "./persistence.ts";
 export interface RecoveryRecord {
@@ -38,7 +39,8 @@ export const readRecovery = async (dir: string): Promise<RecoverableBinding | un
     typeof b.token !== "string" ||
     !/^[0-9a-f-]{36}$/.test(b.token) ||
     typeof b.state !== "string" ||
-    !/^\/tmp\/loom-session-vm-[a-z0-9]+$/.test(b.state) ||
+    dirname(b.state) !== canonicalHostPath("/tmp") ||
+    !/^loom-(?:session-vm|svm)-[a-z0-9]+$/.test(basename(b.state)) ||
     typeof b.smolvm !== "string" ||
     !/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/smolvm$/.test(b.smolvm) ||
     !b.recovery ||

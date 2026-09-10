@@ -1,4 +1,4 @@
-/** Opt-in KVM acceptance test. Prepare tilth first; uses only disposable workspaces. */
+/** Opt-in VM acceptance test. Prepare tilth first; uses only disposable workspaces. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { startRuntimeMcp } from "../backend/daemon/src/daemon/runtime-mcp.ts";
@@ -10,7 +10,9 @@ import { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
 import { checkRuntimeIsolation } from "./runtime-vm-isolation.ts";
 const runtime = Deno.args[0] ?? "tilth";
 const prepared = await resolveRuntime(runtime);
-const scratch = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-accept-" });
+const scratch = await Deno.realPath(
+  await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-accept-" }),
+);
 const report = [];
 let completed = false;
 await Deno.writeTextFile(join(scratch, "host-only"), "outside-workspace-sentinel");

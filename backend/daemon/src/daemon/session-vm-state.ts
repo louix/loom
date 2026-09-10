@@ -1,3 +1,4 @@
+import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 import { existsSync } from "node:fs";
 import { recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
 import { createHash } from "node:crypto";
@@ -12,7 +13,7 @@ export const sessionVmDirectory = (repo: string, id: string) => {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error("Invalid session identity");
   const root = Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local/state");
   const key = createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32);
-  return join(root, "loom/session-vms", key, id);
+  return canonicalHostPath(join(root, "loom/session-vms", key, id));
 };
 
 /** Keep the lock through recovery and the caller's filesystem mutation. */

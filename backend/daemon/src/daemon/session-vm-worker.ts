@@ -88,7 +88,14 @@ export const launchSessionVm = async (
     )
       throw new Error("Session history must be outside the worktree");
   }
-  const state = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-session-vm-" });
+  const state = await Deno.realPath(
+    await Deno.makeTempDir({
+      dir: "/tmp",
+      // smolvm uses HOME/Library/Caches on macOS, regardless of XDG_CACHE_HOME.
+      // Leave room for its VM ID and control socket within Darwin's 104-byte limit.
+      prefix: Deno.build.os === "darwin" ? "loom-svm-" : "loom-session-vm-",
+    }),
+  );
   const binding = {
     version: 1 as const,
     artifact,

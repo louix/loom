@@ -1553,18 +1553,18 @@ test("[commit_reminder]: an uncommitted worktree nudges the agent once per commi
 
     // turn 1 ends with a clean worktree → no reminder
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(40);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     userMsgs.length = 0; // drop the opening-prompt echo
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "idle", 3000);
     assert.deepEqual(userMsgs, [], "a clean worktree is not nudged");
 
     // turn 2 ends with an untracked file present → exactly one reminder
     writeFileSync(join(wt, "scratch.txt"), "wip\n");
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(20);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => userMsgs.length === 1, 3000);
     assert.equal(userMsgs.length, 1);
     assert.match(userMsgs[0] ?? "", /\[loom\].*uncommitted changes/s);
     assert.equal(hh.daemon.registry.get(snap.id)?.status.kind, "running");
@@ -1574,9 +1574,9 @@ test("[commit_reminder]: an uncommitted worktree nudges the agent once per commi
     // turn 3: still dirty, HEAD unchanged → no repeat reminder
     userMsgs.length = 0;
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(20);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "idle", 3000);
     assert.deepEqual(userMsgs, [], "no repeat reminder while HEAD is unchanged");
 
     // turn 4: the agent commits, then leaves a fresh change → one new reminder
@@ -1585,9 +1585,9 @@ test("[commit_reminder]: an uncommitted worktree nudges the agent once per commi
     writeFileSync(join(wt, "scratch2.txt"), "more\n");
     userMsgs.length = 0;
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(20);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => userMsgs.length === 1, 3000);
     assert.equal(userMsgs.length, 1, "a new dirty batch after a commit nudges again");
     assert.equal(nudgedSha(), head());
 
@@ -1596,9 +1596,9 @@ test("[commit_reminder]: an uncommitted worktree nudges the agent once per commi
     wtGit("commit", "-q", "-m", "rest");
     userMsgs.length = 0;
     fs?.emit({ type: "assistant_text", text: "…" });
-    await delay(20);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "running");
     fs?.finishTurn();
-    await delay(120);
+    await waitFor(() => hh.daemon.registry.get(snap.id)?.status.kind === "idle", 3000);
     assert.deepEqual(userMsgs, [], "a clean worktree is not nudged");
     assert.equal(nudgedSha(), "", "the record clears once the tree is clean");
   } finally {

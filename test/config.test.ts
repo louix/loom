@@ -200,7 +200,7 @@ codex_builtin_web_search = true
   assert.equal(p.codexCliPath, join(homedir(), "bin/codex"));
   assert.equal(p.codexBuiltinWebSearch, true);
   assert.deepEqual(p.models, ["gpt-5-codex", "gpt-5"]);
-  assert.deepEqual(lintConfig(c), []);
+  assert.deepEqual(lintConfig({ ...c, claudeProfiles: [] }), []);
 });
 
 test("[chatgpt] disables Codex web search unless explicitly enabled", () => {
@@ -300,10 +300,10 @@ base_url = "http://x/v1"
 api_key  = "sk-inline"
 model    = "m"
 `);
-  assert.deepEqual(lintConfig(c2, {} as NodeJS.ProcessEnv), []);
+  assert.deepEqual(lintConfig({ ...c2, claudeProfiles: [] }, {} as NodeJS.ProcessEnv), []);
 
   // a clean config lints clean
-  assert.deepEqual(lintConfig(cfg("")), []);
+  assert.deepEqual(lintConfig({ ...cfg(""), claudeProfiles: [] }), []);
 });
 
 test("numeric config fields reject negatives / NaN; strArray keeps the valid entries", () => {

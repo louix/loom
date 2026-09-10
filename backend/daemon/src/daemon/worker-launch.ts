@@ -77,7 +77,30 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
           try {
             Deno.kill(-child.pid, "SIGKILL");
           } catch (e) {
-            if (!(e instanceof Deno.errors.NotFound)) throw e;
+            if (e instanceof Deno.errors.NotFound) return;
+            // Darwin can report EPERM while the last group member is exiting.
+            // Ignore it only after confirming that no live members remain.
+            if (Deno.build.os === "darwin" && e instanceof Deno.errors.PermissionDenied) {
+              try {
+                Deno.kill(-child.pid, 0);
+              } catch (check) {
+                if (check instanceof Deno.errors.NotFound) return;
+              }
+              const group = Deno.spawnAndWaitSync(
+                "/bin/ps",
+                ["-o", "stat=", "-g", String(child.pid)],
+                { stdout: "piped", stderr: "piped" },
+              );
+              if (group.success || (group.code === 1 && group.stderr.length === 0)) {
+                const states = new TextDecoder()
+                  .decode(group.stdout)
+                  .trim()
+                  .split(/\s+/)
+                  .filter(Boolean);
+                if (states.every((state) => state.startsWith("Z"))) return;
+              }
+            }
+            throw e;
           }
         }
       },

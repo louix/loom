@@ -1,5 +1,5 @@
 /** Fixed-policy VM launch and reaping, shared by supervisor and daemon fallback. */
-import { join, isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { RuntimeManifest } from "./artifact.ts";
 export interface VmBinding {
   version: 1;
@@ -14,6 +14,18 @@ export interface VmBinding {
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export const sessionVmName = "loom-session";
+const runtimeCommand = (b: VmBinding) => [
+  ...(b.manifest.closureFormat === "erofs"
+    ? [
+        "/bin/sh",
+        "-c",
+        'set -eu; mkdir -p /nix/store; mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /nix/store; exec "$@"',
+        "loom-runtime",
+      ]
+    : []),
+  b.manifest.entrypoint,
+  ...b.manifest.args,
+];
 export const vmEnvironment = (state: string) => {
   return {
     HOME: join(state, "home"),
@@ -24,24 +36,27 @@ export const vmEnvironment = (state: string) => {
   };
 };
 export const vmArguments = (b: VmBinding) => {
-  if (b.state === b.workspace || b.state.startsWith(b.workspace + "/"))
+  if (b.state === b.workspace || b.state.startsWith(b.workspace + "/")) {
     throw new Error("VM supervisor state must be outside the session workspace");
+  }
   if (
     !isAbsolute(b.workspace) ||
     b.workspace === "/" ||
     [b.workspace, b.artifact, b.state].some((p) => /[:,;|\n\0]/.test(p))
-  )
+  ) {
     throw new Error(
       "Unsupported VM mount path (must be absolute, non-root, without colon, comma or newline)",
     );
+  }
   if (
     b.workspace === "/nix" ||
     b.workspace.startsWith("/nix/") ||
     ["/proc", "/sys", "/dev", "/etc", "/bin", "/usr", "/run"].some(
       (p) => b.workspace === p || b.workspace.startsWith(p + "/"),
     )
-  )
+  ) {
     throw new Error("Session workspace overlaps the VM system filesystem");
+  }
   return [
     "machine",
     "run",
@@ -51,7 +66,9 @@ export const vmArguments = (b: VmBinding) => {
     "512",
     "-i",
     "-v",
-    `${b.artifact}/nix/store:/nix/store:ro`,
+    b.manifest.closureFormat === "erofs"
+      ? `${b.artifact}:/run/loom/runtime:ro`
+      : `${b.artifact}/nix/store:/nix/store:ro`,
     "-v",
     `${b.workspace}:${b.workspace}`,
     ...(b.gitSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),
@@ -63,13 +80,13 @@ export const vmArguments = (b: VmBinding) => {
     "XDG_CACHE_HOME=/tmp/loom-cache",
     ...(b.gitSocket ? ["-e", "PATH=/run/loom/bin:/usr/bin:/bin"] : []),
     "--",
-    b.manifest.entrypoint,
-    ...b.manifest.args,
+    ...runtimeCommand(b),
   ];
 };
 export const vmCreateArguments = (b: VmBinding) => {
-  if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket))
+  if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket)) {
     throw new Error("Git endpoint must be in private VM state");
+  }
   const args = vmArguments(b);
   return [
     "machine",
@@ -96,8 +113,7 @@ export const vmExecArguments = (b: VmBinding) => [
   "-e",
   "PATH=/run/loom/bin:/usr/bin:/bin",
   "--",
-  b.manifest.entrypoint,
-  ...b.manifest.args,
+  ...runtimeCommand(b),
 ];
 export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket">) => {
   const command = async (args: string[]) => {
@@ -117,8 +133,9 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket"
     }, 5000);
     try {
       const r = await child.output();
-      if (!r.success)
+      if (!r.success) {
         throw new Error(`smolvm cleanup failed (${r.code}); state retained at ${b.state}`);
+      }
       return new TextDecoder().decode(r.stdout);
     } finally {
       clearTimeout(timer);
@@ -138,8 +155,9 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket"
       if (
         !(m.ephemeral && /^vm-[a-z0-9]+$/.test(m.name)) &&
         !(b.gitSocket && m.name === sessionVmName)
-      )
+      ) {
         throw new Error("Unexpected VM in private state; refusing to delete it");
+      }
       try {
         await command(["machine", "stop", "--name", m.name]);
       } catch (error) {
@@ -153,8 +171,11 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket"
     }
     // Foreground smolvm removes ephemeral records asynchronously; stop/delete
     // can race that removal. Retry until empty, with a strict overall budget.
-    if (Date.now() >= deadline)
-      throw new Error("VM cleanup incomplete; state retained at " + b.state, { cause: lastError });
+    if (Date.now() >= deadline) {
+      throw new Error("VM cleanup incomplete; state retained at " + b.state, {
+        cause: lastError,
+      });
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
 };

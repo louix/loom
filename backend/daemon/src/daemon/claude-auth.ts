@@ -1,7 +1,7 @@
 import { CredentialOwner, CredentialAuthError as ClaudeAuthError } from "./credential-owner.ts";
 export { CredentialAuthError as ClaudeAuthError } from "./credential-owner.ts";
 /** Host-only Claude credential owner. Refresh tokens never enter VM snapshots. */
-import { join } from "node:path";
+import { readClaudeCredentials } from "./claude-credentials.ts";
 import { homedir } from "node:os";
 
 import type { ClaudeAccess } from "../../../../runtime/src/session-vm/auth.ts";
@@ -11,8 +11,10 @@ export interface ClaudeAuthSnapshot {
 }
 const read = async (profile: string): Promise<ClaudeAccess & { refreshToken?: string }> => {
   try {
-    const value = JSON.parse(
-      await Deno.readTextFile(join(profile, ".credentials.json")),
+    const value = (
+      (await readClaudeCredentials(profile)) as {
+        claudeAiOauth?: ClaudeAccess & { refreshToken?: string };
+      }
     ).claudeAiOauth;
     if (
       !value ||
