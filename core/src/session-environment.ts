@@ -35,8 +35,10 @@ export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment 
   if (typeof prepare !== "string" || prepare.length > 65536 || prepare.includes("\0"))
     throw new Error("isolation.environment.prepare must be a shell command string");
   const seconds = r.timeout_seconds ?? 900;
-  if (!Number.isInteger(seconds) || Number(seconds) < 1 || Number(seconds) > 3600)
-    throw new Error("isolation.environment.timeout_seconds must be an integer from 1 to 3600");
+  if (!Number.isInteger(seconds) || Number(seconds) < 1 || Number(seconds) > 2_073_600)
+    throw new Error(
+      "isolation.environment.timeout_seconds must be an integer from 1 to 2073600 (24 days)",
+    );
   const memoryMiB = r.memory_mib ?? 2048;
   if (!Number.isInteger(memoryMiB) || Number(memoryMiB) < 512 || Number(memoryMiB) > 65536)
     throw new Error("isolation.environment.memory_mib must be an integer from 512 to 65536");

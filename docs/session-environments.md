@@ -47,7 +47,8 @@ directory costs more to snapshot. Prepared source/environment caching is future 
 - `prepare`: arbitrary shell script (default empty), executed inside that
   environment. Nothing in the launcher assumes a package manager. For example,
   another repo could use `pnpm install --frozen-lockfile` or `./scripts/setup`.
-- `timeout_seconds`: total preparation budget, from 1 to 3600 (default 900).
+- `timeout_seconds`: total preparation budget, from 1 to 2073600 (24 days;
+  default 900). Set `timeout_seconds = 2073600` for the maximum.
 - `memory_mib`: guest RAM in MiB, from 512 to 65536 (default 2048).
 - `cpus`: guest virtual CPUs, from 1 to 64 (default 1).
 

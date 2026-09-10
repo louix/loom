@@ -39,7 +39,7 @@ test("environment configuration validates commands and bounded setup time", () =
     { command_prefix: ["bad\0arg"] },
     { prepare: false },
     { timeout_seconds: 0 },
-    { timeout_seconds: 3601 },
+    { timeout_seconds: 2_073_601 },
     { timeout_seconds: 1.5 },
     { typo: true },
     { memory_mib: 511 },
@@ -53,6 +53,12 @@ test("environment configuration validates commands and bounded setup time", () =
   ])
     assert.throws(() => normalizeSessionEnvironment(invalid), /isolation.environment/);
   assert.equal(sessionStartupTimeout(normalizeSessionEnvironment(undefined)), 120_000);
+  assert.equal(
+    sessionStartupTimeout(
+      normalizeSessionEnvironment({ prepare: "setup", timeout_seconds: 2_073_600 }),
+    ),
+    2_073_720_000,
+  );
   assert.equal(
     sessionStartupTimeout(
       normalizeSessionEnvironment({ prepare: "custom setup", timeout_seconds: 20 }),
