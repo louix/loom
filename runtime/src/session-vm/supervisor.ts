@@ -112,10 +112,16 @@ const command = async (args: string[]) => {
     env: vmEnvironment(binding.state),
     stdin: "null",
     stdout: "piped",
-    stderr: "null",
+    stderr: "piped",
   });
   const result = await Promise.race([child.output(), done.promise.then(() => undefined)]);
-  if (!result?.success) throw new Error("Session VM startup interrupted or failed");
+  if (!result) throw new Error("Session VM startup interrupted");
+  if (!result.success) {
+    const detail = new TextDecoder().decode(result.stderr).trim().slice(-4096);
+    throw new Error(
+      `smolvm ${args.slice(0, 2).join(" ")} failed (exit ${result.code})${detail ? `: ${detail}` : ""}`,
+    );
+  }
   return new TextDecoder().decode(result.stdout).trim();
 };
 try {
@@ -255,8 +261,12 @@ try {
     await Promise.all([output, diagnostics]);
     Deno.exitCode = result.code;
   }
-} catch {
+} catch (error) {
   Deno.exitCode = 1;
+  // Explicit preparation has no provider credentials. Report the command's
+  // failure, without resource sampling or console/backend log dumps.
+  if (binding.preparationOnly)
+    console.error(error instanceof Error ? error.message : String(error));
   console.error(`Session VM stopped during ${phase}; state: ${binding.state}`);
 } finally {
   clearTimeout(deadline);
