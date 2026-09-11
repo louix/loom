@@ -176,6 +176,11 @@ policy. They grant access to the whole session VM, not just setup commands.
   input/registry downloads, including this repo's locked GitHub inputs.
 - `javascript`: `registry.npmjs.org`, `jsr.io`, `npm.jsr.io`, and `nodejs.org`
   (Node headers for native dependency builds with node-gyp).
+- `python`: `pypi.org` and `files.pythonhosted.org` (PyPI indexes, wheels and
+  source distributions for pip, uv and other Python package managers).
+
+For a repo using all three, set `network_presets = ["nix", "javascript", "python"]`
+under `[repo.isolation]`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

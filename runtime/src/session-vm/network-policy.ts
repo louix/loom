@@ -13,6 +13,7 @@ export const networkPresets = {
   ],
   // node-gyp downloads matching Node headers when building native dependencies.
   javascript: ["registry.npmjs.org", "jsr.io", "npm.jsr.io", "nodejs.org"],
+  python: ["pypi.org", "files.pythonhosted.org"],
 } as const;
 
 export const expandNetworkPresets = (value: unknown): string[] => {
@@ -22,7 +23,7 @@ export const expandNetworkPresets = (value: unknown): string[] => {
     value.length > 16 ||
     !value.every((v) => typeof v === "string" && Object.hasOwn(networkPresets, v))
   )
-    throw new Error("network_presets must contain only nix or javascript");
+    throw new Error(`network_presets must contain only: ${Object.keys(networkPresets).join(", ")}`);
   return [...new Set(value.flatMap((v) => networkPresets[v as keyof typeof networkPresets]))];
 };
 
