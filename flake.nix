@@ -2,8 +2,8 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # This revision packages smolvm 1.8.1; upstream's v1.8.1 tag still packages 1.8.0.
-  inputs.smolvm.url = "github:smol-machines/smolvm/703f12b038014fc832dc03f9b7d85669f496acdb";
+  # Packages smolvm 1.14.6, including host disk-resizing tools on macOS.
+  inputs.smolvm.url = "github:smol-machines/smolvm/5098b07eddd12377fe12f257be7f5e92be7f5840";
 
   inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
 
