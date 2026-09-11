@@ -161,7 +161,8 @@ policy. They grant access to the whole session VM, not just setup commands.
   `tarballs.nixos.org`, `github.com`, `api.github.com`, `codeload.github.com`,
   `raw.githubusercontent.com`, `release-assets.githubusercontent.com`. This covers the official cache and common flake
   input/registry downloads, including this repo's locked GitHub inputs.
-- `javascript`: `registry.npmjs.org`, `jsr.io`, `npm.jsr.io`.
+- `javascript`: `registry.npmjs.org`, `jsr.io`, `npm.jsr.io`, and `nodejs.org`
+  (Node headers for native dependency builds with node-gyp).
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

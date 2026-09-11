@@ -11,7 +11,8 @@ export const networkPresets = {
     "raw.githubusercontent.com",
     "release-assets.githubusercontent.com",
   ],
-  javascript: ["registry.npmjs.org", "jsr.io", "npm.jsr.io"],
+  // node-gyp downloads matching Node headers when building native dependencies.
+  javascript: ["registry.npmjs.org", "jsr.io", "npm.jsr.io", "nodejs.org"],
 } as const;
 
 export const expandNetworkPresets = (value: unknown): string[] => {
