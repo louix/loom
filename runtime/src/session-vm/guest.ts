@@ -3,6 +3,7 @@ import { sessionAuth } from "./auth.ts";
 import { prepareEnvironment, initializeGuestNix } from "./environment.ts";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
+import { startGuestRelay } from "./guest-relay.ts";
 // Cache package downloads on ext4, alongside the private Nix store. Worktree
 // outputs still live on the host mount; HOME holds only launch-time bootstrap.
 for (const [key, path] of Object.entries({
@@ -50,40 +51,13 @@ await Deno.writeTextFile(
   JSON.stringify({ hasCompletedOnboarding: true }),
 );
 const listener = Deno.listen({ hostname: "127.0.0.1", port: 3128 });
-const relay = async (client: Deno.Conn, socket = "/run/loom/egress.sock") => {
-  let host: Deno.Conn | undefined;
-  try {
-    host = await Deno.connect({ transport: "unix", path: socket });
-    await Promise.race([
-      client.readable.pipeTo(host.writable, { preventClose: true }),
-      host.readable.pipeTo(client.writable, { preventClose: true }),
-    ]);
-  } catch {
-    /* Endpoint closed. */
-  } finally {
-    try {
-      client.close();
-    } catch {
-      /* closed */
-    }
-    try {
-      host?.close();
-    } catch {
-      /* closed */
-    }
-  }
-};
-void (async () => {
-  for await (const conn of listener) void relay(conn);
-})();
+void startGuestRelay(listener, "/run/loom/egress.sock").finished;
 const mcp: Array<{ guestPort: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/mcp.json"),
 );
 for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
-  void (async () => {
-    for await (const conn of endpoint) void relay(conn, `/run/loom/mcp-${index}.sock`);
-  })();
+  void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`).finished;
 }
 // Setup happens during initialize, before provider loading/readiness. The proxy
 // stays alive while the environment subprocess downloads its dependencies.
