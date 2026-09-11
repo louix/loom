@@ -72,7 +72,11 @@ Choose values that leave enough host resources for your concurrent sessions.
 Environment activation runs once per VM launch. The setup script runs next,
 then Loom captures exported variables for the worker and its subprocesses.
 Shell-local functions, aliases, and activation processes are not retained.
-The Git bridge/provider executable paths and proxy/bootstrap settings are retained.
+Shell activation and preparation use real Git inside the VM, allowing package
+managers to create and fetch dependency repositories. Host Git metadata remains
+unmounted and the configured network policy still applies. The Git bridge/provider
+executable paths take precedence when the agent starts; proxy/bootstrap settings
+are retained.
 Setup must succeed before initialization completes; failure or timeout aborts
 startup, cleans up the VM and reports a fixed diagnostic. Normal session startup
 discards raw command output. Explicit repo preparation streams it separately

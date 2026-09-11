@@ -77,7 +77,10 @@ const prepare = async (output?: "inherit") => {
     initializeNix: initializeGuestNix,
     ...(output ? { output } : {}),
   });
-  if (!env) return;
+  if (!env) {
+    Deno.env.set("PATH", before.LOOM_GUEST_CONTROL_PATH + ":" + before.PATH);
+    return;
+  }
   for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
   // The dev shell supplies tools and exports; Loom's bridge and provider
   // executables retain precedence and bootstrap settings remain available.
