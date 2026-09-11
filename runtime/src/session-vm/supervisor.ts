@@ -15,6 +15,7 @@ import {
   vmCreateArguments,
   vmEnvironment,
   vmExecArguments,
+  stageGuestImage,
 } from "../packaged/vm.ts";
 import {
   lockSessionState,
@@ -216,6 +217,7 @@ try {
     { mode: 0o600 },
   );
   await attachDiskTemplates(binding.state, binding.smolvm);
+  await stageGuestImage(binding);
   await command(create);
   const diskDirectory =
     binding.persistentDisks && binding.sessionDirectory

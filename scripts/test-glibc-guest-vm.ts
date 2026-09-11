@@ -18,7 +18,8 @@ const fixture = await Deno.realPath(runtime);
 // Never expose the host store. Supply a dedicated copy of the Node closure.
 assert(fixture !== "/nix" && fixture !== "/nix/store");
 assert((await Deno.lstat(join(fixture, "store"))).isDirectory);
-assert((await Deno.lstat(rootfs)).isDirectory);
+const imageInfo = await Deno.lstat(rootfs);
+assert(imageInfo.isDirectory || imageInfo.isFile, "Pass a local rootfs directory or image archive");
 const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-glibc-" }));
 const socket = join(state, "bridge.sock");
 const listener = Deno.listen({ transport: "unix", path: socket });

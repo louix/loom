@@ -47,6 +47,9 @@ let
     if [ -f "$result/session-environment-version" ]; then
       cp "$result/session-environment-version" "$result/registration" /tmp/artifact/
     fi
+    if [ -f "$result/guest-image.tar" ]; then
+      cp "$result/guest-image.tar" /tmp/artifact/
+    fi
     if [ -f "$result/claude-session-version" ]; then
       cp "$result/claude-session-version" /tmp/artifact/
     fi

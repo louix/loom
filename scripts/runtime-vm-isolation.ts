@@ -1,7 +1,13 @@
 /** Guest-root acceptance probes using the production mount and environment policy. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { reapVm, vmArguments, type VmBinding, vmEnvironment } from "../runtime/src/packaged/vm.ts";
+import {
+  reapVm,
+  vmArguments,
+  stageGuestImage,
+  type VmBinding,
+  vmEnvironment,
+} from "../runtime/src/packaged/vm.ts";
 import type { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
 
 export const checkRuntimeIsolation = async (
@@ -24,6 +30,7 @@ export const checkRuntimeIsolation = async (
       await Deno.mkdir(join(state, dir));
     }
     const args = vmArguments(binding);
+    await stageGuestImage(binding);
     const prefix = [
       ...args.slice(0, args.indexOf("--")).filter((arg) => arg !== "-i"),
       "--timeout",

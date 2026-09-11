@@ -7,6 +7,19 @@ the provider becomes ready. Commands are configured in the trusted user config,
 and execute inside the VM, in the session worktree. Claude, Codex and AISDK use
 the same setup path. Host workers and packaged MCP VMs do not run these commands.
 
+Bundled session runtimes use a digest-pinned Debian slim guest image so native
+packages see a glibc environment consistent with Nix tools. The image ships with
+the runtime and is unpacked inside smolvm; Docker/Podman and runtime image
+downloads are not required. This applies to Linux and Apple Silicon guest
+artifacts. Apple Silicon releases require regenerated runtime hashes and host
+validation as described in the packaging documentation.
+
+Upgrading the runtime (including its guest image) invalidates older prepared
+bases. Run `loom environment prepare` after upgrading and restarting the daemon;
+an incompatible base is skipped, and the previous base remains until a new
+preparation succeeds. Existing sessions retain their worktrees and history;
+fork a session whose saved VM disks require an older runtime.
+
 For this repository, add the following to its existing `[[repo]]` entry in
 `~/.config/loom/config.toml` (merge tables rather than duplicating them):
 

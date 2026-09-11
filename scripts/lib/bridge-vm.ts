@@ -1,5 +1,10 @@
 /** Experimental explicit-lifecycle VM. Normal packaged MCP launches are unchanged. */
-import { vmArguments, vmEnvironment, type VmBinding } from "../../runtime/src/packaged/vm.ts";
+import {
+  vmArguments,
+  vmEnvironment,
+  stageGuestImage,
+  type VmBinding,
+} from "../../runtime/src/packaged/vm.ts";
 
 export const guestGitSocket = "/run/loom/git.sock";
 
@@ -57,6 +62,7 @@ export const bridgeVm = async function (binding: VmBinding, socket?: string, ext
   };
   try {
     const args = vmArguments(binding);
+    await stageGuestImage(binding);
     const options = args.slice(2, args.indexOf("--")).filter((arg) => arg !== "-i");
     await checked([
       "machine",

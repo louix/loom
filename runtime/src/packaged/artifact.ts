@@ -10,6 +10,8 @@ export interface RuntimeManifest {
   entrypoint: string;
   args: string[];
   closureFormat?: "erofs";
+  /** A package-owned Docker archive, unpacked inside the VM on both hosts. */
+  guestImage?: "guest-image.tar";
 }
 export interface RuntimeLock {
   version: 1;
@@ -44,7 +46,8 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
     !/^\/nix\/store\/[a-z0-9]{32}-[^/\s]+\/bin\/[^/\s]+$/.test(v.entrypoint) ||
     !Array.isArray(v.args) ||
     !v.args.every((a) => typeof a === "string" && !a.includes("\0")) ||
-    (v.closureFormat !== undefined && v.closureFormat !== "erofs")
+    (v.closureFormat !== undefined && v.closureFormat !== "erofs") ||
+    (v.guestImage !== undefined && v.guestImage !== "guest-image.tar")
   ) {
     throw new Error(
       "Invalid runtime manifest (expected version 1, smolvm, store executable and string args)",
@@ -53,7 +56,16 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
   // Authority is never read from package metadata.
   if (
     Object.keys(v).some(
-      (k) => !["version", "system", "backend", "entrypoint", "args", "closureFormat"].includes(k),
+      (k) =>
+        ![
+          "version",
+          "system",
+          "backend",
+          "entrypoint",
+          "args",
+          "closureFormat",
+          "guestImage",
+        ].includes(k),
     )
   ) {
     throw new Error("Unknown runtime manifest field; permissions belong in Loom configuration");
@@ -70,6 +82,12 @@ export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest
   );
   if (manifest.system !== guestSystem()) {
     throw new Error(`Runtime guest system ${manifest.system} does not match ${guestSystem()}`);
+  }
+  if (manifest.guestImage) {
+    const image = await Deno.lstat(join(artifact, manifest.guestImage));
+    if (!image.isFile || image.size < 1024) {
+      throw new Error("Runtime guest image is missing or invalid");
+    }
   }
   const paths = (await Deno.readTextFile(join(artifact, "store-paths"))).trim().split("\n");
   if (

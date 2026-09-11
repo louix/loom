@@ -2,7 +2,13 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { inspectArtifact } from "../runtime/src/packaged/artifact.ts";
-import { vmArguments, vmEnvironment, reapVm, type VmBinding } from "../runtime/src/packaged/vm.ts";
+import {
+  vmArguments,
+  vmEnvironment,
+  stageGuestImage,
+  reapVm,
+  type VmBinding,
+} from "../runtime/src/packaged/vm.ts";
 
 const [artifactArg, smolvmArg] = Deno.args;
 if (!artifactArg || !smolvmArg)
@@ -130,6 +136,7 @@ try {
       token: "unused-transport-prototype",
     });
   }
+  for (const binding of states) await stageGuestImage(binding);
   const run = async (index: number, forward: boolean, command: string[], extra: string[] = []) => {
     const binding = states[index]!;
     const service = index === 0 ? a : b;

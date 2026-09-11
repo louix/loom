@@ -9,6 +9,8 @@ type Identity = Pick<VmBinding, "artifact" | "smolvm" | "writableNix">;
 export class SavedDiskCompatibilityError extends Error {}
 const identity = (b: Identity) => ({
   version: 1,
+  // The immutable artifact includes its guest image. Changing from Alpine to
+  // Debian (or updating Debian) changes this path and invalidates old bases.
   artifact: b.artifact,
   smolvm: b.smolvm,
   host: `${Deno.build.arch}-${Deno.build.os}`,

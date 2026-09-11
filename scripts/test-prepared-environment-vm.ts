@@ -9,8 +9,10 @@ import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
 
-const [runtime, backend] = Deno.args;
+const [runtime, backend, option] = Deno.args;
 assert(runtime && backend, "Pass a rebuilt AISDK runtime and pinned smolvm");
+assert(option === undefined || option === "--nix", "Optional third argument: --nix");
+const nix = option === "--nix";
 const artifact = await Deno.realPath(runtime);
 const smolvm = await Deno.realPath(backend);
 const f = await gitFixture();
@@ -41,6 +43,7 @@ enabled=false
 artifact=${JSON.stringify(artifact)}
 smolvm=${JSON.stringify(smolvm)}
 [isolation.environment]
+nix=${nix}
 command_prefix=${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])}
 prepare=${JSON.stringify(prepare)}
 timeout_seconds=60
@@ -113,6 +116,7 @@ try {
   // A fresh worktree must materialize dependencies entirely from the VM cache.
   const directory = join(f.root, "session");
   const environment = normalizeSessionEnvironment({
+    nix,
     prepare:
       "cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only",
   });

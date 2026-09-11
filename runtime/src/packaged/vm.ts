@@ -21,6 +21,17 @@ export interface VmBinding {
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export const sessionVmName = "loom-session";
+/** Keep the archive timestamp stable when smolvm hard-links its private cache.
+ * Its copy fallback from the root-owned Nix store resets mtime, unnecessarily
+ * invalidating the extracted image on every clone of a prepared disk.
+ */
+export const stageGuestImage = async (b: VmBinding) => {
+  if (!b.manifest.guestImage) return;
+  const target = join(b.state, b.manifest.guestImage);
+  await Deno.copyFile(join(b.artifact, b.manifest.guestImage), target);
+  await Deno.chmod(target, 0o400);
+  await Deno.utime(target, 1, 1);
+};
 const runtimeCommand = (b: VmBinding) => {
   let mount: string | undefined;
   if (b.writableNix) {
@@ -29,16 +40,25 @@ const runtimeCommand = (b: VmBinding) => {
       // /storage is smolvm's ext4 disk; its overlay-backed root cannot
       // itself be an OverlayFS upper. Keep the DB and build temp files here too.
       "mkdir -p /nix/store /nix/var /run/loom/store-lower /storage/loom-nix/upper /storage/loom-nix/work /storage/loom-nix/var /storage/loom-nix/tmp",
-      b.manifest.closureFormat === "erofs"
-        ? "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower"
-        : "mount --bind /run/loom/runtime/nix/store /run/loom/store-lower",
+      b.manifest.guestImage
+        ? "mount --bind /nix/store /run/loom/store-lower"
+        : b.manifest.closureFormat === "erofs"
+          ? "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower"
+          : "mount --bind /run/loom/runtime/nix/store /run/loom/store-lower",
       "mount -t overlay overlay -o lowerdir=/run/loom/store-lower,upperdir=/storage/loom-nix/upper,workdir=/storage/loom-nix/work /nix/store",
       "mount --bind /storage/loom-nix/var /nix/var",
       'exec "$@"',
     ].join("; ");
-  } else if (b.manifest.closureFormat === "erofs") {
+  } else if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs") {
     mount =
       'set -eu; mkdir -p /nix/store; mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /nix/store; exec "$@"';
+  }
+  if (b.manifest.guestImage) {
+    // /run is ephemeral; the image keeps closure registration under /opt.
+    const metadata = "mkdir -p /run/loom; ln -sfn /opt/loom/runtime /run/loom/runtime";
+    mount = mount
+      ? mount.replace("set -eu; ", `set -eu; ${metadata}; `)
+      : `set -eu; ${metadata}; mount --bind /nix/store /nix/store; mount -o remount,bind,ro /nix/store; exec "$@"`;
   }
   return [
     ...(mount ? ["/bin/sh", "-c", mount, "loom-runtime"] : []),
@@ -80,15 +100,20 @@ export const vmArguments = (b: VmBinding) => {
   return [
     "machine",
     "run",
+    ...(b.manifest.guestImage ? ["--image", join(b.state, b.manifest.guestImage)] : []),
     "--cpus",
     "1",
     "--mem",
     "512",
     "-i",
-    "-v",
-    b.writableNix || b.manifest.closureFormat === "erofs"
-      ? `${b.artifact}:/run/loom/runtime:ro`
-      : `${b.artifact}/nix/store:/nix/store:ro`,
+    ...(b.manifest.guestImage
+      ? []
+      : [
+          "-v",
+          b.writableNix || b.manifest.closureFormat === "erofs"
+            ? `${b.artifact}:/run/loom/runtime:ro`
+            : `${b.artifact}/nix/store:/nix/store:ro`,
+        ]),
     "-v",
     `${b.workspace}:${b.workspace}`,
     ...(b.gitSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),

@@ -161,6 +161,13 @@ version rejects per-runtime environment, network, host and mount options rather
 than silently ignoring them. Runtime and host command configurations are
 mutually exclusive.
 
+Bundled agent session artifacts additionally declare `"guestImage":
+"guest-image.tar"`. This fixed filename contains a Debian slim image and the
+selected Nix runtime closure. smolvm unpacks it inside the guest, avoiding an
+extra runtime mount and preserving Linux filesystem semantics on macOS. No
+registry reference or arbitrary image path is accepted in the manifest. Generic
+command MCP artifacts retain their existing execution contract.
+
 Each session gets its own Deno supervisor, authenticated loopback HTTP endpoint,
 smolvm guest and private state directory. The supervisor translates MCP HTTP to
 stdio, preserving tool names, argument schemas and results. It supports request

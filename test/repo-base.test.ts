@@ -1,7 +1,53 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { publishRepoBase } from "../runtime/src/session-vm/repo-base.ts";
+import { publishRepoBase, seedRepoBase } from "../runtime/src/session-vm/repo-base.ts";
+import type { VmBinding } from "../runtime/src/packaged/vm.ts";
+
+test("a new guest image artifact skips the Alpine base without deleting it", async () => {
+  const home = await Deno.realPath(await Deno.makeTempDir());
+  const base = join(home, "base-alpine");
+  const binding: VmBinding = {
+    version: 1,
+    artifact: "/nix/store/new-debian-runtime",
+    smolvm: "/nix/store/backend/bin/smolvm",
+    writableNix: true,
+    manifest: {
+      version: 1,
+      backend: "smolvm",
+      system: "x86_64-linux",
+      entrypoint: "/nix/store/tool/bin/tool",
+      args: [],
+      guestImage: "guest-image.tar",
+    },
+    workspace: join(home, "worktree"),
+    state: join(home, "state"),
+    token: "test",
+  };
+  try {
+    await Deno.mkdir(join(base, "disks"), { recursive: true });
+    await Deno.writeTextFile(
+      join(base, "disks/identity.json"),
+      JSON.stringify({
+        version: 1,
+        artifact: "/nix/store/old-alpine-runtime",
+        smolvm: binding.smolvm,
+        host: `${Deno.build.arch}-${Deno.build.os}`,
+        writableNix: true,
+      }),
+    );
+    await publishRepoBase(home, base, new AbortController().signal);
+    assert.equal(await seedRepoBase(home, join(home, "session"), binding), false);
+    assert.equal(
+      JSON.parse(await Deno.readTextFile(join(home, "current.json"))).directory,
+      "base-alpine",
+    );
+    assert((await Deno.stat(base)).isDirectory);
+    await assert.rejects(Deno.stat(join(home, "session/disks")), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
 
 test("base publication preserves the previous selection on cancellation and waits for readers", async () => {
   const home = await Deno.realPath(await Deno.makeTempDir());

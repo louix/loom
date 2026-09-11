@@ -10,6 +10,7 @@ import {
   type VmBinding,
   vmEnvironment,
   vmExecArguments,
+  vmCreateArguments,
 } from "../runtime/src/packaged/vm.ts";
 import { decodeWorkerRequest } from "../core/src/worker.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
@@ -60,6 +61,8 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     { entrypoint: "/bin/sh" },
     { args: [1] },
     { closureFormat: "ext4" },
+    { guestImage: "../../host.tar" },
+    { guestImage: "debian:latest" },
   ]) {
     assert.throws(() => decodeManifest({ ...manifest, ...extra }));
   }
@@ -93,6 +96,19 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     assert.deepEqual(command.slice(-3), [manifest.entrypoint, "$(touch /tmp/unsafe)", "a b"]);
     assert.match(command[command.indexOf("-c") + 1]!, /mount -t erofs -o loop,ro/);
   }
+  const guestBinding: VmBinding = {
+    ...imageBinding,
+    manifest: { ...imageBinding.manifest, guestImage: "guest-image.tar" },
+  };
+  assert.deepEqual(decodeManifest(guestBinding.manifest), guestBinding.manifest);
+  const createArgs = vmCreateArguments({ ...guestBinding, gitSocket: `${b.state}/git.sock` });
+  assert.equal(createArgs[createArgs.indexOf("--image") + 1], `${b.state}/guest-image.tar`);
+  assert(!createArgs.includes("--net"));
+  assert(!createArgs.includes(`${b.artifact}:/run/loom/runtime:ro`));
+  assert(!createArgs.includes(`${b.artifact}/nix/store:/nix/store:ro`));
+  const guestExec = vmExecArguments(guestBinding);
+  assert.deepEqual(guestExec.slice(-3), [manifest.entrypoint, "$(touch /tmp/unsafe)", "a b"]);
+  assert(!guestExec[guestExec.indexOf("-c") + 1]!.includes("mount -t erofs"));
   assert.deepEqual(Object.keys(vmEnvironment(b.state)).sort(), [
     "HOME",
     "PATH",

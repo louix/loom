@@ -162,4 +162,13 @@ test("writable Nix uses a read-only artifact and private ext4 upper on both clos
     assert(script.includes("mount --bind /storage/loom-nix/var /nix/var"));
     assert.equal(script.includes("mount -t erofs"), erofs);
   }
+  const imageArgs = vmArguments({
+    ...binding,
+    manifest: { ...binding.manifest, guestImage: "guest-image.tar" },
+  });
+  const imageScript = imageArgs[imageArgs.indexOf("-c") + 1]!;
+  assert(imageScript.includes("mount --bind /nix/store /run/loom/store-lower"));
+  assert(imageScript.includes("upperdir=/storage/loom-nix/upper"));
+  assert(imageScript.includes("/opt/loom/runtime /run/loom/runtime"));
+  assert(!imageArgs.includes(binding.artifact + ":/run/loom/runtime:ro"));
 });

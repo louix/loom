@@ -22,7 +22,9 @@ identifies glibc, agreeing with Nix Node. Debian and Nix still provide different
 glibc versions; this test is evidence for this workload, not universal binary
 compatibility.
 
-This is a feasibility test, **not a change to Loom's shipped guest**. It does
+The initial experiment was a feasibility test. Bundled session runtimes now
+select Debian via a package-owned `guest-image.tar`; the archive is unpacked
+inside the VM rather than on the host. This does
 not fix virtiofs descriptor pressure or shared-filesystem ownership semantics.
 It has not been tested on Apple Silicon or against the private monorepo.
 
@@ -80,19 +82,28 @@ deno run -A scripts/test-glibc-guest-vm.ts \
 The script creates and deletes only its own VM. It retains VM state if deletion
 fails. The supplied rootfs and fixture remain available for subsequent tests.
 
-## Shipping work still required
+## Packaging and remaining validation
 
-Use an official, digest-pinned image bundled with Loom's guest artifacts,
-supplied to smolvm via `--image` as a local directory. Image downloads must be
-part of packaging, not a reason to enable unrestricted guest networking.
+The image is fetched with Nix's `dockerTools.pullImage` using a per-architecture
+digest and fixed-output hash. Nix adds the selected runtime closure as image
+layers, avoiding a separate virtiofs device (which exceeded the x86 IRQ budget
+in a full session). smolvm receives the local archive via `--image`;
+it does not need unrestricted guest networking or host container tooling.
 
-Before changing the default:
+The supervisor stages a private archive copy with a stable timestamp. This lets
+smolvm reuse the flattened image in cloned disks: its archive cache signature
+includes mtime, which its copy fallback from root-owned store files otherwise
+changes on each launch.
 
-1. Package Linux amd64 and arm64 root filesystems with hashes, and include the
-   image identity in prepared-environment compatibility checks. Existing Alpine
-   disk bases must not silently become Debian bases.
-2. Run Loom's full prepared-environment test against the image, including
-   independent disk clones, cache reuse, Git/egress bridges, and failure handling.
+Validation requirements:
+
+1. Linux amd64 and arm64 image archives have pinned hashes. The immutable runtime
+   artifact path includes the image and is already recorded in disk identities.
+   A regression test confirms an older base is skipped and preserved.
+2. Loom's full prepared-environment test passed on Linux x86_64 with `--nix`,
+   including a fresh session using cached dependencies without network, refresh,
+   failure/cancellation preservation, and existing-session isolation. Native
+   oxfmt loading and socket/overlay tests also passed against the packaged archive.
 3. Validate the arm64 guest on Apple Silicon and update bundled runtime hashes.
 
 Keep distribution maintenance upstream in Debian. Avoid adding oxfmt-specific

@@ -9,6 +9,7 @@ import {
   sessionVmName,
   vmEnvironment,
   reapVm,
+  stageGuestImage,
   type VmBinding,
 } from "./vm.ts";
 const writer = new FrameWriter(Deno.stdout.writable);
@@ -38,6 +39,7 @@ try {
   b.manifest = decodeManifest(b.manifest);
   binding = b;
   clearTimeout(bootstrap);
+  await stageGuestImage(b);
   const parent = frames.next().then((next) => {
     if (!next.done) throw new Error("VM worker already bound");
   });
