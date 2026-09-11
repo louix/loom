@@ -101,7 +101,7 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     manifest: { ...imageBinding.manifest, guestImage: "guest-image.tar" },
   };
   assert.deepEqual(decodeManifest(guestBinding.manifest), guestBinding.manifest);
-  const createArgs = vmCreateArguments({ ...guestBinding, gitSocket: `${b.state}/git.sock` });
+  const createArgs = vmCreateArguments(guestBinding);
   assert.equal(createArgs[createArgs.indexOf("--image") + 1], `${b.state}/guest-image.tar`);
   assert(!createArgs.includes("--net"));
   assert(!createArgs.includes(`${b.artifact}:/run/loom/runtime:ro`));

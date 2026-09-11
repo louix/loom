@@ -2,10 +2,9 @@
 
 The opt-in runtime runs the existing Claude connector worker and native Claude
 inside one smolvm guest. The normal framed worker protocol travels through
-smolvm's exec/vsock transport. The guest mounts only the prepared closure,
-a disposable session worktree, a private persistent Claude profile and a private
-credential snapshot. Git operations
-use the existing host bridge; commits exist immediately in host Git.
+smolvm's exec/vsock transport. The guest mounts the host repository, selected session worktree, a private
+persistent Claude profile and a private credential snapshot. Real Git runs inside
+the VM; commits, hooks and configuration are immediately visible to host Git.
 
 IP networking stays disabled. A loopback proxy in the guest relays through a
 separate Unix/vsock endpoint to a host CONNECT proxy. The default permitted target
@@ -89,8 +88,8 @@ worker. The Claude artifact is not pulled into the default Loom package.
 
 `launchSessionVm` now returns the existing `WorkerProcess` contract. The live test
 uses this launcher rather than owning the VM itself. A detached host supervisor
-owns the Git worker, CONNECT proxy and VM. Parent EOF is observed during startup
-and execution; Git worker or guest-exec failure also stops the session. Normal
+owns the CONNECT proxy and VM. Parent EOF is observed during startup
+and execution; guest-exec failure also stops the session. Normal
 termination requests cleanup, with a bounded grace period before forced termination.
 If the supervisor is killed, the surviving parent stops its process group and reaps
 the VM. If the parent is killed, the supervisor observes EOF and performs cleanup.
@@ -246,10 +245,9 @@ commands. There is no host process scanner, pidfd FFI, boot-ID lookup or shell g
 
 Startup scans this repository's private session directories and leaves held
 ownership locks alone. For an abandoned marker, it validates the state ownership
-stamp, revokes credentials and asks smolvm to reap the machine. A fully started
-session also requires the Git worker's shutdown acknowledgement: its pipe EOF
-handler writes that only after host Git operations have drained. History and
-worktrees are retained; recovery does not restart the conversation.
+stamp, revokes credentials and asks smolvm to reap the machine. History and worktrees are retained; recovery does not restart the conversation.
+Old bridge-based active markers require shutdown with the previous Loom version
+before upgrading.
 
 Archive/delete hold the ownership lock through recovery and removal. Resume retries
 recovery before launching. A durable completion marker makes interrupted state
@@ -257,8 +255,7 @@ removal retryable. Startup stops admitting cleanup after 30 seconds, and individ
 commands/waits are bounded. Failures are reported on the affected session without
 preventing the rest of the daemon from starting.
 
-If both owners die during startup, temporary state is missing, the Git worker
-cannot confirm shutdown, or a record is incompatible/corrupt, the session stays
+If temporary state is missing or a record is incompatible/corrupt, the session stays
 blocked for inspection. We deliberately do not guess which host PIDs to kill.
 Records from the earlier process-tracking implementation require manual recovery.
 

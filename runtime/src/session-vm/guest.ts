@@ -78,13 +78,16 @@ const prepare = async (output?: "inherit") => {
     ...(output ? { output } : {}),
   });
   if (!env) {
-    Deno.env.set("PATH", before.LOOM_GUEST_CONTROL_PATH + ":" + before.PATH);
+    Deno.env.set("PATH", [before.LOOM_GUEST_CONTROL_PATH, before.PATH].filter(Boolean).join(":"));
     return;
   }
   for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
-  // The dev shell supplies tools and exports; Loom's bridge and provider
+  // The dev shell supplies tools and exports; Loom's provider
   // executables retain precedence and bootstrap settings remain available.
-  Deno.env.set("PATH", before.LOOM_GUEST_CONTROL_PATH + ":" + (env.PATH ?? "") + ":" + before.PATH);
+  Deno.env.set(
+    "PATH",
+    [before.LOOM_GUEST_CONTROL_PATH, env.PATH, before.PATH].filter(Boolean).join(":"),
+  );
   for (const key of Object.keys(before))
     if (
       key.startsWith("LOOM_") ||

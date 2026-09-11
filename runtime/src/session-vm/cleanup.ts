@@ -3,12 +3,11 @@ export const cleanupSessionVm = async (steps: {
   stop: () => Promise<unknown>;
   reap: () => Promise<unknown>;
   egress: () => Promise<unknown>;
-  git: () => Promise<unknown>;
   credentials: () => Promise<unknown>;
   state: () => Promise<unknown>;
 }) => {
   const errors: unknown[] = [];
-  for (const step of [steps.stop, steps.egress, steps.credentials, steps.reap, steps.git]) {
+  for (const step of [steps.stop, steps.egress, steps.credentials, steps.reap]) {
     try {
       await step();
     } catch (error) {

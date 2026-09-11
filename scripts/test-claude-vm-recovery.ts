@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { readFrames } from "../runtime/src/worker/transport.ts";
 import { Daemon } from "../backend/daemon/src/daemon/daemon.ts";
 import {

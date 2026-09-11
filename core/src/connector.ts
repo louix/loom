@@ -65,7 +65,6 @@ export interface ConnectorConfig {
     artifact: string;
     smolvm: string;
     repoRoot: string;
-    allowRepoPrograms: boolean;
     extraAllowedHosts?: string[];
     environment?: SessionEnvironment;
   };

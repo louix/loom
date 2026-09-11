@@ -7,7 +7,8 @@
   native subprocesses; native host workers remain trusted.
 - With its provider VM policy configured, each Claude, AISDK or Codex session gets a separate
   smolvm with its own writable profile and its own worktree. It can read and
-  modify code. There is no shared provider VM mounting several worktrees.
+  modify the mounted repository, including shared Git metadata and sibling worktrees.
+  VM processes and private profiles remain separate per session.
 - The host owns OAuth refresh and sends access-only credentials to those VMs.
   Native history persists across shutdown; archive/delete stop the VM first.
 - smolvm denies direct egress. A shared host HTTPS proxy checks each VM's host
@@ -15,8 +16,8 @@
   `api.anthropic.com`; trusted per-repo config can add dependency registries.
 - Packaged command MCPs such as Tilth run in their own offline VMs. External
   services use HTTP MCP relays with separate credentials and Deno grants.
-- Host Git operations go through a session-scoped bridge, with repository
-  program execution disabled by default. See its documented command limits.
+- Git runs inside the VM against the mounted host repository. Hooks and config
+  are shared with host Git; changes can affect subsequent host commands.
 - The daemon remains trusted with config, credentials, database, Git and VM
   lifecycle. Standard daemon/TUI launch paths permit only the repository's daemon
   Unix socket, with no direct TCP/HTTP permission. Networked work runs in children.
@@ -36,7 +37,7 @@ forking into an enabled provider with the current isolation policy.
 
 - [Claude VMs, authentication, recovery and project controls](claude-session-vm.md)
 - [Packaged MCP runtimes and Nix variants](packaged-runtimes.md)
-- [Git bridge operations and security policy](guest-host-bridge.md)
+- [Repository mounts and Git](repository-mounts.md)
 - [Connector protocol and authoring](connectors.md)
 
 ## Remaining work

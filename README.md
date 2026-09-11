@@ -372,9 +372,6 @@ base_branch = "main"
 
 [repo.worktree]
 enabled = true
-
-[repo.isolation.git]
-allow_repo_programs = false
 ```
 
 Matching uses the canonical daemon repository path, resolving symlinks; it does

@@ -16,11 +16,21 @@ export interface VmBinding {
   persistentDisks?: boolean;
   preparationOnly?: boolean;
   repoBaseDirectory?: string;
-  gitSocket?: string;
+  mounts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
 }
 export const sessionVmName = "loom-session";
+// Guest UID differs from host file ownership. All mounted repositories are
+// explicitly trusted; this exception is process-local and never edits host config.
+const guestGitEnvironment = [
+  "-e",
+  "GIT_CONFIG_COUNT=1",
+  "-e",
+  "GIT_CONFIG_KEY_0=safe.directory",
+  "-e",
+  "GIT_CONFIG_VALUE_0=*",
+];
 /** Keep the archive timestamp stable when smolvm hard-links its private cache.
  * Its copy fallback from the root-owned Nix store resets mtime, unnecessarily
  * invalidating the extracted image on every clone of a prepared disk.
@@ -76,6 +86,26 @@ export const vmEnvironment = (state: string) => {
   };
 };
 export const vmArguments = (b: VmBinding) => {
+  for (const path of b.mounts ?? [b.workspace]) {
+    if (!isAbsolute(path) || path === "/" || /[:,;|\n\0]/.test(path))
+      throw new Error("Unsupported repository mount path");
+    if (
+      ["/nix", "/proc", "/sys", "/dev", "/etc", "/bin", "/usr", "/run"].some(
+        (system) => path === system || path.startsWith(system + "/"),
+      )
+    )
+      throw new Error("Repository mount overlaps the VM system filesystem");
+    if (
+      [b.state, b.sessionDirectory].some(
+        (privatePath) =>
+          privatePath &&
+          (privatePath === path ||
+            privatePath.startsWith(path + "/") ||
+            path.startsWith(privatePath + "/")),
+      )
+    )
+      throw new Error("VM private state must be outside repository mounts");
+  }
   if (b.state === b.workspace || b.state.startsWith(b.workspace + "/")) {
     throw new Error("VM supervisor state must be outside the session workspace");
   }
@@ -114,16 +144,15 @@ export const vmArguments = (b: VmBinding) => {
             ? `${b.artifact}:/run/loom/runtime:ro`
             : `${b.artifact}/nix/store:/nix/store:ro`,
         ]),
-    "-v",
-    `${b.workspace}:${b.workspace}`,
-    ...(b.gitSocket ? ["-v", `${b.artifact}/bin:/run/loom/bin:ro`] : []),
+    ...(b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}`]),
     "-w",
     b.workspace,
     "-e",
     "HOME=/tmp/loom-home",
     "-e",
     "XDG_CACHE_HOME=/tmp/loom-cache",
-    ...(b.gitSocket ? ["-e", "PATH=/run/loom/bin:/usr/bin:/bin"] : []),
+    ...guestGitEnvironment,
+
     "--",
     ...runtimeCommand(b),
   ];
@@ -132,9 +161,6 @@ export const vmCreateArguments = (
   b: VmBinding,
   resources?: Pick<SessionEnvironment, "memoryMiB" | "cpus">,
 ) => {
-  if (!b.gitSocket || !b.gitSocket.startsWith(b.state + "/") || /[:,;|\n\0]/.test(b.gitSocket)) {
-    throw new Error("Git endpoint must be in private VM state");
-  }
   const args = vmArguments(b);
   args[args.indexOf("--mem") + 1] = String(resources?.memoryMiB ?? 2048);
   args[args.indexOf("--cpus") + 1] = String(resources?.cpus ?? 1);
@@ -144,8 +170,6 @@ export const vmCreateArguments = (
     "--name",
     sessionVmName,
     ...args.slice(2, args.indexOf("--")).filter((a) => a !== "-i"),
-    "--mount-socket",
-    `${b.gitSocket}:/run/loom/git.sock`,
   ];
 };
 export const vmExecArguments = (b: VmBinding) => [
@@ -160,12 +184,13 @@ export const vmExecArguments = (b: VmBinding) => [
   "HOME=/tmp/loom-home",
   "-e",
   "XDG_CACHE_HOME=/tmp/loom-cache",
+  ...guestGitEnvironment,
   "-e",
-  "PATH=/run/loom/bin:/usr/bin:/bin",
+  "PATH=/usr/bin:/bin",
   "--",
   ...runtimeCommand(b),
 ];
-export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket">) => {
+export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state">) => {
   const command = async (args: string[]) => {
     const child = Deno.spawn(b.smolvm, args, {
       clearEnv: true,
@@ -202,10 +227,7 @@ export const reapVm = async (b: Pick<VmBinding, "smolvm" | "state" | "gitSocket"
     const machines = await list();
     if (!machines.length) return;
     for (const m of machines) {
-      if (
-        !(m.ephemeral && /^vm-[a-z0-9]+$/.test(m.name)) &&
-        !(b.gitSocket && m.name === sessionVmName)
-      ) {
+      if (!(m.ephemeral && /^vm-[a-z0-9]+$/.test(m.name)) && m.name !== sessionVmName) {
         throw new Error("Unexpected VM in private state; refusing to delete it");
       }
       try {

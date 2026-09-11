@@ -5,7 +5,7 @@ import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass AISDK_ARTIFACT SMOLVM");

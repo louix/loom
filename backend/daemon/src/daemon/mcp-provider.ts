@@ -16,7 +16,6 @@ export const withExternalMcp = async (
   context: ConnectorContext,
   start = startMcpWorker,
   startRuntime = startRuntimeMcp,
-  allowRepoPrograms = false,
 ): Promise<AgentProvider> => {
   const base = await create(context);
   const open = async (
@@ -39,14 +38,7 @@ export const withExternalMcp = async (
         if (handle.spec.transport === "stdio") return handle;
         const worker =
           handle.spec.transport === "runtime"
-            ? await startRuntime(
-                handle.name,
-                handle.spec.runtime,
-                input.cwd,
-                undefined,
-                undefined,
-                allowRepoPrograms,
-              )
+            ? await startRuntime(handle.name, handle.spec.runtime, input.cwd)
             : await start(handle.name, handle.spec);
         workers.push(worker);
         return { ...handle, spec: worker.handle.spec };

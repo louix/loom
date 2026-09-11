@@ -9,20 +9,19 @@ import { vmArguments, reapVm, type VmBinding } from "../../../../runtime/src/pac
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
 import type { ManagedMcp } from "./mcp-worker.ts";
-import { startSessionGit } from "./git-worker.ts";
+import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 
 export const startRuntimeMcp = async (
   name: string,
   runtime: string,
   workspace: string,
   launch: WorkerLauncher = launchLocalWorker,
-  startGit = startSessionGit,
-  allowRepoPrograms = false,
 ): Promise<ManagedMcp> => {
   requireVmHost();
   const { lock, manifest } = await resolveRuntime(runtime);
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
+  const mounts = await workspaceMounts(cwd);
   const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" }));
   const binding: VmBinding = {
     version: 1,
@@ -30,18 +29,16 @@ export const startRuntimeMcp = async (
     smolvm: lock.smolvm,
     manifest,
     workspace: cwd,
+    mounts,
     state,
     token: crypto.randomUUID() + crypto.randomUUID(),
   };
   let child: ReturnType<WorkerLauncher>;
-  let git: Awaited<ReturnType<typeof startSessionGit>>;
   try {
     vmArguments(binding);
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
     await attachDiskTemplates(state, lock.smolvm);
-    git = await startGit(cwd, state, lock.artifact, allowRepoPrograms);
-    if (git) binding.gitSocket = git.socket;
     const base = mockLaunchSpec(state);
     child = launch({
       ...base,
@@ -50,7 +47,7 @@ export const startRuntimeMcp = async (
         new URL("../../../../runtime/src/packaged/main.ts", import.meta.url),
       ),
       permissions: {
-        read: [state, lock.artifact, cwd],
+        read: [state, lock.artifact, ...(binding.mounts ?? [cwd])],
         write: [state],
         env: [],
         run: [lock.smolvm],
@@ -58,7 +55,6 @@ export const startRuntimeMcp = async (
       },
     });
   } catch (error) {
-    await git?.close();
     await Deno.remove(state, { recursive: true });
     throw error;
   }
@@ -79,23 +75,12 @@ export const startRuntimeMcp = async (
         child.terminate();
         await frames.return(undefined).catch(() => {});
         // Covers SIGKILL/crash of the Deno supervisor as well as normal cleanup.
-        try {
-          await reapVm(binding);
-        } finally {
-          await git?.close();
-        }
+        await reapVm(binding);
         await Deno.remove(state, { recursive: true });
       }
     })());
-  // Either worker dying revokes the entire session capability; do not leave a
-  // persistent VM or native Git child behind after supervisor SIGKILL.
+  // Supervisor death revokes the session capability and reaps its VM.
   void child.exited
-    .then(
-      () => close(),
-      () => close(),
-    )
-    .catch(() => {});
-  void git?.exited
     .then(
       () => close(),
       () => close(),

@@ -5,7 +5,7 @@ import { CodexAuthOwner, readCodexAccess } from "../backend/daemon/src/daemon/co
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
 const [artifact, smolvm, nativeCli] = Deno.args;
 assert(artifact && smolvm && nativeCli, "Pass ARTIFACT SMOLVM HOST_CODEX");

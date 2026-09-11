@@ -244,7 +244,6 @@ interface HookFields {
 export interface LoomConfig {
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
-    git: { allowRepoPrograms: boolean };
     claude?: { artifact: string; smolvm: string };
     aisdk?: { artifact: string; smolvm: string };
     codex?: { artifact: string; smolvm: string };
@@ -394,7 +393,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
   providerAccess: { disabled: [] },
-  isolation: { git: { allowRepoPrograms: false }, extraAllowedHosts: [] },
+  isolation: { extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
@@ -833,12 +832,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     (typeof codexVm["smolvm"] !== "string" || !codexVm["smolvm"].trim())
   )
     throw new Error("isolation.codex.smolvm must name an executable");
-  const gitIsolation = asRecord(asRecord(r["isolation"])["git"]);
-  if (
-    gitIsolation["allow_repo_programs"] !== undefined &&
-    typeof gitIsolation["allow_repo_programs"] !== "boolean"
-  )
-    throw new Error("isolation.git.allow_repo_programs must be a boolean");
   const autoRebase = asRecord(r["auto_rebase"]);
   const autoResume = asRecord(r["auto_resume"]);
   const commitReminder = asRecord(r["commit_reminder"]);
@@ -973,7 +966,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
-      git: { allowRepoPrograms: gitIsolation["allow_repo_programs"] === true },
       extraAllowedHosts: [
         ...new Set([
           ...normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),

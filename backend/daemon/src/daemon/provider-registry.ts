@@ -167,7 +167,6 @@ export class ProviderRegistry {
       context,
       undefined,
       undefined,
-      this.#config.isolation.git.allowRepoPrograms,
     );
     this.#loaded.add(pkg);
     return provider;
@@ -223,7 +222,6 @@ export class ProviderRegistry {
                   ...(this.#config.isolation.environment
                     ? { environment: this.#config.isolation.environment }
                     : {}),
-                  allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
                 },
               }
             : {}),
@@ -250,7 +248,6 @@ export class ProviderRegistry {
               ...(this.#config.isolation.environment
                 ? { environment: this.#config.isolation.environment }
                 : {}),
-              allowRepoPrograms: this.#config.isolation.git.allowRepoPrograms,
             },
           }
         : {}),

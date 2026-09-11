@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";

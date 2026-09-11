@@ -1,6 +1,6 @@
 /** Opt-in live check: native Codex turns, fresh-VM resume and shell/worktree writes. */
 import assert from "node:assert/strict";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { withCodexVmSessions } from "../backend/daemon/src/daemon/codex-vm-provider.ts";
 import { createProvider } from "../connectors/chatgpt/src/index.ts";
 import { makeLogger } from "../core/src/logger.ts";
@@ -19,7 +19,7 @@ const ctx = {
     sdk: "chatgpt" as const,
     configDir: profile,
     codexCliPath: cli,
-    sessionVm: { artifact, smolvm, repoRoot: f.repo, allowRepoPrograms: false },
+    sessionVm: { artifact, smolvm, repoRoot: f.repo },
   },
   logger: makeLogger("smoke"),
 };

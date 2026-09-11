@@ -21,16 +21,13 @@ Deno.test("session cleanup revokes credentials and bridges even when reaping fai
           called.push("reap");
           throw new Error("reap failed");
         },
-        git: async () => {
-          called.push("git");
-        },
         state: async () => {
           called.push("state");
         },
       }),
       AggregateError,
     );
-    assert.deepEqual(called, ["stop", "egress", "reap", "git"]);
+    assert.deepEqual(called, ["stop", "egress", "reap"]);
     await assert.rejects(Deno.stat(auth), Deno.errors.NotFound);
     assert((await Deno.stat(state)).isDirectory);
   } finally {

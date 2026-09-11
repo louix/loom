@@ -1,8 +1,7 @@
 # A command MCP artifact contains executable data, never permission grants.
 { pkgs, package, executable, args ? [], sessionVersion ? null }:
 let
-  gitShim = import ./git-shim.nix { inherit pkgs; };
-  closure = pkgs.closureInfo { rootPaths = [ package gitShim ]; };
+  closure = pkgs.closureInfo { rootPaths = [ package ]; };
   metadata = pkgs.runCommand "loom-runtime-metadata" {} ''
     mkdir -p $out/opt/loom/runtime
     cp ${closure}/registration ${closure}/store-paths $out/opt/loom/runtime/
@@ -37,9 +36,6 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
     cp ${closure}/registration $out/registration
     echo 2 > $out/session-environment-version
   ''}
-  mkdir -p $out/bin
-  ln -s ${gitShim}/bin/git $out/bin/git
-  echo 2 > $out/git-bridge-version
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json
 ''

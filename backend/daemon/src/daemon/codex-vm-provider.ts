@@ -90,7 +90,6 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
       ...(vm.environment ? { environment: vm.environment } : {}),
-      allowRepoPrograms: vm.allowRepoPrograms,
       authOwner: owner,
       providerHosts: ["chatgpt.com"],
     });

@@ -30,10 +30,10 @@ export const gitFixture = async function () {
         PATH: Deno.env.get("PATH") ?? "",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_AUTHOR_NAME: "Bridge test",
-        GIT_AUTHOR_EMAIL: "bridge@example.invalid",
-        GIT_COMMITTER_NAME: "Bridge test",
-        GIT_COMMITTER_EMAIL: "bridge@example.invalid",
+        GIT_AUTHOR_NAME: "Loom test",
+        GIT_AUTHOR_EMAIL: "loom@example.invalid",
+        GIT_COMMITTER_NAME: "Loom test",
+        GIT_COMMITTER_EMAIL: "loom@example.invalid",
       },
       stdin: "null",
       stdout: "piped",
@@ -61,33 +61,4 @@ export const gitFixture = async function () {
     options: { workspace, gitDir, commonDir, state, git: executable },
     close: () => Deno.remove(root, { recursive: true }),
   };
-};
-
-export const bridgeRequest = async function (socket: string, request: unknown) {
-  const conn = await Deno.connect({ transport: "unix", path: socket });
-  const timer = setTimeout(() => {
-    try {
-      conn.close();
-    } catch {
-      /* closed */
-    }
-  }, 10_000);
-  try {
-    const bytes = new TextEncoder().encode(JSON.stringify(request) + "\n");
-    let offset = 0;
-    while (offset < bytes.length) offset += await conn.write(bytes.subarray(offset));
-    let text = "";
-    const decoder = new TextDecoder();
-    const buffer = new Uint8Array(4096);
-    for (;;) {
-      const n = await conn.read(buffer);
-      if (n === null) throw new Error("Disconnected before reply");
-      text += decoder.decode(buffer.subarray(0, n), { stream: true });
-      if (text.length > 512 * 1024) throw new Error("Oversized reply");
-      if (text.includes("\n")) return JSON.parse(text.slice(0, text.indexOf("\n")));
-    }
-  } finally {
-    clearTimeout(timer);
-    conn.close();
-  }
 };

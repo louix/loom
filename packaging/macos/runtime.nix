@@ -40,10 +40,7 @@ let
     "$image_tools/bin/mkfs.erofs" --quiet -T 1 --all-root \
       -U 00000000-0000-0000-0000-000000000000 \
       /tmp/artifact/runtime.erofs "$result/nix/store"
-    cp -a "$result/bin" /tmp/artifact/
-    shim=$(readlink "$result/bin/git")
-    cp -a "$result/nix/store/$(basename "$(dirname "$(dirname "$shim")")")" /tmp/artifact/nix/store/
-    cp "$result/store-paths" "$result/git-bridge-version" /tmp/artifact/
+    cp "$result/store-paths" /tmp/artifact/
     if [ -f "$result/session-environment-version" ]; then
       cp "$result/session-environment-version" "$result/registration" /tmp/artifact/
     fi

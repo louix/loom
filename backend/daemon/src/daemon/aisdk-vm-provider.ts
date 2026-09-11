@@ -85,7 +85,6 @@ export const withAisdkVmSessions = async <T extends AgentProvider>(
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
       ...(vm.environment ? { environment: vm.environment } : {}),
-      allowRepoPrograms: vm.allowRepoPrograms,
       providerHosts: [endpoint.hostname],
       auth: {},
     });

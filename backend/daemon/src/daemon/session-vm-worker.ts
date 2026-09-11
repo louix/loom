@@ -14,6 +14,7 @@ import {
   finishSessionState,
   lockSessionState,
 } from "../../../../runtime/src/session-vm/persistence.ts";
+import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import { readSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
@@ -38,7 +39,6 @@ export interface SessionVmOptions {
       expired: () => void,
     ): Promise<() => Promise<void>>;
   };
-  allowRepoPrograms?: boolean;
   extraAllowedHosts?: string[];
   environment?: SessionEnvironment;
   providerHosts?: string[];
@@ -50,7 +50,6 @@ export interface SessionVmOptions {
 }
 export interface SessionVmStatus {
   phase: string;
-  gitPid?: number;
   execPid?: number;
   network: Array<{ host: string; allowed: boolean }>;
 }
@@ -85,9 +84,10 @@ export const launchSessionVm = async (
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
   const workspace = await Deno.realPath(options.workspace);
+  const mounts = await workspaceMounts(workspace, options.repoRoot);
   const manifest = await inspectArtifact(artifact);
   try {
-    if ((await Deno.readTextFile(join(artifact, "claude-session-version"))).trim() !== "1")
+    if ((await Deno.readTextFile(join(artifact, "claude-session-version"))).trim() !== "2")
       throw new Error("incompatible runtime");
   } catch {
     throw new Error(
@@ -138,7 +138,7 @@ export const launchSessionVm = async (
     state,
     token: crypto.randomUUID(),
     ...(options.environment?.nix ? { writableNix: true } : {}),
-    gitSocket: join(state, "git.sock"),
+    mounts,
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(sessionDirectory && (savedDisks || environmentEnabled(options.environment))
       ? { persistentDisks: true }
@@ -185,7 +185,6 @@ export const launchSessionVm = async (
         environment: options.environment,
         providerHosts: normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
         auth,
-        allowRepoPrograms: options.allowRepoPrograms ?? false,
       }) + "\n",
     );
     if (!options.preparationOnly) child.stderr.on("data", () => {});
@@ -239,7 +238,6 @@ export const launchSessionVm = async (
         await cleanupSessionVm({
           stop: async () => {},
           egress: async () => {},
-          git: async () => {},
           credentials: () => remove(join(state, "private")),
           reap: () => reapVm(binding),
           state: async () => {

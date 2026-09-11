@@ -7,7 +7,7 @@ import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 const [artifact, smolvm, cli] = Deno.args;
 assert(artifact && smolvm && cli, "Pass the Claude artifact, smolvm and host Claude executables");
 const profile = Deno.env.get("CLAUDE_CONFIG_DIR") || join(homedir(), ".claude");

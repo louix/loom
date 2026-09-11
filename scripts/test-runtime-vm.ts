@@ -140,7 +140,7 @@ try {
           clearTimeout(timer);
         }
         // Actual parent-death reaping without daemon fallback is exercised by
-        // test-session-git-vm.ts. Here automatic cleanup may already remove state.
+        // test-claude-vm-lifecycle.ts. Here automatic cleanup may already remove state.
       }
       await worker.close();
       await assert.rejects(fetch(s.url));

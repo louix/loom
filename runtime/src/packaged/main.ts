@@ -3,7 +3,6 @@ import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { stdioHttp } from "../mcp/stdio-http.ts";
 import { decodeManifest } from "./artifact.ts";
 import {
-  vmArguments,
   vmCreateArguments,
   vmExecArguments,
   sessionVmName,
@@ -43,7 +42,7 @@ try {
   const parent = frames.next().then((next) => {
     if (!next.done) throw new Error("VM worker already bound");
   });
-  if (b.gitSocket) {
+  {
     for (const args of [vmCreateArguments(b), ["machine", "start", "--name", sessionVmName]]) {
       child = new Deno.Command(b.smolvm, {
         args,
@@ -62,7 +61,7 @@ try {
     }
   }
   child = new Deno.Command(b.smolvm, {
-    args: b.gitSocket ? vmExecArguments(b) : vmArguments(b),
+    args: vmExecArguments(b),
     cwd: b.state,
     clearEnv: true,
     env: vmEnvironment(b.state),

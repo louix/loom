@@ -1,4 +1,4 @@
-import { gitFixture } from "../scripts/lib/git-bridge-fixture.ts";
+import { gitFixture } from "../scripts/lib/git-fixture.ts";
 import { join } from "node:path";
 import { ipcPermissions } from "../core/src/network-permissions.ts";
 import assert from "node:assert/strict";

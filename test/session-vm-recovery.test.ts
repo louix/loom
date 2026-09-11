@@ -22,9 +22,8 @@ const fixture = async () => {
     token: crypto.randomUUID(),
     state,
     sessionDirectory: dir,
-    gitSocket: join(state, "git-bridge-test/git.sock"),
     smolvm: "/nix/store/00000000000000000000000000000000-smolvm/bin/smolvm",
-    recovery: { version: 2, ready: true, reaped: false },
+    recovery: { version: 3, ready: true, reaped: false },
   };
   await Deno.mkdir(join(dir, "profile"));
   await Deno.writeTextFile(join(dir, "profile/history"), "keep");
@@ -32,7 +31,6 @@ const fixture = async () => {
   await Deno.writeTextFile(join(dir, "disks/storage.raw"), "keep disk");
   await Deno.mkdir(join(state, "private"));
   await Deno.writeTextFile(join(state, "private/auth.json"), "disposable");
-  await Deno.writeTextFile(join(state, "git-bridge-test.stopped"), "");
   const save = async () => {
     await writeRecoveryFile(state, "owner.json", { token: record.token });
     await writeRecoveryFile(dir, "active.json", record);
@@ -87,12 +85,12 @@ test("failed reaping still revokes credentials and keeps the marker", async () =
     await f.close();
   }
 });
-test("interrupted startup stays blocked even with a Git shutdown acknowledgement", async () => {
+test("interrupted startup retains state when VM reaping fails", async () => {
   const f = await fixture();
   try {
     f.record.recovery.ready = false;
     await f.save();
-    await assert.rejects(recoverSessionVm(f.dir), /startup was interrupted/);
+    await assert.rejects(recoverSessionVm(f.dir), /cleanup incomplete/);
     assert((await Deno.stat(join(f.dir, "active.json"))).isFile);
   } finally {
     await f.close();

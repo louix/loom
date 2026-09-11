@@ -153,7 +153,6 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
       providerHosts: [],
       environment: config.isolation.environment!,
       extraAllowedHosts: config.isolation.extraAllowedHosts,
-      allowRepoPrograms: config.isolation.git.allowRepoPrograms,
     });
     vmStopped = false;
     if (cancelled.signal.aborted) worker.terminate();

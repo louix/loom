@@ -7,7 +7,7 @@ import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-stat
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { setLogLevel } from "@loom/core/logger";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 const [artifact, smolvm, cli] = Deno.args;
 assert(artifact && smolvm && cli, "Pass runtime artifact, smolvm and host Claude executable");
 setLogLevel("error");

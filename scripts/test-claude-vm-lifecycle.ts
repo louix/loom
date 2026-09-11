@@ -6,7 +6,7 @@ import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { readFrames } from "../runtime/src/worker/transport.ts";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 const artifact = Deno.args[0] ?? "/tmp/loom-claude-session-artifact";
 const smolvm =
   Deno.args[1] ??
@@ -57,14 +57,7 @@ const gone = async (state: string) => {
 const f = await gitFixture();
 const sessionDirectory = join(f.root, "persistent");
 try {
-  for (const mode of [
-    "close",
-    "startup EOF",
-    "startup EOF after Git ready",
-    "supervisor SIGKILL",
-    "Git SIGKILL",
-    "guest exec SIGKILL",
-  ]) {
+  for (const mode of ["close", "startup EOF", "supervisor SIGKILL", "guest exec SIGKILL"]) {
     console.error(`Testing ${mode}`);
     const worker = await launchSessionVm({
       artifact,
@@ -77,22 +70,6 @@ try {
     const pids = [worker.pid];
     try {
       if (mode.startsWith("startup EOF")) {
-        if (mode === "startup EOF after Git ready") {
-          const deadline = Date.now() + 20_000;
-          for (;;) {
-            try {
-              const { gitPid } = await worker.status();
-              if (gitPid) {
-                pids.push(gitPid);
-                break;
-              }
-            } catch (error) {
-              if (!(error instanceof Deno.errors.NotFound)) throw error;
-            }
-            if (Date.now() > deadline) throw new Error("Git worker did not start");
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-        }
         await worker.input.close();
       } else {
         ({ session } = await RemoteWorkerSession.connect(
@@ -131,14 +108,9 @@ try {
             await duplicate.cleanup?.();
           }
         }
-        if (ready.gitPid) pids.push(ready.gitPid);
         if (ready.execPid) pids.push(ready.execPid);
         if (mode === "supervisor SIGKILL") Deno.kill(worker.pid, "SIGKILL");
-        else if (mode === "Git SIGKILL") {
-          const status = await worker.status();
-          assert(status.gitPid);
-          Deno.kill(status.gitPid, "SIGKILL");
-        } else if (mode === "guest exec SIGKILL") {
+        else if (mode === "guest exec SIGKILL") {
           const status = await worker.status();
           assert(status.execPid);
           Deno.kill(status.execPid, "SIGKILL");
@@ -179,7 +151,7 @@ try {
     }).spawn();
     const frames = readFrames(
       parent.stdout,
-      (v) => v as { kind: string; state?: string; pid?: number; gitPid?: number; execPid?: number },
+      (v) => v as { kind: string; state?: string; pid?: number; execPid?: number },
     );
     let state: string | undefined;
     let reached = false;
@@ -187,7 +159,7 @@ try {
     try {
       for await (const frame of frames) {
         if (frame.state) state = frame.state;
-        for (const pid of [frame.pid, frame.gitPid, frame.execPid]) if (pid) pids.push(pid);
+        for (const pid of [frame.pid, frame.execPid]) if (pid) pids.push(pid);
         if (frame.kind === phase) {
           reached = true;
           break;

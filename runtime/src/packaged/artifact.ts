@@ -121,24 +121,6 @@ export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest
   }
   return manifest;
 };
-/** Resolve guest absolute links against the staged store, never the host store. */
-export const inspectGitShim = async (artifact: string): Promise<void> => {
-  const target = await Deno.readLink(join(artifact, "bin/git"));
-  if (
-    (await Deno.readTextFile(join(artifact, "git-bridge-version"))).trim() !== "2" ||
-    !/^\/nix\/store\/[a-z0-9]{32}-[^/\s]+\/bin\/git$/.test(target)
-  ) {
-    throw new Error("Invalid Git bridge shim");
-  }
-  const staged = join(artifact, target);
-  if (!(await Deno.realPath(staged)).startsWith(artifact + "/nix/store/")) {
-    throw new Error("Git bridge shim escapes artifact");
-  }
-  const executable = await Deno.stat(staged);
-  if (!executable.isFile || !(executable.mode! & 0o111)) {
-    throw new Error("Git bridge shim is not executable");
-  }
-};
 /** A package-owned manifest takes precedence over mutable development pins. */
 export const bundledRuntime = (source: string): RuntimeLock | undefined => {
   const file = Deno.env.get("LOOM_BUNDLED_RUNTIMES");

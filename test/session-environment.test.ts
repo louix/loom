@@ -157,7 +157,6 @@ test("writable Nix uses a read-only artifact and private ext4 upper on both clos
     state: "/tmp/session",
     token: "test",
     writableNix: true,
-    gitSocket: "/tmp/session/git.sock",
     manifest: {
       version: 1,
       system: "x86_64-linux",

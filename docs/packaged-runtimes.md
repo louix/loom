@@ -125,10 +125,7 @@ packages.x86_64-linux.loom-runtime = loom.lib.mkRuntime {
 
 Package the executable's complete runtime dependencies, including programs it
 launches. Nix cannot discover arbitrary subprocesses looked up on PATH: wrap the
-executable to add those dependencies. Tilth uses real Git for upstream tests and
-Loom's controlled Git shim at runtime, with tests left enabled. The artifact
-helper includes that shim and its closure; packages should preserve
-`/run/loom/bin` on PATH or explicitly wrap their Git calls with the shim.
+executable to add those dependencies. Tilth includes real Git on its runtime PATH.
 
 The maintained recipe is also an independent flake:
 
@@ -176,8 +173,8 @@ sampling or elicitation capabilities. Neither artifact paths nor native launch
 commands are sent to the connector worker.
 
 The native guest has one CPU and 512 MiB. It sees the prepared closure read-only
-at `/nix/store` and the session workspace read-write at its original absolute
-path. Its HOME/cache are guest-local and disposable. Host configuration,
+at `/nix/store` and the repository/worktree read-write at their original absolute
+paths. Its HOME/cache are guest-local and disposable. Host home configuration,
 credentials, and the host's complete Nix store are not mounted. Native command
 permissions come from smolvm; Deno permissions alone do not constrain native
 subprocesses.
@@ -188,14 +185,11 @@ reaps after supervisor death. Cleanup has bounded retries for smolvm's
 asynchronous registry removal; unresolved state is retained with its path in the
 error.
 
-Supported linked Git worktrees automatically get a separate host Git worker and
-a dedicated vsock endpoint. Controlled Git operations use the guest shim; actual
-repository metadata stays outside the mount. Upgrade the Loom package, or use
-`deno task runtime:update` in a development checkout, for older artifacts. See
-[session Git bridge](guest-host-bridge.md) for commands, layout checks,
-lifecycle and remaining limitations. Main checkouts with a `.git` directory are
-rejected rather than mounting their metadata. Workspace mounts do not hide
-secrets already stored inside the workspace itself.
+The whole repository and the selected worktree are mounted at their host paths.
+Git metadata is shared, so native Git, hooks and config work normally and commits
+are immediately visible on the host. Sessions can modify shared Git metadata and
+other worktrees within the mounted repo. Hooks/config modified by an agent can
+affect later host Git commands. Secrets inside the repo are also accessible.
 
 ## Verification
 
@@ -205,13 +199,14 @@ notifications. Run the opt-in VM acceptance test after preparation:
 
 ```sh
 deno run -A scripts/test-runtime-vm.ts tilth
-deno run -A scripts/test-session-git-vm.ts tilth
+deno run -A scripts/test-real-git-vm.ts /path/to/aisdk-runtime /path/to/smolvm
 ```
 
 It uses only disposable files and checks tool discovery, read, hash edits, write
 and search through the daemon's launcher, plus normal close, daemon EOF,
 supervisor SIGKILL, and daemon EOF during boot. It also checks denial of
-unmounted host files and symlinks to them through the bridge.
+unmounted host files and symlinks to them. The Git fixture checks root discovery,
+shared hooks/config, host-visible commits and guest dependency clones.
 
 Guest-root probes use the production mount/environment policy to verify the
 read-only runtime closure, its exact store inventory, and denial of host files

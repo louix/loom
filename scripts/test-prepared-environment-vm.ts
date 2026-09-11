@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
@@ -16,6 +16,11 @@ const nix = option === "--nix";
 const artifact = await Deno.realPath(runtime);
 const smolvm = await Deno.realPath(backend);
 const f = await gitFixture();
+// Match Loom's default layout: the session worktree lives inside the repo mount.
+const nestedWorkspace = join(f.repo, ".loom", "trees", "session");
+await Deno.mkdir(join(f.repo, ".loom", "trees"), { recursive: true });
+await f.git("-C", f.repo, "worktree", "move", f.workspace, nestedWorkspace);
+f.workspace = nestedWorkspace;
 const oldState = Deno.env.get("XDG_STATE_HOME");
 Deno.env.set("XDG_STATE_HOME", join(f.root, "persistent"));
 const configHome = join(f.root, "config");
@@ -46,7 +51,7 @@ smolvm=${JSON.stringify(smolvm)}
 nix=${nix}
 command_prefix=${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])}
 prepare=${JSON.stringify(prepare)}
-timeout_seconds=60
+timeout_seconds=180
 `,
   );
 };
@@ -74,7 +79,7 @@ const cli = async (cancel = false) => {
     finished = true;
     return result;
   });
-  const timer = setTimeout(() => child.kill("SIGTERM"), 90000);
+  const timer = setTimeout(() => child.kill("SIGTERM"), 240000);
   const drain = async (stream: ReadableStream<Uint8Array>) => {
     for await (const chunk of stream) {
       const text = new TextDecoder().decode(chunk);

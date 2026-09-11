@@ -203,11 +203,7 @@ api_key_env = "" # env var with the API key; tool is off if unset
 max_results = 5
 # Hosted MCP search services belong in [[http-mcp]], as shown above.
 
-# VM Git bridge: opt in only if repository hooks, filters, merge drivers and
-# fsmonitor programs may execute on the host, outside the VM. Normal host Git
-# is unaffected. Bridge command/branch restrictions remain enforced either way.
-[isolation.git]
-allow_repo_programs = false
+# Session VMs mount the full repository, including shared Git hooks/config.
 
 # Opt in to one VM per regular Claude session. The Linux Nix package bundles
 # the runtime; native Claude remains on the host for login/credential renewal.
@@ -227,8 +223,6 @@ allow_repo_programs = false
 # base_branch = "main"
 # [repo.worktree]
 # enabled = true
-# [repo.isolation.git]
-# allow_repo_programs = false
 
 # Additional HTTPS hosts for commands inside this repo's session/worktree VMs.
 # Required provider API hosts are added separately. Exact DNS names, port 443 only.

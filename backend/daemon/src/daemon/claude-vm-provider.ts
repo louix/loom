@@ -92,7 +92,6 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
       mcpRelays: relays,
       ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
       ...(vm.environment ? { environment: vm.environment } : {}),
-      allowRepoPrograms: vm.allowRepoPrograms,
       ...(owner
         ? { authOwner: owner }
         : { auth: apiKey ? { ANTHROPIC_API_KEY: apiKey } : { CLAUDE_CODE_OAUTH_TOKEN: oauth! } }),

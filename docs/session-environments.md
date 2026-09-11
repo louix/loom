@@ -41,12 +41,9 @@ Keep the existing provider VM settings enabled. Rebuild/upgrade Loom and its
 provider runtimes together, then restart the daemon. Older runtime artifacts
 are rejected when an environment is configured, with a rebuild diagnostic.
 
-`path:.` explicitly uses the guest's worktree as the flake source. The default
-Git flake lookup cannot read the host Git metadata through the VM's limited Git
-bridge. This repo has a default flake dev shell, so this command selects it
-without invoking its Git-based `shell.nix` compatibility shim. Path sources
-include workspace outputs, so a resumed worktree with a large `node_modules`
-directory costs more to snapshot. Prepared source/environment caching is future work.
+`path:.` explicitly uses the worktree as the flake source. Normal Git-based flake
+lookup also works: repository metadata is mounted at its host path. Path sources
+include workspace outputs, so large `node_modules` directories cost more to snapshot.
 
 ## Configuration contract
 
@@ -72,11 +69,10 @@ Choose values that leave enough host resources for your concurrent sessions.
 Environment activation runs once per VM launch. The setup script runs next,
 then Loom captures exported variables for the worker and its subprocesses.
 Shell-local functions, aliases, and activation processes are not retained.
-Shell activation and preparation use real Git inside the VM, allowing package
-managers to create and fetch dependency repositories. Host Git metadata remains
-unmounted and the configured network policy still applies. The Git bridge/provider
-executable paths take precedence when the agent starts; proxy/bootstrap settings
-are retained.
+Activation, preparation and agents use real Git inside the VM. The whole repo,
+including Git metadata, is mounted alongside the selected worktree. Hooks and
+config are shared with host Git; the configured network policy still applies.
+Provider executable paths and proxy/bootstrap settings are retained.
 Setup must succeed before initialization completes; failure or timeout aborts
 startup, cleans up the VM and reports a fixed diagnostic. Normal session startup
 discards raw command output. Explicit repo preparation streams it separately
@@ -132,32 +128,6 @@ A child process reporting `SIGKILL` before the preparation deadline may have
 exhausted guest memory. Increasing `timeout_seconds` does not increase RAM.
 The signal alone is not proof of an out-of-memory kill; guest kernel diagnostics
 are needed to confirm that cause.
-
-Explicit preparation prints its configured RAM and CPU allocation. On failure,
-Loom prints the last 16 KiB of the VM console before cleanup, when available.
-This can reveal guest kernel OOM or crash messages even when the guest-control
-connection closes before setup reports an exit status. An empty console does
-not rule out a host-side VM kill. Console excerpts are emitted only for explicit
-preparation, which does not attach provider credentials.
-
-During explicit preparation, `[prepare resources]` lines sample guest available
-memory, swap, the cumulative kernel OOM-kill counter, and free space/inodes on
-the storage disk and worktree every 30 seconds. On Linux hosts, Loom also samples
-the original VM process's state and resident memory, and checks that process
-again before failure cleanup. These diagnostics do not restart a stopped VM.
-An increase in the guest OOM counter is evidence of a guest OOM kill; a missing
-host process identifies VM termination but does not establish its cause.
-If the original process is still a Linux zombie, Loom also decodes its saved
-wait status into an exit code or terminating signal before cleanup. A SIGKILL
-does not by itself identify who sent it; the core-dump flag does not guarantee
-that the host saved a core file.
-Zero is ambiguous: smolvm disables process dumpability, and Linux may mask this
-protected procfs field to zero. It must not be read as proof of a normal exit.
-Explicit preparation enables backend lifecycle logging and includes the last
-16 KiB of smolvm's `agent-startup-error.log` on failure, separately from the guest
-console. Despite its name, that file also receives backend errors after boot.
-`scripts/test-preparation-backend-vm.ts` checks capture with a deliberate reboot
-of an isolated, credential-free test guest.
 
 The command uses the configured default provider's runtime, or `--provider ID`.
 There is one current base per repo. Sessions using a different runtime/backend

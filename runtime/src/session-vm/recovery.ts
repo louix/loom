@@ -5,7 +5,7 @@ import { join, resolve, dirname, basename } from "node:path";
 import { reapVm, type VmBinding } from "../packaged/vm.ts";
 import { finishSessionState, writeRecoveryFile, removeSessionRuntimeState } from "./persistence.ts";
 export interface RecoveryRecord {
-  version: 2;
+  version: 3;
   ready: boolean;
   reaped: boolean;
 }
@@ -44,20 +44,11 @@ export const readRecovery = async (dir: string): Promise<RecoverableBinding | un
     typeof b.smolvm !== "string" ||
     !/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/smolvm$/.test(b.smolvm) ||
     !b.recovery ||
-    b.recovery.version !== 2 ||
+    b.recovery.version !== 3 ||
     typeof b.recovery.ready !== "boolean" ||
     typeof b.recovery.reaped !== "boolean"
   )
     throw new Error("VM recovery marker is incomplete or incompatible; manual recovery required");
-  if (
-    (b.recovery.ready || b.gitSocket !== join(b.state, "git.sock")) &&
-    !(
-      typeof b.gitSocket === "string" &&
-      b.gitSocket.startsWith(b.state + "/git-bridge-") &&
-      /^git-bridge-[a-z0-9]+\/git\.sock$/.test(b.gitSocket.slice(b.state.length + 1))
-    )
-  )
-    throw new Error("Invalid recovery Git endpoint");
   return b;
 };
 export const recoverSessionVm = async (dir: string): Promise<boolean> => {
@@ -105,20 +96,6 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
         if ((await Deno.realPath(b.smolvm)) !== resolve(b.smolvm))
           throw new Error("Recovery executable changed");
         await reapVm(b);
-      },
-      git: async () => {
-        if (!b.recovery.ready)
-          throw new Error("VM startup was interrupted; cleanup cannot be confirmed automatically");
-        const stopped = `${dirname(b.gitSocket!)}.stopped`;
-        const deadline = Date.now() + 7000;
-        while (!(await exists(stopped))) {
-          if (Date.now() > deadline)
-            throw new Error("Git worker shutdown was not confirmed; retained for inspection");
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        const stamp = await Deno.lstat(stopped);
-        if (!stamp.isFile || stamp.isSymlink)
-          throw new Error("Invalid Git shutdown acknowledgement");
       },
       state: finish,
     }).catch((error) => {

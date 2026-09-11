@@ -1,6 +1,6 @@
 /** Opt-in live check: two short requests, host transcript persistence and fresh-VM resume. */
 import assert from "node:assert/strict";
-import { gitFixture } from "./lib/git-bridge-fixture.ts";
+import { gitFixture } from "./lib/git-fixture.ts";
 import { loadConfig, resolveApiKey } from "../backend/daemon/src/config/config.ts";
 import { withAisdkVmSessions } from "../backend/daemon/src/daemon/aisdk-vm-provider.ts";
 import { createProvider as createGeneric } from "../connectors/generic/src/index.ts";
@@ -28,7 +28,7 @@ const ctx = {
     baseUrl: p.baseUrl,
     apiKey: resolveApiKey(p),
     sdk: p.sdk,
-    sessionVm: { artifact, smolvm, repoRoot: f.repo, allowRepoPrograms: false },
+    sessionVm: { artifact, smolvm, repoRoot: f.repo },
   },
   transcript: store,
   logger: makeLogger("smoke"),

@@ -2,11 +2,10 @@ import {
   sessionStartupTimeout,
   type SessionEnvironment,
 } from "../../../core/src/session-environment.ts";
-/** Trusted host supervisor. Its stdin lifetime owns the VM and both capabilities. */
+/** Trusted host supervisor. Its stdin lifetime owns the VM and its relays. */
 import { join } from "node:path";
 import { attachDiskTemplates, retainDiskTemplates } from "../packaged/disk-templates.ts";
 import { writeSessionAuth, type SessionAuth } from "./auth.ts";
-import { startSessionGit } from "../../../backend/daemon/src/daemon/git-worker.ts";
 import { startEgress } from "./egress.ts";
 import { cleanupSessionVm } from "./cleanup.ts";
 import {
@@ -29,12 +28,6 @@ import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 import { seedRepoBase } from "./repo-base.ts";
 import {
-  preparationConsoleTail,
-  preparationBackendTail,
-  hostPreparationResources,
-  monitorPreparation,
-} from "./prepare-diagnostics.ts";
-import {
   readSessionDisks,
   saveSessionDisks,
   attachSessionDisks,
@@ -45,26 +38,21 @@ const frames = readFrames(Deno.stdin.readable, (value) => value);
 const first = await frames.next();
 clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
-const { binding, auth, allowRepoPrograms, extraAllowedHosts, providerHosts, environment } =
-  first.value as {
-    binding: RecoverableBinding;
-    auth: SessionAuth;
-    allowRepoPrograms: boolean;
-    extraAllowedHosts?: string[];
-    providerHosts?: string[];
-    environment?: SessionEnvironment;
-  };
+const { binding, auth, extraAllowedHosts, providerHosts, environment } = first.value as {
+  binding: RecoverableBinding;
+  auth: SessionAuth;
+  extraAllowedHosts?: string[];
+  providerHosts?: string[];
+  environment?: SessionEnvironment;
+};
 let child: Deno.ChildProcess | undefined;
 let persistentLock: Deno.FsFile | undefined;
 let ownsPersistent = false;
 const relays: ReturnType<typeof startMcpRelay>[] = [];
-let git: Awaited<ReturnType<typeof startSessionGit>>;
 let egress: ReturnType<typeof startEgress> | undefined;
 let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
 let ended = false;
 let machineDirectory: string | undefined;
-let sampleHost: (() => Promise<string>) | undefined;
-let stopMonitor: (() => void) | undefined;
 const cancelled = new AbortController();
 const done = Promise.withResolvers<void>();
 const stop = () => {
@@ -82,7 +70,6 @@ const status = () => {
     join(binding.state, "status.json.tmp"),
     JSON.stringify({
       phase,
-      gitPid: git?.pid,
       execPid: phase === "running" ? child?.pid : undefined,
       network,
     }),
@@ -120,19 +107,9 @@ const persist = async () => {
 };
 const command = async (args: string[]) => {
   if (ended) throw new Error("Session closed during startup");
-  const captureBackend = binding.preparationOnly && args[0] === "machine" && args[1] === "start";
   child = Deno.spawn(binding.smolvm, args, {
     clearEnv: true,
-    env: {
-      ...vmEnvironment(binding.state),
-      // The boot process writes backend stderr to agent-startup-error.log.
-      ...(captureBackend
-        ? {
-            SMOLVM_KRUN_LOG_LEVEL: "3",
-            RUST_LOG: "warn,vmm=info,krun_vmm=info,krun_devices::virtio::vsock=error",
-          }
-        : {}),
-    },
+    env: vmEnvironment(binding.state),
     stdin: "null",
     stdout: "piped",
     stderr: "null",
@@ -149,7 +126,7 @@ try {
     await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
     if ((await Deno.lstat(profile)).isSymlink)
       throw new Error("Session profile must not be a symlink");
-    binding.recovery = { version: 2, ready: false, reaped: false };
+    binding.recovery = { version: 3, ready: false, reaped: false };
     await writeRecoveryFile(binding.state, "owner.json", {
       token: binding.token,
     });
@@ -167,16 +144,6 @@ try {
   );
   if (binding.preparationOnly)
     await Deno.writeTextFile(join(binding.state, "private/prepare-only"), "1", { mode: 0o600 });
-  git = await startSessionGit(
-    binding.workspace,
-    binding.state,
-    binding.artifact,
-    allowRepoPrograms,
-  );
-  if (!git) throw new Error("Session VM requires a linked Git worktree");
-  binding.gitSocket = git.socket;
-  void git.exited.then(stop, stop);
-  if (ended) throw new Error("Session closed during Git startup");
   status();
   egress = startEgress(
     join(binding.state, "egress.sock"),
@@ -191,9 +158,6 @@ try {
     },
   );
   const create = vmCreateArguments(binding, environment);
-  // Claude already puts the closure's Git shim on PATH; no separate mount needed.
-  const shimMount = create.indexOf(`${binding.artifact}/bin:/run/loom/bin:ro`);
-  if (shimMount !== -1) create.splice(shimMount - 1, 2);
   if (binding.persistentDisks) create.push(...sessionDiskSizes);
   create.push(
     "-v",
@@ -240,9 +204,6 @@ try {
     console.error(
       saved ? "Starting VM from a warm disk…" : "Starting VM from the generic runtime (cold)…",
     );
-    console.error(
-      `VM resources: ${environment?.memoryMiB ?? 2048} MiB RAM, ${environment?.cpus ?? 1} CPU(s).`,
-    );
   }
   if (saved) await attachSessionDisks(diskDirectory!, machineDirectory!, binding.state);
   await command(["machine", "start", "--name", sessionVmName]);
@@ -256,10 +217,6 @@ try {
     await command(["machine", "start", "--name", sessionVmName]);
   }
   if (ended) throw new Error("Session closed during VM startup");
-  if (binding.preparationOnly && machineDirectory) {
-    sampleHost = await hostPreparationResources(machineDirectory);
-    stopMonitor = monitorPreparation(sampleHost);
-  }
   child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,
     env: vmEnvironment(binding.state),
@@ -304,12 +261,6 @@ try {
 } finally {
   clearTimeout(deadline);
   stop();
-  stopMonitor?.();
-  if (binding.preparationOnly && Deno.exitCode !== 0 && machineDirectory) {
-    if (sampleHost) console.error(`[prepare resources at failure] ${await sampleHost()}`);
-    console.error(await preparationConsoleTail(machineDirectory));
-    console.error(await preparationBackendTail(machineDirectory));
-  }
   try {
     await cleanupSessionVm({
       stop: async () => {
@@ -332,9 +283,6 @@ try {
         }
       },
       reap: () => reapVm(binding),
-      git: async () => {
-        await git?.close();
-      },
       state: async () => {
         if (ownsPersistent) {
           binding.recovery.reaped = true;

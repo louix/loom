@@ -1,7 +1,6 @@
 # AISDK worker and workspace tools; no native provider executable required.
 { pkgs, loom }:
 let
-  gitShim = import ./git-shim.nix { inherit pkgs; };
   package = pkgs.writeShellScriptBin "loom-aisdk-session" ''
     export HOME=/tmp/loom-home
     export XDG_CACHE_HOME=/tmp/loom-cache
@@ -13,13 +12,12 @@ let
     accept-flake-config = false
     max-jobs = 1
     cores = 1'
-    export LOOM_GUEST_CONTROL_PATH=${pkgs.lib.makeBinPath [ gitShim ]}
+    export LOOM_GUEST_CONTROL_PATH=""
     export LOOM_GUEST_SHELL=${pkgs.bash}/bin/bash
     export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     export NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE
-    # Activation and preparation use guest Git; guest.ts adds the agent shim later.
     export PATH=${pkgs.lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.curl pkgs.nix pkgs.git pkgs.gnutar pkgs.xz pkgs.deno ]}
     exec ${pkgs.deno}/bin/deno run -A --cached-only --node-modules-dir=manual \
       ${loom}/libexec/loom/runtime/src/session-vm/guest.ts
   '';
-in import ./mk-runtime.nix { inherit pkgs package; executable = "loom-aisdk-session"; sessionVersion = 1; }
+in import ./mk-runtime.nix { inherit pkgs package; executable = "loom-aisdk-session"; sessionVersion = 2; }
