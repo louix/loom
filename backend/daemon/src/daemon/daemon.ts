@@ -1956,6 +1956,10 @@ export class Daemon {
       const w = watch(dir, (_evt, name) => {
         if (name && join(dir, name.toString()) === this.#configFile) this.#scheduleReload();
       });
+      w.on("error", (err) => {
+        this.#log.warn("config watch failed; restart to reload config", { dir, err: String(err) });
+        w.close();
+      });
       w.unref();
       this.#configWatchers.push(w);
     } catch (err) {

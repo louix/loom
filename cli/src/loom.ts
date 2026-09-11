@@ -243,7 +243,19 @@ const main = async (): Promise<void> => {
     sockPath: sock,
     daemonEntry: fileURLToPath(new URL("./loomd.ts", import.meta.url)),
     reconnect,
+    autospawn: cmd !== "stop",
+  }).catch((error) => {
+    if (
+      cmd === "stop" &&
+      (error instanceof Deno.errors.NotFound || error instanceof Deno.errors.ConnectionRefused)
+    )
+      return undefined;
+    throw error;
   });
+  if (!client) {
+    writeOut("daemon is not running\n");
+    return;
+  }
 
   if (wantTui) {
     // React (via Ink) chooses its dev or prod build off NODE_ENV when it's first
