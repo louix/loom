@@ -38,6 +38,10 @@ test("cleanTitle rejects a chat turn instead of a label", () => {
   assert.equal(cleanTitle("Sorry, I need more detail to give a good title"), null);
   assert.equal(cleanTitle("Could you tell me what this project does?"), null);
   assert.equal(cleanTitle("I'm not sure what to title this"), null);
+  assert.equal(cleanTitle("I’ll run the read-only checks"), null);
+  assert.equal(cleanTitle("I'll check the environment"), null);
+  assert.equal(cleanTitle("I've verified the runtime"), null);
+  assert.equal(cleanTitle("I'd start with the config"), null);
   // …but a normal label that merely starts with a stop-word-ish token is fine
   assert.equal(cleanTitle("Wire up the websocket layer"), "Wire up the websocket layer");
 });

@@ -25,7 +25,7 @@ const INSTRUCTION = "Title for this task (label only, no questions):";
  */
 const looksConversational = (firstLine: string, cleaned: string): boolean => {
   if (firstLine.trim().endsWith("?")) return true;
-  return /^(?:i['’]?m |i am |i |sorry\b|could you|can you|please\b|what |which |who |when |where |why |how |tell me|provide |describe |hello\b|hey\b)/i.test(
+  return /^(?:i['’](?:m|ll|ve|d)\b|im |i am |i |sorry\b|could you|can you|please\b|what |which |who |when |where |why |how |tell me|provide |describe |hello\b|hey\b)/i.test(
     cleaned,
   );
 };
