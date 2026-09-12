@@ -49,13 +49,9 @@ export const runTui = async (
       {
         exitOnCtrlC: false,
         alternateScreen: true,
-        // Only rewrite the lines that actually changed. A spinner tick or one
-        // appended transcript row costs its own rows instead of a full ~2KB
-        // repaint of the whole viewport: measured at 120×40, a 60-event stream
-        // drops from 494KB to 139KB of terminal output, and paging back through
-        // a long transcript from 195KB to 33KB (see docs/tui-reduction-baseline.md).
-        // React still renders exactly as often — this is terminal traffic only.
-        incrementalRendering: true,
+        // Mosh ignores Ink's CSI E row skips and has no unique environment
+        // marker. LOOM_TUI_COMPAT=1 opts into full redraws for such terminals.
+        incrementalRendering: Deno.env.get("LOOM_TUI_COMPAT") !== "1",
       },
     );
     await instance.waitUntilExit();

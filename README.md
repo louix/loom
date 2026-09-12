@@ -120,6 +120,11 @@ the Vercel AI SDK.
 
 **5 · terminal UI**
 
+For mosh or terminals with misplaced redraws, run `LOOM_TUI_COMPAT=1 loom`.
+This uses full redraws instead of incremental rendering. Leave it unset (or set
+it to `0`) for incremental rendering. Mosh is not detected automatically because
+it advertises a normal xterm terminal type without a unique environment marker.
+
 - **`loom` with no command** in an interactive terminal — or `loom tui`
   explicitly — opens a full-screen fleet view. It is just another client, with
   reconnect enabled, so the daemon and its sessions outlive it; re-opening
