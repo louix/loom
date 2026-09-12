@@ -2,7 +2,10 @@
 
 Loom separates reusable environment preparation from session initialization.
 
-- `loom environment prepare` builds a VM base from committed HEAD. Nix activation
+- `loom environment prepare` builds a VM base from committed HEAD. The bundled
+  Claude, Codex and AISDK providers share one image and need one preparation.
+  Distinct custom runtime images are prepared separately. `--provider P` selects
+  that provider's runtime. Nix activation
   and `isolation.environment.prepare` must succeed before the base is published.
 - `[[hooks]] on = "init"` runs once when a conversation is created, before its opening
   turn, inside its VM or on the host for a non-VM session. A failed init hook is
@@ -83,7 +86,12 @@ changes, and native conversation profiles persist. Init is not rerun during this
 handover; dependencies such as `node_modules` and `.venv` should live in the worktree.
 If a new base changes the interpreter/ABI they need, the agent may need to reinstall them.
 
-There is one current base per repo. Runtime/backend and Nix-store compatibility
+There is one current base per repo and runtime. Bundled providers use the same
+base; distinct custom runtimes keep separate bases. The shared image contains
+provider executables, never provider credentials. Preparation receives no provider
+credentials; each session receives only its selected authentication source and
+has private writable disks, credentials and native provider history.
+Runtime/backend and Nix-store compatibility
 still apply; upgrading Loom's runtime requires rebuilding the matching guest
 runtime and explicitly preparing a compatible base. There is no automatic rebuild
 on every source edit. The `--provider ID` option selects which configured runtime

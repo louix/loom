@@ -54,6 +54,12 @@ for (const runtime of [
   "codex-session-runtime",
   "aisdk-session-runtime",
 ]) {
+  if (runtime === "codex-session-runtime" || runtime === "aisdk-session-runtime") {
+    runtimes[runtime] = runtimes["claude-session-runtime"]!;
+    await publish();
+    console.error(`${runtime}: sharing the verified session image`);
+    continue;
+  }
   const hash = runtimes[runtime];
   if (hash && /^sha256-[A-Za-z0-9+/]{43}=$/.test(hash)) {
     const path = await Deno.spawnAndWait(

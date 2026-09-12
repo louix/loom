@@ -6,6 +6,10 @@ import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
 import { reportStartup, readStartupProgress } from "./progress.ts";
 
+/** Debian login shells reset PATH before sourcing /etc/profile.d. */
+export const guestPathProfile = (path: string): string =>
+  `export PATH='${path.replaceAll("'", "'\\''")}'\n`;
+
 /** Build the environment during explicit preparation; setup output stays off the worker protocol. */
 export const prepareEnvironment = async (
   config: SessionEnvironment | undefined,

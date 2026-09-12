@@ -6,6 +6,36 @@ import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
+import { environmentProviders } from "../cli/src/environment.ts";
+import { normalizeConfig } from "../backend/daemon/src/config/config.ts";
+
+test("default preparation covers enabled runtimes once across provider profiles", () => {
+  const config = normalizeConfig({
+    providers: {
+      chatgpt: { adapter: "aisdk", sdk: "chatgpt" },
+      second: { adapter: "aisdk", sdk: "chatgpt" },
+      generic: { adapter: "aisdk", sdk: "openai", base_url: "https://example.com/v1" },
+    },
+    isolation: {
+      claude: { artifact: "/claude", smolvm: "/backend" },
+      codex: { artifact: "/codex", smolvm: "/backend" },
+      aisdk: { artifact: "/aisdk", smolvm: "/backend" },
+    },
+  });
+  const providers = environmentProviders(config);
+  assert(providers.some((id) => id.startsWith("claude")));
+  assert(providers.includes("chatgpt"));
+  assert(providers.includes("generic"));
+  assert.equal(providers.filter((id) => config.providers.aisdk[id]?.sdk === "chatgpt").length, 1);
+  config.providerAccess.only = ["chatgpt"];
+  assert.deepEqual(environmentProviders(config), ["chatgpt"]);
+  config.providerAccess.disabled = ["chatgpt"];
+  assert.deepEqual(environmentProviders(config), []);
+  config.providerAccess = { disabled: [] };
+  config.isolation.codex = config.isolation.claude!;
+  config.isolation.aisdk = config.isolation.claude!;
+  assert.deepEqual(environmentProviders(config), [providers[0]]);
+});
 
 test("missing or incompatible prepared environments fail before VM or credential startup", async () => {
   const root = await Deno.realPath(await Deno.makeTempDir());

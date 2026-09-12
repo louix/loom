@@ -110,6 +110,7 @@
           bundleSupported = pkgs.stdenv.hostPlatform.isLinux || hostSystem == "aarch64-darwin";
         in rec {
           default = loom;
+          session-runtime = hostRuntimes.claude-session-runtime;
           claude-session-runtime = hostRuntimes.claude-session-runtime;
           aisdk-session-runtime = hostRuntimes.aisdk-session-runtime;
           codex-session-runtime = hostRuntimes.codex-session-runtime;

@@ -165,6 +165,12 @@ export const launchSessionVm = async (
       );
     }
   }
+  if (auth.codexOauth) {
+    // Bubblewrap cannot create protected mount points through the guest's
+    // host-owned virtiofs worktree. Materialize them before entering the VM.
+    for (const name of [".agents", ".codex"])
+      await Deno.mkdir(join(workspace, name), { recursive: true });
+  }
   let sessionDirectory: string | undefined;
   if (options.sessionDirectory) {
     await Deno.mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });

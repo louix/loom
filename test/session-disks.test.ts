@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { readSessionDisks } from "../runtime/src/session-vm/disks.ts";
+import { copyDisk, readSessionDisks } from "../runtime/src/session-vm/disks.ts";
+
+test("disk copies restore sparse logical capacity without changing the immutable source", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const source = join(root, "base.raw"),
+      target = join(root, "copy.raw");
+    await Deno.writeTextFile(source, "filesystem data");
+    await Deno.chmod(source, 0o400);
+    await copyDisk(source, target, undefined, 1024 * 1024);
+    assert.equal((await Deno.stat(target)).size, 1024 * 1024);
+    assert.equal(await Deno.readTextFile(source), "filesystem data");
+    const file = await Deno.open(target);
+    try {
+      const bytes = new Uint8Array(15);
+      await file.read(bytes);
+      assert.equal(new TextDecoder().decode(bytes), "filesystem data");
+      await file.seek(-1, Deno.SeekMode.End);
+      const tail = new Uint8Array(1);
+      assert.equal(await file.read(tail), 1);
+      assert.equal(tail[0], 0);
+    } finally {
+      file.close();
+    }
+    await copyDisk(source, target, undefined, 1);
+    assert.equal(await Deno.readTextFile(target), "filesystem data");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 test("saved disks reject incompatible runtimes and substituted files without discarding state", async () => {
   const root = await Deno.realPath(await Deno.makeTempDir());

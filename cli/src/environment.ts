@@ -1,6 +1,10 @@
 /** Foreground, credential-free preparation. The published base is never writable. */
 import { join, resolve } from "node:path";
-import { loadConfig } from "../../backend/daemon/src/config/config.ts";
+import {
+  claudeProfileId,
+  loadConfig,
+  type LoomConfig,
+} from "../../backend/daemon/src/config/config.ts";
 import { isClaudeId } from "../../core/src/provider-id.ts";
 import { environmentEnabled } from "../../core/src/session-environment.ts";
 import { launchSessionVm } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
@@ -59,16 +63,45 @@ export const prepareEnvironmentInTerminal = async (
   }
 };
 
+export const environmentProviders = (config: LoomConfig): string[] => {
+  const providers = [
+    ...config.claudeProfiles.map(claudeProfileId),
+    ...Object.keys(config.providers.aisdk),
+  ];
+  const seen = new Set<string>();
+  return providers.filter((id) => {
+    if (
+      config.providerAccess.disabled.includes(id) ||
+      (config.providerAccess.only && !config.providerAccess.only.includes(id))
+    )
+      return false;
+    const policy = environmentPolicy(config, id);
+    if (!policy || seen.has(policy.artifact)) return false;
+    seen.add(policy.artifact);
+    return true;
+  });
+};
+
+const environmentPolicy = (config: LoomConfig, id: string) => {
+  if (isClaudeId(id)) return config.isolation.claude;
+  if (config.providers.aisdk[id]?.sdk === "chatgpt") return config.isolation.codex;
+  return config.isolation.aisdk;
+};
+
 export const prepareRepoEnvironment = async (repo: string, provider?: string) => {
+  const config = loadConfig(repo);
+  const providers = provider ? [provider] : environmentProviders(config);
+  if (!providers.length) throw new Error("No configured VM providers to prepare");
+  for (const id of providers) await prepareProviderEnvironment(repo, id);
+};
+
+const prepareProviderEnvironment = async (repo: string, id: string) => {
   repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
   if (!environmentEnabled(config.isolation.environment))
     throw new Error("Configure isolation.environment before preparing this repo");
-  const id = provider ?? config.defaultProvider;
   if (!isClaudeId(id) && !config.providers.aisdk[id]) throw new Error(`Unknown provider: ${id}`);
-  let policy = config.isolation.aisdk;
-  if (isClaudeId(id)) policy = config.isolation.claude;
-  else if (config.providers.aisdk[id]?.sdk === "chatgpt") policy = config.isolation.codex;
+  const policy = environmentPolicy(config, id);
   if (!policy) throw new Error(`Provider ${id} has no configured session VM runtime`);
   const paths = policy.smolvm.includes("/")
     ? [resolve(policy.smolvm)]
@@ -166,7 +199,7 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
     cancelled.signal.throwIfAborted();
     if (code !== 0) throw new Error(`Environment preparation failed (exit ${code})`);
     phase("Saving prepared base…");
-    await publishRepoBase(home, candidate, cancelled.signal);
+    await publishRepoBase(home, candidate, cancelled.signal, await Deno.realPath(policy.artifact));
     published = true;
     phase("Environment prepared. Idle sessions will update automatically; active turns continue.");
   } catch (error) {

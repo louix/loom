@@ -1946,10 +1946,19 @@ export class Daemon {
     if (this.#stopping || this.#checkingEnvironment || this.#vmGenerations.size === 0) return;
     this.#checkingEnvironment = true;
     try {
-      const base = await currentRepoBase(repoBaseDirectory(this.repoRoot));
-      if (!base || this.#stopping) return;
-      const generation = basename(base);
       for (const [id, previous] of this.#vmGenerations) {
+        const provider = this.#registry.get(id)?.provider;
+        let policy = provider ? this.config.isolation.aisdk : undefined;
+        if (provider && isClaudeId(provider)) policy = this.config.isolation.claude;
+        else if (provider && this.config.providers.aisdk[provider]?.sdk === "chatgpt")
+          policy = this.config.isolation.codex;
+        const base = await currentRepoBase(
+          repoBaseDirectory(this.repoRoot),
+          policy ? await Deno.realPath(policy.artifact) : undefined,
+        );
+        if (this.#stopping) return;
+        if (!base) continue;
+        const generation = basename(base);
         if (
           !this.#sessions.has(id) &&
           !this.#revivals.has(id) &&

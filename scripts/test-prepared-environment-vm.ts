@@ -7,7 +7,7 @@ import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
-import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
+import { repoBaseDirectory, currentRepoBase } from "../runtime/src/session-vm/repo-base.ts";
 import { startupStages } from "../runtime/src/session-vm/progress.ts";
 
 const [runtime, backend, option] = Deno.args;
@@ -118,7 +118,7 @@ try {
       initial.output.includes("setup-stderr"),
   );
   const home = repoBaseDirectory(f.repo);
-  const selected = await Deno.readTextFile(join(home, "current.json"));
+  const selected = await currentRepoBase(home, artifact);
   // A fresh worktree must materialize dependencies entirely from the VM cache.
   const directory = join(f.root, "session");
   const environment = normalizeSessionEnvironment({
@@ -164,7 +164,7 @@ try {
                   {
                     name: "install",
                     timeoutMs: 120000,
-                    run: 'test ! -e /storage/session-only; cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only; echo cached > "$XDG_CACHE_HOME/persistent-marker"',
+                    run: 'test ! -e /storage/session-only; cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only; echo cached > "$DENO_DIR/persistent-marker"',
                   },
                   {
                     name: "broken setup",
@@ -220,11 +220,11 @@ try {
         failed.output.includes("deliberate-failure") &&
         failed.output.includes("status 7"),
     );
-    assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
+    assert.equal(await currentRepoBase(home, artifact), selected);
     await config("echo cancel-ready; sleep 60");
     const cancelled = await cli(true);
     assert(cancelled.cancelled && !cancelled.success);
-    assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
+    assert.equal(await currentRepoBase(home, artifact), selected);
     await config(setup);
     const refreshed = await cli();
     assert(
@@ -232,10 +232,10 @@ try {
         refreshed.output.indexOf("Copying VM disks") >= 0 &&
         refreshed.output.indexOf("Copying VM disks") < refreshed.output.indexOf("Starting VM"),
     );
-    assert.notEqual(await Deno.readTextFile(join(home, "current.json")), selected);
+    assert.notEqual(await currentRepoBase(home, artifact), selected);
   });
   assert.equal(
-    await Deno.readTextFile(join(f.repo, ".loom/package-cache/persistent-marker")),
+    await Deno.readTextFile(join(f.repo, ".loom/package-cache/deno/persistent-marker")),
     "cached\n",
   );
   // A new launch uses the new base and retains its host worktree.

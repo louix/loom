@@ -66,7 +66,7 @@ const USAGE: Record<string, string> = {
   streaming preparation output. Publish a base for new and resumed sessions.
   Existing sessions keep running and update once idle. Worktrees and history are
   preserved; guest disks are disposable. Failures leave the previous base intact.
-  --provider P   select the session runtime (default: configured default provider)`,
+  --provider P   prepare only this provider's runtime (default: all configured VM runtimes)`,
   runtime: `loom runtime prepare|status|update [runtime]
 
   prepare                      fetch/build configured runtimes outside the daemon

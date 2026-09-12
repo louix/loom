@@ -1,6 +1,11 @@
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
 import { sessionAuth } from "./auth.ts";
-import { prepareEnvironment, initializeGuestNix, loadPreparedEnvironment } from "./environment.ts";
+import {
+  prepareEnvironment,
+  initializeGuestNix,
+  loadPreparedEnvironment,
+  guestPathProfile,
+} from "./environment.ts";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
 import { startGuestRelay } from "./guest-relay.ts";
@@ -141,5 +146,10 @@ if (preparationOnly) {
 } else
   await runWorker(async () => {
     await prepare();
+    await Deno.mkdir("/etc/profile.d", { recursive: true });
+    await Deno.writeTextFile(
+      "/etc/profile.d/zz-loom-path.sh",
+      guestPathProfile(Deno.env.get("PATH")!),
+    );
     reportStartup("provider");
   });

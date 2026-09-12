@@ -5,8 +5,12 @@ import type { VmBinding } from "../packaged/vm.ts";
 import { writeRecoveryFile } from "./persistence.ts";
 import { reportStartup } from "./progress.ts";
 
-export const sessionDiskSizes = ["--storage", "32", "--overlay", "8"];
-const stems = ["storage", "overlay"];
+const diskGiB = { storage: 32, overlay: 8 };
+export const sessionDiskSizes = Object.entries(diskGiB).flatMap(([name, size]) => [
+  `--${name}`,
+  String(size),
+]);
+const stems = ["storage", "overlay"] as const;
 /** Migration from persistent guest disks; host worktrees and profiles are separate. */
 export const discardSessionDisks = async (home: string) => {
   for (const name of ["disks", "disk-runtime-root", "disk-backend-root"]) {
@@ -61,7 +65,7 @@ export const readSessionDisks = async (dir: string, b: Identity): Promise<boolea
 };
 
 /** Use supported sparse/reflink copies, never hard links between independent VMs. */
-export const copyDisk = async (from: string, to: string, signal?: AbortSignal) => {
+export const copyDisk = async (from: string, to: string, signal?: AbortSignal, minimumSize = 0) => {
   reportStartup("copy");
   const result = await new Deno.Command(Deno.build.os === "darwin" ? "/bin/cp" : "cp", {
     args:
@@ -80,6 +84,9 @@ export const copyDisk = async (from: string, to: string, signal?: AbortSignal) =
   await Deno.chmod(to, 0o600);
   const file = await Deno.open(to, { write: true });
   try {
+    // Sparse backend disks can end before the filesystem's declared capacity.
+    // Restore the logical length before creating a qcow2 overlay from this file.
+    if ((await file.stat()).size < minimumSize) await file.truncate(minimumSize);
     await file.sync();
   } finally {
     file.close();
@@ -100,7 +107,12 @@ export const createSessionDisks = async (
   reportStartup("clone");
   if (Deno.build.os !== "linux") {
     for (const stem of stems)
-      await copyDisk(join(base, `${stem}.raw`), join(dir, `${stem}.raw`), signal);
+      await copyDisk(
+        join(base, `${stem}.raw`),
+        join(dir, `${stem}.raw`),
+        signal,
+        diskGiB[stem] * 1024 ** 3,
+      );
     return;
   }
   const root = dirname(dirname(smolvm));
@@ -125,11 +137,16 @@ export const createSessionDisks = async (
       signal?.throwIfAborted();
       const source = join(base, `${stem}.raw`);
       const backing = join(dir, `base-${stem}.raw`);
-      try {
-        await link(source, backing);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-        await copyDisk(source, backing, signal);
+      const size = diskGiB[stem] * 1024 ** 3;
+      if ((await Deno.stat(source)).size < size) {
+        await copyDisk(source, backing, signal, size);
+      } else {
+        try {
+          await link(source, backing);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+          await copyDisk(source, backing, signal, size);
+        }
       }
       const overlay = join(dir, `${stem}.qcow2`);
       const result = lib.symbols.krun_create_disk_overlay(cstring(overlay), cstring(backing), 0);
@@ -152,7 +169,12 @@ export const saveSessionDisks = async (
   const staging = await Deno.makeTempDir({ dir: dirname(dir), prefix: ".disk-init-" });
   try {
     for (const stem of stems)
-      await copyDisk(join(source, `${stem}.raw`), join(staging, `${stem}.raw`), signal);
+      await copyDisk(
+        join(source, `${stem}.raw`),
+        join(staging, `${stem}.raw`),
+        signal,
+        diskGiB[stem] * 1024 ** 3,
+      );
     await writeRecoveryFile(staging, "identity.json", identity(b));
     // Keep exact OverlayFS lower and backend alive through Nix garbage collection.
     for (const [name, path] of [

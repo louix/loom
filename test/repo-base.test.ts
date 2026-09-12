@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { join } from "node:path";
 import {
   hasCompatibleRepoBase,
+  currentRepoBase,
   publishRepoBase,
   seedRepoBase,
 } from "../runtime/src/session-vm/repo-base.ts";
@@ -16,6 +17,49 @@ const rawDisks = async (base: string) => {
     disk.close();
   }
 };
+
+test("runtime publications coexist, replace only their own base, and retain legacy preparations", async () => {
+  const home = await Deno.realPath(await Deno.makeTempDir());
+  const signal = new AbortController().signal;
+  const makeBase = async (name: string, artifact: string) => {
+    const base = join(home, `base-${name}`);
+    await rawDisks(base);
+    await Deno.writeTextFile(
+      join(base, "disks/identity.json"),
+      JSON.stringify({
+        version: 1,
+        artifact,
+        smolvm: "/backend",
+        host: `${Deno.build.arch}-${Deno.build.os}`,
+        writableNix: true,
+      }),
+    );
+    return base;
+  };
+  try {
+    const claude = await makeBase("claude", "/claude");
+    await publishRepoBase(home, claude, signal);
+    const codex = await makeBase("codex", "/codex");
+    await publishRepoBase(home, codex, signal, "/codex");
+    assert.equal(await currentRepoBase(home, "/claude"), claude);
+    assert.equal(await currentRepoBase(home, "/codex"), codex);
+    assert.equal(await currentRepoBase(home, "/unknown"), undefined);
+    for (const artifact of ["/claude", "/codex"])
+      assert(
+        await hasCompatibleRepoBase(home, { artifact, smolvm: "/backend", writableNix: true }),
+      );
+    const next = await makeBase("next", "/codex");
+    await assert.rejects(publishRepoBase(home, next, AbortSignal.abort(), "/codex"));
+    assert.equal(await currentRepoBase(home, "/codex"), codex);
+    await publishRepoBase(home, next, signal, "/codex");
+    assert.equal(await currentRepoBase(home, "/codex"), next);
+    assert.equal(await currentRepoBase(home, "/claude"), claude);
+    await assert.rejects(Deno.stat(codex), Deno.errors.NotFound);
+    assert((await Deno.stat(claude)).isDirectory);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
 
 test("a new guest image artifact skips the Alpine base without deleting it", async () => {
   const home = await Deno.realPath(await Deno.makeTempDir());

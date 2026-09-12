@@ -4,10 +4,21 @@ import {
   normalizeSessionEnvironment,
   sessionStartupTimeout,
 } from "../core/src/session-environment.ts";
-import { prepareEnvironment } from "../runtime/src/session-vm/environment.ts";
+import { prepareEnvironment, guestPathProfile } from "../runtime/src/session-vm/environment.ts";
 import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
 import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
 import { vmArguments, vmCreateArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
+
+test("guest login profile restores the prepared PATH as literal shell data", async () => {
+  const path = "/nix/store/dev/bin:/workspace/a'b/$(exit 91):/bin";
+  const result = await new Deno.Command("/bin/sh", {
+    args: ["-c", `PATH=/usr/bin:/bin\n${guestPathProfile(path)}printf '%s' "$PATH"`],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert(result.success);
+  assert.equal(new TextDecoder().decode(result.stdout), path);
+});
 
 test("network presets compose with exact hosts and reject unknown grants", () => {
   const config = normalizeConfig({

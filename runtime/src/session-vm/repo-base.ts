@@ -1,4 +1,4 @@
-/** One immutable prepared disk pair per repo. Readers only lock while cloning. */
+/** Immutable prepared disks per repo and runtime. Readers only lock while cloning. */
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -20,12 +20,30 @@ export const repoBaseDirectory = (repo: string) =>
       createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32),
     ),
   );
-export const currentRepoBase = async (home: string) => {
+const selectionFile = (artifact?: string) =>
+  artifact
+    ? `current-${createHash("sha256").update(artifact).digest("hex").slice(0, 32)}.json`
+    : "current.json";
+
+export const currentRepoBase = async (
+  home: string,
+  artifact?: string,
+): Promise<string | undefined> => {
   let value;
   try {
-    value = JSON.parse(await Deno.readTextFile(join(home, "current.json")));
+    value = JSON.parse(await Deno.readTextFile(join(home, selectionFile(artifact))));
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return;
+    if (error instanceof Deno.errors.NotFound) {
+      // Existing single-runtime preparations remain usable after upgrading.
+      if (artifact) {
+        const legacy = await currentRepoBase(home);
+        if (legacy) {
+          const identity = JSON.parse(await Deno.readTextFile(join(legacy, "disks/identity.json")));
+          if (identity.artifact === artifact) return legacy;
+        }
+      }
+      return;
+    }
     throw error;
   }
   if (!value || typeof value.directory !== "string" || !/^base-[a-z0-9]+$/.test(value.directory))
@@ -58,7 +76,7 @@ const compatibleRepoBase = async (
   home: string,
   b: Pick<VmBinding, "artifact" | "smolvm" | "writableNix">,
 ) => {
-  const base = await currentRepoBase(home);
+  const base = await currentRepoBase(home, b.artifact);
   if (!base) return;
   try {
     if (!(await readSessionDisks(join(base, "disks"), b)))
@@ -103,7 +121,12 @@ export const seedRepoBase = async (
     held.close();
   }
 };
-export const publishRepoBase = async (home: string, candidate: string, signal: AbortSignal) => {
+export const publishRepoBase = async (
+  home: string,
+  candidate: string,
+  signal: AbortSignal,
+  artifact?: string,
+) => {
   if (
     dirname(candidate) !== home ||
     !/^base-[a-z0-9]+$/.test(basename(candidate)) ||
@@ -112,13 +135,20 @@ export const publishRepoBase = async (home: string, candidate: string, signal: A
     throw new Error("Invalid prepared environment candidate");
   const held = await lock(home, true);
   try {
-    const previous = await currentRepoBase(home);
+    const previous = await currentRepoBase(home, artifact);
     for (const stem of ["storage", "overlay"])
       await Deno.chmod(join(candidate, "disks", `${stem}.raw`), 0o400);
     signal.throwIfAborted();
-    await writeRecoveryFile(home, "current.json", { directory: basename(candidate) }, signal);
+    await writeRecoveryFile(
+      home,
+      selectionFile(artifact),
+      { directory: basename(candidate) },
+      signal,
+    );
     // Launches retain immutable backing bytes through their private hard links.
-    if (previous && previous !== candidate)
+    // Keep the legacy selection valid until it is explicitly replaced.
+    const legacy = artifact ? await currentRepoBase(home) : undefined;
+    if (previous && previous !== candidate && previous !== legacy)
       await Deno.remove(previous, { recursive: true }).catch(() => {});
   } finally {
     held.close();
