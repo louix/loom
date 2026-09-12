@@ -99,10 +99,12 @@ Session and preparation VMs use `<repo>/.loom/package-cache`, through the existi
 repository mount. It is shared by the repo's VMs and survives failed preparation,
 VM replacement and daemon restarts. It contains no shared installed project environment.
 
-Loom sets `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `DENO_DIR`, `npm_config_cache`,
-`PIP_CACHE_DIR` and `UV_CACHE_DIR` to subdirectories there. Non-VM sessions keep
-using their normal host package-cache settings. Nix store contents remain in the
-prepared guest base. Configured network presets apply to preparation, init and agents.
+Loom sets `XDG_DATA_HOME`, `DENO_DIR`, `npm_config_cache`, `PIP_CACHE_DIR` and
+`UV_CACHE_DIR` to subdirectories there. `XDG_CACHE_HOME` uses guest-owned
+`/storage/loom-cache`, because Nix's Git cache rejects host-mounted directories
+whose ownership differs from the guest user. Nix's cache and store contents remain
+in the prepared guest base. Non-VM sessions keep using their normal host
+package-cache settings. Configured network presets apply to preparation, init and agents.
 
 For pnpm, an init command can explicitly select a shared store and copy imports:
 
@@ -110,7 +112,7 @@ For pnpm, an init command can explicitly select a shared store and copy imports:
 [[repo.hooks]]
 name = "install dependencies"
 on = "init"
-run = 'pnpm install --frozen-lockfile --store-dir="$XDG_CACHE_HOME/pnpm" --package-import-method=copy'
+run = 'pnpm install --frozen-lockfile --store-dir="$XDG_DATA_HOME/pnpm/store" --package-import-method=copy'
 timeout = 600
 ```
 

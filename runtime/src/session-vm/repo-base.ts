@@ -53,6 +53,36 @@ const lock = async (home: string, exclusive: boolean) => {
     throw error;
   }
 };
+/** Caller holds the publication lock while inspecting or consuming the selection. */
+const compatibleRepoBase = async (
+  home: string,
+  b: Pick<VmBinding, "artifact" | "smolvm" | "writableNix">,
+) => {
+  const base = await currentRepoBase(home);
+  if (!base) return;
+  try {
+    if (!(await readSessionDisks(join(base, "disks"), b)))
+      throw new Error("Prepared environment disks are missing");
+  } catch (error) {
+    if (error instanceof SavedDiskCompatibilityError) return;
+    throw error;
+  }
+  return base;
+};
+
+/** Check before launching a supervisor; seeding revalidates under the same lock. */
+export const hasCompatibleRepoBase = async (
+  home: string,
+  b: Pick<VmBinding, "artifact" | "smolvm" | "writableNix">,
+) => {
+  const held = await lock(home, false);
+  try {
+    return (await compatibleRepoBase(home, b)) !== undefined;
+  } finally {
+    held.close();
+  }
+};
+
 export const seedRepoBase = async (
   home: string,
   sessionDirectory: string,
@@ -61,16 +91,9 @@ export const seedRepoBase = async (
 ) => {
   const held = await lock(home, false);
   try {
-    const base = await currentRepoBase(home);
+    const base = await compatibleRepoBase(home, b);
     if (!base) return false;
     const disks = join(base, "disks");
-    try {
-      if (!(await readSessionDisks(disks, b)))
-        throw new Error("Prepared environment disks are missing");
-    } catch (error) {
-      if (error instanceof SavedDiskCompatibilityError) return false;
-      throw error;
-    }
     if (b.preparationOnly)
       await saveSessionDisks(join(sessionDirectory, "disks"), disks, b, signal);
     else await createSessionDisks(join(sessionDirectory, "disks"), disks, b.smolvm, signal);

@@ -3,6 +3,66 @@ import { test } from "node:test";
 import { join } from "node:path";
 import { readStartupProgress } from "../runtime/src/session-vm/progress.ts";
 import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
+import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
+import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
+
+test("missing or incompatible prepared environments fail before VM or credential startup", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", root);
+  const progress: string[] = [];
+  let credentialsRead = false;
+  const options = {
+    artifact: root,
+    smolvm: Deno.execPath(),
+    workspace: root,
+    repoRoot: root,
+    sessionDirectory: join(root, "session"),
+    environment: normalizeSessionEnvironment({ nix: true }),
+    onProgress: (message: string) => progress.push(message),
+    authOwner: {
+      current: () => {
+        credentialsRead = true;
+        throw new Error("credentials requested");
+      },
+      subscribe: async () => async () => {},
+    },
+  };
+  try {
+    const missing = /No compatible prepared environment\. Run loom environment prepare/;
+    await assert.rejects(launchSessionVm(options), missing);
+    const home = repoBaseDirectory(root);
+    await Deno.mkdir(join(home, "base-old/disks"), { recursive: true });
+    await Deno.writeTextFile(join(home, "current.json"), JSON.stringify({ directory: "base-old" }));
+    await Deno.writeTextFile(
+      join(home, "base-old/disks/identity.json"),
+      JSON.stringify({ version: 0 }),
+    );
+    await assert.rejects(launchSessionVm(options), missing);
+    const { repoRoot: _repoRoot, ...withoutRepo } = options;
+    await assert.rejects(launchSessionVm(withoutRepo), missing);
+    assert.equal(credentialsRead, false);
+    assert.deepEqual(progress, []);
+    await assert.rejects(Deno.stat(options.sessionDirectory), Deno.errors.NotFound);
+    await assert.rejects(Deno.stat(join(root, ".loom")), Deno.errors.NotFound);
+
+    // Ordinary sessions and explicit preparation may still use the generic runtime.
+    await assert.rejects(
+      launchSessionVm({ ...options, environment: normalizeSessionEnvironment(undefined) }),
+      /credentials requested/,
+    );
+    const { authOwner: _authOwner, ...preparation } = options;
+    await assert.rejects(
+      launchSessionVm({ ...preparation, preparationOnly: true, workspace: join(root, "absent") }),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 test("startup phases survive fragmented stderr without publishing vendor output", async () => {
   const chunks = [

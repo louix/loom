@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { publishRepoBase, seedRepoBase } from "../runtime/src/session-vm/repo-base.ts";
+import {
+  hasCompatibleRepoBase,
+  publishRepoBase,
+  seedRepoBase,
+} from "../runtime/src/session-vm/repo-base.ts";
 import type { VmBinding } from "../runtime/src/packaged/vm.ts";
 
 const rawDisks = async (base: string) => {
@@ -46,6 +50,11 @@ test("a new guest image artifact skips the Alpine base without deleting it", asy
       }),
     );
     await publishRepoBase(home, base, new AbortController().signal);
+    assert.equal(await hasCompatibleRepoBase(home, binding), false);
+    assert.equal(
+      await hasCompatibleRepoBase(home, { ...binding, artifact: "/nix/store/old-alpine-runtime" }),
+      true,
+    );
     assert.equal(await seedRepoBase(home, join(home, "session"), binding), false);
     assert.equal(
       JSON.parse(await Deno.readTextFile(join(home, "current.json"))).directory,

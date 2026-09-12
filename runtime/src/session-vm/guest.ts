@@ -11,7 +11,8 @@ const cache = await Deno.readTextFile("/run/loom/private/cache-path").catch((err
   throw error;
 });
 for (const [key, path] of Object.entries({
-  XDG_CACHE_HOME: cache,
+  // Nix's libgit2 cache requires guest ownership; host mounts expose the host UID.
+  XDG_CACHE_HOME: "/storage/loom-cache",
   npm_config_cache: `${cache}/npm`,
   PIP_CACHE_DIR: `${cache}/pip`,
   UV_CACHE_DIR: `${cache}/uv`,

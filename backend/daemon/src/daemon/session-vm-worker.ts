@@ -2,6 +2,7 @@ import {
   environmentEnabled,
   type SessionEnvironment,
 } from "../../../../core/src/session-environment.ts";
+import { WorkerDiagnostic } from "../../../../core/src/worker.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -18,7 +19,10 @@ import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import { readStartupProgress, startupStages } from "../../../../runtime/src/session-vm/progress.ts";
-import { repoBaseDirectory } from "../../../../runtime/src/session-vm/repo-base.ts";
+import {
+  hasCompatibleRepoBase,
+  repoBaseDirectory,
+} from "../../../../runtime/src/session-vm/repo-base.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -116,6 +120,19 @@ export const launchSessionVm = async (
     throw new Error("Repo preparation must not receive provider credentials or MCP endpoints");
   if (options.auth && options.authOwner)
     throw new Error("Choose static auth or a credential owner");
+  const artifact = await Deno.realPath(options.artifact);
+  const smolvm = await Deno.realPath(options.smolvm);
+  if (
+    !options.preparationOnly &&
+    environmentEnabled(options.environment) &&
+    (!options.repoRoot ||
+      !(await hasCompatibleRepoBase(repoBaseDirectory(options.repoRoot), {
+        artifact,
+        smolvm,
+        ...(options.environment?.nix ? { writableNix: true } : {}),
+      })))
+  )
+    throw new WorkerDiagnostic("sessionEnvironmentMissing");
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
@@ -127,8 +144,6 @@ export const launchSessionVm = async (
     if ((await Deno.realPath(packageCache)) !== packageCache)
       throw new Error("Package cache must not be a symlink");
   }
-  const artifact = await Deno.realPath(options.artifact);
-  const smolvm = await Deno.realPath(options.smolvm);
   const workspace = await Deno.realPath(options.workspace);
   const mounts = await workspaceMounts(workspace, options.repoRoot);
   const manifest = await inspectArtifact(artifact);
