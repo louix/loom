@@ -616,8 +616,9 @@ const main = async (): Promise<void> => {
         return; // runTail owns the lifetime
       }
       case "stop": {
-        await client.request("daemon.shutdown");
-        writeOut("daemon shutting down\n");
+        const { stopDaemon } = await import("./stop.ts");
+        await stopDaemon(client);
+        writeOut("daemon stopped\n");
         break;
       }
       default:
