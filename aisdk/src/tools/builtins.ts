@@ -1,5 +1,5 @@
 /**
- * The first-party tool suite for aisdk sessions: a persistent-shell Bash, a
+ * The first-party tool suite for aisdk sessions: a stateless Bash, a
  * string-replacement Edit, a ripgrep-backed Grep, and background-task tools. These fill the gap left
  * by not having Claude Code's built-ins; official MCP servers (filesystem,
  * fetch, git) cover the rest — and win name collisions: a configured server

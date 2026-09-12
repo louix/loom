@@ -290,7 +290,7 @@ export class BackgroundTasks {
 const killGroup = (task: Task): void => {
   const c = task.child;
   // Negative pid = the whole process group (bash was spawned detached), so
-  // descendants the command started go too — same as BashShell.#kill.
+  // descendants the command started go too — as with foreground Bash commands.
   if (typeof c.pid === "number") {
     try {
       Deno.kill(-c.pid, "SIGKILL");

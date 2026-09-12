@@ -12,7 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BashShell } from "@loom/aisdk/tools/bash";
+import { BashShell, bashTool } from "@loom/aisdk/tools/bash";
+import { setTimeout as delay } from "node:timers/promises";
 import { applyEdit } from "@loom/aisdk/tools/edit";
 import { runRipgrep } from "@loom/aisdk/tools/grep";
 
@@ -39,25 +40,26 @@ test("BashShell runs a command and returns output + exit code", async () => {
   }
 });
 
-test("BashShell keeps cwd and exported env between calls", async () => {
+test("BashShell starts each command in the worktree with no implicit shell state", async () => {
   const { dir, cleanup } = tmp();
   try {
     mkdirSync(join(dir, "sub"));
     const sh = new BashShell(dir);
     await sh.run("cd sub");
     const pwd = await sh.run("pwd");
-    assert.match(pwd.output.trim(), /\/sub$/);
+    assert.equal(pwd.output.trim(), dir);
+    assert.equal((await sh.run("pwd", 1000, "sub")).output.trim(), join(dir, "sub"));
 
     await sh.run("export LOOM_TEST=42");
     const echoed = await sh.run("echo $LOOM_TEST");
-    assert.equal(echoed.output.trim(), "42");
+    assert.equal(echoed.output.trim(), "");
     sh.close();
   } finally {
     cleanup();
   }
 });
 
-test("BashShell times out a slow command and resets the shell", async () => {
+test("BashShell times out a slow command and remains usable", async () => {
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
@@ -74,59 +76,57 @@ test("BashShell times out a slow command and resets the shell", async () => {
   }
 });
 
-test("BashShell: an unbalanced quote is caught by the syntax pre-check, not by wedging", async () => {
+test("BashShell: Bash reports malformed input without waiting for the timeout", async () => {
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
     const started = Date.now();
-    const r = await sh.run('echo "oops', 120_000); // would block for the full timeout without the pre-check
+    const r = await sh.run('echo "oops', 120_000); // Bash sees EOF immediately.
     assert.equal(r.exitCode, 2);
     assert.ok(Date.now() - started < 5_000, "returned fast instead of blocking");
-    // the persistent shell is untouched
+    // The next command is independent.
     await sh.run("export KEEP=1");
     const after = await sh.run("echo [${KEEP}]");
-    assert.equal(after.output.trim(), "[1]");
+    assert.equal(after.output.trim(), "[]");
     sh.close();
   } finally {
     cleanup();
   }
 });
 
-test("BashShell: an unterminated heredoc is caught, but a valid extglob pattern runs", async () => {
+test("BashShell leaves heredoc and shell-option semantics to Bash", async () => {
   const { dir, cleanup } = tmp();
+  const sh = new BashShell(dir);
   try {
-    const sh = new BashShell(dir);
-    // unterminated heredoc → rejected fast, not a 120s wedge
-    const bad = await sh.run("cat <<EOF\nhello", 120_000);
-    assert.equal(bad.exitCode, 2);
-
-    // a plain syntax error is NOT pre-rejected — it runs and the shell reports it
-    const syn = await sh.run("if then", 3_000);
-    assert.equal(syn.timedOut, false);
-    assert.match(syn.output, /syntax error/);
-
-    // extglob after `shopt -s extglob` must NOT be blocked by the pre-check
-    await sh.run("shopt -s extglob");
+    const heredoc = await sh.run("cat <<EOF\nhello", 3000);
+    assert.equal(heredoc.timedOut, false);
+    assert.equal(heredoc.exitCode, 0); // Bash warns, but still executes the heredoc.
+    assert.match(heredoc.output, /hello/);
+    for (const command of ["if then", "echo hi |", "echo hi &&"]) {
+      const result = await sh.run(command, 3000);
+      assert.equal(result.exitCode, 2);
+      assert.equal(result.timedOut, false);
+    }
     await sh.run("touch keep.md drop.txt");
-    const ls = await sh.run("ls !(*.txt)", 3_000);
-    assert.equal(ls.timedOut, false);
+    const ls = await sh.run("bash -O extglob -c 'ls !(*.txt)'", 3000);
+    assert.equal(ls.exitCode, 0);
     assert.match(ls.output, /keep\.md/);
     assert.doesNotMatch(ls.output, /drop\.txt/);
-    sh.close();
   } finally {
+    sh.close();
     cleanup();
   }
 });
 
-test("BashShell: a command that exits the shell doesn't block; the shell is reset", async () => {
+test("BashShell: exit returns its actual status", async () => {
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
     await sh.run("export KEEP=1");
     const started = Date.now();
-    const r = await sh.run("exit", 120_000);
+    const r = await sh.run("exit 7", 120_000);
     assert.ok(Date.now() - started < 5_000, "detected the shell exit instead of timing out");
-    assert.equal(r.exitCode, null);
+    assert.equal(r.exitCode, 7);
     const after = await sh.run("echo [${KEEP}]");
     assert.equal(after.output.trim(), "[]"); // fresh shell
     sh.close();
@@ -135,14 +135,14 @@ test("BashShell: a command that exits the shell doesn't block; the shell is rese
   }
 });
 
-test("BashShell: a `read` in the command gets EOF, not the sentinel", async () => {
+test("BashShell: a command receives EOF on stdin", async () => {
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
     const r = await sh.run('read -r x; echo "got:[$x]"', 3_000);
     assert.equal(r.timedOut, false);
     assert.equal(r.output.trim(), "got:[]");
-    // the next command still frames cleanly
+    // The next command remains usable.
     const next = await sh.run("echo ok");
     assert.equal(next.output.trim(), "ok");
     sh.close();
@@ -184,14 +184,13 @@ test("BashShell caps a multi-megabyte stream in flight without buffering it all"
   const { dir, cleanup } = tmp();
   try {
     const sh = new BashShell(dir);
-    // ~8 MB — well past MAX_LIVE_BYTES. Pre-fix this grew #buf unbounded until
-    // it landed the sentinel; now it collapses to head + tail as it streams.
+    // ~8 MB: retain bounded head and tail while the process is running.
     const r = await sh.run("head -c 8000000 /dev/zero | tr '\\0' 'x'; echo done");
     assert.equal(r.exitCode, 0);
     assert.equal(r.timedOut, false);
     assert.ok(r.output.length < 200_000, `output should be bounded, was ${r.output.length}`);
     assert.match(r.output, /truncated/);
-    assert.match(r.output, /done\s*$/); // the sentinel-adjacent tail survived
+    assert.match(r.output, /done\s*$/); // the final output survived
     sh.close();
   } finally {
     cleanup();
@@ -199,6 +198,64 @@ test("BashShell caps a multi-megabyte stream in flight without buffering it all"
 });
 
 // --- edit --------------------------------------------------------------------
+
+test("BashShell reaps descendants on exit, timeout, cancellation and close", async () => {
+  const { dir, cleanup } = tmp();
+  const sh = new BashShell(dir);
+  try {
+    for (const how of ["exit", "timeout", "abort", "close"] as const) {
+      const controller = new AbortController();
+      const marker = join(dir, how);
+      const command = `(sleep 0.5; touch '${marker}') & echo ready; ${how === "exit" ? "exit 0" : "wait"}`;
+      const running = sh.run(command, how === "timeout" ? 100 : 3000, dir, controller.signal);
+      if (how === "abort" || how === "close") {
+        await delay(100);
+        if (how === "abort") controller.abort();
+        else sh.close();
+      }
+      const result = await running;
+      assert.equal(result.timedOut, how === "timeout");
+      assert.equal(result.exitCode, how === "exit" ? 0 : null);
+    }
+    await delay(600);
+    assert.deepEqual(readdirSync(dir), []);
+    assert.equal((await sh.run("echo usable")).output.trim(), "usable");
+  } finally {
+    sh.close();
+    cleanup();
+  }
+});
+
+test("Bash tool inherits prepared exports and forwards cancellation and cwd", async () => {
+  const { dir, cleanup } = tmp();
+  const sh = new BashShell(dir);
+  const saved = Deno.env.get("LOOM_TEST_PREPARED_EXPORT");
+  Deno.env.set("LOOM_TEST_PREPARED_EXPORT", "prepared");
+  try {
+    mkdirSync(join(dir, "sub"));
+    const tool = bashTool(sh);
+    const result = await tool.execute!(
+      { command: 'printf "$LOOM_TEST_PREPARED_EXPORT"; pwd', cwd: "sub" },
+      { toolCallId: "1", messages: [], context: {} },
+    );
+    assert.match(JSON.stringify(result), /prepared/);
+    assert.match(JSON.stringify(result), /sub/);
+    const controller = new AbortController();
+    const pending = tool.execute!(
+      { command: "sleep 10" },
+      { toolCallId: "2", messages: [], context: {}, abortSignal: controller.signal },
+    );
+    await delay(50);
+    controller.abort();
+    const cancelled = await pending;
+    assert.equal((cancelled as { exit_code: number | null }).exit_code, null);
+  } finally {
+    if (saved === undefined) Deno.env.delete("LOOM_TEST_PREPARED_EXPORT");
+    else Deno.env.set("LOOM_TEST_PREPARED_EXPORT", saved);
+    sh.close();
+    cleanup();
+  }
+});
 
 test("applyEdit: exact single replacement", () => {
   const { dir, cleanup } = tmp();

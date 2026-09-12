@@ -20,6 +20,13 @@ SDK-agnostic helpers live in `core/src/` with no vendor imports (`commit.ts`, no
 
 ## Shipped: background tasks (aisdk only)
 
+Foreground `bash` uses a fresh `bash --noprofile --norc -c` process for each call.
+It inherits the session's prepared environment and defaults to the worktree;
+optional `cwd` is absolute or relative to that worktree. `cd`, `export` and shell
+options do not persist between calls. Output is bounded, and timeout, interruption
+or command exit clean up its process group. Use `background` for jobs that must
+outlive a foreground command.
+
 Claude Code has native `run_in_background` / `BashOutput` / `KillShell`, so this is
 aisdk-only. `aisdk/src/tools/background.ts`:
 
@@ -83,7 +90,6 @@ Tool behavior when built: `check(name, full?, filter?, timeout_ms?)`; pass →
 `"typecheck passed (exit 0)"` (the errors-only context diet); failure → merged
 stdout+stderr clamped head+tail with the exit code; optional regex line filter.
 Registered only when ≥ 1 command is configured. Runner in `core/src/check.ts`:
-one-shot detached `bash -c` — never the session's persistent shell, which a long
-check would block on `#busy` and whose timeout reset would discard the agent's
-cd/env. Live-clamped buffer, group SIGKILL on timeout, and `check` added to
+one-shot detached `bash -c` with a bounded output buffer, group SIGKILL on timeout,
+and `check` added to
 `READONLY_EXACT` in `aisdk/src/gate.ts`.
