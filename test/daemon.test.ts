@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -1735,7 +1735,7 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
       cfgPath,
       `[[repo]]\npath = ${JSON.stringify(hh.repoRoot)}\n[repo.worktree]\nenabled = false\n`,
     );
-    await delay(500); // debounce (250ms) + reload
+    await waitFor(() => notices.some((t) => /config reloaded/.test(t)));
 
     assert.ok(
       notices.some((t) => /config reloaded/.test(t)),
@@ -1774,7 +1774,7 @@ test("a provider-set change on disk asks for a restart rather than applying live
       cfgPath,
       `base_branch = "main"\n\n[custom-provider.local]\nbase_url = "http://localhost:1234/v1"\nmodel = "m"\n`,
     );
-    await delay(500);
+    await waitFor(() => notices.some((t) => /restart the daemon/.test(t)));
 
     assert.ok(
       notices.some((t) => /restart the daemon/.test(t)),
@@ -1785,6 +1785,37 @@ test("a provider-set change on disk asks for a restart rather than applying live
     assert.ok(!list.some((p) => p.id === "local"));
     await c.close();
   } finally {
+    await hh.cleanup();
+  }
+});
+
+test("config reload survives atomic saves, deletion, and invalid edits", async () => {
+  const hh = await makeHarness({ config: "[worktree]\nenabled = true\n" });
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  const notices: string[] = [];
+  c.onPush((f) => {
+    if (f.type === "notice") notices.push(f.text);
+  });
+  try {
+    const replacement = `${hh.configPath}.new`;
+    writeFileSync(replacement, "[worktree]\nenabled = false\n");
+    renameSync(replacement, hh.configPath);
+    await waitFor(() => hh.daemon.config.worktree.enabled === false);
+
+    writeFileSync(hh.configPath, "[invalid");
+    await waitFor(() => notices.some((t) => /config reload failed/.test(t)));
+    assert.equal(hh.daemon.config.worktree.enabled, false, "invalid edits keep the running config");
+
+    rmSync(hh.configPath);
+    await waitFor(() => hh.daemon.config.worktree.enabled === true);
+    writeFileSync(hh.configPath, "[worktree]\nenabled = false\n");
+    await waitFor(() => hh.daemon.config.worktree.enabled === false);
+  } finally {
+    await c.close();
     await hh.cleanup();
   }
 });

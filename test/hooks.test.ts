@@ -443,7 +443,7 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
     await delay(250);
     assert.ok(!existsSync(log), "a hook for another project must not fire");
 
-    // re-point it at this repo; the reload is debounced 250ms
+    // Re-point it at this repo; config changes are polled every 250ms.
     writeFileSync(
       hh.configPath,
       `[[hooks]]\non = "turn_end"\nproject = "${hh.repoRoot}"\nrun = "touch ${log}"\n`,

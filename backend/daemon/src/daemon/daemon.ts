@@ -7,8 +7,8 @@ import {
   recoverRepositoryVms,
 } from "./session-vm-state.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, watch, type FSWatcher } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, watchFile, unwatchFile } from "node:fs";
+import { join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
@@ -241,8 +241,7 @@ export class Daemon {
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
-  #configWatchers: FSWatcher[] = [];
-  #reloadTimer: NodeJS.Timeout | null = null;
+  #onConfigChange = (): void => this.#reloadConfig();
   /** Periodic sweep that re-primes the prompt cache for keep-warm sessions. */
   #warmSweep: NodeJS.Timeout | null = null;
   /** Re-entrancy guard: a slow ping must not let two sweeps overlap. */
@@ -563,9 +562,7 @@ export class Daemon {
     this.#idle.stop();
     if (this.#warmSweep) clearInterval(this.#warmSweep);
     if (this.#gitSweep) clearInterval(this.#gitSweep);
-    if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
-    for (const w of this.#configWatchers) w.close();
-    this.#configWatchers = [];
+    unwatchFile(this.#configFile, this.#onConfigChange);
     for (const [sig, fn] of this.#signalHandlers) Deno.removeSignalListener(sig, fn);
     this.#signalHandlers = [];
 
@@ -1950,32 +1947,9 @@ export class Daemon {
   // live config reload
   // -------------------------------------------------------------------------
 
-  /** Watch only the trusted config directory, including atomic file replacement. */
+  /** Poll the trusted config file: survives atomic saves and exhausted OS watcher limits. */
   #watchConfig(): void {
-    const dir = dirname(this.#configFile);
-    if (!existsSync(dir)) return;
-    try {
-      const w = watch(dir, (_evt, name) => {
-        if (name && join(dir, name.toString()) === this.#configFile) this.#scheduleReload();
-      });
-      w.on("error", (err) => {
-        this.#log.warn("config watch failed; restart to reload config", { dir, err: String(err) });
-        w.close();
-      });
-      w.unref();
-      this.#configWatchers.push(w);
-    } catch (err) {
-      this.#log.warn("config watch failed", { dir, err: String(err) });
-    }
-  }
-
-  #scheduleReload(): void {
-    if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
-    this.#reloadTimer = setTimeout(() => {
-      this.#reloadTimer = null;
-      this.#reloadConfig();
-    }, 250);
-    this.#reloadTimer.unref();
+    watchFile(this.#configFile, { persistent: false, interval: 250 }, this.#onConfigChange);
   }
 
   /**
