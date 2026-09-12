@@ -309,6 +309,8 @@ export class Daemon {
       this.#pmsgs,
       opts.connectors,
       opts.repoRoot,
+      (sessionId, message) =>
+        this.emitEvent({ type: "startup_progress", sessionId, ts: Date.now(), message }),
     );
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,

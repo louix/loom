@@ -11,7 +11,7 @@ import type {
   McpServerHandle,
 } from "@loom/core/types";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
-import { launchSessionVm } from "./session-vm-worker.ts";
+import { createSessionVmLauncher } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -34,6 +34,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
   ctx: ConnectorContext,
 ): Promise<T> => {
   const vm = ctx.config.sessionVm!;
+  const launches = createSessionVmLauncher();
   const smolvm = await executable(vm.smolvm);
   const cli = await executable(ctx.config.cliPath || "claude");
   const profile =
@@ -83,7 +84,8 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
       url.port = String(guestPort);
       return { ...server, spec: { ...server.spec, url: url.toString() } };
     });
-    const worker = await launchSessionVm({
+    const worker = await launches.launch({
+      onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
       workspace: input.cwd,
       artifact: vm.artifact,
       smolvm,
@@ -119,6 +121,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
           ? { method: "resume", args: [options as SessionRef] }
           : { method: "create", args: [options as CreateSessionOptions] },
       );
+      ctx.onStartupProgress?.(input.sessionId, "Session ready.");
       return owner ? refreshOnAuthFailure(session, () => owner.current(true)) : session;
     } catch (error) {
       worker.terminate();
@@ -134,6 +137,7 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
       if (prop === "resumeSession") return (ref: SessionRef) => start(ref, true);
       if (prop === "close")
         return async () => {
+          await launches.close();
           await owner?.close();
           await target.close?.();
         };

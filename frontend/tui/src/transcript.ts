@@ -279,6 +279,8 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
         text: `${sessionStateLabel(ev.status)}${ev.note ? ` (${ev.note})` : ""}`,
         tone: "dim",
       };
+    case "startup_progress":
+      return { glyph: "·", text: ev.message, tone: "dim" };
     case "error":
       return { glyph: "✕", text: oneLine(ev.message, 160), full: body(ev.message), tone: "bad" };
     case "result":
@@ -943,6 +945,7 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "provider_changed":
       return "provider switched";
     // metadata, not conversation
+    case "startup_progress":
     case "usage":
     case "result":
     case "status_changed":

@@ -26,9 +26,11 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
+import { enterSessionEnvironment } from "./maintenance.ts";
+import { reportStartup, readStartupProgress } from "./progress.ts";
 import { seedRepoBase } from "./repo-base.ts";
 import {
-  readSessionDisks,
+  discardSessionDisks,
   saveSessionDisks,
   attachSessionDisks,
   sessionDiskSizes,
@@ -46,7 +48,9 @@ const { binding, auth, extraAllowedHosts, providerHosts, environment } = first.v
   environment?: SessionEnvironment;
 };
 let child: Deno.ChildProcess | undefined;
+if (binding.preparationOnly) Deno.env.set("LOOM_PREPARATION_ONLY", "1");
 let persistentLock: Deno.FsFile | undefined;
+let environmentLease: Deno.FsFile | undefined;
 let ownsPersistent = false;
 const relays: ReturnType<typeof startMcpRelay>[] = [];
 let egress: ReturnType<typeof startEgress> | undefined;
@@ -125,9 +129,12 @@ const command = async (args: string[]) => {
   return new TextDecoder().decode(result.stdout).trim();
 };
 try {
+  if (binding.repoBaseDirectory && !binding.preparationOnly)
+    environmentLease = await enterSessionEnvironment(binding.repoBaseDirectory);
   if (binding.sessionDirectory) {
     persistentLock = await lockSessionState(binding.sessionDirectory);
     await assertNoActiveVm(binding.sessionDirectory);
+    if (!binding.preparationOnly) await discardSessionDisks(binding.sessionDirectory);
     const profile = join(binding.sessionDirectory, "profile");
     await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
     if ((await Deno.lstat(profile)).isSymlink)
@@ -164,7 +171,7 @@ try {
     },
   );
   const create = vmCreateArguments(binding, environment);
-  if (binding.persistentDisks) create.push(...sessionDiskSizes);
+  create.push(...sessionDiskSizes);
   create.push(
     "-v",
     `${binding.state}/private:/run/loom/private:ro`,
@@ -187,41 +194,21 @@ try {
     { mode: 0o600 },
   );
   await attachDiskTemplates(binding.state, binding.smolvm);
+  reportStartup("runtime");
   await stageGuestImage(binding);
   await command(create);
-  const diskDirectory =
-    binding.persistentDisks && binding.sessionDirectory
-      ? join(binding.sessionDirectory, "disks")
-      : undefined;
-  machineDirectory =
-    diskDirectory || binding.preparationOnly
-      ? await command(["machine", "data-dir", "--name", sessionVmName])
-      : undefined;
-  let saved = diskDirectory ? await readSessionDisks(diskDirectory, binding) : false;
-  if (!saved && diskDirectory && binding.repoBaseDirectory) {
-    saved = await seedRepoBase(
-      binding.repoBaseDirectory,
-      binding.sessionDirectory!,
-      binding,
-      cancelled.signal,
-    );
+  const diskHome = binding.preparationOnly ? binding.sessionDirectory! : binding.state;
+  const diskDirectory = join(diskHome, "disks");
+  machineDirectory = await command(["machine", "data-dir", "--name", sessionVmName]);
+  let saved = false;
+  if (binding.repoBaseDirectory) {
+    saved = await seedRepoBase(binding.repoBaseDirectory, diskHome, binding, cancelled.signal);
   }
-  if (binding.preparationOnly) {
-    console.error(
-      saved ? "Starting VM from a warm disk…" : "Starting VM from the generic runtime (cold)…",
-    );
-  }
-  if (saved) await attachSessionDisks(diskDirectory!, machineDirectory!, binding.state);
+  if (!saved) reportStartup("cold");
+  if (saved) await attachSessionDisks(diskDirectory, machineDirectory, binding.state);
+  reportStartup("boot");
   await command(["machine", "start", "--name", sessionVmName]);
   await retainDiskTemplates(binding.state, binding.smolvm);
-  if (diskDirectory && !saved) {
-    // Let the backend format its own disks once, then attach the durable pair.
-    // No repo command or credential-consuming worker has run at this point.
-    await command(["machine", "stop", "--name", sessionVmName]);
-    await saveSessionDisks(diskDirectory, machineDirectory!, binding, cancelled.signal);
-    await attachSessionDisks(diskDirectory, machineDirectory!, binding.state);
-    await command(["machine", "start", "--name", sessionVmName]);
-  }
   if (ended) throw new Error("Session closed during VM startup");
   child = Deno.spawn(binding.smolvm, vmExecArguments(binding), {
     clearEnv: true,
@@ -232,10 +219,9 @@ try {
   });
   input = child.stdin.getWriter();
   // Never expose raw vendor stderr: it can contain credentials.
-  const diagnostics = child.stderr.pipeTo(
-    binding.preparationOnly ? Deno.stderr.writable : new WritableStream({ write() {} }),
-    { preventClose: true },
-  );
+  const diagnostics = binding.preparationOnly
+    ? child.stderr.pipeTo(Deno.stderr.writable, { preventClose: true })
+    : readStartupProgress(child.stderr, reportStartup);
   void diagnostics.catch(stop);
   const output = child.stdout
     .pipeThrough(
@@ -260,6 +246,11 @@ try {
     const result = await child.status;
     await Promise.all([output, diagnostics]);
     Deno.exitCode = result.code;
+    if (result.success) {
+      await command(["machine", "stop", "--name", sessionVmName]);
+      if (!saved)
+        await saveSessionDisks(diskDirectory, machineDirectory, binding, cancelled.signal);
+    }
   }
 } catch (error) {
   Deno.exitCode = 1;
@@ -309,5 +300,6 @@ try {
   }
   // stdin and the parent can still be alive when a guest or capability dies.
   persistentLock?.close();
+  environmentLease?.close();
   Deno.exit(Deno.exitCode);
 }

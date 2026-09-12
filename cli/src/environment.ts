@@ -8,6 +8,15 @@ import { repoBaseDirectory, publishRepoBase } from "../../runtime/src/session-vm
 import { lockSessionState, SessionVmBusyError } from "../../runtime/src/session-vm/persistence.ts";
 import { ipcPermissions } from "../../core/src/network-permissions.ts";
 import { loomPaths } from "../../core/src/paths.ts";
+import { LoomClient } from "@loom/client";
+import { drainSessionEnvironment } from "../../runtime/src/session-vm/maintenance.ts";
+import {
+  sessionVmDirectory,
+  stoppedSessionVm,
+} from "../../backend/daemon/src/daemon/session-vm-state.ts";
+import { dirname } from "node:path";
+import { discardSessionDisks } from "../../runtime/src/session-vm/disks.ts";
+import { withStoppedSessionVm } from "../../backend/daemon/src/daemon/session-vm-state.ts";
 
 /** Called while Ink has suspended terminal ownership. Keep one CLI output path. */
 export const prepareEnvironmentInTerminal = async (
@@ -99,6 +108,7 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
   });
   const cancelled = new AbortController();
   let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+  let environmentLease: Deno.FsFile | undefined;
   const stop = () => {
     cancelled.abort();
     worker?.terminate();
@@ -132,6 +142,44 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
     }
   };
   try {
+    phase("Stopping repo sessions…");
+    const client = await LoomClient.connect({
+      repoRoot: repo,
+      sockPath: loomPaths(repo).sock,
+      autospawn: false,
+      reconnect: false,
+    }).catch((error) => {
+      if (error instanceof Deno.errors.NotFound || error instanceof Deno.errors.ConnectionRefused)
+        return undefined;
+      throw error;
+    });
+    try {
+      await client?.request("daemon.shutdown");
+    } finally {
+      await client?.close();
+    }
+    environmentLease = await drainSessionEnvironment(home, cancelled.signal);
+    // Recover orphaned supervisors, including disks from older Loom versions.
+    const sessionRoot = dirname(sessionVmDirectory(repo, "scan"));
+    const shutdownDeadline = Date.now() + 30_000;
+    try {
+      for await (const entry of Deno.readDir(sessionRoot)) {
+        if (!entry.isDirectory && !entry.isSymlink) continue;
+        for (;;) {
+          cancelled.signal.throwIfAborted();
+          try {
+            await stoppedSessionVm(repo, entry.name);
+            break;
+          } catch (error) {
+            if (!(error instanceof SessionVmBusyError) || Date.now() >= shutdownDeadline)
+              throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
     const revision = await git(["rev-parse", "HEAD"], cancelled.signal);
     phase(`Preparing ${repo} at ${revision.slice(0, 12)} for ${id}`);
     phase("Creating disposable worktree (committed HEAD)…");
@@ -168,7 +216,20 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
     phase("Saving prepared base…");
     await publishRepoBase(home, candidate, cancelled.signal);
     published = true;
-    phase("Environment prepared. New sessions will clone this base.");
+    try {
+      for await (const entry of Deno.readDir(sessionRoot)) {
+        if (entry.isDirectory || entry.isSymlink)
+          await withStoppedSessionVm(repo, entry.name, () =>
+            discardSessionDisks(join(sessionRoot, entry.name)),
+          );
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound))
+        phase(
+          `Environment prepared; obsolete guest disk cleanup will be retried on resume: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+    phase("Environment prepared. New and resumed sessions will use this base.");
   } catch (error) {
     phase(
       cancelled.signal.aborted
@@ -191,6 +252,7 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
       if (vmStopped && candidate && !published) await Deno.remove(candidate, { recursive: true });
     } finally {
       preparation.close();
+      environmentLease?.close();
       Deno.removeSignalListener("SIGINT", stop);
       Deno.removeSignalListener("SIGTERM", stop);
     }

@@ -1,6 +1,6 @@
 # Session environments
 
-The next-stage design is in [prepared environments and persistent session VMs](prepared-environments-plan.md).
+Prepared bases are shared; each VM launch gets disposable writable disks.
 
 Session VMs can enter a configured environment and run a setup command before
 the provider becomes ready. Commands are configured in the trusted user config,
@@ -17,8 +17,8 @@ validation as described in the packaging documentation.
 Upgrading the runtime (including its guest image) invalidates older prepared
 bases. Run `loom environment prepare` after upgrading and restarting the daemon;
 an incompatible base is skipped, and the previous base remains until a new
-preparation succeeds. Existing sessions retain their worktrees and history;
-fork a session whose saved VM disks require an older runtime.
+preparation succeeds. Existing sessions retain their host worktrees and history
+and use the current environment when resumed.
 
 For this repository, add the following to its existing `[[repo]]` entry in
 `~/.config/loom/config.toml` (merge tables rather than duplicating them):
@@ -63,7 +63,7 @@ include workspace outputs, so large `node_modules` directories cost more to snap
 - `cpus`: guest virtual CPUs, from 1 to 64 (default 1).
 
 Resource settings apply to both explicit preparation and session VMs on their
-next launch. They do not themselves invalidate saved disks or warm bases.
+next launch. They do not themselves invalidate warm bases.
 Choose values that leave enough host resources for your concurrent sessions.
 
 Environment activation runs once per VM launch. The setup script runs next,
@@ -74,18 +74,21 @@ including Git metadata, is mounted alongside the selected worktree. Hooks and
 config are shared with host Git; the configured network policy still applies.
 Provider executable paths and proxy/bootstrap settings are retained.
 Setup must succeed before initialization completes; failure or timeout aborts
-startup, cleans up the VM and reports a fixed diagnostic. Normal session startup
-discards raw command output. Explicit repo preparation streams it separately
+startup, cleans up the VM and reports a fixed diagnostic. During STARTING, the
+TUI EVENTS pane shows runtime preparation, disk creation, VM boot, Nix activation,
+the prepare command, and agent readiness. Normal session startup discards raw
+command output. Explicit repo preparation streams it separately
 from the worker protocol, without attaching provider credentials.
 Setup has no interactive stdin and should be repeatable.
 
-Setup runs on both create and resume. Environment-enabled sessions retain their
-private guest disks across shutdown, including the Nix store and caches under
-`/storage/loom-cache` and `/storage/loom-data`. Worktree outputs such as
-`node_modules` remain in the host-mounted session worktree. Archiving retains
-the disks; deleting a session removes them. A runtime/backend or Nix-setting
-change blocks reuse and asks you to fork, preserving the existing worktree and
-history. Exact runtime/backend packages are retained as Nix GC roots.
+Setup runs on both create and resume. Linux creates small qcow2 writable disks
+over the read-only prepared base using smolvm's bundled libkrun. macOS uses APFS
+clones. These writable disks are removed when the VM stops. Guest-only package
+installs, files and caches are disposable; prepare the base to retain them for
+future launches. Host worktrees (including staged, unstaged and untracked files),
+`node_modules`, and native conversation profiles remain on the host. Existing
+persistent guest disks from older versions are discarded on their next launch
+or after successful preparation. Prepared runtime/backend packages retain Nix GC roots.
 
 ## Prepare a warm base
 
@@ -95,10 +98,12 @@ runs the arbitrary `prepare` command, and saves a private copy of both VM disks.
 Activation and setup output stream directly to the terminal. For a shell taking
 30 minutes to build, set `timeout_seconds = 3600` to cover activation and setup.
 
-Rerun the same command to refresh, reusing the previous compatible base. Failed
-or cancelled preparation retains the previous selection. New sessions clone
-the base and rerun setup in their own host worktree; existing session disks stay
-independent. The worktree's `node_modules` is not baked into the base: package
+Rerun the same command to refresh, reusing the previous compatible base. Preparation
+blocks new session VM launches, stops the repo daemon and waits for session VMs
+to shut down before doing any work. Failed or cancelled preparation retains the
+previous base. Successful preparation replaces it for every subsequent launch,
+including resumed conversations. Host worktrees and profiles are untouched.
+The worktree's `node_modules` is not baked into the base: package
 stores/caches supply the new installation. Package managers must support copying
 across the guest disk and host mount; configure this in your setup command when
 necessary. Exports from that command also let you choose custom guest cache paths.
@@ -137,7 +142,7 @@ This version has no automatic input invalidation or background preparation.
 In the TUI, press `Space`, choose **Prepare repo environment**, and press Enter.
 The TUI hands over the terminal to the same CLI command. Press Enter after it
 finishes to return, or Ctrl-C during preparation to cancel and return after cleanup.
-Running sessions continue on their own disks.
+The repo's sessions are stopped; resume them after preparation finishes.
 
 ## Network presets
 

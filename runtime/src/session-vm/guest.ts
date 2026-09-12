@@ -4,6 +4,7 @@ import { prepareEnvironment, initializeGuestNix } from "./environment.ts";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
 import { startGuestRelay } from "./guest-relay.ts";
+import { reportStartup } from "./progress.ts";
 // Cache package downloads on ext4, alongside the private Nix store. Worktree
 // outputs still live on the host mount; HOME holds only launch-time bootstrap.
 for (const [key, path] of Object.entries({
@@ -71,7 +72,6 @@ const prepare = async (output?: "inherit") => {
   }
   if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
   const before = Deno.env.toObject();
-  if (output) console.error("Entering repo environment…");
   const env = await prepareEnvironment(config, {
     shell: before.LOOM_GUEST_SHELL!,
     initializeNix: initializeGuestNix,
@@ -118,6 +118,7 @@ try {
   if (!(error instanceof Deno.errors.NotFound)) throw error;
 }
 if (preparationOnly) {
+  Deno.env.set("LOOM_PREPARATION_ONLY", "1");
   try {
     await prepare("inherit");
     Deno.exit(0);
@@ -125,4 +126,8 @@ if (preparationOnly) {
     console.error(error instanceof Error ? error.message : String(error));
     Deno.exit(1);
   }
-} else await runWorker(() => prepare());
+} else
+  await runWorker(async () => {
+    await prepare();
+    reportStartup("provider");
+  });

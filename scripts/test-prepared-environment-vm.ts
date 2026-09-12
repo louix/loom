@@ -8,6 +8,7 @@ import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provide
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
+import { startupStages } from "../runtime/src/session-vm/progress.ts";
 
 const [runtime, backend, option] = Deno.args;
 assert(runtime && backend, "Pass a rebuilt AISDK runtime and pinned smolvm");
@@ -123,10 +124,12 @@ try {
   const environment = normalizeSessionEnvironment({
     nix,
     prepare:
-      "cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only",
+      "test ! -e /storage/session-only; cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only",
   });
-  const start = async () => {
+  const start = async (expectedBase: number) => {
+    const progress: string[] = [];
     const worker = await launchSessionVm({
+      onProgress: (message) => progress.push(message),
       workspace: f.workspace,
       repoRoot: f.repo,
       artifact,
@@ -146,7 +149,22 @@ try {
         120000,
       );
       try {
-        assert.equal((await Deno.readTextFile(join(f.workspace, "base-count"))).trim(), "1");
+        assert.equal(
+          (await Deno.readTextFile(join(f.workspace, "base-count"))).trim(),
+          String(expectedBase),
+        );
+        for (const stage of [
+          "runtime",
+          "clone",
+          "boot",
+          "activate",
+          "prepare",
+          "provider",
+        ] as const)
+          assert(
+            progress.includes(startupStages[stage]),
+            `Missing startup phase ${stage}: ${progress.join("; ")}`,
+          );
         assert((await Deno.stat(join(f.workspace, "node_modules/zod/package.json"))).isFile);
         assert.deepEqual(
           (await worker.status()).network,
@@ -161,7 +179,7 @@ try {
       await worker.cleanup!();
     }
   };
-  await start();
+  await start(1);
   await config("echo 999 > /storage/base-count; echo deliberate-failure >&2; exit 7");
   const failed = await cli();
   assert(
@@ -176,12 +194,16 @@ try {
   assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
   await config(setup);
   const refreshed = await cli();
-  assert(refreshed.success && refreshed.output.includes("warm disk"));
+  assert(
+    refreshed.success &&
+      refreshed.output.indexOf("Copying VM disks") >= 0 &&
+      refreshed.output.indexOf("Copying VM disks") < refreshed.output.indexOf("Starting VM"),
+  );
   assert.notEqual(await Deno.readTextFile(join(home, "current.json")), selected);
-  // Refreshing the repo base cannot mutate or replace an existing session disk.
-  await start();
+  // A new launch uses the new base and retains its host worktree.
+  await start(2);
   console.log(
-    "Passed: live stdout/stderr, cached Deno install into a new worktree without network, refresh, failure, cancellation, and existing-session isolation.",
+    "Passed: live stdout/stderr, cached Deno install without network, refresh, failure, cancellation, and fresh disks on resume.",
   );
 } finally {
   if (oldState === undefined) Deno.env.delete("XDG_STATE_HOME");

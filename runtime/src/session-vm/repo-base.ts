@@ -4,7 +4,12 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
 import type { VmBinding } from "../packaged/vm.ts";
-import { readSessionDisks, saveSessionDisks, SavedDiskCompatibilityError } from "./disks.ts";
+import {
+  readSessionDisks,
+  saveSessionDisks,
+  createSessionDisks,
+  SavedDiskCompatibilityError,
+} from "./disks.ts";
 import { writeRecoveryFile } from "./persistence.ts";
 
 export const repoBaseDirectory = (repo: string) =>
@@ -66,7 +71,9 @@ export const seedRepoBase = async (
       if (error instanceof SavedDiskCompatibilityError) return false;
       throw error;
     }
-    await saveSessionDisks(join(sessionDirectory, "disks"), disks, b, signal);
+    if (b.preparationOnly)
+      await saveSessionDisks(join(sessionDirectory, "disks"), disks, b, signal);
+    else await createSessionDisks(join(sessionDirectory, "disks"), disks, b.smolvm, signal);
     return true;
   } finally {
     held.close();
@@ -82,9 +89,11 @@ export const publishRepoBase = async (home: string, candidate: string, signal: A
   const held = await lock(home, true);
   try {
     const previous = await current(home);
+    for (const stem of ["storage", "overlay"])
+      await Deno.chmod(join(candidate, "disks", `${stem}.raw`), 0o400);
     signal.throwIfAborted();
     await writeRecoveryFile(home, "current.json", { directory: basename(candidate) }, signal);
-    // All readers have completed their independent copies; no live disk depends on this base.
+    // Launches retain immutable backing bytes through their private hard links.
     if (previous && previous !== candidate)
       await Deno.remove(previous, { recursive: true }).catch(() => {});
   } finally {

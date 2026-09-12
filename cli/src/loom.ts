@@ -62,9 +62,11 @@ Run 'loom <command> --help' for detail on one command.`;
 const USAGE: Record<string, string> = {
   environment: `loom environment prepare [--provider P]
 
-  Enter the configured environment and run its prepare command in a disposable
+  Stop this repo's daemon and sessions, then enter the configured environment
+  and run its prepare command in a disposable
   VM/worktree at committed HEAD, streaming setup output. Save an independent base
-  for future sessions. Rerun to refresh; failures leave the previous base intact.
+  for new and resumed sessions. Worktrees and history are preserved; guest disks
+  are disposable. Rerun to refresh; failures leave the previous base intact.
   --provider P   select the session runtime (default: configured default provider)`,
   runtime: `loom runtime prepare|status|update [runtime]
 

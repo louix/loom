@@ -216,6 +216,12 @@ export interface StatusChangedEvent extends HarnessEventBase {
   note?: string;
 }
 
+/** Host startup activity, available before an agent's event stream exists. */
+export interface StartupProgressEvent extends HarnessEventBase {
+  type: "startup_progress";
+  message: string;
+}
+
 export interface ErrorEvent extends HarnessEventBase {
   type: "error";
   message: string;
@@ -324,6 +330,7 @@ export type HarnessEvent =
   | SubagentStoppedEvent
   | BackgroundTasksEvent
   | StatusChangedEvent
+  | StartupProgressEvent
   | ErrorEvent
   | ResultEvent
   | RewindEvent

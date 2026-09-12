@@ -12,8 +12,6 @@ export interface VmBinding {
   token: string;
   /** Private guest OverlayFS upper, never a writable host store. */
   writableNix?: boolean;
-  /** Raw disks owned by sessionDirectory; launch-local links are disposable. */
-  persistentDisks?: boolean;
   preparationOnly?: boolean;
   repoBaseDirectory?: string;
   mounts?: string[];
@@ -45,16 +43,17 @@ export const stageGuestImage = async (b: VmBinding) => {
 const runtimeCommand = (b: VmBinding) => {
   let mount: string | undefined;
   if (b.writableNix) {
+    const lower = b.manifest.guestImage ? "/nix/store" : "/run/loom/runtime/nix/store";
+    let mountLower = `mount --bind ${lower} /run/loom/store-lower`;
+    if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs")
+      mountLower =
+        "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower";
     mount = [
       "set -eu",
       // /storage is smolvm's ext4 disk; its overlay-backed root cannot
       // itself be an OverlayFS upper. Keep the DB and build temp files here too.
       "mkdir -p /nix/store /nix/var /run/loom/store-lower /storage/loom-nix/upper /storage/loom-nix/work /storage/loom-nix/var /storage/loom-nix/tmp",
-      b.manifest.guestImage
-        ? "mount --bind /nix/store /run/loom/store-lower"
-        : b.manifest.closureFormat === "erofs"
-          ? "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower"
-          : "mount --bind /run/loom/runtime/nix/store /run/loom/store-lower",
+      mountLower,
       "mount -t overlay overlay -o lowerdir=/run/loom/store-lower,upperdir=/storage/loom-nix/upper,workdir=/storage/loom-nix/work /nix/store",
       "mount --bind /storage/loom-nix/var /nix/var",
       'exec "$@"',

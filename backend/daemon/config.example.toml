@@ -237,7 +237,8 @@ max_results = 5
 # prepare = "deno install --frozen" # arbitrary repo-specific shell command
 # timeout_seconds = 900
 # Run `loom environment prepare` (or use the Space palette) to warm a repo base.
-# Sessions keep independent guest disks across resume; setup still runs each time.
+# VM disks are disposable; create/resume uses the current prepared base and reruns setup.
+# Preparing again stops this repo's sessions; host worktrees and history are preserved.
 
 # Optional project provider restrictions. Omit `only` to allow every configured
 # provider; an empty list allows none. `disabled` takes precedence over `only`.

@@ -1,6 +1,11 @@
 # Warm repo bases and persistent session VMs
 
-Status: implemented and verified on Linux. Apple Silicon disk validation and
+Historical design: persistent session disks have been replaced by disposable
+per-launch writable disks. Preparation now stops the repo's sessions and replaces
+their shared base; host worktrees and profiles persist. See
+[session environments](session-environments.md) for current behavior.
+
+Original status: implemented and verified on Linux. Apple Silicon disk validation and
 runtime hash regeneration remain pending. See [session environments](session-environments.md)
 for commands and current behavior.
 

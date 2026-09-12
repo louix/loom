@@ -4,6 +4,7 @@ import {
 } from "../../../core/src/session-environment.ts";
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
+import { reportStartup, readStartupProgress } from "./progress.ts";
 
 /** Resolve once per VM launch; setup output never enters the framed worker protocol.
  * Kept separate from activation so a future prepared image can skip preparation.
@@ -33,7 +34,10 @@ export const prepareEnvironment = async (
     }
   }, config!.timeoutMs);
   try {
-    if (config!.nix) await options.initializeNix?.(stop.signal);
+    if (config!.nix) {
+      reportStartup("nix");
+      await options.initializeNix?.(stop.signal);
+    }
     if (timedOut) throw new WorkerDiagnostic("sessionEnvironmentTimeout");
     // Prefix entries and the setup body are separate argv entries. Only the
     // explicitly configured shell body is interpreted as code.
@@ -41,7 +45,7 @@ export const prepareEnvironment = async (
       ...config!.commandPrefix,
       options.shell,
       "-c",
-      'set -e\nif [ -n "$1" ]; then printf "\\nRunning repo setup…\\n" >&2; fi\nshift\neval "$1"\nshift\nexec "$@"',
+      'set -e\nif [ -n "$1" ]; then printf "\\nRunning repo setup…\\n" >&2; else printf \'{"loomStartup":"prepare"}\\n\' >&2; fi\nshift\neval "$1"\nshift\nexec "$@"',
       "loom-prepare",
       options.output ?? "",
       config!.prepare,
@@ -54,14 +58,19 @@ export const prepareEnvironment = async (
       fileURLToPath(new URL("./capture-environment.ts", import.meta.url)),
       snapshot,
     ];
+    reportStartup("activate");
     child = new Deno.Command(argv[0]!, {
       args: argv.slice(1),
       ...(options.cwd ? { cwd: options.cwd } : {}),
       stdin: "null",
       stdout: options.output ?? "null",
-      stderr: options.output ?? "null",
+      stderr: options.output ?? "piped",
     }).spawn();
+    const diagnostics = options.output
+      ? undefined
+      : readStartupProgress(child.stderr, reportStartup);
     const result = await child.status;
+    await diagnostics;
     if (timedOut) throw new WorkerDiagnostic("sessionEnvironmentTimeout");
     if (!result.success) {
       if (options.output) console.error(`Repo setup exited with status ${result.code}.`);

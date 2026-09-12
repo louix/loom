@@ -2914,6 +2914,57 @@ test("cold send dismisses the prompt for startup and recovers an unaccepted draf
   }
 });
 
+test("startup progress reaches EVENTS while the session is still starting", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: { kind: "starting" } })));
+    fake.heads()[0]?.resolve({ items: [], olderCursor: null });
+    await delay(0);
+    fake.push({
+      kind: "push",
+      seq: 1,
+      epoch: "e1",
+      type: "event",
+      id: 1,
+      event: { type: "startup_progress", sessionId: "a", ts: 1, message: "Starting VM…" },
+    });
+    assert.equal(handle.getView().sel?.status.kind, "starting");
+    assert.equal(winOf(handle.transcript.get())?.lines.at(-1)?.text, "Starting VM…");
+  } finally {
+    teardown();
+  }
+});
+
+test("a pending send does not silently block a later prompt", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("first", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.send").length, 1);
+    // The daemon can publish activity while the earlier RPC is still pending.
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning })));
+    await delay(110);
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("follow-up", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    assert.deepEqual(
+      fake.of("session.send").map((call) => call.params.text),
+      ["first", "follow-up"],
+    );
+    for (const call of fake.of("session.send")) call.resolve({ injected: true });
+    await delay(0);
+  } finally {
+    teardown();
+  }
+});
+
 test("an ambiguous send saves the draft and warns without retrying automatically", async () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });

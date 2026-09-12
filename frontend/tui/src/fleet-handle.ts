@@ -1445,9 +1445,7 @@ export const mkFleetHandle = ({
   };
 
   const forkingSessions = new Set<string>();
-  let submittingPrompt = false;
   const submitPrompt = (): void => {
-    if (submittingPrompt) return;
     const p = openPrompt(state.overlay);
     if (!p) return;
     const text = p.buffer.text.trim();
@@ -1484,7 +1482,6 @@ export const mkFleetHandle = ({
     };
 
     if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
-    submittingPrompt = true;
     // Let the session's STARTING state show while create/resume runs. Keep
     // the submitted draft only for failures before a session accepts it.
     if (p.t === "new" || sendTo !== null) dispatch({ t: "closePrompt" });
@@ -1640,9 +1637,6 @@ export const mkFleetHandle = ({
           return;
         }
         reopen(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        submittingPrompt = false;
       });
   };
 

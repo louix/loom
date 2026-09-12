@@ -1,10 +1,20 @@
-/** Host-only raw disks. Caller holds the session ownership lock for their lifetime. */
+/** Immutable prepared raw disks and disposable per-launch writable disks. */
 import { dirname, join, isAbsolute } from "node:path";
+import { link } from "node:fs/promises";
 import type { VmBinding } from "../packaged/vm.ts";
 import { writeRecoveryFile } from "./persistence.ts";
+import { reportStartup } from "./progress.ts";
 
 export const sessionDiskSizes = ["--storage", "32", "--overlay", "8"];
 const stems = ["storage", "overlay"];
+/** Migration from persistent guest disks; host worktrees and profiles are separate. */
+export const discardSessionDisks = async (home: string) => {
+  for (const name of ["disks", "disk-runtime-root", "disk-backend-root"]) {
+    await Deno.remove(join(home, name), { recursive: true }).catch((error) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    });
+  }
+};
 type Identity = Pick<VmBinding, "artifact" | "smolvm" | "writableNix">;
 export class SavedDiskCompatibilityError extends Error {}
 const identity = (b: Identity) => ({
@@ -39,7 +49,7 @@ export const readSessionDisks = async (dir: string, b: Identity): Promise<boolea
   for (const [key, value] of Object.entries(identity(b))) {
     if (saved[key] !== value)
       throw new SavedDiskCompatibilityError(
-        "Saved VM disks require a different runtime or Nix setting. Fork the session to start with the current runtime; existing worktree and history are retained.",
+        "Prepared VM disks require a different runtime or Nix setting. Prepare the environment again.",
       );
   }
   for (const stem of stems) {
@@ -52,6 +62,7 @@ export const readSessionDisks = async (dir: string, b: Identity): Promise<boolea
 
 /** Use supported sparse/reflink copies, never hard links between independent VMs. */
 export const copyDisk = async (from: string, to: string, signal?: AbortSignal) => {
+  reportStartup("copy");
   const result = await new Deno.Command(Deno.build.os === "darwin" ? "/bin/cp" : "cp", {
     args:
       Deno.build.os === "darwin"
@@ -59,16 +70,74 @@ export const copyDisk = async (from: string, to: string, signal?: AbortSignal) =
         : ["--reflink=auto", "--sparse=always", "--", from, to],
     stdin: "null",
     stdout: "null",
-    stderr: "null",
+    stderr: "piped",
     ...(signal ? { signal } : {}),
   }).output();
-  if (!result.success) throw new Error("Could not clone the stopped VM disk");
+  if (!result.success)
+    throw new Error(
+      `Could not copy the VM disk: ${new TextDecoder().decode(result.stderr).trim().slice(-2048)}`,
+    );
   await Deno.chmod(to, 0o600);
   const file = await Deno.open(to, { write: true });
   try {
     await file.sync();
   } finally {
     file.close();
+  }
+};
+
+/** Linux uses the same libkrun disk creator as smolvm; macOS uses APFS clones.
+ * Backing-file hard links keep the immutable bytes alive even after a failed
+ * supervisor or base replacement. Only the private overlay is ever writable.
+ */
+export const createSessionDisks = async (
+  dir: string,
+  base: string,
+  smolvm: string,
+  signal?: AbortSignal,
+) => {
+  await Deno.mkdir(dir, { mode: 0o700 });
+  reportStartup("clone");
+  if (Deno.build.os !== "linux") {
+    for (const stem of stems)
+      await copyDisk(join(base, `${stem}.raw`), join(dir, `${stem}.raw`), signal);
+    return;
+  }
+  const root = dirname(dirname(smolvm));
+  const library = [join(root, "libexec/smolvm/lib/libkrun.so"), join(root, "lib/libkrun.so")];
+  let path: string | undefined;
+  for (const candidate of library) {
+    try {
+      path = await Deno.realPath(candidate);
+      break;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  if (!path)
+    throw new Error("The configured smolvm has no bundled libkrun for writable disk creation");
+  const lib = Deno.dlopen(path, {
+    krun_create_disk_overlay: { parameters: ["buffer", "buffer", "u32"], result: "i32" },
+  });
+  const cstring = (value: string) => new TextEncoder().encode(value + "\0");
+  try {
+    for (const stem of stems) {
+      signal?.throwIfAborted();
+      const source = join(base, `${stem}.raw`);
+      const backing = join(dir, `base-${stem}.raw`);
+      try {
+        await link(source, backing);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+        await copyDisk(source, backing, signal);
+      }
+      const overlay = join(dir, `${stem}.qcow2`);
+      const result = lib.symbols.krun_create_disk_overlay(cstring(overlay), cstring(backing), 0);
+      if (result < 0) throw new Error(`Could not create writable VM disk (${result})`);
+      await Deno.chmod(overlay, 0o600);
+    }
+  } finally {
+    lib.close();
   }
 };
 
@@ -120,7 +189,7 @@ export const saveSessionDisks = async (
   }
 };
 
-/** smolvm deletes launch-local links, while the owned disk pair remains private. */
+/** Attach a prepared candidate or launch-local writable pair to smolvm. */
 export const attachSessionDisks = async (dir: string, target: string, state: string) => {
   if (!isAbsolute(target) || !target.startsWith(state + "/"))
     throw new Error("Unexpected smolvm disk directory");
@@ -131,7 +200,14 @@ export const attachSessionDisks = async (dir: string, target: string, state: str
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       });
     }
-    await Deno.symlink(join(dir, `${stem}.raw`), join(target, `${stem}.raw`));
+    let ext = "raw";
+    try {
+      await Deno.lstat(join(dir, `${stem}.qcow2`));
+      ext = "qcow2";
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    await Deno.symlink(join(dir, `${stem}.${ext}`), join(target, `${stem}.${ext}`));
     await Deno.writeTextFile(join(target, `${stem}.formatted`), "1");
   }
 };

@@ -10,7 +10,7 @@ import type {
   McpServerHandle,
 } from "@loom/core/types";
 import { CodexAuthOwner } from "./codex-auth.ts";
-import { launchSessionVm } from "./session-vm-worker.ts";
+import { createSessionVmLauncher } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -33,6 +33,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
   ctx: ConnectorContext,
 ): Promise<T> => {
   const vm = ctx.config.sessionVm!;
+  const launches = createSessionVmLauncher();
   const smolvm = await executable(vm.smolvm);
   const cli = await executable(ctx.config.codexCliPath || "codex");
   const profile =
@@ -81,7 +82,8 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       url.port = String(guestPort);
       return { ...server, spec: { ...server.spec, url: url.toString() } };
     });
-    const worker = await launchSessionVm({
+    const worker = await launches.launch({
+      onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
       workspace: input.cwd,
       artifact: vm.artifact,
       smolvm,
@@ -122,6 +124,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       await Deno.writeTextFile(join(sessionDirectory, "codex-ref"), session.providerRef!, {
         mode: 0o600,
       });
+      ctx.onStartupProgress?.(input.sessionId, "Session ready.");
       return session;
     } catch (error) {
       worker.terminate();
@@ -137,6 +140,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       if (prop === "resumeSession") return (ref: SessionRef) => start(ref, true);
       if (prop === "close")
         return async () => {
+          await launches.close();
           await owner?.close();
           await target.close?.();
         };

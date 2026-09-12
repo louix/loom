@@ -36,6 +36,7 @@ const GENERIC = "@loom/connector-generic";
 const CHATGPT = "@loom/connector-chatgpt";
 
 export class ProviderRegistry {
+  readonly #onStartupProgress: ConnectorContext["onStartupProgress"];
   readonly #config: LoomConfig;
   readonly #repoRoot: string;
   readonly #transcript: TranscriptStore;
@@ -55,8 +56,10 @@ export class ProviderRegistry {
     transcript: TranscriptStore,
     manifest: ConnectorManifest,
     repoRoot = Deno.cwd(),
+    onStartupProgress?: ConnectorContext["onStartupProgress"],
   ) {
     this.#repoRoot = repoRoot;
+    this.#onStartupProgress = onStartupProgress;
     this.#config = config;
     this.#transcript = transcript;
     this.#manifest = manifest;
@@ -152,6 +155,7 @@ export class ProviderRegistry {
       );
     }
     const context = this.#contextFor(id);
+    if (this.#onStartupProgress) context.onStartupProgress = this.#onStartupProgress;
     if (context.config.sessionVm && ![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(pkg))
       throw new Error(
         `Connector ${pkg} has no VM backend; choose a supported connector or disable its VM policy`,

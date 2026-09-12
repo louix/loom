@@ -4,6 +4,15 @@ import { join } from "node:path";
 import { publishRepoBase, seedRepoBase } from "../runtime/src/session-vm/repo-base.ts";
 import type { VmBinding } from "../runtime/src/packaged/vm.ts";
 
+const rawDisks = async (base: string) => {
+  await Deno.mkdir(join(base, "disks"), { recursive: true });
+  for (const stem of ["storage", "overlay"]) {
+    const disk = await Deno.open(join(base, "disks", `${stem}.raw`), { create: true, write: true });
+    await disk.truncate(1024 * 1024);
+    disk.close();
+  }
+};
+
 test("a new guest image artifact skips the Alpine base without deleting it", async () => {
   const home = await Deno.realPath(await Deno.makeTempDir());
   const base = join(home, "base-alpine");
@@ -25,7 +34,7 @@ test("a new guest image artifact skips the Alpine base without deleting it", asy
     token: "test",
   };
   try {
-    await Deno.mkdir(join(base, "disks"), { recursive: true });
+    await rawDisks(base);
     await Deno.writeTextFile(
       join(base, "disks/identity.json"),
       JSON.stringify({
@@ -55,8 +64,8 @@ test("base publication preserves the previous selection on cancellation and wait
     next = join(home, "base-next");
   let reader: Deno.FsFile | undefined;
   try {
-    await Deno.mkdir(first);
-    await Deno.mkdir(next);
+    await rawDisks(first);
+    await rawDisks(next);
     const signal = new AbortController().signal;
     await publishRepoBase(home, first, signal);
     const selected = await Deno.readTextFile(join(home, "current.json"));

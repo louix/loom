@@ -373,6 +373,9 @@ export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
         case "status_changed":
           valid = state(e.status);
           break;
+        case "startup_progress":
+          valid = str(e.message);
+          break;
         case "usage":
           valid =
             tokens(e.tokens) &&

@@ -17,8 +17,9 @@ import {
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
-import { readSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
+import { readStartupProgress, startupStages } from "../../../../runtime/src/session-vm/progress.ts";
 import { repoBaseDirectory } from "../../../../runtime/src/session-vm/repo-base.ts";
+import { enterSessionEnvironment } from "../../../../runtime/src/session-vm/maintenance.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -27,6 +28,7 @@ import {
 } from "../../../../runtime/src/session-vm/auth.ts";
 
 export interface SessionVmOptions {
+  onProgress?: (message: string) => void;
   workspace: string;
   artifact: string;
   smolvm: string;
@@ -53,6 +55,43 @@ export interface SessionVmStatus {
   execPid?: number;
   network: Array<{ host: string; allowed: boolean }>;
 }
+
+/** A provider owns launches too, including VMs still waiting for agent readiness. */
+export const createSessionVmLauncher = () => {
+  let closed = false;
+  const launches = new Set<Promise<Awaited<ReturnType<typeof launchSessionVm>>>>();
+  return {
+    launch(options: SessionVmOptions) {
+      if (closed) throw new Error("Session VM provider is shutting down");
+      const pending = launchSessionVm(options).then(async (worker) => {
+        if (closed) {
+          worker.terminate();
+          await worker.cleanup?.();
+          throw new Error("Session VM provider is shutting down");
+        }
+        void worker.exited.then(
+          () => launches.delete(pending),
+          () => launches.delete(pending),
+        );
+        return worker;
+      });
+      launches.add(pending);
+      void pending.catch(() => launches.delete(pending));
+      return pending;
+    },
+    async close() {
+      closed = true;
+      await Promise.all(
+        [...launches].map(async (pending) => {
+          const worker = await pending.catch(() => undefined);
+          if (!worker) return;
+          worker.terminate();
+          await worker.cleanup?.();
+        }),
+      );
+    },
+  };
+};
 const remove = async (path: string) => {
   try {
     await Deno.remove(path, { recursive: true });
@@ -70,6 +109,10 @@ export const launchSessionVm = async (
     diagnostics?: ReadableStream<Uint8Array>;
   }
 > => {
+  if (options.repoRoot && !options.preparationOnly) {
+    const admission = await enterSessionEnvironment(repoBaseDirectory(options.repoRoot));
+    admission.close();
+  }
   const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
   if (
     options.preparationOnly &&
@@ -105,7 +148,6 @@ export const launchSessionVm = async (
     }
   }
   let sessionDirectory: string | undefined;
-  let savedDisks = false;
   if (options.sessionDirectory) {
     await Deno.mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
     sessionDirectory = await Deno.realPath(options.sessionDirectory);
@@ -115,11 +157,6 @@ export const launchSessionVm = async (
       /[:,;|\n\0]/.test(sessionDirectory)
     )
       throw new Error("Session history must be outside the worktree");
-    savedDisks = await readSessionDisks(join(sessionDirectory, "disks"), {
-      artifact,
-      smolvm,
-      writableNix: options.environment?.nix === true,
-    });
   }
   const state = await Deno.realPath(
     await Deno.makeTempDir({
@@ -140,9 +177,6 @@ export const launchSessionVm = async (
     ...(options.environment?.nix ? { writableNix: true } : {}),
     mounts,
     ...(sessionDirectory ? { sessionDirectory } : {}),
-    ...(sessionDirectory && (savedDisks || environmentEnabled(options.environment))
-      ? { persistentDisks: true }
-      : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
     ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),
@@ -187,7 +221,11 @@ export const launchSessionVm = async (
         auth,
       }) + "\n",
     );
-    if (!options.preparationOnly) child.stderr.on("data", () => {});
+    if (!options.preparationOnly)
+      void readStartupProgress(
+        Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
+        (stage) => options.onProgress?.(startupStages[stage]),
+      ).catch(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ended = new AbortController();
     void exited.then(

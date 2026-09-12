@@ -1,13 +1,18 @@
 /** Storage acceptance against the pinned smolvm. No provider credentials/network.
  * Run: deno run -A scripts/test-session-disk-vm.ts /nix/store/.../bin/smolvm
- * Exercises raw disk copies without backing-file dependencies.
+ * Exercises ephemeral CoW disks, independent writes and host worktree persistence.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import { vmEnvironment } from "../runtime/src/packaged/vm.ts";
 import { attachDiskTemplates } from "../runtime/src/packaged/disk-templates.ts";
-import { attachSessionDisks, copyDisk, sessionDiskSizes } from "../runtime/src/session-vm/disks.ts";
+import {
+  attachSessionDisks,
+  createSessionDisks,
+  copyDisk,
+  sessionDiskSizes,
+} from "../runtime/src/session-vm/disks.ts";
 
 const [binary] = Deno.args;
 assert(binary, "Pass the pinned smolvm executable");
@@ -99,15 +104,24 @@ try {
   );
   await machine(source.state, "stop");
 
-  phase("Copying stopped disks into two independent machines");
+  phase("Saving the immutable base");
+  const base = join(root, "base");
+  await copyDisks(source.disks, base);
+  for (const stem of ["storage", "overlay"]) await Deno.chmod(join(base, `${stem}.raw`), 0o400);
+  phase("Creating two small writable overlays");
   const left = await create("left", second);
   const right = await create("right", second);
-  await copyDisks(source.disks, left.disks);
-  await copyDisks(source.disks, right.disks);
-  // A clone must not depend on its source's files or machine configuration.
-  await machine(source.state, "delete", "--force");
-  states.splice(states.indexOf(source.state), 1);
-  await Deno.remove(source.state, { recursive: true });
+  const overlay = async (vm: typeof left, from: string) => {
+    const dir = join(vm.state, "disks");
+    await createSessionDisks(dir, from, smolvm);
+    if (Deno.build.os === "linux") {
+      for (const stem of ["storage", "overlay"])
+        assert((await stat(join(dir, `${stem}.qcow2`))).size < 1024 * 1024);
+    }
+    await attachSessionDisks(dir, vm.disks, vm.state);
+  };
+  await overlay(left, base);
+  await overlay(right, base);
   await machine(left.state, "start");
   await exec(
     left.state,
@@ -123,26 +137,32 @@ try {
   assert.equal(await exec(left.state, "cat /storage/dependency /workspace/dirty"), "left\ndirty");
   assert.equal(await Deno.readTextFile(join(second, "dirty")), "dirty\n");
   await assert.rejects(Deno.stat(join(first, "dirty")), Deno.errors.NotFound);
-  phase("Recreating a launch around durable disk links");
+  phase("Refreshing the base and discarding the stopped session disks");
   await machine(left.state, "stop");
-  const durable = join(root, "durable");
-  await copyDisks(left.disks, durable);
-  await attachSessionDisks(durable, left.disks, left.state);
-  await machine(left.state, "start");
-  assert.equal(await exec(left.state, "cat /storage/dependency"), "left");
-  await exec(left.state, "echo linked > /storage/dependency; sync");
-  await machine(left.state, "stop");
+  await machine(right.state, "stop");
+  await machine(source.state, "start");
+  await exec(source.state, "echo refreshed > /storage/dependency; sync");
+  await machine(source.state, "stop");
+  const refreshed = join(root, "refreshed");
+  await copyDisks(source.disks, refreshed);
+  for (const stem of ["storage", "overlay"])
+    await Deno.chmod(join(refreshed, `${stem}.raw`), 0o400);
+  // Removing the published name cannot destroy a launch's read-only backing bytes.
+  await Deno.remove(base, { recursive: true });
+  await machine(right.state, "start");
+  assert.equal(await exec(right.state, "cat /storage/dependency"), "cached");
   await machine(left.state, "delete", "--force");
   states.splice(states.indexOf(left.state), 1);
-  const resumed = await create("resumed", first);
-  await attachSessionDisks(durable, resumed.disks, resumed.state);
+  await Deno.remove(left.state, { recursive: true });
+  const resumed = await create("resumed", second);
+  await overlay(resumed, refreshed);
   await machine(resumed.state, "start");
   assert.equal(
-    await exec(resumed.state, "cat /storage/dependency /workspace/identity"),
-    "linked\nfirst",
+    await exec(resumed.state, "cat /storage/dependency /workspace/dirty /workspace/identity"),
+    "refreshed\ndirty\nsecond",
   );
   phase(
-    "Passed: restart, sparse copies, independent writes, source deletion, and fresh workspace binding",
+    "Passed: tiny CoW disks, independent writes, retained backing bytes, base refresh, and dirty host worktree persistence",
   );
 } finally {
   // Do not remove disk files unless shutdown/deletion was confirmed.
