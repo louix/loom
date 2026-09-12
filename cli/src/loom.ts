@@ -433,13 +433,13 @@ const main = async (): Promise<void> => {
         const text = positionals.slice(2).join(" ");
         if (!text) need(undefined, "send <id> <text...>");
         const r = await client.request<SessionSnapshot>("session.send", { id, text });
-        writeOut(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "interrupt": {
         const id = need(positionals[1], "interrupt <id>");
         const r = await client.request<SessionSnapshot>("session.interrupt", { id });
-        writeOut(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "compact": {
@@ -532,7 +532,7 @@ const main = async (): Promise<void> => {
           id,
           by: client.clientId,
         });
-        writeOut(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "done": {
@@ -542,7 +542,7 @@ const main = async (): Promise<void> => {
           by: client.clientId,
           ...(values.force ? { force: true } : {}),
         });
-        writeOut(`${r.id} -> ${r.status}\n`);
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
       }
       case "rm": {
