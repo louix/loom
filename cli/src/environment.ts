@@ -166,7 +166,7 @@ const prepareProviderEnvironment = async (repo: string, id: string) => {
   };
   try {
     const revision = await git(["rev-parse", "HEAD"], cancelled.signal);
-    phase(`Preparing ${repo} at ${revision.slice(0, 12)} for ${id}`);
+    phase(`Preparing session environment for ${repo} at ${revision.slice(0, 12)}`);
     phase("Creating disposable worktree (committed HEAD)…");
     temporary = await Deno.realPath(
       await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-prepare-" }),
