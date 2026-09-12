@@ -1,3 +1,4 @@
+import type { RpcParams } from "@loom/core/rpc-params";
 import {
   currentRepoBase,
   repoBaseDirectory,
@@ -45,19 +46,16 @@ import {
   stateStarting,
 } from "@loom/core/session-state";
 import {
-  isTranscriptId,
   PROTOCOL_VERSION,
   type DaemonInfo,
   type DoctorMcpServer,
   type DoctorReport,
-  type HelloParams,
   type HelloResult,
   type ModelChoice,
   type ProviderInfo,
   type SearchResult,
   type SessionSnapshot,
   type StatePush,
-  type TranscriptId,
 } from "@loom/core/wire";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
 import {
@@ -85,12 +83,11 @@ import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest } from "@loom/core/connector";
 import {
   isSessionMode,
-  normalizeSessionMode,
   type CreateSessionOptions,
   type EffortLevel,
   type McpServerHandle,
-  type PermissionDecision,
-  type PlanDecision,
+  permissionDecisionSchema,
+  planDecisionSchema,
   type SessionMode,
   type SessionRef,
 } from "@loom/core/types";
@@ -99,16 +96,6 @@ import { repoInstructionsFor, systemPromptAppendFor } from "./prompt.ts";
 
 /** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
 const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
-
-const VALID_STATUS_KINDS: readonly SessionStateKind[] = [
-  "starting",
-  "awaiting_input",
-  "running",
-  "interrupted",
-  "idle",
-  "error",
-  "done",
-];
 
 const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
@@ -2105,7 +2092,7 @@ export class Daemon {
     d.register("hello", (params, ctx) => this.#hHello(params, ctx));
 
     d.register("ping", (params) => {
-      const nonce = isObj(params) ? params["nonce"] : undefined;
+      const nonce = params.nonce;
       return {
         nonce: nonce ?? null,
         pid: Deno.pid,
@@ -2154,7 +2141,7 @@ export class Daemon {
     d.register("providers.list", () => this.#providerList());
 
     d.register("providers.probeModels", async (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       if (isClaudeId(id)) {
         try {
           const provider = await this.#providers.get(
@@ -2205,9 +2192,9 @@ export class Daemon {
       warnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],
     }));
 
-    d.register("daemon.relinkProvider", (params: unknown) => {
-      const from = reqString(params, "from");
-      const to = reqString(params, "to");
+    d.register("daemon.relinkProvider", (params) => {
+      const from = params.from;
+      const to = params.to;
       if (!this.#providers.has(to)) throw new RpcError("bad_request", `unknown provider: ${to}`);
       const relinked = this.#registry.relinkProvider(from, to);
       return { relinked };
@@ -2218,14 +2205,14 @@ export class Daemon {
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));
 
     d.register("session.get", (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       const s = this.#registry.get(id);
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
       return this.#enrich(s);
     });
 
     d.register("session.history", (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       return this.#registry.store.statusHistory(id);
     });
@@ -2234,44 +2221,25 @@ export class Daemon {
     // that answers "is this model caching, and for how long". Optional `id`
     // narrows it to one session's breakdown.
     d.register("stats.models", (params) => {
-      const p = isObj(params) ? params : {};
-      const id = typeof p["id"] === "string" && p["id"] !== "" ? p["id"] : undefined;
+      const p = params;
+      const id = p.id || undefined;
       if (id && !this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       return { models: this.#registry.store.modelUsage(id) };
     });
 
     // Durable transcript history supports recall, reconnect and scrollback.
     d.register("session.messages", (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       this.#registry.mustGet(id);
       return this.#sessionEvents.messages(id);
     });
 
     d.register("session.events", (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const p = isObj(params) ? params : {};
-      // Clamp: a client drives this in a paging loop, so a negative / NaN /
-      // fractional `limit` must not reach `LIMIT ?` (negative = the whole
-      // history in one frame; non-integer = a datatype throw).
-      const rawLimit = typeof p["limit"] === "number" ? Math.trunc(p["limit"]) : 500;
-      const limit = Number.isFinite(rawLimit) ? Math.min(5000, Math.max(1, rawLimit)) : 500;
-      // Optional scroll-back cursor, read off an earlier page. Rejecting a
-      // malformed one keeps "you asked wrongly" distinct from the page's own
-      // `olderCursor: null`, which means the session has no older history —
-      // conflating them is what stalls a scroll-back loop silently.
-      let olderThan: TranscriptId | undefined;
-      const rawCursor = p["cursor"];
-      if (rawCursor !== undefined && rawCursor !== null) {
-        const c = isObj(rawCursor) ? (rawCursor as Record<string, unknown>) : null;
-        if (!c || !isTranscriptId(c["olderThan"])) {
-          throw new RpcError(
-            "bad_request",
-            "cursor must be the { olderThan } object from an earlier page's olderCursor",
-          );
-        }
-        olderThan = c["olderThan"];
-      }
+      const p = params;
+      const limit = p.limit;
+      const olderThan = p.cursor?.olderThan;
       return this.#sessionEvents.page(id, {
         limit,
         ...(olderThan === undefined ? {} : { olderThan }),
@@ -2285,7 +2253,7 @@ export class Daemon {
      * fresher results asks again.
      */
     d.register("session.search", async (params) => {
-      const query = reqString(params, "query");
+      const query = params.query;
       return {
         query,
         ids: (await this.#search.rank(this.#registry.listSorted(), query)).map((hit) => hit.id),
@@ -2295,15 +2263,13 @@ export class Daemon {
     // --- session control (Claude adapter, milestone 2) --------------------
 
     d.register("session.create", async (params) => {
-      const p = isObj(params) ? params : {};
-      const prompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
-      if (prompt === "") throw new RpcError("bad_request", "prompt is required");
+      const p = params;
+      const prompt = p.prompt;
 
-      const providerId =
-        typeof p["provider"] === "string" ? p["provider"] : this.#defaultProviderId();
-      const mode: SessionMode = normalizeSessionMode(p["mode"]) ?? this.#defaultMode();
+      const providerId = p.provider ?? this.#defaultProviderId();
+      const mode = p.mode ?? this.#defaultMode();
       const aisdkProfile = this.config.providers.aisdk[providerId];
-      const explicitModel = typeof p["model"] === "string" ? (p["model"] as string) : null;
+      const explicitModel = p.model ?? null;
       // Tell the operator once when the model we'd have reused has dropped out of
       // the endpoint's list since it last ran (item: "handle when the default is
       // no longer there").
@@ -2323,10 +2289,10 @@ export class Daemon {
         }
       }
       const model = explicitModel ?? (this.#defaultModelFor(providerId) || null);
-      const explicitEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : null;
+      const explicitEffort = p.effort ?? null;
       const effort =
         explicitEffort ?? (this.#defaultEffortFor(providerId, model ?? undefined) || null);
-      const parentId = typeof p["parentId"] === "string" ? (p["parentId"] as string) : null;
+      const parentId = p.parentId ?? null;
       if (parentId && !this.#registry.get(parentId)) {
         throw new RpcError("not_found", `no such parent session: ${parentId}`);
       }
@@ -2335,10 +2301,7 @@ export class Daemon {
       // configured base. `[worktree] enabled = false` (or a per-session
       // `worktree: false`) runs it in the repo working dir instead — no branch
       // isolation, concurrent sessions can collide, hard-fork unavailable.
-      const wantWorktree =
-        typeof p["worktree"] === "boolean"
-          ? (p["worktree"] as boolean)
-          : this.config.worktree.enabled;
+      const wantWorktree = p.worktree ?? this.config.worktree.enabled;
 
       return this.#startSession({
         prompt,
@@ -2348,12 +2311,12 @@ export class Daemon {
         mode,
         parentId,
         wantWorktree,
-        by: clientLabel(params),
+        by: params.by,
       });
     });
 
     d.register("session.resume", async (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       if (this.#sessions.has(id)) throw new RpcError("conflict", "session is already running");
       const snap = await this.#reviveSession(id);
       this.#publishState(snap.id);
@@ -2362,8 +2325,8 @@ export class Daemon {
     });
 
     d.register("session.send", async (params) => {
-      const id = reqString(params, "id");
-      const text = reqString(params, "text");
+      const id = params.id;
+      const text = params.text;
       this.#registry.mustGet(id);
       try {
         while (this.#revivals.has(id)) await this.#revivals.get(id);
@@ -2420,7 +2383,7 @@ export class Daemon {
     });
 
     d.register("session.checkpoints", (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       const model = snap.model;
@@ -2435,8 +2398,8 @@ export class Daemon {
     });
 
     d.register("session.rewind", async (params) => {
-      const id = reqString(params, "id");
-      const toTurn = Number((isObj(params) ? params : {})["toTurn"]);
+      const id = params.id;
+      const toTurn = params.toTurn;
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       const provider = await this.#providers.get(snap.provider).catch(() => null);
@@ -2448,7 +2411,7 @@ export class Daemon {
       }
       // `toTurn` is how many turns to keep: 0 wipes the transcript (redo the
       // first message from scratch), `turns - 1` drops just the last turn.
-      if (!Number.isInteger(toTurn) || toTurn < 0 || toTurn >= snap.turns) {
+      if (toTurn >= snap.turns) {
         throw new RpcError("bad_request", `toTurn must be 0..${snap.turns - 1}`);
       }
       if (!["idle", "interrupted", "error"].includes(snap.status.kind)) {
@@ -2497,7 +2460,7 @@ export class Daemon {
       // working tree is left exactly where it is — which may be many commits /
       // edits *ahead* of the turn we just rewound to. Figure out the drift now
       // (before `restoreWorktree` potentially erases it).
-      const restoreWorktree = isObj(params) && params["restoreWorktree"] === true;
+      const restoreWorktree = params.restoreWorktree === true;
       const wt = snap.worktree;
       let worktreeDrift: {
         checkpointSha: string;
@@ -2589,7 +2552,7 @@ export class Daemon {
     });
 
     d.register("session.fork", async (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       const parent = this.#registry.get(id);
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
       // Resolve the provider's real capabilities rather than guess from
@@ -2597,11 +2560,11 @@ export class Daemon {
       // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
       // conservatively `false` (it may route through Codex's own thread),
       // so a config-membership guess would wrongly authorize a hard fork.
-      const p = isObj(params) ? params : {};
+      const p = params;
       const fallback = this.#providers.has(parent.provider)
         ? parent.provider
         : this.#defaultProviderId();
-      const providerId = typeof p["provider"] === "string" ? p["provider"] : fallback;
+      const providerId = p.provider ?? fallback;
       const parentProvider = await this.#providers.get(providerId);
       const continuation = providerId !== parent.provider || !!this.#resumeBlockedReason(parent);
       const model =
@@ -2626,7 +2589,7 @@ export class Daemon {
         // request would 400 on most endpoints.
         throw new RpcError("bad_request", "the parent is mid-turn — interrupt it before forking");
       }
-      const forkPrompt = typeof p["prompt"] === "string" ? (p["prompt"] as string).trim() : "";
+      const forkPrompt = p.prompt?.trim() ?? "";
 
       const context = continuation
         ? forkContext(id, this.#sessionEvents.page(id, { limit: 5000 }))
@@ -2773,7 +2736,7 @@ export class Daemon {
     });
 
     d.register("session.interrupt", async (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       this.#hooks.forget(id);
       await this.#sessions.interrupt(id);
@@ -2781,12 +2744,9 @@ export class Daemon {
     });
 
     d.register("session.compact", async (params) => {
-      const id = reqString(params, "id");
-      const p = isObj(params) ? params : {};
-      const instructions =
-        typeof p["instructions"] === "string" && p["instructions"].trim() !== ""
-          ? (p["instructions"] as string).trim()
-          : undefined;
+      const id = params.id;
+      const p = params;
+      const instructions = p.instructions?.trim() || undefined;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       if (instructions) {
         const row = this.#registry.get(id);
@@ -2810,7 +2770,7 @@ export class Daemon {
     // auto path is enabled. No running provider needed — it's pure git — and no
     // agent nudge on a dirty / conflicted tree: the caller gets the outcome.
     d.register("session.rebase", async (params) => {
-      const id = reqString(params, "id");
+      const id = params.id;
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       if (!snap.worktree)
@@ -2819,8 +2779,8 @@ export class Daemon {
     });
 
     d.register("session.setKeepWarm", async (params) => {
-      const id = reqString(params, "id");
-      const p = isObj(params) ? params : {};
+      const id = params.id;
+      const p = params;
       const on = p["on"] === true;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       const snap = this.#enrich(this.#registry.mustGet(id), false);
@@ -2842,39 +2802,21 @@ export class Daemon {
     });
 
     d.register("session.respondPermission", async (params) => {
-      const id = reqString(params, "id");
-      const requestId = reqString(params, "requestId");
-      const p = isObj(params) ? params : {};
-      if (p["decision"] !== "allow" && p["decision"] !== "deny") {
-        throw new RpcError("bad_request", `decision must be "allow" or "deny"`);
-      }
-      const behavior = p["decision"] === "allow" ? "allow" : "deny";
-      const decision: PermissionDecision =
-        behavior === "allow"
-          ? {
-              behavior: "allow",
-              ...(isObj(p["updatedInput"]) ? { updatedInput: p["updatedInput"] } : {}),
-            }
-          : {
-              behavior: "deny",
-              ...(typeof p["message"] === "string" ? { message: p["message"] as string } : {}),
-            };
+      const id = params.id;
+      const requestId = params.requestId;
+      const p = params;
+      const decision = permissionDecisionSchema.parse({ ...p, behavior: p.decision });
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       return this.#sessions.respondToPermission(id, requestId, decision);
     });
 
     // Resolve an outstanding `plan_review` (milestone 8).
     d.register("session.respondPlan", async (params) => {
-      const id = reqString(params, "id");
-      const requestId = reqString(params, "requestId");
-      const p = isObj(params) ? params : {};
-      const action = p["action"];
-      // The implementing actions accept the permission mode the implementation
-      // should run in; `plan` would withhold the mutators, so it's rejected.
-      const mode = p["mode"] === undefined ? undefined : normalizeSessionMode(p["mode"]);
-      if (p["mode"] !== undefined && (mode === null || mode === "plan")) {
-        throw new RpcError("bad_request", "mode must be default | acceptEdits | auto");
-      }
+      const id = params.id;
+      const requestId = params.requestId;
+      const p = params;
+      const action = p.action;
+      const mode = p.mode;
 
       const parent = this.#registry.get(id);
       if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
@@ -2882,10 +2824,9 @@ export class Daemon {
 
       // `implement_fresh` may retarget the model / effort / provider the
       // implementation runs under (the plan review's `⌥p`).
-      const retargetModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
-      const retargetEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
-      const retargetProvider =
-        typeof p["provider"] === "string" ? (p["provider"] as string) : undefined;
+      const retargetModel = p.model ?? undefined;
+      const retargetEffort = p.effort ?? undefined;
+      const retargetProvider = p.provider ?? undefined;
       if (
         retargetEffort !== undefined &&
         !EFFORT_LEVELS.includes(retargetEffort) &&
@@ -2908,7 +2849,7 @@ export class Daemon {
         if (!this.#providers.has(retargetProvider)) {
           throw new RpcError("bad_request", `unknown provider: ${retargetProvider}`);
         }
-        const planText = typeof p["plan"] === "string" ? (p["plan"] as string).trim() : "";
+        const planText = p.plan?.trim() ?? "";
         if (planText === "") {
           throw new RpcError("bad_request", "a provider fork needs the approved plan text");
         }
@@ -2925,55 +2866,29 @@ export class Daemon {
           mode: runMode,
           parentId: id,
           wantWorktree: this.config.worktree.enabled,
-          by: clientLabel(params),
+          by: params.by,
         });
         await this.#sessions.respondToPlan(id, requestId, { action: "handoff" });
         this.#onActivityChange("session-forked");
         return snap;
       }
 
-      let decision: PlanDecision;
-      if (action === "implement") {
-        decision = { action, ...(mode ? { mode } : {}) };
-      } else if (action === "implement_fresh") {
-        decision = {
-          action,
-          ...(mode ? { mode } : {}),
-          ...(retargetModel ? { model: retargetModel } : {}),
-          ...(retargetEffort ? { effort: retargetEffort } : {}),
-        };
-      } else if (action === "revise") {
-        const plan = typeof p["plan"] === "string" ? (p["plan"] as string) : "";
-        if (plan.trim() === "") throw new RpcError("bad_request", "revise needs a non-empty plan");
-        decision = { action: "revise", plan, ...(mode ? { mode } : {}) };
-      } else if (action === "discuss") {
-        const message = typeof p["message"] === "string" ? (p["message"] as string) : "";
-        if (message.trim() === "") throw new RpcError("bad_request", "discuss needs a message");
-        decision = { action: "discuss", message };
-      } else {
-        throw new RpcError(
-          "bad_request",
-          "action must be implement | implement_fresh | revise | discuss",
-        );
-      }
+      const decision = planDecisionSchema.parse(p);
       return this.#sessions.respondToPlan(id, requestId, decision);
     });
 
     // Answer an outstanding `ask_user` question (loom MCP server, milestone 4).
     d.register("session.answer", async (params) => {
-      const id = reqString(params, "id");
-      const requestId = reqString(params, "requestId");
-      const text = reqString(params, "text");
+      const id = params.id;
+      const requestId = params.requestId;
+      const text = params.text;
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       return this.#sessions.answerQuestion(id, requestId, text);
     });
 
     d.register("session.setMode", async (params) => {
-      const id = reqString(params, "id");
-      const mode = normalizeSessionMode(params && (params as Record<string, unknown>)["mode"]);
-      if (!mode) {
-        throw new RpcError("bad_request", "mode must be one of manual|plan|acceptEdits|auto");
-      }
+      const id = params.id;
+      const mode = params.mode;
       // The target is the client's, computed against what it displays — never
       // re-derived here as "the next mode after the current one", which would
       // resolve differently depending on where in the queue this lands.
@@ -3001,8 +2916,8 @@ export class Daemon {
     });
 
     d.register("session.setModel", async (params) => {
-      const id = reqString(params, "id");
-      const model = reqString(params, "model");
+      const id = params.id;
+      const model = params.model;
       return this.#queue.run(id, async () => {
         // Reread inside the queue — a command ahead of this one may have moved
         // the provider (and with it which defaults store to write).
@@ -3023,8 +2938,8 @@ export class Daemon {
     });
 
     d.register("session.setEffort", async (params) => {
-      const id = reqString(params, "id");
-      const effort = reqString(params, "effort");
+      const id = params.id;
+      const effort = params.effort;
       return this.#queue.run(id, async () => {
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
@@ -3047,11 +2962,11 @@ export class Daemon {
     // provider-agnostic transcript store, so the new adapter resumes with full
     // history. A switch touching Claude needs history reconstruction (Phase 2).
     d.register("session.setProvider", async (params) => {
-      const id = reqString(params, "id");
-      const provider = reqString(params, "provider");
-      const p = isObj(params) ? params : {};
-      const wantModel = typeof p["model"] === "string" ? (p["model"] as string) : undefined;
-      const wantEffort = typeof p["effort"] === "string" ? (p["effort"] as string) : undefined;
+      const id = params.id;
+      const provider = params.provider;
+      const p = params;
+      const wantModel = p.model ?? undefined;
+      const wantEffort = p.effort ?? undefined;
       // Rechecked inside the queue, and held for the whole swap: a mode /
       // model / effort change arriving mid-swap applies to the new adapter
       // rather than to one that is being torn down.
@@ -3175,9 +3090,8 @@ export class Daemon {
     });
 
     d.register("session.setTitle", (params) => {
-      const id = reqString(params, "id");
-      const title = reqString(params, "title").trim().slice(0, 200);
-      if (title === "") throw new RpcError("bad_request", "title must not be empty");
+      const id = params.id;
+      const title = params.title;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
@@ -3186,12 +3100,9 @@ export class Daemon {
     });
 
     d.register("session.setComment", (params) => {
-      const id = reqString(params, "id");
-      const p = isObj(params) ? params : {};
-      const comment =
-        typeof p["comment"] === "string" && p["comment"].trim() !== ""
-          ? p["comment"].trim().slice(0, 2000)
-          : null;
+      const id = params.id;
+      const p = params;
+      const comment = p.comment?.trim().slice(0, 2000) || null;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       const snap = this.#registry.setFields(id, { comment });
       this.#publishState(snap.id);
@@ -3205,8 +3116,8 @@ export class Daemon {
     // resumes (see `#reviveSession`). A dirty worktree needs `force` to
     // archive, the way `remove` / `gc` already gate discarding live changes.
     d.register("session.markDone", async (params) => {
-      const id = reqString(params, "id");
-      const force = isObj(params) && params["force"] === true;
+      const id = params.id;
+      const force = params.force === true;
       return this.#queue.run(id, async () => {
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
@@ -3254,8 +3165,8 @@ export class Daemon {
     // in-place session shares the repo working dir, so its "worktree" is never
     // removed and it has no branch to delete.
     d.register("session.remove", async (params) => {
-      const id = reqString(params, "id");
-      const p = isObj(params) ? params : {};
+      const id = params.id;
+      const p = params;
       const alsoBranch = p["deleteBranch"] === true;
       const force = p["force"] === true;
       return this.#queue.run(id, async () => {
@@ -3315,8 +3226,8 @@ export class Daemon {
     // `done` (or explicitly targeted `error`) row whose tree removal failed then.
     // Branches are never auto-deleted; the row is retained as a record (spec §6).
     d.register("session.gc", async (params) => {
-      const p = isObj(params) ? params : {};
-      const only = typeof p["id"] === "string" ? (p["id"] as string) : null;
+      const p = params;
+      const only = p.id ?? null;
       const force = p["force"] === true;
       // Bulk sweep: `done` only (an `error` session may still be resumable).
       // An explicit `id` may also target an `error` row — that's how a fork
@@ -3363,23 +3274,19 @@ export class Daemon {
     // --- development / test hooks (no provider adapter yet) -----------------
 
     d.register("session.createStub", (params) => {
-      const p = isObj(params) ? params : {};
+      const p = params;
       const id = randomUUID();
-      const prompt = typeof p["prompt"] === "string" ? (p["prompt"] as string) : null;
+      const prompt = p.prompt ?? null;
       this.#registry.create({
         id,
-        provider: typeof p["provider"] === "string" ? (p["provider"] as string) : "stub",
-        model: typeof p["model"] === "string" ? (p["model"] as string) : null,
-        mode: typeof p["mode"] === "string" ? (p["mode"] as string) : "default",
-        parentId: typeof p["parentId"] === "string" ? (p["parentId"] as string) : null,
+        provider: p.provider ?? "stub",
+        model: p.model ?? null,
+        mode: p.mode ?? "default",
+        parentId: p.parentId ?? null,
         title: prompt,
       });
-      const kind =
-        typeof p["status"] === "string" &&
-        (VALID_STATUS_KINDS as string[]).includes(p["status"] as string)
-          ? (p["status"] as SessionStateKind)
-          : "idle";
-      const detail = typeof p["reason"] === "string" ? (p["reason"] as string) : null;
+      const kind = p.status ?? "idle";
+      const detail = p.reason ?? null;
       const state = parseSessionState(kind, detail);
       const snap = this.#registry.setStatus(id, state, detail);
       this.emitEvent({
@@ -3395,14 +3302,10 @@ export class Daemon {
     });
 
     d.register("session.setStatus", (params) => {
-      const id = reqString(params, "id");
-      const kind = reqString(params, "status");
-      if (!(VALID_STATUS_KINDS as string[]).includes(kind)) {
-        throw new RpcError("bad_request", `invalid status: ${kind}`);
-      }
+      const id = params.id;
+      const kind = params.status;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-      const detail =
-        isObj(params) && typeof params["reason"] === "string" ? (params["reason"] as string) : null;
+      const detail = params.reason ?? null;
       const state = parseSessionState(kind, detail);
       const snap = this.#registry.setStatus(id, state, detail);
       this.emitEvent({
@@ -3418,20 +3321,13 @@ export class Daemon {
     });
 
     d.register("dev.emit", (params) => {
-      const raw = isObj(params) ? params["event"] : undefined;
-      if (!isObj(raw) || typeof raw["sessionId"] !== "string" || typeof raw["type"] !== "string") {
-        throw new RpcError("bad_request", "event must be an object with sessionId and type");
-      }
-      // `ts` is "when the daemon observed the event" — a caller-supplied one
-      // doesn't get to win.
-      const event = { ...raw, ts: Date.now() } as unknown as HarnessEvent;
+      const event = { ...params.event, ts: Date.now() };
       const seq = this.emitEvent(event);
       return { seq };
     });
   }
 
-  #hHello(params: unknown, ctx: RpcContext): HelloResult {
-    const p = (isObj(params) ? params : {}) as Partial<HelloParams>;
+  #hHello(p: RpcParams<"hello">, ctx: RpcContext): HelloResult {
     if (p.protocolVersion !== undefined && p.protocolVersion !== PROTOCOL_VERSION) {
       // The version rides in `data` as well as the message: the client renders
       // its own "upgrade" line from it, and parsing that out of prose would be
@@ -3442,7 +3338,7 @@ export class Daemon {
         { daemon: PROTOCOL_VERSION },
       );
     }
-    ctx.conn.clientId = typeof p.clientId === "string" ? p.clientId : `anon-${ctx.conn.id}`;
+    ctx.conn.clientId = p.clientId ?? `anon-${ctx.conn.id}`;
 
     // Subscribe and enqueue the opening snapshot as one synchronous operation:
     // any state change from here on is published *after* this frame, so the
@@ -3632,24 +3528,4 @@ const searchNoteOf = (backend: string, resolvedKey: string): string => {
   if (backend === "none") return "no backend configured";
   if (resolvedKey === "") return "backend set but no api_key / api_key_env resolved";
   return "";
-};
-
-// ---------------------------------------------------------------------------
-// param helpers
-// ---------------------------------------------------------------------------
-
-const isObj = (v: unknown): v is Record<string, unknown> => {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-};
-
-const reqString = (params: unknown, key: string): string => {
-  if (!isObj(params) || typeof params[key] !== "string" || params[key] === "") {
-    throw new RpcError("bad_request", `missing required string param: ${key}`);
-  }
-  return params[key] as string;
-};
-
-const clientLabel = (params: unknown): string | undefined => {
-  if (isObj(params) && typeof params["by"] === "string") return params["by"] as string;
-  return undefined;
 };

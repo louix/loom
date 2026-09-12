@@ -22,6 +22,7 @@
     "./version": "./src/version.ts",
     "./transcript": "./src/transcript.ts",
     "./connector": "./src/connector.ts",
-    "./worker": "./src/worker.ts"
+    "./worker": "./src/worker.ts",
+    "./rpc-params": "./src/rpc-params.ts"
   }
 }

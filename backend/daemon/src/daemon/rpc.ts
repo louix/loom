@@ -1,6 +1,12 @@
 import type { Connection } from "./connection.ts";
 import type { RequestFrame, ResponseFrame, WireError } from "@loom/core/wire";
 import { makeLogger } from "@loom/core/logger";
+import {
+  rpcParamsSchemas,
+  rpcParamsError,
+  type RpcParams,
+  type RpcMethod,
+} from "@loom/core/rpc-params";
 
 const log = makeLogger("rpc");
 
@@ -25,9 +31,20 @@ export class RpcError extends Error {
 export class RpcDispatcher {
   #handlers = new Map<string, RpcHandler>();
 
-  register(method: string, handler: RpcHandler): void {
+  register<M extends string>(
+    method: M,
+    handler: (params: RpcParams<M>, ctx: RpcContext) => unknown | Promise<unknown>,
+  ): void {
     if (this.#handlers.has(method)) throw new Error(`duplicate RPC handler: ${method}`);
-    this.#handlers.set(method, handler);
+    this.#handlers.set(method, (params, ctx) => {
+      const schema = Object.hasOwn(rpcParamsSchemas, method)
+        ? rpcParamsSchemas[method as RpcMethod]
+        : undefined;
+      const parsed = schema?.safeParse(params ?? {});
+      if (parsed && !parsed.success)
+        throw new RpcError("bad_request", rpcParamsError(method, parsed.error));
+      return handler((parsed ? parsed.data : params) as RpcParams<M>, ctx);
+    });
   }
 
   has(method: string): boolean {
