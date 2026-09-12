@@ -123,10 +123,9 @@ try {
   const directory = join(f.root, "session");
   const environment = normalizeSessionEnvironment({
     nix,
-    prepare:
-      "test ! -e /storage/session-only; cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only",
+    prepare: "exit 99", // A session must never evaluate preparation against its worktree.
   });
-  const start = async (expectedBase: number) => {
+  const start = async (expectedBase: number, during?: () => Promise<void>) => {
     const progress: string[] = [];
     const worker = await launchSessionVm({
       onProgress: (message) => progress.push(message),
@@ -149,23 +148,57 @@ try {
         120000,
       );
       try {
+        session.onStartupProgress = (message) => progress.push(message);
+        await session.start({
+          method: "create",
+          args: [
+            {
+              sessionId: "prepared-test",
+              cwd: f.workspace,
+              prompt: "test",
+              mode: "default",
+              mcpServers: [],
+              initHooks: {
+                env: {},
+                hooks: [
+                  {
+                    name: "install",
+                    timeoutMs: 120000,
+                    run: 'test ! -e /storage/session-only; cp /storage/project-deno.lock deno.lock; deno install --cached-only --frozen; cat /storage/base-count > base-count; echo private > /storage/session-only; echo cached > "$XDG_CACHE_HOME/persistent-marker"',
+                  },
+                  {
+                    name: "broken setup",
+                    timeoutMs: 1000,
+                    run: "echo invalid-package >&2; exit 7",
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        assert(
+          progress.some(
+            (message) => message.includes("exited 7") && message.includes("invalid-package"),
+          ),
+        );
         assert.equal(
           (await Deno.readTextFile(join(f.workspace, "base-count"))).trim(),
           String(expectedBase),
         );
-        for (const stage of [
-          "runtime",
-          "clone",
-          "boot",
-          "activate",
-          "prepare",
-          "provider",
-        ] as const)
+        for (const stage of ["runtime", "clone", "boot", "restore", "init", "provider"] as const)
           assert(
             progress.includes(startupStages[stage]),
             `Missing startup phase ${stage}: ${progress.join("; ")}`,
           );
         assert((await Deno.stat(join(f.workspace, "node_modules/zod/package.json"))).isFile);
+        if (during) {
+          await during();
+          assert.equal(
+            session.snapshot().providerRef,
+            "fake-prepared-test",
+            "preparation leaves the old VM alive",
+          );
+        }
         assert.deepEqual(
           (await worker.status()).network,
           [],
@@ -179,27 +212,32 @@ try {
       await worker.cleanup!();
     }
   };
-  await start(1);
-  await config("echo 999 > /storage/base-count; echo deliberate-failure >&2; exit 7");
-  const failed = await cli();
-  assert(
-    !failed.success &&
-      failed.output.includes("deliberate-failure") &&
-      failed.output.includes("status 7"),
+  await start(1, async () => {
+    await config("echo 999 > /storage/base-count; echo deliberate-failure >&2; exit 7");
+    const failed = await cli();
+    assert(
+      !failed.success &&
+        failed.output.includes("deliberate-failure") &&
+        failed.output.includes("status 7"),
+    );
+    assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
+    await config("echo cancel-ready; sleep 60");
+    const cancelled = await cli(true);
+    assert(cancelled.cancelled && !cancelled.success);
+    assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
+    await config(setup);
+    const refreshed = await cli();
+    assert(
+      refreshed.success &&
+        refreshed.output.indexOf("Copying VM disks") >= 0 &&
+        refreshed.output.indexOf("Copying VM disks") < refreshed.output.indexOf("Starting VM"),
+    );
+    assert.notEqual(await Deno.readTextFile(join(home, "current.json")), selected);
+  });
+  assert.equal(
+    await Deno.readTextFile(join(f.repo, ".loom/package-cache/persistent-marker")),
+    "cached\n",
   );
-  assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
-  await config("echo cancel-ready; sleep 60");
-  const cancelled = await cli(true);
-  assert(cancelled.cancelled && !cancelled.success);
-  assert.equal(await Deno.readTextFile(join(home, "current.json")), selected);
-  await config(setup);
-  const refreshed = await cli();
-  assert(
-    refreshed.success &&
-      refreshed.output.indexOf("Copying VM disks") >= 0 &&
-      refreshed.output.indexOf("Copying VM disks") < refreshed.output.indexOf("Starting VM"),
-  );
-  assert.notEqual(await Deno.readTextFile(join(home, "current.json")), selected);
   // A new launch uses the new base and retains its host worktree.
   await start(2);
   console.log(

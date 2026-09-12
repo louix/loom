@@ -1,8 +1,8 @@
 # Warm repo bases and persistent session VMs
 
 Historical design: persistent session disks have been replaced by disposable
-per-launch writable disks. Preparation now stops the repo's sessions and replaces
-their shared base; host worktrees and profiles persist. See
+per-launch writable disks. Preparation publishes a replacement base while sessions
+continue running; idle VMs resume on the new base. Host worktrees and profiles persist. See
 [session environments](session-environments.md) for current behavior.
 
 Original status: implemented and verified on Linux. Apple Silicon disk validation and

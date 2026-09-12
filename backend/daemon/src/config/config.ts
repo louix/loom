@@ -183,6 +183,7 @@ export interface ClaudeProfile {
  * `turn_end` fires on any completed turn, including one that wrote nothing.
  */
 export type HookEvent =
+  | "init"
   | "file_write"
   | "turn_end"
   | "waiting"
@@ -194,6 +195,7 @@ export type HookEvent =
   | "interrupted";
 
 export const HOOK_EVENTS: readonly HookEvent[] = [
+  "init",
   "file_write",
   "turn_end",
   "waiting",
@@ -209,7 +211,7 @@ const isHookEvent = (v: unknown): v is HookEvent =>
   typeof v === "string" && (HOOK_EVENTS as readonly string[]).includes(v);
 
 /** One `[[hooks]]` entry, normalized. */
-export type WriteHookEvent = "file_write" | "turn_end";
+export type WriteHookEvent = "file_write" | "turn_end" | "init";
 
 export type HookConfig = HookFields &
   ({ kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] });
@@ -521,11 +523,15 @@ const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
 const parseHooks = (raw: unknown): HookConfig[] => {
   if (raw !== undefined && !Array.isArray(raw)) throw new Error("hooks: use [[hooks]] entries");
   const rows = Array.isArray(raw) ? raw : [];
+  if (rows.length > 64) throw new Error("hooks: at most 64 entries are supported");
   const out: HookConfig[] = [];
   for (const entry of rows) {
     const e = asRecord(entry);
     const run = str(e["run"], "").trim();
-    if (run === "") throw new Error("hook: run must be a non-empty command");
+    if (run === "" || run.length > 65536 || run.includes("\0"))
+      throw new Error(
+        "hook: run must be a non-empty command of at most 65536 characters without NUL",
+      );
     const onRaw = Array.isArray(e["on"]) ? e["on"] : [e["on"]];
     const on = onRaw.filter(isHookEvent);
     if (on.length === 0 || on.length !== onRaw.length) {
@@ -540,8 +546,8 @@ const parseHooks = (raw: unknown): HookConfig[] => {
         ? {
             kind,
             on: events.map((event): WriteHookEvent => {
-              if (event !== "file_write" && event !== "turn_end")
-                throw new Error("check hook: only file_write and turn_end are supported");
+              if (event !== "file_write" && event !== "turn_end" && event !== "init")
+                throw new Error("check hook: only init, file_write and turn_end are supported");
               return event;
             }),
           }

@@ -2,8 +2,7 @@
  * Check hooks may feed failures to the agent; notification hooks never do.
  * Commands use LOOM_* environment variables, not string interpolation.
  */
-import process from "node:process";
-import { spawn } from "node:child_process";
+import { executeShellHook, type HookAttempt as Attempt } from "../../../../core/src/shell-hook.ts";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
 import type { Logger } from "@loom/core/logger";
@@ -42,9 +41,6 @@ export interface HookRunnerOptions {
   onNotice: (text: string, tone: "info" | "warn") => void;
 }
 
-/** Cap on captured output, so a runaway command can't be pasted into a prompt whole. */
-const OUTPUT_CAP = 8_000;
-
 /**
  * How many times in a row one hook may message a session before it gives up.
  * A checker reporting a failure the agent then can't fix would
@@ -65,12 +61,6 @@ interface RunningHook {
   sessionId: string;
   abort: AbortController;
   pending: Map<string, PendingRun>;
-}
-
-interface Attempt {
-  code: number;
-  output: string;
-  timedOut: boolean;
 }
 
 export class HookRunner {
@@ -120,6 +110,10 @@ export class HookRunner {
     this.#turnFiles.clear();
     this.#lastFeedback.clear();
     this.#feedbackRuns.clear();
+  }
+
+  isRunning(sessionId: string): boolean {
+    return [...this.#running.values()].some((job) => job.sessionId === sessionId);
   }
 
   cancel(sessionId: string): void {
@@ -307,48 +301,7 @@ export class HookRunner {
       LOOM_MESSAGE: describe(event, session, files, ctx),
     };
 
-    return new Promise<Attempt>((settle, fail) => {
-      // `detached` puts the command in its own process group, so the timeout
-      // below can take its children with it — `sh -c 'tsc | head'` that wedges
-      // would otherwise survive a signal aimed at the shell alone.
-      const child = spawn("sh", ["-c", hook.run], {
-        cwd,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-      let out = "";
-      let timedOut = false;
-      const append = (chunk: Buffer): void => {
-        if (out.length < OUTPUT_CAP) out += chunk.toString("utf8");
-      };
-      child.stdout.on("data", append);
-      child.stderr.on("data", append);
-      const kill = (): void => {
-        try {
-          if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL"); // group already gone, or no pid — try the shell itself
-        }
-      };
-      const timer = setTimeout(() => {
-        timedOut = true;
-        kill();
-      }, hook.timeoutMs);
-      signal.addEventListener("abort", kill, { once: true });
-      timer.unref();
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", kill);
-        fail(err);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", kill);
-        const text = out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}\n… [truncated]` : out;
-        settle({ code: code ?? 1, output: text.trim(), timedOut });
-      });
-    });
+    return executeShellHook(hook.run, cwd, env, hook.timeoutMs, signal);
   }
 
   /** Deal with a finished run: nothing on success, feedback or a notice on failure. */
@@ -415,6 +368,8 @@ const describe = (
 ): string => {
   const who = session.title?.trim() || session.id.slice(0, 8);
   switch (event) {
+    case "init":
+      return `${who}: session initializing`;
     case "file_write":
     case "turn_end":
       return files.length === 0

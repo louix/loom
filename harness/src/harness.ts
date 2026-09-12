@@ -34,7 +34,7 @@ export interface Harness {
 
 /** A throwaway git repo with a standalone daemon running against it. */
 export const makeHarness = async (
-  opts: { git?: boolean; config?: string } = {},
+  opts: { git?: boolean; config?: string; connectors?: ConnectorManifest } = {},
 ): Promise<Harness> => {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
   const configDir = mkdtempSync(join(tmpdir(), "loom-h-config-"));
@@ -56,7 +56,7 @@ export const makeHarness = async (
     repoRoot,
     configFile: configPath,
     standalone: true,
-    connectors: CONNECTORS,
+    connectors: opts.connectors ?? CONNECTORS,
   });
 
   const h: Harness = {
@@ -72,7 +72,7 @@ export const makeHarness = async (
         repoRoot,
         configFile: configPath,
         standalone: true,
-        connectors: CONNECTORS,
+        connectors: opts.connectors ?? CONNECTORS,
       });
       return daemon;
     },

@@ -1,5 +1,7 @@
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
 export const startupStages = {
+  restore: "Restoring prepared environment…",
+  init: "Running session init hooks…",
   runtime: "Preparing VM runtime…",
   clone: "Creating writable disks from the prepared environment…",
   copy: "Copying VM disks…",

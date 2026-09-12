@@ -1,16 +1,22 @@
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
 import { sessionAuth } from "./auth.ts";
-import { prepareEnvironment, initializeGuestNix } from "./environment.ts";
+import { prepareEnvironment, initializeGuestNix, loadPreparedEnvironment } from "./environment.ts";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup } from "./progress.ts";
-// Cache package downloads on ext4, alongside the private Nix store. Worktree
-// outputs still live on the host mount; HOME holds only launch-time bootstrap.
+// Package caches outlive VM replacement; installed dependencies stay in the worktree.
+const cache = await Deno.readTextFile("/run/loom/private/cache-path").catch((error) => {
+  if (error instanceof Deno.errors.NotFound) return "/storage/loom-cache";
+  throw error;
+});
 for (const [key, path] of Object.entries({
-  XDG_CACHE_HOME: "/storage/loom-cache",
-  XDG_DATA_HOME: "/storage/loom-data",
-  DENO_DIR: "/storage/loom-cache/deno",
+  XDG_CACHE_HOME: cache,
+  npm_config_cache: `${cache}/npm`,
+  PIP_CACHE_DIR: `${cache}/pip`,
+  UV_CACHE_DIR: `${cache}/uv`,
+  XDG_DATA_HOME: `${cache}/data`,
+  DENO_DIR: `${cache}/deno`,
 })) {
   await Deno.mkdir(path, { recursive: true });
   Deno.env.set(key, path);
@@ -60,8 +66,8 @@ for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
   void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`).finished;
 }
-// Setup happens during initialize, before provider loading/readiness. The proxy
-// stays alive while the environment subprocess downloads its dependencies.
+// Explicit preparation builds the environment; normal initialization restores it
+// before loading the provider. The proxy remains available to setup and init hooks.
 const prepare = async (output?: "inherit") => {
   let config: SessionEnvironment | undefined;
   try {
@@ -72,11 +78,15 @@ const prepare = async (output?: "inherit") => {
   }
   if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
   const before = Deno.env.toObject();
-  const env = await prepareEnvironment(config, {
-    shell: before.LOOM_GUEST_SHELL!,
-    initializeNix: initializeGuestNix,
-    ...(output ? { output } : {}),
-  });
+  const env = output
+    ? await prepareEnvironment(config, {
+        shell: before.LOOM_GUEST_SHELL!,
+        initializeNix: initializeGuestNix,
+        ...(output ? { output } : {}),
+      })
+    : await loadPreparedEnvironment(config);
+  if (output && env)
+    await Deno.writeTextFile("/storage/loom-environment.json", JSON.stringify(env));
   if (!env) {
     Deno.env.set("PATH", [before.LOOM_GUEST_CONTROL_PATH, before.PATH].filter(Boolean).join(":"));
     return;
@@ -95,6 +105,11 @@ const prepare = async (output?: "inherit") => {
         "HOME",
         "TMPDIR",
         "DENO_DIR",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "npm_config_cache",
+        "PIP_CACHE_DIR",
+        "UV_CACHE_DIR",
         "DENO_NO_UPDATE_CHECK",
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",

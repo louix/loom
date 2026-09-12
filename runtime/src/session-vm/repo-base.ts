@@ -20,7 +20,7 @@ export const repoBaseDirectory = (repo: string) =>
       createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32),
     ),
   );
-const current = async (home: string) => {
+export const currentRepoBase = async (home: string) => {
   let value;
   try {
     value = JSON.parse(await Deno.readTextFile(join(home, "current.json")));
@@ -61,7 +61,7 @@ export const seedRepoBase = async (
 ) => {
   const held = await lock(home, false);
   try {
-    const base = await current(home);
+    const base = await currentRepoBase(home);
     if (!base) return false;
     const disks = join(base, "disks");
     try {
@@ -74,6 +74,7 @@ export const seedRepoBase = async (
     if (b.preparationOnly)
       await saveSessionDisks(join(sessionDirectory, "disks"), disks, b, signal);
     else await createSessionDisks(join(sessionDirectory, "disks"), disks, b.smolvm, signal);
+    await Deno.writeTextFile(join(b.state, "base-generation"), basename(base));
     return true;
   } finally {
     held.close();
@@ -88,7 +89,7 @@ export const publishRepoBase = async (home: string, candidate: string, signal: A
     throw new Error("Invalid prepared environment candidate");
   const held = await lock(home, true);
   try {
-    const previous = await current(home);
+    const previous = await currentRepoBase(home);
     for (const stem of ["storage", "overlay"])
       await Deno.chmod(join(candidate, "disks", `${stem}.raw`), 0o400);
     signal.throwIfAborted();

@@ -83,7 +83,15 @@ export interface AgentDefinitionSpec {
   model?: string;
 }
 
+export interface InitHook {
+  name: string;
+  run: string;
+  timeoutMs: number;
+}
+
 export interface CreateSessionOptions {
+  /** Trusted lifecycle commands, consumed once before the opening turn. Never passed on resume. */
+  initHooks?: { hooks: InitHook[]; env: Record<string, string> };
   /** Loom's session id. The adapter tags the provider's own id separately. */
   sessionId: string;
   /** The session's worktree (or, until the worktree manager lands, the repo root). */
@@ -123,6 +131,8 @@ export interface CreateSessionOptions {
 }
 
 export interface SessionRef {
+  /** Only a newly created fork initializes here; ordinary resumes omit this. */
+  initHooks?: CreateSessionOptions["initHooks"];
   sessionId: string;
   /** The provider's own persisted session identifier. */
   providerRef: string;

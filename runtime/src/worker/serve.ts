@@ -1,3 +1,5 @@
+import { runSessionInit } from "../../../core/src/session-init.ts";
+import { reportStartup } from "../session-vm/progress.ts";
 import { WorkerTranscript } from "./transcript.ts";
 import {
   decodeWorkerRequest,
@@ -106,10 +108,25 @@ export const serveWorker = async (
       if (started || r.args[0].sessionId !== binding.sessionId)
         throw new Error("invalid session binding");
       started = true;
+      if (r.args[0].initHooks?.hooks.length) reportStartup("init");
+      const initProgress = async (message: string) => {
+        await writer.send({
+          kind: "event",
+          seq: ++seq,
+          event: {
+            type: "startup_progress",
+            sessionId: binding!.sessionId,
+            ts: Date.now(),
+            message,
+          },
+        });
+      };
       session =
         r.method === "create"
-          ? await provider.createSession(r.args[0])
-          : await provider.resumeSession(r.args[0]);
+          ? await provider.createSession(await runSessionInit(r.args[0], initProgress, stop.signal))
+          : await provider.resumeSession(
+              await runSessionInit(r.args[0], initProgress, stop.signal),
+            );
       if (closing) {
         await session.close();
         return;

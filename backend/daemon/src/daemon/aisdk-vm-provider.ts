@@ -8,7 +8,7 @@ import type {
   SessionRef,
   McpServerHandle,
 } from "@loom/core/types";
-import { createSessionVmLauncher } from "./session-vm-worker.ts";
+import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -115,12 +115,14 @@ export const withAisdkVmSessions = async <T extends AgentProvider>(
       );
       await session.attachTranscript(ctx.transcript!);
       const options = { ...input, mcpServers: servers };
+      session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
       await session.start(
         resume
           ? { method: "resume", args: [options as SessionRef] }
           : { method: "create", args: [options as CreateSessionOptions] },
       );
       await Deno.writeTextFile(join(sessionDirectory, "aisdk"), "1", { mode: 0o600 });
+      ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
       ctx.onStartupProgress?.(input.sessionId, "Session ready.");
       return session;
     } catch (error) {

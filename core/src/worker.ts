@@ -12,11 +12,13 @@ import type {
   DiscoveredModel,
 } from "./types.ts";
 
-export const WORKER_VERSION = 2;
+export const WORKER_VERSION = 3;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
 const diagnostics = {
+  sessionEnvironmentMissing:
+    "No compatible prepared environment. Run loom environment prepare before starting this session.",
   sessionEnvironmentFailed:
     "VM environment preparation failed. Check isolation.environment.command_prefix, prepare and network presets. The session has not started.",
   sessionEnvironmentTimeout:
@@ -149,6 +151,27 @@ const sessionOptions = (v: unknown, resume: boolean): boolean => {
   for (const key of ["model", "effort", "parentId", "systemPromptAppend", "workspaceRoot"]) {
     if (!optional(v[key], str)) return false;
   }
+  if (
+    !optional(
+      v.initHooks,
+      (x) =>
+        record(x) &&
+        stringMap(x.env) &&
+        Array.isArray(x.hooks) &&
+        x.hooks.length <= 64 &&
+        x.hooks.every(
+          (h) =>
+            record(h) &&
+            str(h.name) &&
+            str(h.run) &&
+            h.run.length <= 65536 &&
+            finite(h.timeoutMs) &&
+            Number(h.timeoutMs) >= 1000 &&
+            Number(h.timeoutMs) <= 600000,
+        ),
+    )
+  )
+    return false;
   if (!optional(v.repoInstructions, nullableString)) return false;
   for (const key of ["disableTools", "settingSources"])
     if (!optional(v[key], strings)) return false;

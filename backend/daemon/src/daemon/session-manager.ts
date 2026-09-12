@@ -107,6 +107,7 @@ interface Running {
   pump: Promise<void>;
   /** Per-session op chain — `send` / `compact` / `rewind` run one at a time through {@link SessionManager.#enqueue}. */
   gate: Promise<unknown>;
+  operations: number;
   /** Set for the duration of a gated `compact` / `rewind` / provider swap; a straight `send` is fast-failed while non-null. */
   restructuring: "compact" | "rewind" | "provider" | null;
   /** Epoch ms the gate opened — seeds the snapshot's `compacting` overlay. */
@@ -242,6 +243,7 @@ export class SessionManager {
       refReported: false,
       pump: Promise.resolve(),
       gate: Promise.resolve(),
+      operations: 0,
       restructuring: null,
       restructuringSince: null,
       rewinding: false,
@@ -262,6 +264,7 @@ export class SessionManager {
   async #drain(id: string, run: Running): Promise<void> {
     try {
       for await (const raw of run.session.events()) {
+        if (run.ended) break;
         const ev = { ...raw, ordinal: run.ordinal++ } as HarnessEvent;
         if (ev.type === "assistant_text" && run.firstOutputSince !== null) {
           this.#hooks.log.info("first_output", {
@@ -578,6 +581,7 @@ export class SessionManager {
    * through here — they preempt.
    */
   async #enqueue<T>(run: Running, op: () => Promise<T>): Promise<T> {
+    run.operations++;
     const prev = run.gate;
     let release!: () => void;
     run.gate = new Promise<void>((r) => {
@@ -587,6 +591,7 @@ export class SessionManager {
     try {
       return await op();
     } finally {
+      run.operations--;
       release();
     }
   }
@@ -865,6 +870,38 @@ export class SessionManager {
   }
 
   // --- teardown ------------------------------------------------------
+
+  /** Only an entirely settled session can have its VM replaced. */
+  canRefresh(id: string): boolean {
+    const run = this.#running.get(id);
+    return (
+      !!run &&
+      !run.ended &&
+      run.state.kind === "idle" &&
+      run.operations === 0 &&
+      !run.restructuring &&
+      !run.compaction &&
+      run.pending.size === 0 &&
+      run.backgroundTasks.length === 0 &&
+      ![...run.subagents.values()].some((s) => s.active)
+    );
+  }
+
+  async suspendIdle(id: string): Promise<boolean> {
+    if (!this.canRefresh(id)) return false;
+    const run = this.#require(id);
+    run.ended = true;
+    try {
+      await this.close(id);
+    } finally {
+      // Even a cleanup failure leaves this adapter unusable. A later resume
+      // must recover its VM instead of sending into the retired session.
+      if (this.#running.get(id) === run) this.#running.delete(id);
+      this.#keepWarm.delete(id);
+      this.#warmPings.delete(id);
+    }
+    return true;
+  }
 
   /** Close and forget a single session (e.g. tearing down a failed fork). */
   async close(id: string): Promise<void> {

@@ -230,15 +230,21 @@ max_results = 5
 # [repo.isolation]
 # extra_allowed_hosts = ["registry.npmjs.org"]
 # network_presets = ["nix", "javascript"]
-# See docs/session-environments.md. Setup runs on each VM launch (including resume).
+# See docs/session-environments.md. Base setup runs only during explicit preparation.
 # [repo.isolation.environment]
 # nix = true
 # command_prefix = ["nix", "develop", "path:.", "--no-write-lock-file", "--command"]
-# prepare = "deno install --frozen" # arbitrary repo-specific shell command
+# prepare = "" # optional base setup, only during explicit environment preparation
 # timeout_seconds = 900
 # Run `loom environment prepare` (or use the Space palette) to warm a repo base.
-# VM disks are disposable; create/resume uses the current prepared base and reruns setup.
-# Preparing again stops this repo's sessions; host worktrees and history are preserved.
+# Re-preparation keeps sessions running; idle VMs switch to the new base.
+# Host worktrees, history and .loom/package-cache survive VM replacement.
+# Session init runs once, in VM and non-VM sessions; failure is passed to the agent.
+# [[repo.hooks]]
+# name = "install dependencies"
+# on = "init"
+# run = "deno install --frozen"
+# timeout = 600
 
 # Optional project provider restrictions. Omit `only` to allow every configured
 # provider; an empty list allows none. `disabled` takes precedence over `only`.

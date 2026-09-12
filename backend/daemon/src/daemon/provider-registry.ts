@@ -1,3 +1,6 @@
+import { runSessionInit } from "../../../../core/src/session-init.ts";
+import { matchGlob } from "./hooks.ts";
+import type { CreateSessionOptions, SessionRef } from "@loom/core/types";
 import { withCodexVmSessions } from "./codex-vm-provider.ts";
 import { withAisdkVmSessions } from "./aisdk-vm-provider.ts";
 /**
@@ -36,6 +39,7 @@ const GENERIC = "@loom/connector-generic";
 const CHATGPT = "@loom/connector-chatgpt";
 
 export class ProviderRegistry {
+  readonly #onVmStarted: ConnectorContext["onVmStarted"];
   readonly #onStartupProgress: ConnectorContext["onStartupProgress"];
   readonly #config: LoomConfig;
   readonly #repoRoot: string;
@@ -57,7 +61,9 @@ export class ProviderRegistry {
     manifest: ConnectorManifest,
     repoRoot = Deno.cwd(),
     onStartupProgress?: ConnectorContext["onStartupProgress"],
+    onVmStarted?: ConnectorContext["onVmStarted"],
   ) {
+    this.#onVmStarted = onVmStarted;
     this.#repoRoot = repoRoot;
     this.#onStartupProgress = onStartupProgress;
     this.#config = config;
@@ -156,6 +162,7 @@ export class ProviderRegistry {
     }
     const context = this.#contextFor(id);
     if (this.#onStartupProgress) context.onStartupProgress = this.#onStartupProgress;
+    if (this.#onVmStarted) context.onVmStarted = this.#onVmStarted;
     if (context.config.sessionVm && ![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(pkg))
       throw new Error(
         `Connector ${pkg} has no VM backend; choose a supported connector or disable its VM policy`,
@@ -173,7 +180,55 @@ export class ProviderRegistry {
       undefined,
     );
     this.#loaded.add(pkg);
-    return provider;
+    const initStop = new AbortController();
+    return new Proxy(provider, {
+      get: (target, prop) => {
+        if (prop === "close")
+          return async () => {
+            initStop.abort();
+            await target.close?.();
+          };
+        if (prop === "createSession" || prop === "resumeSession")
+          return async (options: CreateSessionOptions | SessionRef) => {
+            if (prop === "resumeSession" && !options.initHooks)
+              return target.resumeSession(options as SessionRef);
+            const hooks =
+              "oneShot" in options && options.oneShot
+                ? []
+                : this.#config.hooks.filter(
+                    (h) =>
+                      h.on.includes("init") && (!h.project || matchGlob(h.project, this.#repoRoot)),
+                  );
+            const configured = {
+              ...options,
+              initHooks: {
+                hooks,
+                env: {
+                  LOOM_REPO_ROOT: this.#repoRoot,
+                  LOOM_WORKTREE: options.cwd,
+                  LOOM_SESSION_PROVIDER: id,
+                  LOOM_SESSION_MODEL: options.model ?? "",
+                  LOOM_SESSION_STATUS: "starting",
+                  LOOM_FILES: "",
+                  LOOM_FILE: "",
+                },
+              },
+            };
+            const ready = context.config.sessionVm
+              ? configured
+              : await runSessionInit(
+                  configured,
+                  (message) => context.onStartupProgress?.(options.sessionId, message),
+                  initStop.signal,
+                );
+            return prop === "createSession"
+              ? target.createSession(ready as CreateSessionOptions)
+              : target.resumeSession(ready as SessionRef);
+          };
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
   }
 
   /**

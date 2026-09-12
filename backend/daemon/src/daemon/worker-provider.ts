@@ -106,6 +106,7 @@ export class RemoteWorkerSession implements AgentSession {
   #snapshot: AdapterSnapshot | undefined;
   #seq = 0;
   #requestId = 0;
+  onStartupProgress?: (message: string) => void;
   #failure: Error | undefined;
   #closing: Promise<void> | undefined;
   #stopping = false;
@@ -208,7 +209,11 @@ export class RemoteWorkerSession implements AgentSession {
   }
 
   async start(command: Extract<WorkerCommand, { method: "create" | "resume" }>): Promise<void> {
-    await this.#request(command);
+    await this.#request(
+      command,
+      this.#timeoutMs +
+        (command.args[0].initHooks?.hooks.reduce((sum, hook) => sum + hook.timeoutMs, 0) ?? 0),
+    );
     if (!this.#snapshot) {
       this.#fail(new Error("missing initial worker state"));
       throw this.#failure;
@@ -376,13 +381,17 @@ export class RemoteWorkerSession implements AgentSession {
           break;
         case "event":
           if (
-            !this.#snapshot ||
+            (!this.#snapshot && !(this.#ready && f.event.type === "startup_progress")) ||
             this.#ended ||
             f.seq !== ++this.#seq ||
             f.event.sessionId !== this.id
           )
             throw new Error("invalid worker event sequence or binding");
-          if (!this.#stopping) this.#events.push(f.event);
+          if (!this.#stopping) {
+            if (f.event.type === "startup_progress" && this.onStartupProgress)
+              this.onStartupProgress(f.event.message);
+            else this.#events.push(f.event);
+          }
           break;
         case "end":
           if (!this.#snapshot || this.#ended) throw new Error("unexpected worker stream end");

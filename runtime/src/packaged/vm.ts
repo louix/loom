@@ -14,6 +14,7 @@ export interface VmBinding {
   writableNix?: boolean;
   preparationOnly?: boolean;
   repoBaseDirectory?: string;
+  packageCache?: string;
   mounts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;

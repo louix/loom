@@ -10,7 +10,7 @@ import type {
   McpServerHandle,
 } from "@loom/core/types";
 import { CodexAuthOwner } from "./codex-auth.ts";
-import { createSessionVmLauncher } from "./session-vm-worker.ts";
+import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -116,6 +116,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
         },
       );
       const options = { ...input, mcpServers: servers };
+      session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
       await session.start(
         resume
           ? { method: "resume", args: [options as SessionRef] }
@@ -124,6 +125,7 @@ export const withCodexVmSessions = async <T extends AgentProvider>(
       await Deno.writeTextFile(join(sessionDirectory, "codex-ref"), session.providerRef!, {
         mode: 0o600,
       });
+      ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
       ctx.onStartupProgress?.(input.sessionId, "Session ready.");
       return session;
     } catch (error) {

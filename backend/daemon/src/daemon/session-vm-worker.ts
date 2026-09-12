@@ -19,7 +19,6 @@ import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import { readStartupProgress, startupStages } from "../../../../runtime/src/session-vm/progress.ts";
 import { repoBaseDirectory } from "../../../../runtime/src/session-vm/repo-base.ts";
-import { enterSessionEnvironment } from "../../../../runtime/src/session-vm/maintenance.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -109,10 +108,6 @@ export const launchSessionVm = async (
     diagnostics?: ReadableStream<Uint8Array>;
   }
 > => {
-  if (options.repoRoot && !options.preparationOnly) {
-    const admission = await enterSessionEnvironment(repoBaseDirectory(options.repoRoot));
-    admission.close();
-  }
   const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
   if (
     options.preparationOnly &&
@@ -124,6 +119,14 @@ export const launchSessionVm = async (
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
+  const packageCache = options.repoRoot
+    ? join(await Deno.realPath(options.repoRoot), ".loom/package-cache")
+    : undefined;
+  if (packageCache) {
+    await Deno.mkdir(packageCache, { recursive: true, mode: 0o700 });
+    if ((await Deno.realPath(packageCache)) !== packageCache)
+      throw new Error("Package cache must not be a symlink");
+  }
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
   const workspace = await Deno.realPath(options.workspace);
@@ -139,7 +142,7 @@ export const launchSessionVm = async (
   }
   if (environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "2")
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "3")
         throw new Error();
     } catch {
       throw new Error(
@@ -176,6 +179,7 @@ export const launchSessionVm = async (
     token: crypto.randomUUID(),
     ...(options.environment?.nix ? { writableNix: true } : {}),
     mounts,
+    ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
@@ -339,6 +343,16 @@ export const launchSessionVm = async (
     return worker;
   } catch (error) {
     await remove(state);
+    throw error;
+  }
+};
+
+/** Recorded under the publication lock when this VM selects its immutable base. */
+export const sessionVmGeneration = async (state: string): Promise<string> => {
+  try {
+    return await Deno.readTextFile(join(state, "base-generation"));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return "";
     throw error;
   }
 };

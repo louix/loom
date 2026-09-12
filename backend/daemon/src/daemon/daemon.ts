@@ -1,3 +1,8 @@
+import {
+  currentRepoBase,
+  repoBaseDirectory,
+} from "../../../../runtime/src/session-vm/repo-base.ts";
+import { basename } from "node:path";
 import { forkContext } from "./fork-context.ts";
 import {
   sessionVmDirectory,
@@ -241,6 +246,9 @@ export class Daemon {
   #pidfile: PidfileInfo | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
+  readonly #vmGenerations = new Map<string, string>();
+  #environmentPoll: NodeJS.Timeout | undefined;
+  #checkingEnvironment = false;
   #onConfigChange = (): void => this.#reloadConfig();
   /** Periodic sweep that re-primes the prompt cache for keep-warm sessions. */
   #warmSweep: NodeJS.Timeout | null = null;
@@ -310,6 +318,7 @@ export class Daemon {
       opts.repoRoot,
       (sessionId, message) =>
         this.emitEvent({ type: "startup_progress", sessionId, ts: Date.now(), message }),
+      (id, generation) => this.#vmGenerations.set(id, generation),
     );
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,
@@ -497,6 +506,8 @@ export class Daemon {
     }
 
     this.#watchConfig();
+    this.#environmentPoll = setInterval(() => void this.#checkEnvironment(), 1000);
+    this.#environmentPoll.unref();
     if (!this.#standalone) this.#installSignalHandlers();
 
     // Listen before the model probes: a client that just spawned us can start
@@ -563,6 +574,7 @@ export class Daemon {
     if (this.#warmSweep) clearInterval(this.#warmSweep);
     if (this.#gitSweep) clearInterval(this.#gitSweep);
     unwatchFile(this.#configFile, this.#onConfigChange);
+    clearInterval(this.#environmentPoll);
     for (const [sig, fn] of this.#signalHandlers) Deno.removeSignalListener(sig, fn);
     this.#signalHandlers = [];
 
@@ -1209,11 +1221,9 @@ export class Daemon {
         await this.#sessions.create(await this.#providers.get(o.providerId), opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Nothing ran in the worktree — reclaim it now (gc only touches `done`
-        // rows, so an `error` row's tree would leak forever). Keep the row as
-        // a record of the failure, with no worktree. (An in-place session has
-        // no tree to reclaim.)
-        if (wt) {
+        // Init may have changed files before the provider failed. Preserve those
+        // edits; reclaim only untouched worktrees.
+        if (wt && !this.#worktrees.isDirty(wt.path)) {
           try {
             this.#worktrees.remove(wt.path, { force: true });
           } catch {
@@ -1947,6 +1957,78 @@ export class Daemon {
   // live config reload
   // -------------------------------------------------------------------------
 
+  /** A successful publication is the only signal to replace idle VMs. */
+  async #checkEnvironment(): Promise<void> {
+    if (this.#stopping || this.#checkingEnvironment || this.#vmGenerations.size === 0) return;
+    this.#checkingEnvironment = true;
+    try {
+      const base = await currentRepoBase(repoBaseDirectory(this.repoRoot));
+      if (!base || this.#stopping) return;
+      const generation = basename(base);
+      for (const [id, previous] of this.#vmGenerations) {
+        if (
+          !this.#sessions.has(id) &&
+          !this.#revivals.has(id) &&
+          this.#registry.get(id)?.status.kind !== "starting"
+        ) {
+          this.#vmGenerations.delete(id);
+          continue;
+        }
+        if (
+          generation === previous ||
+          this.#revivals.has(id) ||
+          !this.#sessions.canRefresh(id) ||
+          this.#hooks.isRunning(id)
+        )
+          continue;
+        const operation = this.#queue
+          .run(id, async () => {
+            if (this.#stopping || !this.#sessions.canRefresh(id) || this.#hooks.isRunning(id))
+              return this.#registry.mustGet(id);
+            const warm = this.#sessions.keepWarm(id);
+            const stopped = this.#sessions.suspendIdle(id);
+            this.#registry.setStatus(id, stateStarting, "updating environment");
+            this.emitEvent({
+              type: "startup_progress",
+              sessionId: id,
+              ts: Date.now(),
+              message: "Updating session to the new prepared environment…",
+            });
+            this.#publishState(id);
+            await stopped;
+            if (this.#stopping) return this.#registry.mustGet(id);
+            const snap = await this.#reviveLocked(id);
+            if (warm) this.#sessions.setKeepWarm(id, true);
+            return snap;
+          })
+          .catch((error: unknown) => {
+            if (!this.#stopping) {
+              const message = error instanceof Error ? error.message : String(error);
+              this.#registry.setStatus(id, stateError(message));
+              this.emitEvent({
+                type: "error",
+                sessionId: id,
+                ts: Date.now(),
+                message: `Environment update failed: ${message}`,
+                fatal: true,
+              });
+            }
+            throw error;
+          })
+          .finally(() => {
+            this.#revivals.delete(id);
+            if (!this.#stopping) this.#publishState(id);
+          });
+        this.#revivals.set(id, operation);
+        void operation.catch(() => {});
+      }
+    } catch (error) {
+      this.#log.warn("prepared environment check failed", { err: String(error) });
+    } finally {
+      this.#checkingEnvironment = false;
+    }
+  }
+
   /** Poll the trusted config file: survives atomic saves and exhausted OS watcher limits. */
   #watchConfig(): void {
     watchFile(this.#configFile, { persistent: false, interval: 250 }, this.#onConfigChange);
@@ -2291,6 +2373,7 @@ export class Daemon {
       const text = reqString(params, "text");
       this.#registry.mustGet(id);
       try {
+        while (this.#revivals.has(id)) await this.#revivals.get(id);
         // A cold session (daemon restarted, or a turn that ended) is brought back
         // transparently — `send` is the one verb for "talk to this session", it
         // doesn't need a separate resume step.
@@ -2306,6 +2389,7 @@ export class Daemon {
         // would park behind it (a compaction can run for minutes). Fast-fail with
         // a distinct `code` the TUI recognises and re-routes to its own outgoing
         // queue (which drains when the compaction boundary lands).
+        while (this.#revivals.has(id)) await this.#revivals.get(id);
         const restructuring = this.#sessions.isRestructuring(id);
         if (restructuring) {
           const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
@@ -2632,6 +2716,7 @@ export class Daemon {
           });
         } else
           await this.#sessions.resume(parentProvider, {
+            initHooks: { hooks: [], env: {} }, // A new conversation despite copying its transcript.
             sessionId: newId,
             providerRef: newId,
             cwd: wt.path,

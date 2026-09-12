@@ -26,7 +26,6 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
-import { enterSessionEnvironment } from "./maintenance.ts";
 import { reportStartup, readStartupProgress } from "./progress.ts";
 import { seedRepoBase } from "./repo-base.ts";
 import {
@@ -50,7 +49,6 @@ const { binding, auth, extraAllowedHosts, providerHosts, environment } = first.v
 let child: Deno.ChildProcess | undefined;
 if (binding.preparationOnly) Deno.env.set("LOOM_PREPARATION_ONLY", "1");
 let persistentLock: Deno.FsFile | undefined;
-let environmentLease: Deno.FsFile | undefined;
 let ownsPersistent = false;
 const relays: ReturnType<typeof startMcpRelay>[] = [];
 let egress: ReturnType<typeof startEgress> | undefined;
@@ -129,8 +127,6 @@ const command = async (args: string[]) => {
   return new TextDecoder().decode(result.stdout).trim();
 };
 try {
-  if (binding.repoBaseDirectory && !binding.preparationOnly)
-    environmentLease = await enterSessionEnvironment(binding.repoBaseDirectory);
   if (binding.sessionDirectory) {
     persistentLock = await lockSessionState(binding.sessionDirectory);
     await assertNoActiveVm(binding.sessionDirectory);
@@ -183,6 +179,8 @@ try {
       "-v",
       `${binding.sessionDirectory}/profile:/tmp/loom-home/${auth.codexOauth ? ".codex" : ".claude"}`,
     );
+  if (binding.packageCache)
+    await Deno.writeTextFile(join(binding.state, "private/cache-path"), binding.packageCache);
   for (const [index, relay] of (binding.mcpRelays ?? []).entries()) {
     const socket = join(binding.state, `mcp-${index}.sock`);
     relays.push(startMcpRelay(socket, relay.port));
@@ -300,6 +298,5 @@ try {
   }
   // stdin and the parent can still be alive when a guest or capability dies.
   persistentLock?.close();
-  environmentLease?.close();
   Deno.exit(Deno.exitCode);
 }

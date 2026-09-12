@@ -88,6 +88,7 @@ export interface ConnectorConfig {
 
 export interface ConnectorContext {
   /** Host-only progress before create/resume returns an agent session. */
+  onVmStarted?: (sessionId: string, generation: string) => void;
   onStartupProgress?: (sessionId: string, message: string) => void;
   /** The provider id this instance serves. */
   id: string;

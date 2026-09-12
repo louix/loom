@@ -11,7 +11,7 @@ import type {
   McpServerHandle,
 } from "@loom/core/types";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
-import { createSessionVmLauncher } from "./session-vm-worker.ts";
+import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -116,11 +116,13 @@ export const withClaudeVmSessions = async <T extends AgentProvider>(
         },
       );
       const options = { ...input, mcpServers: servers };
+      session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
       await session.start(
         resume
           ? { method: "resume", args: [options as SessionRef] }
           : { method: "create", args: [options as CreateSessionOptions] },
       );
+      ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
       ctx.onStartupProgress?.(input.sessionId, "Session ready.");
       return owner ? refreshOnAuthFailure(session, () => owner.current(true)) : session;
     } catch (error) {

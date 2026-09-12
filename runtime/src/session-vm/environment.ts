@@ -6,9 +6,7 @@ import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
 import { reportStartup, readStartupProgress } from "./progress.ts";
 
-/** Resolve once per VM launch; setup output never enters the framed worker protocol.
- * Kept separate from activation so a future prepared image can skip preparation.
- */
+/** Build the environment during explicit preparation; setup output stays off the worker protocol. */
 export const prepareEnvironment = async (
   config: SessionEnvironment | undefined,
   options: {
@@ -95,6 +93,44 @@ export const prepareEnvironment = async (
   } finally {
     clearTimeout(timer);
     await Deno.remove(directory, { recursive: true });
+  }
+};
+
+/** Session boots consume the prepared environment without evaluating the changing worktree. */
+export const loadPreparedEnvironment = async (
+  config?: SessionEnvironment,
+  path = "/storage/loom-environment.json",
+  worktree = Deno.cwd(),
+): Promise<Record<string, string> | undefined> => {
+  if (!environmentEnabled(config)) return;
+  reportStartup("restore");
+  try {
+    const env = JSON.parse(await Deno.readTextFile(path));
+    if (
+      !env ||
+      typeof env !== "object" ||
+      Array.isArray(env) ||
+      !Object.entries(env).every(
+        ([k, v]) => k.length > 0 && !/[=\0]/.test(k) && typeof v === "string" && !v.includes("\0"),
+      )
+    )
+      throw new Error("Invalid prepared environment");
+    // Shell activation can export paths such as $PWD/node_modules/.bin.
+    // The preparation checkout is gone by the time a session consumes them.
+    const source = env.PWD;
+    if (typeof source === "string" && source.startsWith("/") && source !== "/") {
+      const prefix = new RegExp(
+        source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?=$|[/\\s:'\"])",
+        "g",
+      );
+      for (const key of Object.keys(env)) env[key] = env[key].replace(prefix, () => worktree);
+    }
+    for (const key of Object.keys(env)) if (key.startsWith("LOOM_")) delete env[key];
+    delete env.PWD;
+    delete env.OLDPWD;
+    return env;
+  } catch {
+    throw new WorkerDiagnostic("sessionEnvironmentMissing");
   }
 };
 
