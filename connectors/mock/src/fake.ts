@@ -72,7 +72,7 @@ export class FakeSession implements AgentSession {
    *  adapters' A2 behaviour). */
   #compactInterrupted = false;
 
-  constructor(id: string, opts: { model?: string; mode: SessionMode }, resumed = false) {
+  constructor(id: string, opts: Pick<CreateSessionOptions, "model" | "mode">, resumed = false) {
     this.id = id;
     this.providerRef = `fake-${id}`;
     this.resumed = resumed;

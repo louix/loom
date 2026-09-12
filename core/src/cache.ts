@@ -1,3 +1,4 @@
+import { z } from "zod";
 /**
  * Prompt-cache arithmetic shared by every provider path. Anthropic reports the
  * per-TTL breakdown of a cache write the same way whether it arrives through
@@ -10,10 +11,11 @@
  * each ephemeral bucket. Fields are optional and nullable — older providers
  * omit the object entirely.
  */
-export interface CacheCreation {
-  ephemeral_5m_input_tokens?: number | null;
-  ephemeral_1h_input_tokens?: number | null;
-}
+export const cacheCreationSchema = z.object({
+  ephemeral_5m_input_tokens: z.union([z.number().nonnegative(), z.null()]).optional(),
+  ephemeral_1h_input_tokens: z.union([z.number().nonnegative(), z.null()]).optional(),
+});
+export type CacheCreation = z.infer<typeof cacheCreationSchema>;
 
 /**
  * Which prompt-cache TTL a request wrote at, in minutes — 60, 5, or 0 when it

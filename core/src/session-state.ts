@@ -1,3 +1,4 @@
+import { z } from "zod";
 /**
  * A session's turn state as one closed union (design spec §4). The client never
  * sets it; the daemon derives it from the adapter's `HarnessEvent` stream
@@ -14,17 +15,39 @@
  * `status_changed` event and the `status_history` row.
  */
 import { absurd } from "./absurd.ts";
-import type { AwaitReason } from "./events.ts";
+export const awaitReasonSchema = z.enum(["permission", "question", "plan_review", "user_question"]);
+export type AwaitReason = z.infer<typeof awaitReasonSchema>;
 
-export type SessionState =
-  | { readonly kind: "starting" }
-  | { readonly kind: "running" }
-  | { readonly kind: "awaiting_input"; readonly on: AwaitReason }
-  | { readonly kind: "interrupted"; readonly by: "user" | "stream_ended" }
-  | { readonly kind: "idle" }
-  | { readonly kind: "working_background" }
-  | { readonly kind: "error"; readonly message: string }
-  | { readonly kind: "done" };
+export const sessionStateSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("starting"),
+  }),
+  z.object({
+    kind: z.literal("running"),
+  }),
+  z.object({
+    kind: z.literal("awaiting_input"),
+    on: awaitReasonSchema,
+  }),
+  z.object({
+    kind: z.literal("interrupted"),
+    by: z.union([z.literal("user"), z.literal("stream_ended")]),
+  }),
+  z.object({
+    kind: z.literal("idle"),
+  }),
+  z.object({
+    kind: z.literal("working_background"),
+  }),
+  z.object({
+    kind: z.literal("error"),
+    message: z.string(),
+  }),
+  z.object({
+    kind: z.literal("done"),
+  }),
+]);
+export type SessionState = z.infer<typeof sessionStateSchema>;
 
 export type SessionStateKind = SessionState["kind"];
 
@@ -167,4 +190,4 @@ export const sessionStateDetail = (s: SessionState): string | null =>
   })(s);
 
 const isAwaitReason = (s: string | null): s is AwaitReason =>
-  s === "permission" || s === "question" || s === "plan_review" || s === "user_question";
+  awaitReasonSchema.safeParse(s).success;

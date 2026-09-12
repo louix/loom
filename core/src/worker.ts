@@ -1,15 +1,18 @@
-import type { TranscriptMessage } from "./transcript.ts";
-/** Private connector protocol. Never route these messages through daemon admin RPC. */
-import type { HarnessEvent } from "./events.ts";
-import { MCP_CAPABILITIES } from "./types.ts";
-import { connectorWireConfigSchema, type ConnectorWireConfig } from "./connector.ts";
-import type {
-  AdapterSnapshot,
-  AgentSession,
-  CreateSessionOptions,
-  ProviderCapabilities,
-  SessionRef,
-  DiscoveredModel,
+import { z } from "zod";
+import { transcriptMessageSchema } from "./transcript.ts";
+import { harnessEventSchema } from "./events.ts";
+import { connectorWireConfigSchema } from "./connector.ts";
+import { decode } from "./schema.ts";
+import {
+  adapterSnapshotSchema,
+  createSessionOptionsSchema,
+  sessionRefSchema,
+  providerCapabilitiesSchema,
+  discoveredModelSchema,
+  sessionModeSchema,
+  permissionDecisionSchema,
+  planDecisionSchema,
+  mcpServerHandleSchema,
 } from "./types.ts";
 
 export const WORKER_VERSION = 3;
@@ -38,414 +41,100 @@ export class WorkerDiagnostic extends Error {
   }
 }
 
-export interface WorkerBinding {
-  generation: string;
-  providerId: string;
-  sessionId: string;
-  connector:
-    | "@loom/connector-mock"
-    | "@loom/connector-claude"
-    | "@loom/connector-generic"
-    | "@loom/connector-gemini"
-    | "@loom/connector-chatgpt";
-  config: ConnectorWireConfig;
-  role: WorkerRole;
-  baseBranch?: string;
-}
-
-export type WorkerRole = "session" | "title" | "discovery" | "enumeration" | "capabilities";
+/** Private connector protocol. Never route these frames through daemon admin RPC. */
+export const workerRoleSchema = z.enum([
+  "session",
+  "title",
+  "discovery",
+  "enumeration",
+  "capabilities",
+]);
+export type WorkerRole = z.infer<typeof workerRoleSchema>;
+export const workerBindingSchema = z.object({
+  generation: z.string(),
+  providerId: z.string(),
+  sessionId: z.string(),
+  connector: z.enum([
+    "@loom/connector-mock",
+    "@loom/connector-claude",
+    "@loom/connector-generic",
+    "@loom/connector-gemini",
+    "@loom/connector-chatgpt",
+  ]),
+  config: connectorWireConfigSchema.strict(),
+  role: workerRoleSchema,
+  baseBranch: z.string().optional(),
+});
+export type WorkerBinding = z.infer<typeof workerBindingSchema>;
 export type WorkerProfile = Pick<WorkerBinding, "connector" | "config" | "baseBranch">;
 
-type SessionMethod = Exclude<keyof AgentSession, "id" | "providerRef" | "events" | "snapshot">;
-type SessionCommand = {
-  [K in SessionMethod]: { method: K; args: Parameters<AgentSession[K]> };
-}[SessionMethod];
-export type WorkerCommand =
-  | { method: "seedTranscript"; args: [TranscriptMessage[]] }
-  | { method: "initialize"; args: [WorkerBinding] }
-  | { method: "create"; args: [CreateSessionOptions] }
-  | { method: "resume"; args: [SessionRef] }
-  | { method: "listModels"; args: [] }
-  | { method: "listPersistedSessions"; args: [] }
-  | SessionCommand;
-export type WorkerRequest = { kind: "request"; id: number } & WorkerCommand;
-export type WorkerFrame =
-  | { kind: "transcript"; from: number; messages: TranscriptMessage[] }
-  | { kind: "hello"; version: number }
-  | { kind: "ready"; id: number; generation: string; capabilities: ProviderCapabilities }
-  | { kind: "response"; id: number; error?: { code: "operation_failed"; message: string } }
-  | { kind: "state"; snapshot: AdapterSnapshot }
-  | { kind: "event"; seq: number; event: HarnessEvent }
-  | { kind: "models"; id: number; models: DiscoveredModel[] }
-  | { kind: "sessions"; id: number; sessions: SessionRef[] }
-  | { kind: "end" };
+// Runtime MCP mounts must be resolved by the host before reaching a connector.
+const mountedMcp = mcpServerHandleSchema.refine((m) => m.spec.transport !== "runtime");
+const create = createSessionOptionsSchema.extend({ mcpServers: z.array(mountedMcp) });
+const resume = sessionRefSchema.extend({ mcpServers: z.array(mountedMcp).optional() });
+const command = <M extends string, A extends z.ZodType>(method: M, args: A) =>
+  z.object({ method: z.literal(method), args });
+export const workerCommandSchema = z.discriminatedUnion("method", [
+  command("initialize", z.tuple([workerBindingSchema])),
+  command("seedTranscript", z.tuple([z.array(transcriptMessageSchema)])),
+  command("create", z.tuple([create])),
+  command("resume", z.tuple([resume])),
+  command("send", z.tuple([z.string()])),
+  command("setModel", z.tuple([z.string()])),
+  command("setEffort", z.tuple([z.string()])),
+  command("setMode", z.tuple([sessionModeSchema])),
+  command("compact", z.tuple([z.string().optional()])),
+  command("rewind", z.tuple([z.int().nonnegative(), z.string().optional()])),
+  command("respondToPermission", z.tuple([z.string(), permissionDecisionSchema])),
+  command("answerQuestion", z.tuple([z.string(), z.string()])),
+  command("respondToPlan", z.tuple([z.string(), planDecisionSchema])),
+  command("interrupt", z.tuple([])),
+  command("close", z.tuple([])),
+  command("listModels", z.tuple([])),
+  command("listPersistedSessions", z.tuple([])),
+]);
+export type WorkerCommand = z.infer<typeof workerCommandSchema>;
+export const workerRequestSchema = workerCommandSchema.and(
+  z.object({ kind: z.literal("request"), id: z.int().positive() }),
+);
+export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 
-const wireConfig = connectorWireConfigSchema.strict();
-
-const record = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
-const str = (v: unknown): v is string => typeof v === "string";
-const mode = (v: unknown) => ["default", "plan", "acceptEdits", "auto"].includes(String(v));
-const id = (v: unknown) => Number.isSafeInteger(v) && Number(v) > 0;
-const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
-const optional = (v: unknown, check: (v: unknown) => boolean) => v === undefined || check(v);
-const strings = (v: unknown) => Array.isArray(v) && v.every(str);
-const tokens = (v: unknown) =>
-  record(v) && ["input", "output", "cacheRead", "cacheWrite"].every((k) => finite(v[k]));
-const transcriptMessages = (v: unknown) =>
-  Array.isArray(v) && v.every((m) => record(m) && str(m.role) && "content" in m);
-const nullableString = (v: unknown) => v === null || str(v);
-const state = (v: unknown): boolean => {
-  if (!record(v)) return false;
-  switch (v.kind) {
-    case "starting":
-    case "running":
-    case "idle":
-    case "working_background":
-    case "done":
-      return true;
-    case "error":
-      return str(v.message);
-    case "interrupted":
-      return v.by === "user" || v.by === "stream_ended";
-    case "awaiting_input":
-      return ["permission", "question", "plan_review", "user_question"].includes(String(v.on));
-    default:
-      return false;
-  }
-};
-const permission = (v: unknown) =>
-  record(v) &&
-  (v.behavior === "allow"
-    ? optional(v.updatedInput, record)
-    : v.behavior === "deny" && optional(v.message, str));
-const plan = (v: unknown) =>
-  record(v) &&
-  ["implement", "implement_fresh", "revise", "discuss", "handoff"].includes(String(v.action)) &&
-  optional(v.mode, mode) &&
-  optional(v.model, str) &&
-  optional(v.effort, str) &&
-  (v.action !== "revise" || str(v.plan)) &&
-  (v.action !== "discuss" || str(v.message));
-
-const stringMap = (v: unknown) => record(v) && Object.values(v).every(str);
-const mcp = (v: unknown): boolean => {
-  if (
-    !record(v) ||
-    !str(v.name) ||
-    !record(v.spec) ||
-    !optional(
-      v.defaultFor,
-      (x) => Array.isArray(x) && x.every((c) => MCP_CAPABILITIES.includes(c)),
-    ) ||
-    !optional(v.credentialEnv, str)
-  )
-    return false;
-  const s = v.spec;
-  if (s.transport === "stdio")
-    return str(s.command) && optional(s.args, strings) && optional(s.env, stringMap);
-  return s.transport === "http" && str(s.url) && optional(s.headers, stringMap);
-};
-
-const sessionOptions = (v: unknown, resume: boolean): boolean => {
-  if (!record(v) || !str(v.sessionId) || !str(v.cwd)) return false;
-  if (resume ? !str(v.providerRef) : !str(v.prompt) || !mode(v.mode)) return false;
-  if (!optional(v.mode, mode)) return false;
-  for (const key of ["model", "effort", "parentId", "systemPromptAppend", "workspaceRoot"]) {
-    if (!optional(v[key], str)) return false;
-  }
-  if (
-    !optional(
-      v.initHooks,
-      (x) =>
-        record(x) &&
-        stringMap(x.env) &&
-        Array.isArray(x.hooks) &&
-        x.hooks.length <= 64 &&
-        x.hooks.every(
-          (h) =>
-            record(h) &&
-            str(h.name) &&
-            str(h.run) &&
-            h.run.length <= 65536 &&
-            finite(h.timeoutMs) &&
-            Number(h.timeoutMs) >= 1000 &&
-            Number(h.timeoutMs) <= 600000,
-        ),
-    )
-  )
-    return false;
-  if (!optional(v.repoInstructions, nullableString)) return false;
-  for (const key of ["disableTools", "settingSources"])
-    if (!optional(v[key], strings)) return false;
-  for (const key of ["loomServer", "oneShot"])
-    if (!optional(v[key], (x) => typeof x === "boolean")) return false;
-  if (
-    !optional(
-      v.subagents,
-      (x) =>
-        Array.isArray(x) &&
-        x.every(
-          (a) =>
-            record(a) &&
-            str(a.name) &&
-            str(a.description) &&
-            str(a.prompt) &&
-            optional(a.tools, strings) &&
-            optional(a.model, str),
-        ),
-    )
-  )
-    return false;
-  return (
-    (resume && v.mcpServers === undefined) ||
-    (Array.isArray(v.mcpServers) && v.mcpServers.every(mcp))
-  );
-};
-
-export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
-  if (!record(v) || v.kind !== "request" || !id(v.id) || !Array.isArray(v.args))
-    throw new Error("invalid worker request");
-  const a = v.args;
-  let valid = false;
-  switch (v.method) {
-    case "initialize": {
-      const b = a[0];
-      valid =
-        a.length === 1 &&
-        record(b) &&
-        str(b.generation) &&
-        str(b.providerId) &&
-        str(b.sessionId) &&
-        ["session", "title", "discovery", "enumeration", "capabilities"].includes(String(b.role)) &&
-        optional(b.baseBranch, str) &&
-        [
-          "@loom/connector-mock",
-          "@loom/connector-claude",
-          "@loom/connector-generic",
-          "@loom/connector-gemini",
-          "@loom/connector-chatgpt",
-        ].includes(String(b.connector)) &&
-        wireConfig.safeParse(b.config).success;
-      break;
-    }
-    case "seedTranscript":
-      valid = a.length === 1 && transcriptMessages(a[0]);
-      break;
-    case "create":
-    case "resume":
-      valid = a.length === 1 && sessionOptions(a[0], v.method === "resume");
-      break;
-    case "send":
-    case "setModel":
-    case "setEffort":
-      valid = a.length === 1 && str(a[0]);
-      break;
-    case "setMode":
-      valid = a.length === 1 && mode(a[0]);
-      break;
-    case "compact":
-      valid = a.length === 0 || (a.length === 1 && str(a[0]));
-      break;
-    case "rewind":
-      valid =
-        (a.length === 1 || a.length === 2) &&
-        Number.isSafeInteger(a[0]) &&
-        Number(a[0]) >= 0 &&
-        optional(a[1], str);
-      break;
-    case "respondToPermission":
-      valid = a.length === 2 && str(a[0]) && permission(a[1]);
-      break;
-    case "answerQuestion":
-      valid = a.length === 2 && str(a[0]) && str(a[1]);
-      break;
-    case "respondToPlan":
-      valid = a.length === 2 && str(a[0]) && plan(a[1]);
-      break;
-    case "interrupt":
-    case "close":
-    case "listModels":
-    case "listPersistedSessions":
-      valid = a.length === 0;
-      break;
-  }
-  if (!valid) throw new Error("invalid worker method or arguments");
-  return v as unknown as WorkerRequest;
-};
-
-export const decodeWorkerFrame = (v: unknown): WorkerFrame => {
-  if (!record(v)) throw new Error("invalid worker frame");
-  let valid = false;
-  switch (v.kind) {
-    case "transcript":
-      valid = Number.isSafeInteger(v.from) && Number(v.from) >= 0 && transcriptMessages(v.messages);
-      break;
-    case "hello":
-      valid = Number.isSafeInteger(v.version);
-      break;
-    case "end":
-      valid = true;
-      break;
-    case "response":
-      valid =
-        id(v.id) &&
-        optional(v.error, (e) => record(e) && e.code === "operation_failed" && str(e.message));
-      break;
-    case "models":
-      valid =
-        id(v.id) &&
-        Array.isArray(v.models) &&
-        v.models.every(
-          (m) =>
-            record(m) &&
-            str(m.id) &&
-            optional(m.label, str) &&
-            optional(m.context, finite) &&
-            optional(m.supportsEffort, (x) => typeof x === "boolean") &&
-            optional(m.effortLevels, strings) &&
-            optional(m.defaultEffort, str),
-        );
-      break;
-    case "sessions":
-      valid =
-        id(v.id) && Array.isArray(v.sessions) && v.sessions.every((s) => sessionOptions(s, true));
-      break;
-    case "ready": {
-      const c = v.capabilities;
-      valid =
-        id(v.id) &&
-        str(v.generation) &&
-        record(c) &&
-        [
-          "liveModeSwitch",
-          "liveModelSwitch",
-          "forking",
-          "rewind",
-          "subagents",
-          "compaction",
-          "compactionInstructions",
-          "ownsTranscript",
-          "oneShot",
-          "partialTokens",
-        ].every((k) => typeof c[k] === "boolean") &&
-        strings(c.models) &&
-        Array.isArray(c.permissionModes) &&
-        c.permissionModes.every(mode);
-      break;
-    }
-    case "state": {
-      const s = v.snapshot;
-      valid =
-        record(s) &&
-        state(s.status) &&
-        nullableString(s.providerRef) &&
-        nullableString(s.model) &&
-        nullableString(s.effort) &&
-        mode(s.mode) &&
-        tokens(s.usage) &&
-        ["contextUsed", "contextLimit", "costUsd", "turns"].every((k) => finite(s[k])) &&
-        optional(s.rewindRef, str);
-      break;
-    }
-    case "event": {
-      const e = v.event;
-      if (!id(v.seq) || !record(e) || !str(e.sessionId) || !finite(e.ts)) break;
-      if (!optional(e.agentId, str) || !optional(e.ordinal, finite)) break;
-      switch (e.type) {
-        case "assistant_text":
-        case "thinking":
-          valid = str(e.text);
-          break;
-        case "compact":
-          valid =
-            ["manual", "auto"].includes(String(e.trigger)) && finite(e.before) && finite(e.after);
-          break;
-        case "error":
-          valid = str(e.message) && typeof e.fatal === "boolean";
-          break;
-        case "result":
-          valid = e.kind === "ok" ? optional(e.summary, str) : e.kind === "error" && str(e.error);
-          break;
-        case "permission_request":
-          valid = str(e.id) && str(e.tool);
-          break;
-        case "question":
-          valid = str(e.id) && str(e.question) && optional(e.context, str);
-          break;
-        case "plan_review":
-          valid = str(e.id) && str(e.plan);
-          break;
-        case "status_changed":
-          valid = state(e.status);
-          break;
-        case "startup_progress":
-          valid = str(e.message);
-          break;
-        case "usage":
-          valid =
-            tokens(e.tokens) &&
-            finite(e.contextUsed) &&
-            finite(e.contextLimit) &&
-            optional(e.costDeltaUsd, finite) &&
-            optional(e.cacheTtlMinutes, finite) &&
-            optional(
-              e.cacheCreation,
-              (value) =>
-                record(value) &&
-                optional(
-                  value.ephemeral_5m_input_tokens,
-                  (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-                ) &&
-                optional(
-                  value.ephemeral_1h_input_tokens,
-                  (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-                ),
-            );
-          break;
-        case "tool_call":
-          valid = str(e.id) && str(e.name) && "input" in e;
-          break;
-        case "tool_result":
-          valid = str(e.id) && typeof e.ok === "boolean" && "output" in e;
-          break;
-        case "answer":
-          valid = str(e.id) && str(e.text);
-          break;
-        case "context":
-          valid = finite(e.contextUsed) && optional(e.contextLimit, finite);
-          break;
-        case "compact_progress":
-          valid = finite(e.elapsedMs) && finite(e.generated) && finite(e.before);
-          break;
-        case "subagent_started":
-          valid = str(e.subagentId) && str(e.name);
-          break;
-        case "subagent_stopped":
-          valid = str(e.subagentId);
-          break;
-        case "background_tasks":
-          valid =
-            Array.isArray(e.tasks) &&
-            e.tasks.every(
-              (t) =>
-                record(t) &&
-                str(t.id) &&
-                str(t.title) &&
-                ["subagent", "shell", "workflow", "monitor", "other"].includes(String(t.kind)),
-            );
-          break;
-        case "rate_limit":
-          valid =
-            ["allowed", "allowed_warning", "rejected"].includes(String(e.status)) &&
-            optional(e.window, str) &&
-            optional(e.utilization, finite) &&
-            optional(e.resetsAt, finite);
-          break;
-      }
-      break;
-    }
-  }
-  if (!valid) throw new Error("invalid worker frame payload");
-  return v as unknown as WorkerFrame;
-};
+export const workerFrameSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("transcript"),
+    from: z.int().nonnegative(),
+    messages: z.array(transcriptMessageSchema),
+  }),
+  z.object({ kind: z.literal("hello"), version: z.int() }),
+  z.object({
+    kind: z.literal("ready"),
+    id: z.int().positive(),
+    generation: z.string(),
+    capabilities: providerCapabilitiesSchema,
+  }),
+  z.object({
+    kind: z.literal("response"),
+    id: z.int().positive(),
+    error: z.object({ code: z.literal("operation_failed"), message: z.string() }).optional(),
+  }),
+  z.object({ kind: z.literal("state"), snapshot: adapterSnapshotSchema }),
+  z.object({
+    kind: z.literal("event"),
+    seq: z.int().positive(),
+    event: harnessEventSchema.refine(
+      (e) => !["rewind", "provider_changed", "user_message"].includes(e.type),
+    ),
+  }),
+  z.object({
+    kind: z.literal("models"),
+    id: z.int().positive(),
+    models: z.array(discoveredModelSchema),
+  }),
+  z.object({ kind: z.literal("sessions"), id: z.int().positive(), sessions: z.array(resume) }),
+  z.object({ kind: z.literal("end") }),
+]);
+export type WorkerFrame = z.infer<typeof workerFrameSchema>;
+export const decodeWorkerRequest = (value: unknown): WorkerRequest =>
+  decode(workerRequestSchema, value, "invalid worker method or arguments");
+export const decodeWorkerFrame = (value: unknown): WorkerFrame =>
+  decode(workerFrameSchema, value, "invalid worker frame payload");

@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { opaqueSchema } from "./schema.ts";
 /**
  * What a blocked turn is waiting on, as one closed union (design spec §4's
  * companion to {@link SessionState}). Each variant carries its request id *and*
@@ -13,16 +15,17 @@ import { absurd } from "./absurd.ts";
 import type { HarnessEvent } from "./events.ts";
 
 /** A tool call gated on approve/deny. */
-export interface PermissionInteraction {
-  readonly kind: "permission";
-  readonly id: string;
-  readonly tool: string;
-  readonly input: unknown;
+export const permissionInteractionSchema = z.object({
+  kind: z.literal("permission"),
+  id: z.string(),
+  tool: z.string(),
+  input: opaqueSchema,
   /** Adapter-supplied alternatives (Claude's `suggestions`), passed through verbatim. */
-  readonly suggestions?: unknown;
+  suggestions: opaqueSchema.optional(),
   /** When the request was raised (epoch ms). */
-  readonly at: number;
-}
+  at: z.number(),
+});
+export type PermissionInteraction = z.infer<typeof permissionInteractionSchema>;
 
 /**
  * The SDK's own `AskUserQuestion` tool — a multiple-choice prompt rather than a
@@ -30,37 +33,42 @@ export interface PermissionInteraction {
  * `respondToPermission`), so it keeps the tool call's `input`; the questions are
  * parsed out of it for display.
  */
-export interface UserQuestionInteraction {
-  readonly kind: "user_question";
-  readonly id: string;
-  readonly tool: string;
-  readonly input: unknown;
-  readonly at: number;
-}
+export const userQuestionInteractionSchema = z.object({
+  kind: z.literal("user_question"),
+  id: z.string(),
+  tool: z.string(),
+  input: opaqueSchema,
+  at: z.number(),
+});
+export type UserQuestionInteraction = z.infer<typeof userQuestionInteractionSchema>;
 
 /** Loom's own `ask_user` tool — a free-text answer. */
-export interface QuestionInteraction {
-  readonly kind: "question";
-  readonly id: string;
-  readonly question: string;
+export const questionInteractionSchema = z.object({
+  kind: z.literal("question"),
+  id: z.string(),
+  question: z.string(),
   /** Background the agent supplied with the question. */
-  readonly context?: string;
-  readonly at: number;
-}
+  context: z.string().optional(),
+  at: z.number(),
+});
+export type QuestionInteraction = z.infer<typeof questionInteractionSchema>;
 
 /** An `ExitPlanMode` plan awaiting a human decision. */
-export interface PlanReviewInteraction {
-  readonly kind: "plan_review";
-  readonly id: string;
-  readonly plan: string;
-  readonly at: number;
-}
+export const planReviewInteractionSchema = z.object({
+  kind: z.literal("plan_review"),
+  id: z.string(),
+  plan: z.string(),
+  at: z.number(),
+});
+export type PlanReviewInteraction = z.infer<typeof planReviewInteractionSchema>;
 
-export type SessionInteraction =
-  | PermissionInteraction
-  | UserQuestionInteraction
-  | QuestionInteraction
-  | PlanReviewInteraction;
+export const sessionInteractionSchema = z.discriminatedUnion("kind", [
+  permissionInteractionSchema,
+  userQuestionInteractionSchema,
+  questionInteractionSchema,
+  planReviewInteractionSchema,
+]);
+export type SessionInteraction = z.infer<typeof sessionInteractionSchema>;
 
 interface FoldInteraction<B> {
   readonly onPermission: (i: PermissionInteraction) => B;

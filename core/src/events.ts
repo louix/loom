@@ -1,107 +1,119 @@
-import type { CacheCreation } from "@loom/core/cache";
+import { z } from "zod";
+import { opaqueSchema } from "./schema.ts";
+import { cacheCreationSchema } from "./cache.ts";
 /**
  * The normalized event union every provider adapter emits (design spec §3).
  * Milestone 1 has no adapter yet, but the daemon's event log, persistence and
  * wire protocol are all typed against this union so adapters slot in later
  * without reshaping anything downstream.
  */
-import type { SessionState, SessionStateKind } from "./session-state.ts";
+import { sessionStateSchema, type SessionState, type SessionStateKind } from "./session-state.ts";
 
 /**
  * What a blocked turn is waiting on. `user_question` is the SDK's own
  * multiple-choice `AskUserQuestion` tool (answered, not approved/denied);
  * `question` is Loom's `ask_user`.
  */
-export type AwaitReason = "permission" | "question" | "plan_review" | "user_question";
+export type { AwaitReason } from "./session-state.ts";
 
 // The session's turn state is a closed union — see `./session-state.ts`.
 export type { SessionState, SessionStateKind };
 
-export interface TokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-}
+export const tokenUsageSchema = z.object({
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+});
+export type TokenUsage = z.infer<typeof tokenUsageSchema>;
 
-export interface HarnessEventBase {
+export const harnessEventBaseSchema = z.object({
   /** Session this event belongs to. */
-  sessionId: string;
+  sessionId: z.string(),
   /** Sub-agent that produced it, when applicable. */
-  agentId?: string;
+  agentId: z.string().optional(),
   /** Adapter-side monotonic ordinal within the session, if the adapter provides one. */
-  ordinal?: number;
+  ordinal: z.number().optional(),
   /** Wall-clock time the daemon observed the event. */
-  ts: number;
-}
+  ts: z.number(),
+});
+export type HarnessEventBase = z.infer<typeof harnessEventBaseSchema>;
 
-export interface AssistantTextEvent extends HarnessEventBase {
-  type: "assistant_text";
-  text: string;
-}
+export const assistantTextEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("assistant_text"),
+  text: z.string(),
+});
+export type AssistantTextEvent = z.infer<typeof assistantTextEventSchema>;
 
-export interface ThinkingEvent extends HarnessEventBase {
-  type: "thinking";
-  text: string;
-}
+export const thinkingEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("thinking"),
+  text: z.string(),
+});
+export type ThinkingEvent = z.infer<typeof thinkingEventSchema>;
 
-export interface ToolCallEvent extends HarnessEventBase {
-  type: "tool_call";
-  id: string;
-  name: string;
-  input: unknown;
-}
+export const toolCallEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("tool_call"),
+  id: z.string(),
+  name: z.string(),
+  input: opaqueSchema,
+});
+export type ToolCallEvent = z.infer<typeof toolCallEventSchema>;
 
-export interface ToolResultEvent extends HarnessEventBase {
-  type: "tool_result";
-  id: string;
-  ok: boolean;
-  output: unknown;
-}
+export const toolResultEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("tool_result"),
+  id: z.string(),
+  ok: z.boolean(),
+  output: opaqueSchema,
+});
+export type ToolResultEvent = z.infer<typeof toolResultEventSchema>;
 
-export interface PermissionRequestEvent extends HarnessEventBase {
-  type: "permission_request";
-  id: string;
-  tool: string;
-  input: unknown;
-  suggestions?: unknown;
-}
+export const permissionRequestEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("permission_request"),
+  id: z.string(),
+  tool: z.string(),
+  input: opaqueSchema,
+  suggestions: opaqueSchema.optional(),
+});
+export type PermissionRequestEvent = z.infer<typeof permissionRequestEventSchema>;
 
 /** The agent called the loom `ask_user` tool and is blocked on a human answer. */
-export interface QuestionEvent extends HarnessEventBase {
-  type: "question";
-  id: string;
-  question: string;
+export const questionEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("question"),
+  id: z.string(),
+  question: z.string(),
   /** Optional background the agent supplied with the question. */
-  context?: string;
-}
+  context: z.string().optional(),
+});
+export type QuestionEvent = z.infer<typeof questionEventSchema>;
 
 /** A human answered an outstanding {@link QuestionEvent}; the turn resumes. */
-export interface AnswerEvent extends HarnessEventBase {
-  type: "answer";
-  id: string;
-  text: string;
-}
+export const answerEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("answer"),
+  id: z.string(),
+  text: z.string(),
+});
+export type AnswerEvent = z.infer<typeof answerEventSchema>;
 
 /**
  * In `plan` mode the agent called the harness's "present a plan" tool. The turn
  * blocks on a {@link PlanDecision} — surfaced as `awaiting_input` / `plan_review`.
  */
-export interface PlanReviewEvent extends HarnessEventBase {
-  type: "plan_review";
-  id: string;
-  plan: string;
-}
+export const planReviewEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("plan_review"),
+  id: z.string(),
+  plan: z.string(),
+});
+export type PlanReviewEvent = z.infer<typeof planReviewEventSchema>;
 
-export interface UsageEvent extends HarnessEventBase {
-  type: "usage";
-  tokens: TokenUsage;
+export const usageEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("usage"),
+  tokens: tokenUsageSchema,
   /** Input tokens on the most recent request — numerator for context-window fill. */
-  contextUsed: number;
+  contextUsed: z.number(),
   /** Model context limit from Loom's catalogue (not the SDK). */
-  contextLimit: number;
+  contextLimit: z.number(),
   /** Incremental dollar cost attributed to this event, if computed. */
-  costDeltaUsd?: number;
+  costDeltaUsd: z.number().optional(),
   /**
    * The prompt-cache TTL the provider actually wrote at on this turn, in
    * minutes (5 or 60). Ground truth read back off the response — not the TTL
@@ -109,10 +121,11 @@ export interface UsageEvent extends HarnessEventBase {
    * plan outside its usage limits, Bedrock) shows up instead of being assumed.
    * Absent when the turn wrote no cache, or the provider reports no split.
    */
-  cacheTtlMinutes?: number;
+  cacheTtlMinutes: z.number().optional(),
   /** Observed per-TTL write counts, used to price mixed cache writes. */
-  cacheCreation?: CacheCreation;
-}
+  cacheCreation: cacheCreationSchema.optional(),
+});
+export type UsageEvent = z.infer<typeof usageEventSchema>;
 
 /**
  * The context window's fill moved, with no token accounting attached. A turn
@@ -125,18 +138,19 @@ export interface UsageEvent extends HarnessEventBase {
  * transcript, read only off the session snapshot. An adapter that already
  * emits a `usage` per model request (the aisdk path) has no use for it.
  */
-export interface ContextEvent extends HarnessEventBase {
-  type: "context";
+export const contextEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("context"),
   /** Input tokens on the most recent request — numerator for context-window fill. */
-  contextUsed: number;
+  contextUsed: z.number(),
   /**
    * Model context limit from Loom's catalogue (not the SDK). Absent when the
    * adapter hasn't learned it yet (it arrives with the first completed turn) —
    * a beat without it moves the numerator and leaves the stored scale alone,
    * rather than resetting a resumed session's limit to zero.
    */
-  contextLimit?: number;
-}
+  contextLimit: z.number().optional(),
+});
+export type ContextEvent = z.infer<typeof contextEventSchema>;
 
 /**
  * The context window was compacted (`/compact`, or an automatic threshold in
@@ -144,13 +158,14 @@ export interface ContextEvent extends HarnessEventBase {
  * the boundary; `after` is 0 when the provider doesn't report it until the next
  * turn. Status is unaffected.
  */
-export interface CompactEvent extends HarnessEventBase {
-  type: "compact";
-  trigger: "manual" | "auto";
-  before: number;
-  after: number;
-  summary?: string;
-}
+export const compactEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("compact"),
+  trigger: z.union([z.literal("manual"), z.literal("auto")]),
+  before: z.number(),
+  after: z.number(),
+  summary: z.string().optional(),
+});
+export type CompactEvent = z.infer<typeof compactEventSchema>;
 
 /**
  * A heartbeat while a compaction is in flight. Summarising a long history can
@@ -160,37 +175,48 @@ export interface CompactEvent extends HarnessEventBase {
  * no true progress number for a single streamed completion. A `compact` (or a
  * fatal `error`) ends the run. Not persisted or shown in the transcript.
  */
-export interface CompactProgressEvent extends HarnessEventBase {
-  type: "compact_progress";
+export const compactProgressEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("compact_progress"),
   /** ms since the compaction started. */
-  elapsedMs: number;
+  elapsedMs: z.number(),
   /** chars of summary text streamed so far. */
-  generated: number;
+  generated: z.number(),
   /** context-token count at the start, for a "compacting 120k" label. */
-  before: number;
-}
+  before: z.number(),
+});
+export type CompactProgressEvent = z.infer<typeof compactProgressEventSchema>;
 
-export interface SubagentStartedEvent extends HarnessEventBase {
-  type: "subagent_started";
-  subagentId: string;
-  name: string;
-}
+export const subagentStartedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("subagent_started"),
+  subagentId: z.string(),
+  name: z.string(),
+});
+export type SubagentStartedEvent = z.infer<typeof subagentStartedEventSchema>;
 
-export interface SubagentStoppedEvent extends HarnessEventBase {
-  type: "subagent_stopped";
-  subagentId: string;
-}
+export const subagentStoppedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("subagent_stopped"),
+  subagentId: z.string(),
+});
+export type SubagentStoppedEvent = z.infer<typeof subagentStoppedEventSchema>;
 
 /** Coarse classification of a background task, for an icon / label. */
-export type BackgroundTaskKind = "subagent" | "shell" | "workflow" | "monitor" | "other";
+export const backgroundTaskKindSchema = z.union([
+  z.literal("subagent"),
+  z.literal("shell"),
+  z.literal("workflow"),
+  z.literal("monitor"),
+  z.literal("other"),
+]);
+export type BackgroundTaskKind = z.infer<typeof backgroundTaskKindSchema>;
 
-export interface BackgroundTaskInfo {
+export const backgroundTaskInfoSchema = z.object({
   /** The provider's task id — stable for the task's lifetime. */
-  id: string;
-  kind: BackgroundTaskKind;
+  id: z.string(),
+  kind: backgroundTaskKindSchema,
   /** A one-line human label (task description, or the shell command). */
-  title: string;
-}
+  title: z.string(),
+});
+export type BackgroundTaskInfo = z.infer<typeof backgroundTaskInfoSchema>;
 
 /**
  * The session's full set of live background tasks after a membership change —
@@ -204,35 +230,39 @@ export interface BackgroundTaskInfo {
  * State-bearing: a non-empty set holds a settled turn in `working_background`
  * instead of `idle`; an empty set releases it.
  */
-export interface BackgroundTasksEvent extends HarnessEventBase {
-  type: "background_tasks";
-  tasks: BackgroundTaskInfo[];
-}
+export const backgroundTasksEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("background_tasks"),
+  tasks: z.array(backgroundTaskInfoSchema),
+});
+export type BackgroundTasksEvent = z.infer<typeof backgroundTasksEventSchema>;
 
-export interface StatusChangedEvent extends HarnessEventBase {
-  type: "status_changed";
-  status: SessionState;
+export const statusChangedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("status_changed"),
+  status: sessionStateSchema,
   /** An audit breadcrumb for the transition (`"rewind"`, `"resumed"`, …), not part of the state. */
-  note?: string;
-}
+  note: z.string().optional(),
+});
+export type StatusChangedEvent = z.infer<typeof statusChangedEventSchema>;
 
 /** Host startup activity, available before an agent's event stream exists. */
-export interface StartupProgressEvent extends HarnessEventBase {
-  type: "startup_progress";
-  message: string;
-}
+export const startupProgressEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("startup_progress"),
+  message: z.string(),
+});
+export type StartupProgressEvent = z.infer<typeof startupProgressEventSchema>;
 
-export interface ErrorEvent extends HarnessEventBase {
-  type: "error";
-  message: string;
-  fatal: boolean;
-}
+export const errorEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("error"),
+  message: z.string(),
+  fatal: z.boolean(),
+});
+export type ErrorEvent = z.infer<typeof errorEventSchema>;
 
 /** A turn ended cleanly. `summary` is the model's closing text, if any. */
-export interface ResultOkEvent extends HarnessEventBase {
-  type: "result";
-  kind: "ok";
-  summary?: string;
+export const resultOkEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("result"),
+  kind: z.literal("ok"),
+  summary: z.string().optional(),
   /**
    * Why the turn ended, when it wasn't the model stopping on its own.
    * `step_limit` — the aisdk per-segment step ceiling tripped
@@ -240,27 +270,34 @@ export interface ResultOkEvent extends HarnessEventBase {
    * session is left `idle`, so a plain `send` continues it. Absent on a normal
    * finish.
    */
-  stopReason?: "step_limit";
-}
+  stopReason: z.literal("step_limit").optional(),
+});
+export type ResultOkEvent = z.infer<typeof resultOkEventSchema>;
 
 /** A turn ended on a failure. `error` is always populated. */
-export interface ResultErrorEvent extends HarnessEventBase {
-  type: "result";
-  kind: "error";
-  error: string;
-}
+export const resultErrorEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("result"),
+  kind: z.literal("error"),
+  error: z.string(),
+});
+export type ResultErrorEvent = z.infer<typeof resultErrorEventSchema>;
 
-export type ResultEvent = ResultOkEvent | ResultErrorEvent;
+export const resultEventSchema = z.discriminatedUnion("kind", [
+  resultOkEventSchema,
+  resultErrorEventSchema,
+]);
+export type ResultEvent = z.infer<typeof resultEventSchema>;
 
 /**
  * The session was rewound to an earlier turn (`undo`) — the transcript past
  * `toTurn` was discarded. Daemon-emitted, not from an adapter. Status is left
  * at `idle`.
  */
-export interface RewindEvent extends HarnessEventBase {
-  type: "rewind";
-  toTurn: number;
-}
+export const rewindEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("rewind"),
+  toTurn: z.number(),
+});
+export type RewindEvent = z.infer<typeof rewindEventSchema>;
 
 /**
  * The session's provider was switched live (`⌥p`) — the conversation continues
@@ -271,16 +308,17 @@ export interface RewindEvent extends HarnessEventBase {
  * verbatim (a switch touching Claude, whose history lives server-side) and the
  * target was seeded from a rendered digest of the prior turns instead.
  */
-export interface ProviderChangedEvent extends HarnessEventBase {
-  type: "provider_changed";
+export const providerChangedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("provider_changed"),
   /** New provider id. */
-  provider: string;
-  model: string | null;
-  effort: string | null;
+  provider: z.string(),
+  model: z.union([z.string(), z.null()]),
+  effort: z.union([z.string(), z.null()]),
   /** Provider id the session ran on before the switch. */
-  from: string;
-  lossy: boolean;
-}
+  from: z.string(),
+  lossy: z.boolean(),
+});
+export type ProviderChangedEvent = z.infer<typeof providerChangedEventSchema>;
 
 /**
  * A user message the daemon delivered while a turn was already in flight.
@@ -289,11 +327,12 @@ export interface ProviderChangedEvent extends HarnessEventBase {
  * SDK for the next turn boundary. Emitted so every client sees it land, since
  * the composing client's local echo doesn't reach the others.
  */
-export interface UserMessageEvent extends HarnessEventBase {
-  type: "user_message";
-  text: string;
-  injected: boolean;
-}
+export const userMessageEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("user_message"),
+  text: z.string(),
+  injected: z.boolean(),
+});
+export type UserMessageEvent = z.infer<typeof userMessageEventSchema>;
 
 /**
  * The provider's own account-plan usage, for a subscription session (not an
@@ -302,40 +341,43 @@ export interface UserMessageEvent extends HarnessEventBase {
  * separately, so a consumer should key state by `rateLimitType` and merge
  * rather than overwrite.
  */
-export interface RateLimitEvent extends HarnessEventBase {
-  type: "rate_limit";
-  status: "allowed" | "allowed_warning" | "rejected";
+export const rateLimitEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("rate_limit"),
+  status: z.union([z.literal("allowed"), z.literal("allowed_warning"), z.literal("rejected")]),
   /** The usage window this reading is for, e.g. `five_hour` / `seven_day`. Absent when the provider doesn't distinguish windows. */
-  window?: string;
+  window: z.string().optional(),
   /** Percentage of the window used, 0-100+. */
-  utilization?: number;
+  utilization: z.number().optional(),
   /** When the window resets (epoch ms). */
-  resetsAt?: number;
-}
+  resetsAt: z.number().optional(),
+});
+export type RateLimitEvent = z.infer<typeof rateLimitEventSchema>;
 
-export type HarnessEvent =
-  | AssistantTextEvent
-  | ThinkingEvent
-  | ToolCallEvent
-  | ToolResultEvent
-  | PermissionRequestEvent
-  | QuestionEvent
-  | AnswerEvent
-  | PlanReviewEvent
-  | UsageEvent
-  | ContextEvent
-  | CompactEvent
-  | CompactProgressEvent
-  | SubagentStartedEvent
-  | SubagentStoppedEvent
-  | BackgroundTasksEvent
-  | StatusChangedEvent
-  | StartupProgressEvent
-  | ErrorEvent
-  | ResultEvent
-  | RewindEvent
-  | ProviderChangedEvent
-  | UserMessageEvent
-  | RateLimitEvent;
+export const harnessEventSchema = z.discriminatedUnion("type", [
+  assistantTextEventSchema,
+  thinkingEventSchema,
+  toolCallEventSchema,
+  toolResultEventSchema,
+  permissionRequestEventSchema,
+  questionEventSchema,
+  answerEventSchema,
+  planReviewEventSchema,
+  usageEventSchema,
+  contextEventSchema,
+  compactEventSchema,
+  compactProgressEventSchema,
+  subagentStartedEventSchema,
+  subagentStoppedEventSchema,
+  backgroundTasksEventSchema,
+  statusChangedEventSchema,
+  startupProgressEventSchema,
+  errorEventSchema,
+  resultEventSchema,
+  rewindEventSchema,
+  providerChangedEventSchema,
+  userMessageEventSchema,
+  rateLimitEventSchema,
+]);
+export type HarnessEvent = z.infer<typeof harnessEventSchema>;
 
 export type HarnessEventType = HarnessEvent["type"];

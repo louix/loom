@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { opaqueSchema } from "./schema.ts";
 /**
  * The conversation-history store a connector uses when the provider keeps no
  * server-side memory (the aisdk case — Loom owns the whole `ModelMessage[]`).
@@ -7,10 +9,13 @@
  * `TranscriptMessage` is structural on purpose — `@loom/core` pulls in no
  * model SDK, and a real `ModelMessage` is a superset of this shape.
  */
-export interface TranscriptMessage {
-  readonly role: string;
-  readonly content: unknown;
-}
+export const transcriptMessageSchema = z
+  .object({
+    role: z.string(),
+    content: opaqueSchema,
+  })
+  .passthrough();
+export type TranscriptMessage = z.infer<typeof transcriptMessageSchema>;
 
 export interface TranscriptStore {
   /** The session's messages, in order. */
