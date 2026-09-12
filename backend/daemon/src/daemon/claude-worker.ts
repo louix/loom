@@ -3,7 +3,7 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ConnectorContext } from "../../../../core/src/connector.ts";
 import type { WorkerRole } from "../../../../core/src/worker.ts";
 import { mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
-import { withClaudeVmSessions } from "./claude-vm-provider.ts";
+import { withVmSessions } from "./vm-provider.ts";
 import { WorkerProvider } from "./worker-provider.ts";
 
 // Native descendants are not constrained by these Deno host grants. Keep this
@@ -115,5 +115,5 @@ export const createClaudeWorkerProvider = async (ctx: ConnectorContext) => {
     },
   );
 
-  return ctx.config.sessionVm ? withClaudeVmSessions(base, ctx) : base;
+  return ctx.config.sessionVm ? withVmSessions(base, ctx, "claude") : base;
 };

@@ -1,7 +1,7 @@
 /** Opt-in live check: native Codex turns, fresh-VM resume and shell/worktree writes. */
 import assert from "node:assert/strict";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { withCodexVmSessions } from "../backend/daemon/src/daemon/codex-vm-provider.ts";
+import { withVmSessions } from "../backend/daemon/src/daemon/vm-provider.ts";
 import { createProvider } from "../connectors/chatgpt/src/index.ts";
 import { makeLogger } from "../core/src/logger.ts";
 import type { AgentSession } from "../core/src/types.ts";
@@ -23,7 +23,7 @@ const ctx = {
   },
   logger: makeLogger("smoke"),
 };
-const provider = await withCodexVmSessions(createProvider(ctx), ctx);
+const provider = await withVmSessions(createProvider(ctx), ctx, "codex");
 let session: AgentSession | undefined;
 const turn = async () => {
   let text = "";

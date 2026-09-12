@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { loadConfig, resolveApiKey } from "../backend/daemon/src/config/config.ts";
-import { withAisdkVmSessions } from "../backend/daemon/src/daemon/aisdk-vm-provider.ts";
+import { withVmSessions } from "../backend/daemon/src/daemon/vm-provider.ts";
 import { createProvider as createGeneric } from "../connectors/generic/src/index.ts";
 import { createProvider as createGemini } from "../connectors/gemini/src/index.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
@@ -34,9 +34,10 @@ const ctx = {
   logger: makeLogger("smoke"),
 };
 let session: AgentSession | undefined;
-const provider = await withAisdkVmSessions(
+const provider = await withVmSessions(
   await (p.sdk === "google" ? createGemini : createGeneric)(ctx),
   ctx,
+  "aisdk",
 );
 const turn = async () => {
   for await (const event of session!.events()) {

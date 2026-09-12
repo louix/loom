@@ -60,6 +60,7 @@ class ScriptedSession extends FakeSession {
 }
 class ScriptedProvider extends FakeProvider {
   override async createSession(opts: CreateSessionOptions) {
+    if (opts.prompt === "fail-create") throw new Error("fixture create failure");
     return new ScriptedSession(opts.sessionId, opts);
   }
 }

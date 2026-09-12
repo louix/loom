@@ -1,8 +1,7 @@
 import { runSessionInit } from "../../../../core/src/session-init.ts";
 import { matchGlob } from "./hooks.ts";
 import type { CreateSessionOptions, SessionRef } from "@loom/core/types";
-import { withCodexVmSessions } from "./codex-vm-provider.ts";
-import { withAisdkVmSessions } from "./aisdk-vm-provider.ts";
+import { withVmSessions } from "./vm-provider.ts";
 /**
  * Instantiates providers by id, on demand, from a {@link ConnectorManifest} of
  * lazy thunks the CLI supplies. Nothing in the daemon's graph imports a vendor
@@ -172,8 +171,8 @@ export class ProviderRegistry {
       async (ctx) => {
         const base = await createProvider(ctx);
         if (ctx.config.sessionVm && ctx.config.sdk === "chatgpt")
-          return withCodexVmSessions(base, ctx);
-        return !isClaudeId(id) && ctx.config.sessionVm ? withAisdkVmSessions(base, ctx) : base;
+          return withVmSessions(base, ctx, "codex");
+        return !isClaudeId(id) && ctx.config.sessionVm ? withVmSessions(base, ctx, "aisdk") : base;
       },
       context,
       undefined,
