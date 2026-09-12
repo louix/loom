@@ -13,7 +13,16 @@ import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { HistoryCursor, HistoryPage, TranscriptId, PushFrame } from "@loom/core/wire";
-import { C, clock, humanTokens, inside, truncate, wrapText, type Tone } from "./theme.ts";
+import {
+  C,
+  clock,
+  humanTokens,
+  inside,
+  truncate,
+  wrapText,
+  type Tone,
+  type Palette,
+} from "./theme.ts";
 
 /** How much of the selected session's log to show:
  *   - `chat`           — just the conversation (tool traffic and thinking
@@ -1006,10 +1015,15 @@ export interface PhysicalRow {
  *  an added/removed diff line (an Edit's old/new block, tilth_write's own
  *  `diff: true` output, or even a `git diff` a Bash call happened to print) —
  *  colour it accordingly. Any other row keeps its plain tone colour. */
-export const diffSegColor = (kind: LogLine["kind"], seg: string, fallback: string): string => {
+export const diffSegColor = (
+  kind: LogLine["kind"],
+  seg: string,
+  fallback: string,
+  palette: Palette = C,
+): string => {
   if (kind !== "tool_call" && kind !== "tool_result") return fallback;
-  if (seg.startsWith("+ ")) return C.good;
-  if (seg.startsWith("- ")) return C.bad;
+  if (seg.startsWith("+ ")) return palette.good;
+  if (seg.startsWith("- ")) return palette.bad;
   return fallback;
 };
 

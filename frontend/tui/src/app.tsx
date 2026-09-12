@@ -4,15 +4,9 @@
  * needs from Ink, starts it once, forwards key presses, and renders the view it
  * publishes. JSX with no bundler — `@oxc-node` transforms `.tsx` on the fly.
  */
-import {
-  useEffect,
-  useState,
-  useSyncExternalStore,
-  useMemo,
-  useContext,
-  type ReactNode,
-} from "react";
+import { useEffect, useState, useSyncExternalStore, useMemo, type ReactNode } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { PaletteContext, useTheme } from "./ui.tsx";
 import { absurd } from "@loom/core/absurd";
 import { showConnectionError, type LoomClient } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
@@ -30,9 +24,8 @@ import {
 
 import { outboxOf } from "./composer.ts";
 import { headerView, fleetPaneView, logView } from "./views.ts";
-import { C, PALETTES, spinnerFrame } from "./theme.ts";
+import { PALETTES, spinnerFrame } from "./theme.ts";
 import {
-  PaletteContext,
   Confirm,
   Doctor,
   EventLog,
@@ -104,6 +97,7 @@ export const App = ({
 type PaneProps = { view: FleetView; handle: FleetHandle; width: number };
 
 const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
+  const C = useTheme();
   const { ui: state, cols, bodyH, leftW, rightW } = view;
   const header = useMemo(() => headerView(state.fleet), [state.fleet]);
 
@@ -287,7 +281,7 @@ const DetailArea = ({ view, handle }: PaneProps): ReactNode => {
 
 const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean }): ReactNode => {
   const { tick } = useSyncExternalStore(handle.animation.subscribe, handle.animation.get);
-  const palette = useContext(PaletteContext);
+  const palette = useTheme();
   return (
     <Text
       color={palette.accentDim}

@@ -27,6 +27,8 @@ export type Palette = {
   bg: string | undefined;
 };
 
+export type ThemeColor = Exclude<keyof Palette, "bg">;
+
 const DARK: Palette = {
   accent: "#5eead4",
   accentDim: "#2dd4bf",
@@ -109,22 +111,22 @@ export const nextThemeMode = (m: ThemeMode): ThemeMode => THEME_CYCLE[m];
 export type Tone = "plain" | "dim" | "accent" | "good" | "warn" | "bad" | "think";
 
 /** Ink colour for a log tone, read fresh so a theme switch takes effect immediately. */
-export const toneColor = (t: Tone): string => {
+export const toneColor = (t: Tone, palette: Palette = C): string => {
   switch (t) {
     case "plain":
-      return C.text;
+      return palette.text;
     case "dim":
-      return C.dim;
+      return palette.dim;
     case "accent":
-      return C.accent;
+      return palette.accent;
     case "good":
-      return C.good;
+      return palette.good;
     case "warn":
-      return C.warn;
+      return palette.warn;
     case "bad":
-      return C.bad;
+      return palette.bad;
     case "think":
-      return C.faint;
+      return palette.faint;
   }
 };
 
@@ -158,31 +160,31 @@ const STATUS_TEXT: Record<SessionStateKind, { glyph: string; label: string }> = 
   done: { glyph: "✓", label: "archived" },
 };
 
-const statusColor = (s: SessionStateKind): string => {
+export const statusTone = (s: SessionStateKind): ThemeColor => {
   switch (s) {
     case "awaiting_input":
-      return C.await_;
+      return "await_";
     case "running":
-      return C.accent;
+      return "accent";
     case "starting":
-      return C.accentDim;
+      return "accentDim";
     case "working_background":
-      return C.accentDim;
+      return "accentDim";
     case "interrupted":
-      return C.warn;
+      return "warn";
     case "idle":
-      return C.good;
+      return "good";
     case "error":
-      return C.bad;
+      return "bad";
     case "done":
-      return C.faint;
+      return "faint";
   }
 };
 
 /** Glyph + colour + label for a session status, read fresh (colour follows the theme). */
 export const statusLook = (s: SessionStateKind): StatusLook => ({
   ...STATUS_TEXT[s],
-  color: statusColor(s),
+  color: C[statusTone(s)],
 });
 
 /** Braille spinner frames for running rows. */

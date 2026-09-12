@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
+import { createElement } from "react";
+import { PALETTES } from "@loom/tui/theme";
+import { PaletteContext } from "@loom/tui/ui";
+import { Doctor } from "@loom/tui/components";
 import { renderToString } from "ink";
 import { bindCommand, keyCommand } from "@loom/tui/commands";
 import { detailLayout } from "@loom/tui/components";
@@ -44,6 +48,8 @@ test("detail height and click regions agree with rendered rows, including expire
         parentId: "parent",
         forkTurn: 2,
         mode: "default",
+        costUsd: 1,
+        costSource: "provider",
         resumable: false,
         resumeBlockedReason: "A long explanation that wraps over several rows on a narrow screen.",
         rateLimits: { five_hour: { status: "allowed", resetsAt: 100, utilization: 0.5 } },
@@ -55,6 +61,10 @@ test("detail height and click regions agree with rendered rows, including expire
         .trimEnd()
         .split("\n");
       assert.equal(lines.length, layout.height, `height at ${width} columns, time ${now}`);
+      assert.ok(
+        lines.some((line) => line.includes("$1.00")),
+        "cost suffix remains readable",
+      );
       const hit = layout.hits({ x: 0, y: 0 })[0]!;
       assert.equal(lines[hit.y]!.slice(hit.x0, hit.x1 + 1), "mode [manual]");
     }
@@ -115,5 +125,74 @@ test("one model-selection flow serves new sessions, live sessions, and plans, re
       dest,
       selection: { provider: "test", model: "model", effort: "high" },
     });
+  }
+});
+
+test("prepared detail and doctor resolve every theme without changing their geometry", () => {
+  const report = {
+    daemon: {
+      pid: 1,
+      version: "0.0.1",
+      startedAt: 0,
+      uptimeMs: 5,
+      epoch: "e",
+      repoRoot: "/r",
+      clients: 1,
+      connections: 1,
+      eventSeq: 3,
+      sessions: 1,
+      runningSessions: 1,
+    },
+    connectors: [{ pkg: "@loom/connector-claude", providerIds: ["claude"], loaded: false }],
+    mcp: [
+      {
+        name: "tilth",
+        command: "tilth --mcp --edit",
+        resolved: "tilth --mcp --edit",
+        status: "ok" as const,
+        note: "",
+      },
+    ],
+    tools: {
+      loom: ["ask_user", "commit"],
+      claude: [],
+      aisdk: [],
+      claudeDisabled: ["Grep", "Glob"],
+    },
+    webSearch: { backend: "none" as const, enabled: false, note: "no backend configured" },
+    configWarnings: [],
+  };
+  const layout = detailLayout(snap({ status: "error", contextUsed: 90, contextLimit: 100 }), {
+    width: 80,
+  });
+  let previous: string | undefined;
+  for (const palette of Object.values(PALETTES)) {
+    const requested = new Set<string>();
+    const theme = new Proxy(palette, {
+      get(target, key: keyof typeof palette) {
+        requested.add(key);
+        return target[key];
+      },
+    });
+    const detail = renderToString(
+      createElement(PaletteContext.Provider, { value: theme }, layout.render(0)),
+      { columns: 80 },
+    );
+    assert.ok(requested.has("bad"), "detail status and context heat use the supplied theme");
+    assert.ok(requested.has("bg"), "panel background uses the supplied theme");
+    const plain = stripVTControlCharacters(detail);
+    if (previous !== undefined) assert.equal(plain, previous);
+    previous = plain;
+    requested.clear();
+    const doctor = renderToString(
+      createElement(
+        PaletteContext.Provider,
+        { value: theme },
+        createElement(Doctor, { report, width: 80 }),
+      ),
+      { columns: 80 },
+    );
+    assert.ok(requested.has("good"), "MCP status colour must not be cached at module load");
+    assert.ok(stripVTControlCharacters(doctor).includes("✓ tilth"));
   }
 });

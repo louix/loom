@@ -4,13 +4,15 @@
  * load its hook), so the only build step is still "none". Every component is a
  * pure projection of the narrow view its pane is handed — see `views.ts`.
  */
-import { createContext, useContext, memo, type ReactNode } from "react";
-import { Box, Text } from "ink";
+import { memo, type ReactNode } from "react";
+import { Box } from "ink";
+import { Field, Fields, Hints, Line, Panel, Section, Text, useTheme } from "./ui.tsx";
+export { PaletteContext } from "./ui.tsx";
 import { rowLayout, type LayoutRow } from "./layout.ts";
 import { helpLines } from "./help.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
-import type { DoctorMcpServer, DoctorReport, SessionSnapshot } from "@loom/core/wire";
+import type { DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
@@ -46,7 +48,6 @@ import {
 } from "./overlay.ts";
 import {
   bar,
-  C,
   humanDuration,
   humanTokens,
   mmss,
@@ -56,11 +57,13 @@ import {
   shortId,
   spinnerFrame,
   statusLook,
+  statusTone,
   toneColor,
   truncate,
   inside,
   wrapText,
   type Tone,
+  type ThemeColor,
 } from "./theme.ts";
 
 /** The ` · …` tail after a status label in the Detail pane. */
@@ -83,16 +86,16 @@ const titleLine = (t: string | null): string => {
 };
 
 /** Connection lamp — glyph + colour per {@link Connection}, read fresh so it follows the theme. */
-const lampFor = (c: Connection): { color: string; text: string } => {
+const lampFor = (c: Connection) => {
   switch (c) {
     case "live":
-      return { color: C.good, text: "● live" };
+      return { tone: "good" as const, text: "● live" };
     case "reconnecting":
-      return { color: C.warn, text: "◍ reconnecting" };
+      return { tone: "warn" as const, text: "◍ reconnecting" };
     case "closed":
-      return { color: C.bad, text: "○ offline" };
+      return { tone: "bad" as const, text: "○ offline" };
     case "connecting":
-      return { color: C.dim, text: "◌ connecting" };
+      return { tone: "dim" as const, text: "◌ connecting" };
   }
 };
 
@@ -110,10 +113,10 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
 };
 
 /** Context-meter colour by fill fraction. */
-const contextHeatColor = (frac: number): string => {
-  if (frac > 0.85) return C.bad;
-  if (frac > 0.6) return C.warn;
-  return C.accentDim;
+const contextHeatTone = (frac: number) => {
+  if (frac > 0.85) return "bad";
+  if (frac > 0.6) return "warn";
+  return "accentDim";
 };
 
 /** The one-line git summary under a session's Detail pane. */
@@ -140,36 +143,25 @@ const gitLineText = (s: SessionSnapshot): string => {
 // header
 // ---------------------------------------------------------------------------
 
-export const PaletteContext = createContext(C);
-
 export const Header = memo(({ view, width }: { view: HeaderView; width: number }): ReactNode => {
-  const C = useContext(PaletteContext);
   const lamp = lampFor(view.connection);
   return (
     <Box width={width} justifyContent="space-between" paddingX={1}>
       <Box gap={1}>
-        <Text color={C.accent} bold wrap="truncate-end">
+        <Line tone="accent" bold>
           {"▍ loom"}
-        </Text>
-        <Text color={C.dim} wrap="truncate-end">
-          {`v${view.version}`}
-        </Text>
-        <Text color={C.faint}>{"·"}</Text>
-        <Text color={C.text} wrap="truncate-end">
-          {view.repo}
-        </Text>
+        </Line>
+        <Line tone="dim">{`v${view.version}`}</Line>
+        <Text tone="faint">{"·"}</Text>
+        <Line tone="text">{view.repo}</Line>
       </Box>
       <Box gap={1}>
-        <Text color={C.dim} wrap="truncate-end">
-          {`${view.sessions} sessions`}
-        </Text>
-        {view.waiting ? <Text color={C.await_}>{`◆ ${view.waiting}`}</Text> : null}
-        {view.running ? <Text color={C.accent}>{`● ${view.running}`}</Text> : null}
-        {view.background ? <Text color={C.accentDim}>{`◐ ${view.background}`}</Text> : null}
-        <Text color={C.faint}>{"·"}</Text>
-        <Text color={lamp.color} wrap="truncate-end">
-          {lamp.text}
-        </Text>
+        <Line tone="dim">{`${view.sessions} sessions`}</Line>
+        {view.waiting ? <Text tone="await_">{`◆ ${view.waiting}`}</Text> : null}
+        {view.running ? <Text tone="accent">{`● ${view.running}`}</Text> : null}
+        {view.background ? <Text tone="accentDim">{`◐ ${view.background}`}</Text> : null}
+        <Text tone="faint">{"·"}</Text>
+        <Line tone={lamp.tone}>{lamp.text}</Line>
       </Box>
     </Box>
   );
@@ -195,7 +187,6 @@ export const Fleet = memo(
     width: number;
     now: number;
   }): ReactNode => {
-    const C = useContext(PaletteContext);
     const iw = inside(width);
     const childKeyOf = (s: SessionSnapshot): string | null =>
       view.focused && s.id === view.selectedId ? view.focused.key : null;
@@ -205,23 +196,23 @@ export const Fleet = memo(
       case "searching":
         // An answer that hasn't come back yet is not an answer of "none".
         blocks = [
-          <Text key="empty" color={C.dim} wrap="truncate-end">
+          <Line key="empty" tone="dim">
             {"searching every session…"}
-          </Text>,
+          </Line>,
         ];
         break;
       case "noMatch":
         blocks = [
-          <Text key="empty" color={C.dim} wrap="truncate-end">
+          <Line key="empty" tone="dim">
             {"no sessions match — esc clears the filter"}
-          </Text>,
+          </Line>,
         ];
         break;
       case "none":
         blocks = [
-          <Text key="empty" color={C.dim}>
+          <Text key="empty" tone="dim">
             {"no sessions yet — press "}
-            <Text color={C.accent}>{"n"}</Text>
+            <Text tone="accent">{"n"}</Text>
             {" to start one"}
           </Text>,
         ];
@@ -237,8 +228,8 @@ export const Fleet = memo(
                   <Text color={statusLook(entry.group.status).color}>
                     {statusLook(entry.group.status).glyph + " "}
                   </Text>
-                  <Text color={C.dim}>{entry.group.label.toUpperCase()}</Text>
-                  <Text color={C.faint}>{`  ${entry.group.sessions.length}`}</Text>
+                  <Text tone="dim">{entry.group.label.toUpperCase()}</Text>
+                  <Text tone="faint">{`  ${entry.group.sessions.length}`}</Text>
                 </Text>
               );
             case "session":
@@ -263,7 +254,7 @@ export const Fleet = memo(
               });
             case "childMore":
               return (
-                <Text key={`more-${entry.s.id}`} color={C.faint}>
+                <Text key={`more-${entry.s.id}`} tone="faint">
                   {`  └ +${entry.extra} more`}
                 </Text>
               );
@@ -285,18 +276,8 @@ export const Fleet = memo(
     }
 
     return (
-      <Box
-        flexDirection="column"
-        flexShrink={0}
-        width={width}
-        borderStyle="round"
-        borderColor={C.faint}
-        borderBackgroundColor={C.bg}
-        paddingX={1}
-      >
-        <Text color={C.dim} wrap="truncate-end">
-          {title}
-        </Text>
+      <Panel flexShrink={0} width={width} tone="faint">
+        <Line tone="dim">{title}</Line>
         {find ? (
           <Box marginTop={1} flexShrink={0}>
             <InputLine
@@ -310,25 +291,25 @@ export const Fleet = memo(
         <Box flexDirection="column" marginTop={1} flexShrink={0}>
           {blocks}
           {view.shown < view.total ? (
-            <Text color={C.faint} wrap="truncate-end">
+            <Line tone="faint">
               {`↕ ${view.offset + 1}–${view.offset + view.shown} of ${view.total}`}
-            </Text>
+            </Line>
           ) : null}
         </Box>
-      </Box>
+      </Panel>
     );
   },
 );
 
 /** Fleet-row cache dot: `⟢` graded green → amber → red by TTL left, blank otherwise. */
-const cacheHeatColor = (h: "fresh" | "fading" | "expiring"): string => {
+const cacheHeatTone = (h: "fresh" | "fading" | "expiring") => {
   switch (h) {
     case "fresh":
-      return C.good;
+      return "good";
     case "fading":
-      return C.warn;
+      return "warn";
     case "expiring":
-      return C.bad;
+      return "bad";
   }
 };
 
@@ -368,6 +349,7 @@ const FleetRow = ({
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
 }): ReactNode => {
+  const C = useTheme();
   const look = statusLook(s.status.kind);
   const blocked = s.resumable === false;
   let glyph = look.glyph;
@@ -382,7 +364,7 @@ const FleetRow = ({
       : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`;
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
-  const cacheColor = heat ? cacheHeatColor(heat) : null;
+  const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
   const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
@@ -390,21 +372,23 @@ const FleetRow = ({
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return (
-    <Text key={s.id} wrap="truncate-end">
-      <Text color={selected && !focused ? C.accent : C.faint}>{selected ? "▍ " : "  "}</Text>
-      <Text color={s.status.kind === "running" ? C.accent : look.color}>{glyph + " "}</Text>
+    <Line key={s.id}>
+      <Text tone={selected && !focused ? "accent" : "faint"}>{selected ? "▍ " : "  "}</Text>
+      <Text tone={s.status.kind === "running" ? "accent" : statusTone(s.status.kind)}>
+        {glyph + " "}
+      </Text>
       <Text color={idColor}>{`${idText}  `}</Text>
       {compacting ? (
-        <Text color={C.accent}>{"⇊ "}</Text>
+        <Text tone="accent">{"⇊ "}</Text>
       ) : (
         <Text color={cacheColor ?? C.faint}>{cacheColor ? "⟢ " : "  "}</Text>
       )}
-      <Text color={C.faint}>{s.comment ? "✎ " : "  "}</Text>
+      <Text tone="faint">{s.comment ? "✎ " : "  "}</Text>
       <Text color={titleColor} bold={selected && !blocked}>
         {title}
       </Text>
-      <Text color={C.faint}>{` ${cost}`}</Text>
-    </Text>
+      <Text tone="faint">{` ${cost}`}</Text>
+    </Line>
   );
 };
 
@@ -448,15 +432,15 @@ const FleetChildRow = ({
 }): ReactNode => {
   const room = Math.max(6, iw - 8);
   return (
-    <Text key={rowKey} wrap="truncate-end">
-      <Text color={sel ? C.accent : C.faint}>{sel ? "▍ " : "  "}</Text>
-      <Text color={C.faint}>{isLast ? "└ " : "├ "}</Text>
-      <Text color={C.accentDim}>{spinnerFrame(tick) + " "}</Text>
-      <Text color={C.faint}>{childGlyph(c) + " "}</Text>
-      <Text color={sel ? C.text : C.dim} bold={sel}>
+    <Line key={rowKey}>
+      <Text tone={sel ? "accent" : "faint"}>{sel ? "▍ " : "  "}</Text>
+      <Text tone="faint">{isLast ? "└ " : "├ "}</Text>
+      <Text tone="accentDim">{spinnerFrame(tick) + " "}</Text>
+      <Text tone="faint">{childGlyph(c) + " "}</Text>
+      <Text tone={sel ? "text" : "dim"} bold={sel}>
         {truncate(c.label.replace(/\s+/g, " ").trim(), room)}
       </Text>
-    </Text>
+    </Line>
   );
 };
 
@@ -466,14 +450,6 @@ const FleetChildRow = ({
 
 /** Left gutter (chars) for the label ∶ value rows in the Detail pane. */
 const DETAIL_GUTTER = 8;
-
-/** A fixed-width label gutter + a value that truncates to the rest of the row. */
-const Field = ({ label, children }: { label: string; children: ReactNode }): ReactNode => (
-  <Box>
-    <Text color={C.dim}>{label.padEnd(DETAIL_GUTTER)}</Text>
-    <Box flexGrow={1}>{children}</Box>
-  </Box>
-);
 
 export const detailLayout = (
   s: SessionSnapshot | null,
@@ -497,43 +473,33 @@ export const detailLayout = (
   const rows: LayoutRow<Content, "mode">[] = [];
   const add = (value: ReactNode | Content) =>
     rows.push({ tag: "content", value: typeof value === "function" ? value : () => value });
+  const addLine = (children: ReactNode, tone: ThemeColor = "faint") =>
+    add(<Line tone={tone}>{children}</Line>);
   const space = () => rows.push({ tag: "space" });
   const w = inside(width);
   const look = s ? statusLook(s.status.kind) : null;
   if (!s) {
-    add(<Text color={C.dim}>DETAIL</Text>);
-    add(<Text color={C.faint}>select a session with ↑/↓</Text>);
+    addLine("DETAIL", "dim");
+    addLine("select a session with ↑/↓");
   } else {
     add(
       <Box>
-        <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
+        <Line tone="dim">{`DETAIL  ${shortId(s.id)}`}</Line>
         <Box flexGrow={1} justifyContent="flex-end">
-          <Text wrap="truncate-end">
-            <Text color={C.faint}>engine </Text>
-            <Text color={engineColor || C.faint}>{s.provider}</Text>
-            <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
-          </Text>
+          <Line>
+            <Text tone="faint">engine </Text>
+            <Text tone="faint" {...(engineColor ? { color: engineColor } : {})}>
+              {s.provider}
+            </Text>
+            <Text tone="faint">{s.model ? ` / ${s.model}` : ""}</Text>
+          </Line>
         </Box>
       </Box>,
     );
-    if (account)
-      add(
-        <Text color={C.faint} wrap="truncate-end">
-          {account}
-        </Text>,
-      );
-    add(
-      <Text color={C.text} wrap="truncate-end">
-        {truncate(titleLine(s.title), w)}
-      </Text>,
-    );
+    if (account) addLine(account);
+    addLine(truncate(titleLine(s.title), w), "text");
     if (s.parentId && s.forkTurn != null)
-      add(
-        <Text
-          color={C.faint}
-          wrap="truncate-end"
-        >{`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}</Text>,
-      );
+      addLine(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`);
     space();
     const status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
     const chip = `mode ${modeChipText(s.mode, mode)}`;
@@ -544,40 +510,33 @@ export const detailLayout = (
       width: [...chip].length,
       value: () => (
         <Box gap={2}>
-          <Text color={look!.color} bold wrap="truncate-end">
+          <Line tone={statusTone(s.status.kind)} bold>
             {status}
-          </Text>
-          <Text wrap="truncate-end">
-            <Text color={C.dim}>mode </Text>
-            <Text color={C.warn}>{modeChipText(s.mode, mode)}</Text>
-          </Text>
-          <Text
-            color={C.dim}
-            wrap="truncate-end"
-          >{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Text>
+          </Line>
+          <Line>
+            <Text tone="dim">mode </Text>
+            <Text tone="warn">{modeChipText(s.mode, mode)}</Text>
+          </Line>
+          <Line tone="dim">{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Line>
         </Box>
       ),
     });
     const frac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
     add(
       <Field label="context">
-        <Text wrap="truncate-end">
-          <Text color={contextHeatColor(frac)}>{bar(frac, 16)}</Text>
-          <Text
-            color={C.dim}
-          >{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
-        </Text>
+        <Line>
+          <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
+          <Text tone="dim">{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
+        </Line>
       </Field>,
     );
     if (compacting)
       add((now) => (
         <Field label="">
-          <Text wrap="truncate-end">
-            <Text
-              color={C.accent}
-            >{`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}</Text>
-            <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
-          </Text>
+          <Line>
+            <Text tone="accent">{`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}</Text>
+            <Text tone="faint">{`  from ${humanTokens(compacting.before)}`}</Text>
+          </Line>
         </Field>
       ));
     if (cacheStatus(s, 0).state !== "unknown")
@@ -588,32 +547,33 @@ export const detailLayout = (
           : "";
         return (
           <Field label="cache">
-            <Text color={cs.state === "cold" ? C.faint : C.good} wrap="truncate-end">
+            <Line tone={cs.state === "cold" ? "faint" : "good"}>
               {`${cacheLede(cs)}${hit}${s.keepWarm ? "  ·  keep-warm" : ""}${cs.source === "config" ? "  ·  ttl assumed" : ""}`}
-            </Text>
+            </Line>
           </Field>
         );
       });
     const hitRate = cacheHitRate(s.usage);
     add(
-      <Box>
-        <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
-        <Box flexGrow={1}>
-          <Text color={C.faint} wrap="truncate-end">
-            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
-              (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
-          </Text>
-        </Box>
-        <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
-          {` ${s.costSource === "none" || s.costSource === "partial" ? "--" : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`}`}
-        </Text>
-      </Box>,
+      <Field
+        label="tokens"
+        suffix={
+          <Line tone={s.costUsd ? "good" : "faint"}>
+            {` ${s.costSource === "none" || s.costSource === "partial" ? "--" : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`}`}
+          </Line>
+        }
+      >
+        <Line tone="faint">
+          {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+            (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
+        </Line>
+      </Field>,
     );
     // Reserve one row while limits are in the snapshot, so clock ticks cannot change geometry.
     if (Object.keys(s.rateLimits).length)
       add((now) => (
         <Field label="plan">
-          <Text wrap="truncate-end">
+          <Line>
             {Object.entries(s.rateLimits)
               .filter(
                 ([, r]) =>
@@ -623,81 +583,67 @@ export const detailLayout = (
               .map(([window, rl], i) => (
                 <Text
                   key={window}
-                  color={{ rejected: C.bad, allowed_warning: C.warn, allowed: C.faint }[rl.status]}
+                  tone={
+                    ({ rejected: "bad", allowed_warning: "warn", allowed: "faint" } as const)[
+                      rl.status
+                    ]
+                  }
                 >
                   {`${i ? "   " : ""}${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
                 </Text>
               ))}
-          </Text>
+          </Line>
         </Field>
       ));
     space();
     add(
       <Box>
-        <Text color={C.faint}>⌥ </Text>
-        <Text color={C.dim} wrap="truncate-end">
-          {gitLineText(s)}
-        </Text>
+        <Text tone="faint">⌥ </Text>
+        <Line tone="dim">{gitLineText(s)}</Line>
       </Box>,
     );
-    if (s.git?.lastCommitSubject)
-      add(
-        <Text
-          color={C.faint}
-          wrap="truncate-end"
-        >{`  “${truncate(s.git.lastCommitSubject, w - 4)}”`}</Text>,
-      );
+    if (s.git?.lastCommitSubject) addLine(`  “${truncate(s.git.lastCommitSubject, w - 4)}”`);
     if (s.comment)
       add(
         <Field label="comment">
-          <Text color={C.accentDim} wrap="truncate-end">
+          <Line tone="accentDim">
             {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
-          </Text>
+          </Line>
         </Field>,
       );
     if (queued.length)
-      add(
-        <Text color={C.accentDim} wrap="truncate-end">
-          {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
-        </Text>,
+      addLine(
+        `▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`,
+        "accentDim",
       );
     if (s.resumable === false)
       for (const line of wrapText(
         `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
         w,
       ))
-        add(<Text color={C.warn}>{line}</Text>);
+        addLine(line, "warn");
     if (s.subagents.length)
-      add(
-        <Text color={C.dim} wrap="truncate-end">
-          {`⑂ ${s.subagents.filter((a) => a.active).length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", "), w - 20)}`}
-        </Text>,
+      addLine(
+        `⑂ ${s.subagents.filter((a) => a.active).length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", "), w - 20)}`,
+        "dim",
       );
     if (s.backgroundTasks.length)
-      add(
-        <Text color={C.accentDim} wrap="truncate-end">
-          {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "), w - 24)}`}
-        </Text>,
+      addLine(
+        `◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "), w - 24)}`,
+        "accentDim",
       );
   }
   const layout = rowLayout(width, rows, { x: 2, y: 1 });
   return {
     ...layout,
     render: (now: number): ReactNode => (
-      <Box
-        width={width}
-        borderStyle="round"
-        borderColor={look?.color ?? C.faint}
-        borderBackgroundColor={C.bg}
-        paddingX={1}
-        flexDirection="column"
-      >
+      <Panel width={width} tone={s ? statusTone(s.status.kind) : "faint"}>
         {layout.rows.map((row, i) => (
           <Box key={i} height={1} flexShrink={0}>
             {row.tag === "space" ? <Text> </Text> : row.value(now)}
           </Box>
         ))}
-      </Box>
+      </Panel>
     ),
   };
 };
@@ -735,7 +681,7 @@ export const Detail = memo(
 
 export const EventLog = memo(
   ({ view, width, spinner }: { view: LogView; width: number; spinner?: ReactNode }): ReactNode => {
-    const C = useContext(PaletteContext);
+    const palette = useTheme();
     const { child, rows } = view;
     // Pane title: the focused child's name while drilled in, else the plain header.
     let title = "EVENTS";
@@ -747,25 +693,13 @@ export const EventLog = memo(
     }
 
     return (
-      <Box
-        width={width}
-        borderStyle="round"
-        borderColor={view.scrolled ? C.accentDim : C.faint}
-        borderBackgroundColor={C.bg}
-        paddingX={1}
-        flexDirection="column"
-        flexGrow={1}
-      >
+      <Panel width={width} tone={view.scrolled ? "accentDim" : "faint"} flexGrow={1}>
         <Box justifyContent="space-between">
-          <Text color={C.dim} wrap="truncate-end">
-            {title}
-          </Text>
-          <Text color={C.faint}>
-            {view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}
-          </Text>
+          <Line tone="dim">{title}</Line>
+          <Text tone="faint">{view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}</Text>
         </Box>
         {rows.length === 0 ? (
-          <Text color={C.faint}>
+          <Text tone="faint">
             {child
               ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
               : "  (quiet)"}
@@ -773,21 +707,25 @@ export const EventLog = memo(
         ) : (
           rows.map((r) =>
             r.first ? (
-              <Text key={r.key} wrap="truncate-end">
-                <Text color={C.faint}>{r.ts}</Text>
-                <Text color={toneColor(r.tone)}>{`${r.glyph} `}</Text>
-                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
-              </Text>
+              <Line key={r.key}>
+                <Text tone="faint">{r.ts}</Text>
+                <Text color={toneColor(r.tone, palette)}>{`${r.glyph} `}</Text>
+                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
+                  {r.seg}
+                </Text>
+              </Line>
             ) : (
-              <Text key={r.key} wrap="truncate-end">
+              <Line key={r.key}>
                 <Text>{" ".repeat(r.indent)}</Text>
-                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone))}>{r.seg}</Text>
-              </Text>
+                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
+                  {r.seg}
+                </Text>
+              </Line>
             ),
           )
         )}
         {view.spinning ? spinner : null}
-      </Box>
+      </Panel>
     );
   },
 );
@@ -812,9 +750,9 @@ const caretCell = (ln: string, col: number, room: number): ReactNode => {
   const off = Math.max(0, col - (room - 1));
   return (
     <Text wrap="hard">
-      <Text color={C.text}>{ln.slice(off, col)}</Text>
+      <Text tone="text">{ln.slice(off, col)}</Text>
       <Text inverse>{ln.slice(col, col + 1) || " "}</Text>
-      <Text color={C.text}>{ln.slice(col + 1, off + room)}</Text>
+      <Text tone="text">{ln.slice(col + 1, off + room)}</Text>
     </Text>
   );
 };
@@ -843,10 +781,10 @@ export const InputLine = ({
   if (buf.text === "") {
     return (
       <Box>
-        <Text color={C.accent}>{"▍ "}</Text>
+        <Text tone="accent">{"▍ "}</Text>
         <Text inverse> </Text>
         {placeholder ? (
-          <Text color={C.faint} wrap="hard">
+          <Text tone="faint" wrap="hard">
             {` ${placeholder}`}
           </Text>
         ) : null}
@@ -858,7 +796,7 @@ export const InputLine = ({
     const { lines, row, col } = layout(buf);
     return (
       <Box>
-        <Text color={C.accent}>{"▍ "}</Text>
+        <Text tone="accent">{"▍ "}</Text>
         {caretCell(lines[row] ?? "", col, room)}
       </Box>
     );
@@ -886,13 +824,13 @@ export const InputLine = ({
           r === row ? (
             caretCell(ln, col, room)
           ) : (
-            <Text color={C.text} wrap="hard">
+            <Text tone="text" wrap="hard">
               {ln.length ? ln : " "}
             </Text>
           );
         return (
           <Box key={r}>
-            <Text color={C.accent}>{gutter}</Text>
+            <Text tone="accent">{gutter}</Text>
             {content}
           </Box>
         );
@@ -923,9 +861,9 @@ const MODE_HINT: Record<PromptKind, string> = {
 const modeChip = (mode: string | null | undefined, pending?: SessionMode | null): ReactNode => {
   const settled = !pending || pending === mode;
   return (
-    <Text wrap="truncate-end" color={!settled || (mode && mode !== "default") ? C.warn : C.faint}>
+    <Line tone={!settled || (mode && mode !== "default") ? "warn" : "faint"}>
       {modeChipText(mode, pending)}
-    </Text>
+    </Line>
   );
 };
 
@@ -991,7 +929,7 @@ const feedbackLines = (p: Prompt, width: number): string[] => {
 const PromptFeedback = ({ p, width }: { p: Prompt; width: number }): ReactNode => (
   <>
     {feedbackLines(p, width).map((line, i) => (
-      <Text key={i} color={p.feedback?.pending ? C.accent : C.bad}>
+      <Text key={i} tone={p.feedback?.pending ? "accent" : "bad"}>
         {line}
       </Text>
     ))}
@@ -1009,6 +947,7 @@ export const FooterArea = ({
   modes?: ModeChoices;
   outbox?: Outboxes;
 }): ReactNode => {
+  const palette = useTheme();
   const p = openPrompt(state.overlay);
   if (p && p.t !== "new") {
     // A reply to a session — the input lives on that session's EVENTS pane
@@ -1017,14 +956,14 @@ export const FooterArea = ({
     const sess = send ? fleetSessions(state).find((x) => x.id === p.sessionId) : undefined;
     return (
       <Box width={width} paddingX={1}>
-        <Text color={C.faint} wrap="truncate-end">
+        <Line tone="faint">
           {promptHints(
             p,
             send ? queueFor({ ...state, outbox }, p.sessionId).length : 0,
             sess?.mode,
             pendingMode(modes, sess?.id),
           )}
-        </Text>
+        </Line>
       </Box>
     );
   }
@@ -1035,24 +974,22 @@ export const FooterArea = ({
     return (
       <Box flexDirection="column" width={width} paddingX={1}>
         <Box gap={1}>
-          <Text color={C.accent} bold wrap="truncate-end">
+          <Line tone="accent" bold>
             {p.label}
-          </Text>
+          </Line>
           {modeChip(p.settings.mode)}
-          <Text color={prov?.color || C.faint} wrap="truncate-end">
+          <Line tone="faint" {...(prov?.color ? { color: prov.color } : {})}>
             {`${prov?.tag ?? p.settings.provider ?? "?"} / ${
               p.settings.model || prov?.defaultModel || "auto"
             }`}
-          </Text>
-          <Text color={C.faint}>{"⌥p change"}</Text>
+          </Line>
+          <Text tone="faint">{"⌥p change"}</Text>
         </Box>
         <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={PROMPT_PLACEHOLDER.new} />
         <PromptFeedback p={p} width={width - 2} />
         {/* Truncate, never wrap — this row is budgeted as exactly one line
             (see promptRows); wrapping it grows the frame past the terminal. */}
-        <Text color={C.faint} wrap="truncate-end">
-          {promptHints(p, 0, null)}
-        </Text>
+        <Line tone="faint">{promptHints(p, 0, null)}</Line>
       </Box>
     );
   }
@@ -1069,30 +1006,14 @@ export const FooterArea = ({
           height at any width. */}
       {state.notice ? (
         <Box paddingX={1}>
-          <Text wrap="truncate-end" color={toneColor(state.notice.tone)}>
+          <Line color={toneColor(state.notice.tone, palette)}>
             {`${noticeGlyph(state.notice.tone)} ${state.notice.text}`}
-          </Text>
+          </Line>
         </Box>
       ) : null}
-      <Text color={C.faint}>{"─".repeat(width)}</Text>
+      <Text tone="faint">{"─".repeat(width)}</Text>
       <Box paddingX={1}>
-        {/* One truncating Text (not a flex row of chips): overflow clips the
-         * tail instead of wrapping a hint onto a second line. */}
-        <Text wrap="truncate-end">
-          {hints.flatMap((hint, i) => [
-            i > 0 ? (
-              <Text key={`s${i}`} color={C.faint}>
-                {" · "}
-              </Text>
-            ) : null,
-            <Text key={`k${i}`} color={C.accent}>
-              {hint.keys}
-            </Text>,
-            <Text key={`l${i}`} color={C.dim}>
-              {` ${hint.label}`}
-            </Text>,
-          ])}
-        </Text>
+        <Hints items={hints} />
       </Box>
     </Box>
   );
@@ -1151,9 +1072,9 @@ export const PromptPane = ({
   return (
     <Box flexDirection="column" width={width} paddingX={2}>
       <Box gap={1}>
-        <Text color={C.accent} bold wrap="truncate-end">
+        <Line tone="accent" bold>
           {p.label}
-        </Text>
+        </Line>
         {sess ? modeChip(sess.mode, pendingMode(modes, sess.id)) : null}
       </Box>
       <InputLine
@@ -1177,30 +1098,18 @@ export const Confirm = ({
   confirm: ConfirmState;
   width: number;
 }): ReactNode => {
-  const accent = confirm.danger ? C.bad : C.accent;
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
   else if (confirm.action === "gc") actionText = "remove the worktrees";
   else if (confirm.action === "deleteSession")
     actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";
   return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={accent}
-      borderBackgroundColor={C.bg}
-      paddingX={2}
-      paddingY={1}
-      flexDirection="column"
-    >
-      <Text color={accent} bold>
-        {confirm.title}
-      </Text>
-      {confirm.body ? <Text color={C.warn}>{confirm.body}</Text> : null}
+    <Panel width={width} tone={confirm.danger ? "bad" : "accent"} overlay title={confirm.title}>
+      {confirm.body ? <Text tone="warn">{confirm.body}</Text> : null}
       {confirm.branchName ? (
         <Box gap={1} marginTop={1}>
-          <Text color={C.accent}>{"b"}</Text>
-          <Text color={confirm.deleteBranch ? C.bad : C.dim}>
+          <Text tone="accent">{"b"}</Text>
+          <Text tone={confirm.deleteBranch ? "bad" : "dim"}>
             {confirm.deleteBranch
               ? `will also delete branch ${confirm.branchName}`
               : `keep branch ${confirm.branchName}`}
@@ -1208,14 +1117,14 @@ export const Confirm = ({
         </Box>
       ) : null}
       <Box height={1} />
-      <Box gap={2}>
-        <Text color={C.accent}>{"enter"}</Text>
-        <Text color={C.dim}>{actionText}</Text>
-        <Text color={C.faint}>{"·"}</Text>
-        <Text color={C.accent}>{"esc"}</Text>
-        <Text color={C.dim}>{"cancel"}</Text>
-      </Box>
-    </Box>
+      <Hints
+        gap={2}
+        items={[
+          { keys: "enter", label: actionText },
+          { keys: "esc", label: "cancel" },
+        ]}
+      />
+    </Panel>
   );
 };
 
@@ -1326,22 +1235,13 @@ export const RequestPanel = ({
 }): ReactNode => {
   const w = inside(width);
   const box = (title: string, body: ReactNode[], hint: string): ReactNode => (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={C.await_}
-      borderBackgroundColor={C.bg}
-      paddingX={1}
-      flexDirection="column"
-    >
-      <Text color={C.await_} bold wrap="truncate-end">
+    <Panel width={width} tone="await_">
+      <Line tone="await_" bold>
         {title}
-      </Text>
+      </Line>
       {body.slice(0, requestPanelRows(request, width, questionIdx) - REQUEST_PANEL_CHROME)}
-      <Text color={C.faint} wrap="truncate-end">
-        {hint}
-      </Text>
-    </Box>
+      <Line tone="faint">{hint}</Line>
+    </Panel>
   );
 
   if (request === null) return null;
@@ -1349,9 +1249,9 @@ export const RequestPanel = ({
     wrapText(text.replace(/\s+/g, " ").trim(), w)
       .slice(0, max)
       .map((l, i) => (
-        <Text key={`${key}${i}`} color={C.text} wrap="truncate-end">
+        <Line key={`${key}${i}`} tone="text">
           {l}
-        </Text>
+        </Line>
       ));
   // "…and N more" is the whole reason the panel takes a count: answering the
   // one on screen leaves the others outstanding and the turn still blocked.
@@ -1364,9 +1264,9 @@ export const RequestPanel = ({
         [
           ...lines(q.question, 4),
           q.context ? (
-            <Text key="ctx" color={C.faint} wrap="truncate-end">
+            <Line key="ctx" tone="faint">
               {truncate(q.context.replace(/\s+/g, " ").trim(), w)}
-            </Text>
+            </Line>
           ) : null,
         ],
         `a answer  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
@@ -1390,9 +1290,9 @@ export const RequestPanel = ({
       return box(
         `? QUESTION${pos ? ` (${pos})` : ""}`,
         describeAskUserQuestion(u.input, w, questionIdx).map((l, i) => (
-          <Text key={i} color={C.text} wrap="truncate-end">
+          <Line key={i} tone="text">
             {l}
-          </Text>
+          </Line>
         )),
         `a answer  ·  d deny${
           qs.length > 1 ? "  ·  ←/→ question" : ""
@@ -1403,9 +1303,9 @@ export const RequestPanel = ({
       box(
         `⇱ PERMISSION — ${p.tool || "tool"}${queued > 1 ? ` (1 of ${queued})` : ""}`,
         describeRequest(p.input, w).map((l, i) => (
-          <Text key={i} color={C.text} wrap="truncate-end">
+          <Line key={i} tone="text">
             {l}
-          </Text>
+          </Line>
         )),
         `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
       ),
@@ -1468,68 +1368,57 @@ export const PlanReview = ({
     (providerForks ||
       (impl.model !== undefined && impl.model !== (cur.model ?? undefined)) ||
       (impl.effort !== undefined && impl.effort !== (cur.effort ?? undefined)));
-  const row = (k: string, v: string): ReactNode => (
+  const row = (key: string, label: string): ReactNode => (
     <Box gap={1}>
       <Box width={3}>
-        <Text color={C.accent}>{k}</Text>
+        <Text tone="accent">{key}</Text>
       </Box>
-      <Text color={C.dim} wrap="truncate-end">
-        {v}
-      </Text>
+      <Line tone="dim">{label}</Line>
     </Box>
   );
   return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={C.await_}
-      borderBackgroundColor={C.bg}
-      paddingX={2}
-      paddingY={1}
-      flexDirection="column"
-    >
-      <Text color={C.await_} bold>
-        {"❖ PLAN REVIEW"}
-      </Text>
+    <Panel width={width} tone="await_" overlay title={"❖ PLAN REVIEW"}>
       <Box height={1} />
       {body.map((l, i) => (
-        <Text key={i} color={C.text} wrap="truncate-end">
+        <Line key={i} tone="text">
           {l || " "}
-        </Text>
+        </Line>
       ))}
-      <Text color={C.faint} wrap="truncate-end">
+      <Line tone="faint">
         {overflow
           ? `  ↕ lines ${off + 1}–${off + body.length} of ${lines.length}  ·  PgUp/PgDn`
           : " "}
-      </Text>
+      </Line>
       <Box height={1} />
       {frac !== null && ctx ? (
         <Text>
-          <Text color={contextHeatColor(frac)}>{bar(frac, 16)}</Text>
-          <Text color={C.dim}>
+          <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
+          <Text tone="dim">
             {`  ${Math.round(frac * 100)}% context · ${humanTokens(ctx.used)}/${humanTokens(ctx.limit)}`}
           </Text>
         </Text>
       ) : null}
-      <Text wrap="truncate-end">
+      <Line>
         {"implementation mode "}
         {modeChip(plan.mode)}
-        <Text color={C.faint}>{"  ·  ⇧⇥ cycles"}</Text>
-      </Text>
-      <Text wrap="truncate-end">
+        <Text tone="faint">{"  ·  ⇧⇥ cycles"}</Text>
+      </Line>
+      <Line>
         {"implement fresh → "}
         {shown ? (
-          <Text color={target?.color || C.faint}>{target?.tag ?? shown.provider}</Text>
+          <Text tone="faint" {...(target?.color ? { color: target.color } : {})}>
+            {target?.tag ?? shown.provider}
+          </Text>
         ) : (
-          <Text color={C.faint}>{"the session's current model"}</Text>
+          <Text tone="faint">{"the session's current model"}</Text>
         )}
-        {shown?.model ? <Text color={C.text}>{` / ${shown.model}`}</Text> : null}
-        {shown?.effort ? <Text color={C.warn}>{`  ·  ${shown.effort}`}</Text> : null}
-        {diverged ? <Text color={C.faint}>{"  ·  differs from this session"}</Text> : null}
-        <Text color={C.faint}>{"  ·  ⌥p retarget"}</Text>
-      </Text>
+        {shown?.model ? <Text tone="text">{` / ${shown.model}`}</Text> : null}
+        {shown?.effort ? <Text tone="warn">{`  ·  ${shown.effort}`}</Text> : null}
+        {diverged ? <Text tone="faint">{"  ·  differs from this session"}</Text> : null}
+        <Text tone="faint">{"  ·  ⌥p retarget"}</Text>
+      </Line>
       {providerForks ? (
-        <Text color={C.faint}>{"  different provider — implements in a fresh forked session"}</Text>
+        <Text tone="faint">{"  different provider — implements in a fresh forked session"}</Text>
       ) : null}
       <Box height={1} />
       {row("i", "implement — the agent proceeds in this context")}
@@ -1537,10 +1426,10 @@ export const PlanReview = ({
       {row("e", "edit the plan in $EDITOR, then implement what you saved")}
       {row("d", "discuss — send a note back; the agent stays in plan mode")}
       <Box height={1} />
-      <Text color={C.faint} wrap="truncate-end">
+      <Line tone="faint">
         {"⌥o / o view read-only  ·  esc backs out — the review stays pending"}
-      </Text>
-    </Box>
+      </Line>
+    </Panel>
   );
 };
 
@@ -1572,22 +1461,11 @@ export const Picker = ({
   const shown = vis.slice(start, start + rows);
 
   return (
-    <Box
-      width={width}
-      borderStyle="round"
-      borderColor={C.accent}
-      borderBackgroundColor={C.bg}
-      paddingX={2}
-      paddingY={1}
-      flexDirection="column"
-    >
-      <Text color={C.accent} bold>
-        {`▸ ${picker.title.toUpperCase()}`}
-      </Text>
+    <Panel width={width} tone="accent" overlay title={`▸ ${picker.title.toUpperCase()}`}>
       {/* The prompt's input line, pinned to one row, so the filter reads as
           "type here" and takes the same readline motions. */}
       <InputLine buf={picker.filter} room={w - 4} placeholder="type to search" multiline={false} />
-      <Text color={C.faint}>
+      <Text tone="faint">
         {picker.items.length === 0
           ? " "
           : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`}
@@ -1595,30 +1473,30 @@ export const Picker = ({
       <Box height={1} />
       {shown.length === 0
         ? [
-            <Text key="none" color={C.faint} wrap="wrap">
+            <Text key="none" tone="faint" wrap="wrap">
               {picker.items.length === 0 ? (picker.emptyText ?? "nothing to pick") : "no matches"}
             </Text>,
           ]
         : shown.map((it, i) => {
             const on = start + i === picker.index;
             return (
-              <Text key={it.id} wrap="truncate-end" color={on ? C.text : C.dim} bold={on}>
-                <Text color={on ? C.accent : C.faint}>{on ? "▍ " : "  "}</Text>
+              <Line key={it.id} tone={on ? "text" : "dim"} bold={on}>
+                <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
                 {truncate(it.label, Math.max(6, w - 32))}
-                {it.hint ? <Text color={C.faint}>{`  ${truncate(it.hint, 28)}`}</Text> : null}
-              </Text>
+                {it.hint ? <Text tone="faint">{`  ${truncate(it.hint, 28)}`}</Text> : null}
+              </Line>
             );
           })}
       {start + shown.length < vis.length || start > 0 ? (
-        <Text color={C.faint}>{`  … ${vis.length - shown.length} more`}</Text>
+        <Text tone="faint">{`  … ${vis.length - shown.length} more`}</Text>
       ) : null}
       <Box height={1} />
-      <Text color={C.faint}>
+      <Text tone="faint">
         {picker.items.length === 0
           ? "enter continue · esc cancel"
           : "type to filter · ↑↓ move · enter pick · esc cancel"}
       </Text>
-    </Box>
+    </Panel>
   );
 };
 
@@ -1636,12 +1514,8 @@ export const Help = ({
   const start = Math.min(scroll, Math.max(0, lines.length - capacity));
   return (
     <Box width={width} height={height} flexDirection="column">
-      <Text color={C.dim} wrap="truncate-end">
-        {lines.slice(start, start + capacity).join("\n")}
-      </Text>
-      <Text color={C.accent} wrap="truncate-end">
-        ↑↓ PgUp/PgDn scroll · Esc close
-      </Text>
+      <Line tone="dim">{lines.slice(start, start + capacity).join("\n")}</Line>
+      <Line tone="accent">↑↓ PgUp/PgDn scroll · Esc close</Line>
     </Box>
   );
 };
@@ -1650,29 +1524,6 @@ export const Help = ({
 // doctor overlay — enabled tools, connector plugins, daemon vitals
 // ---------------------------------------------------------------------------
 
-const DocRow = ({ label, children }: { label: string; children: ReactNode }): ReactNode => (
-  <Box gap={2}>
-    <Box width={13} flexShrink={0}>
-      <Text color={C.faint}>{label}</Text>
-    </Box>
-    <Text color={C.dim}>{children}</Text>
-  </Box>
-);
-
-const DocHead = ({ children }: { children: ReactNode }): ReactNode => (
-  <>
-    <Box height={1} />
-    <Text color={C.dim} bold>
-      {children}
-    </Text>
-  </>
-);
-
-const MCP_MARK: Record<DoctorMcpServer["status"], { glyph: string; color: string }> = {
-  ok: { glyph: "✓", color: C.good },
-  missing: { glyph: "✗", color: C.bad },
-};
-
 export const Doctor = ({
   report,
   width,
@@ -1680,99 +1531,106 @@ export const Doctor = ({
   report: DoctorReport | null;
   width: number;
 }): ReactNode => (
-  <Box
-    width={width}
-    borderStyle="round"
-    borderColor={C.accent}
-    borderBackgroundColor={C.bg}
-    paddingX={2}
-    paddingY={1}
-    flexDirection="column"
-  >
-    <Text color={C.accent} bold>
-      {"loom — doctor"}
-    </Text>
-    {report ? (
-      <DoctorBody report={report} />
-    ) : (
-      <Text color={C.faint}>{"  querying the daemon…"}</Text>
-    )}
-  </Box>
+  <Panel width={width} tone="accent" overlay title="loom — doctor">
+    {report ? <DoctorBody report={report} /> : <Line tone="faint">{"  querying the daemon…"}</Line>}
+  </Panel>
 );
 
 const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
   const d = report.daemon;
   const ws = report.webSearch;
-
   return (
     <>
-      <DocHead>{"daemon"}</DocHead>
-      <DocRow label="version">
-        {`${d.version}  ·  pid ${d.pid}  ·  up ${humanDuration(d.uptimeMs)}`}
-      </DocRow>
-      <DocRow label="repo">{d.repoRoot}</DocRow>
-      <DocRow label="clients">{`${d.clients}  (${d.connections} connection${d.connections === 1 ? "" : "s"})`}</DocRow>
-      <DocRow label="events">{d.eventSeq}</DocRow>
-      <DocRow label="sessions">{`${d.sessions}  ·  ${d.runningSessions} running`}</DocRow>
-
-      <DocHead>{"connectors"}</DocHead>
-      {report.connectors.map((c) => (
-        <Box key={c.pkg} gap={2}>
-          <Box width={13} flexShrink={0}>
-            <Text color={c.loaded ? C.good : C.faint}>{c.loaded ? "● loaded" : "○ idle"}</Text>
-          </Box>
-          <Text color={C.dim}>
-            {c.pkg.replace(/^@loom\/connector-/, "")}
-            <Text color={C.faint}>{`  ${c.providerIds.join(", ") || "—"}`}</Text>
-          </Text>
-        </Box>
-      ))}
-
-      <DocHead>{"mcp servers"}</DocHead>
-      <Text color={C.faint}>{"  mounted into every session"}</Text>
-      {report.mcp.map((m) => {
-        const mk = MCP_MARK[m.status];
-        return (
+      <Section title="daemon">
+        <Fields
+          rows={[
+            ["version", `${d.version}  ·  pid ${d.pid}  ·  up ${humanDuration(d.uptimeMs)}`],
+            ["repo", d.repoRoot],
+            [
+              "clients",
+              `${d.clients}  (${d.connections} connection${d.connections === 1 ? "" : "s"})`,
+            ],
+            ["events", d.eventSeq],
+            ["sessions", `${d.sessions}  ·  ${d.runningSessions} running`],
+          ]}
+        />
+      </Section>
+      <Section title="connectors">
+        {report.connectors.map((c) => (
+          <Field
+            key={c.pkg}
+            width={15}
+            label={
+              <Line tone={c.loaded ? "good" : "faint"}>{c.loaded ? "● loaded" : "○ idle"}</Line>
+            }
+          >
+            <Line tone="dim" wrap="wrap">
+              {c.pkg.replace(/^@loom\/connector-/, "")}
+              <Line tone="faint">{`  ${c.providerIds.join(", ") || "—"}`}</Line>
+            </Line>
+          </Field>
+        ))}
+      </Section>
+      <Section title="mcp servers">
+        <Line tone="faint">{"  mounted into every session"}</Line>
+        {report.mcp.map((m) => (
           <Box key={m.name} flexDirection="column">
-            <Box gap={2}>
-              <Box width={13} flexShrink={0}>
-                <Text color={mk.color}>{`${mk.glyph} ${m.name}`}</Text>
-              </Box>
-              <Text color={C.dim}>{m.resolved}</Text>
-            </Box>
-            {m.note ? <Text color={C.faint}>{`               ${m.note}`}</Text> : null}
+            <Field
+              width={15}
+              label={
+                <Line tone={m.status === "ok" ? "good" : "bad"}>
+                  {`${m.status === "ok" ? "✓" : "✗"} ${m.name}`}
+                </Line>
+              }
+            >
+              <Line tone="dim" wrap="wrap">
+                {m.resolved}
+              </Line>
+            </Field>
+            {m.note && <Line tone="faint" wrap="wrap">{`               ${m.note}`}</Line>}
           </Box>
-        );
-      })}
-
-      <DocHead>{"tools"}</DocHead>
-      <DocRow label="loom">{report.tools.loom.join(", ")}</DocRow>
-      <DocRow label="claude">
-        {report.tools.claude.join(", ")}
-        <Text color={C.faint}>{"  + native"}</Text>
-      </DocRow>
-      <DocRow label="aisdk">{report.tools.aisdk.join(", ")}</DocRow>
-      <DocRow label="disabled">
-        {report.tools.claudeDisabled.join(", ")}
-        <Text color={C.faint}>{"  (Claude — use fff)"}</Text>
-      </DocRow>
-      <DocRow label="web_search">
-        <Text color={ws.enabled ? C.good : C.faint}>
-          {ws.backend === "none" ? "off" : `${ws.backend} · ${ws.enabled ? "enabled" : "disabled"}`}
-        </Text>
-        {ws.note ? <Text color={C.faint}>{`  ${ws.note}`}</Text> : null}
-      </DocRow>
-
-      {report.configWarnings.length > 0 ? (
-        <>
-          <DocHead>{"config warnings"}</DocHead>
+        ))}
+      </Section>
+      <Section title="tools">
+        <Fields
+          rows={[
+            ["loom", report.tools.loom.join(", ")],
+            [
+              "claude",
+              <>
+                {report.tools.claude.join(", ")}
+                <Line tone="faint">{"  + native"}</Line>
+              </>,
+            ],
+            ["aisdk", report.tools.aisdk.join(", ")],
+            [
+              "disabled",
+              <>
+                {report.tools.claudeDisabled.join(", ")}
+                <Line tone="faint">{"  (Claude — use fff)"}</Line>
+              </>,
+            ],
+            [
+              "web_search",
+              <>
+                <Line tone={ws.enabled ? "good" : "faint"}>
+                  {ws.backend === "none"
+                    ? "off"
+                    : `${ws.backend} · ${ws.enabled ? "enabled" : "disabled"}`}
+                </Line>
+                {ws.note && <Line tone="faint">{`  ${ws.note}`}</Line>}
+              </>,
+            ],
+          ]}
+        />
+      </Section>
+      {report.configWarnings.length > 0 && (
+        <Section title="config warnings">
           {report.configWarnings.map((w, i) => (
-            <Text key={i} color={C.warn} wrap="wrap">
-              {`  ${w}`}
-            </Text>
+            <Line key={i} tone="warn" wrap="wrap">{`  ${w}`}</Line>
           ))}
-        </>
-      ) : null}
+        </Section>
+      )}
     </>
   );
 };

@@ -20,6 +20,7 @@
     "./views": "./src/views.ts",
     "./clock": "./src/clock.ts",
     "./commands": "./src/commands.ts",
-    "./layout": "./src/layout.ts"
+    "./layout": "./src/layout.ts",
+    "./ui": "./src/ui.tsx"
   }
 }
