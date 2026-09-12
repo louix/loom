@@ -6,7 +6,7 @@
  */
 import { memo, type ReactNode } from "react";
 import { Box } from "ink";
-import { Field, Fields, Hints, Line, Panel, Section, Text, useTheme } from "./ui.tsx";
+import { Field, Fields, Hints, Line, Lines, Panel, Section, Text, useTheme } from "./ui.tsx";
 export { PaletteContext } from "./ui.tsx";
 import { rowLayout, type LayoutRow } from "./layout.ts";
 import { helpLines } from "./help.ts";
@@ -524,19 +524,15 @@ export const detailLayout = (
     const frac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
     add(
       <Field label="context">
-        <Line>
-          <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
-          <Text tone="dim">{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
-        </Line>
+        <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
+        <Text tone="dim">{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
       </Field>,
     );
     if (compacting)
       add((now) => (
         <Field label="">
-          <Line>
-            <Text tone="accent">{`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}</Text>
-            <Text tone="faint">{`  from ${humanTokens(compacting.before)}`}</Text>
-          </Line>
+          <Text tone="accent">{`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}</Text>
+          <Text tone="faint">{`  from ${humanTokens(compacting.before)}`}</Text>
         </Field>
       ));
     if (cacheStatus(s, 0).state !== "unknown")
@@ -546,10 +542,8 @@ export const detailLayout = (
           ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
           : "";
         return (
-          <Field label="cache">
-            <Line tone={cs.state === "cold" ? "faint" : "good"}>
-              {`${cacheLede(cs)}${hit}${s.keepWarm ? "  ·  keep-warm" : ""}${cs.source === "config" ? "  ·  ttl assumed" : ""}`}
-            </Line>
+          <Field label="cache" tone={cs.state === "cold" ? "faint" : "good"}>
+            {`${cacheLede(cs)}${hit}${s.keepWarm ? "  ·  keep-warm" : ""}${cs.source === "config" ? "  ·  ttl assumed" : ""}`}
           </Field>
         );
       });
@@ -557,42 +551,39 @@ export const detailLayout = (
     add(
       <Field
         label="tokens"
+        tone="faint"
         suffix={
           <Line tone={s.costUsd ? "good" : "faint"}>
             {` ${s.costSource === "none" || s.costSource === "partial" ? "--" : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`}`}
           </Line>
         }
       >
-        <Line tone="faint">
-          {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
-            (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
-        </Line>
+        {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+          (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
       </Field>,
     );
     // Reserve one row while limits are in the snapshot, so clock ticks cannot change geometry.
     if (Object.keys(s.rateLimits).length)
       add((now) => (
         <Field label="plan">
-          <Line>
-            {Object.entries(s.rateLimits)
-              .filter(
-                ([, r]) =>
-                  (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) >
-                  now,
-              )
-              .map(([window, rl], i) => (
-                <Text
-                  key={window}
-                  tone={
-                    ({ rejected: "bad", allowed_warning: "warn", allowed: "faint" } as const)[
-                      rl.status
-                    ]
-                  }
-                >
-                  {`${i ? "   " : ""}${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
-                </Text>
-              ))}
-          </Line>
+          {Object.entries(s.rateLimits)
+            .filter(
+              ([, r]) =>
+                (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) >
+                now,
+            )
+            .map(([window, rl], i) => (
+              <Text
+                key={window}
+                tone={
+                  ({ rejected: "bad", allowed_warning: "warn", allowed: "faint" } as const)[
+                    rl.status
+                  ]
+                }
+              >
+                {`${i ? "   " : ""}${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
+              </Text>
+            ))}
         </Field>
       ));
     space();
@@ -605,10 +596,8 @@ export const detailLayout = (
     if (s.git?.lastCommitSubject) addLine(`  “${truncate(s.git.lastCommitSubject, w - 4)}”`);
     if (s.comment)
       add(
-        <Field label="comment">
-          <Line tone="accentDim">
-            {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
-          </Line>
+        <Field label="comment" tone="accentDim">
+          {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
         </Field>,
       );
     if (queued.length)
@@ -1234,25 +1223,17 @@ export const RequestPanel = ({
   questionIdx?: number;
 }): ReactNode => {
   const w = inside(width);
-  const box = (title: string, body: ReactNode[], hint: string): ReactNode => (
-    <Panel width={width} tone="await_">
-      <Line tone="await_" bold>
-        {title}
-      </Line>
-      {body.slice(0, requestPanelRows(request, width, questionIdx) - REQUEST_PANEL_CHROME)}
+  if (request === null) return null;
+  const capacity = requestPanelRows(request, width, questionIdx) - REQUEST_PANEL_CHROME;
+  const box = (title: string, body: string[], hint: string, context?: string): ReactNode => (
+    <Panel width={width} tone="await_" title={title}>
+      <Lines lines={body.slice(0, capacity)} tone="text" />
+      {context && body.length < capacity && <Line tone="faint">{context}</Line>}
       <Line tone="faint">{hint}</Line>
     </Panel>
   );
-
-  if (request === null) return null;
-  const lines = (text: string, max: number, key = ""): ReactNode[] =>
-    wrapText(text.replace(/\s+/g, " ").trim(), w)
-      .slice(0, max)
-      .map((l, i) => (
-        <Line key={`${key}${i}`} tone="text">
-          {l}
-        </Line>
-      ));
+  const lines = (text: string, max: number): string[] =>
+    wrapText(text.replace(/\s+/g, " ").trim(), w).slice(0, max);
   // "…and N more" is the whole reason the panel takes a count: answering the
   // one on screen leaves the others outstanding and the turn still blocked.
   const alsoQueued = queued > 1 ? `  ·  ${queued - 1} more queued` : "";
@@ -1261,15 +1242,9 @@ export const RequestPanel = ({
     onQuestion: (q) =>
       box(
         "? QUESTION",
-        [
-          ...lines(q.question, 4),
-          q.context ? (
-            <Line key="ctx" tone="faint">
-              {truncate(q.context.replace(/\s+/g, " ").trim(), w)}
-            </Line>
-          ) : null,
-        ],
+        lines(q.question, 4),
         `a answer  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
+        q.context ? truncate(q.context.replace(/\s+/g, " ").trim(), w) : undefined,
       ),
     onPlanReview: (p) =>
       box(
@@ -1289,11 +1264,7 @@ export const RequestPanel = ({
         .join(" · ");
       return box(
         `? QUESTION${pos ? ` (${pos})` : ""}`,
-        describeAskUserQuestion(u.input, w, questionIdx).map((l, i) => (
-          <Line key={i} tone="text">
-            {l}
-          </Line>
-        )),
+        describeAskUserQuestion(u.input, w, questionIdx),
         `a answer  ·  d deny${
           qs.length > 1 ? "  ·  ←/→ question" : ""
         }  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
@@ -1302,11 +1273,7 @@ export const RequestPanel = ({
     onPermission: (p) =>
       box(
         `⇱ PERMISSION — ${p.tool || "tool"}${queued > 1 ? ` (1 of ${queued})` : ""}`,
-        describeRequest(p.input, w).map((l, i) => (
-          <Line key={i} tone="text">
-            {l}
-          </Line>
-        )),
+        describeRequest(p.input, w),
         `a approve  ·  d deny  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
       ),
   })(request);
@@ -1368,22 +1335,10 @@ export const PlanReview = ({
     (providerForks ||
       (impl.model !== undefined && impl.model !== (cur.model ?? undefined)) ||
       (impl.effort !== undefined && impl.effort !== (cur.effort ?? undefined)));
-  const row = (key: string, label: string): ReactNode => (
-    <Box gap={1}>
-      <Box width={3}>
-        <Text tone="accent">{key}</Text>
-      </Box>
-      <Line tone="dim">{label}</Line>
-    </Box>
-  );
   return (
     <Panel width={width} tone="await_" overlay title={"❖ PLAN REVIEW"}>
       <Box height={1} />
-      {body.map((l, i) => (
-        <Line key={i} tone="text">
-          {l || " "}
-        </Line>
-      ))}
+      <Lines lines={body} tone="text" />
       <Line tone="faint">
         {overflow
           ? `  ↕ lines ${off + 1}–${off + body.length} of ${lines.length}  ·  PgUp/PgDn`
@@ -1421,10 +1376,17 @@ export const PlanReview = ({
         <Text tone="faint">{"  different provider — implements in a fresh forked session"}</Text>
       ) : null}
       <Box height={1} />
-      {row("i", "implement — the agent proceeds in this context")}
-      {row("f", "implement fresh — compact to the plan + goal first")}
-      {row("e", "edit the plan in $EDITOR, then implement what you saved")}
-      {row("d", "discuss — send a note back; the agent stays in plan mode")}
+      <Fields
+        width={4}
+        labelTone="accent"
+        wrap="truncate-end"
+        rows={[
+          ["i", "implement — the agent proceeds in this context"],
+          ["f", "implement fresh — compact to the plan + goal first"],
+          ["e", "edit the plan in $EDITOR, then implement what you saved"],
+          ["d", "discuss — send a note back; the agent stays in plan mode"],
+        ]}
+      />
       <Box height={1} />
       <Line tone="faint">
         {"⌥o / o view read-only  ·  esc backs out — the review stays pending"}
@@ -1514,7 +1476,7 @@ export const Help = ({
   const start = Math.min(scroll, Math.max(0, lines.length - capacity));
   return (
     <Box width={width} height={height} flexDirection="column">
-      <Line tone="dim">{lines.slice(start, start + capacity).join("\n")}</Line>
+      <Lines lines={lines.slice(start, start + capacity)} tone="dim" />
       <Line tone="accent">↑↓ PgUp/PgDn scroll · Esc close</Line>
     </Box>
   );
@@ -1556,40 +1518,29 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
         />
       </Section>
       <Section title="connectors">
-        {report.connectors.map((c) => (
-          <Field
-            key={c.pkg}
-            width={15}
-            label={
-              <Line tone={c.loaded ? "good" : "faint"}>{c.loaded ? "● loaded" : "○ idle"}</Line>
-            }
-          >
-            <Line tone="dim" wrap="wrap">
+        <Fields
+          rows={report.connectors.map((c) => [
+            <Text tone={c.loaded ? "good" : "faint"}>{c.loaded ? "● loaded" : "○ idle"}</Text>,
+            <>
               {c.pkg.replace(/^@loom\/connector-/, "")}
-              <Line tone="faint">{`  ${c.providerIds.join(", ") || "—"}`}</Line>
-            </Line>
-          </Field>
-        ))}
+              <Text tone="faint">{`  ${c.providerIds.join(", ") || "—"}`}</Text>
+            </>,
+          ])}
+        />
       </Section>
       <Section title="mcp servers">
         <Line tone="faint">{"  mounted into every session"}</Line>
-        {report.mcp.map((m) => (
-          <Box key={m.name} flexDirection="column">
-            <Field
-              width={15}
-              label={
-                <Line tone={m.status === "ok" ? "good" : "bad"}>
-                  {`${m.status === "ok" ? "✓" : "✗"} ${m.name}`}
-                </Line>
-              }
-            >
-              <Line tone="dim" wrap="wrap">
-                {m.resolved}
-              </Line>
-            </Field>
-            {m.note && <Line tone="faint" wrap="wrap">{`               ${m.note}`}</Line>}
-          </Box>
-        ))}
+        <Fields
+          rows={report.mcp.flatMap((m) => [
+            [
+              <Text
+                tone={m.status === "ok" ? "good" : "bad"}
+              >{`${m.status === "ok" ? "✓" : "✗"} ${m.name}`}</Text>,
+              m.resolved,
+            ] as const,
+            ["", m.note ? <Text tone="faint">{m.note}</Text> : null] as const,
+          ])}
+        />
       </Section>
       <Section title="tools">
         <Fields
@@ -1626,9 +1577,7 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
       </Section>
       {report.configWarnings.length > 0 && (
         <Section title="config warnings">
-          {report.configWarnings.map((w, i) => (
-            <Line key={i} tone="warn" wrap="wrap">{`  ${w}`}</Line>
-          ))}
+          <Lines lines={report.configWarnings.map((w) => `  ${w}`)} tone="warn" wrap="wrap" />
         </Section>
       )}
     </>

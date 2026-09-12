@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { createElement } from "react";
 import { PALETTES } from "@loom/tui/theme";
-import { PaletteContext } from "@loom/tui/ui";
+import { Fields, Line, Lines, PaletteContext } from "@loom/tui/ui";
 import { Doctor } from "@loom/tui/components";
-import { renderToString } from "ink";
+import { Box, renderToString } from "ink";
 import { bindCommand, keyCommand } from "@loom/tui/commands";
 import { detailLayout } from "@loom/tui/components";
 import {
@@ -19,6 +19,34 @@ import {
 import type { ProviderInfo } from "@loom/core/wire";
 import type { PickerDest } from "@loom/tui/overlay";
 import { fleet, snap } from "./tui-fixtures.ts";
+
+test("shared text and fields retain blank rows and label gutters in narrow panes", () => {
+  const rendered = renderToString(
+    createElement(
+      Box,
+      { width: 16, flexDirection: "column" },
+      createElement(Line, null, "start"),
+      createElement(Lines, { lines: ["", "middle", ""] }),
+      createElement(Fields, {
+        width: 4,
+        wrap: "truncate-end",
+        rows: [
+          ["i", "a long action that must stay on one row"],
+          ["omit", null],
+          ["n", 0],
+        ],
+      }),
+    ),
+    { columns: 16 },
+  );
+  const rows = stripVTControlCharacters(rendered)
+    .split("\n")
+    .map((row) => row.trimEnd());
+  assert.deepEqual(rows.slice(0, 4), ["start", "", "middle", ""]);
+  assert.equal(rows.length, 6);
+  assert.ok(rows[4]!.startsWith("i   a long"));
+  assert.equal(rows[5], "n   0");
+});
 
 test("shortcuts resolve the current decision and bind session commands to their target", () => {
   for (const [reason, action] of [

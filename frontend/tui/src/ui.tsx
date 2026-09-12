@@ -18,6 +18,15 @@ export const Line = (props: ComponentProps<typeof Text>): ReactNode => (
   <Text wrap="truncate-end" {...props} />
 );
 
+/** Prepared text rows, including blank rows; wrapping belongs to the caller. */
+export const Lines = ({
+  lines,
+  ...props
+}: Omit<ComponentProps<typeof Line>, "children"> & {
+  lines: readonly string[];
+}): ReactNode =>
+  lines.length ? <Line {...props}>{lines.map((line) => line || " ").join("\n")}</Line> : null;
+
 /** Pane chrome. Overlays use the same panel with roomier padding. */
 export const Panel = ({
   tone = "faint",
@@ -57,17 +66,22 @@ export const Field = ({
   children,
   width = 8,
   suffix,
-}: {
+  labelTone = "dim",
+  ...props
+}: ComponentProps<typeof Line> & {
   label: ReactNode;
   children: ReactNode;
   width?: number;
   suffix?: ReactNode;
+  labelTone?: ThemeColor;
 }): ReactNode => (
   <Box>
     <Box width={width} flexShrink={0}>
-      <Line tone="dim">{label}</Line>
+      <Line tone={labelTone}>{label}</Line>
     </Box>
-    <Box flexGrow={1}>{children}</Box>
+    <Box flexGrow={1}>
+      <Line {...props}>{children}</Line>
+    </Box>
     {suffix != null && <Box flexShrink={0}>{suffix}</Box>}
   </Box>
 );
@@ -75,18 +89,15 @@ export const Field = ({
 /** A group of values sharing one label width. Null values omit the row. */
 export const Fields = ({
   rows,
-  width = 15,
-}: {
-  rows: readonly (readonly [string, ReactNode])[];
-  width?: number;
+  ...props
+}: Omit<ComponentProps<typeof Field>, "label" | "children"> & {
+  rows: readonly (readonly [ReactNode, ReactNode])[];
 }): ReactNode => (
   <>
-    {rows.map(([label, value]) =>
+    {rows.map(([label, value], i) =>
       value == null ? null : (
-        <Field key={label} width={width} label={<Line tone="faint">{label}</Line>}>
-          <Line tone="dim" wrap="wrap">
-            {value}
-          </Line>
+        <Field key={i} width={15} label={label} labelTone="faint" tone="dim" wrap="wrap" {...props}>
+          {value}
         </Field>
       ),
     )}
