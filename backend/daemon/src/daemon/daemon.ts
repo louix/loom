@@ -72,7 +72,6 @@ import { SessionEventStore } from "../store/session-events.ts";
 import { SessionSearchStore } from "../store/session-search.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
 import { probeOpenAiModels } from "./model-catalog.ts";
-import { EventLog } from "./event-log.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
@@ -234,7 +233,7 @@ export class Daemon {
   // The "already nudged for this base head" record is persisted on the session
   // row (`auto_rebase_nudged_sha`) — see `SessionStore.autoRebaseNudgedSha` —
   // so it survives a daemon restart.
-  #events: EventLog;
+  #eventSeq = 0;
   #server: SocketServer;
   #dispatcher: RpcDispatcher;
   #providers: ProviderRegistry;
@@ -297,7 +296,6 @@ export class Daemon {
     this.#sessionEvents = new SessionEventStore(this.#db);
     this.#search = new SessionSearchStore(this.#db);
     this.#providerDefaults = new ProviderDefaultStore(this.#db);
-    this.#events = new EventLog(this.config.daemon.eventBufferSize, this.epoch);
     this.#dispatcher = new RpcDispatcher();
     this.#server = new SocketServer({
       sockPath: this.paths.sock,
@@ -456,9 +454,6 @@ export class Daemon {
   }
   get registry(): Registry {
     return this.#registry;
-  }
-  get events(): EventLog {
-    return this.#events;
   }
   get providers(): ProviderRegistry {
     return this.#providers;
@@ -631,7 +626,7 @@ export class Daemon {
   // -------------------------------------------------------------------------
 
   emitEvent(event: HarnessEvent): number {
-    if (this.#stopping) return this.#events.head;
+    if (this.#stopping) return this.#eventSeq;
     // Persist *before* the frame goes out. The push carries the row's durable
     // id, so a client that reacts to it — by paging, or by merging it against a
     // page already in flight — has to be able to read that row back the moment
@@ -647,12 +642,14 @@ export class Daemon {
       event.type === "context"
         ? null
         : this.#sessionEvents.append(event.sessionId, event);
-    const frame = this.#events.append({
+    const frame = {
+      seq: ++this.#eventSeq,
+      epoch: this.epoch,
       kind: "push",
       type: "event",
       event,
       ...(durable === null ? {} : { id: durable }),
-    });
+    } as const;
     this.#server.broadcast(frame);
     return frame.seq;
   }
@@ -709,7 +706,7 @@ export class Daemon {
   /** A daemon-level advisory for the operator (config reload feedback). */
   #emitNotice(text: string, tone: "info" | "warn"): void {
     if (this.#stopping) return;
-    this.#server.broadcast(this.#events.append({ kind: "push", type: "notice", text, tone }));
+    this.#server.broadcast({ kind: "push", seq: ++this.#eventSeq, type: "notice", text, tone });
   }
 
   /**
@@ -2086,7 +2083,6 @@ export class Daemon {
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       next.db !== before.db ||
-      next.daemon.eventBufferSize !== before.daemon.eventBufferSize ||
       JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
       JSON.stringify(next.httpMcp) !== JSON.stringify(before.httpMcp);
 
@@ -2132,8 +2128,7 @@ export class Daemon {
       mcpMounts: [...this.config.mcp, ...this.config.httpMcp].map((m) => m.name),
       clients: this.#server.clientCount,
       connections: this.#server.connectionCount,
-      eventSeq: this.#events.head,
-      eventBuffer: this.#events.size,
+      eventSeq: this.#eventSeq,
       hygiene: this.#hygiene,
     }));
 
@@ -2245,9 +2240,7 @@ export class Daemon {
       return { models: this.#registry.store.modelUsage(id) };
     });
 
-    // The durable counterpart to the cross-session `EventLog` ring — lets a
-    // client backfill a session's own history once it's fallen out of that
-    // ring (busy neighbour sessions, or a daemon restart).
+    // Durable transcript history supports recall, reconnect and scrollback.
     d.register("session.messages", (params) => {
       const id = reqString(params, "id");
       this.#registry.mustGet(id);
@@ -3458,28 +3451,6 @@ export class Daemon {
     this.#server.subscribe(ctx.conn);
     ctx.conn.pushState(this.#stateFrame("all"));
 
-    const sinceSeq = typeof p.sinceSeq === "number" ? p.sinceSeq : undefined;
-    const head = this.#events.head;
-    let replaying = false;
-    if (sinceSeq !== undefined) {
-      const { frames, rolled } = this.#events.since(sinceSeq);
-      // Push synchronously (the connection is already subscribed): a
-      // setImmediate deferral let a live frame from the poll phase interleave
-      // ahead of the replayed older ones. The client buffers everything until
-      // its hello response lands, so ordering is preserved.
-      if (rolled) {
-        ctx.conn.push({
-          kind: "push",
-          seq: head,
-          type: "resync",
-          reason: "event buffer rolled past requested seq",
-        });
-      } else if (frames.length > 0) {
-        replaying = true;
-        for (const f of frames) ctx.conn.push(f);
-      }
-    }
-
     this.#onActivityChange("hello");
 
     return {
@@ -3491,8 +3462,6 @@ export class Daemon {
         repoRoot: this.repoRoot,
         epoch: this.epoch,
       },
-      seq: head,
-      replaying,
     };
   }
 
@@ -3629,8 +3598,7 @@ export class Daemon {
         repoRoot: this.repoRoot,
         clients: this.#server.clientCount,
         connections: this.#server.connectionCount,
-        eventSeq: this.#events.head,
-        eventBuffer: this.#events.size,
+        eventSeq: this.#eventSeq,
         sessions: this.#registry.list().length,
         runningSessions: this.#sessions.count,
       },

@@ -32,11 +32,11 @@ export interface ConnectOptions {
   daemonEntry?: string;
   /** Spawn a daemon if none is listening. Default true. */
   autospawn?: boolean;
-  /** Reconnect (with gap replay) if the connection drops. Default true. */
+  /** Reconnect with a fresh snapshot if the connection drops. Default true. */
   reconnect?: boolean;
   clientId?: string;
   /**
-   * How long `connect()` waits for the daemon's opening snapshot once the
+   * How long each connection waits for the daemon's opening snapshot once the
    * handshake has succeeded, in ms. Default 10s. A test seam: a daemon that
    * deliberately never sends one shouldn't take the full production deadline
    * to prove it.
@@ -184,7 +184,7 @@ class Attempt {
 /**
  * Thin client for the Loom daemon. Handles connect-or-spawn, the `hello`
  * handshake, request/response correlation, and — for long-lived uses like
- * `loom tail` — automatic reconnect with `sinceSeq` gap replay.
+ * `loom tail` — automatic reconnect with a fresh fleet snapshot.
  */
 export class LoomClient {
   readonly clientId: string;
@@ -199,7 +199,6 @@ export class LoomClient {
   #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   #pushListeners = new Set<PushListener>();
   #stateListeners = new Map<string, Set<StateListener>>();
-  #lastSeq = 0;
   #closed = false;
   /**
    * A handshake failure no reconnect can fix, latched on first sight. While
@@ -208,8 +207,6 @@ export class LoomClient {
    * to agree by waiting, so saying "reconnecting…" would be a lie.
    */
   #fatal: ConnectionError | null = null;
-  /** The daemon epoch from the last hello — a change means it restarted. */
-  #daemonEpoch: string | null = null;
   daemonInfo: HelloResult["daemon"] | null = null;
   /** Cuts a backoff sleep short when `close()` lands during one. */
   #wake: () => void = () => {};
@@ -241,12 +238,7 @@ export class LoomClient {
       // The same opening path a reconnect uses. The only difference is what
       // `connect()` does with a failure: it throws, where the supervisor backs
       // off and tries again.
-      first = await c.#open(undefined);
-      // A hello response is not a connection. Every caller of `connect()` goes
-      // straight on to read the fleet, so resolving before the first snapshot
-      // hands them a `pending` and makes "no snapshot yet" indistinguishable
-      // from "no sessions".
-      await c.#awaitFirstSnapshot(first);
+      first = await c.#open();
     } catch (err) {
       // `#handshake` already installed the precise error for a protocol
       // mismatch; anything else is the transport failing to come up at all.
@@ -264,31 +256,29 @@ export class LoomClient {
     return c;
   }
 
-  /** Resolve once a valid snapshot is installed; reject (having closed the
-   *  socket) if the daemon never sends one. Startup only — a reconnect keeps
-   *  the last snapshot until the new one lands. */
-  #awaitFirstSnapshot(attempt: Attempt): Promise<void> {
-    if (this.#state.tag === "data") return Promise.resolve();
-    return new Promise<void>((resolve, reject) => {
-      let off: (() => void) | null = null;
-      const timer = setTimeout(() => {
-        off?.();
-        // Nothing will hold this client once `connect()` throws, so don't
-        // leave a socket or a supervisor running behind it.
-        this.#closed = true;
-        attempt.dispose();
-        reject(new Error("daemon completed the handshake but sent no state snapshot"));
-      }, this.#opts.firstSnapshotMs);
-      // Safe to install after the timer: the `data` early-return above means
-      // `subscribe`'s immediate call cannot resolve before this returns.
-      off = this.subscribe((s) => {
-        if (s.tag === "idle" || s.tag === "pending") return;
-        clearTimeout(timer);
-        off?.();
-        if (s.tag === "data") resolve();
-        else reject(new Error(showConnectionError(s.error)));
-      });
+  /** Every connection becomes ready only after its authoritative snapshot. */
+  async #awaitFirstSnapshot(attempt: Attempt): Promise<void> {
+    if (this.#state.tag === "data") return;
+    const ready = Promise.withResolvers<void>();
+    const timer = setTimeout(
+      () => ready.reject(new Error("daemon completed the handshake but sent no state snapshot")),
+      this.#opts.firstSnapshotMs,
+    );
+    const off = this.subscribe((state) => {
+      if (state.tag === "data") ready.resolve();
+      else if (state.tag === "error") ready.reject(new Error(showConnectionError(state.error)));
     });
+    try {
+      await Promise.race([
+        ready.promise,
+        attempt.closed.then(() => {
+          throw new Error("connection dropped before the state snapshot");
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      off();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -394,8 +384,8 @@ export class LoomClient {
     return () => this.#pushListeners.delete(fn);
   }
 
-  /** Events: "disconnect" (transport dropped, reconnect starting), "reconnect", "resync", "close". */
-  on(event: "disconnect" | "reconnect" | "resync" | "close", fn: StateListener): () => void {
+  /** Events: "disconnect" (transport dropped), "reconnect" (fresh snapshot ready), "close". */
+  on(event: "disconnect" | "reconnect" | "close", fn: StateListener): () => void {
     let set = this.#stateListeners.get(event);
     if (!set) {
       set = new Set();
@@ -403,10 +393,6 @@ export class LoomClient {
     }
     set.add(fn);
     return () => set!.delete(fn);
-  }
-
-  get lastSeq(): number {
-    return this.#lastSeq;
   }
 
   async close(): Promise<void> {
@@ -432,7 +418,7 @@ export class LoomClient {
 
   /**
    * Test hook: sever the transport without marking the client closed, so the
-   * reconnect path (with `sinceSeq` gap replay) runs. Not for production use.
+   * reconnect path fetches a fresh snapshot. Not for production use.
    */
   dropForTest(): void {
     this.#attempt?.dispose();
@@ -444,14 +430,13 @@ export class LoomClient {
 
   /**
    * Open one connection: dial (spawning a daemon if nothing is listening),
-   * install the attempt, and complete the handshake. The same path for the
-   * first connection and for every reconnect — the only difference is
-   * `sinceSeq`, which is `undefined` when there is no stream to resume.
+   * install the attempt, validate the handshake and await the fresh snapshot.
+   * The same path serves the first connection and every reconnect.
    *
    * Every failure disposes what it built. Nothing partial is left installed for
    * the next attempt to inherit.
    */
-  async #open(sinceSeq: number | undefined): Promise<Attempt> {
+  async #open(): Promise<Attempt> {
     let sock: Deno.Conn;
     try {
       sock = await tryConnect(this.#opts.sockPath);
@@ -471,15 +456,17 @@ export class LoomClient {
       throw new Error("client closed while connecting");
     }
     const a = new Attempt(sock);
+    this.#setState(loadablePending);
     this.#attempt = a;
     a.readLoop = this.#runReadLoop(a);
     try {
-      await this.#handshake(a, sinceSeq);
+      await this.#handshake(a);
+      await this.#awaitFirstSnapshot(a);
     } catch (err) {
       // The socket may still be up (a mismatch is an answer, not a drop), and a
       // half-open attempt is exactly what the next one must not inherit.
-      if (this.#attempt === a) this.#attempt = null;
       a.dispose();
+      await a.readLoop;
       throw err;
     }
     // It dropped again while the handshake was in flight, so this connection is
@@ -614,7 +601,8 @@ export class LoomClient {
       if (!a.helloDone) {
         // Bounded: a handshake that never completes must not let a chatty
         // daemon grow this without limit before the reconnect loop gives up.
-        if (a.preHello.length < 20_000) a.preHello.push(frame);
+        if (a.preHello.length >= 20_000) return false;
+        a.preHello.push(frame);
         return true;
       }
       this.#route(frame);
@@ -648,18 +636,6 @@ export class LoomClient {
   }
 
   #deliverPush(frame: PushFrame): void {
-    // The daemon issues seqs strictly contiguously. A jump means a frame went
-    // missing — an unparseable line dropped in `#ingest`, or a bug — and our
-    // seq view now has a hole no future `sinceSeq` will ever fill. Re-baseline.
-    if (frame.type !== "resync" && this.#lastSeq > 0 && frame.seq > this.#lastSeq + 1) {
-      void this.#resync("seq gap");
-      return;
-    }
-    if (frame.seq > this.#lastSeq) this.#lastSeq = frame.seq;
-    if (frame.type === "resync") {
-      void this.#resync(frame.reason);
-      return;
-    }
     for (const l of this.#pushListeners) {
       try {
         l(frame);
@@ -683,14 +659,13 @@ export class LoomClient {
     return mkFatal(e);
   }
 
-  async #handshake(a: Attempt, sinceSeq: number | undefined): Promise<void> {
+  async #handshake(a: Attempt): Promise<void> {
     a.helloDone = false;
     let raw: unknown;
     try {
       raw = await this.request<unknown>("hello", {
         protocolVersion: PROTOCOL_VERSION,
         clientId: this.clientId,
-        ...(sinceSeq !== undefined ? { sinceSeq } : {}),
       });
     } catch (err) {
       // The daemon refused our version outright. It reports its own in the
@@ -710,24 +685,11 @@ export class LoomClient {
     if (result.protocolVersion !== PROTOCOL_VERSION) {
       throw this.#mismatch(result.protocolVersion);
     }
-    // A different epoch across a reconnect ⇒ the daemon restarted: its seq and
-    // in-memory version counters reset, so any replay it offered against our
-    // stale sinceSeq is meaningless. Re-baseline and tell the app to resync.
-    const restarted = this.#daemonEpoch !== null && this.#daemonEpoch !== result.daemon.epoch;
-    this.#daemonEpoch = result.daemon.epoch;
     this.daemonInfo = result.daemon;
-    if (restarted || sinceSeq === undefined || !result.replaying) {
-      this.#lastSeq = result.seq;
-    }
     a.helloDone = true;
     const queued = a.preHello;
     a.preHello = [];
-    // On a restart, drop any "replayed" frames from the old seq space.
-    for (const f of queued) {
-      if (restarted && f.type !== "state" && f.seq <= result.seq) continue;
-      this.#route(f);
-    }
-    if (restarted) this.#fire("resync", { reason: "daemon restarted" });
+    for (const frame of queued) this.#route(frame);
   }
 
   /**
@@ -805,7 +767,7 @@ export class LoomClient {
       while (attempt === null) {
         if (this.#closed || this.#fatal !== null) return;
         try {
-          attempt = await this.#open(this.#lastSeq);
+          attempt = await this.#open();
         } catch (err) {
           // A version incompatibility is not a transient failure. Retrying it
           // would leave the UI flickering between "reconnecting" and the real
@@ -819,7 +781,7 @@ export class LoomClient {
           waitMs = Math.min(waitMs * 2, 4000);
         }
       }
-      this.#fire("reconnect", { lastSeq: this.#lastSeq });
+      this.#fire("reconnect");
     }
   }
 
@@ -840,31 +802,6 @@ export class LoomClient {
         resolve();
       };
     });
-  }
-
-  async #resync(reason: string): Promise<void> {
-    // The daemon says our seq is unrecoverable (buffer rolled, or it
-    // restarted). Re-baseline from a fresh hello rather than carrying a stale
-    // `#lastSeq` forward; the listener re-reads the transcript, which is the
-    // only thing with a gap in it.
-    try {
-      const result = await this.request<HelloResult>("hello", {
-        protocolVersion: PROTOCOL_VERSION,
-        clientId: this.clientId,
-      });
-      this.daemonInfo = result.daemon;
-      this.#daemonEpoch = result.daemon.epoch; // keep it fresh so the next handshake doesn't false-detect a restart
-      // Monotonic: live frames delivered while this `hello` was in flight may
-      // already have advanced `#lastSeq` past the fresh head — keeping the
-      // higher value means the next reconnect's `sinceSeq` doesn't re-request
-      // frames we already processed (there is no seq de-dupe on delivery).
-      if (result.seq > this.#lastSeq) this.#lastSeq = result.seq;
-      // The daemon pushes a fresh snapshot from its `hello` handler, so state
-      // re-baselines itself — there is nothing to refetch here.
-    } catch {
-      /* the reconnect loop will try again */
-    }
-    this.#fire("resync", { reason });
   }
 
   #fire(event: string, info?: unknown): void {

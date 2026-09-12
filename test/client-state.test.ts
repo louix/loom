@@ -307,7 +307,6 @@ const helloLine = (id: number, repoRoot: string, over: Record<string, unknown> =
       protocolVersion: PROTOCOL_VERSION,
       seq: 0,
       daemon: stubDaemonInfo(repoRoot),
-      replaying: false,
       ...over,
     },
   });
@@ -884,3 +883,105 @@ nodeTest("concurrent requests reach the daemon whole and in issue order", async 
     }
   });
 });
+
+nodeTest(
+  "reconnect waits for its snapshot and retries a handshake that never supplies one",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    const sockPath = `${dir}/loom.sock`;
+    const held = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const stub = await mkStubDaemon(sockPath, async (id, conn) => {
+      if (conn.nth === 2) {
+        await conn.send(helloLine(id, dir)); // The snapshot deadline must allow another attempt.
+        return;
+      }
+      if (conn.nth === 3) {
+        await conn.send(helloLine(id, dir));
+        reached.resolve();
+        await held.promise;
+        await conn.send(stateLine(dir));
+        return;
+      }
+      await conn.send(stateLine(dir));
+      await conn.send(helloLine(id, dir));
+    });
+    const c = await LoomClient.connect({
+      repoRoot: dir,
+      sockPath,
+      autospawn: false,
+      reconnect: true,
+      firstSnapshotMs: 300,
+    });
+    let reconnects = 0;
+    c.on("reconnect", () => {
+      reconnects++;
+      assert.equal(c.getState().tag, "data");
+    });
+    try {
+      c.dropForTest();
+      await Promise.race([
+        reached.promise,
+        delay(2000).then(() => {
+          throw new Error("reconnect did not retry");
+        }),
+      ]);
+      assert.equal(c.getState().tag, "pending");
+      assert.equal(reconnects, 0, "hello alone is not a ready connection");
+      held.resolve();
+      await waitFor(() => reconnects === 1);
+      assert.equal(stub.handshakes(), 3);
+    } finally {
+      held.resolve();
+      await c.close();
+      await stub.close();
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+nodeTest(
+  "a pending question survives reconnect and can be answered from the fresh snapshot",
+  async () => {
+    const h = await makeHarness();
+    const c = await LoomClient.connect({
+      repoRoot: h.repoRoot,
+      sockPath: h.sockPath,
+      autospawn: false,
+      reconnect: true,
+    });
+    try {
+      const provider = (await h.daemon.providers.get("fake")) as FakeProvider;
+      const session = await c.request<SessionSnapshot>("session.create", {
+        provider: "fake",
+        prompt: "ask a question",
+      });
+      provider
+        .session(session.id)!
+        .emit({
+          type: "question",
+          id: "pending-question",
+          question: "Which branch?",
+          context: "Choose a target",
+        });
+      await waitFor(() => requestsOf(c, session.id).length === 1);
+      const before = requestsOf(c, session.id);
+      let reconnected = false;
+      c.on("reconnect", () => {
+        reconnected = true;
+      });
+      c.dropForTest();
+      await waitFor(() => reconnected);
+      assert.deepEqual(requestsOf(c, session.id), before);
+      await c.request("session.answer", {
+        id: session.id,
+        requestId: "pending-question",
+        text: "main",
+      });
+      await waitFor(() => requestsOf(c, session.id).length === 0);
+    } finally {
+      await c.close();
+      await h.cleanup();
+    }
+  },
+);

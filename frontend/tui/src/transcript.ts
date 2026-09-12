@@ -1330,11 +1330,6 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
     subscribe: store.subscribe,
     receive: (frame) => {
       if (disposed) return;
-      if (frame.type === "resync") {
-        const id = transcriptSession(resource);
-        if (id) open(id);
-        return;
-      }
       if (frame.type !== "event" || frame.event.sessionId !== transcriptSession(resource)) return;
       const ev = frame.event;
       let name: string | undefined;

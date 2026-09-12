@@ -296,119 +296,61 @@ test("setStatus publishes a snapshot carrying the new status", async () => {
   await c.close();
 });
 
-test("a fresh client (no sinceSeq) is told replaying:false", async () => {
+test("hello returns metadata and a fresh snapshot without transport replay", async () => {
   const c = await client();
-  const raw = await c.request<HelloResult>("hello", {
-    protocolVersion: PROTOCOL_VERSION,
-    clientId: "probe",
-  });
-  assert.equal(raw.replaying, false);
-  assert.equal(typeof raw.seq, "number");
-  // The fleet rides the `state` push the handler enqueues, not this result.
-  assert.equal("sessions" in raw, false);
-  await c.close();
-});
-
-test("reconnecting within the buffer replays the gap (no resync)", async () => {
-  const observer = await client(true);
-  const driver = await client();
-  const stub = await driver.request<SessionSnapshot>("session.createStub", { prompt: "gap" });
-
-  const texts: string[] = [];
-  observer.onPush((f) => {
-    if (f.type === "event") {
-      const t = (f.event as { text?: string }).text;
-      if (t) texts.push(t);
-    }
-  });
-  let reconnected = false;
-  let resynced = false;
-  observer.on("reconnect", () => {
-    reconnected = true;
-  });
-  observer.on("resync", () => {
-    resynced = true;
-  });
-
-  await driver.request("dev.emit", {
-    event: { sessionId: stub.id, type: "thinking", text: "A-live" },
-  });
-  await delay(20);
-  assert.ok(texts.includes("A-live"));
-
-  // Transport drop, then an event lands while the observer is away.
-  observer.dropForTest();
-  await driver.request("dev.emit", {
-    event: { sessionId: stub.id, type: "thinking", text: "B-gap" },
-  });
-
-  // Wait for the observer to come back and drain the replay.
-  for (let i = 0; i < 100 && !reconnected; i++) await delay(10);
-  await delay(30);
-
-  assert.equal(reconnected, true);
-  assert.equal(resynced, false, "gap was within the buffer — no resync expected");
-  assert.ok(texts.includes("B-gap"), `missed the gap event; saw ${JSON.stringify(texts)}`);
-
-  await observer.close();
-  await driver.close();
-});
-
-test("hello with a stale high sinceSeq triggers a resync push", async () => {
-  const c = await client();
-  let resynced = false;
-  c.on("resync", () => {
-    resynced = true;
-  });
-  // Ask to replay from a seq far beyond head.
-  await c.request("hello", {
-    protocolVersion: PROTOCOL_VERSION,
-    clientId: "stale",
-    sinceSeq: 999_999,
-  });
-  await delay(30);
-  assert.equal(resynced, true);
-  await c.close();
-});
-
-test("a reconnect onto a restarted daemon (new epoch) forces a resync", async () => {
-  const hh = await makeHarness();
-  const c = await LoomClient.connect({
-    repoRoot: hh.repoRoot,
-    sockPath: hh.sockPath,
-    autospawn: false,
-    reconnect: true,
-  });
   try {
-    // a couple of frames pre-restart → the old client's #lastSeq is small
-    await c.request("session.createStub", { prompt: "a" });
-    await c.request("session.createStub", { prompt: "b" });
-    const lastSeq = c.lastSeq;
-    let resyncs = 0;
-    c.on("resync", () => {
-      resyncs += 1;
+    const raw = await c.request<HelloResult>("hello", {
+      protocolVersion: PROTOCOL_VERSION,
+      clientId: "probe",
     });
-
-    await hh.restart();
-    // Drive the NEW daemon's head *above* the old client's #lastSeq, so
-    // `EventLog.since(lastSeq)` returns { rolled: false } and the only thing
-    // that can trigger a resync is the epoch-mismatch branch in #handshake.
-    const driver = await LoomClient.connect({
-      repoRoot: hh.repoRoot,
-      sockPath: hh.sockPath,
-      autospawn: false,
-    });
-    for (let i = 0; i < lastSeq + 4; i++) {
-      await driver.request("session.createStub", { prompt: `d${i}` });
-    }
-    await driver.close();
-
-    await delay(500); // client's reconnect loop + handshake
-    assert.equal(resyncs, 1, "the epoch change alone must force exactly one resync");
-    assert.equal(c.lastSeq >= lastSeq, true, "re-baselined onto the new daemon's seq");
+    assert.equal("replaying" in raw, false);
+    assert.equal("seq" in raw, false);
+    assert.equal("sessions" in raw, false);
+    assert.equal(c.getState().tag, "data");
   } finally {
     await c.close();
-    await hh.cleanup();
+  }
+});
+
+test("reconnect recovers missed output from durable history and continues live events", async () => {
+  const observer = await client(true);
+  const driver = await client();
+  try {
+    const stub = await driver.request<SessionSnapshot>("session.createStub", { prompt: "gap" });
+    const texts: string[] = [];
+    observer.onPush((f) => {
+      if (f.type === "event" && f.event.type === "assistant_text") texts.push(f.event.text);
+    });
+    let reconnected = false;
+    observer.on("reconnect", () => {
+      assert.equal(observer.getState().tag, "data");
+      reconnected = true;
+    });
+    await driver.request("dev.emit", {
+      event: { sessionId: stub.id, type: "assistant_text", text: "A-live" },
+    });
+    await waitFor(() => texts.includes("A-live"));
+    observer.dropForTest();
+    // Persist synchronously before the client can open another socket.
+    h.daemon.emitEvent({
+      sessionId: stub.id,
+      type: "assistant_text",
+      text: "B-gap",
+      ts: Date.now(),
+    });
+    await waitFor(() => reconnected);
+    assert.equal(texts.includes("B-gap"), false, "missed events are not replayed on the transport");
+    const page = await observer.request<HistoryPage>("session.events", { id: stub.id });
+    assert(
+      page.items.some((row) => row.event.type === "assistant_text" && row.event.text === "B-gap"),
+    );
+    await driver.request("dev.emit", {
+      event: { sessionId: stub.id, type: "assistant_text", text: "C-live" },
+    });
+    await waitFor(() => texts.includes("C-live"));
+  } finally {
+    await observer.close();
+    await driver.close();
   }
 });
 

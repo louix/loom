@@ -123,8 +123,6 @@ export const isPushFrame = (v: unknown): v is PushFrame => {
       const ev = v["event"];
       return isRec(ev) && isStr(ev["type"]) && isStr(ev["sessionId"]);
     }
-    case "resync":
-      return isStr(v["reason"]);
     case "notice":
       return isStr(v["text"]) && (v["tone"] === "info" || v["tone"] === "warn");
     default:
@@ -138,8 +136,4 @@ export const isPushFrame = (v: unknown): v is PushFrame => {
  * report, not a malformed frame to drop the socket over.
  */
 export const isHelloResult = (v: unknown): v is HelloResult =>
-  isRec(v) &&
-  isNum(v["protocolVersion"]) &&
-  isDaemonInfo(v["daemon"]) &&
-  isNum(v["seq"]) &&
-  typeof v["replaying"] === "boolean";
+  isRec(v) && isNum(v["protocolVersion"]) && isDaemonInfo(v["daemon"]);

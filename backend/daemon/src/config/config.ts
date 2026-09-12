@@ -306,7 +306,6 @@ export interface LoomConfig {
      * from the durable per-session `session_events` table, so this does not need
      * to hold a long session's entire history.
      */
-    eventBufferSize: number;
   };
   providers: {
     claude: {
@@ -405,7 +404,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   defaultProvider: "claude",
   daemon: {
     idleShutdownMinutes: 30,
-    eventBufferSize: 4096,
   },
   providers: {
     claude: {
@@ -1027,7 +1025,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     defaultProvider,
     daemon: {
       idleShutdownMinutes: nonNeg(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
-      eventBufferSize: Math.max(1, nonNeg(daemon["event_buffer_size"], d.daemon.eventBufferSize)),
     },
     providers: {
       claude: {

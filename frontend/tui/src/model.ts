@@ -509,9 +509,6 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
       const notice = noticeForEvent(s, ev) ?? s.notice;
       return notice === s.notice ? s : { ...s, notice };
     }
-    case "resync":
-      return s;
-
     case "notice":
       // A daemon-level advisory (config reload). Transient — same channel as a
       // local notice, styled by tone.

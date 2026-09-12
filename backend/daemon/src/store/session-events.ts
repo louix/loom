@@ -1,8 +1,6 @@
 /**
- * Durable per-session transcript. The cross-session in-memory `EventLog` ring
- * (`../daemon/event-log.ts`) only covers a live client's reconnect gap — it is
- * shared by every session and doesn't survive a restart. This table is the
- * record `session.events` pages over.
+ * Durable per-session transcript. `session.events` pages over this table on
+ * attach, reconnect and scrollback; live events carry these same row ids.
  *
  * A row's `id` is its identity everywhere: it is what the live push carries,
  * what a page returns, and what the next page's cursor is expressed in. Being

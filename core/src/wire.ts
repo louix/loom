@@ -18,7 +18,8 @@ import type { SessionMode } from "./types.ts";
  * would sit with an empty fleet forever, so the mismatch has to be loud.
  */
 // v3 returns all search IDs in one response instead of paginating them.
-export const PROTOCOL_VERSION = 3;
+// v4 reconnects from a fresh snapshot and durable history; no transport replay.
+export const PROTOCOL_VERSION = 4;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
@@ -125,14 +126,7 @@ export interface SearchResult {
 export interface EventPush {
   kind: "push";
   seq: number;
-  /**
-   * The daemon epoch (a fresh id per daemon process) that issued `seq`. The
-   * counter resets to 1 on every daemon start, so `seq` alone is unique only
-   * *within* an epoch. Together the pair addresses a position in this
-   * connection's raw stream — that is all: which frames a reconnect still
-   * needs, and whether the ring rolled past them. It is not the transcript's
-   * identity, which is {@link id} and survives a restart.
-   */
+  /** Diagnostic stream position only; transcript identity is the durable id. */
   epoch: string;
   type: "event";
   event: HarnessEvent;
@@ -144,20 +138,6 @@ export interface EventPush {
    * manufacture one for them.
    */
   id?: TranscriptId;
-}
-
-/**
- * The daemon could not replay the client's requested `sinceSeq` because the
- * ring buffer had already rolled past it. Authoritative state needs nothing
- * doing — the next {@link StatePush} carries all of it — but transcript entries
- * in the gap were missed, so a client holding cached pages must drop them and
- * re-read rather than keep a hole it cannot see.
- */
-export interface ResyncPush {
-  kind: "push";
-  seq: number;
-  type: "resync";
-  reason: string;
 }
 
 /**
@@ -178,7 +158,7 @@ export interface NoticePush {
  * no replay, so a client that has just attached and one that has been
  * connected for hours converge on exactly the same value.
  *
- * Deliberately outside the `seq`-stamped push stream and its replay ring: a
+ * Deliberately outside the `seq`-stamped event stream: a
  * snapshot is only ever interesting when it's the current one, so buffering old
  * ones to replay after a reconnect would cost memory to deliver staleness.
  */
@@ -189,11 +169,10 @@ export interface StatePush {
 }
 
 /**
- * The `seq`-stamped stream: raw adapter events plus the two advisories that
- * ride alongside them. Authoritative *state* does not travel here — it is a
- * whole-fleet {@link StatePush}, outside the seq space and its replay ring.
+ * Raw adapter events and daemon notices, numbered for diagnostics.
+ * Authoritative state travels separately in a whole-fleet {@link StatePush}.
  */
-export type PushFrame = EventPush | ResyncPush | NoticePush;
+export type PushFrame = EventPush | NoticePush;
 
 export type Frame = RequestFrame | ResponseFrame | PushFrame | StatePush;
 
@@ -376,8 +355,6 @@ export interface HelloParams {
   protocolVersion: number;
   /** Stable id for this client instance; used in change attribution. */
   clientId: string;
-  /** Last push `seq` the client processed, for gap replay. Omit on first attach. */
-  sinceSeq?: number;
 }
 
 /** One row in the model picker — a canonical id plus display trimmings. */
@@ -493,9 +470,8 @@ export interface DoctorReport {
     /** Distinct attached clients / raw socket connections. */
     clients: number;
     connections: number;
-    /** Push-stream head seq / frames still buffered for gap replay. */
+    /** Number of events and notices emitted by this daemon, for diagnostics. */
     eventSeq: number;
-    eventBuffer: number;
     sessions: number;
     runningSessions: number;
   };
@@ -526,12 +502,4 @@ export interface DoctorReport {
 export interface HelloResult {
   protocolVersion: number;
   daemon: DaemonInfo;
-  /** Current head of the push stream. Frames after this arrive live. */
-  seq: number;
-  /**
-   * True when the daemon will replay buffered frames in `(sinceSeq, seq]`.
-   * False when it could not (buffer rolled, or no `sinceSeq` given) and the
-   * client should rely on `sessions` above.
-   */
-  replaying: boolean;
 }

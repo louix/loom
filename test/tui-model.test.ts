@@ -128,8 +128,8 @@ const ev = (over: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): Harne
 
 /**
  * A live push for an event the daemon persisted: `id` is its durable transcript
- * identity, the same one `session.events` returns for it. `seq` is the ring's
- * own counter and no longer identifies anything in the transcript.
+ * identity, the same one `session.events` returns for it. `seq` is a diagnostic
+ * counter and does not identify anything in the transcript.
  */
 const push = (id: number, event: HarnessEvent): EventPush => {
   return { kind: "push", seq: id, epoch: "e1", type: "event", event, id };
@@ -651,8 +651,8 @@ test("a repeated durable id folds once, and ids order the transcript, not timest
     "durable order, not clock order",
   );
 
-  // The same entry again — the ring replaying across a reconnect, or a page
-  // overlapping the live stream. One entry, and the reducer says nothing moved.
+  // A page overlapping the live stream supplies the same entry again.
+  // One entry, and the reducer says nothing moved.
   const before = s;
   s = pushed(
     s,
@@ -2245,7 +2245,6 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
       clients: 1,
       connections: 1,
       eventSeq: 3,
-      eventBuffer: 3,
       sessions: 1,
       runningSessions: 1,
     },

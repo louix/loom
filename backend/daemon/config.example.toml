@@ -41,7 +41,6 @@ enabled = true # when the daemon starts and finds sessions the previous
 
 [daemon]
 idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0 disables
-event_buffer_size = 4096 # push-stream ring buffer, in frames
 
 [providers.claude]
 model = "claude-sonnet-5"

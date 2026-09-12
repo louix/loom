@@ -7,7 +7,6 @@
     "./config/pricing": "./src/config/pricing.ts",
     "./daemon/connection": "./src/daemon/connection.ts",
     "./daemon/daemon": "./src/daemon/daemon.ts",
-    "./daemon/event-log": "./src/daemon/event-log.ts",
     "./daemon/hooks": "./src/daemon/hooks.ts",
     "./daemon/hygiene": "./src/daemon/hygiene.ts",
     "./daemon/lifecycle": "./src/daemon/lifecycle.ts",

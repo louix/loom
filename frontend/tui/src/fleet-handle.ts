@@ -289,10 +289,7 @@ export interface FleetClient {
   ) => Promise<T>;
   readonly subscribe: (fn: (state: ClientState) => void) => () => void;
   readonly onPush: (fn: (frame: PushFrame) => void) => () => void;
-  readonly on: (
-    event: "disconnect" | "reconnect" | "resync" | "close",
-    fn: () => void,
-  ) => () => void;
+  readonly on: (event: "disconnect" | "reconnect" | "close", fn: () => void) => () => void;
   readonly close: () => Promise<void>;
 }
 
@@ -2449,13 +2446,6 @@ export const mkFleetHandle = ({
           dispatch({ t: "notice", text: "daemon restarted", tone: "good" });
         }
         void reconcileVersion();
-      }),
-      client.on("resync", () => {
-        log?.info("resync");
-        // The stream rolled past our seq without the connection dropping, so
-        // nothing else drops the window: entries in the gap never arrived and
-        // the transcript would hold a hole it cannot see.
-        transcripts.refresh();
       }),
       term.onResize(() => {
         dims = term.getSize();

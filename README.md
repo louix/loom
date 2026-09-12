@@ -23,8 +23,8 @@ the Vercel AI SDK.
 - **Wire protocol** — newline-delimited JSON over the socket. One connection
   multiplexes request/response and a server→client push stream; every push
   frame carries a monotonic `seq`.
-- **In-memory event log** — sequenced ring buffer with `since(seq)` gap replay
-  for client reconnect, and rolled-past detection that triggers a `resync`.
+- **Reconnect** — replaces the fleet snapshot and reloads the selected transcript
+  from durable session history. Transient notices during a disconnect may be lost.
 - **SQLite store** (`node:sqlite`, WAL) — `sessions`, `status_history`,
   `usage`, `runtime_children`; append-only versioned migrations.
 - **Session registry** — write-through over the store, per-session version
@@ -37,7 +37,7 @@ the Vercel AI SDK.
   processes from a previous daemon epoch are signalled to exit, stale git
   index locks are cleared and worktrees pruned.
 - **Thin client + `loom` CLI** — connect-or-spawn the daemon, `hello`
-  handshake, request/response, automatic reconnect with gap replay.
+  handshake, request/response, automatic reconnect with a fresh snapshot.
 
 **2 · Claude adapter**
 
@@ -123,7 +123,7 @@ the Vercel AI SDK.
 - **`loom` with no command** in an interactive terminal — or `loom tui`
   explicitly — opens a full-screen fleet view. It is just another client, with
   reconnect enabled, so the daemon and its sessions outlive it; re-opening
-  replays the daemon's buffered event history so the log isn't blank.
+  loads the selected session's newest history page from SQLite.
 - **Fleet pane** — sessions grouped by status in fleet-view order, a braille
   spinner on running rows, cost per session, and a `⟢` cache dot that grades
   green → amber → red as the prompt cache nears expiry (blank once it's cold or
@@ -233,8 +233,8 @@ was created with (or later switched to) become the default for the _next_
   the model is still working when that trips, the turn continues with a fresh
   budget rather than ending; only after five such segments does it stop, with a
   `step_limit` end marker and the session left idle so a message resumes it.
-- **10c** — first-party `bash` (persistent shell — cwd and env persist between
-  calls), `edit` (exact then whitespace-insensitive string replacement), and
+- **10c** — first-party `bash` (now a fresh process per call, with explicit `cwd`
+  and the session environment), `edit` (exact then whitespace-insensitive string replacement), and
   `grep` (ripgrep) tools, mounted alongside the MCP + `loom` tools and gated the
   same way. A `web_search` tool joins them when `[search]` names a backend
   (`brave` / `tavily` / `kagi`) whose key env var is set — `kagi` talks to

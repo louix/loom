@@ -701,10 +701,9 @@ const printSessions = (rows: SessionSnapshot[]): void => {
 
 const runTail = async (client: LoomClient): Promise<void> => {
   writeOut(`tailing ${client.daemonInfo?.repoRoot ?? "daemon"} — Ctrl-C to stop\n`);
-  client.on("reconnect", (i) =>
-    writeOut(`[reconnected @ seq ${(i as { lastSeq: number }).lastSeq}]\n`),
+  client.on("reconnect", () =>
+    writeOut("[reconnected; reload session history for missed output]\n"),
   );
-  client.on("resync", (i) => writeOut(`[resync: ${(i as { reason: string }).reason}]\n`));
   client.on("close", () => {
     writeOut("[connection closed]\n");
     Deno.exit(0);

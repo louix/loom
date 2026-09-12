@@ -1769,7 +1769,7 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
       </DocRow>
       <DocRow label="repo">{d.repoRoot}</DocRow>
       <DocRow label="clients">{`${d.clients}  (${d.connections} connection${d.connections === 1 ? "" : "s"})`}</DocRow>
-      <DocRow label="events">{`seq ${d.eventSeq}  ·  ${d.eventBuffer} buffered`}</DocRow>
+      <DocRow label="events">{d.eventSeq}</DocRow>
       <DocRow label="sessions">{`${d.sessions}  ·  ${d.runningSessions} running`}</DocRow>
 
       <DocHead>{"connectors"}</DocHead>

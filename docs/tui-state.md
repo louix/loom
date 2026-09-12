@@ -4,6 +4,14 @@ The daemon publishes replacement session snapshots. Clients keep connection stat
 separate from selected-session transcript loading, and transcripts use bounded
 history pages rather than embedding the whole log in fleet updates.
 
+Each reconnect waits for a fresh fleet snapshot, then the TUI reloads the selected
+session's newest history page and resets its scroll position. Pending questions,
+permissions and plans come from the snapshot. Durable row IDs merge history with
+concurrent live output without duplicates. There is no transport replay or event
+ring buffer; transient notices and raw `loom tail` output while disconnected may
+be missed. Requests with uncertain outcomes fail explicitly and are never retried
+automatically. Protocol v4 requires matching client and daemon versions.
+
 Session startup and cold resume publish `starting` before launching a worker or
 VM. Submitting a new message closes the composer so the STARTING state is visible.
 A structurally valid create request gets a row and opening message before provider,
