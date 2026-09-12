@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { makeLogger } from "../core/src/logger.ts";
 
 test(
-  "ChatGPT worker accepts legacy auth_path during initialization",
+  "ChatGPT worker initializes with auth_path and host isolation policy",
   { timeout: 15_000 },
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "loom-chatgpt-init-" });
@@ -14,7 +14,13 @@ test(
       // Capabilities need no credentials or vendor process. These paths need not exist.
       const provider = await module.createProvider({
         id: "chatgpt-init",
-        config: { sdk: "chatgpt", authPath: `${dir}/auth.json`, codexCliPath: `${dir}/codex` },
+        config: {
+          sdk: "chatgpt",
+          authPath: `${dir}/auth.json`,
+          codexCliPath: `${dir}/codex`,
+          sessionVm: { artifact: `${dir}/artifact`, smolvm: "smolvm", repoRoot: dir },
+          workerAllowedHosts: ["chatgpt.com"],
+        },
         logger: makeLogger("test"),
       });
       try {

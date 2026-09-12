@@ -12,6 +12,9 @@ export const createProviderWorker = (
 ) => {
   const native = ctx.config.sdk === "chatgpt";
   const config = { ...ctx.config };
+  // Host launch policy stays in the daemon; it is not connector wire config.
+  delete config.sessionVm;
+  delete config.workerAllowedHosts;
   if (config.codexCliPath?.includes("/")) config.codexCliPath = resolve(config.codexCliPath);
   const endpoints = {
     chatgpt: "https://chatgpt.com",
