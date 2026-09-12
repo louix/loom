@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { SessionEnvironment } from "./session-environment.ts";
 /**
  * The plugin seam. A connector package (`@loom/connector-*`) exports
@@ -24,40 +25,63 @@ export interface SearchConfig {
  * `[custom-provider.<id>]` / `[google]` / `[anthropic]` / `[providers.claude]`.
  * Every field is optional — a connector reads only the ones it needs.
  */
-export interface ConnectorConfig {
+const connectorConfigFields = z.object({
   /** Default model for new sessions. */
-  model?: string;
+  model: z.string(),
   /** Model ids offered in the picker. */
-  models?: string[];
+  models: z.array(z.string()),
   /** OpenAI-compatible endpoint base URL. */
-  baseUrl?: string;
+  baseUrl: z.string(),
   /** Resolved API key (inline `api_key` wins over `api_key_env`), "" if keyless. */
-  apiKey?: string;
+  apiKey: z.string(),
   /** Which model backend the aisdk connectors dial. */
-  sdk?: "openai" | "google" | "anthropic" | "chatgpt";
+  sdk: z.enum(["openai", "google", "anthropic", "chatgpt"]),
   /** Optional Codex OAuth auth.json path; omitted uses `~/.codex/auth.json`. */
-  authPath?: string;
+  authPath: z.string(),
   /** ChatGPT: explicit `codex` executable. Empty / omitted uses PATH. */
-  codexCliPath?: string;
+  codexCliPath: z.string(),
   /** Expose Codex's own web search alongside configured MCP servers. Default false. */
-  codexBuiltinWebSearch?: boolean;
+  codexBuiltinWebSearch: z.boolean(),
   /** Per-segment tool-call ceiling for a turn. */
-  maxSteps?: number;
+  maxSteps: z.number(),
   /**
    * Known per-model context-window sizes in tokens, keyed by model id — from
    * the endpoint's `/models` metadata (`context_length` et al.) or a
    * `model_context` config pin. Sessions prefer these over the built-in
    * prefix table in `@loom/core/tokens`.
    */
-  modelContext?: Record<string, number>;
+  modelContext: z.record(z.string(), z.number()),
   /**
    * Request `stream_options.include_usage` on streamed completions (default
    * true). Endpoints that validate strictly against an older OpenAI schema
    * may reject the field — turn it off per provider with `include_usage`.
    */
-  includeUsage?: boolean;
+  includeUsage: z.boolean(),
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
-  cliPath?: string;
+  cliPath: z.string(),
+  /**
+   * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
+   * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache
+   * breakpoint at all. Ignored by the other aisdk backends.
+   */
+  promptCacheTtl: z.string(),
+  /**
+   * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
+   * config directory, already tilde-expanded and absolute. "" = the SDK's
+   * default (`~/.claude`).
+   *
+   * ChatGPT (`sdk = "chatgpt"`): explicit Codex home directory (`auth.json`,
+   * `config.toml`). "" falls through to legacy `auth_path`'s parent, then
+   * `CODEX_HOME`, then `~/.codex`.
+   */
+  configDir: z.string(),
+});
+
+/** Selects only connector fields; host launch policy never crosses the wire. */
+export const connectorWireConfigSchema = connectorConfigFields.partial();
+export type ConnectorWireConfig = z.infer<typeof connectorWireConfigSchema>;
+
+export interface ConnectorConfig extends ConnectorWireConfig {
   /** Operator-selected Deno network hosts for a connector worker. */
   workerAllowedHosts?: string[];
   /** Host-selected Claude session VM policy. */
@@ -68,22 +92,6 @@ export interface ConnectorConfig {
     extraAllowedHosts?: string[];
     environment?: SessionEnvironment;
   };
-  /**
-   * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
-   * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache
-   * breakpoint at all. Ignored by the other aisdk backends.
-   */
-  promptCacheTtl?: string;
-  /**
-   * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
-   * config directory, already tilde-expanded and absolute. "" = the SDK's
-   * default (`~/.claude`).
-   *
-   * ChatGPT (`sdk = "chatgpt"`): explicit Codex home directory (`auth.json`,
-   * `config.toml`). "" falls through to legacy `auth_path`'s parent, then
-   * `CODEX_HOME`, then `~/.codex`.
-   */
-  configDir?: string;
 }
 
 export interface ConnectorContext {

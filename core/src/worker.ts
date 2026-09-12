@@ -2,7 +2,7 @@ import type { TranscriptMessage } from "./transcript.ts";
 /** Private connector protocol. Never route these messages through daemon admin RPC. */
 import type { HarnessEvent } from "./events.ts";
 import { MCP_CAPABILITIES } from "./types.ts";
-import type { ConnectorConfig } from "./connector.ts";
+import { connectorWireConfigSchema, type ConnectorWireConfig } from "./connector.ts";
 import type {
   AdapterSnapshot,
   AgentSession,
@@ -48,7 +48,7 @@ export interface WorkerBinding {
     | "@loom/connector-generic"
     | "@loom/connector-gemini"
     | "@loom/connector-chatgpt";
-  config: ConnectorConfig;
+  config: ConnectorWireConfig;
   role: WorkerRole;
   baseBranch?: string;
 }
@@ -79,6 +79,8 @@ export type WorkerFrame =
   | { kind: "models"; id: number; models: DiscoveredModel[] }
   | { kind: "sessions"; id: number; sessions: SessionRef[] }
   | { kind: "end" };
+
+const wireConfig = connectorWireConfigSchema.strict();
 
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -123,7 +125,8 @@ const plan = (v: unknown) =>
   optional(v.mode, mode) &&
   optional(v.model, str) &&
   optional(v.effort, str) &&
-  (v.action !== "revise" || str(v.plan));
+  (v.action !== "revise" || str(v.plan)) &&
+  (v.action !== "discuss" || str(v.message));
 
 const stringMap = (v: unknown) => record(v) && Object.values(v).every(str);
 const mcp = (v: unknown): boolean => {
@@ -223,28 +226,7 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
           "@loom/connector-gemini",
           "@loom/connector-chatgpt",
         ].includes(String(b.connector)) &&
-        record(b.config) &&
-        Object.entries(b.config).every(([k, v]) => {
-          if (
-            [
-              "cliPath",
-              "configDir",
-              "authPath",
-              "promptCacheTtl",
-              "model",
-              "baseUrl",
-              "apiKey",
-              "codexCliPath",
-              "sdk",
-            ].includes(k)
-          )
-            return str(v);
-          if (k === "models") return strings(v);
-          if (k === "includeUsage" || k === "codexBuiltinWebSearch") return typeof v === "boolean";
-          if (k === "maxSteps") return finite(v);
-          if (k === "modelContext") return record(v) && Object.values(v).every(finite);
-          return false;
-        });
+        wireConfig.safeParse(b.config).success;
       break;
     }
     case "seedTranscript":

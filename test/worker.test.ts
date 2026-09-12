@@ -13,6 +13,7 @@ import {
   type WorkerProcess,
 } from "../backend/daemon/src/daemon/worker-launch.ts";
 import type { CreateSessionOptions } from "../core/src/types.ts";
+import { connectorWireConfigSchema, type ConnectorWireConfig } from "../core/src/connector.ts";
 
 const cwd = fileURLToPath(new URL("../", import.meta.url));
 const opts = (sessionId: string): CreateSessionOptions => ({
@@ -31,6 +32,64 @@ const next = async <T>(iterator: AsyncIterator<T>): Promise<T> => {
   assert.equal(result.done, false);
   return result.value;
 };
+
+test("all connector config fields round-trip; host policy stays off the wire", () => {
+  const config = {
+    model: "fixture",
+    models: ["fixture"],
+    baseUrl: "https://example.test",
+    apiKey: "test-secret",
+    sdk: "chatgpt",
+    authPath: "/tmp/auth.json",
+    codexCliPath: "/tmp/codex",
+    codexBuiltinWebSearch: true,
+    maxSteps: 10,
+    modelContext: { fixture: 1000 },
+    includeUsage: true,
+    cliPath: "/tmp/claude",
+    promptCacheTtl: "5m",
+    configDir: "/tmp/profile",
+  } satisfies Required<ConnectorWireConfig>;
+  const host = {
+    ...config,
+    sessionVm: { artifact: "host-only" },
+    workerAllowedHosts: ["host-only"],
+  };
+  const selected = connectorWireConfigSchema.parse(host);
+  assert.deepEqual(selected, config);
+  assert.equal(host.sessionVm.artifact, "host-only");
+  const request = (config: unknown) => ({
+    kind: "request",
+    id: 1,
+    method: "initialize",
+    args: [
+      {
+        generation: "g",
+        providerId: "p",
+        sessionId: "s",
+        connector: "@loom/connector-chatgpt",
+        role: "capabilities",
+        config,
+      },
+    ],
+  });
+  const frame = JSON.parse(JSON.stringify(request(selected)));
+  assert.deepEqual(decodeWorkerRequest(frame), frame);
+  assert.throws(() => decodeWorkerRequest(request(host)));
+  assert.throws(() => decodeWorkerRequest(request({ ...config, sdk: "typo" })));
+});
+
+test("invalid outgoing requests fail locally and leave the worker usable", async () => {
+  const provider = await WorkerProvider.create("fake", mockLaunchSpec);
+  const session = await provider.createSession(opts("local-validation"));
+  try {
+    await assert.rejects(session.rewind(-1), /invalid worker rewind request/);
+    await session.setModel("still-alive");
+    assert.equal(session.snapshot().model, "still-alive");
+  } finally {
+    await session.close();
+  }
+});
 
 test(
   "slow environment initialization has its own budget; later requests keep their deadline",
@@ -75,6 +134,18 @@ test(
 );
 
 test("worker decoders reject admin methods, malformed arguments and payloads", () => {
+  const discuss = (decision: unknown) => ({
+    kind: "request",
+    id: 1,
+    method: "respondToPlan",
+    args: ["plan", decision],
+  });
+  assert.throws(() => decodeWorkerRequest(discuss({ action: "discuss" })));
+  assert.throws(() => decodeWorkerRequest(discuss({ action: "discuss", message: 42 })));
+  assert.equal(
+    decodeWorkerRequest(discuss({ action: "discuss", message: "add tests" })).method,
+    "respondToPlan",
+  );
   assert.throws(() =>
     decodeWorkerRequest({ kind: "request", id: 1, method: "session.delete", args: ["peer"] }),
   );

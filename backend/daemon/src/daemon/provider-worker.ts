@@ -1,7 +1,7 @@
 /** Host connector processes for non-VM sessions and short-lived utilities. */
 import { homedir } from "node:os";
 import { join, delimiter, isAbsolute, resolve } from "node:path";
-import type { ConnectorContext } from "@loom/core/connector";
+import { connectorWireConfigSchema, type ConnectorContext } from "@loom/core/connector";
 import type { WorkerProfile, WorkerRole } from "@loom/core/worker";
 import { WorkerProvider } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
@@ -11,10 +11,9 @@ export const createProviderWorker = (
   ctx: ConnectorContext,
 ) => {
   const native = ctx.config.sdk === "chatgpt";
-  const config = { ...ctx.config };
-  // Host launch policy stays in the daemon; it is not connector wire config.
-  delete config.sessionVm;
-  delete config.workerAllowedHosts;
+  const parsed = connectorWireConfigSchema.safeParse(ctx.config);
+  if (!parsed.success) throw new Error("invalid connector worker configuration");
+  const config = parsed.data;
   if (config.codexCliPath?.includes("/")) config.codexCliPath = resolve(config.codexCliPath);
   const endpoints = {
     chatgpt: "https://chatgpt.com",

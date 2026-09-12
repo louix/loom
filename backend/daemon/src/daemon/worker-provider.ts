@@ -16,6 +16,7 @@ import type {
 } from "../../../../core/src/types.ts";
 import {
   decodeWorkerFrame,
+  decodeWorkerRequest,
   MAX_FRAME_BYTES,
   MAX_PENDING,
   WORKER_VERSION,
@@ -313,6 +314,12 @@ export class RemoteWorkerSession implements AgentSession {
     if (this.#pending.size >= MAX_PENDING)
       return Promise.reject(new Error("too many worker requests"));
     const id = ++this.#requestId;
+    const request = { kind: "request", id, ...command };
+    try {
+      decodeWorkerRequest(request);
+    } catch {
+      return Promise.reject(new Error(`invalid worker ${command.method} request`));
+    }
     const d = deferred<WorkerFrame>();
     const timer = setTimeout(
       () => this.#fail(new Error(`worker ${command.method} timed out`)),
@@ -325,7 +332,7 @@ export class RemoteWorkerSession implements AgentSession {
     };
     const expected = kinds[command.method] ?? "response";
     this.#pending.set(id, { resolve: d.resolve, reject: d.reject, timer, expected });
-    void this.#writer.send({ kind: "request", id, ...command }).catch((e) => this.#fail(e));
+    void this.#writer.send(request).catch((e) => this.#fail(e));
     return d.promise;
   }
   async #read() {
