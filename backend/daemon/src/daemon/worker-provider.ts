@@ -407,7 +407,8 @@ export class RemoteWorkerSession implements AgentSession {
           break;
       }
     }
-    if (!this.#stopping && !this.#failure) throw new Error("worker connection ended");
+    if (!this.#stopping && !this.#failure)
+      throw (await this.#process.failure?.()) ?? new Error("worker connection ended");
   }
 }
 

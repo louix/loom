@@ -26,6 +26,8 @@ export interface WorkerProcess {
   pid: number;
   terminate(): void;
   cleanup?(): Promise<void>;
+  /** Credential-free supervisor diagnosis, drained before interpreting worker EOF. */
+  failure?(): Promise<Error | undefined>;
 }
 export type WorkerLauncher = (spec: WorkerLaunchSpec) => WorkerProcess;
 

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { readStartupProgress } from "../runtime/src/session-vm/progress.ts";
+import {
+  readStartupProgress,
+  classifyStartupFailure,
+  startupFailures,
+  startupMessage,
+} from "../runtime/src/session-vm/progress.ts";
 import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
@@ -113,6 +118,38 @@ test("startup phases survive fragmented stderr without publishing vendor output"
     (stage) => stages.push(stage),
   );
   assert.deepEqual(stages, ["boot", "activate", "prepare"]);
+});
+
+test("startup diagnostics expose only known causes and bounded elapsed times", async () => {
+  const messages: string[] = [];
+  const failures: string[] = [];
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      for (const value of [
+        { loomStartup: "boot", elapsedSeconds: 30 },
+        { loomStartup: "boot", elapsedSeconds: "secret-token" },
+        { loomStartupFailure: "devices", stderr: "secret-token" },
+        { loomStartupFailure: "secret-token" },
+        { loomStartupFailure: "toString" },
+      ])
+        c.enqueue(new TextEncoder().encode(JSON.stringify(value) + "\n"));
+      c.close();
+    },
+  });
+  await readStartupProgress(
+    stream,
+    (stage, elapsed) => messages.push(startupMessage(stage, elapsed)),
+    (code) => failures.push(startupFailures[code]),
+  );
+  assert.deepEqual(messages, ["Starting VM… (30s elapsed)", "Starting VM…"]);
+  assert.deepEqual(failures, [startupFailures.devices]);
+  assert.equal(
+    classifyStartupFailure(new Error("no more IRQs are available: secret-token")),
+    "devices",
+  );
+  assert.equal(classifyStartupFailure(new Error("ENOSPC: secret-token")), "space");
+  assert.equal(classifyStartupFailure(new Error("Permission denied: secret-token")), "permission");
+  assert.equal(classifyStartupFailure(new Error("unrecognized: secret-token")), "backend");
 });
 
 test("discarding legacy guest disks preserves host profiles and worktree changes", async () => {

@@ -33,6 +33,25 @@ const next = async <T>(iterator: AsyncIterator<T>): Promise<T> => {
   return result.value;
 };
 
+test("worker EOF waits for the supervisor diagnostic instead of hiding its cause", async () => {
+  const diagnosis = Promise.withResolvers<Error>();
+  const failed = RemoteWorkerSession.connect("failed-vm", "fake", mockLaunchSpec(cwd), () => ({
+    input: new WritableStream(),
+    output: new ReadableStream({
+      start(c) {
+        c.close();
+      },
+    }),
+    exited: Promise.resolve(),
+    pid: -1,
+    terminate() {},
+    failure: () => diagnosis.promise,
+  }));
+  const rejected = assert.rejects(failed, /VM backend ran out of virtual devices/);
+  diagnosis.resolve(new Error("The VM backend ran out of virtual devices (IRQs)."));
+  await rejected;
+});
+
 test("all connector config fields round-trip; host policy stays off the wire", () => {
   const config = {
     model: "fixture",

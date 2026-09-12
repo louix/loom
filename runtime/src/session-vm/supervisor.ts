@@ -26,7 +26,7 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
-import { reportStartup, readStartupProgress } from "./progress.ts";
+import { reportStartup, readStartupProgress, classifyStartupFailure } from "./progress.ts";
 import { seedRepoBase } from "./repo-base.ts";
 import {
   discardSessionDisks,
@@ -116,7 +116,18 @@ const command = async (args: string[]) => {
     stdout: "piped",
     stderr: "piped",
   });
-  const result = await Promise.race([child.output(), done.promise.then(() => undefined)]);
+  const started = Date.now();
+  const stage = args[1] === "start" ? "boot" : "runtime";
+  const heartbeat = setInterval(
+    () => reportStartup(stage, Math.floor((Date.now() - started) / 1000)),
+    15_000,
+  );
+  let result;
+  try {
+    result = await Promise.race([child.output(), done.promise.then(() => undefined)]);
+  } finally {
+    clearInterval(heartbeat);
+  }
   if (!result) throw new Error("Session VM startup interrupted");
   if (!result.success) {
     const detail = new TextDecoder().decode(result.stderr).trim().slice(-4096);
@@ -256,6 +267,7 @@ try {
   // failure, without resource sampling or console/backend log dumps.
   if (binding.preparationOnly)
     console.error(error instanceof Error ? error.message : String(error));
+  else console.error(JSON.stringify({ loomStartupFailure: classifyStartupFailure(error) }));
   console.error(`Session VM stopped during ${phase}; state: ${binding.state}`);
 } finally {
   clearTimeout(deadline);

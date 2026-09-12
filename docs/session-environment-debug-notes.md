@@ -164,3 +164,34 @@ Shared-image implementation is now in progress:
 
 Do not spawn subagents: current instructions prohibit delegation unless requested.
 The unrelated untracked review documents and `out` predate this work; leave them alone.
+
+## Usability follow-up
+
+The user requested unsigned commits as work completes. The environment fixes and
+shared image above were committed in `2ddb3a8`.
+
+- `08f1f46`: `send`, `interrupt`, `resume`, and `done` now print the existing
+  readable session-state label instead of `[object Object]`.
+- `80f83b6`: `loom stop` waits for the connection to close and the old daemon to
+  release its pidfile before reporting `daemon stopped`. A bounded timeout reports
+  incomplete shutdown. Regression tests cover delayed ownership release,
+  immediate restart, and a stuck shutdown.
+- `0143413`: the title filter rejects conversational contractions such as
+  “I'll”, “I’ll”, “I've”, and “I'd”, which previously allowed assistant preambles
+  to become titles.
+- The VM diagnostics follow-up reports elapsed time every 15 seconds during long
+  backend commands. Only fixed diagnostic codes and bounded elapsed times cross
+  the stderr channel; raw provider stderr remains discarded. Worker EOF waits for
+  the supervisor's diagnostic, preserving recognized IRQ, disk-space, permission,
+  and disk failures. Other VM disconnects identify the last startup stage.
+- Validation: the 10 shutdown/title tests and 23 startup/worker tests passed;
+  full typecheck and changed-file lint passed. The live external-worktree
+  reproduction now reports the specific virtual-device/IRQ error with a nested
+  worktree workaround (`/tmp/loom-backend-diagnostic.log`). Three normal live VM
+  clones still passed tool and credential-isolation checks
+  (`/tmp/loom-usability-vm.log`).
+
+The external-worktree device limit is still a backend limitation; this follow-up
+makes its cause visible but does not increase the backend's IRQ capacity. The Nix
+profile still points at the shared-image build listed above; the usability changes
+have been verified from source and are not yet installed in that profile.

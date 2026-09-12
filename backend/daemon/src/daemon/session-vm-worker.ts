@@ -18,7 +18,12 @@ import {
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
-import { readStartupProgress, startupStages } from "../../../../runtime/src/session-vm/progress.ts";
+import {
+  readStartupProgress,
+  startupMessage,
+  startupFailures,
+  type StartupStage,
+} from "../../../../runtime/src/session-vm/progress.ts";
 import {
   hasCompatibleRepoBase,
   repoBaseDirectory,
@@ -246,11 +251,20 @@ export const launchSessionVm = async (
         auth,
       }) + "\n",
     );
-    if (!options.preparationOnly)
-      void readStartupProgress(
-        Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
-        (stage) => options.onProgress?.(startupStages[stage]),
-      ).catch(() => {});
+    let lastStage: StartupStage = "runtime";
+    let failure: Error | undefined;
+    const startup = !options.preparationOnly
+      ? readStartupProgress(
+          Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
+          (stage, elapsed) => {
+            lastStage = stage;
+            options.onProgress?.(startupMessage(stage, elapsed));
+          },
+          (code) => {
+            failure = new Error(startupFailures[code]);
+          },
+        ).catch(() => {})
+      : Promise.resolve();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ended = new AbortController();
     void exited.then(
@@ -322,6 +336,12 @@ export const launchSessionVm = async (
       exited,
       pid: child.pid ?? -1,
       exitCode: exited.then(() => child.exitCode ?? 1),
+      failure: async () => {
+        await startup;
+        return (
+          failure ?? new Error(`Session VM connection ended during: ${startupMessage(lastStage)}`)
+        );
+      },
       ...(options.preparationOnly
         ? { diagnostics: Readable.toWeb(child.stderr) as ReadableStream<Uint8Array> }
         : {}),
