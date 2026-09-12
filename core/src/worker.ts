@@ -229,6 +229,7 @@ export const decodeWorkerRequest = (v: unknown): WorkerRequest => {
             [
               "cliPath",
               "configDir",
+              "authPath",
               "promptCacheTtl",
               "model",
               "baseUrl",

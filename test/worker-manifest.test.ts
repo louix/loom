@@ -3,6 +3,31 @@ import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { makeLogger } from "../core/src/logger.ts";
 
+test(
+  "ChatGPT worker accepts legacy auth_path during initialization",
+  { timeout: 15_000 },
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "loom-chatgpt-init-" });
+    try {
+      const { CONNECTORS } = await import("../cli/src/connectors.ts");
+      const module = await CONNECTORS["@loom/connector-chatgpt"]!();
+      // Capabilities need no credentials or vendor process. These paths need not exist.
+      const provider = await module.createProvider({
+        id: "chatgpt-init",
+        config: { sdk: "chatgpt", authPath: `${dir}/auth.json`, codexCliPath: `${dir}/codex` },
+        logger: makeLogger("test"),
+      });
+      try {
+        assert.equal(provider.capabilities.liveModeSwitch, true);
+      } finally {
+        await provider.close?.();
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
 test("CLI mock manifest executes the connector only in a child", { timeout: 15_000 }, async () => {
   const resolved: string[] = [];
   const hook = registerHooks({
