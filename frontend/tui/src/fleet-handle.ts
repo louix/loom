@@ -1,3 +1,4 @@
+import { bindCommand, keyCommand } from "./commands.ts";
 import { helpLines } from "./help.ts";
 /**
  * Everything the TUI does that isn't drawing: owns the {@link TuiState}, the
@@ -35,8 +36,8 @@ import { applyKey, buffer } from "./editor.ts";
 import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
-  detailRows,
-  modeChipHit,
+  detailLayout,
+  type DetailLayout,
   promptPaneRows,
   promptRows,
   requestPanelRows,
@@ -52,6 +53,7 @@ import {
   fleetSessions,
   allowedActs,
   commandsFor,
+  commandHints,
   defaultModelOf,
   defaultProviderId,
   escapePicker,
@@ -62,8 +64,9 @@ import {
   NOTICE_TTL_MS,
   modelPickItems,
   modelSupportsEffort,
-  pickerStep,
-  type WizardStep,
+  selectModel,
+  startModelSelection,
+  type ModelSelection,
   providerInfo,
   reduce,
   selectedSession,
@@ -79,6 +82,7 @@ import {
   type TuiState,
   focusedChildOf,
   providerAccountOf,
+  providerColorOf,
   cacheStatus,
 } from "./model.ts";
 import {
@@ -93,14 +97,12 @@ import {
   promptOnPane,
   requestPrompt,
   sessionPrompt,
-  unwind,
   type Confirm,
   type Overlay,
   type Prompt,
   type NewSessionSettings,
   type Picker,
   type PickerDest,
-  type PickerStep,
   type PlanReview,
   type RequestPromptKind,
   type SessionPromptKind,
@@ -158,36 +160,6 @@ const LATCHED_OVERLAYS = new Set<Overlay["t"]>(["confirm", "plan", "picker"]);
  */
 const REPEATABLE_CTRL = new Set([0x01, 0x02, 0x05, 0x06, 0x0b, 0x15, 0x17]);
 
-/**
- * The acts {@link runAct} hands off to {@link act} — session verbs plus the
- * always-on globals. Everything else in {@link ActName} (view / structural
- * commands) `runAct` handles inline. Splitting the union this way makes both
- * switches exhaustive: a new `ActName` fails to compile until it's placed.
- */
-type DelegatedAct =
-  | "approve"
-  | "deny"
-  | "answer"
-  | "send"
-  | "interrupt"
-  | "done"
-  | "compact"
-  | "keepwarm"
-  | "rebase"
-  | "planreview"
-  | "mode"
-  | "undo"
-  | "title"
-  | "comment"
-  | "new"
-  | "find"
-  | "filter"
-  | "help"
-  | "quit";
-
-/** The {@link DelegatedAct}s allowed regardless of the selected session's state. */
-const GLOBAL_ACTS = new Set<DelegatedAct>(["new", "find", "filter", "help", "quit"]);
-
 /** The terminal capabilities the handle needs, gathered by the component from Ink. */
 export interface Term {
   readonly exit: () => void;
@@ -230,6 +202,7 @@ export type BodyKind =
 export interface FleetView {
   readonly ui: TuiState;
   readonly fleetLayout: FleetLayout;
+  readonly detail: DetailLayout;
   /** Top-anchored offset into the plan-review body (PgUp/PgDn/wheel). */
   readonly planScroll: number;
   /** The active layout view — `⇥` toggles it, `Esc` resets to `overview`. */
@@ -374,9 +347,11 @@ const deriveView = (
 
   // The right column is Detail (natural height) + gap 1 + the log, and must
   // sum to exactly bodyH — size the log against Detail's real row count
-  // (detailRows), not a hardcoded guess, or a rich claude session overflows
+  // from the same rows that render, or a rich claude session overflows
   // the body and pushes the top of the UI off screen.
-  const detailH = detailRows(sel, {
+  const detail = detailLayout(sel, {
+    mode,
+    engineColor: sel ? providerColorOf(state, sel.provider) : "",
     width: body.t === "sessionPane" ? cols : rightW,
     account: account,
     compacting: sel?.compacting ?? null,
@@ -384,6 +359,7 @@ const deriveView = (
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.
+  const detailH = detail.height;
   const eventsW = body.t === "sessionPane" ? cols : rightW;
   // A session-targeted prompt draws its input group under the EVENTS log (its
   // label + editor rows) — budget them against the log's height.
@@ -400,25 +376,11 @@ const deriveView = (
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
   if (body.t === "split") {
     hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: leftW }, layout));
-    const chip = modeChipHit(sel, {
-      originX: leftW + 2,
-      originY: 2,
-      paneW: rightW,
-      account: account,
-      pending: mode,
-    });
-    if (chip) hits.push({ kind: "mode", ...chip });
+    hits.push(...detail.hits({ x: leftW + 2, y: 2 }));
   } else if (body.t === "fleetOnly") {
     hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: cols }, layout));
   } else if (body.t === "sessionPane") {
-    const chip = modeChipHit(sel, {
-      originX: 1,
-      originY: 2,
-      paneW: cols,
-      account: account,
-      pending: mode,
-    });
-    if (chip) hits.push({ kind: "mode", ...chip });
+    hits.push(...detail.hits({ x: 1, y: 2 }));
   }
 
   const prompt = openPrompt(state.overlay);
@@ -441,6 +403,7 @@ const deriveView = (
   return {
     ui: state,
     fleetLayout: layout,
+    detail,
     planScroll,
     layoutView,
     sel,
@@ -907,9 +870,118 @@ export const mkFleetHandle = ({
     show({ t: "prompt", prompt });
   };
 
-  const act = (name: DelegatedAct): void => {
-    const s = selectedSession(state);
+  const runAct = (action: ActName): void => {
+    const command = bindCommand(action, state.selectedId);
+    if (!command) return;
+    const s =
+      command.tag === "session" ? (sessionOf(command.sessionId) ?? null) : selectedSession(state);
+    const name = command.name;
     const by = client.clientId;
+    switch (name) {
+      case "viewlog":
+        return void viewInEditor();
+      case "logs":
+        return void viewLogs();
+      case "doctor":
+        return void openDoctor();
+      case "prepareEnvironment":
+        return void prepareRepo();
+      case "model":
+        return void switchModel();
+      case "effort":
+        return void switchEffort();
+      case "provider":
+        return void pickProviderModelForSession();
+      case "theme":
+        return void dispatch({ t: "toggleTheme" });
+      case "restart":
+        return void show({ t: "confirm", confirm: confirmFor("restart") });
+      case "quitall":
+        return void show({ t: "confirm", confirm: confirmFor("quitAll") });
+      case "gc": {
+        // A bulk sweep — every done session's worktree goes (branches and rows
+        // stay). Behind a confirm like `X`, since it deletes directories.
+        const targets = fleetSessions(state).filter((s) => s.status.kind === "done" && s.worktree);
+        if (targets.length === 0)
+          return void dispatch({
+            t: "notice",
+            text: "nothing to gc — no done sessions with worktrees",
+            tone: "dim",
+          });
+        return void show({
+          t: "confirm",
+          confirm: {
+            title: "Run gc?",
+            body: `The worktrees of ${targets.length} done session${targets.length === 1 ? "" : "s"} go away — session rows and branches are kept.`,
+            danger: true,
+            action: "gc",
+          },
+        });
+      }
+      case "delete":
+        return void (s ? show({ t: "confirm", confirm: confirmForDelete(s) }) : undefined);
+      case "copybranch": {
+        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+        const nm = s.branch ?? (s.worktree ? (s.worktree.split("/").pop() ?? s.worktree) : s.id);
+        return copyToClipboard(nm, nm);
+      }
+      case "clearqueue": {
+        const box = s && outboxOf(composer.get(), s.id);
+        if (!box || pending(box).length === 0) {
+          return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
+        }
+        return void composer.clear(s.id);
+      }
+      case "fork": {
+        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+        if (isClaudeId(s.provider) && s.resumable !== false) {
+          return void dispatch({
+            t: "notice",
+            text: "hard fork isn't available for Claude sessions yet",
+            tone: "dim",
+          });
+        }
+        if (s.inPlace && s.resumable !== false) {
+          return void dispatch({
+            t: "notice",
+            text: "hard fork needs a worktree — this session runs in-place",
+            tone: "dim",
+          });
+        }
+        if (s.status.kind === "awaiting_input") {
+          return void dispatch({
+            t: "notice",
+            text: "answer the pending request first",
+            tone: "dim",
+          });
+        }
+        if (forkingSessions.has(s.id)) return;
+        forkingSessions.add(s.id);
+        note("Starting fork…", "dim");
+        client
+          .request<SessionSnapshot>("session.fork", { id: s.id, by: client.clientId })
+          .then((r) => {
+            dispatch({ t: "select", id: r.id });
+            dispatch({
+              t: "notice",
+              text: `forked → ${shortId(r.id)}${s.resumable === false ? " — fresh session with saved context" : ""}`,
+              tone: "good",
+            });
+          })
+          .catch((e: unknown) =>
+            dispatch({
+              t: "notice",
+              text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
+              tone: "bad",
+            }),
+          )
+          .finally(() => forkingSessions.delete(s.id));
+        return;
+      }
+      default:
+        break;
+    }
+    if (!allowedActs(s).has(name)) return;
     if (name === "new") {
       return void show({
         t: "prompt",
@@ -1131,82 +1203,49 @@ export const mkFleetHandle = ({
   // ask where it came from, and unwinding restores exactly what it interrupted.
 
   /** Open `step` of the wizard. `pick` pre-selects an id in the new list. */
-  const openStep = (
-    step: WizardStep,
-    dest: PickerDest,
-    chosen: { provider: string | null; model: string | null },
-    from: PickerStep,
-    pick?: string | null,
-  ): void => show(pickerStep(state, step, { dest, chosen, from, ...(pick ? { pick } : {}) }));
-
-  /** The session an open plan review belongs to, for the retarget wizard's
-   *  "current value" pre-selection. */
   const sessionOf = (id: string): SessionSnapshot | undefined =>
     fleetSessions(state).find((x) => x.id === id);
 
-  /** `⌥p` from the plan review: retarget the `f` (implement fresh) run. Each
-   *  step pre-selects what the review would use today — a staged choice if
-   *  there is one, else the plan session's own. A staged provider that differs
-   *  from the session's forks a fresh session when `f` fires. */
   const openPlanRetarget = (plan: PlanReview): void => {
-    const ps = sessionOf(plan.sessionId);
-    const dest: PickerDest = { t: "planImpl", plan };
-    if (fleetProviders(state).length > 1) {
-      return openStep(
-        "provider",
-        dest,
-        { provider: null, model: null },
-        "provider",
-        plan.impl?.provider ?? ps?.provider,
-      );
-    }
-    const provider = fleetProviders(state)[0]?.id ?? ps?.provider ?? "claude";
-    openStep(
-      "model",
-      dest,
-      { provider, model: null },
-      "model",
-      plan.impl?.model ?? (provider === ps?.provider ? ps?.model : null),
+    const s = sessionOf(plan.sessionId);
+    show(
+      startModelSelection(
+        state,
+        { t: "planImpl", plan },
+        {
+          provider: plan.impl?.provider ?? s?.provider ?? null,
+          model: plan.impl?.model ?? s?.model ?? null,
+        },
+      ),
     );
   };
-
-  /** Stage the wizard's choices onto the review it was opened over and put the
-   *  review back up. Whatever isn't chosen the daemon fills from the target
-   *  provider's defaults. */
-  const stagePlanImpl = (
-    plan: PlanReview,
-    provider: string,
-    model: string | null,
-    effort: string | null,
-  ): void => show({ t: "plan", plan: { ...plan, impl: { provider, model, effort } } });
 
   /**
    * Finalize a model (+ optional effort) chosen through the wizard: a live
    * switch on an existing session, or folding the choice into the `new`-session
    * prompt waiting behind it.
    */
-  const finalizeModelChoice = (
-    dest: PickerDest,
-    chosen: { provider: string | null; model: string | null },
-    model: string,
-    effort?: string,
-  ): void => {
-    if (dest.t === "newSession") {
+  const finalizeModelChoice = (dest: PickerDest, selection: ModelSelection): void => {
+    const { provider, effort } = selection;
+    const model = selection.model ?? "";
+    if (dest.t === "newSession")
       return show({
         t: "prompt",
-        prompt: newPrompt(
-          newSettings(state, chosen.provider, model || null, effort ?? null),
-          dest.draft,
-        ),
+        prompt: newPrompt(newSettings(state, provider, selection.model, effort), dest.draft),
       });
-    }
-    if (dest.t !== "session")
-      return show(
-        unwind({
-          t: "picker",
-          picker: state.overlay.t === "picker" ? state.overlay.picker : ({} as Picker),
-        }),
-      );
+    if (dest.t === "planImpl")
+      return show({
+        t: "plan",
+        plan: {
+          ...dest.plan,
+          impl: {
+            provider: provider ?? "claude",
+            model: selection.model,
+            effort,
+          },
+        },
+      });
+    if (dest.t !== "session") return;
     const id = dest.sessionId;
     // Came from a `send` prompt (⌥m/⌥t mid-message) → drop the user back into
     // it with the half-typed text intact once the switch is away.
@@ -1217,9 +1256,7 @@ export const mkFleetHandle = ({
     );
     const sess = sessionOf(id);
     const toProvider =
-      chosen.provider !== null && sess !== undefined && chosen.provider !== sess.provider
-        ? chosen.provider
-        : null;
+      provider !== null && sess !== undefined && provider !== sess.provider ? provider : null;
     const req = toProvider
       ? client.request("session.setProvider", {
           id,
@@ -1271,50 +1308,18 @@ export const mkFleetHandle = ({
     overlayActed = p;
     const cur = pickerCurrent(p);
     const dest = p.dest;
-    const provider = cur && p.step === "provider" ? cur.id : p.chosen.provider;
-    const model = cur && p.step === "model" ? cur.id : p.chosen.model;
-
-    // An empty model / effort step: Enter continues without picking one. The
-    // daemon falls back to the target provider's defaults (a model with no
-    // enumerated effort levels never reaches an empty effort step).
-    if (!cur && p.step !== "undo" && p.step !== "command") {
-      if (dest.t === "planImpl") {
-        return provider === null
-          ? show({ t: "plan", plan: dest.plan })
-          : stagePlanImpl(dest.plan, provider, model, null);
+    if (p.step !== "undo" && p.step !== "command") {
+      const result = selectModel(state, p);
+      switch (result.tag) {
+        case "show":
+          return show(result.overlay);
+        case "selected":
+          return finalizeModelChoice(result.dest, result.selection);
+        default:
+          return absurd(result);
       }
-      if (p.step === "effort") return finalizeModelChoice(dest, p.chosen, p.chosen.model ?? "");
-      if (dest.t === "newSession") {
-        return show({
-          t: "prompt",
-          prompt: newPrompt(newSettings(state, provider, model, null), dest.draft),
-        });
-      }
-      return show(unwind({ t: "picker", picker: p }));
     }
-
     switch (p.step) {
-      case "provider":
-        // Provider chosen → always a model step.
-        return openStep("model", dest, { provider, model: null }, p.from);
-
-      case "model": {
-        const pid = provider ?? "claude";
-        if (model !== null && modelSupportsEffort(state, pid, model)) {
-          return openStep("effort", dest, { provider: pid, model }, p.from);
-        }
-        if (dest.t === "planImpl") return stagePlanImpl(dest.plan, pid, model, null);
-        return finalizeModelChoice(dest, { provider: pid, model }, model ?? "");
-      }
-
-      case "effort": {
-        const effort = cur?.id ?? null;
-        if (dest.t === "planImpl") {
-          return stagePlanImpl(dest.plan, provider ?? "claude", model, effort);
-        }
-        return finalizeModelChoice(dest, p.chosen, model ?? "", effort ?? undefined);
-      }
-
       case "undo": {
         const undoTurn = Number(cur?.id);
         const prefill = cur?.blob ?? "";
@@ -1352,19 +1357,7 @@ export const mkFleetHandle = ({
   /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
    *  only one), then the model, then land back on the prompt. */
   const pickProviderModel = (settings: NewSessionSettings, draft: string): void => {
-    const dest: PickerDest = { t: "newSession", settings, draft };
-    const provs = fleetProviders(state);
-    if (provs.length > 1) {
-      return openStep(
-        "provider",
-        dest,
-        { provider: null, model: null },
-        "provider",
-        settings.provider,
-      );
-    }
-    const only = provs[0]?.id ?? settings.provider ?? "claude";
-    openStep("model", dest, { provider: only, model: null }, "model", settings.model);
+    show(startModelSelection(state, { t: "newSession", settings, draft }, settings));
   };
 
   /** The session a live `⌥m` / `⌥p` / `⌥t` acts on: an explicit id, or the
@@ -1388,11 +1381,13 @@ export const mkFleetHandle = ({
     ) {
       return note(`${s.provider} has no alternate models`, "dim");
     }
-    openStep(
-      "model",
-      { t: "session", sessionId: s.id, back: draft ?? null },
-      { provider: s.provider, model: null },
-      "model",
+    show(
+      startModelSelection(
+        state,
+        { t: "session", sessionId: s.id, back: draft ?? null },
+        s,
+        "model",
+      ),
     );
   };
 
@@ -1412,13 +1407,7 @@ export const mkFleetHandle = ({
       return note("interrupt the turn before switching provider", "dim");
     }
     if (fleetProviders(state).length <= 1) return switchModel(s.id, draft);
-    openStep(
-      "provider",
-      { t: "session", sessionId: s.id, back: draft ?? null },
-      { provider: null, model: null },
-      "provider",
-      s.provider,
-    );
+    show(startModelSelection(state, { t: "session", sessionId: s.id, back: draft ?? null }, s));
   };
 
   /** Open a live thinking-effort switcher (`⌥t`) — only when the session's
@@ -1433,11 +1422,13 @@ export const mkFleetHandle = ({
         "dim",
       );
     }
-    openStep(
-      "effort",
-      { t: "session", sessionId: s.id, back: draft ?? null },
-      { provider: s.provider, model: s.model },
-      "effort",
+    show(
+      startModelSelection(
+        state,
+        { t: "session", sessionId: s.id, back: draft ?? null },
+        s,
+        "effort",
+      ),
     );
   };
 
@@ -1812,144 +1803,6 @@ export const mkFleetHandle = ({
     }
   };
 
-  /**
-   * Run a named action — the single dispatch point shared by the browse keymap
-   * and the `Space` command palette. Session verbs and the always-on globals go
-   * through {@link act}; the app / view / structural commands are handled here.
-   */
-  const runAct = (name: ActName): void => {
-    const sel = selectedSession(state);
-    const allowed = allowedActs(sel);
-    switch (name) {
-      case "viewlog":
-        return void viewInEditor();
-      case "logs":
-        return void viewLogs();
-      case "doctor":
-        return void openDoctor();
-      case "prepareEnvironment":
-        return void prepareRepo();
-      case "model":
-        return void switchModel();
-      case "effort":
-        return void switchEffort();
-      case "provider":
-        return void pickProviderModelForSession();
-      case "theme":
-        return void dispatch({ t: "toggleTheme" });
-      case "restart":
-        return void show({ t: "confirm", confirm: confirmFor("restart") });
-      case "quitall":
-        return void show({ t: "confirm", confirm: confirmFor("quitAll") });
-      case "gc": {
-        // A bulk sweep — every done session's worktree goes (branches and rows
-        // stay). Behind a confirm like `X`, since it deletes directories.
-        const targets = fleetSessions(state).filter((s) => s.status.kind === "done" && s.worktree);
-        if (targets.length === 0)
-          return void dispatch({
-            t: "notice",
-            text: "nothing to gc — no done sessions with worktrees",
-            tone: "dim",
-          });
-        return void show({
-          t: "confirm",
-          confirm: {
-            title: "Run gc?",
-            body: `The worktrees of ${targets.length} done session${targets.length === 1 ? "" : "s"} go away — session rows and branches are kept.`,
-            danger: true,
-            action: "gc",
-          },
-        });
-      }
-      case "delete":
-        return void (sel ? show({ t: "confirm", confirm: confirmForDelete(sel) }) : undefined);
-      case "copybranch": {
-        if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        const nm =
-          sel.branch ?? (sel.worktree ? (sel.worktree.split("/").pop() ?? sel.worktree) : sel.id);
-        return copyToClipboard(nm, nm);
-      }
-      case "clearqueue": {
-        const box = sel && outboxOf(composer.get(), sel.id);
-        if (!box || pending(box).length === 0) {
-          return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
-        }
-        return void composer.clear(sel.id);
-      }
-      case "fork": {
-        if (!sel) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        if (isClaudeId(sel.provider) && sel.resumable !== false) {
-          return void dispatch({
-            t: "notice",
-            text: "hard fork isn't available for Claude sessions yet",
-            tone: "dim",
-          });
-        }
-        if (sel.inPlace && sel.resumable !== false) {
-          return void dispatch({
-            t: "notice",
-            text: "hard fork needs a worktree — this session runs in-place",
-            tone: "dim",
-          });
-        }
-        if (sel.status.kind === "awaiting_input") {
-          return void dispatch({
-            t: "notice",
-            text: "answer the pending request first",
-            tone: "dim",
-          });
-        }
-        if (forkingSessions.has(sel.id)) return;
-        forkingSessions.add(sel.id);
-        note("Starting fork…", "dim");
-        client
-          .request<SessionSnapshot>("session.fork", { id: sel.id, by: client.clientId })
-          .then((r) => {
-            dispatch({ t: "select", id: r.id });
-            dispatch({
-              t: "notice",
-              text: `forked → ${shortId(r.id)}${sel.resumable === false ? " — fresh session with saved context" : ""}`,
-              tone: "good",
-            });
-          })
-          .catch((e: unknown) =>
-            dispatch({
-              t: "notice",
-              text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
-              tone: "bad",
-            }),
-          )
-          .finally(() => forkingSessions.delete(sel.id));
-        return;
-      }
-      case "approve":
-      case "deny":
-      case "answer":
-      case "send":
-      case "interrupt":
-      case "done":
-      case "compact":
-      case "keepwarm":
-      case "rebase":
-      case "planreview":
-      case "mode":
-      case "undo":
-      case "title":
-      case "comment":
-      case "new":
-      case "find":
-      case "filter":
-      case "help":
-      case "quit":
-        // Globals are always allowed; session verbs are gated by the selected
-        // session's state (the set the keymap / palette also check).
-        if (GLOBAL_ACTS.has(name) || allowed.has(name)) act(name);
-        return;
-      default:
-        return absurd(name);
-    }
-  };
-
   // ---- keymap -----------------------------------------------
   const handleKey = (input: string, key: Key): void => {
     if (!connected()) {
@@ -1957,7 +1810,6 @@ export const mkFleetHandle = ({
       return;
     }
     const sel = selectedSession(state);
-    const allowed = allowedActs(sel);
     const { logPage } = store.get();
 
     if (key.ctrl && input === "c") return quitTui();
@@ -2059,12 +1911,13 @@ export const mkFleetHandle = ({
       if (key.meta && input === "m") {
         if (p.t === "new") {
           const pid = p.settings.provider ?? defaultProviderId(state);
-          return void openStep(
-            "model",
-            { t: "newSession", settings: p.settings, draft: p.buffer.text },
-            { provider: pid, model: null },
-            "model",
-            p.settings.model,
+          return void show(
+            startModelSelection(
+              state,
+              { t: "newSession", settings: p.settings, draft: p.buffer.text },
+              { provider: pid, model: p.settings.model },
+              "model",
+            ),
           );
         }
         if (sendTo) return void switchModel(sendTo, p.buffer.text);
@@ -2078,12 +1931,13 @@ export const mkFleetHandle = ({
           if (!mid || !modelSupportsEffort(state, pid, mid)) {
             return void note("this model has no thinking-effort control", "dim");
           }
-          return void openStep(
-            "effort",
-            { t: "newSession", settings: p.settings, draft: p.buffer.text },
-            { provider: pid, model: mid },
-            "effort",
-            p.settings.effort,
+          return void show(
+            startModelSelection(
+              state,
+              { t: "newSession", settings: p.settings, draft: p.buffer.text },
+              { provider: pid, model: mid, effort: p.settings.effort },
+              "effort",
+            ),
           );
         }
         if (sendTo) return void switchEffort(sendTo, p.buffer.text);
@@ -2306,8 +2160,7 @@ export const mkFleetHandle = ({
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
     // ⇧⇥ cycles the permission mode; plain ⇥ toggles the fleet list — the
     // overview split ↔ the session's detail + events (see {@link LayoutView}).
-    if (key.tab && key.shift) return void (sel ? runAct("mode") : undefined);
-    if (key.tab) {
+    if (key.tab && !key.shift) {
       if (sel) {
         layoutView = layoutView === "session" ? "overview" : "session";
         publish();
@@ -2324,26 +2177,8 @@ export const mkFleetHandle = ({
       }
       return;
     }
-    // Enter on a fleet row = act on it — unless a prompt submit just fired in
-    // the same input chunk (U5).
-    if (key.return) {
-      if (Date.now() - promptSubmittedAt < 100) return;
-      if (allowed.has("send")) return runAct("send");
-      if (allowed.has("answer")) return runAct("answer");
-      if (allowed.has("planreview")) return runAct("planreview");
-      return;
-    }
-    // ⌥m switches the selected session's model, ⌥t its thinking-effort level —
-    // the Alt keys that also act from the fleet view (their sibling ⇧⇥ does
-    // the same for the mode).
-    if (key.meta && input === "m") return void (sel ? runAct("model") : undefined);
-    if (key.meta && input === "t") return void (sel ? runAct("effort") : undefined);
-    if (key.meta && input === "p")
-      return void (sel ? pickProviderModelForSession(sel.id) : undefined);
-    if (key.ctrl || key.meta) return; // Ctrl / Alt otherwise do nothing outside the prompt
-
-    // Space → the command palette.
-    if (input === " ") {
+    if (key.return && Date.now() - promptSubmittedAt < 100) return;
+    if (input === " " && !key.ctrl && !key.meta) {
       return void show({
         t: "picker",
         picker: makePicker({
@@ -2354,39 +2189,8 @@ export const mkFleetHandle = ({
         }),
       });
     }
-
-    // Shift = the heavier / structural sibling of its lowercase.
-    if (input === "Q") return runAct("quitall");
-    if (input === "R") return runAct("restart");
-    if (input === "X") return runAct("delete");
-    if (input === "F") return runAct("fork");
-
-    if (input === "q") return quitTui();
-
-    // `a` resolves to whichever request the session has parked on.
-    let aKey: ActName = "approve";
-    if (allowed.has("answer")) aKey = "answer";
-    else if (allowed.has("planreview")) aKey = "planreview";
-
-    const map: Record<string, ActName> = {
-      a: aKey,
-      d: "deny", // deny-only now — never delete (that's X)
-      i: "interrupt",
-      x: "done",
-      c: "compact",
-      r: "rebase", // any worktree session; a no-op "already current" when not behind
-      u: "undo",
-      e: "title",
-      y: "copybranch",
-      o: "viewlog",
-      v: "filter",
-      t: "theme",
-      n: "new",
-      "/": "find",
-      "?": "help",
-    };
-    const chosen = map[input];
-    if (chosen) return runAct(chosen);
+    const chosen = keyCommand(commandHints({ ...state, outbox: composer.get() }), input, key);
+    if (chosen) runAct(chosen);
   };
 
   const effectStart = (): (() => void) => {

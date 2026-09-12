@@ -67,7 +67,7 @@ import {
   type Transcript,
   type LogLine,
 } from "@loom/tui/transcript";
-import { detailRows, modeChipHit, promptPaneRows, promptRows } from "@loom/tui/components";
+import { detailLayout, promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   discussPrompt,
@@ -435,9 +435,9 @@ test("fleetHits shifts every row down when the filter box is open", () => {
   assert.equal(after - before, 2, "the marginTop + the InputLine push the list down");
 });
 
-test("modeChipHit points at the Detail status row's chip cell", () => {
+test("detail layout points at the Detail status row's chip cell", () => {
   const plain = snap({ id: "p", status: "idle", mode: "default" });
-  const hit = modeChipHit(plain, { originX: 1, originY: 2, paneW: 80 });
+  const hit = detailLayout(plain, { width: 80 }).hits({ x: 1, y: 2 })[0];
   assert.ok(hit);
   // border + DETAIL header + title + the status row's marginTop.
   assert.equal(hit!.y, 6);
@@ -445,12 +445,12 @@ test("modeChipHit points at the Detail status row's chip cell", () => {
 
   // account + fork lines each push the status row down one.
   const forked = snap({ id: "f", status: "idle", parentId: "p", forkTurn: 3 });
-  const fh = modeChipHit(forked, { originX: 1, originY: 2, paneW: 80, account: "x (y)" });
+  const fh = detailLayout(forked, { width: 80, account: "x (y)" }).hits({ x: 1, y: 2 })[0];
   assert.equal(fh!.y, 8);
 
-  assert.equal(modeChipHit(null, { originX: 1, originY: 2, paneW: 80 }), null);
+  assert.deepEqual(detailLayout(null, { width: 80 }).hits({ x: 1, y: 2 }), []);
   // a pane too narrow to fit the chip drops the region.
-  assert.equal(modeChipHit(plain, { originX: 1, originY: 2, paneW: 8 }), null);
+  assert.deepEqual(detailLayout(plain, { width: 8 }).hits({ x: 1, y: 2 }), []);
 });
 
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
@@ -2743,9 +2743,9 @@ test("defaultModeOf reads the daemon's remembered mode, not per-provider", () =>
 // layout budgets — the frame must never exceed the terminal (see deriveView)
 // ---------------------------------------------------------------------------
 
-test("detailRows counts the Detail pane's physical rows, conditional lines included", () => {
-  assert.equal(detailRows(null), 4); // borders + "DETAIL" + the select hint
-  assert.equal(detailRows(snap({ id: "a", status: "idle" })), 10);
+test("detail layout counts the Detail pane's physical rows, conditional lines included", () => {
+  assert.equal(detailLayout(null).height, 4); // borders + "DETAIL" + the select hint
+  assert.equal(detailLayout(snap({ id: "a", status: "idle" })).height, 10);
 
   // A claude chat mid-flight: profile line, fork lineage, compaction, warm
   // cache, plan windows, commit subject, queued message, sub-agents, bg tasks.
@@ -2773,11 +2773,11 @@ test("detailRows counts the Detail pane's physical rows, conditional lines inclu
     subagents: [{ id: "sa", name: "scout", active: true }],
     backgroundTasks: [{ id: "bt", kind: "shell", title: "tail log" }],
   });
-  const rows = detailRows(full, {
+  const rows = detailLayout(full, {
     account: "claude pro (acme)",
     compacting: { startedAt: Date.now(), before: 90_000 },
     queued: ["follow up"],
-  });
+  }).height;
   assert.equal(rows, 19);
   // The layout used to hardcode 13 here — a session like this overflowed the
   // body by 6 rows and pushed the top bar off the alt screen.

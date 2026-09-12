@@ -18,6 +18,8 @@
     "./transcript": "./src/transcript.ts",
     "./theme-store": "./src/theme-store.ts",
     "./views": "./src/views.ts",
-    "./clock": "./src/clock.ts"
+    "./clock": "./src/clock.ts",
+    "./commands": "./src/commands.ts",
+    "./layout": "./src/layout.ts"
   }
 }

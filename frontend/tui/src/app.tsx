@@ -29,13 +29,11 @@ import {
 } from "./model.ts";
 
 import { outboxOf } from "./composer.ts";
-import { pendingMode } from "./mode-control.ts";
 import { headerView, fleetPaneView, logView } from "./views.ts";
 import { C, PALETTES, spinnerFrame } from "./theme.ts";
 import {
   PaletteContext,
   Confirm,
-  Detail,
   Doctor,
   EventLog,
   Fleet,
@@ -282,22 +280,9 @@ const FleetArea = ({ view, handle, width }: PaneProps): ReactNode => {
   );
 };
 
-const DetailArea = ({ view, handle, width }: PaneProps): ReactNode => {
-  const boxes = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
-  const choices = useSyncExternalStore(handle.modes.subscribe, handle.modes.get);
+const DetailArea = ({ view, handle }: PaneProps): ReactNode => {
   const now = useSyncExternalStore(handle.animation.subscribe, handle.animation.getNow);
-  const box = outboxOf(boxes, view.sel?.id ?? null);
-  const mode = pendingMode(choices, view.sel?.id);
-  return (
-    <Detail
-      session={view.sel}
-      fleet={view.ui.fleet}
-      box={box}
-      mode={mode}
-      width={width}
-      now={now}
-    />
-  );
+  return view.detail.render(now);
 };
 
 const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean }): ReactNode => {

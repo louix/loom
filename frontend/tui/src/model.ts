@@ -4,6 +4,8 @@
  * decides *what* to show lives here as a `reduce(state, action)` function and
  * a set of selectors, all unit-tested without React or a live daemon.
  */
+import { commandHint, type ActName, type KeyHint } from "./commands.ts";
+export type { ActName, KeyHint } from "./commands.ts";
 import { absurd } from "@loom/core/absurd";
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
@@ -49,13 +51,11 @@ import {
 } from "./composer.ts";
 import { queryOf, searchMatches, type Find } from "./fleet-search.ts";
 import {
-  cycleLogFilter,
   filterLog,
   noTranscript,
   queuedLine,
   transcriptLines,
   type Transcript,
-  logFilterLabel,
   oneLine,
   type LogFilter,
   type LogLine,
@@ -994,6 +994,71 @@ export const escapePicker = (p: Picker, s: TuiState): Overlay => {
   return unwind({ t: "picker", picker: p });
 };
 
+/** A model picker either advances, returns a choice, or restores its caller. */
+export interface ModelSelection {
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+}
+export type ModelSelectionStep =
+  | { tag: "show"; overlay: Overlay }
+  | { tag: "selected"; dest: PickerDest; selection: ModelSelection };
+
+export const selectModel = (s: TuiState, p: Picker): ModelSelectionStep => {
+  const item = pickerCurrent(p);
+  const provider = p.step === "provider" && item ? item.id : p.chosen.provider;
+  const model = p.step === "model" && item ? item.id : p.chosen.model;
+  const show = (overlay: Overlay): ModelSelectionStep => ({ tag: "show", overlay });
+  if (!item && (provider === null || (p.dest.t === "session" && p.step !== "effort")))
+    return show(unwind({ t: "picker", picker: p }));
+  const next = (step: WizardStep) =>
+    show(
+      pickerStep(s, step, {
+        dest: p.dest,
+        chosen: { provider, model: step === "model" ? null : model },
+        from: p.from,
+      }),
+    );
+  if (item && p.step === "provider") return next("model");
+  if (item && p.step === "model" && modelSupportsEffort(s, provider ?? "claude", model!))
+    return next("effort");
+  return {
+    tag: "selected",
+    dest: p.dest,
+    selection: {
+      provider,
+      model,
+      effort: p.step === "effort" ? (item?.id ?? null) : null,
+    },
+  };
+};
+
+/** Open the same selection flow for a prompt, a live session, or a plan. */
+export const startModelSelection = (
+  s: TuiState,
+  dest: PickerDest,
+  current: Pick<ModelSelection, "provider" | "model"> & { effort?: string | null },
+  start: WizardStep = "provider",
+): Overlay => {
+  const providers = fleetProviders(s);
+  const step = start === "provider" && providers.length <= 1 ? "model" : start;
+  const provider =
+    start === "provider" && providers.length <= 1
+      ? (providers[0]?.id ?? current.provider ?? "claude")
+      : current.provider;
+  return pickerStep(s, step, {
+    dest,
+    from: step,
+    chosen: {
+      provider: step === "provider" ? null : provider,
+      model: step === "effort" ? current.model : null,
+    },
+    pick: { provider: current.provider, model: current.model, effort: current.effort ?? null }[
+      step
+    ],
+  });
+};
+
 export interface Group {
   status: SessionStateKind;
   label: string;
@@ -1182,56 +1247,11 @@ export const fleetHits = (
 // contextual actions — what the footer offers and the keymap allows
 // ---------------------------------------------------------------------------
 
-export type ActName =
-  | "approve"
-  | "deny"
-  | "answer"
-  | "send"
-  | "interrupt"
-  | "done"
-  | "compact"
-  | "keepwarm"
-  | "planreview"
-  | "mode"
-  | "model"
-  | "effort"
-  | "provider"
-  | "undo"
-  | "fork"
-  | "rebase"
-  | "title"
-  | "comment"
-  | "delete"
-  | "copybranch"
-  | "viewlog"
-  | "logs"
-  | "theme"
-  | "clearqueue"
-  | "restart"
-  | "quitall"
-  | "gc"
-  | "new"
-  | "find"
-  | "filter"
-  | "help"
-  | "doctor"
-  | "prepareEnvironment"
-  | "quit";
-
-export interface KeyHint {
-  keys: string;
-  label: string;
-  act: ActName;
-  /** Shown on the footer (the few most pertinent). Everything else is
-   *  palette-and-help only — see {@link commandsFor}. */
-  footer?: boolean;
-}
-
 const GLOBAL_HINTS: KeyHint[] = [
-  { keys: "n", label: "new", act: "new", footer: true },
-  { keys: "/", label: "find", act: "find", footer: true },
-  { keys: "?", label: "help", act: "help", footer: true },
-  { keys: "q", label: "quit", act: "quit", footer: true },
+  commandHint("new", { footer: true }),
+  commandHint("find", { footer: true }),
+  commandHint("help", { footer: true }),
+  commandHint("quit", { footer: true }),
 ];
 
 /** The actions valid for the given session, most salient first, then globals. */
@@ -1246,20 +1266,20 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // footer and the permitted set the keymap checks.
     if (status.kind === "awaiting_input") {
       if (status.on === "question") {
-        local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
+        local.push(commandHint("answer", { footer: true }));
       } else if (status.on === "user_question") {
         // AskUserQuestion is a real permission gate underneath, so — unlike
         // Loom's own ask_user — denying it is a meaningful choice, not just
         // "come back later".
-        local.push({ keys: "⏎", label: "answer", act: "answer", footer: true });
-        local.push({ keys: "d", label: "deny", act: "deny", footer: true });
+        local.push(commandHint("answer", { footer: true }));
+        local.push(commandHint("deny", { footer: true }));
       } else if (status.on === "plan_review") {
-        local.push({ keys: "⏎", label: "review plan", act: "planreview", footer: true });
+        local.push(commandHint("planreview", { footer: true }));
       } else {
-        local.push({ keys: "a", label: "approve", act: "approve", footer: true });
-        local.push({ keys: "d", label: "deny", act: "deny", footer: true });
+        local.push(commandHint("approve", { footer: true }));
+        local.push(commandHint("deny", { footer: true }));
       }
-      local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
+      local.push(commandHint("interrupt", { footer: true }));
       return [...local, ...GLOBAL_HINTS];
     }
 
@@ -1270,13 +1290,13 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     ) {
       // `working_background` is settled-but-not-done: interrupt kills the
       // outstanding background work too.
-      local.push({ keys: "i", label: "interrupt", act: "interrupt", footer: true });
+      local.push(commandHint("interrupt", { footer: true }));
     }
     // `send` is the one "talk to this session" verb, bound to Enter — it works
     // while running (injects), idle, or stopped (interrupted / errored → the
     // daemon revives the session first). No separate "resume" step.
     if (status.kind !== "starting" && session.resumable !== false) {
-      local.push({ keys: "⏎", label: "send", act: "send", footer: true });
+      local.push(commandHint("send", { footer: true }));
     }
     // `compact` is legal on any live session — the half-full meter is when it's
     // worth *suggesting*, not when it becomes possible (you may well want to
@@ -1289,33 +1309,28 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       status.kind === "working_background"
     ) {
       const half = session.contextLimit > 0 && session.contextUsed / session.contextLimit > 0.5;
-      local.push({
-        keys: "c",
-        label: "compact",
-        act: "compact",
-        ...(half ? { footer: true } : {}),
-      });
+      local.push(commandHint("compact", { footer: half }));
     }
     // Keep-warm — palette only (a rarely-flipped toggle). Offered once the
     // session has a known cache TTL to race (measured, or a config pin),
     // running or idle; the label reflects the current state.
     if ((status.kind === "running" || status.kind === "idle") && session.cache.ttlMinutes > 0) {
-      local.push({
-        keys: "",
-        label: session.keepWarm ? "stop keeping cache warm" : "keep cache warm",
-        act: "keepwarm",
-      });
+      local.push(
+        commandHint("keepwarm", {
+          label: session.keepWarm ? "stop keeping cache warm" : "keep cache warm",
+        }),
+      );
     }
     if (status.kind === "idle" || status.kind === "error" || status.kind === "interrupted") {
-      local.push({ keys: "x", label: "archive", act: "done", footer: true });
+      local.push(commandHint("done", { footer: true }));
     }
     // Second tier — palette / help only (see the grammar note at the top of the
     // file). `⇧⇥` cycles the permission mode, `⌥m` its rarer sibling the model;
     // both also work inside a prompt, so you can re-mode / re-model mid-message.
-    local.push({ keys: "⇧⇥", label: "mode", act: "mode" });
-    local.push({ keys: "⌥m", label: "model", act: "model" });
-    local.push({ keys: "⌥t", label: "effort", act: "effort" });
-    local.push({ keys: "⌥p", label: "provider", act: "provider" });
+    local.push(commandHint("mode"));
+    local.push(commandHint("model"));
+    local.push(commandHint("effort"));
+    local.push(commandHint("provider"));
     // Undo needs a rewind-capable provider (the daemon reports `canRewind`);
     // it's conversation-only, so an in-place session can still do it. Hard fork
     // is aisdk-only for now (fork-tree F3) and additionally needs an isolated
@@ -1325,26 +1340,22 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       (status.kind === "idle" || status.kind === "interrupted") &&
       session.turns >= 1
     ) {
-      local.push({ keys: "u", label: "undo", act: "undo" });
+      local.push(commandHint("undo"));
     }
     if ((!isClaudeId(session.provider) && !session.inPlace) || session.resumable === false) {
-      local.push({
-        keys: "F",
-        label: "fork",
-        act: "fork",
-        ...(session.resumable === false ? { footer: true } : {}),
-      });
+      local.push(
+        commandHint("fork", {
+          label: "fork",
+          ...(session.resumable === false ? { footer: true } : {}),
+        }),
+      );
     }
-    local.push({ keys: "e", label: "rename", act: "title" });
+    local.push(commandHint("title"));
     // Palette-only, like keepwarm — a rarely-used per-session note, not a
     // footer verb. No dedicated key.
-    local.push({
-      keys: "",
-      label: session.comment ? "edit comment" : "add comment",
-      act: "comment",
-    });
+    local.push(commandHint("comment", { label: session.comment ? "edit comment" : "add comment" }));
     if (session.branch || session.worktree) {
-      local.push({ keys: "y", label: "copy branch", act: "copybranch" });
+      local.push(commandHint("copybranch"));
     }
     // Any worktree session can rebase onto its base — `syncOntoBase` is the
     // manual side of `[auto_rebase]`. Offered even when `behindBase` reads 0:
@@ -1362,7 +1373,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     }
     // `X` — a destructive, structural op (worktree + transcript go); `d` is
     // deny-only now, never delete.
-    local.push({ keys: "X", label: "delete", act: "delete" });
+    local.push(commandHint("delete"));
   }
   const usable =
     session?.resumable === false
@@ -1394,38 +1405,32 @@ export const allowedActs = (session: SessionSnapshot | null): Set<ActName> => {
  * selected session's contextual verbs ({@link actionsFor}) plus the app / view
  * commands that never earn a footer slot. One entry per act; `hint` is its key.
  */
-export const commandsFor = (s: TuiState & { outbox?: Outboxes }): PickItem[] => {
-  const seen = new Set<ActName>();
-  const items: PickItem[] = [];
-  for (const h of actionsFor(selectedSession(s))) {
-    if (seen.has(h.act)) continue;
-    seen.add(h.act);
-    items.push({ id: h.act, label: h.label, hint: h.keys });
-  }
-  const extra: Array<[ActName, string, string]> = [
-    ["doctor", "doctor — tools, connectors, daemon", ""],
-    ["prepareEnvironment", "Prepare repo environment — refresh base for future sessions", ""],
-    ["viewlog", "view the log in $EDITOR", "o"],
-    ["logs", "view the daemon + TUI logs in $EDITOR", ""],
-    ["filter", `event log: ${logFilterLabel(cycleLogFilter(s.logFilter))}`, "v"],
-    ["theme", `switch to ${nextThemeMode(s.theme)} theme`, "t"],
-    ["restart", "restart the daemon", "R"],
-    ["quitall", "quit and stop the daemon", "Q"],
+export const commandHints = (s: TuiState & { outbox?: Outboxes }): KeyHint[] => {
+  const hints = actionsFor(selectedSession(s));
+  const extra: ActName[] = [
+    "doctor",
+    "prepareEnvironment",
+    "viewlog",
+    "logs",
+    "filter",
+    "theme",
+    "restart",
+    "quitall",
   ];
-  for (const [id, label, key] of extra) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    items.push({ id, label, hint: key });
-  }
-  // gc only when there's something to collect — done sessions with worktrees.
-  if (fleetSessions(s).some((x) => x.status.kind === "done" && x.worktree)) {
-    items.push({ id: "gc", label: "gc — remove worktrees of done sessions", hint: "" });
-  }
-  if (s.selectedId && queueFor(s, s.selectedId).length > 0) {
-    items.push({ id: "clearqueue", label: "clear the queued messages", hint: "⌥x" });
-  }
-  return items;
+  for (const name of extra)
+    hints.push(
+      commandHint(
+        name,
+        name === "theme" ? { label: `switch to ${nextThemeMode(s.theme)} theme` } : {},
+      ),
+    );
+  if (fleetSessions(s).some((x) => x.status.kind === "done" && x.worktree))
+    hints.push(commandHint("gc"));
+  if (s.selectedId && queueFor(s, s.selectedId).length) hints.push(commandHint("clearqueue"));
+  return hints;
 };
+export const commandsFor = (s: TuiState & { outbox?: Outboxes }): PickItem[] =>
+  commandHints(s).map((h) => ({ id: h.act, label: h.label, hint: h.keys }));
 
 /**
  * The hint chips the footer shows for the current UI mode. `browse` delegates to

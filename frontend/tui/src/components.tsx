@@ -6,6 +6,7 @@
  */
 import { createContext, useContext, memo, type ReactNode } from "react";
 import { Box, Text } from "ink";
+import { rowLayout, type LayoutRow } from "./layout.ts";
 import { helpLines } from "./help.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
@@ -474,9 +475,238 @@ const Field = ({ label, children }: { label: string; children: ReactNode }): Rea
   </Box>
 );
 
+export const detailLayout = (
+  s: SessionSnapshot | null,
+  {
+    width = 80,
+    account = "",
+    engineColor = "",
+    queued = [],
+    mode = null,
+    compacting = s?.compacting ?? null,
+  }: {
+    width?: number;
+    account?: string;
+    engineColor?: string;
+    queued?: readonly string[];
+    mode?: SessionMode | null;
+    compacting?: { startedAt: number; before: number } | null;
+  } = {},
+) => {
+  type Content = (now: number) => ReactNode;
+  const rows: LayoutRow<Content, "mode">[] = [];
+  const add = (value: ReactNode | Content) =>
+    rows.push({ tag: "content", value: typeof value === "function" ? value : () => value });
+  const space = () => rows.push({ tag: "space" });
+  const w = inside(width);
+  const look = s ? statusLook(s.status.kind) : null;
+  if (!s) {
+    add(<Text color={C.dim}>DETAIL</Text>);
+    add(<Text color={C.faint}>select a session with ↑/↓</Text>);
+  } else {
+    add(
+      <Box>
+        <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
+        <Box flexGrow={1} justifyContent="flex-end">
+          <Text wrap="truncate-end">
+            <Text color={C.faint}>engine </Text>
+            <Text color={engineColor || C.faint}>{s.provider}</Text>
+            <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
+          </Text>
+        </Box>
+      </Box>,
+    );
+    if (account)
+      add(
+        <Text color={C.faint} wrap="truncate-end">
+          {account}
+        </Text>,
+      );
+    add(
+      <Text color={C.text} wrap="truncate-end">
+        {truncate(titleLine(s.title), w)}
+      </Text>,
+    );
+    if (s.parentId && s.forkTurn != null)
+      add(
+        <Text
+          color={C.faint}
+          wrap="truncate-end"
+        >{`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}</Text>,
+      );
+    space();
+    const status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
+    const chip = `mode ${modeChipText(s.mode, mode)}`;
+    rows.push({
+      tag: "target",
+      kind: "mode",
+      x: [...status].length + 2,
+      width: [...chip].length,
+      value: () => (
+        <Box gap={2}>
+          <Text color={look!.color} bold wrap="truncate-end">
+            {status}
+          </Text>
+          <Text wrap="truncate-end">
+            <Text color={C.dim}>mode </Text>
+            <Text color={C.warn}>{modeChipText(s.mode, mode)}</Text>
+          </Text>
+          <Text
+            color={C.dim}
+            wrap="truncate-end"
+          >{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Text>
+        </Box>
+      ),
+    });
+    const frac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
+    add(
+      <Field label="context">
+        <Text wrap="truncate-end">
+          <Text color={contextHeatColor(frac)}>{bar(frac, 16)}</Text>
+          <Text
+            color={C.dim}
+          >{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
+        </Text>
+      </Field>,
+    );
+    if (compacting)
+      add((now) => (
+        <Field label="">
+          <Text wrap="truncate-end">
+            <Text
+              color={C.accent}
+            >{`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}</Text>
+            <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
+          </Text>
+        </Field>
+      ));
+    if (cacheStatus(s, 0).state !== "unknown")
+      add((now) => {
+        const cs = cacheStatus(s, now);
+        const hit = cs.lastHit
+          ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
+          : "";
+        return (
+          <Field label="cache">
+            <Text color={cs.state === "cold" ? C.faint : C.good} wrap="truncate-end">
+              {`${cacheLede(cs)}${hit}${s.keepWarm ? "  ·  keep-warm" : ""}${cs.source === "config" ? "  ·  ttl assumed" : ""}`}
+            </Text>
+          </Field>
+        );
+      });
+    const hitRate = cacheHitRate(s.usage);
+    add(
+      <Box>
+        <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
+        <Box flexGrow={1}>
+          <Text color={C.faint} wrap="truncate-end">
+            {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+              (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
+          </Text>
+        </Box>
+        <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
+          {` ${s.costSource === "none" || s.costSource === "partial" ? "--" : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`}`}
+        </Text>
+      </Box>,
+    );
+    // Reserve one row while limits are in the snapshot, so clock ticks cannot change geometry.
+    if (Object.keys(s.rateLimits).length)
+      add((now) => (
+        <Field label="plan">
+          <Text wrap="truncate-end">
+            {Object.entries(s.rateLimits)
+              .filter(
+                ([, r]) =>
+                  (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) >
+                  now,
+              )
+              .map(([window, rl], i) => (
+                <Text
+                  key={window}
+                  color={{ rejected: C.bad, allowed_warning: C.warn, allowed: C.faint }[rl.status]}
+                >
+                  {`${i ? "   " : ""}${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
+                </Text>
+              ))}
+          </Text>
+        </Field>
+      ));
+    space();
+    add(
+      <Box>
+        <Text color={C.faint}>⌥ </Text>
+        <Text color={C.dim} wrap="truncate-end">
+          {gitLineText(s)}
+        </Text>
+      </Box>,
+    );
+    if (s.git?.lastCommitSubject)
+      add(
+        <Text
+          color={C.faint}
+          wrap="truncate-end"
+        >{`  “${truncate(s.git.lastCommitSubject, w - 4)}”`}</Text>,
+      );
+    if (s.comment)
+      add(
+        <Field label="comment">
+          <Text color={C.accentDim} wrap="truncate-end">
+            {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
+          </Text>
+        </Field>,
+      );
+    if (queued.length)
+      add(
+        <Text color={C.accentDim} wrap="truncate-end">
+          {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
+        </Text>,
+      );
+    if (s.resumable === false)
+      for (const line of wrapText(
+        `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
+        w,
+      ))
+        add(<Text color={C.warn}>{line}</Text>);
+    if (s.subagents.length)
+      add(
+        <Text color={C.dim} wrap="truncate-end">
+          {`⑂ ${s.subagents.filter((a) => a.active).length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", "), w - 20)}`}
+        </Text>,
+      );
+    if (s.backgroundTasks.length)
+      add(
+        <Text color={C.accentDim} wrap="truncate-end">
+          {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "), w - 24)}`}
+        </Text>,
+      );
+  }
+  const layout = rowLayout(width, rows, { x: 2, y: 1 });
+  return {
+    ...layout,
+    render: (now: number): ReactNode => (
+      <Box
+        width={width}
+        borderStyle="round"
+        borderColor={look?.color ?? C.faint}
+        borderBackgroundColor={C.bg}
+        paddingX={1}
+        flexDirection="column"
+      >
+        {layout.rows.map((row, i) => (
+          <Box key={i} height={1} flexShrink={0}>
+            {row.tag === "space" ? <Text> </Text> : row.value(now)}
+          </Box>
+        ))}
+      </Box>
+    ),
+  };
+};
+
+export type DetailLayout = ReturnType<typeof detailLayout>;
+
 export const Detail = memo(
   ({
-    session: s,
+    session,
     fleet,
     box,
     mode,
@@ -489,302 +719,15 @@ export const Detail = memo(
     mode: SessionMode | null;
     width: number;
     now: number;
-  }): ReactNode => {
-    const C = useContext(PaletteContext);
-    if (!s) {
-      return (
-        <Box
-          width={width}
-          borderStyle="round"
-          borderColor={C.faint}
-          borderBackgroundColor={C.bg}
-          paddingX={1}
-          flexDirection="column"
-        >
-          <Text color={C.dim}>{"DETAIL"}</Text>
-          <Text color={C.faint}>{"select a session with ↑/↓"}</Text>
-        </Box>
-      );
-    }
-
-    const queued = pending(box);
-    const planWindows = Object.entries(s.rateLimits).filter(
-      ([, r]) =>
-        (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) > now,
-    );
-    const engineColor = providerColorOf({ fleet }, s.provider);
-    const account = providerAccountOf({ fleet }, s.provider);
-    const compacting = s.compacting ?? null;
-    const w = inside(width);
-    const look = statusLook(s.status.kind);
-    const ctxFrac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
-    const ctxPct = Math.round(ctxFrac * 100);
-    const g = s.git;
-    const gitLine = gitLineText(s);
-    const hitRate = cacheHitRate(s.usage);
-
-    return (
-      <Box
-        width={width}
-        borderStyle="round"
-        borderColor={look.color}
-        borderBackgroundColor={C.bg}
-        paddingX={1}
-        flexDirection="column"
-      >
-        <Box>
-          <Text color={C.dim} wrap="truncate-end">{`DETAIL  ${shortId(s.id)}`}</Text>
-          <Box flexGrow={1} justifyContent="flex-end">
-            <Text wrap="truncate-end">
-              <Text color={C.faint}>{"engine "}</Text>
-              <Text color={engineColor || C.faint}>{s.provider}</Text>
-              <Text color={C.faint}>{s.model ? ` / ${s.model}` : ""}</Text>
-            </Text>
-          </Box>
-        </Box>
-        {account ? (
-          <Text color={C.faint} wrap="truncate-end">
-            {account}
-          </Text>
-        ) : null}
-        <Text color={C.text} wrap="truncate-end">
-          {truncate(titleLine(s.title), w)}
-        </Text>
-        {s.parentId && s.forkTurn != null ? (
-          <Text color={C.faint} wrap="truncate-end">
-            {`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`}
-          </Text>
-        ) : null}
-        <Box marginTop={1} gap={2}>
-          <Text color={look.color} bold wrap="truncate-end">
-            {`${look.glyph} ${look.label}${statusDetailSuffix(s)}`}
-          </Text>
-          {/* `[mode]` in the same gold the event log gives tool commands — the one */}
-          {/* thing on this row you change mid-session, so it should catch the eye. */}
-          <Text wrap="truncate-end">
-            <Text color={C.dim}>{"mode "}</Text>
-            <Text color={C.warn}>{modeChipText(s.mode, mode)}</Text>
-          </Text>
-          <Text color={C.dim} wrap="truncate-end">
-            {`${s.turns} turn${s.turns === 1 ? "" : "s"}`}
-          </Text>
-        </Box>
-        <Field label="context">
-          <Text wrap="truncate-end">
-            <Text color={contextHeatColor(ctxFrac)}>{bar(ctxFrac, 16)}</Text>
-            <Text color={C.dim}>
-              {`  ${ctxPct}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}
-            </Text>
-          </Text>
-        </Field>
-        {compacting ? (
-          <Field label="">
-            <Text wrap="truncate-end">
-              <Text color={C.accent}>
-                {`⇊ compacting… ${Math.max(0, Math.round((now - compacting.startedAt) / 1000))}s`}
-              </Text>
-              <Text color={C.faint}>{`  from ${humanTokens(compacting.before)}`}</Text>
-            </Text>
-          </Field>
-        ) : null}
-        {(() => {
-          const cs = cacheStatus(s, now);
-          if (cs.state === "unknown") return null;
-          const hit = cs.lastHit
-            ? `  ·  ${cs.lastHit === "hit" ? "last turn hit" : "last turn rewrote"}`
-            : "";
-          const warm = s.keepWarm ? "  ·  keep-warm" : "";
-          // The countdown length is only confirmed once a turn has written cache
-          // and reported which bucket; until then it is the configured pin, which
-          // the provider is free to ignore. Say so rather than imply precision.
-          const assumed = cs.source === "config" ? "  ·  ttl assumed" : "";
-          return (
-            <Field label="cache">
-              <Text
-                color={cs.state === "cold" ? C.faint : C.good}
-                wrap="truncate-end"
-              >{`${cacheLede(cs)}${hit}${warm}${assumed}`}</Text>
-            </Field>
-          );
-        })()}
-        <Box>
-          <Text color={C.dim}>{"tokens".padEnd(DETAIL_GUTTER)}</Text>
-          <Box flexGrow={1}>
-            <Text color={C.faint} wrap="truncate-end">
-              {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
-                // Share of prompt tokens served from cache over the session's
-                // life. The other figures on this row are lifetime totals too, so
-                // a session that switched models blends them — `loom cache` is
-                // the per-model breakdown.
-                (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
-            </Text>
-          </Box>
-          <Text color={s.costUsd ? C.good : C.faint} wrap="truncate-end">
-            {` ${
-              s.costSource === "none" || s.costSource === "partial"
-                ? "--"
-                : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`
-            }`}
-          </Text>
-        </Box>
-        {planWindows.length > 0 ? (
-          <Field label="plan">
-            <Text wrap="truncate-end">
-              {planWindows.map(([window, rl], i) => {
-                let col: string = C.faint;
-                if (rl.status === "rejected") col = C.bad;
-                else if (rl.status === "allowed_warning") col = C.warn;
-                const pct = rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%";
-                const resets = rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : "";
-                return (
-                  <Text key={window} color={col}>
-                    {`${i > 0 ? "   " : ""}${window} ${pct}${resets}`}
-                  </Text>
-                );
-              })}
-            </Text>
-          </Field>
-        ) : null}
-        <Box marginTop={1}>
-          <Text color={C.faint}>{"⌥ "}</Text>
-          <Text color={C.dim} wrap="truncate-end">
-            {gitLine}
-          </Text>
-        </Box>
-        {g?.lastCommitSubject ? (
-          <Text color={C.faint} wrap="truncate-end">
-            {`  “${truncate(g.lastCommitSubject, w - 4)}”`}
-          </Text>
-        ) : null}
-        {s.comment ? (
-          <Field label="comment">
-            <Text color={C.accentDim} wrap="truncate-end">
-              {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
-            </Text>
-          </Field>
-        ) : null}
-        {queued.length > 0 ? (
-          <Text color={C.accentDim} wrap="truncate-end">
-            {`▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`}
-          </Text>
-        ) : null}
-        {s.resumable === false
-          ? wrapText(
-              `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
-              w,
-            ).map((line, i) => (
-              <Text key={`blocked-${i}`} color={C.warn}>
-                {line}
-              </Text>
-            ))
-          : null}
-        {(s.subagents ?? []).length > 0
-          ? (() => {
-              const subs = s.subagents ?? [];
-              const active = subs.filter((a) => a.active);
-              const names = subs.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", ");
-              return (
-                <Text color={C.dim} wrap="truncate-end">
-                  {`⑂ ${active.length}/${subs.length} sub-agent${subs.length === 1 ? "" : "s"} · ${truncate(names, w - 20)}`}
-                </Text>
-              );
-            })()
-          : null}
-        {(s.backgroundTasks ?? []).length > 0 ? (
-          <Text color={C.accentDim} wrap="truncate-end">
-            {`◐ ${s.backgroundTasks.length} background task${s.backgroundTasks.length === 1 ? "" : "s"} · ${truncate(
-              s.backgroundTasks.map((t) => t.title.replace(/\s+/g, " ").trim()).join(", "),
-              w - 24,
-            )}`}
-          </Text>
-        ) : null}
-      </Box>
-    );
-  },
+  }): ReactNode =>
+    detailLayout(session, {
+      width,
+      queued: pending(box),
+      mode,
+      account: session ? providerAccountOf({ fleet }, session.provider) : "",
+      engineColor: session ? providerColorOf({ fleet }, session.provider) : "",
+    }).render(now),
 );
-
-/**
- * The physical rows {@link Detail} renders for a session — the layout's budget
- * for the right column. Every Detail line truncates (never wraps), so the count
- * is exact. `deriveView` sizes the split event log against this; it used to
- * hardcode 13, which drifted from the conditional lines a claude chat accumulates
- * (account / cache / plan / commit subject / background tasks), overflowed the
- * body, and pushed the top of the UI off the alt screen. Keep in lockstep with
- * Detail's JSX above — `test/tui-model.test.ts` pins both ends.
- */
-export const detailRows = (
-  session: SessionSnapshot | null,
-  opts: {
-    /** `<login method> (<org>)` line — claude profiles only. */
-    width?: number;
-    account?: string;
-    /** Compaction-in-flight row. */
-    compacting?: { startedAt: number; before: number } | null;
-    /** Queued-messages row. */
-    queued?: readonly string[];
-  } = {},
-): number => {
-  if (!session) return 4; // borders + "DETAIL" + the select hint
-  const s = session;
-  let rows = 4; // borders + the title row + the title line
-  if (opts.account) rows += 1;
-  if (s.parentId && s.forkTurn != null) rows += 1;
-  rows += 2; // status row + its marginTop
-  if (s.resumable === false)
-    rows += wrapText(
-      `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
-      inside(opts.width ?? 80),
-    ).length;
-  rows += 1; // context
-  if (opts.compacting) rows += 1;
-  // cache row: appears once cache data exists (warm → cold with age, but the
-  // row persists), so `Date.now()` here can't disagree with the render.
-  if (cacheStatus(s, Date.now()).state !== "unknown") rows += 1;
-  rows += 1; // tokens
-  if (Object.keys(s.rateLimits).length > 0) rows += 1;
-  rows += 2; // git row + its marginTop
-  if (s.git?.lastCommitSubject) rows += 1;
-  if (s.comment) rows += 1;
-  if ((opts.queued ?? []).length > 0) rows += 1;
-  if (s.subagents.length > 0) rows += 1;
-  if ((s.backgroundTasks ?? []).length > 0) rows += 1;
-  return rows;
-};
-
-/**
- * The clickable cell span of Detail's gold `[mode]` chip, in 1-based screen
- * coordinates — `null` when no session is shown or the chip is truncated off a
- * narrow pane. `originX`/`originY` are the Detail box's top-left; `paneW` its
- * outer width. Mirrors {@link Detail}'s chrome up to the status row the same way
- * {@link detailRows} mirrors the whole card; `test/tui-model.test.ts` pins it.
- */
-export const modeChipHit = (
-  session: SessionSnapshot | null,
-  geom: {
-    originX: number;
-    originY: number;
-    paneW: number;
-    account?: string;
-    /** Widens the chip while a mode change is pending — the click target has to
-     *  follow the text it points at. */
-    pending?: SessionMode | null;
-  },
-): { y: number; x0: number; x1: number } | null => {
-  if (!session) return null;
-  const s = session;
-  const forked = s.parentId != null && s.forkTurn != null;
-  // border + DETAIL header + title + the status row's marginTop, plus the
-  // optional account / fork lines between header and status.
-  const y = geom.originY + 4 + (geom.account ? 1 : 0) + (forked ? 1 : 0);
-  const look = statusLook(s.status.kind);
-  const left = `${look.glyph} ${look.label}${statusDetailSuffix(s)}`;
-  const contentX = geom.originX + 2; // round border + paddingX:1
-  const x0 = contentX + [...left].length + 2; // the status row's gap={2}
-  const chip = `mode ${modeChipText(s.mode, geom.pending)}`;
-  const rightEdge = geom.originX + geom.paneW - 3; // inside the far border + pad
-  if (x0 > rightEdge) return null;
-  return { y, x0, x1: Math.min(x0 + [...chip].length - 1, rightEdge) };
-};
 
 // ---------------------------------------------------------------------------
 // event log (right column, bottom)
