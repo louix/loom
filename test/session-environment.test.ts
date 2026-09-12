@@ -109,13 +109,9 @@ test("configured activation precedes arbitrary setup and preserves exports for t
   }
 });
 
-test("activation and preparation can create guest Git dependencies without the agent shim", async () => {
+test("activation and preparation can create Git dependencies", async () => {
   const dir = await Deno.makeTempDir();
-  const previous = Deno.env.get("LOOM_GUEST_CONTROL_PATH");
   try {
-    await Deno.mkdir(dir + "/agent-bin");
-    await Deno.writeTextFile(dir + "/agent-bin/git", "#!/bin/sh\nexit 91\n", { mode: 0o755 });
-    Deno.env.set("LOOM_GUEST_CONTROL_PATH", dir + "/agent-bin");
     const config = normalizeSessionEnvironment({
       command_prefix: ["/bin/sh", "-ec", 'git init --bare source; exec "$@"', "activation"],
       prepare:
@@ -124,8 +120,6 @@ test("activation and preparation can create guest Git dependencies without the a
     await prepareEnvironment(config, { shell: "/bin/sh", cwd: dir });
     assert.equal(await Deno.readTextFile(dir + "/result"), "true\n");
   } finally {
-    if (previous === undefined) Deno.env.delete("LOOM_GUEST_CONTROL_PATH");
-    else Deno.env.set("LOOM_GUEST_CONTROL_PATH", previous);
     await Deno.remove(dir, { recursive: true });
   }
 });

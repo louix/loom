@@ -6,23 +6,8 @@ export const gitFixture = async function () {
   );
   const repo = join(root, "repo");
   const workspace = join(root, "worktree");
-  const state = join(root, "state");
-  await Deno.mkdir(state);
-  const found = (Deno.env.get("PATH") ?? "").split(":").map((p) => join(p, "git"));
-  let executable = "";
-  for (const path of found) {
-    try {
-      if ((await Deno.stat(path)).isFile) {
-        executable = await Deno.realPath(path);
-        break;
-      }
-    } catch {
-      /* next */
-    }
-  }
-  assert.ok(executable, "Git must be on PATH");
   const git = async (...args: string[]) => {
-    const result = await new Deno.Command(executable, {
+    const result = await new Deno.Command("git", {
       args,
       clearEnv: true,
       env: {
@@ -47,18 +32,13 @@ export const gitFixture = async function () {
   await git("-C", repo, "add", "file.txt");
   await git("-C", repo, "commit", "-m", "base commit");
   await git("-C", repo, "worktree", "add", "-b", "session", workspace);
-  const gitDir = await git("-C", workspace, "rev-parse", "--absolute-git-dir");
   const commonDir = join(repo, ".git");
   return {
     root,
     repo,
     workspace,
-    state,
-    gitDir,
     commonDir,
     git,
-    executable,
-    options: { workspace, gitDir, commonDir, state, git: executable },
     close: () => Deno.remove(root, { recursive: true }),
   };
 };

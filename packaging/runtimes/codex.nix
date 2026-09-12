@@ -12,7 +12,7 @@ let
     accept-flake-config = false
     max-jobs = 1
     cores = 1'
-    export LOOM_GUEST_CONTROL_PATH=${pkgs.lib.makeBinPath [ pkgs.codex ]}
+    export LOOM_GUEST_PROVIDER_PATH=${pkgs.lib.makeBinPath [ pkgs.codex ]}
     export LOOM_GUEST_SHELL=${pkgs.bash}/bin/bash
     export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     export NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE

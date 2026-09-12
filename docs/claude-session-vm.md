@@ -32,9 +32,9 @@ guest credentials; this boundary does not attempt to hide API credentials from
 the agent.
 
 This is a **live** acceptance test that consumes Claude usage: Claude creates a file and commits it
-in a temporary linked worktree. The test also checks that real host metadata and
-the host credential file are absent, direct IP connections report an explicit
-network-unreachable error (a timeout is inconclusive and fails the test), and a
+in a temporary linked worktree. The test also checks that repository Git metadata
+is accessible and the host credential file is absent, direct IP connections report
+an explicit network-unreachable error (a timeout is inconclusive and fails the test), and a
 proxy request to `example.com:443` is denied. Failed Git fixtures are retained without
 the temporary credential copy. The normal test suite covers proxy denial cases
 without making API requests.

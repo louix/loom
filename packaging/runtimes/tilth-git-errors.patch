@@ -7,7 +7,7 @@
 -    // git diff --no-index exits 1 when there are differences; that is normal.
 -    // For all other variants, a non-zero exit is unexpected but we still return
 -    // whatever stdout was produced so the caller can decide.
-+    // Bridge denials, timeouts and Git failures must not look like a clean tree.
++    // Git failures must not look like a clean tree.
 +    // git diff --no-index exits 1 for differences; preserve that special case.
 +    if !output.status.success()
 +        && !(matches!(source, DiffSource::Files(..)) && output.status.code() == Some(1))

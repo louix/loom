@@ -87,16 +87,12 @@ const prepare = async (output?: "inherit") => {
     : await loadPreparedEnvironment(config);
   if (output && env)
     await Deno.writeTextFile("/storage/loom-environment.json", JSON.stringify(env));
-  if (!env) {
-    Deno.env.set("PATH", [before.LOOM_GUEST_CONTROL_PATH, before.PATH].filter(Boolean).join(":"));
-    return;
-  }
+  if (!env) return;
   for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
-  // The dev shell supplies tools and exports; Loom's provider
-  // executables retain precedence and bootstrap settings remain available.
+  // Keep the pinned provider executable ahead of dev-shell tools.
   Deno.env.set(
     "PATH",
-    [before.LOOM_GUEST_CONTROL_PATH, env.PATH, before.PATH].filter(Boolean).join(":"),
+    [before.LOOM_GUEST_PROVIDER_PATH, env.PATH, before.PATH].filter(Boolean).join(":"),
   );
   for (const key of Object.keys(before))
     if (

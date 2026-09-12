@@ -74,8 +74,10 @@ try {
   const inventory = (await Deno.readTextFile(join(artifact, "store-paths"))).trim().split("\n");
   const deno = inventory.find((path) => /-deno-[0-9]/.test(path)) + "/bin/deno";
   const probe = `
-    for (const path of ${JSON.stringify([join(f.commonDir, "config"), join(homedir(), ".claude/.credentials.json")])}) {
-      try { await Deno.stat(path); throw new Error("Host metadata exposed"); }
+    if (!(await Deno.stat(${JSON.stringify(join(f.commonDir, "config"))})).isFile)
+      throw new Error("Repository Git config unavailable");
+    for (const path of ${JSON.stringify([join(homedir(), ".claude/.credentials.json")])}) {
+      try { await Deno.stat(path); throw new Error("Host credentials exposed"); }
       catch (error) { if (!(error instanceof Deno.errors.NotFound)) throw error; }
     }
     const conn = await Deno.connect({hostname:"127.0.0.1",port:3128});
@@ -92,7 +94,7 @@ try {
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Direct IP probe timed out: isolation result inconclusive")), 1500); })
       ]);
     } finally { clearTimeout(timer); }
-    console.log("Host metadata, direct IP and unapproved proxy destination blocked");
+    console.log("Repository metadata available; host credentials, direct IP and unapproved proxy destination blocked");
     Deno.exit(0);
   `;
   console.error(

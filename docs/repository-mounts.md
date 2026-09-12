@@ -14,6 +14,13 @@ There is no Git shim, host Git worker or command allowlist. Commits and edits ar
 immediately visible on the host. The old isolation.git.allow_repo_programs option
 is obsolete and can be removed.
 
+Use native Git hooks for commit checks. Loom's worktree hooks forward `pre-commit`,
+`prepare-commit-msg`, `commit-msg` and `post-commit` to the repository's hooks;
+its `pre-push` hook blocks session pushes. In VM sessions these hooks execute
+inside the guest and their commands must be available there. A rejecting
+`pre-commit` hook fails the Git command and returns its output to the agent.
+Loom's `init` hook handles initial session setup in both VM and host sessions.
+
 This trusts agents with the mounted repository: shared hooks/config and sibling
 worktrees are accessible. Changes to hooks/config can execute code when Git later
 runs on the host. Files and secrets inside the repo are not isolated from agents.

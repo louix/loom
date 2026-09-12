@@ -20,11 +20,13 @@ fork them to continue under the new policy.
 
 ## Files, network and lifecycle
 
-The VM mounts only its worktree, packaged runtime, private native profile and
-session-scoped bridges. Codex history survives VM shutdown and is used by
-`thread/resume` in a fresh VM. Archive/delete stop the VM before removing the
-profile or worktree. Host Git is available through the existing bridge; native
-shell and filesystem tools run inside the VM.
+The VM mounts the host repository and selected worktree at their original paths,
+the packaged runtime, a private native profile and session-scoped relays.
+Codex history survives VM shutdown and is used by `thread/resume` in a fresh VM.
+Archive/delete stop the VM before removing the
+profile or worktree. Real Git, repository hooks, native shell and filesystem tools
+run inside the VM. See [repository mounts](repository-mounts.md) for the shared
+Git metadata and filesystem boundaries.
 
 Direct egress is disabled. The host HTTPS proxy permits `chatgpt.com:443` plus
 trusted `isolation.extra_allowed_hosts` for worktree commands. MCP endpoints use
