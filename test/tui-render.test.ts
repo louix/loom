@@ -546,6 +546,7 @@ models   = ["m1", "m2"]
       await delay(100);
       assert.match(stdout.last, /COMMANDS/);
       assert.match(stdout.last, /rename/);
+      assert.ok(stdout.last.includes("─".repeat(stdout.columns - 6)), "menu fills terminal width");
 
       stdin.feed("rename");
       await delay(80);

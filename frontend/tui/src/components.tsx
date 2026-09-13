@@ -1434,11 +1434,21 @@ export const Picker = ({
         : shown.map((it, i) => {
             const on = start + i === picker.index;
             return (
-              <Line key={it.id} tone={on ? "text" : "dim"} bold={on}>
-                <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
-                {truncate(it.label, Math.max(6, w - 32))}
-                {it.hint ? <Text tone="faint">{`  ${truncate(it.hint, 28)}`}</Text> : null}
-              </Line>
+              <Box key={it.id}>
+                <Box flexShrink={0}>
+                  <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Line tone={on ? "text" : "dim"} bold={on}>
+                    {it.label}
+                  </Line>
+                </Box>
+                {it.hint ? (
+                  <Box marginLeft={2} flexShrink={1} minWidth={0}>
+                    <Line tone="faint">{it.hint}</Line>
+                  </Box>
+                ) : null}
+              </Box>
             );
           })}
       {start + shown.length < vis.length || start > 0 ? (

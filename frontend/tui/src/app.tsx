@@ -143,7 +143,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
     case "confirm":
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          <Confirm confirm={view.body.confirm} width={Math.min(cols - 4, 64)} />
+          <Confirm confirm={view.body.confirm} width={cols - 4} />
         </Box>
       );
       break;
@@ -164,7 +164,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
           <PlanReview
             plan={plan}
-            width={Math.min(cols - 4, 96)}
+            width={cols - 4}
             height={Math.max(8, bodyH - 2)}
             scroll={view.planScroll}
             {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
@@ -187,11 +187,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
     case "picker":
       body = (
         <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          <Picker
-            picker={view.body.picker}
-            width={Math.min(cols - 4, 64)}
-            height={Math.max(6, bodyH - 2)}
-          />
+          <Picker picker={view.body.picker} width={cols - 4} height={Math.max(6, bodyH - 2)} />
         </Box>
       );
       break;
