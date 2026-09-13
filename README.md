@@ -455,10 +455,13 @@ Invalid hook kinds, events, and missing commands are rejected. An invalid
 reload keeps the running configuration and reports the error.
 
 **Session titles.** A session's title starts as its first message clipped to 200
-chars; after the first successful turn the daemon replaces it with a 4–6 word
-summary from a cheap one-shot through the same provider (`[titles]` config, off
-with `enabled = false`). Renaming it yourself (`e` in the UI / `loom` …) pins
-the title and the auto-titler leaves it alone.
+chars; after a successful turn the daemon tries to replace it with a 4–6 word
+summary through the same provider (`[titles]` config, off with `enabled = false`).
+Failed requests retry after later successful turns; completed titles survive
+daemon restarts. A generic `loom/<id>` branch is named from the generated title,
+or the existing title if generation fails. Branch rename failures retry without
+regenerating a completed title. Descriptive branch names stay stable. Renaming
+the title yourself pins it and also names a still-generic branch.
 
 **Prompt-cache liveness.** The Detail pane shows `cache ⟢ warm ~47:12 · last
 turn hit` (green) or `cache ⟢ cold` once the window lapses, and each fleet row

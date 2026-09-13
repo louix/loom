@@ -353,4 +353,13 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE model_usage ADD COLUMN min_miss_gap_sec INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE model_usage ADD COLUMN last_cache_active INTEGER NOT NULL DEFAULT 0;
   `,
+  // 25 — remember successful auto-titling independently of manual title locks.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN auto_title_done INTEGER NOT NULL DEFAULT 0;
+  -- Existing descriptive branches are evidence that naming already ran.
+  UPDATE sessions SET auto_title_done = 1
+    WHERE branch IS NOT NULL
+      AND branch != 'loom/' || substr(id, 1, 8)
+      AND branch != 'loom/' || id;
+  `,
 ];

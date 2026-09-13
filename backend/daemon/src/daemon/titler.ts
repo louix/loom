@@ -1,12 +1,11 @@
 /**
- * Auto-titling (M7a). A session's title starts as the first message clipped to
- * 200 chars; after the first turn the daemon replaces it with a short summary
- * produced by a cheap, tool-free one-shot through the *same* provider. A manual
- * rename (`session.setTitle`) locks the title and this never runs again.
+ * Generate a short session label through the same provider. The daemon calls
+ * this after successful turns, retries failures, and persists successful
+ * generation separately from a manual title lock.
  */
 import { randomUUID } from "node:crypto";
 import { isClaudeId } from "@loom/core/provider-id";
-import type { AgentProvider } from "@loom/core/types";
+import type { AgentProvider, AgentSession } from "@loom/core/types";
 import type { Logger } from "@loom/core/logger";
 
 const SYSTEM =
@@ -92,52 +91,64 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
   // to make the model converse — keep the clipped message as the title.
   if (prompt.trim().split(/\s+/).filter(Boolean).length < 2) return null;
 
-  let session;
-  try {
-    session = await provider.createSession({
-      sessionId: `title-${randomUUID()}`,
-      cwd,
-      prompt: `${INSTRUCTION}\n\n${prompt}`,
-      mode: "auto", // no permission round-trips for a throwaway
-      mcpServers: [],
-      oneShot: true,
-      disableTools: NO_TOOLS,
-      settingSources: [],
-      systemPromptAppend: SYSTEM,
-      ...(model ? { model } : {}),
-    });
-  } catch (err) {
-    log.debug("titler: createSession failed", { err: String(err) });
-    return null;
-  }
-
-  let text = "";
-  let okResult = false;
+  let session: AgentSession | undefined;
+  let closing: Promise<void> | undefined;
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    void session.close().catch(() => {});
-  }, req.timeoutMs ?? 30_000);
-  try {
-    for await (const ev of session.events()) {
-      if (ev.type === "assistant_text") text += ev.text;
-      else if (ev.type === "result") {
-        okResult = ev.kind === "ok";
-        break;
-      } else if (ev.type === "error" && ev.fatal) break;
+  const close = (): Promise<void> => {
+    if (!session) return Promise.resolve();
+    return (closing ??= Promise.resolve()
+      .then(() => session!.close())
+      .catch(() => {}));
+  };
+  // Bound startup, streaming AND cleanup. Closing a broken provider need not
+  // unblock its iterator; racing the whole job keeps naming/shutdown bounded.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      log.warn("titler: timed out", { timeoutMs: req.timeoutMs ?? 30_000 });
+      void close();
+      resolve(null);
+    }, req.timeoutMs ?? 30_000);
+  });
+  const run = async (): Promise<string | null> => {
+    try {
+      session = await provider.createSession({
+        sessionId: `title-${randomUUID()}`,
+        cwd,
+        prompt: `${INSTRUCTION}\n\n${prompt}`,
+        mode: "auto",
+        mcpServers: [],
+        oneShot: true,
+        disableTools: NO_TOOLS,
+        settingSources: [],
+        systemPromptAppend: SYSTEM,
+        ...(model ? { model } : {}),
+      });
+      // A startup that resolves after the deadline still owns cleanup.
+      if (timedOut) return null;
+      let text = "";
+      for await (const ev of session.events()) {
+        if (timedOut) return null;
+        if (ev.type === "assistant_text") text += ev.text;
+        else if (ev.type === "result") {
+          const title = ev.kind === "ok" ? cleanTitle(text) : null;
+          if (!title) log.warn("titler: no usable title", { result: ev.kind });
+          return title;
+        } else if (ev.type === "error" && ev.fatal) break;
+      }
+      log.warn("titler: stream ended without a result");
+      return null;
+    } catch (err) {
+      log.warn("titler: request failed", { err: String(err) });
+      return null;
+    } finally {
+      await close();
     }
-  } catch (err) {
-    log.debug("titler: stream failed", { err: String(err) });
+  };
+  try {
+    return await Promise.race([run(), deadline]);
   } finally {
     clearTimeout(timer);
-    await session.close().catch(() => {});
   }
-  // Only trust the reply when the one-shot actually finished. A timeout or a
-  // torn-off stream leaves `text` holding half a phrase — better to keep the
-  // clipped first message than show a mangled title.
-  if (timedOut || !okResult) {
-    log.debug("titler: no clean result", { timedOut });
-    return null;
-  }
-  return cleanTitle(text);
 };

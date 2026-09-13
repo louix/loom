@@ -214,6 +214,7 @@ export class SessionStore {
       title: string | null;
       comment: string | null;
       titleLocked: boolean;
+      autoTitleDone: boolean;
       worktree: string | null;
       branch: string | null;
       baseBranch: string | null;
@@ -231,6 +232,7 @@ export class SessionStore {
       title: "title",
       comment: "comment",
       titleLocked: "title_locked",
+      autoTitleDone: "auto_title_done",
       worktree: "worktree",
       branch: "branch",
       baseBranch: "base_branch",
@@ -598,6 +600,14 @@ export class SessionStore {
       | { title_locked: number }
       | undefined;
     return (row?.title_locked ?? 0) !== 0;
+  }
+
+  /** Successful generation survives restarts; failures remain retryable. */
+  autoTitleDone(id: string): boolean {
+    const row = this.#db.prepare("SELECT auto_title_done FROM sessions WHERE id = ?").get(id) as
+      | { auto_title_done: number }
+      | undefined;
+    return (row?.auto_title_done ?? 0) !== 0;
   }
 
   statusHistory(id: string): Array<{ status: string; reason: string | null; at: number }> {

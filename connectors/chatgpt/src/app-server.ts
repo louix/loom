@@ -283,6 +283,8 @@ export class CodexAppServerSession implements AgentSession {
   #contextLimit = 0;
   #turns = 0;
 
+  readonly #oneShot: boolean;
+
   private constructor(
     opts: CreateSessionOptions,
     proc: ChildProcessWithoutNullStreams,
@@ -290,6 +292,7 @@ export class CodexAppServerSession implements AgentSession {
     dispatch: ToolDispatcher,
     networkAccess: boolean,
   ) {
+    this.#oneShot = opts.oneShot === true;
     this.id = opts.sessionId;
     this.#networkAccess = networkAccess;
     this.#model = opts.model ?? "";
@@ -327,7 +330,12 @@ export class CodexAppServerSession implements AgentSession {
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
-    const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
+    const built = launchOptions(
+      opts.oneShot ? [] : opts.mcpServers,
+      search,
+      opts.oneShot ? false : builtinWebSearch,
+      codexHome,
+    );
     const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
@@ -335,13 +343,34 @@ export class CodexAppServerSession implements AgentSession {
       const started = await s.#rpc.requestStartup("thread/start", {
         ...(opts.model ? { model: opts.model } : {}),
         cwd: opts.cwd,
-        approvalPolicy: policyFor(opts.mode),
+        approvalPolicy: opts.oneShot ? "never" : policyFor(opts.mode),
         approvalsReviewer: approvalsReviewerFor(opts.mode),
-        sandbox: sandboxFor(opts.mode),
-        config: { "sandbox_workspace_write.network_access": networkAccess },
+        sandbox: opts.oneShot ? "read-only" : sandboxFor(opts.mode),
         ...(opts.effort ? { effort: opts.effort } : {}),
-        ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
-        ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
+        ...(opts.oneShot
+          ? {
+              ephemeral: true,
+              baseInstructions: opts.systemPromptAppend ?? "",
+              developerInstructions: "",
+              config: {
+                "sandbox_workspace_write.network_access": false,
+                project_doc_max_bytes: 0,
+                features: {
+                  shell_tool: false,
+                  multi_agent: false,
+                  plugins: false,
+                  apps: false,
+                  hooks: false,
+                },
+              },
+            }
+          : {
+              config: { "sandbox_workspace_write.network_access": networkAccess },
+              ...(opts.systemPromptAppend
+                ? { developerInstructions: opts.systemPromptAppend }
+                : {}),
+              ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
+            }),
       });
       s.#threadId = (started as any)?.thread?.id ?? null;
       if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
@@ -773,7 +802,7 @@ export class CodexAppServerSession implements AgentSession {
         input: [textInput(input)],
         model: this.#model || undefined,
         effort: this.#effort ?? undefined,
-        approvalPolicy: policyFor(this.#mode),
+        approvalPolicy: this.#oneShot ? "never" : policyFor(this.#mode),
         approvalsReviewer: approvalsReviewerFor(this.#mode),
         sandboxPolicy: this.#sandboxPolicy(),
       });
@@ -804,6 +833,7 @@ export class CodexAppServerSession implements AgentSession {
     return this.#sandboxPolicyFor(this.#mode);
   }
   #sandboxPolicyFor(mode: SessionMode): Record<string, unknown> {
+    if (this.#oneShot) return { type: "readOnly", networkAccess: false };
     if (mode === "plan") return { type: "readOnly", networkAccess: this.#networkAccess };
     return {
       type: "workspaceWrite",

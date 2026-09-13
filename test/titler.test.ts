@@ -69,3 +69,56 @@ test("generateTitle runs a one-shot through the provider and cleans the reply", 
   });
   assert.equal(title, "Wire up the websocket layer");
 });
+
+test("generateTitle bounds startup and closes a session that arrives after timeout", async () => {
+  const provider = new FakeProvider();
+  const { FakeSession } = await import("../connectors/mock/src/fake.ts");
+  const session = new FakeSession("late", { mode: "auto" });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let closed = 0;
+  session.close = async () => {
+    closed++;
+  };
+  provider.createSession = async () => {
+    await gate;
+    return session;
+  };
+  assert.equal(
+    await generateTitle({ provider, prompt: "fix naming", cwd: "/tmp", log, timeoutMs: 10 }),
+    null,
+  );
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(closed, 1);
+});
+
+test("generateTitle bounds an unresponsive stream and cleanup", async () => {
+  const provider = new FakeProvider();
+  const { FakeSession } = await import("../connectors/mock/src/fake.ts");
+  const session = new FakeSession("stuck", { mode: "auto" });
+  let closed = 0;
+  session.close = () => {
+    closed++;
+    return new Promise<void>(() => {});
+  };
+  provider.createSession = async () => session;
+  assert.equal(
+    await generateTitle({ provider, prompt: "fix naming", cwd: "/tmp", log, timeoutMs: 10 }),
+    null,
+  );
+  assert.equal(closed, 1);
+  session.endStream();
+});
+
+test("generateTitle rejects partial text without a successful result", async () => {
+  const provider = new FakeProvider();
+  const { FakeSession } = await import("../connectors/mock/src/fake.ts");
+  const session = new FakeSession("partial", { mode: "auto" });
+  session.emit({ type: "assistant_text", text: "Fix the naming" });
+  session.endStream();
+  provider.createSession = async () => session;
+  assert.equal(await generateTitle({ provider, prompt: "fix naming", cwd: "/tmp", log }), null);
+});

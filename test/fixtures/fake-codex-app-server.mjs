@@ -144,6 +144,11 @@ const handle = (req) => {
     return;
   }
   if (method === "thread/start") {
+    if (process.env["LOOM_TEST_START_PARAMS_FILE"])
+      writeFileSync(
+        process.env["LOOM_TEST_START_PARAMS_FILE"],
+        JSON.stringify({ params, argv: process.argv }),
+      );
     if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
       send({
         jsonrpc: "2.0",
@@ -290,6 +295,20 @@ const handle = (req) => {
       // `setMode`) while the turn is still genuinely open.
       if (!process.env["LOOM_TEST_HOLD_TURN"]) {
         setTimeout(() => {
+          if (process.env["LOOM_TEST_TITLE_REPLY"])
+            send({
+              jsonrpc: "2.0",
+              method: "item/completed",
+              params: {
+                threadId: startedThreadId,
+                turnId: "fake-turn-1",
+                item: {
+                  type: "agentMessage",
+                  id: "title",
+                  text: process.env["LOOM_TEST_TITLE_REPLY"],
+                },
+              },
+            });
           send({
             jsonrpc: "2.0",
             method: "turn/completed",

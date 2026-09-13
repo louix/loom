@@ -1577,53 +1577,55 @@ export class Daemon {
     });
   }
 
-  /**
-   * After a session's first successful turn, replace the clipped-prompt title
-   * with a model-generated summary — unless the user has already renamed it.
-   */
+  /** Retry unfinished naming on successful turns, independently of turn count. */
   async #maybeAutoTitle(id: string): Promise<void> {
-    if (!this.config.titles.enabled || this.#titling.has(id)) return;
+    if (this.#stopping || !this.config.titles.enabled || this.#titling.has(id)) return;
     const snap = this.#registry.get(id);
-    if (!snap || snap.turns !== 1 || !snap.title) return;
-    if (this.#registry.store.titleLocked(id)) return;
-    if (!this.#providers.has(snap.provider)) return;
-
+    if (!snap?.title || snap.status.kind === "done") return;
+    const store = this.#registry.store;
+    const needsTitle = !store.titleLocked(id) && !store.autoTitleDone(id);
+    const needsBranch = snap.branch === `loom/${id.slice(0, 8)}` || snap.branch === `loom/${id}`;
+    if (!needsTitle && !needsBranch) return;
     this.#titling.add(id);
     try {
-      const provider = await this.#providers.get(snap.provider);
-      if (!provider.capabilities.oneShot) return;
-      const title = await generateTitle({
-        provider,
-        prompt: snap.title,
-        cwd: snap.worktree ?? this.repoRoot,
-        log: this.#log.child("titler"),
-        ...(this.config.titles.model
-          ? { model: this.config.titles.model }
-          : (() => {
-              const m =
-                this.config.providers.aisdk[snap.provider]?.titleModel ||
-                cheapModelFor(snap.provider);
-              return m ? { model: m } : {};
-            })()),
-      });
-      if (!title || this.#stopping) return;
-      if (this.#registry.store.titleLocked(id)) return; // raced with a manual rename
-      let updated = this.#registry.setFields(id, { title });
-
-      // Rebrand the still-generic `loom/<shortId>` worktree branch from the new
-      // title. In-place sessions have no branch; the check also skips a branch
-      // already renamed (or manually shaped).
-      if (snap.branch === `loom/${id.slice(0, 8)}` || snap.branch === `loom/${id}`) {
-        const branch = this.#worktrees.renameBranch(title, snap.branch);
-        if (branch !== snap.branch) updated = this.#registry.setFields(id, { branch });
+      if (needsTitle && this.#providers.has(snap.provider)) {
+        const provider = await this.#providers.get(snap.provider);
+        const model =
+          this.config.titles.model ||
+          this.config.providers.aisdk[snap.provider]?.titleModel ||
+          cheapModelFor(snap.provider);
+        const title = await generateTitle({
+          provider,
+          prompt: snap.title,
+          cwd: snap.worktree ?? this.repoRoot,
+          log: this.#log.child("titler"),
+          ...(model ? { model } : {}),
+        });
+        const current = this.#registry.get(id);
+        if (this.#stopping || !current || current.status.kind === "done") return;
+        if (title && !store.titleLocked(id)) {
+          this.#registry.setFields(id, { title, autoTitleDone: true });
+        }
       }
-
-      this.#publishState(updated.id);
     } catch (err) {
-      this.#log.debug("auto-title failed", { id, err: String(err) });
+      this.#log.warn("auto-title failed; will retry after a later turn", { id, err: String(err) });
     } finally {
+      // Read the current row: generation may race a manual title, archive, or removal.
       this.#titling.delete(id);
+      if (!this.#stopping) {
+        this.#maybeNameBranch(id);
+        if (this.#registry.get(id)) this.#publishState(id);
+      }
     }
+  }
+
+  /** Naming the branch must not depend on a successful model request. */
+  #maybeNameBranch(id: string): void {
+    const snap = this.#registry.get(id);
+    if (!snap?.title || !snap.worktree || snap.status.kind === "done") return;
+    if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
+    const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
+    if (branch !== snap.branch) this.#registry.setFields(id, { branch });
   }
 
   /**
@@ -3104,8 +3106,9 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
+      if (this.config.titles.enabled) this.#maybeNameBranch(id);
       this.#publishState(snap.id);
-      return this.#enrich(snap);
+      return this.#enrich(this.#registry.mustGet(id));
     });
 
     d.register("session.setComment", (params) => {

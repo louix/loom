@@ -150,13 +150,15 @@ class ChatGPTProvider implements AgentProvider {
         ...opts,
         // A fresh thread — `ask_user` really is registered whenever the
         // rest of the loom tool set is.
-        systemPromptAppend: codeModeInstructions(
-          workspaceRoot,
-          mounted,
-          mounted,
-          opts.repoInstructions ?? null,
-          mcpToolPreferences(opts.mcpServers),
-        ),
+        systemPromptAppend: opts.oneShot
+          ? (opts.systemPromptAppend ?? "")
+          : codeModeInstructions(
+              workspaceRoot,
+              mounted,
+              mounted,
+              opts.repoInstructions ?? null,
+              mcpToolPreferences(opts.mcpServers),
+            ),
       },
       this.#codexHome,
       this.#codexCliPath,

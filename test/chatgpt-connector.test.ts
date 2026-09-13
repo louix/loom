@@ -2018,3 +2018,40 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
     await rm(root, { recursive: true, force: true });
   }
 });
+test("ChatGPT titling preserves labeling instructions and uses an ephemeral read-only thread", async () => {
+  const { generateTitle } = await import("@loom/daemon/daemon/titler");
+  const dir = await mkdtemp(join(tmpdir(), "loom-codex-title-"));
+  const capture = join(dir, "start.json");
+  Deno.env.set("LOOM_TEST_START_PARAMS_FILE", capture);
+  Deno.env.set("LOOM_TEST_TITLE_REPLY", "Repair automatic session naming");
+  try {
+    const provider = createProvider({
+      id: "chatgpt",
+      config: { configDir: dir, codexCliPath: FAKE_CODEX, codexBuiltinWebSearch: true },
+      logger: makeLogger("title-test"),
+    });
+    const title = await generateTitle({
+      provider,
+      prompt: "please fix automatic naming",
+      cwd: dir,
+      log: makeLogger("title-test"),
+      timeoutMs: 3000,
+    });
+    assert.equal(title, "Repair automatic session naming");
+    const { params, argv } = JSON.parse(await readFile(capture, "utf8"));
+    assert.match(params.baseInstructions, /labelling function/);
+    assert.equal(params.developerInstructions, "");
+    assert.equal(params.ephemeral, true);
+    assert.equal(params.sandbox, "read-only");
+    assert.equal(params.approvalPolicy, "never");
+    assert.equal(params.dynamicTools, undefined);
+    assert.equal(params.config.project_doc_max_bytes, 0);
+    assert.equal(params.config.features.shell_tool, false);
+    assert.ok(argv.includes('web_search = "disabled"'));
+    assert.ok(argv.includes("mcp_servers={  }"));
+  } finally {
+    Deno.env.delete("LOOM_TEST_START_PARAMS_FILE");
+    Deno.env.delete("LOOM_TEST_TITLE_REPLY");
+    await rm(dir, { recursive: true, force: true });
+  }
+});
