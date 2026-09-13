@@ -59,7 +59,7 @@ export type ConnectionError =
 
 export const showConnectionError = (e: ConnectionError): string =>
   e.kind === "protocol_mismatch"
-    ? `daemon speaks wire protocol v${e.daemon}, this client is v${e.client} — upgrade`
+    ? `daemon speaks wire protocol v${e.daemon}, this client is v${e.client} — incompatible. If you just updated Loom, restart the running daemon using the updated installation; otherwise update Loom so client and daemon match. Restarting interrupts attached clients and running sessions.`
     : e.message;
 
 /**
