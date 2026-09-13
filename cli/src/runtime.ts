@@ -3,6 +3,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { onPath } from "@loom/core/paths";
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
+import { lockSessionState } from "../../runtime/src/session-vm/persistence.ts";
+import { pruneRuntimeCaches } from "./maintenance.ts";
 import {
   inspectArtifact,
   requireVmHost,
@@ -102,9 +104,11 @@ export const prepareRuntime = async (
   await checked(smolvm, ["--version"]);
   const parent = join(home, await runtimeKey(source));
   await Deno.mkdir(parent, { recursive: true, mode: 0o700 });
-  // Generations are retained: an update cannot GC an artifact used by a live session.
-  const generation = await Deno.makeTempDir({ dir: parent, prefix: "generation-" });
+  const preparing = await lockSessionState(parent);
+  // Publish before pruning; collection is serialized against updates and VM use.
+  let generation: string | undefined;
   try {
+    generation = await Deno.makeTempDir({ dir: parent, prefix: "generation-" });
     await checked("nix", [
       "--extra-experimental-features",
       "nix-command flakes",
@@ -138,8 +142,10 @@ export const prepareRuntime = async (
     await Deno.rename(next, join(parent, "current"));
     return { lock, manifest };
   } catch (error) {
-    await Deno.remove(generation, { recursive: true }).catch(() => {});
+    if (generation) await Deno.remove(generation, { recursive: true }).catch(() => {});
     throw error;
+  } finally {
+    preparing.close();
   }
 };
 export const runtimeCommand = async (
@@ -148,8 +154,16 @@ export const runtimeCommand = async (
   opts: { smolvm?: string; json: boolean },
 ) => {
   const [action, name, ...rest] = args;
+  if (action === "prune" && !name && !rest.length) {
+    const result = await pruneRuntimeCaches(repoRoot);
+    return opts.json
+      ? JSON.stringify(result) + "\n"
+      : `Removed ${result.generations} old runtime generations and ${result.templates} backend template caches.${result.deferred ? " Some cleanup deferred: active VMs/updates, recovery state, or unreadable metadata." : ""}\n`;
+  }
   if (!action || !["prepare", "status", "update"].includes(action) || rest.length)
-    throw new Error("Usage: loom runtime prepare|status|update [runtime] [--smolvm PATH] [--json]");
+    throw new Error(
+      "Usage: loom runtime prepare|status|update [runtime] [--smolvm PATH] [--json]; loom runtime prune",
+    );
   const config = loadConfig(repoRoot);
   const sources = name
     ? [name]
@@ -185,6 +199,10 @@ export const runtimeCommand = async (
       Deno.exitCode = 1;
     }
   }
+  if (action === "update")
+    await pruneRuntimeCaches(repoRoot).catch((error) =>
+      console.error(`Runtime cleanup deferred: ${error instanceof Error ? error.message : error}`),
+    );
   if (opts.json) return JSON.stringify(rows, null, 2) + "\n";
   if (!rows.length) return "No packaged runtimes configured.\n";
   return (

@@ -100,7 +100,7 @@ incompatible environment-format change require preparation again. Custom runtime
 without the compatibility metadata retain exact artifact matching.
 
 The transition to this layout requires one new preparation; older bases remain
-intact. Changing a repo's development dependencies or preparation command still
+available until replacements are prepared. Changing a repo's development dependencies or preparation command still
 requires explicit preparation to capture those changes. The TUI checks enabled
 VM providers on launch and shows a persistent warning for missing or incompatible
 images, with **Space → Prepare repo environment** as the remedy. It rechecks after
@@ -109,6 +109,29 @@ preparation. No VM is started or image rebuilt by this check.
 In the TUI, use **Space → Prepare repo environment**. The CLI owns the terminal
 until preparation finishes; Enter returns to the TUI and Ctrl-C cancels preparation.
 The daemon and existing sessions keep running throughout.
+
+## Image cleanup
+
+Successful preparation prunes obsolete bases once every configured VM runtime
+has a compatible replacement. This includes bases from older Loom releases,
+superseded compatibility keys and abandoned preparation directories. Bases used
+by live VMs retain both their disk files and Nix GC roots; shutdown or recovery
+retries cleanup after releasing them. Active preparation and unfinished recovery
+state are retained. Other configured runtime images are preserved.
+
+Run `loom environment prune` to retry cleanup for this repo without rebuilding.
+It also attempts runtime cache cleanup. `loom runtime prune` cleans only old
+custom runtime generations and backend disk-template caches; runtime updates
+attempt this automatically. Current generations and explicit runtime pins from
+all trusted repo configurations are retained. Global cache cleanup is deferred
+while a VM is running, starting, or has retained recovery state, or while a
+runtime update is in progress.
+
+These commands support `--json` and report removal counts. They delete obsolete
+disk files and release their Nix GC roots, but do not invoke system-wide Nix
+garbage collection. Released Nix store paths are reclaimed by normal Nix GC,
+provided no other roots (such as older profile generations) still retain them.
+Host worktrees, conversation profiles and package-manager caches are preserved.
 
 ## Host package caches
 

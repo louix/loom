@@ -27,7 +27,7 @@ import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 import { reportStartup, readStartupProgress, classifyStartupFailure } from "./progress.ts";
-import { seedRepoBase } from "./repo-base.ts";
+import { seedRepoBase, pruneRepoBases } from "./repo-base.ts";
 import {
   discardSessionDisks,
   saveSessionDisks,
@@ -302,6 +302,8 @@ try {
         await removeSessionRuntimeState(binding.state);
         if (binding.sessionDirectory && ownsPersistent)
           await finishSessionState(binding.sessionDirectory, binding.token);
+        if (!binding.preparationOnly && binding.repoBaseDirectory)
+          await pruneRepoBases(binding.repoBaseDirectory, undefined).catch(() => {});
       },
     });
   } catch {

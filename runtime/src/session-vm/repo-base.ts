@@ -11,7 +11,8 @@ import {
   SavedDiskCompatibilityError,
 } from "./disks.ts";
 import { environmentIdentity } from "./environment-identity.ts";
-import { writeRecoveryFile } from "./persistence.ts";
+import { writeRecoveryFile, lockSessionState, assertNoActiveVm } from "./persistence.ts";
+import { referencedBases } from "../packaged/maintenance.ts";
 
 export const repoBaseDirectory = (repo: string) =>
   canonicalHostPath(
@@ -152,9 +153,97 @@ export const publishRepoBase = async (
     // Launches retain immutable backing bytes through their private hard links.
     // Keep the legacy selection valid until it is explicitly replaced.
     const legacy = artifact ? await currentRepoBase(home) : undefined;
-    if (previous && previous !== candidate && previous !== legacy)
+    const inUse = await referencedBases().catch(() => undefined);
+    if (
+      previous &&
+      previous !== candidate &&
+      previous !== legacy &&
+      inUse &&
+      !inUse.has(basename(previous))
+    )
       await Deno.remove(previous, { recursive: true }).catch(() => {});
   } finally {
     held.close();
+  }
+};
+
+/** Remove obsolete bases after configured replacements exist. With no bindings, keep all selections. */
+export const pruneRepoBases = async (
+  home: string,
+  bindings: Array<Pick<VmBinding, "artifact" | "smolvm" | "writableNix">> | undefined,
+  temporary = "/tmp",
+): Promise<{ removed: number; retained: number }> => {
+  const preparing = await lockSessionState(join(home, "preparation"));
+  try {
+    const held = await lock(home, true);
+    try {
+      const selections = new Set<string>();
+      const keep = await referencedBases(temporary);
+      for (const binding of bindings ?? []) {
+        const base = await compatibleRepoBase(home, binding);
+        if (!base)
+          throw new Error(
+            "Prepare all configured runtime environments before pruning older images",
+          );
+        selections.add(await selectionFile(binding.artifact));
+        if ((await currentRepoBase(home)) === base) selections.add("current.json");
+        keep.add(basename(base));
+      }
+      // Validate all selections before changing anything. An unknown format is not garbage.
+      const obsolete: string[] = [];
+      for await (const entry of Deno.readDir(home)) {
+        if (!/^(?:current|current-[a-f0-9]{32})\.json$/.test(entry.name)) continue;
+        const path = join(home, entry.name);
+        const info = await Deno.lstat(path);
+        if (!info.isFile || info.isSymlink || info.size > 16384)
+          throw new Error("Invalid environment selection");
+        const value = JSON.parse(await Deno.readTextFile(path));
+        if (
+          !value ||
+          typeof value.directory !== "string" ||
+          !/^base-[a-z0-9]+$/.test(value.directory)
+        )
+          throw new Error("Invalid environment selection");
+        if (bindings === undefined) keep.add(value.directory);
+        else if (!selections.has(entry.name)) obsolete.push(path);
+      }
+      for (const path of obsolete) await Deno.remove(path);
+      let removed = 0,
+        retained = 0;
+      for await (const entry of Deno.readDir(home)) {
+        if (!/^base-[a-z0-9]+$/.test(entry.name)) continue;
+        const path = join(home, entry.name);
+        const info = await Deno.lstat(path);
+        if (!info.isDirectory || info.isSymlink || keep.has(entry.name)) {
+          retained++;
+          continue;
+        }
+        let owner: Deno.FsFile | undefined;
+        try {
+          owner = await lockSessionState(path);
+          await assertNoActiveVm(path);
+          // Also protect Linux launches from older versions which retained backing links.
+          for (const stem of ["storage", "overlay"]) {
+            try {
+              if ((await Deno.lstat(join(path, "disks", stem + ".raw"))).nlink! > 1)
+                throw new Error("Base still has live backing links");
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+          }
+          await Deno.remove(path, { recursive: true });
+          removed++;
+        } catch {
+          retained++;
+        } finally {
+          owner?.close();
+        }
+      }
+      return { removed, retained };
+    } finally {
+      held.close();
+    }
+  } finally {
+    preparing.close();
   }
 };

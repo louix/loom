@@ -10,6 +10,7 @@ import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectArtifact } from "../../../../runtime/src/packaged/artifact.ts";
+import { vmMaintenanceLock } from "../../../../runtime/src/packaged/maintenance.ts";
 import { readRecovery, recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
 import {
   finishSessionState,
@@ -107,7 +108,7 @@ const remove = async (path: string) => {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
 };
-export const launchSessionVm = async (
+const launchSessionVmOwned = async (
   options: SessionVmOptions,
 ): Promise<
   WorkerProcess & {
@@ -397,6 +398,22 @@ export const sessionVmGeneration = async (state: string): Promise<string> => {
     return await Deno.readTextFile(join(state, "base-generation"));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return "";
+    throw error;
+  }
+};
+
+/** A cache collector cannot race VM startup; retained state protects crash recovery. */
+export const launchSessionVm = async (options: SessionVmOptions) => {
+  const lease = (await vmMaintenanceLock())!;
+  try {
+    const worker = await launchSessionVmOwned(options);
+    void worker.exited.then(
+      () => lease.close(),
+      () => lease.close(),
+    );
+    return worker;
+  } catch (error) {
+    lease.close();
     throw error;
   }
 };

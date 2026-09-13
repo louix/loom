@@ -5,13 +5,14 @@ import {
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { resolveRuntime, requireVmHost } from "../../../../runtime/src/packaged/artifact.ts";
+import { vmMaintenanceLock } from "../../../../runtime/src/packaged/maintenance.ts";
 import { vmArguments, reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
 import type { ManagedMcp } from "./mcp-worker.ts";
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 
-export const startRuntimeMcp = async (
+const startRuntimeMcpOwned = async (
   name: string,
   runtime: string,
   workspace: string,
@@ -134,5 +135,20 @@ export const startRuntimeMcp = async (
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+  }
+};
+
+export const startRuntimeMcp = async (...args: Parameters<typeof startRuntimeMcpOwned>) => {
+  const lease = (await vmMaintenanceLock())!;
+  try {
+    const worker = await startRuntimeMcpOwned(...args);
+    void worker.exited.then(
+      () => lease.close(),
+      () => lease.close(),
+    );
+    return worker;
+  } catch (error) {
+    lease.close();
+    throw error;
   }
 };

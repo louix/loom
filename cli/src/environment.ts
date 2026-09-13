@@ -12,11 +12,13 @@ import {
   repoBaseDirectory,
   publishRepoBase,
   hasCompatibleRepoBase,
+  pruneRepoBases,
 } from "../../runtime/src/session-vm/repo-base.ts";
 import { lockSessionState, SessionVmBusyError } from "../../runtime/src/session-vm/persistence.ts";
 import { ipcPermissions } from "../../core/src/network-permissions.ts";
 import { inspectArtifact } from "../../runtime/src/packaged/artifact.ts";
 import { loomPaths } from "../../core/src/paths.ts";
+import { pruneRuntimeCaches } from "./maintenance.ts";
 
 /** Called while Ink has suspended terminal ownership. Keep one CLI output path. */
 export const prepareEnvironmentInTerminal = async (
@@ -98,6 +100,11 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
   const providers = provider ? [provider] : environmentProviders(config);
   if (!providers.length) throw new Error("No configured VM providers to prepare");
   for (const id of providers) await prepareProviderEnvironment(repo, id);
+  await pruneRepoEnvironment(repo).catch((error) =>
+    console.error(
+      `Environment prepared; cleanup deferred: ${error instanceof Error ? error.message : error}`,
+    ),
+  );
 };
 
 const prepareProviderEnvironment = async (repo: string, id: string) => {
@@ -277,4 +284,22 @@ export const repoEnvironmentWarning = async (
   } catch (error) {
     return `Could not check environment image: ${error instanceof Error ? error.message : String(error)}`;
   }
+};
+
+/** Explicit and post-preparation collection, scoped to this repo's configured images. */
+export const pruneRepoEnvironment = async (repo: string) => {
+  repo = await Deno.realPath(repo);
+  const config = loadConfig(repo);
+  const bindings = [];
+  for (const policy of [config.isolation.claude, config.isolation.codex, config.isolation.aisdk]) {
+    if (!policy) continue;
+    bindings.push({
+      artifact: await Deno.realPath(policy.artifact),
+      smolvm: await resolveEnvironmentBackend(policy.smolvm),
+      writableNix: config.isolation.environment?.nix === true,
+    });
+  }
+  const bases = await pruneRepoBases(repoBaseDirectory(repo), bindings);
+  const caches = await pruneRuntimeCaches(repo);
+  return { ...bases, ...caches };
 };

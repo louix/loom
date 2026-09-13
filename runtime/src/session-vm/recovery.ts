@@ -1,6 +1,7 @@
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
 /** Called only while holding the persistent session's ownership lock. */
 import { cleanupSessionVm } from "./cleanup.ts";
+import { pruneRepoBases } from "./repo-base.ts";
 import { join, resolve, dirname, basename } from "node:path";
 import { reapVm, type VmBinding } from "../packaged/vm.ts";
 import { finishSessionState, writeRecoveryFile, removeSessionRuntimeState } from "./persistence.ts";
@@ -82,6 +83,8 @@ export const recoverSessionVm = async (dir: string): Promise<boolean> => {
     await writeRecoveryFile(dir, "active.json", b);
     if (present) await removeSessionRuntimeState(b.state);
     await finishSessionState(dir, b.token);
+    if (!b.preparationOnly && b.repoBaseDirectory)
+      await pruneRepoBases(b.repoBaseDirectory, undefined).catch(() => {});
   };
   if (!b.recovery.reaped) {
     await cleanupSessionVm({

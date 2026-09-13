@@ -27,8 +27,8 @@ commands:
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
-  runtime prepare|status|update [runtime]  manage optional packaged MCP runtimes
-  environment prepare    warm the repo's VM environment for future sessions
+  runtime prepare|status|update|prune [runtime]  manage optional packaged MCP runtimes
+  environment prepare|prune  prepare the repo environment or remove obsolete bases
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -60,17 +60,19 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
-  environment: `loom environment prepare [--provider P]
+  environment: `loom environment prepare [--provider P] | loom environment prune
 
   Build the configured environment in a disposable VM/worktree at committed HEAD,
   streaming preparation output. Publish a base for new and resumed sessions.
   Existing sessions keep running and update once idle. Worktrees and history are
   preserved; guest disks are disposable. Failures leave the previous base intact.
+  prune removes obsolete bases once configured replacements exist, preserving live VMs.
   --provider P   prepare only this provider's runtime (default: all configured VM runtimes)`,
-  runtime: `loom runtime prepare|status|update [runtime]
+  runtime: `loom runtime prepare|status|update [runtime] | loom runtime prune
 
   prepare                      fetch/build configured runtimes outside the daemon
   status                       inspect prepared artifacts without network access
+  prune                        remove obsolete generations and backend template caches when no VMs need them
   update <runtime>             explicitly prepare the current recipe again
   --smolvm PATH                Nix-packaged smolvm executable to pin during preparation
   --json                       machine-readable results
@@ -218,10 +220,18 @@ const main = async (): Promise<void> => {
     })();
   await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
   if (cmd === "environment") {
-    if (positionals.length !== 2 || positionals[1] !== "prepare")
+    if (positionals.length !== 2 || !["prepare", "prune"].includes(positionals[1]!))
       throw new Error(USAGE.environment);
-    const { prepareRepoEnvironment } = await import("./environment.ts");
-    await prepareRepoEnvironment(repoRoot, values.provider);
+    const { prepareRepoEnvironment, pruneRepoEnvironment } = await import("./environment.ts");
+    if (positionals[1] === "prune") {
+      if (values.provider) throw new Error("environment prune checks all configured runtimes");
+      const result = await pruneRepoEnvironment(repoRoot);
+      writeOut(
+        values.json
+          ? JSON.stringify(result) + "\n"
+          : `Removed ${result.removed} old environment bases; retained ${result.retained}. Removed ${result.generations} runtime generations and ${result.templates} template caches.${result.deferred ? " Runtime cleanup deferred: active VMs/updates, recovery state, or unreadable metadata." : ""}\n`,
+      );
+    } else await prepareRepoEnvironment(repoRoot, values.provider);
     return;
   }
   if (cmd === "runtime") {

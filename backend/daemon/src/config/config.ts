@@ -1153,3 +1153,18 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
 export const resolveAgainstRepo = (repoRoot: string, p: string): string => {
   return isAbsolute(p) ? p : resolve(repoRoot, p);
 };
+
+/** Global cache pruning must also respect paths pinned by other trusted repositories. */
+export const loadAllRepoConfigs = (
+  repoRoot: string,
+  configFile = userConfigPath(),
+): LoomConfig[] => {
+  const current = loadConfig(repoRoot, configFile); // validates every repo entry first
+  const raw = readTomlIfPresent(configFile) ?? {};
+  const repos = (raw.repo ?? []) as Array<{ path: string }>;
+  return [
+    current,
+    normalizeConfig(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "repo"))),
+    ...repos.map((entry) => loadConfig(configRepoPath(entry.path), configFile)),
+  ];
+};
