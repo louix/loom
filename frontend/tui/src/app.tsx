@@ -8,9 +8,14 @@ import { useEffect, useState, useSyncExternalStore, useMemo, type ReactNode } fr
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { PaletteContext, useTheme } from "./ui.tsx";
 import { absurd } from "@loom/core/absurd";
-import { showConnectionError, type LoomClient } from "@loom/client";
+import { showConnectionError } from "@loom/client";
 import type { EditorHandoff } from "./editor-handoff.ts";
-import { mkFleetHandle, type FleetView, type FleetHandle } from "./fleet-handle.ts";
+import {
+  mkFleetHandle,
+  type FleetView,
+  type FleetHandle,
+  type FleetClient,
+} from "./fleet-handle.ts";
 import { openPrompt, promptOnPane } from "./overlay.ts";
 import {
   fleetSessions,
@@ -48,7 +53,7 @@ export const App = ({
   openEditor: openEditorOverride,
   historyPageSize,
 }: {
-  client: LoomClient;
+  client: FleetClient;
   /** Daemon + TUI log paths for the "view logs" palette command. */
   logs?: { daemon: string; tui: string };
   /** TUI preference file — the theme persists across restarts there. */

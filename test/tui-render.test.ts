@@ -116,7 +116,7 @@ const waitFor = async (
 };
 
 const mount = (
-  client: LoomClient,
+  client: FleetClient,
   extra: Partial<Parameters<typeof App>[0]> = {},
   /** Terminal size override — layout regressions are width-sensitive. */
   size: { columns?: number; rows?: number } = {},
@@ -162,29 +162,22 @@ const harness = async (
   };
 };
 
-// Every test below is fully self-contained — its own harness (daemon + temp
-// git repo), client, ink instance and fake streams — so they overlap safely.
-// The suite's wall time is dominated by this file's serial chain of paced UI
-// tests; 4-way overlap cuts it to roughly a quarter. Bounded (not `true`) so a
-// small machine doesn't host every daemon at once.
+// Each test owns its client, Ink instance and streams. Integration tests also
+// own a daemon + temp repo; display-only tests use mountFleet snapshots.
+// Bound concurrency so small machines don't host every daemon at once.
 describe("tui-render", { concurrency: 4 }, () => {
   test("renders the fleet, tracks selection by key, and shows help", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    await client.request("session.createStub", {
-      prompt: "add a --json flag",
-      status: "running",
-      provider: "fake",
-    });
-    await client.request("session.createStub", {
-      prompt: "write the release notes",
-      status: "awaiting_input",
-      reason: "permission",
-      provider: "fake",
-    });
-    const { stdout, stdin, app } = mount(client);
+    const { stdout, stdin, app, settle } = await mountFleet([
+      snap({ id: "running", title: "add a --json flag", status: "running" }),
+      snap({
+        id: "waiting",
+        title: "write the release notes",
+        status: "awaiting_input",
+        awaitReason: "permission",
+      }),
+    ]);
     try {
-      await delay(200);
+      await settle();
       assert.match(stdout.last, /▍ loom/);
       assert.match(stdout.last, /AWAITING INPUT/);
       assert.match(stdout.last, /write the release notes/);
@@ -195,39 +188,33 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.doesNotMatch(stdout.last, /budget/);
 
       stdin.feed("j");
-      await delay(120);
+      await settle();
       assert.match(stdout.last, /add a --json flag/);
       assert.match(stdout.last, /interrupt/);
       assert.doesNotMatch(stdout.last, /approve/);
 
       stdin.feed("?");
-      await delay(120);
+      await settle();
       assert.match(stdout.last, /loom — keys/);
       assert.match(stdout.last, /archive the session/);
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
   test("esc does not quit; only overlays back out", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    await client.request("session.createStub", {
-      prompt: "a task",
-      status: "idle",
-      provider: "fake",
-    });
-    const { stdout, stdin, app } = mount(client);
+    const { stdout, stdin, app, settle } = await mountFleet([snap({ title: "a task" })]);
     try {
-      await delay(160);
+      await settle();
       stdin.feed(ESC);
-      await delay(100);
+      // A lone Escape is held by Ink's input parser for 20ms. This no-op has
+      // no changed frame to await; let it resolve before feeding the next key.
+      await delay(60);
+      await settle();
       assert.match(stdout.last, /▍ loom/, "still rendering after esc — the UI did not exit");
 
       stdin.feed("n");
-      await delay(100);
+      await settle();
       assert.match(stdout.last, /new session/);
       assert.match(
         stdout.last,
@@ -235,17 +222,15 @@ describe("tui-render", { concurrency: 4 }, () => {
         "the mode chip is always shown (default reads as 'manual')",
       );
       stdin.feed(ESC);
-      await delay(100);
+      await waitFor(stdout, (text) => !/new session/.test(text));
       assert.doesNotMatch(stdout.last, /new session/);
 
       stdin.feed("\x05"); // ⌃e outside the prompt: Ctrl is editing-only, inert here
-      await delay(80);
+      await settle();
       assert.match(stdout.last, /▍ loom/, "still rendering — ⌃e did nothing in browse");
       assert.doesNotMatch(stdout.last, /new session/);
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
@@ -455,27 +440,20 @@ models   = ["m1", "m2"]
   });
 
   test("R raises a restart confirmation that esc dismisses", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    await client.request("session.createStub", {
-      prompt: "busy",
-      status: "running",
-      provider: "fake",
-    });
-    const { stdout, stdin, app } = mount(client);
+    const { stdout, stdin, app, settle } = await mountFleet([
+      snap({ title: "busy", status: "running" }),
+    ]);
     try {
-      await delay(160);
+      await settle();
       stdin.feed("R");
-      await delay(100);
+      await settle();
       assert.match(stdout.last, /Restart the daemon\?/);
       assert.match(stdout.last, /will be interrupted/);
       stdin.feed(ESC);
-      await delay(100);
+      await waitFor(stdout, (text) => !/Restart the daemon\?/.test(text));
       assert.doesNotMatch(stdout.last, /Restart the daemon\?/);
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
@@ -1325,19 +1303,11 @@ models   = ["m1", "m2"]
   });
 
   test("⇥ toggles the fleet list; esc brings it back", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    const s = await client.request<SessionSnapshot>("session.createStub", {
-      prompt: "look at logs",
-      status: "running",
-      provider: "fake",
-    });
-    const { stdout, stdin, app } = mount(client);
+    const { stdout, stdin, app, settle } = await mountFleet([
+      snap({ title: "look at logs", status: "running" }),
+    ]);
     try {
-      await delay(150);
-      await client.request("dev.emit", {
-        event: { sessionId: s.id, type: "assistant_text", text: "hello from the agent" },
-      });
+      await settle();
       await waitFor(stdout, /FLEET/);
 
       stdin.feed("\t"); // overview → session: detail + events, no fleet column
@@ -1352,24 +1322,21 @@ models   = ["m1", "m2"]
       await waitFor(stdout, /FLEET/);
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
   test("a narrow terminal hides detail + events until ⇥ swaps to the session pane", async () => {
-    const { connect, cleanup } = await harness();
-    const client = await connect();
-    const s = await client.request<SessionSnapshot>("session.createStub", {
-      prompt: "narrow layout task",
-      status: "running",
-      provider: "fake",
-    });
-    const { stdout, stdin, app } = mount(client, {}, { columns: 60 });
+    const { stdout, stdin, app } = await mountFleet(
+      [snap({ id: "narrow", title: "narrow layout task", status: "running" })],
+      { columns: 60 },
+      [
+        {
+          id: 1,
+          event: { sessionId: "narrow", ts: 1, type: "assistant_text", text: "one column now" },
+        },
+      ],
+    );
     try {
-      await client.request("dev.emit", {
-        event: { sessionId: s.id, type: "assistant_text", text: "one column now" },
-      });
       // overview: the fleet list alone — no detail, no events, no switcher bar.
       await waitFor(stdout, /FLEET/);
       assert.doesNotMatch(stdout.last, /EVENTS/);
@@ -1384,25 +1351,22 @@ models   = ["m1", "m2"]
       await waitFor(stdout, (t) => /FLEET/.test(t) && !/EVENTS/.test(t));
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
   test("→ still only drills into children — the layout zoom is on ⇥, not the arrows", async () => {
-    const { h, connect, cleanup } = await harness();
-    const client = await connect();
-    const snap = await client.request<SessionSnapshot>("session.create", {
-      prompt: "spawn helpers",
-      provider: "fake",
-    });
-    const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
-    const { stdout, stdin, app } = mount(client, {}, { columns: 60 });
+    const { stdout, stdin, app, settle } = await mountFleet(
+      [
+        snap({
+          title: "spawn helpers",
+          status: "running",
+          subagents: [{ id: "t1", name: "reviewer", active: true }],
+        }),
+      ],
+      { columns: 60 },
+    );
     try {
-      await delay(150);
-      fs?.emit({ type: "assistant_text", text: "mainline chatter" });
-      fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
-      fs?.emit({ type: "assistant_text", text: "reviewing the diff", agentId: "t1" });
+      await settle();
       await waitFor(stdout, /⑂ reviewer/);
 
       // → drills into the child rows and stays on the fleet list — it does not
@@ -1418,8 +1382,6 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /FLEET/);
     } finally {
       app.unmount();
-      await client.close();
-      await cleanup();
     }
   });
 
@@ -2297,6 +2259,26 @@ const testSession = (over: Partial<SessionSnapshot> = {}): SessionSnapshot =>
 
 const fleetOf = (...sessions: SessionSnapshot[]): ClientState =>
   loadableLoaded({ daemon: testDaemon, providers: [], sessions });
+
+/** Display-only tests start from a snapshot; RPC behavior belongs to the daemon tests. */
+const mountFleet = async (
+  sessions: SessionSnapshot[],
+  size: { columns?: number; rows?: number } = {},
+  items: HistoryPage["items"] = [],
+) => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(...sessions));
+  const mounted = mount(fake.client, {}, size);
+  const settle = async () => {
+    // Let React process input/effects, then wait for Ink's pending render.
+    await delay(0);
+    await mounted.app.waitUntilRenderFlush();
+  };
+  await settle();
+  for (const call of fake.heads()) call.resolve({ items, olderCursor: null });
+  await settle();
+  return { ...mounted, settle };
+};
 
 /** One page of `n` durable entries ending at `lastId`, oldest first. */
 const pageOf = (
