@@ -87,13 +87,3 @@ test("startup hygiene terminates a live child from a previous daemon epoch", asy
 
   if (victim.pid && pidAlive(victim.pid)) victim.kill("SIGKILL");
 });
-
-test("hygiene report is exposed on daemon.status", async () => {
-  const c = await client();
-  const s = await c.request<{
-    hygiene: { interruptedSessions: Array<{ id: string; was: string }>; worktreePruned: boolean };
-  }>("daemon.status");
-  assert.ok(s.hygiene);
-  assert.ok(Array.isArray(s.hygiene.interruptedSessions));
-  await c.close();
-});

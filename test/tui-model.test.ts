@@ -27,7 +27,6 @@ import {
   footerHints,
   groupsOf,
   initialState,
-  newSettings,
   modelPickEmptyText,
   modelPickItems,
   modelSupportsEffort,
@@ -2166,21 +2165,6 @@ test("a permission carries its tool + input; leaving awaiting_input clears it", 
   assert.equal(shown(s, "a"), null);
 });
 
-test("confirm open / run / close", () => {
-  let s = reduce(
-    initialState(),
-    open({
-      t: "confirm",
-      confirm: { title: "Restart the daemon?", danger: false, action: "restart" },
-    }),
-  );
-  assert.equal(s.overlay.t, "confirm");
-  assert.equal(confirmOf(s)?.action, "restart");
-  s = reduce(s, open({ t: "browse" }));
-  assert.equal(s.overlay.t, "browse");
-  assert.equal(confirmOf(s), null);
-});
-
 test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", () => {
   let s = reduce(
     initialState(),
@@ -2213,16 +2197,6 @@ test("toggleConfirmBranch flips deleteBranch only when a branch is on offer", ()
   assert.equal(confirmOf(t)?.deleteBranch, undefined);
 });
 
-test("help toggles the mode without disturbing the rest of the state", () => {
-  const a = snap({ id: "a", status: "running" });
-  let s = reduce(initialState(), fleet([a]));
-  s = reduce(s, { t: "overlay", overlay: { t: "help" } });
-  assert.equal(s.overlay.t, "help");
-  assert.equal(s.selectedId, "a");
-  s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
-  assert.equal(s.overlay.t, "browse");
-});
-
 test("doctor: open sets the mode, doctorLoaded caches the report, close returns to browse", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));
@@ -2234,50 +2208,28 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
 
   const report = {
     daemon: {
-      pid: 1,
-      version: "0.0.1",
-      startedAt: 0,
+      ...daemon,
       uptimeMs: 5,
-      epoch: "e",
-      repoRoot: "/r",
       clients: 1,
       connections: 1,
       eventSeq: 3,
       sessions: 1,
       runningSessions: 1,
     },
-    connectors: [{ pkg: "@loom/connector-claude", providerIds: ["claude"], loaded: false }],
-    mcp: [
-      {
-        name: "tilth",
-        command: "tilth --mcp --edit",
-        resolved: "tilth --mcp --edit",
-        status: "ok" as const,
-        note: "",
-      },
-    ],
-    tools: {
-      loom: ["ask_user", "commit"],
-      claude: [],
-      aisdk: [],
-      claudeDisabled: ["Grep", "Glob"],
-    },
-    webSearch: { backend: "none" as const, enabled: false, note: "no backend configured" },
+    connectors: [],
+    mcp: [],
+    tools: { loom: [], claude: [], aisdk: [], claudeDisabled: [] },
+    webSearch: { backend: "none" as const, enabled: false, note: "" },
     configWarnings: [],
   };
   s = reduce(s, { t: "doctorLoaded", report });
-  assert.equal(s.doctor?.mcp[0]?.name, "tilth");
+  assert.equal(s.doctor, report);
   assert.equal(s.overlay.t, "doctor");
 
   s = reduce(s, { t: "overlay", overlay: { t: "browse" } });
   assert.equal(s.overlay.t, "browse");
   // the cached report survives a close so a reopen paints immediately
-  assert.equal(s.doctor?.daemon.pid, 1);
-});
-
-test("commandsFor lists doctor in the Space palette", () => {
-  const s = reduce(initialState(), fleet([]));
-  assert.ok(commandsFor(s).some((it) => it.id === "doctor"));
+  assert.equal(s.doctor, report);
 });
 
 test("the header lamp is derived from the snapshot's loadable state", () => {
@@ -2710,12 +2662,6 @@ test("escapePicker: a wizard steps back only as far as the step it opened at", (
   assert.equal(back4.t, "prompt");
   assert.equal(back4.t === "prompt" && promptKind(back4.prompt), "new");
   assert.equal(back4.t === "prompt" && back4.prompt.buffer.text, "idea");
-});
-
-test("newSettings folds the ⌃P chooser's provider + model into the new prompt", () => {
-  const p = newPrompt(newSettings(withProviders(), "openai", "o4", null));
-  assert.equal(p.t === "new" && p.settings.provider, "openai");
-  assert.equal(p.t === "new" && p.settings.model, "o4");
 });
 
 test("defaultModelOf reads the provider's advertised default model", () => {

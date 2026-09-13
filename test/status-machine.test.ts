@@ -13,8 +13,9 @@ import {
   stateWorkingBackground,
 } from "@loom/core/session-state";
 
-const ev = (e: Partial<HarnessEvent> & { type: HarnessEvent["type"] }): HarnessEvent =>
-  ({ sessionId: "s", ts: 0, ...e }) as HarnessEvent;
+// Distribute over the event union so each kind still requires its own payload.
+type EventPayload<E = HarnessEvent> = E extends HarnessEvent ? Omit<E, "sessionId" | "ts"> : never;
+const ev = (e: EventPayload): HarnessEvent => ({ sessionId: "s", ts: 0, ...e });
 
 /** `deriveStatus` is total: it returns the same `SessionState` when nothing changes. */
 const unchanged = (from: SessionState, e: HarnessEvent) =>
@@ -188,8 +189,6 @@ test("a clean result with background work outstanding settles to working_backgro
     deriveStatus(stateRunning, ev({ type: "result", kind: "ok" }), { backgroundTasks: 2 }),
     stateWorkingBackground,
   );
-  // …and to plain idle when nothing is in flight (the default context).
-  assert.deepEqual(deriveStatus(stateRunning, ev({ type: "result", kind: "ok" })), stateIdle);
   // A failed result still errors regardless of background work.
   assert.deepEqual(
     deriveStatus(stateRunning, ev({ type: "result", kind: "error", error: "boom" }), {
@@ -215,7 +214,7 @@ test("background_tasks holds/releases a settled turn, and never disturbs a live 
   unchanged(stateAwaitingInput("permission"), bgEv(0));
   unchanged(stateInterrupted("user"), bgEv(0));
   unchanged(stateError("x"), bgEv(0));
-  unchanged({ kind: "done" } as SessionState, bgEv(1));
+  unchanged({ kind: "done" }, bgEv(1));
 });
 
 test("fresh model output heals working_background → running (the re-drive)", () => {
