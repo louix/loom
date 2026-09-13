@@ -956,14 +956,12 @@ nodeTest(
         provider: "fake",
         prompt: "ask a question",
       });
-      provider
-        .session(session.id)!
-        .emit({
-          type: "question",
-          id: "pending-question",
-          question: "Which branch?",
-          context: "Choose a target",
-        });
+      provider.session(session.id)!.emit({
+        type: "question",
+        id: "pending-question",
+        question: "Which branch?",
+        context: "Choose a target",
+      });
       await waitFor(() => requestsOf(c, session.id).length === 1);
       const before = requestsOf(c, session.id);
       let reconnected = false;

@@ -688,7 +688,7 @@ gitignored:
 To enable the repository pre-commit checks locally:
 
 ```sh
-git config core.hooksPath .githooks
+deno task prepare
 ```
 
 The hook runs `deno task format:check` and `deno task lint`.
