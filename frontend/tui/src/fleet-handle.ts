@@ -892,6 +892,8 @@ export const mkFleetHandle = ({
         return void switchEffort();
       case "provider":
         return void pickProviderModelForSession();
+      case "filter":
+        return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
       case "theme":
         return void dispatch({ t: "toggleTheme" });
       case "restart":
@@ -987,9 +989,6 @@ export const mkFleetHandle = ({
         t: "prompt",
         prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
       });
-    }
-    if (name === "filter") {
-      return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
     }
     if (name === "find") {
       // The fleet filter — an inline single-line query on the FLEET pane, not a

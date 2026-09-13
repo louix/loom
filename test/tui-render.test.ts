@@ -3151,3 +3151,26 @@ test("Detail keeps ChatGPT model limits visible on separate rows", async () => {
     );
   assert.equal(rows.filter((row) => /codex|gpt-6-astra/.test(row)).length, 3);
 });
+
+test("v cycles EVENTS verbosity and the palette can change it too", async () => {
+  const { stdout, stdin, app, settle } = await mountFleet([snap({ title: "filter test" })]);
+  try {
+    assert.match(stdout.last, /EVENTS[^\n]*full/);
+    for (const tag of ["chat", "chat+tools", "full"]) {
+      stdin.feed("v");
+      await settle();
+      const header = stdout.last.split("\n").find((line) => line.includes("EVENTS"));
+      assert.equal(header?.match(/EVENTS\s+(chat\+tools|chat|full)\b/)?.[1], tag, header);
+    }
+    stdin.feed(" ");
+    await settle();
+    stdin.feed("verbosity");
+    await settle();
+    stdin.feed("\r");
+    await settle();
+    assert.match(stdout.last, /EVENTS[^\n]*chat/);
+    assert.doesNotMatch(stdout.last, /COMMANDS/);
+  } finally {
+    app.unmount();
+  }
+});

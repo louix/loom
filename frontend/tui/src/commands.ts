@@ -4,7 +4,7 @@ import type { KeyLike } from "./editor.ts";
 const globalCommands = {
   new: ["n", "new"],
   find: ["/", "find"],
-  filter: ["v", "filter"],
+  filter: ["v", "verbosity"],
   help: ["?", "help"],
   quit: ["q", "quit"],
   doctor: ["", "doctor — tools, connectors, daemon"],

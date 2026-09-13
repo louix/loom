@@ -103,6 +103,9 @@ you can see what you type.
 | `/`        | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text; matched in the daemon, so sessions this TUI has never opened are found too); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
 | `q` / `⌃c` | quit the UI — the daemon keeps running                                                                                                                                                                                               |
 
+`v` cycles EVENTS verbosity: `full` → `chat` → `chat+tools` → `full`.
+The same action is available as **verbosity** in the Space command palette.
+
 ## In the prompt
 
 Reply prompts — send, answer, deny, rename, discuss, compact — draw on the
