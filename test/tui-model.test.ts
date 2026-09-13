@@ -66,7 +66,7 @@ import {
   type Transcript,
   type LogLine,
 } from "@loom/tui/transcript";
-import { detailLayout, promptPaneRows, promptRows } from "@loom/tui/components";
+import { promptPaneRows, promptRows } from "@loom/tui/components";
 import { buffer } from "@loom/tui/editor";
 import {
   discussPrompt,
@@ -435,24 +435,6 @@ test("fleetHits shifts every row down when the filter box is open", () => {
   const before = fleetHits(s, geom).find((h) => h.kind === "session")!.y;
   const after = fleetHits({ ...s, find: openFind() }, geom).find((h) => h.kind === "session")!.y;
   assert.equal(after - before, 2, "the marginTop + the InputLine push the list down");
-});
-
-test("detail layout points at the Detail status row's chip cell", () => {
-  const plain = snap({ id: "p", status: "idle", mode: "default" });
-  const hit = detailLayout(plain, { width: 80 }).hits({ x: 1, y: 2 })[0];
-  assert.ok(hit);
-  // border + DETAIL header + title + the status row's marginTop.
-  assert.equal(hit!.y, 6);
-  assert.ok(hit!.x0 > 1 && hit!.x1 >= hit!.x0);
-
-  // account + fork lines each push the status row down one.
-  const forked = snap({ id: "f", status: "idle", parentId: "p", forkTurn: 3 });
-  const fh = detailLayout(forked, { width: 80, account: "x (y)" }).hits({ x: 1, y: 2 })[0];
-  assert.equal(fh!.y, 8);
-
-  assert.deepEqual(detailLayout(null, { width: 80 }).hits({ x: 1, y: 2 }), []);
-  // a pane too narrow to fit the chip drops the region.
-  assert.deepEqual(detailLayout(plain, { width: 8 }).hits({ x: 1, y: 2 }), []);
 });
 
 test("visibleLog: the main view hides child-tagged frames; a focused child narrows to them", () => {
@@ -2723,47 +2705,6 @@ test("defaultModeOf reads the daemon's remembered mode, not per-provider", () =>
 // ---------------------------------------------------------------------------
 // layout budgets — the frame must never exceed the terminal (see deriveView)
 // ---------------------------------------------------------------------------
-
-test("detail layout counts the Detail pane's physical rows, conditional lines included", () => {
-  assert.equal(detailLayout(null).height, 4); // borders + "DETAIL" + the select hint
-  assert.equal(detailLayout(snap({ id: "a", status: "idle" })).height, 10);
-
-  // A claude chat mid-flight: profile line, fork lineage, compaction, warm
-  // cache, plan windows, commit subject, queued message, sub-agents, bg tasks.
-  const full = snap({
-    id: "c",
-    status: "running",
-    parentId: "p",
-    forkTurn: 3,
-    git: {
-      branch: "loom/x",
-      commits: 2,
-      aheadOfBase: 1,
-      behindBase: 0,
-      dirty: true,
-      lastCommitSubject: "add flag",
-    },
-    rateLimits: { five_hour: { status: "allowed", utilization: 0.4 } },
-    cache: {
-      ttlMinutes: 5,
-      ttlSource: "observed",
-      lastTurnAt: Date.now(),
-      lastRead: 2,
-      lastWrite: 1,
-    },
-    subagents: [{ id: "sa", name: "scout", active: true }],
-    backgroundTasks: [{ id: "bt", kind: "shell", title: "tail log" }],
-  });
-  const rows = detailLayout(full, {
-    account: "claude pro (acme)",
-    compacting: { startedAt: Date.now(), before: 90_000 },
-    queued: ["follow up"],
-  }).height;
-  assert.equal(rows, 19);
-  // The layout used to hardcode 13 here — a session like this overflowed the
-  // body by 6 rows and pushed the top bar off the alt screen.
-  assert.ok(rows > 13, "a full claude Detail exceeds the old hardcoded budget");
-});
 
 test("promptRows budgets the footer notice row in browse, never in a prompt", () => {
   assert.equal(promptRows(initialState(), 100), 2);

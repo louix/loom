@@ -69,34 +69,66 @@ test("shortcuts resolve the current decision and bind session commands to their 
   assert.equal(keyCommand(commandHints(state), "", { tab: true, shift: true }), "mode");
 });
 
-test("detail height and click regions agree with rendered rows, including expired limits", () => {
-  for (const width of [40, 80, 120]) {
-    const layout = detailLayout(
-      snap({
-        parentId: "parent",
-        forkTurn: 2,
-        mode: "default",
-        costUsd: 1,
-        costSource: "provider",
-        resumable: false,
-        resumeBlockedReason: "A long explanation that wraps over several rows on a narrow screen.",
-        rateLimits: { five_hour: { status: "allowed", resetsAt: 100, utilization: 0.5 } },
-      }),
-      { width, account: "personal account", queued: ["next task"] },
-    );
-    for (const now of [50, 150]) {
-      const lines = stripVTControlCharacters(renderToString(layout.render(now), { columns: width }))
-        .trimEnd()
-        .split("\n");
-      assert.equal(lines.length, layout.height, `height at ${width} columns, time ${now}`);
-      assert.ok(
-        lines.some((line) => line.includes("$1.00")),
-        "cost suffix remains readable",
-      );
-      const hit = layout.hits({ x: 0, y: 0 })[0]!;
-      assert.equal(lines[hit.y]!.slice(hit.x0, hit.x1 + 1), "mode [manual]");
+test("detail budgets and click regions match rendered panes across widths and expiry", () => {
+  const plain = snap({ mode: "default" });
+  const full = snap({
+    status: "running",
+    parentId: "parent",
+    forkTurn: 2,
+    mode: "default",
+    costUsd: 1,
+    costSource: "provider",
+    resumable: false,
+    resumeBlockedReason: "A long explanation that wraps over several rows on a narrow screen.",
+    rateLimits: { five_hour: { status: "allowed", resetsAt: 100, utilization: 0.5 } },
+    git: {
+      branch: "loom/x",
+      commits: 2,
+      aheadOfBase: 1,
+      behindBase: 0,
+      dirty: true,
+      lastCommitSubject: "add flag",
+    },
+    cache: { ttlMinutes: 5, ttlSource: "observed", lastTurnAt: 1, lastRead: 2, lastWrite: 1 },
+    subagents: [{ id: "sa", name: "scout", active: true }],
+    backgroundTasks: [{ id: "bt", kind: "shell", title: "tail log" }],
+    compacting: { startedAt: 1, before: 90_000, generated: 0 },
+  });
+  const origin = { x: 3, y: 2 };
+  for (const session of [null, plain, full]) {
+    for (const width of [40, 80, 120]) {
+      const layout = detailLayout(session, {
+        width,
+        ...(session === full ? { account: "personal account", queued: ["next task"] } : {}),
+      });
+      for (const now of [50, 150]) {
+        const lines = stripVTControlCharacters(
+          renderToString(layout.render(now), { columns: width }),
+        )
+          .trimEnd()
+          .split("\n");
+        assert.equal(lines.length, layout.height, `height at ${width} columns, time ${now}`);
+        const hits = layout.hits(origin);
+        assert.equal(hits.length, session ? 1 : 0);
+        for (const hit of hits) {
+          assert.equal(
+            lines[hit.y - origin.y]!.slice(hit.x0 - origin.x, hit.x1 - origin.x + 1),
+            "mode [manual]",
+          );
+        }
+        if (session === full)
+          assert.ok(
+            lines.some((line) => line.includes("$1.00")),
+            "cost remains readable",
+          );
+      }
     }
   }
+  assert.deepEqual(
+    detailLayout(plain, { width: 8 }).hits(origin),
+    [],
+    "a clipped chip is not clickable",
+  );
 });
 
 test("one model-selection flow serves new sessions, live sessions, and plans, retaining return context", () => {
