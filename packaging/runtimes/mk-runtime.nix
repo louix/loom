@@ -1,10 +1,11 @@
 # A command MCP artifact contains executable data, never permission grants.
-{ pkgs, package, executable, args ? [], sessionVersion ? null }:
+{ pkgs, package, executable, args ? [], sessionVersion ? null, extraRoots ? [], splitRuntime ? false }:
 let
-  closure = pkgs.closureInfo { rootPaths = [ package ]; };
+  closure = pkgs.closureInfo { rootPaths = [ package ] ++ extraRoots; };
+  imageClosure = if splitRuntime then pkgs.closureInfo { rootPaths = [ package ]; } else closure;
   metadata = pkgs.runCommand "loom-runtime-metadata" {} ''
     mkdir -p $out/opt/loom/runtime
-    cp ${closure}/registration ${closure}/store-paths $out/opt/loom/runtime/
+    cp ${imageClosure}/registration ${imageClosure}/store-paths $out/opt/loom/runtime/
   '';
   guestImage = pkgs.dockerTools.buildLayeredImage {
     name = "loom-${executable}";
@@ -24,6 +25,9 @@ let
     inherit args;
   } // pkgs.lib.optionalAttrs (sessionVersion != null) {
     guestImage = "guest-image.tar";
+  } // pkgs.lib.optionalAttrs splitRuntime {
+    # Bump the epoch for incompatible preparation/restore or store-layout changes.
+    environmentCompatibility = builtins.hashString "sha256" "loom-environment-4:${guestImage}";
   }));
 in pkgs.runCommand "loom-${executable}-runtime" {} ''
   mkdir -p $out/nix/store
@@ -34,7 +38,7 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
   ${pkgs.lib.optionalString (sessionVersion != null) ''
     cp ${guestImage} $out/guest-image.tar
     cp ${closure}/registration $out/registration
-    echo 3 > $out/session-environment-version
+    echo ${if splitRuntime then "4" else "3"} > $out/session-environment-version
   ''}
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json

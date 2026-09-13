@@ -91,11 +91,20 @@ base; distinct custom runtimes keep separate bases. The shared image contains
 provider executables, never provider credentials. Preparation receives no provider
 credentials; each session receives only its selected authentication source and
 has private writable disks, credentials and native provider history.
-Runtime/backend and Nix-store compatibility
-still apply; upgrading Loom's runtime requires rebuilding the matching guest
-runtime and explicitly preparing a compatible base. There is no automatic rebuild
-on every source edit. The `--provider ID` option selects which configured runtime
-prepares the base. This protocol revision requires updated guest runtimes.
+Bundled runtimes keep the guest image and its registered Nix tools separate from
+Loom's application code, which is mounted read-only on each launch. Source-only
+Loom upgrades reuse prepared bases. Compatibility follows the stable guest image
+and an explicit environment-format epoch, plus the host architecture/OS, exact
+smolvm executable identity and writable-Nix setting. Guest OS/tool changes or an
+incompatible environment-format change require preparation again. Custom runtimes
+without the compatibility metadata retain exact artifact matching.
+
+The transition to this layout requires one new preparation; older bases remain
+intact. Changing a repo's development dependencies or preparation command still
+requires explicit preparation to capture those changes. The TUI checks enabled
+VM providers on launch and shows a persistent warning for missing or incompatible
+images, with **Space → Prepare repo environment** as the remedy. It rechecks after
+preparation. No VM is started or image rebuilt by this check.
 
 In the TUI, use **Space → Prepare repo environment**. The CLI owns the terminal
 until preparation finishes; Enter returns to the TUI and Ctrl-C cancels preparation.

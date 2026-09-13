@@ -3,6 +3,7 @@ import { dirname, join, isAbsolute } from "node:path";
 import { link } from "node:fs/promises";
 import type { VmBinding } from "../packaged/vm.ts";
 import { writeRecoveryFile } from "./persistence.ts";
+import { environmentIdentity } from "./environment-identity.ts";
 import { reportStartup } from "./progress.ts";
 
 const diskGiB = { storage: 32, overlay: 8 };
@@ -21,11 +22,10 @@ export const discardSessionDisks = async (home: string) => {
 };
 type Identity = Pick<VmBinding, "artifact" | "smolvm" | "writableNix">;
 export class SavedDiskCompatibilityError extends Error {}
-const identity = (b: Identity) => ({
+const identity = async (b: Identity) => ({
   version: 1,
-  // The immutable artifact includes its guest image. Changing from Alpine to
-  // Debian (or updating Debian) changes this path and invalidates old bases.
-  artifact: b.artifact,
+  // Legacy/custom images retain exact artifact matching.
+  artifact: await environmentIdentity(b.artifact),
   smolvm: b.smolvm,
   host: `${Deno.build.arch}-${Deno.build.os}`,
   writableNix: b.writableNix === true,
@@ -50,7 +50,7 @@ export const readSessionDisks = async (dir: string, b: Identity): Promise<boolea
   const saved = JSON.parse(await Deno.readTextFile(file));
   if (!saved || typeof saved !== "object" || Array.isArray(saved))
     throw new Error("Invalid saved VM disk identity");
-  for (const [key, value] of Object.entries(identity(b))) {
+  for (const [key, value] of Object.entries(await identity(b))) {
     if (saved[key] !== value)
       throw new SavedDiskCompatibilityError(
         "Prepared VM disks require a different runtime or Nix setting. Prepare the environment again.",
@@ -175,7 +175,7 @@ export const saveSessionDisks = async (
         signal,
         diskGiB[stem] * 1024 ** 3,
       );
-    await writeRecoveryFile(staging, "identity.json", identity(b));
+    await writeRecoveryFile(staging, "identity.json", await identity(b));
     // Keep exact OverlayFS lower and backend alive through Nix garbage collection.
     for (const [name, path] of [
       ["runtime", b.artifact],

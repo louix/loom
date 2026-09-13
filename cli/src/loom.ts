@@ -286,6 +286,10 @@ const main = async (): Promise<void> => {
     await runTui(client, {
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
+      checkEnvironment: async () => {
+        const { repoEnvironmentWarning } = await import("./environment.ts");
+        return repoEnvironmentWarning(logRoot);
+      },
       prepareEnvironment: async () => {
         const { prepareEnvironmentInTerminal } = await import("./environment.ts");
         return prepareEnvironmentInTerminal(fileURLToPath(import.meta.url), logRoot);

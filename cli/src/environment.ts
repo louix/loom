@@ -8,9 +8,14 @@ import {
 import { isClaudeId } from "../../core/src/provider-id.ts";
 import { environmentEnabled } from "../../core/src/session-environment.ts";
 import { launchSessionVm } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
-import { repoBaseDirectory, publishRepoBase } from "../../runtime/src/session-vm/repo-base.ts";
+import {
+  repoBaseDirectory,
+  publishRepoBase,
+  hasCompatibleRepoBase,
+} from "../../runtime/src/session-vm/repo-base.ts";
 import { lockSessionState, SessionVmBusyError } from "../../runtime/src/session-vm/persistence.ts";
 import { ipcPermissions } from "../../core/src/network-permissions.ts";
+import { inspectArtifact } from "../../runtime/src/packaged/artifact.ts";
 import { loomPaths } from "../../core/src/paths.ts";
 
 /** Called while Ink has suspended terminal ownership. Keep one CLI output path. */
@@ -103,24 +108,7 @@ const prepareProviderEnvironment = async (repo: string, id: string) => {
   if (!isClaudeId(id) && !config.providers.aisdk[id]) throw new Error(`Unknown provider: ${id}`);
   const policy = environmentPolicy(config, id);
   if (!policy) throw new Error(`Provider ${id} has no configured session VM runtime`);
-  const paths = policy.smolvm.includes("/")
-    ? [resolve(policy.smolvm)]
-    : (Deno.env.get("PATH") ?? "")
-        .split(":")
-        .filter(Boolean)
-        .map((p) => join(p, policy.smolvm));
-  let smolvm: string | undefined;
-  for (const path of paths) {
-    try {
-      if ((await Deno.stat(path)).isFile) {
-        smolvm = await Deno.realPath(path);
-        break;
-      }
-    } catch (e) {
-      if (!(e instanceof Deno.errors.NotFound)) throw e;
-    }
-  }
-  if (!smolvm) throw new Error("Configured smolvm executable was not found");
+  const smolvm = await resolveEnvironmentBackend(policy.smolvm);
   const home = repoBaseDirectory(repo);
   await Deno.mkdir(home, { recursive: true, mode: 0o700 });
   // Separate from the brief publication lock: sessions may clone the old base
@@ -227,5 +215,66 @@ const prepareProviderEnvironment = async (repo: string, id: string) => {
       Deno.removeSignalListener("SIGINT", stop);
       Deno.removeSignalListener("SIGTERM", stop);
     }
+  }
+};
+
+const resolveEnvironmentBackend = async (executable: string): Promise<string> => {
+  const paths = executable.includes("/")
+    ? [resolve(executable)]
+    : (Deno.env.get("PATH") ?? "")
+        .split(":")
+        .filter(Boolean)
+        .map((p) => join(p, executable));
+  let smolvm: string | undefined;
+  for (const path of paths) {
+    try {
+      if ((await Deno.stat(path)).isFile) {
+        smolvm = await Deno.realPath(path);
+        break;
+      }
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) throw e;
+    }
+  }
+  if (!smolvm) throw new Error("Configured smolvm executable was not found");
+  return smolvm;
+};
+
+/** Launch-time preflight: no VM, fetching or preparation; only enabled VM providers. */
+export const repoEnvironmentWarning = async (
+  repo: string,
+  configured?: LoomConfig,
+): Promise<string | null> => {
+  try {
+    const config = configured ?? loadConfig(repo);
+    if (!environmentEnabled(config.isolation.environment)) return null;
+    const missing: string[] = [];
+    for (const id of environmentProviders(config)) {
+      const policy = environmentPolicy(config, id)!;
+      try {
+        const artifact = await Deno.realPath(policy.artifact);
+        const smolvm = await resolveEnvironmentBackend(policy.smolvm);
+        const manifest = await inspectArtifact(artifact);
+        const version = (
+          await Deno.readTextFile(join(artifact, "session-environment-version"))
+        ).trim();
+        if (
+          version !== (manifest.environmentCompatibility ? "4" : "3") ||
+          !(await hasCompatibleRepoBase(repoBaseDirectory(repo), {
+            artifact,
+            smolvm,
+            writableNix: config.isolation.environment?.nix === true,
+          }))
+        )
+          missing.push(id);
+      } catch {
+        missing.push(id);
+      }
+    }
+    return missing.length
+      ? `Environment image missing or out of date (${missing.join(", ")}).`
+      : null;
+  } catch (error) {
+    return `Could not check environment image: ${error instanceof Error ? error.message : String(error)}`;
   }
 };

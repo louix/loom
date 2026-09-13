@@ -162,7 +162,10 @@ export const launchSessionVm = async (
   }
   if (environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "3")
+      if (
+        (await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !==
+        (manifest.environmentCompatibility ? "4" : "3")
+      )
         throw new Error();
     } catch {
       throw new Error(

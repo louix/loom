@@ -3174,3 +3174,52 @@ test("v cycles EVENTS verbosity and the palette can change it too", async () => 
     app.unmount();
   }
 });
+
+test("environment warning stays in the frame and clears only after a compatible preparation", async () => {
+  for (const code of [0, 1, 130]) {
+    const fake = mkFakeClient();
+    fake.deliver(fleetOf());
+    const warning = "Environment image missing or out of date (claude).";
+    const mounted = mount(
+      fake.client,
+      {
+        environmentWarning: warning,
+        prepareEnvironment: async () => code,
+        checkEnvironment: async () => (code === 0 ? null : warning),
+      },
+      { columns: 100, rows: 24 },
+    );
+    try {
+      await waitFor(mounted.stdout, /Environment image missing/);
+      assert.match(mounted.stdout.last, /Prepare repo environment/);
+      assert(mounted.stdout.last.trimEnd().split("\n").length <= 24);
+    } finally {
+      mounted.app.unmount();
+    }
+    const handle = mkFleetHandle({
+      client: fake.client,
+      term: {
+        ...fakeTerm,
+        suspendTerminal: async (fn) => {
+          await fn();
+        },
+      },
+      environmentWarning: warning,
+      prepareEnvironment: async () => code,
+      checkEnvironment: async () => (code === 0 ? null : warning),
+    });
+    const stop = handle.effectStart();
+    try {
+      fake.deliver(fleetOf());
+      assert.equal(handle.getView().environmentWarning, warning);
+      handle.handleKey(" ", {} as Key);
+      handle.handleKey("Prepare repo environment", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      await delay(0);
+      assert.equal(handle.getView().environmentWarning, code === 0 ? null : warning);
+      assert.equal(handle.getView().rows, code === 0 ? 40 : 38);
+    } finally {
+      stop();
+    }
+  }
+});

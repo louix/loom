@@ -29,6 +29,7 @@ export const runTui = async (
     logs?: { daemon: string; tui: string };
     themeState?: string;
     prepareEnvironment?: () => Promise<number>;
+    checkEnvironment?: () => Promise<string | null>;
   } = {},
 ): Promise<void> => {
   try {
@@ -39,9 +40,12 @@ export const runTui = async (
     // the alt screen, which App's keymap reads as fleet-selection movement.
     if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
+    const environmentWarning = (await opts.checkEnvironment?.()) ?? null;
     const instance = render(
       <App
         client={client}
+        environmentWarning={environmentWarning}
+        {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
         {...(opts.prepareEnvironment ? { prepareEnvironment: opts.prepareEnvironment } : {})}

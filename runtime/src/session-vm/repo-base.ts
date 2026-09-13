@@ -10,6 +10,7 @@ import {
   createSessionDisks,
   SavedDiskCompatibilityError,
 } from "./disks.ts";
+import { environmentIdentity } from "./environment-identity.ts";
 import { writeRecoveryFile } from "./persistence.ts";
 
 export const repoBaseDirectory = (repo: string) =>
@@ -20,9 +21,12 @@ export const repoBaseDirectory = (repo: string) =>
       createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32),
     ),
   );
-const selectionFile = (artifact?: string) =>
+const selectionFile = async (artifact?: string) =>
   artifact
-    ? `current-${createHash("sha256").update(artifact).digest("hex").slice(0, 32)}.json`
+    ? `current-${createHash("sha256")
+        .update(await environmentIdentity(artifact))
+        .digest("hex")
+        .slice(0, 32)}.json`
     : "current.json";
 
 export const currentRepoBase = async (
@@ -31,7 +35,7 @@ export const currentRepoBase = async (
 ): Promise<string | undefined> => {
   let value;
   try {
-    value = JSON.parse(await Deno.readTextFile(join(home, selectionFile(artifact))));
+    value = JSON.parse(await Deno.readTextFile(join(home, await selectionFile(artifact))));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       // Existing single-runtime preparations remain usable after upgrading.
@@ -39,7 +43,7 @@ export const currentRepoBase = async (
         const legacy = await currentRepoBase(home);
         if (legacy) {
           const identity = JSON.parse(await Deno.readTextFile(join(legacy, "disks/identity.json")));
-          if (identity.artifact === artifact) return legacy;
+          if (identity.artifact === (await environmentIdentity(artifact))) return legacy;
         }
       }
       return;
@@ -141,7 +145,7 @@ export const publishRepoBase = async (
     signal.throwIfAborted();
     await writeRecoveryFile(
       home,
-      selectionFile(artifact),
+      await selectionFile(artifact),
       { directory: basename(candidate) },
       signal,
     );

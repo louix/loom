@@ -49,6 +49,8 @@ export const App = ({
   logs,
   themeState,
   prepareEnvironment,
+  environmentWarning,
+  checkEnvironment,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
   historyPageSize,
@@ -59,6 +61,8 @@ export const App = ({
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
   prepareEnvironment?: () => Promise<number>;
+  environmentWarning?: string | null;
+  checkEnvironment?: () => Promise<string | null>;
   openEditor?: EditorHandoff;
   /** Test seam: rows per durable-history page (see {@link mkFleetHandle}). */
   historyPageSize?: number;
@@ -82,6 +86,8 @@ export const App = ({
       },
       ...(logs ? { logs } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),
+      ...(environmentWarning ? { environmentWarning } : {}),
+      ...(checkEnvironment ? { checkEnvironment } : {}),
       ...(themeState ? { themeState } : {}),
       ...(openEditorOverride ? { openEditorOverride } : {}),
       ...(historyPageSize !== undefined ? { historyPageSize } : {}),
@@ -234,7 +240,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
     <Box
       flexDirection="column"
       width={cols}
-      height={view.rows}
+      height={view.rows + (view.environmentWarning ? 2 : 0)}
       overflow="hidden"
       backgroundColor={C.bg}
     >
@@ -249,6 +255,16 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
         />
       ) : null}
       <InputArea view={view} handle={handle} width={cols} />
+      {view.environmentWarning && (
+        <Box height={2} flexShrink={0} flexDirection="column">
+          <Text color={C.warn} wrap="truncate">
+            {view.environmentWarning}
+          </Text>
+          <Text color={C.warn} wrap="truncate">
+            Space → Prepare repo environment · loom environment prepare
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 };

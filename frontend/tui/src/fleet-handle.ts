@@ -200,6 +200,7 @@ export type BodyKind =
   | { t: "sessionPane" };
 /** Layout and UI coordination only. Feature values stay in their handles. */
 export interface FleetView {
+  readonly environmentWarning?: string | null;
   readonly ui: TuiState;
   readonly fleetLayout: FleetLayout;
   readonly detail: DetailLayout;
@@ -275,6 +276,8 @@ export interface MkFleetHandleInput {
    *  restarts. Absent in tests, where nothing touches disk. */
   readonly themeState?: string;
   readonly prepareEnvironment?: () => Promise<number>;
+  readonly environmentWarning?: string | null;
+  readonly checkEnvironment?: () => Promise<string | null>;
   /** Test seam: stands in for the real `$EDITOR` handoff. */
   readonly openEditorOverride?: EditorHandoff;
   /** Test seam: rows per durable-history page (default 500). Lets a test drive
@@ -469,6 +472,8 @@ export const mkFleetHandle = ({
   logs,
   themeState,
   prepareEnvironment,
+  environmentWarning: initialEnvironmentWarning,
+  checkEnvironment,
   openEditorOverride,
   historyPageSize,
 }: MkFleetHandleInput): FleetHandle => {
@@ -480,6 +485,7 @@ export const mkFleetHandle = ({
   const savedTheme = themeState ? loadPersistedTheme(themeState) : null;
   if (savedTheme) setThemeMode(savedTheme);
   let state = initialState();
+  let environmentWarning = initialEnvironmentWarning ?? null;
   /** Whether the daemon has given us a snapshot to act on. The single source
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
@@ -581,16 +587,18 @@ export const mkFleetHandle = ({
     pageRows: () => store.get().logPage,
   });
 
-  const view = (): FleetView =>
-    deriveView(
+  const view = (): FleetView => ({
+    environmentWarning,
+    ...deriveView(
       state,
       searches.get(),
       pending(outboxOf(composer.get(), state.selectedId)),
       pendingMode(modes.get(), state.selectedId),
       planScroll,
       layoutView,
-      dims,
-    );
+      { ...dims, rows: dims.rows - (environmentWarning ? 2 : 0) },
+    ),
+  });
   const store = mkStore(view());
   const publish = (): void => {
     const frame = animation.get();
@@ -766,6 +774,7 @@ export const mkFleetHandle = ({
       let code = 1;
       await term.suspendTerminal(async () => {
         code = await prepareEnvironment();
+        if (checkEnvironment) environmentWarning = await checkEnvironment();
       });
       let message = "Environment preparation failed";
       if (code === 0) message = "Repo environment prepared";

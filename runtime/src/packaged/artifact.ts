@@ -12,6 +12,8 @@ export interface RuntimeManifest {
   closureFormat?: "erofs";
   /** A package-owned Docker archive, unpacked inside the VM on both hosts. */
   guestImage?: "guest-image.tar";
+  /** Stable guest image + environment format identity; code is mounted separately. */
+  environmentCompatibility?: string;
 }
 export interface RuntimeLock {
   version: 1;
@@ -47,7 +49,11 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
     !Array.isArray(v.args) ||
     !v.args.every((a) => typeof a === "string" && !a.includes("\0")) ||
     (v.closureFormat !== undefined && v.closureFormat !== "erofs") ||
-    (v.guestImage !== undefined && v.guestImage !== "guest-image.tar")
+    (v.guestImage !== undefined && v.guestImage !== "guest-image.tar") ||
+    (v.environmentCompatibility !== undefined &&
+      (typeof v.environmentCompatibility !== "string" ||
+        !/^[a-f0-9]{64}$/.test(v.environmentCompatibility) ||
+        !v.guestImage))
   ) {
     throw new Error(
       "Invalid runtime manifest (expected version 1, smolvm, store executable and string args)",
@@ -65,6 +71,7 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
           "args",
           "closureFormat",
           "guestImage",
+          "environmentCompatibility",
         ].includes(k),
     )
   ) {

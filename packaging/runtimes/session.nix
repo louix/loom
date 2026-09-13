@@ -20,6 +20,14 @@ let
     export NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE
     export PATH=${pkgs.lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.curl pkgs.nix pkgs.git pkgs.gnutar pkgs.xz pkgs.deno pkgs.claude-code pkgs.codex ]}
     exec ${pkgs.deno}/bin/deno run -A --cached-only --node-modules-dir=manual \
-      ${loom}/libexec/loom/runtime/src/session-vm/guest.ts
+      "$@"
   '';
-in import ./mk-runtime.nix { inherit pkgs package; executable = "loom-session"; sessionVersion = 2; }
+in import ./mk-runtime.nix {
+  inherit pkgs package;
+  executable = "loom-session";
+  sessionVersion = 2;
+  args = [ "${loom}/libexec/loom/runtime/src/session-vm/guest.ts" ];
+  extraRoots = [ loom ];
+  # Only stable tools enter the guest image. Loom code is mounted per launch.
+  splitRuntime = true;
+}

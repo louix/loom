@@ -42,6 +42,30 @@ export const stageGuestImage = async (b: VmBinding) => {
   await Deno.utime(target, 1, 1);
 };
 const runtimeCommand = (b: VmBinding) => {
+  if (b.manifest.environmentCompatibility) {
+    // The image and its registered Nix closure stay fixed across Loom upgrades.
+    // Current code is another read-only lower layer, never saved in the base.
+    const script = [
+      "set -eu",
+      "mkdir -p /run/loom/store-base /run/loom/store-code",
+      "mount --bind /nix/store /run/loom/store-base",
+      b.manifest.closureFormat === "erofs"
+        ? "mount -t erofs -o loop,ro /run/loom/code/runtime.erofs /run/loom/store-code"
+        : "mount --bind /run/loom/code/nix/store /run/loom/store-code",
+      "ln -sfn /opt/loom/runtime /run/loom/runtime",
+      ...(b.writableNix
+        ? [
+            "mkdir -p /storage/loom-nix/upper /storage/loom-nix/work /storage/loom-nix/var /storage/loom-nix/tmp /nix/var",
+            "mount -t overlay overlay -o lowerdir=/run/loom/store-code:/run/loom/store-base,upperdir=/storage/loom-nix/upper,workdir=/storage/loom-nix/work /nix/store",
+            "mount --bind /storage/loom-nix/var /nix/var",
+          ]
+        : [
+            "mount -t overlay overlay -o ro,lowerdir=/run/loom/store-code:/run/loom/store-base /nix/store",
+          ]),
+      'exec "$@"',
+    ].join("; ");
+    return ["/bin/sh", "-c", script, "loom-runtime", b.manifest.entrypoint, ...b.manifest.args];
+  }
   let mount: string | undefined;
   if (b.writableNix) {
     const lower = b.manifest.guestImage ? "/nix/store" : "/run/loom/runtime/nix/store";
@@ -144,6 +168,7 @@ export const vmArguments = (b: VmBinding) => {
             ? `${b.artifact}:/run/loom/runtime:ro`
             : `${b.artifact}/nix/store:/nix/store:ro`,
         ]),
+    ...(b.manifest.environmentCompatibility ? ["-v", `${b.artifact}:/run/loom/code:ro`] : []),
     ...(b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}`]),
     "-w",
     b.workspace,
