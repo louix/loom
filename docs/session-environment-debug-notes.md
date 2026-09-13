@@ -195,3 +195,38 @@ The external-worktree device limit is still a backend limitation; this follow-up
 makes its cause visible but does not increase the backend's IRQ capacity. The Nix
 profile still points at the shared-image build listed above; the usability changes
 have been verified from source and are not yet installed in that profile.
+
+## pnpm native-addon follow-up — 2026-09-13
+
+- `3b7b8cb` removes the misleading selected-provider name from preparation output:
+  it now says `Preparing session environment for <repo> at <revision>`.
+- Reproduced the reported node-gyp 12.3.0 `TAR_ENTRY_ERROR EPERM: fchown` using
+  Nix-provided pnpm 11.25.0 in a credential-free VM. pnpm's default root lifecycle
+  mode replaces `TMPDIR` with the dependency's host-mounted `node_modules/.tmp`.
+  node-gyp extracts headers there and tar tries to apply archive ownership, which
+  virtiofs rejects. Guest `/tmp` and `/storage` support ownership changes.
+- Setting `pnpm_config_unsafe_perm=true` preserved `/storage/loom-nix/tmp` and the
+  same header extraction succeeded. Evidence: `/tmp/loom-pnpm-header-probe.log`
+  contains default exit 1 with `fchown`, then fixed exit 0. pnpm 11 uses its own
+  `pnpm_config_` prefix; retain `npm_config_` as well for older pnpm versions.
+- Guest bootstrap now sets both spellings and preserves them after restoring an
+  environment. This affects guest package-script execution, not host permissions,
+  VM mounts, provider credentials, or build-script approval lists.
+- Added `scripts/test-pnpm-environment-vm.ts`: a disposable repo with Nix-provided
+  pnpm, Python and compiler tools, plain `pnpm install`, and an actual
+  `cpu-features` addon load. A local dependency explicitly runs `node-gyp install`
+  to exercise downloaded-header extraction even when Nix Node automatically
+  supplies local headers for compilation. The regression requires a
+  header-download log entry.
+- The corrected guest build is available at `/tmp/loom-pnpm-fixed-package-v2`,
+  pointing to `/nix/store/yj49jlq6r503ij6xvcwrji5i1vhkijv2-loom-0.0.0-g3b7b8cb-dirty`.
+  Registry: `/nix/store/clg4drgw7x02ww4zp92lxgi8r4plm2y7-loom-bundled-runtimes.json`.
+  The final fixture passed in `/tmp/loom-pnpm-regression-final.log`: plain pnpm
+  install downloaded and extracted Node 24.19.0 headers via its dependency script,
+  compiled `cpu-features`, and loaded the addon (`LOOM_NATIVE_ADDON_OK x86`).
+  Preparation exited successfully and the fixture cleaned up. Earlier fixture runs
+  either hit cold-boot failures or used local Nix headers; those are not evidence
+  that downloaded-header installation works.
+- The 13 targeted environment/startup tests, full typecheck (plus checks after
+  final fixture adjustments), and changed-file lint passed. The tested package
+  was built but has not replaced the user's installed Nix profile.

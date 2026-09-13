@@ -114,6 +114,13 @@ whose ownership differs from the guest user. Nix's cache and store contents rema
 in the prepared guest base. Non-VM sessions keep using their normal host
 package-cache settings. Configured network presets apply to preparation, init and agents.
 
+The guest preserves its temporary directory for pnpm install scripts by setting
+`pnpm_config_unsafe_perm=true` (and the older `npm_config_unsafe_perm` spelling).
+Otherwise pnpm's root-user mode redirects temporary
+files into the host-mounted `node_modules` tree, where node-gyp cannot apply
+tarball ownership (`EPERM: fchown`). This setting applies inside the session VM;
+plain `pnpm install` needs no additional flags.
+
 For pnpm, an init command can explicitly select a shared store and copy imports:
 
 ```toml
@@ -175,6 +182,8 @@ deno run -A scripts/test-prepared-environment-vm.ts /path/to/aisdk-runtime /path
 deno run -A scripts/test-prepared-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm --nix
 # Heavier fixture: this repository's actual Nix development shell.
 deno run -A scripts/test-session-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm
+# Native addon compilation with Nix-provided pnpm and a mounted worktree.
+deno run -A scripts/test-pnpm-environment-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
 Apple Silicon disk cloning and runtime hash regeneration need validation on a Mac.

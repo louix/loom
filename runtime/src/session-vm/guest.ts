@@ -27,6 +27,11 @@ for (const [key, path] of Object.entries({
   await Deno.mkdir(path, { recursive: true });
   Deno.env.set(key, path);
 }
+// pnpm's root-user lifecycle mode otherwise moves TMPDIR into node_modules.
+// Keep extraction on guest storage: virtiofs cannot apply tarball ownership.
+// Package scripts already run inside this session's VM as the guest user.
+Deno.env.set("npm_config_unsafe_perm", "true");
+Deno.env.set("pnpm_config_unsafe_perm", "true");
 const auth = sessionAuth(JSON.parse(await Deno.readTextFile("/run/loom/private/auth.json")));
 Deno.env.set("CLAUDE_CONFIG_DIR", "/tmp/loom-home/.claude");
 Deno.env.set("CLAUDE_CODE_PROJECT_DIR_NAME", "loom-session");
@@ -110,6 +115,8 @@ const prepare = async (output?: "inherit") => {
         "XDG_CACHE_HOME",
         "XDG_DATA_HOME",
         "npm_config_cache",
+        "npm_config_unsafe_perm",
+        "pnpm_config_unsafe_perm",
         "PIP_CACHE_DIR",
         "UV_CACHE_DIR",
         "DENO_NO_UPDATE_CHECK",
