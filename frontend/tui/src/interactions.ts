@@ -180,6 +180,17 @@ export const formatQuestionsForEditor = (qs: AskUserQuestionItem[]): string =>
     .join("\n\n")
     .concat("\n");
 
+/** Resolve only complete letter selections; prose and unknown letters stay verbatim.
+ *  The model supplied option labels, but the TUI alone added the a), b), … tags. */
+const resolveOptionLetters = (q: AskUserQuestionItem, answer: string): string => {
+  const selection = answer.trim();
+  if (!/^[a-z][).]?(?:\s*(?:,|\/|\band\b)\s*[a-z][).]?)*$/i.test(selection)) return answer;
+  const letters = selection.toLowerCase().split(/\s*(?:,|\/|\band\b)\s*/);
+  const options = letters.map((letter) => q.options[letter.charCodeAt(0) - 97]);
+  if (options.some((option) => !option)) return answer;
+  return options.map((option) => option!.label).join(", ");
+};
+
 // ---- decisions -------------------------------------------------------------
 
 /**
@@ -215,9 +226,14 @@ export const decisionCall = (
     case "answers": {
       const raw = d.request?.kind === "user_question" ? d.request.input : undefined;
       const base = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+      const answers = { ...d.answers };
+      for (const q of parseAskUserQuestions(raw)) {
+        const answer = answers[q.question];
+        if (answer !== undefined) answers[q.question] = resolveOptionLetters(q, answer);
+      }
       return {
         method: "session.respondPermission",
-        params: { ...on, decision: "allow", updatedInput: { ...base, answers: d.answers } },
+        params: { ...on, decision: "allow", updatedInput: { ...base, answers } },
       };
     }
   }

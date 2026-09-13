@@ -110,6 +110,10 @@ selected session's EVENTS pane (label, then the input under its transcript), so
 you can see the agent you're typing at; the footer keeps their hints row. The
 sessionless `new` prompt stays in the footer.
 
+For lettered questions, enter a letter (`b` or `b)`) or a list (`a, c`,
+`a and c`, or `a/c`). The TUI sends the corresponding option labels to the
+agent. Free-form replies are also accepted and sent as typed.
+
 `Ctrl` carries the readline motions and nothing else:
 
 | key                              | motion                                                                                                                           |
