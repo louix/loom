@@ -22,6 +22,8 @@ export const rateLimitEvents = (
     const snapshot = record(value);
     if (!snapshot) continue;
     const id = typeof snapshot["limitId"] === "string" ? snapshot["limitId"] : key;
+    // The usage endpoint reports Spark under its internal bucket name.
+    const label = id === "codex_bengalfox" ? "codex_5.3-spark" : id;
     for (const slot of ["primary", "secondary"] as const) {
       const window = record(snapshot[slot]);
       const used = window?.["usedPercent"];
@@ -41,7 +43,7 @@ export const rateLimitEvents = (
         type: "rate_limit",
         sessionId,
         ts,
-        window: `${id} ${duration}`,
+        window: `${label} ${duration}`,
         utilization: used,
         status,
         ...(typeof reset === "number" && Number.isFinite(reset) && reset > 0
