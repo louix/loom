@@ -200,6 +200,7 @@ export const approvalsReviewerFor = (mode: SessionMode): "user" | "auto_review" 
 
 export class CodexAppServerSession implements AgentSession {
   readonly id: string;
+  readonly #networkAccess: boolean;
   readonly #rpc: CodexRpcClient;
   #events = new AsyncChannel<HarnessEvent>();
   readonly #pending = new PendingInteractions<PermissionDecision, PlanDecision>();
@@ -287,8 +288,10 @@ export class CodexAppServerSession implements AgentSession {
     proc: ChildProcessWithoutNullStreams,
     base: string | undefined,
     dispatch: ToolDispatcher,
+    networkAccess: boolean,
   ) {
     this.id = opts.sessionId;
+    this.#networkAccess = networkAccess;
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
     this.#mode = opts.mode;
@@ -320,12 +323,13 @@ export class CodexAppServerSession implements AgentSession {
     base?: string,
     launch: CodexLauncher = spawnCodex,
     dispatch: ToolDispatcher = localToolDispatcher,
+    networkAccess = false,
   ): Promise<CodexAppServerSession> {
     // Replacing the complete table prevents ~/.codex/config.toml MCP entries
     // from leaking into a Loom-controlled session.
     const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
     const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
-    const s = new CodexAppServerSession(opts, proc, base, dispatch);
+    const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
       const started = await s.#rpc.requestStartup("thread/start", {
@@ -334,6 +338,7 @@ export class CodexAppServerSession implements AgentSession {
         approvalPolicy: policyFor(opts.mode),
         approvalsReviewer: approvalsReviewerFor(opts.mode),
         sandbox: sandboxFor(opts.mode),
+        config: { "sandbox_workspace_write.network_access": networkAccess },
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(opts.systemPromptAppend ? { developerInstructions: opts.systemPromptAppend } : {}),
         ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
@@ -361,6 +366,7 @@ export class CodexAppServerSession implements AgentSession {
     base?: string,
     launch: CodexLauncher = spawnCodex,
     dispatch: ToolDispatcher = localToolDispatcher,
+    networkAccess = false,
   ): Promise<CodexAppServerSession> {
     if (!ref.providerRef) throw new Error("Codex session has no app-server thread id to resume");
     const opts: CreateSessionOptions = {
@@ -375,7 +381,7 @@ export class CodexAppServerSession implements AgentSession {
     };
     const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
     const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
-    const s = new CodexAppServerSession(opts, proc, base, dispatch);
+    const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
       s.#usageBaseline = null;
@@ -386,6 +392,7 @@ export class CodexAppServerSession implements AgentSession {
         approvalPolicy: policyFor(opts.mode),
         approvalsReviewer: approvalsReviewerFor(opts.mode),
         sandbox: sandboxFor(opts.mode),
+        config: { "sandbox_workspace_write.network_access": networkAccess },
         excludeTurns: true,
         ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
         // No `dynamicTools` here: the generated `ThreadResumeParams` binding
@@ -797,11 +804,11 @@ export class CodexAppServerSession implements AgentSession {
     return this.#sandboxPolicyFor(this.#mode);
   }
   #sandboxPolicyFor(mode: SessionMode): Record<string, unknown> {
-    if (mode === "plan") return { type: "readOnly", networkAccess: false };
+    if (mode === "plan") return { type: "readOnly", networkAccess: this.#networkAccess };
     return {
       type: "workspaceWrite",
       writableRoots: [this.#cwd],
-      networkAccess: false,
+      networkAccess: this.#networkAccess,
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false,
     };

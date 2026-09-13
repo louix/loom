@@ -1,10 +1,14 @@
+import type { ConnectorContext } from "../../../core/src/connector.ts";
 import { makeLogger } from "../../../core/src/logger.ts";
 import { serveWorker } from "./serve.ts";
 
 // Static worker-only imports. Add a connector here when its migration is ready.
 import { armWorkerShutdown, exitWorker } from "./shutdown.ts";
 
-export const runWorker = async (beforeInitialize: () => Promise<void> = async () => {}) => {
+export const runWorker = async (
+  beforeInitialize: () => Promise<void> = async () => {},
+  executionEnvironment: ConnectorContext["executionEnvironment"] = "host",
+) => {
   await serveWorker(
     Deno.stdin.readable,
     Deno.stdout.writable,
@@ -21,6 +25,7 @@ export const runWorker = async (beforeInitialize: () => Promise<void> = async ()
       return createProvider({
         id: binding.providerId,
         config: binding.config,
+        executionEnvironment,
         transcript,
         logger: makeLogger("worker"),
         ...(binding.baseBranch ? { baseBranch: binding.baseBranch } : {}),

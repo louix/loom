@@ -187,3 +187,18 @@ deno run -A scripts/test-pnpm-environment-vm.ts /path/to/session-runtime /path/t
 ```
 
 Apple Silicon disk cloning and runtime hash regeneration need validation on a Mac.
+
+### Package-manager networking
+
+The guest exports HTTP(S) proxy variables and `NODE_USE_ENV_PROXY=1` during
+preparation and session startup, including after restoring a prepared environment.
+Node/Corepack need this opt-in to use the proxy (Node 24.5+ or 22.21+); older
+Node versions need their own proxy support. Direct guest DNS/network access is
+unavailable.
+
+VM-backed Codex sessions permit network access within their filesystem sandbox so
+commands can reach the guest proxy. Loom's host proxy still enforces the selected
+network presets and exact extra hosts on HTTPS port 443. Host Codex sessions keep
+network access disabled. Changing package installation from environment preparation
+to an init hook does not itself fix networking; it installs dependencies in the
+conversation's worktree.

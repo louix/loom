@@ -1954,3 +1954,67 @@ test("Codex usage counts deltas, ignores duplicates and other threads, and resum
     }
   }
 });
+
+test("Codex VM network access survives turns, mode changes and resume; host stays offline", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loom-network-"));
+  const log = join(root, "requests.jsonl");
+  Deno.env.set("LOOM_TEST_REQUEST_LOG", log);
+  try {
+    for (const executionEnvironment of ["host", "session-vm"] as const) {
+      await writeFile(log, "");
+      const provider = createProvider({
+        id: "chatgpt",
+        executionEnvironment,
+        config: { codexCliPath: FAKE_CODEX, configDir: root },
+        logger: makeLogger("test"),
+      });
+      const opts = {
+        sessionId: "network",
+        cwd: root,
+        prompt: "",
+        mode: "default" as const,
+        mcpServers: [],
+      };
+      let session = await provider.createSession(opts);
+      const providerRef = session.providerRef!;
+      try {
+        for (const mode of ["plan", "acceptEdits", "auto", "default"] as const) {
+          await session.setMode!(mode);
+          await session.send("check");
+          for await (const event of session.events()) if (event.type === "result") break;
+        }
+      } finally {
+        await session.close();
+      }
+      session = await provider.resumeSession({ sessionId: opts.sessionId, cwd: root, providerRef });
+      try {
+        await session.send("resumed");
+        for await (const event of session.events()) if (event.type === "result") break;
+      } finally {
+        await session.close();
+      }
+      const requests = (await readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const allowed = executionEnvironment === "session-vm";
+      const starts = requests.filter((r) => ["thread/start", "thread/resume"].includes(r.method));
+      assert.equal(starts.length, 2);
+      for (const { params } of starts)
+        assert.equal(params.config["sandbox_workspace_write.network_access"], allowed);
+      const policies = requests.filter((r) =>
+        ["turn/start", "thread/settings/update"].includes(r.method),
+      );
+      assert.equal(policies.length, 9);
+      for (const { params } of policies) {
+        assert.equal(params.sandboxPolicy.networkAccess, allowed);
+        if (params.sandboxPolicy.type === "workspaceWrite")
+          assert.deepEqual(params.sandboxPolicy.writableRoots, [root]);
+        else assert.equal(params.sandboxPolicy.type, "readOnly");
+      }
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_REQUEST_LOG");
+    await rm(root, { recursive: true, force: true });
+  }
+});

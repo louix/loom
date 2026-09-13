@@ -95,6 +95,7 @@ class ChatGPTProvider implements AgentProvider {
   readonly #listModelsImpl: (launch: CodexLauncher) => Promise<DiscoveredModel[]>;
   readonly #launch: CodexLauncher;
   readonly #dispatch: ToolDispatcher;
+  readonly #networkAccess: boolean;
 
   constructor(
     id: string,
@@ -103,6 +104,7 @@ class ChatGPTProvider implements AgentProvider {
     codexHome: CodexHome,
     codexCliPath: string,
     base: string | undefined,
+    networkAccess: boolean,
     search?: ConnectorContext["search"],
     codexBuiltinWebSearch = false,
     launch: CodexLauncher = spawnCodex,
@@ -114,6 +116,7 @@ class ChatGPTProvider implements AgentProvider {
     this.#codexCliPath = codexCliPath;
     this.#search = search;
     this.#base = base;
+    this.#networkAccess = networkAccess;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
     this.#launch = launch;
     this.#dispatch = dispatch;
@@ -162,6 +165,7 @@ class ChatGPTProvider implements AgentProvider {
       this.#base,
       this.#launch,
       this.#dispatch,
+      this.#networkAccess,
     );
   }
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
@@ -189,6 +193,7 @@ class ChatGPTProvider implements AgentProvider {
       this.#base,
       this.#launch,
       this.#dispatch,
+      this.#networkAccess,
     );
   }
   listPersistedSessions(): Promise<SessionRef[]> {
@@ -256,6 +261,7 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     codexHome,
     codexCliPath,
     ctx.baseBranch,
+    ctx.executionEnvironment === "session-vm",
     ctx.search,
     ctx.config.codexBuiltinWebSearch,
   );

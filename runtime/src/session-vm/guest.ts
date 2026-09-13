@@ -54,6 +54,8 @@ if (auth.codexOauth) {
 }
 for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] as const)
   if (typeof auth[key] === "string") Deno.env.set(key, auth[key]);
+// Node/Corepack otherwise bypass the proxy and attempt unavailable guest DNS.
+Deno.env.set("NODE_USE_ENV_PROXY", "1");
 Deno.env.set("HTTPS_PROXY", "http://127.0.0.1:3128");
 Deno.env.set("HTTP_PROXY", "http://127.0.0.1:3128");
 Deno.env.set("NO_PROXY", "localhost,127.0.0.1");
@@ -123,6 +125,7 @@ const prepare = async (output?: "inherit") => {
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
         "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "NODE_USE_ENV_PROXY",
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
@@ -159,4 +162,4 @@ if (preparationOnly) {
       guestPathProfile(Deno.env.get("PATH")!),
     );
     reportStartup("provider");
-  });
+  }, "session-vm");

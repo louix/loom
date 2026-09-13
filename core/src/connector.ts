@@ -95,6 +95,8 @@ export interface ConnectorConfig extends ConnectorWireConfig {
 }
 
 export interface ConnectorContext {
+  /** Set by the local bootstrap, never accepted from serialized connector config. */
+  executionEnvironment?: "host" | "session-vm";
   /** Host-only progress before create/resume returns an agent session. */
   onVmStarted?: (sessionId: string, generation: string) => void;
   onStartupProgress?: (sessionId: string, message: string) => void;

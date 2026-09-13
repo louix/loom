@@ -61,7 +61,7 @@
  * against a slow `turn/start` without also blocking the first turn a test
  * needs just to get set up.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -114,6 +114,8 @@ const capture = (resultFile) => (response) => {
 
 const handle = (req) => {
   const { id, method, params } = req;
+  if (process.env.LOOM_TEST_REQUEST_LOG)
+    appendFileSync(process.env.LOOM_TEST_REQUEST_LOG, JSON.stringify(req) + "\n");
   // A response to a request *we* sent (e.g. our own `item/tool/call`), not a
   // request from the client — has an id but no method.
   if (method === undefined && id !== undefined && pendingOutgoing.has(id)) {
