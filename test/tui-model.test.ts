@@ -1733,6 +1733,40 @@ test("groupsOf only emits non-empty groups, in fleet-view order", () => {
 // event formatting
 // ---------------------------------------------------------------------------
 
+test("structured tool errors retain readable summaries and expanded details", () => {
+  const tilthError = "## frontend/tui/src/model.ts\nerror: edit[0]: missing 'content'";
+  const cases: Array<[unknown, string]> = [
+    [
+      {
+        content: [
+          { type: "text", text: tilthError },
+          null,
+          { type: "image", data: "ignored" },
+          { type: "text", text: "## test/tui-model.test.ts\nerror: edit[0]: missing 'content'" },
+        ],
+        structuredContent: null,
+        _meta: null,
+      },
+      tilthError + "\n## test/tui-model.test.ts\nerror: edit[0]: missing 'content'",
+    ],
+    [{ message: "HTTP 502: MCP request failed" }, "HTTP 502: MCP request failed"],
+    [{ text: "nope" }, "nope"],
+    [
+      { code: 502, details: { retry: true } },
+      JSON.stringify({ code: 502, details: { retry: true } }, null, 2),
+    ],
+    ["plain failure", "plain failure"],
+  ];
+  for (const [output, expected] of cases) {
+    const line = formatEvent(ev({ type: "tool_result", id: "1", ok: false, output }), "Read");
+    assert.equal(line.tone, "bad");
+    assert.equal(line.full, "error\n" + expected);
+    assert.ok(line.text.startsWith("error "));
+    assert.ok(!line.text.includes("[object Object]"));
+    assert.ok(line.text.includes(expected.split("\n")[0]!));
+  }
+});
+
 test("formatEvent renders each event kind to a glyph + one-liner + tone", () => {
   const tc = formatEvent(
     ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }),

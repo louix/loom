@@ -218,7 +218,7 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       };
     }
     case "tool_result": {
-      const raw = valueOf(ev.output);
+      const raw = ev.ok ? valueOf(ev.output) : toolErrorText(ev.output);
       const out = typeof raw === "string" ? body(raw) : "";
       // A read-only whole-file tool's result is just the file the user can
       // already see — the call line (path + range) says enough; don't dump
@@ -476,6 +476,33 @@ const valueOf = (x: unknown): unknown => {
     return (x as Record<string, unknown>)["text"];
   }
   return x;
+};
+
+/** MCP failures can carry text blocks or a message instead of a plain string. */
+const toolErrorText = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record["content"])) {
+      const text = record["content"]
+        .filter(
+          (block): block is { type: "text"; text: string } =>
+            block !== null &&
+            typeof block === "object" &&
+            block.type === "text" &&
+            typeof block.text === "string",
+        )
+        .map((block) => block.text)
+        .filter(Boolean)
+        .join("\n");
+      if (text) return text;
+    }
+    for (const key of ["text", "message"]) {
+      if (typeof record[key] === "string" && record[key]) return record[key];
+    }
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
 };
 
 /** The lines a page contributes, in page order. Non-transcript kinds are
