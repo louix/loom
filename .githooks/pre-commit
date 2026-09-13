@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+# Keep commits consistently formatted and lint-clean.
+deno task format:check
+deno task lint

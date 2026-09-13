@@ -684,3 +684,11 @@ gitignored:
 | `hooks/pre-push` | the push-blocking hook, shared by every worktree                        |
 | `models.toml`    | legacy price table; no longer used for runtime costs                    |
 | `LOOM.md`        | optional repo instructions, injected into every session's system prompt |
+
+To enable the repository pre-commit checks locally:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The hook runs `deno task format:check` and `deno task lint`.
