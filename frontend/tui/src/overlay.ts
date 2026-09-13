@@ -153,21 +153,23 @@ export interface PlanReview {
 // confirmation
 // ---------------------------------------------------------------------------
 
-export interface Confirm {
+export type Confirm = {
   title: string;
   body?: string;
   danger: boolean;
-  action: "restart" | "quitAll" | "deleteSession" | "archiveSession" | "gc";
-  /** Target session for `deleteSession` / `archiveSession`. */
-  sessionId?: string;
-  /** `deleteSession`: the session's branch, when it has one — `b` toggles
-   *  whether it's deleted along with the row + worktree. */
-  branchName?: string;
-  deleteBranch?: boolean;
-  /** `deleteSession`: the worktree had uncommitted changes — confirming the
-   *  delete also discards those, so the request passes `force`. */
-  force?: boolean;
-}
+} & (
+  | { action: "restart" | "quitAll" | "gc" }
+  | { action: "archiveSession"; sessionId: string }
+  | {
+      action: "deleteSession";
+      sessionId: string;
+      /** The session's branch, when it has one — b toggles its deletion. */
+      branchName?: string;
+      deleteBranch?: boolean;
+      /** Confirm discarding uncommitted worktree changes. */
+      force?: boolean;
+    }
+);
 
 // ---------------------------------------------------------------------------
 // picker — provider / model / effort choice, undo, the command palette

@@ -95,7 +95,10 @@ const open = (overlay: Overlay): Action => ({ t: "overlay", overlay });
 const promptOf = (s: TuiState) => openPrompt(s.overlay);
 const planOf = (s: TuiState) => (s.overlay.t === "plan" ? s.overlay.plan : null);
 const pickerOf = (s: TuiState) => (s.overlay.t === "picker" ? s.overlay.picker : null);
-const confirmOf = (s: TuiState) => (s.overlay.t === "confirm" ? s.overlay.confirm : null);
+const confirmOf = (s: TuiState) =>
+  s.overlay.t === "confirm" && s.overlay.confirm.action === "deleteSession"
+    ? s.overlay.confirm
+    : null;
 
 /** A `new` prompt's creation settings, as a fresh state produces them. */
 const settings: NewSessionSettings = { mode: "default", provider: null, model: null, effort: null };

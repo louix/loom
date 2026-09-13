@@ -1095,7 +1095,7 @@ export const Confirm = ({
   return (
     <Panel width={width} tone={confirm.danger ? "bad" : "accent"} overlay title={confirm.title}>
       {confirm.body ? <Text tone="warn">{confirm.body}</Text> : null}
-      {confirm.branchName ? (
+      {confirm.action === "deleteSession" && confirm.branchName ? (
         <Box gap={1} marginTop={1}>
           <Text tone="accent">{"b"}</Text>
           <Text tone={confirm.deleteBranch ? "bad" : "dim"}>

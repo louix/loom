@@ -1745,7 +1745,7 @@ export const mkFleetHandle = ({
     if (overlayActed === c) return;
     overlayActed = c;
     show(browse);
-    if (c.action === "deleteSession" && c.sessionId) {
+    if (c.action === "deleteSession") {
       const id = c.sessionId;
       const alsoBranch = c.deleteBranch === true;
       client
@@ -1764,7 +1764,7 @@ export const mkFleetHandle = ({
         .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
       return;
     }
-    if (c.action === "archiveSession" && c.sessionId) {
+    if (c.action === "archiveSession") {
       const id = c.sessionId;
       perform(async () => {
         await client.request("session.markDone", { id, by: client.clientId, force: true });
@@ -2032,7 +2032,11 @@ export const mkFleetHandle = ({
 
     if (state.overlay.t === "confirm") {
       if (key.return) return runConfirm();
-      if (input === "b" && state.overlay.confirm.branchName) {
+      if (
+        input === "b" &&
+        state.overlay.confirm.action === "deleteSession" &&
+        state.overlay.confirm.branchName
+      ) {
         return void dispatch({ t: "toggleConfirmBranch" });
       }
       if (key.escape || input === "q" || input === "n") return void show(browse);

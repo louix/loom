@@ -410,7 +410,7 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "toggleConfirmBranch": {
       const c = s.overlay.t === "confirm" ? s.overlay.confirm : null;
-      if (!c?.branchName) return s;
+      if (c?.action !== "deleteSession" || !c.branchName) return s;
       return { ...s, overlay: { t: "confirm", confirm: { ...c, deleteBranch: !c.deleteBranch } } };
     }
 
@@ -1465,7 +1465,7 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
     case "confirm":
       return [
         { keys: "enter", label: "confirm" },
-        ...(s.overlay.t === "confirm" && s.overlay.confirm.branchName
+        ...(s.overlay.confirm.action === "deleteSession" && s.overlay.confirm.branchName
           ? [{ keys: "b", label: s.overlay.confirm.deleteBranch ? "keep branch" : "+ branch" }]
           : []),
         { keys: "esc", label: "cancel" },
