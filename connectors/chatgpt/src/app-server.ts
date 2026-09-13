@@ -26,6 +26,7 @@ import type {
 } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";
 import { verifyChatGptAccount } from "./account.ts";
+import { rateLimitEvents } from "./rate-limits.ts";
 import type { CodexHome } from "./codex-home.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
 import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
@@ -459,6 +460,13 @@ export class CodexAppServerSession implements AgentSession {
     });
     this.#rpc.notify("initialized", {});
     await verifyChatGptAccount(this.#rpc);
+    // Limits are optional telemetry: unavailable usage must not prevent a session.
+    try {
+      const limits = await this.#rpc.request("account/rateLimits/read", {}, { timeoutMs: 3000 });
+      for (const event of rateLimitEvents(limits, this.id, now())) this.#events.push(event);
+    } catch {
+      // Older servers and temporarily unavailable usage endpoints still support chat.
+    }
   }
 
   get providerRef(): string | null {
@@ -1041,6 +1049,10 @@ export class CodexAppServerSession implements AgentSession {
     );
   }
   #notification(method: string, p: Record<string, unknown>): void {
+    if (method === "account/rateLimits/updated") {
+      for (const event of rateLimitEvents(p, this.id, now())) this.#events.push(event);
+      return;
+    }
     if (method === "thread/tokenUsage/updated") {
       if (this.#startingUsageTurn) {
         this.#pendingUsage.push(p);

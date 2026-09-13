@@ -129,6 +129,12 @@ const handle = (req) => {
     return;
   }
   if (method === "initialized" || method === "test/hang") return;
+  if (method === "account/rateLimits/read") {
+    if (process.env["LOOM_TEST_LIMITS_ERROR"])
+      send({ id, error: { code: -32601, message: "limits unavailable" } });
+    else send({ id, result: JSON.parse(process.env["LOOM_TEST_LIMITS"] || "{}") });
+    return;
+  }
   if (method === "account/read") {
     // LOOM_TEST_ACCOUNT_TYPE lets a test simulate a non-ChatGPT account
     // (unset → the normal, valid ChatGPT subscription account).
@@ -277,6 +283,8 @@ const handle = (req) => {
     turnStartCount++;
     const respondToTurnStart = () => {
       send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
+      const limits = process.env["LOOM_TEST_LIMITS_UPDATE"];
+      if (limits) send({ method: "account/rateLimits/updated", params: JSON.parse(limits) });
       const usage = process.env["LOOM_TEST_USAGE_UPDATES"];
       if (usage)
         for (const update of JSON.parse(usage)) {

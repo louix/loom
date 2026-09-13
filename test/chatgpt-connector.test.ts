@@ -2055,3 +2055,108 @@ test("ChatGPT titling preserves labeling instructions and uses an ephemeral read
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("ChatGPT plan limits are read on start/resume and refreshed by account notifications", async () => {
+  const window = (usedPercent: number, windowDurationMins: number) => ({
+    usedPercent,
+    windowDurationMins,
+    resetsAt: 2_000_000_000,
+  });
+  const codex = { limitId: "codex", primary: window(20, 300), secondary: window(85, 10080) };
+  const astra = { limitId: "gpt-6-astra", primary: window(45, 300), secondary: null };
+  Deno.env.set(
+    "LOOM_TEST_LIMITS",
+    JSON.stringify({
+      rateLimits: codex,
+      rateLimitsByLimitId: { codex, "gpt-6-astra": astra },
+    }),
+  );
+  Deno.env.set(
+    "LOOM_TEST_LIMITS_UPDATE",
+    JSON.stringify({
+      rateLimits: { ...astra, primary: window(100, 300) },
+    }),
+  );
+  try {
+    for (const resumed of [false, true]) {
+      const home = { dir: "/tmp/loom-limits", authJsonPath: "/tmp/loom-limits/auth.json" };
+      const s = resumed
+        ? await CodexAppServerSession.resume(
+            { sessionId: "limits", providerRef: "fake-thread-1", cwd: "/tmp" },
+            home,
+            FAKE_CODEX,
+          )
+        : await CodexAppServerSession.start(
+            { sessionId: "limits", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+            home,
+            FAKE_CODEX,
+          );
+      const deadline = setTimeout(() => void s.close(), 5000);
+      try {
+        await s.send("go");
+        const events = [];
+        for await (const event of s.events()) {
+          if (event.type === "rate_limit") events.push(event);
+          if (events.length === 4) break;
+        }
+        assert.deepEqual(
+          events.map((e) => [e.window, e.utilization, e.status, e.resetsAt]),
+          [
+            ["codex 5h", 20, "allowed", 2_000_000_000_000],
+            ["codex 7d", 85, "allowed_warning", 2_000_000_000_000],
+            ["gpt-6-astra 5h", 45, "allowed", 2_000_000_000_000],
+            ["gpt-6-astra 5h", 100, "rejected", 2_000_000_000_000],
+          ],
+        );
+        assert.ok(events.every((e) => e.sessionId === "limits"));
+      } finally {
+        clearTimeout(deadline);
+        await s.close();
+      }
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_LIMITS");
+    Deno.env.delete("LOOM_TEST_LIMITS_UPDATE");
+  }
+});
+
+test("ChatGPT sessions still start when account limits are unavailable", async () => {
+  Deno.env.set("LOOM_TEST_LIMITS_ERROR", "1");
+  try {
+    const s = await CodexAppServerSession.start(
+      { sessionId: "limits", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+      { dir: "/tmp/loom-limits", authJsonPath: "/tmp/loom-limits/auth.json" },
+      FAKE_CODEX,
+    );
+    await s.close();
+  } finally {
+    Deno.env.delete("LOOM_TEST_LIMITS_ERROR");
+  }
+});
+
+test("ChatGPT legacy limits preserve percentages and ignore malformed or absent windows", async () => {
+  const { rateLimitEvents } = await import("../connectors/chatgpt/src/rate-limits.ts");
+  assert.deepEqual(rateLimitEvents(null, "s", 1), []);
+  assert.deepEqual(rateLimitEvents({ rateLimits: { primary: { usedPercent: "50" } } }, "s", 1), []);
+  assert.deepEqual(
+    rateLimitEvents(
+      {
+        rateLimits: {
+          primary: { usedPercent: 0, windowDurationMins: null, resetsAt: null },
+          secondary: null,
+        },
+      },
+      "s",
+      1,
+    ),
+    [
+      {
+        type: "rate_limit",
+        sessionId: "s",
+        ts: 1,
+        window: "codex primary",
+        utilization: 0,
+        status: "allowed",
+      },
+    ],
+  );
+});

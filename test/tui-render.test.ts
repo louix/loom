@@ -3120,3 +3120,34 @@ test("reply recall queries user messages independently of transcript loading", a
     teardown();
   }
 });
+
+test("Detail keeps ChatGPT model limits visible on separate rows", async () => {
+  const { stripVTControlCharacters: stripAnsi } = await import("node:util");
+  const session = snap({
+    rateLimits: {
+      "codex 5h": { status: "allowed", utilization: 20, resetsAt: 2_000_000_000_000 },
+      "codex 7d": { status: "allowed_warning", utilization: 85, resetsAt: 2_000_000_000_000 },
+      "gpt-6-astra 5h": { status: "rejected", utilization: 100, resetsAt: 2_000_000_000_000 },
+    },
+  });
+  const frame = stripAnsi(
+    renderToString(
+      createElement(Detail, {
+        session,
+        fleet: loadableIdle,
+        box: outboxOf({}, session.id),
+        mode: null,
+        width: 50,
+        now: 1_999_999_000_000,
+      }),
+      { columns: 50 },
+    ),
+  );
+  const rows = frame.split("\n");
+  for (const label of ["codex 5h 20%", "codex 7d 85%", "gpt-6-astra 5h 100%"])
+    assert.ok(
+      rows.some((row) => row.includes(label)),
+      frame,
+    );
+  assert.equal(rows.filter((row) => /codex|gpt-6-astra/.test(row)).length, 3);
+});

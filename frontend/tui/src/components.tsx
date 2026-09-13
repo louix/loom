@@ -562,28 +562,20 @@ export const detailLayout = (
           (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
       </Field>,
     );
-    // Reserve one row while limits are in the snapshot, so clock ticks cannot change geometry.
-    if (Object.keys(s.rateLimits).length)
+    // Reserve one row per window so clock ticks cannot change geometry.
+    for (const [i, [window, rl]] of Object.entries(s.rateLimits).entries())
       add((now) => (
-        <Field label="plan">
-          {Object.entries(s.rateLimits)
-            .filter(
-              ([, r]) =>
-                (r.resetsAt ?? (r.observedAt !== undefined ? r.observedAt + 300_000 : Infinity)) >
-                now,
-            )
-            .map(([window, rl], i) => (
-              <Text
-                key={window}
-                tone={
-                  ({ rejected: "bad", allowed_warning: "warn", allowed: "faint" } as const)[
-                    rl.status
-                  ]
-                }
-              >
-                {`${i ? "   " : ""}${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
-              </Text>
-            ))}
+        <Field label={i === 0 ? "plan" : ""}>
+          {(rl.resetsAt ?? (rl.observedAt !== undefined ? rl.observedAt + 300_000 : Infinity)) >
+            now && (
+            <Text
+              tone={
+                ({ rejected: "bad", allowed_warning: "warn", allowed: "faint" } as const)[rl.status]
+              }
+            >
+              {`${window} ${rl.utilization != null ? `${Math.round(rl.utilization)}%` : "?%"}${rl.resetsAt != null ? `  ⟳ ${humanDuration(rl.resetsAt - now)}` : ""}`}
+            </Text>
+          )}
         </Field>
       ));
     space();
