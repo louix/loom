@@ -507,7 +507,7 @@ test("a snapshot re-sorts the fleet and preserves selection", () => {
   assert.equal(s.selectedId, "a");
 });
 
-test("a session missing from the snapshot drops out and reselects the head", () => {
+test("a session missing from the snapshot drops out and selects the remaining row", () => {
   const a = snap({ id: "a", status: "awaiting_input" });
   const b = snap({ id: "b", status: "running" });
   let s = reduce(initialState(), fleet([a, b]));
@@ -529,15 +529,13 @@ test("a removed session selects the row above, not the fleet head", () => {
     fleetSessions(s).map((x) => x.id),
     ["a", "b", "c"],
   );
-  s = reduce(s, { t: "select", id: "b" });
-  s = reduce(s, fleet([a, c]));
-  // b sat between a and c — losing it should land on a (the row above), not
-  // snap back to the fleet head.
+  s = reduce(s, { t: "select", id: "c" });
+  s = reduce(s, fleet([a, b]));
   assert.deepEqual(
     fleetSessions(s).map((x) => x.id),
-    ["a", "c"],
+    ["a", "b"],
   );
-  assert.equal(s.selectedId, "a");
+  assert.equal(s.selectedId, "b");
 });
 
 test("a removed session falls back to the new head when it was already on top", () => {
@@ -3053,3 +3051,23 @@ test("session recall restores persisted messages independently of global history
   s = reduce(s, { t: "promptHistoryNav", dir: -1 });
   assert.equal(promptOf(s)?.buffer.text, "opening");
 });
+
+for (const action of ["remove", "archive"] as const) {
+  test(`${action} selects the previous surviving row and handles list boundaries`, () => {
+    const a = snap({ id: "a", status: "running", updatedAt: 3 });
+    const b = snap({ id: "b", status: "running", updatedAt: 2 });
+    const c = snap({ id: "c", status: "running", updatedAt: 1 });
+    const change = (id: string) => (action === "archive" ? [snap({ id, status: "done" })] : []);
+    const select = (id: string) =>
+      reduce(reduce(initialState(), fleet([c, a, b])), { t: "select", id });
+    assert.equal(reduce(select("c"), fleet([a, b, ...change("c")])).selectedId, "b");
+    assert.equal(reduce(select("b"), fleet([a, c, ...change("b")])).selectedId, "a");
+    assert.equal(reduce(select("a"), fleet([b, c, ...change("a")])).selectedId, "b");
+    assert.equal(reduce(select("c"), fleet([a, ...change("c")])).selectedId, "a");
+    assert.equal(reduce(select("b"), fleet([b, ...change("a")])).selectedId, "b");
+    assert.equal(
+      reduce(select("c"), fleet(change("c"))).selectedId,
+      action === "archive" ? "c" : null,
+    );
+  });
+}

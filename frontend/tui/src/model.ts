@@ -489,7 +489,7 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
   return {
     ...s,
     fleet,
-    selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId),
+    selectedId: clampSelection(sessions, s.selectedId, s.pendingSelectId, fleetSessions(s)),
     ...settlePendingSelect(s, sessions),
     selectedChild: clampChild(sessions, s.selectedId, s.selectedChild),
     ...(qnavGone ? { qnav: null } : {}),
@@ -597,12 +597,26 @@ const clampSelection = (
   list: readonly SessionSnapshot[],
   current: string | null,
   pending?: string,
+  previous: readonly SessionSnapshot[] = [],
 ): string | null => {
-  if (current && list.some((x) => x.id === current)) return current;
+  const selected = list.find((x) => x.id === current);
+  const wasSelected = previous.find((x) => x.id === current);
+  const archived =
+    selected?.status.kind === "done" &&
+    wasSelected !== undefined &&
+    wasSelected.status.kind !== "done";
+  if (selected && !archived) return selected.id;
   // A just-picked session whose row hasn't arrived yet — hold the selection on
   // it rather than snapping to the fleet head (U4).
   if (current && current === pending) return current;
-  return list[0]?.id ?? null;
+  // Keep the cursor near a removed or archived row in the order last shown.
+  const candidates = archived ? list.filter((x) => x.id !== current) : list;
+  const live = new Set(candidates.map((x) => x.id));
+  for (let i = previous.findIndex((x) => x.id === current) - 1; i >= 0; i--) {
+    const id = previous[i]!.id;
+    if (live.has(id)) return id;
+  }
+  return candidates[0]?.id ?? selected?.id ?? null;
 };
 
 /** Clear `pendingSelectId` once its session is in `list` (or gone). */
