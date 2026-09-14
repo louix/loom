@@ -702,6 +702,8 @@ export class Daemon {
    */
   #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
+    if (this.#sessions.isStopping(s.id)) out = { ...out, stopping: true };
+    if (this.#sessions.stopFailed(s.id)) out = { ...out, stopFailed: true };
     // Outstanding requests, complete enough to answer without any transcript —
     // this is what lets a second client act on a permission it never saw raised.
     const requests = this.#sessions.requestsOf(s.id);
@@ -2361,6 +2363,8 @@ export class Daemon {
         // queue (which drains when the compaction boundary lands).
         while (this.#revivals.has(id)) await this.#revivals.get(id);
         const restructuring = this.#sessions.isRestructuring(id);
+        if (this.#sessions.isStopping(id))
+          throw new RpcError("busy", "session is stopping — the message was not sent");
         if (restructuring) {
           const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
           throw new RpcError(

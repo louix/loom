@@ -123,6 +123,10 @@ interface Running {
    * keeps its own fallback overlay until the gate releases.
    */
   compaction: { startedAt: number; before: number; generated: number } | null;
+  stopping: boolean;
+  stopRequested: boolean;
+  stopFailed: boolean;
+  interruptOperation: Promise<void> | null;
 }
 
 export class SessionManager {
@@ -139,6 +143,14 @@ export class SessionManager {
 
   get count(): number {
     return this.#running.size;
+  }
+
+  isStopping(id: string): boolean {
+    return this.#running.get(id)?.stopping ?? false;
+  }
+
+  stopFailed(id: string): boolean {
+    return this.#running.get(id)?.stopFailed ?? false;
   }
 
   has(id: string): boolean {
@@ -248,6 +260,10 @@ export class SessionManager {
       restructuringSince: null,
       rewinding: false,
       compaction: null,
+      stopping: false,
+      stopRequested: false,
+      stopFailed: false,
+      interruptOperation: null,
     };
     this.#running.set(id, run);
     // `#drain` handles its own stream errors; this catch is for the pathological
@@ -355,7 +371,7 @@ export class SessionManager {
 
   /**
    * Drop every overlay a dead adapter can no longer update — outstanding
-   * requests (unanswerable now), background tasks (the process is gone) and any
+   * requests (unanswerable now), foreground/background tasks and any
    * compaction in flight. Returns whether anything actually changed, so the
    * caller can publish when no status transition will.
    */
@@ -398,6 +414,7 @@ export class SessionManager {
    * reaches clients even though the session stays `awaiting_input` throughout.
    */
   #trackPending(run: Running, ev: HarnessEvent): boolean {
+    if (run.stopRequested) return false;
     const request = interactionFor(ev);
     if (request) {
       run.pending.set(request.id, request);
@@ -434,6 +451,7 @@ export class SessionManager {
 
   #trackSubagents(run: Running, ev: HarnessEvent): boolean {
     if (ev.type === "subagent_started") {
+      if (run.stopRequested && !run.stopping && !run.stopFailed) return false;
       run.subagents.set(ev.subagentId, { name: ev.name, startedAt: ev.ts, active: true });
       return true;
     }
@@ -462,6 +480,7 @@ export class SessionManager {
    */
   #trackBackgroundTasks(run: Running, ev: HarnessEvent): boolean {
     if (ev.type !== "background_tasks") return false;
+    if (run.stopRequested && !run.stopping && !run.stopFailed) return false;
     run.backgroundTasks = ev.tasks;
     return true;
   }
@@ -522,11 +541,15 @@ export class SessionManager {
 
   /** Returns whether it published a transition. */
   #applyStatus(id: string, run: Running, ev: HarnessEvent): boolean {
-    // Stickiness of `interrupted` / `error` now lives in `deriveStatus` itself
-    // (it returns them unchanged for trailing events), so there is no guard
-    // here that could silently swallow a live turn's events. `backgroundTasks`
-    // is already updated for this event (see `#trackBackgroundTasks`), so a
-    // `result` sees the current count.
+    if (run.stopRequested) {
+      if (ev.type === "error" && ev.fatal) {
+        run.stopFailed = true;
+        return this.#transition(id, run, stateError(ev.message));
+      }
+      return false;
+    }
+    // Outside explicit cancellation, provider events drive the normal machine.
+    // Background membership is already current when a result is derived.
     return this.#transition(
       id,
       run,
@@ -623,8 +646,13 @@ export class SessionManager {
     // A send that reached the gate mid-restructure would otherwise park for the
     // whole (up-to-15-min) compaction.
     if (run.restructuring) throw new Error(`session is ${run.restructuring}ing`);
+    if (run.stopping || run.stopFailed)
+      throw new Error("cancellation is unresolved — retry interrupt before sending");
     return this.#enqueue(run, async () => {
       opts.signal?.throwIfAborted();
+      if (run.stopping || run.stopFailed)
+        throw new Error("cancellation is unresolved — retry interrupt before sending");
+      run.stopRequested = false;
       const injected = isLiveState(run.state);
       const before = run.state;
       if (!injected) run.firstOutputSince = performance.now();
@@ -647,6 +675,8 @@ export class SessionManager {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
     return this.#enqueue(run, async () => {
+      if (run.stopping || run.stopFailed)
+        throw new Error("cancellation is unresolved — retry interrupt first");
       run.restructuring = "compact";
       run.restructuringSince = Date.now();
       // Snapshots carry a `compacting` overlay for the whole gate hold, so a
@@ -667,44 +697,59 @@ export class SessionManager {
 
   async interrupt(id: string): Promise<void> {
     const run = this.#require(id);
+    if (run.interruptOperation) return run.interruptOperation;
     // A fork / rewind is mid-flight — there is no turn to stop and clobbering
     // state here would race the rewind's own idle transition.
     if (run.rewinding) return;
-    if (run.restructuring === "compact") {
-      // A2: cancel an in-flight compaction. No state clobber — a manual compact
-      // of an idle session leaves `run.state === "idle"`, so a plain
-      // `!isLiveState` guard would wrongly no-op and leave the compaction running.
-      try {
-        await run.session.interrupt();
-      } catch (err) {
-        this.#hooks.log.warn("adapter interrupt failed", {
-          id,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-      return;
-    }
+    const compactOnly = run.restructuring === "compact" && !isLiveState(run.state);
     // S13: an interrupt on a session that already ended cleanly (idle / error /
     // interrupted / done) must not overwrite that settled state.
-    if (run.ended || !isLiveState(run.state)) return;
-    // Nothing outstanding survives the interrupt, and the SDK's interrupt kills
-    // the session's background tasks too — clear both now rather than wait for
-    // events a torn-down stream might never send. The transition below carries
-    // the cleared overlays to clients.
-    this.#clearOverlays(run);
-    // Reflect the interrupt immediately and unconditionally — the adapter call
-    // below can be slow (or, on a wedged turn, throw), and the UI must not be
-    // left showing `running` either way. `interrupted` is sticky in
-    // `deriveStatus`, so trailing events from the killed turn won't undo it.
-    this.#transition(id, run, stateInterrupted("user"), "user");
-    try {
-      await run.session.interrupt();
-    } catch (err) {
-      this.#hooks.log.warn("adapter interrupt failed", {
-        id,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
+    if (
+      run.ended ||
+      (!compactOnly &&
+        !isLiveState(run.state) &&
+        !run.stopFailed &&
+        !run.backgroundTasks.length &&
+        ![...run.subagents.values()].some((s) => s.active))
+    )
+      return;
+    // Keep child activity until the provider confirms cancellation. Pending
+    // requests are withdrawn as soon as the user requests a stop.
+    run.pending.clear();
+    run.stopRequested = true;
+    run.stopping = true;
+    this.#hooks.onOverlay(id);
+    const operation = Promise.resolve().then(async () => {
+      try {
+        await run.session.interrupt();
+        run.stopFailed = false;
+        run.stopping = false;
+        this.#clearOverlays(run);
+        if (!run.ended && !compactOnly) this.#transition(id, run, stateInterrupted("user"), "user");
+      } catch (err) {
+        run.stopping = false;
+        run.stopFailed = true;
+        const message = `Could not stop all session work: ${err instanceof Error ? err.message : String(err)} — retry interrupt`;
+        this.#hooks.log.warn("adapter interrupt failed", { id, err: message });
+        if (!run.ended) {
+          this.#hooks.emitEvent({
+            type: "error",
+            sessionId: id,
+            ts: Date.now(),
+            fatal: false,
+            message,
+          });
+          this.#transition(id, run, stateError(message));
+        }
+        throw new Error(message);
+      } finally {
+        run.stopping = false;
+        run.interruptOperation = null;
+        this.#hooks.onOverlay(id);
+      }
+    });
+    run.interruptOperation = operation;
+    return operation;
   }
 
   /** Move a settled `awaiting_input` session back to `running` — unless a user
@@ -715,7 +760,7 @@ export class SessionManager {
    *  transition carries it, and when the turn stays blocked the overlay hook
    *  does — otherwise the other clients keep offering an answered request. */
   #resumeAfterAnswer(id: string, run: Running): void {
-    const resume = run.state.kind !== "interrupted" && run.pending.size === 0;
+    const resume = !run.stopRequested && run.state.kind !== "interrupted" && run.pending.size === 0;
     if (resume && this.#transition(id, run, stateRunning)) return;
     this.#hooks.onOverlay(id);
   }
@@ -849,6 +894,8 @@ export class SessionManager {
    */
   async rewind(id: string, keep: number, at?: string): Promise<void> {
     const run = this.#require(id);
+    if (run.stopping || run.stopFailed)
+      throw new Error("cancellation is unresolved — retry interrupt first");
     if (run.ended) throw new Error("session has ended");
     // S13: only a settled, non-terminal session (`idle` / `error` /
     // `interrupted`) may rewind — anything live or `done` must be interrupted

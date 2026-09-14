@@ -1391,6 +1391,19 @@ test("actionsFor keeps the salient action first", () => {
   assert.equal(first?.act, "approve");
 });
 
+test("unresolved cancellation offers retry interrupt without starting new work", () => {
+  for (const session of [
+    { ...snap({ status: "awaiting_input", awaitReason: "permission" }), stopping: true },
+    { ...snap({ status: "error" }), stopFailed: true },
+  ]) {
+    const acts = actionsFor(session).map((h) => h.act);
+    assert.ok(acts.includes("interrupt"));
+    assert.ok(!acts.includes("send"));
+    assert.ok(!acts.includes("approve"));
+    assert.ok(!acts.includes("done"));
+  }
+});
+
 test("footerHints gives every overlay its own fixed key set", () => {
   const base: TuiState = {
     ...initialState(),

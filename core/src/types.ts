@@ -290,7 +290,8 @@ export interface AgentSession {
    * fork — and settle promptly (do not wait out a multi-minute summarise).
    * Parked permission / question / plan promises MUST be resolved so a gated
    * tool `execute` unwinds. Idempotent; safe to call on an already-stopped
-   * session.
+   * session. Resolve only after cancellation is confirmed; reject if any
+   * requested cancellation failed or work is known to remain queued.
    */
   interrupt(): Promise<void>;
   /**

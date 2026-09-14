@@ -28,6 +28,14 @@ test("an unknown context limit is not rendered as zero capacity or zero percent"
   assert.ok(!plain.includes("0%"));
 });
 
+test("a pending interrupt is displayed as stopping rather than completed", () => {
+  const session = { ...snap({ status: "running" }), stopping: true };
+  const layout = detailLayout(session, { width: 80 });
+  const plain = stripVTControlCharacters(renderToString(layout.render(0), { columns: 80 }));
+  assert.ok(plain.includes("stopping…"));
+  assert.ok(!plain.includes("interrupted"));
+});
+
 test("shared text and fields retain blank rows and label gutters in narrow panes", () => {
   const rendered = renderToString(
     createElement(

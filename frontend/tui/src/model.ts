@@ -1274,6 +1274,11 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
   if (session) {
     const { status } = session;
 
+    if (session.stopping || session.stopFailed) {
+      local.push(commandHint("interrupt", { footer: true }));
+      return [...local, ...GLOBAL_HINTS];
+    }
+
     // Request mode — the turn is parked on a decision. Offer only the keys that
     // resolve it (plus interrupt); mode / model / rename / undo / fork are all
     // noise while the agent is blocked, so they're dropped from both the

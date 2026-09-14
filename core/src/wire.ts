@@ -358,6 +358,10 @@ export const sessionSnapshotSchema = z.object({
       generated: z.number(),
     })
     .optional(),
+  /** Stop requested; the provider has not yet confirmed cancellation. */
+  stopping: z.boolean().optional(),
+  /** Cancellation failed; retry interrupt before starting more work. */
+  stopFailed: z.boolean().optional(),
   git: z.union([gitFactsSchema, z.null()]),
   createdAt: z.number(),
   updatedAt: z.number(),

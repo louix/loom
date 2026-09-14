@@ -772,6 +772,87 @@ describe("session-manager", { concurrency: 4 }, () => {
     });
   }
 
+  test("interrupt retains unresolved children, exposes failures and supports retry", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "subagent_started", subagentId: "child", name: "reviewer" });
+    fs.emit({
+      type: "background_tasks",
+      tasks: [{ id: "bg", kind: "subagent", title: "detached" }],
+    });
+    await waitFor(
+      async () =>
+        (await c.request<SessionSnapshot>("session.get", { id })).backgroundTasks.length === 1,
+    );
+    let reject!: (err: Error) => void;
+    fs.interrupt = () =>
+      new Promise<void>((_resolve, r) => {
+        reject = r;
+      });
+    const failure = assert.rejects(
+      c.request("session.interrupt", { id }),
+      /Could not stop all session work/,
+    );
+    await waitFor(async () => !!(await c.request<SessionSnapshot>("session.get", { id })).stopping);
+    let snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.subagents[0]?.active, true);
+    assert.equal(snap.backgroundTasks.length, 1);
+    assert.notEqual(snap.status.kind, "interrupted");
+    await assert.rejects(c.request("session.send", { id, text: "racing send" }), /stopping/);
+    reject(new Error("child stop rejected"));
+    await failure;
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.status.kind, "error");
+    assert.equal(snap.stopFailed, true);
+    assert.equal(snap.stopping, undefined);
+    assert.equal(snap.subagents[0]?.active, true);
+    assert.equal(snap.backgroundTasks.length, 1);
+    fs.interrupt = async () => {};
+    await c.request("session.interrupt", { id });
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.status.kind, "interrupted");
+    assert.equal(snap.stopFailed, undefined);
+    assert.equal(snap.subagents[0]?.active, false);
+    assert.deepEqual(snap.backgroundTasks, []);
+    fs.emit({ type: "subagent_started", subagentId: "late", name: "stale" });
+    fs.emit({
+      type: "background_tasks",
+      tasks: [{ id: "late", kind: "subagent", title: "stale" }],
+    });
+    await delay(20);
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.ok(!snap.subagents.some((s) => s.active));
+    assert.deepEqual(snap.backgroundTasks, []);
+    await c.close();
+  });
+
+  test("a permission reply cannot hide a concurrent cancellation failure", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+    let release: (() => void) | undefined;
+    fs.respondToPermission = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const reply = c.request("session.respondPermission", {
+      id,
+      requestId: "p1",
+      decision: "allow",
+    });
+    await waitFor(() => release !== undefined);
+    fs.interrupt = async () => {
+      throw new Error("stop failed");
+    };
+    await assert.rejects(c.request("session.interrupt", { id }), /stop failed/);
+    release!();
+    await reply;
+    assert.equal(await statusOf(c, id), "error");
+    assert.equal((await c.request<SessionSnapshot>("session.get", { id })).stopFailed, true);
+    await c.close();
+  });
+
   test("background tasks hold a finished turn in working_background, then release it", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
@@ -1092,7 +1173,12 @@ describe("session-manager", { concurrency: 4 }, () => {
       "the interrupt stays sticky for its own turn",
     );
 
-    // …but a subsequent turn is not frozen out: its permission_request lands.
+    // A late request cannot resurrect the interrupted turn.
+    fs.emit({ type: "permission_request", id: "stale", tool: "Bash", input: {} });
+    await delay(20);
+    assert.equal(await statusOf(c, id), "interrupted");
+    // …but an explicitly started subsequent turn is not frozen out.
+    await c.request("session.send", { id, text: "continue" });
     fs.emit({ type: "permission_request", id: "p9", tool: "Bash", input: {} });
     await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
     await c.close();

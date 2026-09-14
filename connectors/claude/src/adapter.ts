@@ -349,8 +349,9 @@ class ClaudeSession implements AgentSession {
    * aborts the live turn but not turns already sitting in its command queue (a
    * message the user sent mid-turn, or the plan-approval path's own follow-up).
    * While this is set, `#drain` keeps the mapper's accounting current but drops
-   * every mapped event, so a queued turn can't stream chatter into a session
-   * the user has stopped. A real `send()` supersedes the interrupt.
+   * conversational events while forwarding task lifecycle cleanup. A queued
+   * turn cannot stream chatter into a stopped session. A real `send()`
+   * supersedes the interrupt once cancellation has completed.
    */
   #interrupted = false;
 

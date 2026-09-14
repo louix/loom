@@ -355,6 +355,7 @@ const FleetRow = ({
   let glyph = look.glyph;
   if (["running", "starting"].includes(s.status.kind)) glyph = spinnerFrame(tick);
   if (blocked) glyph = "○";
+  if (s.stopping) glyph = "◌";
   let titleColor = selected ? C.text : C.dim;
   if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
@@ -501,7 +502,9 @@ export const detailLayout = (
     if (s.parentId && s.forkTurn != null)
       addLine(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`);
     space();
-    const status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
+    const status = s.stopping
+      ? "◌ stopping…"
+      : `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
     const chip = `mode ${modeChipText(s.mode, mode)}`;
     rows.push({
       tag: "target",
