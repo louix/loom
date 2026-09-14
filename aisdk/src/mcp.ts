@@ -117,6 +117,10 @@ export class McpHub {
         // before `tools()` threw — close it so it isn't orphaned for the
         // daemon's lifetime (it never made it into `clients`).
         await client?.close().catch(() => {});
+        if (h.required) {
+          await Promise.allSettled(clients.map((connected) => connected.close()));
+          throw new Error(`Required tool ${h.name} failed to connect`, { cause: err });
+        }
         log.warn("mcp server failed to start; skipping", {
           name: h.name,
           err: err instanceof Error ? err.message : String(err),

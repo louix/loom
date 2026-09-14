@@ -558,6 +558,21 @@ class ClaudeSession implements AgentSession {
     if (!q) return;
     try {
       for await (const msg of q) {
+        if (msg.type === "system" && msg.subtype === "init") {
+          const missing = (this.#startOpts?.mcpServers ?? []).filter(
+            (server) =>
+              server.required &&
+              !msg.mcp_servers.some(
+                (status) => status.name === server.name && status.status === "connected",
+              ),
+          );
+          if (missing.length) {
+            q.close();
+            throw new Error(
+              `Required tools failed to connect: ${missing.map((server) => server.name).join(", ")}`,
+            );
+          }
+        }
         // Always run the mapper — it carries cumulative token / cost state
         // that must stay correct even for a turn we're suppressing.
         const events = this.#mapper.map(msg);

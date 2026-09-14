@@ -82,6 +82,42 @@ const fakeQuery = (msgs: unknown[] = []) => {
   });
 };
 
+test("Claude surfaces required MCP initialization failure and closes the query", async () => {
+  const q = fakeQuery([
+    { type: "system", subtype: "init", mcp_servers: [{ name: "files", status: "failed" }] },
+  ]);
+  let closed = false;
+  const close = q.close;
+  q.close = () => {
+    closed = true;
+    close();
+  };
+  __setClaudeSdk({ query: () => q as never });
+  const session = await new ClaudeProvider().createSession({
+    sessionId: "required-mcp",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [{ name: "files", required: true, spec: { transport: "stdio", command: "files" } }],
+    loomServer: false,
+  });
+  try {
+    const events: HarnessEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    assert.ok(closed);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "error" &&
+          event.fatal &&
+          /Required tools failed to connect: files/.test(event.message),
+      ),
+    );
+  } finally {
+    await session.close();
+  }
+});
+
 test("C6: interrupt() denies a parked canUseTool and muzzles later calls without a new prompt", async () => {
   let canUse!: FakeCanUseTool;
   __setClaudeSdk({

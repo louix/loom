@@ -105,18 +105,15 @@ the Vercel AI SDK.
   - **`commit`** — commits the session's worktree under its
     `Loom (<model>)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
-- **Tool defaults** — `default_for` on `[[command-mcp]]` or `[[http-mcp]]` selects
-  a preferred server for capabilities such as `read`, `edit`, or `web_search`.
-  Tools keep their advertised names and schemas. The shipped defaults prefer
-  tilth for code reading/writing/editing and fff for file finding/text search;
-  native tools remain available as fallbacks unless disabled explicitly.
-  In the aisdk engine, an MCP tool
-  replaces a first-party builtin of the same name (fff's `grep` wins), while
-  the session-control tools (`ask_user`, `commit`, `task`, `exit_plan`) always
-  stay first-party. If `tilth` isn't on `$PATH`, the session runs with the
-  remaining tools. The steer also names the session's checkout root —
-  tilth's cwd — so agents pass a real `root` instead of guessing a mount
-  location.
+- **Tool selection** — define host commands in `[tools.<name>]`, separate
+  offline VM runtimes in `[vm-tools.<name>]`, and remote services in
+  `[remote-tools.<name>]`. Select them with `tools`, `vm-tools`, and
+  `remote-tools` lists under `[session]` or `[repo.session]`. Definitions
+  alone enable nothing; no external tools are selected by default. Selected
+  tools are required. Agent VMs reject host tool selections before startup.
+  `default_for` declares capability preferences without renaming tools or
+  schemas; native tools remain available where supported. See
+  [tool configuration and common setups](docs/tools.md).
 
 **5 · terminal UI**
 
@@ -229,7 +226,7 @@ was created with (or later switched to) become the default for the _next_
 `provider_messages`.
 
 - **10a** — streaming, token usage + price-table cost, cancel, resume.
-- **10b** — multi-step tool use. MCP servers (`[[command-mcp]]` / `[[http-mcp]]`) connect through
+- **10b** — multi-step tool use. Selected MCP tools connect through
   `@ai-sdk/mcp`; the `loom` `ask_user` / `commit` tools are native. Every tool
   call runs through the same permission gate as Claude: read-ish tools pass,
   edits and commands surface a `permission_request` (or run straight through in

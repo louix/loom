@@ -367,7 +367,10 @@ test("loadConfig merges an exact repo override from the user file and ignores re
       `
 base_branch = "trunk"
 default_provider = "deepseek"
-command-mcp = []
+[tools.local]
+command = "tool"
+[session]
+tools = []
 [providers.deepseek]
 adapter = "aisdk"
 base_url = "https://api.deepseek.com/v1"
@@ -375,7 +378,8 @@ model = "deepseek-chat"
 [[repo]]
 path = ${JSON.stringify(dir)}
 base_branch = "main"
-command-mcp = [{ name = "local", command = "tool" }]
+[repo.session]
+tools = ["local"]
 [repo.providers.deepseek]
 model = "deepseek-reasoner"
 [[repo]]
@@ -505,7 +509,7 @@ max_results = 8
   assert.equal(c.search.apiBase, "http://localhost:7777");
   assert.equal(c.search.maxResults, 8);
 
-  assert.throws(() => cfg(`[search]\nbackend = "kagi"\n`), /http-mcp/);
+  assert.throws(() => cfg(`[search]\nbackend = "kagi"\n`), /remote-tools/);
   assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);

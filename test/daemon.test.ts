@@ -442,9 +442,9 @@ test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () 
   assert.ok(byPkg.get("@loom/connector-mock")?.providerIds.includes("fake"));
   assert.equal(byPkg.get("@loom/connector-gemini")?.loaded, false);
 
-  // The default config mounts tilth + fff into every session.
+  // External tools require an explicit selection.
   const mcpNames = rep.mcp.map((m) => m.name).sort();
-  assert.deepEqual(mcpNames, ["fff", "tilth"]);
+  assert.deepEqual(mcpNames, []);
   for (const m of rep.mcp) {
     assert.ok(m.resolved.length > 0);
     assert.ok(["ok", "missing"].includes(m.status));
@@ -2354,9 +2354,9 @@ test("a mode notification for a session with no live adapter writes nothing", as
 test("doctor reflects configured HTTP mounts, preferences and disabled native tools", async () => {
   const hh = await makeHarness({
     config: `
-command-mcp = []
-[[http-mcp]]
-name = "research"
+[session]
+remote-tools = ["research"]
+[remote-tools.research]
 url = "https://example.invalid/mcp?private=do-not-display"
 default_for = ["web_search"]
 [providers.claude]
@@ -2381,6 +2381,52 @@ disable_builtin = ["Read"]
   } finally {
     c.close();
     await hh.cleanup();
+  }
+});
+
+test("tool preflight rejects missing host executables and VM placement before allocating a session", async () => {
+  for (const vm of [false, true]) {
+    const hh = await makeHarness({
+      config: `
+[tools.files]
+command = "loom-test-missing-host-tool"
+[session]
+tools = ["files"]
+[providers.claude]
+models = ["fixture"]
+${vm ? '[isolation.claude]\nartifact = "/unused-runtime"' : ""}
+`,
+    });
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+      reconnect: false,
+    });
+    try {
+      const before = execFileSync("git", ["-C", hh.repoRoot, "worktree", "list", "--porcelain"], {
+        encoding: "utf8",
+      });
+      await assert.rejects(
+        c.request("session.create", { provider: vm ? "claude" : "fake", prompt: "go" }),
+        vm ? /host tools are selected/ : /Required host tool files/,
+      );
+      const list = await c.request<SessionSnapshot[]>("session.list");
+      assert.equal(list.length, 0);
+      assert.equal(
+        execFileSync("git", ["-C", hh.repoRoot, "worktree", "list", "--porcelain"], {
+          encoding: "utf8",
+        }),
+        before,
+      );
+      const report = await c.request<DoctorReport>("daemon.doctor");
+      assert.match(report.mcp[0]!.note, /Host tool.*Required/);
+      if (vm)
+        assert.ok(report.configWarnings.some((line) => line.includes("host tools are selected")));
+    } finally {
+      await c.close();
+      await hh.cleanup();
+    }
   }
 });
 

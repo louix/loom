@@ -10,7 +10,6 @@
     "./daemon/hooks": "./src/daemon/hooks.ts",
     "./daemon/hygiene": "./src/daemon/hygiene.ts",
     "./daemon/lifecycle": "./src/daemon/lifecycle.ts",
-    "./daemon/mcp-fallback": "./src/daemon/mcp-fallback.ts",
     "./daemon/model-catalog": "./src/daemon/model-catalog.ts",
     "./daemon/prompt": "./src/daemon/prompt.ts",
     "./daemon/provider-registry": "./src/daemon/provider-registry.ts",

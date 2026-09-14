@@ -71,6 +71,8 @@ export type McpCapability = (typeof MCP_CAPABILITIES)[number];
 /** A vendor-neutral MCP server description. */
 export const mcpServerHandleSchema = z.object({
   name: z.string(),
+  /** Configured tools must connect successfully before a session runs. */
+  required: z.boolean().optional(),
   /** Preferred capabilities; tools retain their own names and input schemas. */
   defaultFor: z.array(z.enum(MCP_CAPABILITIES)).optional(),
   /** Upstream credential env name to omit from native child environments. */

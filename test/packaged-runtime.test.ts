@@ -27,10 +27,11 @@ const manifest = {
 };
 test("packaged MCP config rejects ambiguous commands and unsupported permission grants", () => {
   const base =
-    '[[command-mcp]]\nname="code"\nruntime="tilth"\nisolation="vm"\ndefault_for=["read","edit"]';
+    '[session]\nvm-tools=["code"]\n[vm-tools.code]\nruntime="tilth"\ndefault_for=["read","edit"]';
   assert.deepEqual(normalizeConfig(parse(base)).mcp, [
     {
       name: "code",
+      required: true,
       runtime: "tilth",
       isolation: "vm",
       defaultFor: ["read", "edit"],
@@ -47,9 +48,7 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
   ]) {
     assert.throws(() => normalizeConfig(parse(base + extra)));
   }
-  assert.throws(() => normalizeConfig(parse(base.replace('isolation="vm"', 'isolation="host"'))));
   assert.throws(() => normalizeConfig(parse(base.replace('runtime="tilth"', 'command="tilth"'))));
-  assert.throws(() => normalizeConfig(parse(base.replace('isolation="vm"', ""))));
 });
 test("manifest cannot grant authority; VM mount and environment policies are fixed", () => {
   assert.deepEqual(decodeManifest(manifest), manifest);

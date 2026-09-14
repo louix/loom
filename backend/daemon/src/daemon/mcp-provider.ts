@@ -23,6 +23,14 @@ export const withExternalMcp = async (
     resume: boolean,
   ): Promise<AgentSession> => {
     const workers: ManagedMcp[] = [];
+    // Reject incompatible selections before starting any external MCP workers.
+    if (context.config.sessionVm && !("oneShot" in input && input.oneShot)) {
+      const host = input.mcpServers?.find((h) => h.spec.transport === "stdio");
+      if (host)
+        throw new Error(
+          `Host tool ${host.name} cannot be used by a VM agent; select vm-tools or remote-tools instead.`,
+        );
+    }
     const cleanup = async () => {
       const results = await Promise.allSettled(workers.map((w) => w.close()));
       const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));

@@ -29,14 +29,16 @@ remain available for development builds.
 Configure Tilth with:
 
 ```toml
-[[command-mcp]]
-name = "tilth"
+[session]
+tools = []
+vm-tools = ["tilth"]
+
+[vm-tools.tilth]
 runtime = "tilth"
-isolation = "vm"
 default_for = ["read", "write", "edit", "find", "grep"]
 ```
 
-Replace the old tilth `command` entry; do not keep both with the same name. The
+Select Tilth from only one group: host `tools` or `vm-tools`. The
 runtime supplies its own `--mcp --edit` arguments. `default_for` remains a
 capability preference, not a tool-name or schema adapter.
 
@@ -105,8 +107,10 @@ recovery. Automatic runtime GC and a rollback CLI are not implemented yet.
 Use a Nix flake reference as the runtime value, for example:
 
 ```toml
-[[command-mcp]]
-name = "my-tools"
+[session]
+vm-tools = ["my-tools"]
+
+[vm-tools.my-tools]
 runtime = "github:your-org/your-tools/<revision>#loom-runtime"
 isolation = "vm"
 ```

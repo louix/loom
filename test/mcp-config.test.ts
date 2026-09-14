@@ -4,22 +4,22 @@ import { parse } from "smol-toml";
 import { normalizeConfig, lintConfig } from "@loom/daemon/config/config";
 import { mcpToolPreferences, toolSteer } from "@loom/runtime/instructions";
 import { codeModeInstructions } from "@loom/connector-chatgpt";
-import { resolveMcpSpec } from "../backend/daemon/src/daemon/mcp-fallback.ts";
 import { decodeWorkerRequest } from "../core/src/worker.ts";
 import type { McpServerHandle } from "@loom/core/types";
 
 const config = (s: string) => normalizeConfig(parse(s));
-const http = `[[http-mcp]]
-name = "research"
+const http = `[session]
+remote-tools = ["research"]
+[remote-tools.research]
 url = "https://mcp.example.com/mcp"
 bearer_token_env = "SEARCH_CREDENTIAL"
 default_for = ["web_search", "web_fetch"]`;
 
-test("MCP transport tables parse preferences and credentials without provider-specific behavior", () => {
+test("named tool definitions resolve selected transports and credential references", () => {
   const cfg = config(
-    http +
-      `\n[[command-mcp]]
-name = "code"
+    http.replace("[session]", '[session]\ntools = ["code"]') +
+      `
+[tools.code]
 command = "/path with spaces/tool"
 args = ["--mcp", "literal $HOME"]
 default_for = ["read", "write", "edit"]`,
@@ -27,45 +27,52 @@ default_for = ["read", "write", "edit"]`,
   assert.deepEqual(cfg.httpMcp, [
     {
       name: "research",
+      required: true,
       url: "https://mcp.example.com/mcp",
       bearerTokenEnv: "SEARCH_CREDENTIAL",
       defaultFor: ["web_search", "web_fetch"],
     },
   ]);
-  const command = cfg.mcp[0]!;
-  assert.ok("command" in command);
-  assert.deepEqual(resolveMcpSpec(command), {
-    command: "/path with spaces/tool",
-    args: ["--mcp", "literal $HOME"],
-  });
+  assert.deepEqual(cfg.mcp, [
+    {
+      name: "code",
+      required: true,
+      command: "/path with spaces/tool",
+      args: ["--mcp", "literal $HOME"],
+      defaultFor: ["read", "write", "edit"],
+    },
+  ]);
   assert.ok(lintConfig(cfg, {}).some((s) => s.includes("SEARCH_CREDENTIAL")));
   assert.ok(
     !lintConfig(cfg, { SEARCH_CREDENTIAL: "secret" }).some((s) => s.includes("SEARCH_CREDENTIAL")),
   );
-  assert.deepEqual(config("command-mcp = []\nhttp-mcp = []").mcp, []);
+  assert.deepEqual(config("").mcp, []);
   assert.deepEqual(config("").httpMcp, []);
   const inline = config(http + '\nbearer_token = "inline-secret"');
   assert.equal(inline.httpMcp[0]?.bearerToken, "inline-secret");
   assert.ok(!lintConfig(inline, {}).some((s) => s.includes("SEARCH_CREDENTIAL")));
-  assert.throws(() => config(http + "\nbearer_token = 42"), /bearer_token/);
 });
 
-test("MCP configuration rejects obsolete syntax, ambiguous defaults, duplicate names and malformed entries", () => {
+test("catalogs reject old syntax and malformed definitions even when unselected", () => {
   for (const text of [
     '[[mcp]]\nname = "old"\ncommand = "old"',
+    "command-mcp = []",
+    "http-mcp = []",
     '[search]\nbackend = "kagi"',
-    http + '\n[[http-mcp]]\nname = "research"\nurl = "https://other.example/mcp"',
-    http +
-      '\n[[http-mcp]]\nname = "other"\nurl = "https://other.example/mcp"\ndefault_for = ["web_search"]',
     http.replace('["web_search", "web_fetch"]', '["invented"]'),
     http.replace('bearer_token_env = "SEARCH_CREDENTIAL"', "bearer_token_env = 42"),
     http.replace("default_for =", "override ="),
     http.replace("https://mcp.example.com/mcp", "file:///tmp/key"),
     http.replace("https://mcp.example.com/mcp", "https://user:password@example.com/mcp"),
-    http.replace('name = "research"', 'name = "loom"'),
-    '[[command-mcp]]\nname = "broken"\ncommand = "tool"\nargs = [1]',
+    '[tools.loom]\ncommand = "tool"',
+    '[tools.broken]\ncommand = "tool"\nargs = [1]',
+    '[tools.broken]\nruntime = "tilth"',
+    '[vm-tools.broken]\nruntime = "tilth"\ncommand = "host"',
+    '[session]\nexecution = "vm"',
+    '[session]\ntools = ["missing"]',
+    "tools = []",
   ])
-    assert.throws(() => config(text));
+    assert.throws(() => config(text), text);
 });
 
 test("capability preferences retain advertised schemas, fallbacks and connector-neutral names", () => {

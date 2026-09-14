@@ -61,15 +61,14 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-Configure local processes with `[[command-mcp]]` (`name`, `command`, `args`) and
-use `runtime = "tilth"` with `isolation = "vm"` for an optional
-[prepared VM runtime](packaged-runtimes.md). Configure
-remote servers with `[[http-mcp]]` (`name`, `url`, optional `bearer_token_env`).
-An inline `bearer_token` is also supported and takes precedence over the env var.
-Each active session gets a separate Deno relay for each HTTP mount. Command
-servers retain their existing launch behavior; networked services should use HTTP MCP mounts. Both groups replace their own defaults when present; top-level
-`command-mcp = []` disables the default tilth/fff mounts. There are no default
-HTTP mounts. Names must be unique across both groups; `loom` is reserved.
+Define host commands under `[tools.<name>]`, separate offline packaged VMs
+under `[vm-tools.<name>]`, and remote services under `[remote-tools.<name>]`.
+Select names with the three corresponding lists under `[session]` or
+`[repo.session]`. There are no implicit external tools. See
+[tool selection](tools.md) and [packaged runtimes](packaged-runtimes.md).
+Each active session gets a separate relay for each remote service. Only selected
+remote credentials are required; inline `bearer_token` overrides the env var.
+Names must be unique across selected tools; `loom` is reserved.
 
 `default_for` declares capability preferences, not tool aliases. Supported values
 are `read`, `write`, `edit`, `find`, `grep`, `web_search` and `web_fetch`.
@@ -81,14 +80,16 @@ tool settings. Permission checks are unchanged. This is agent guidance, not a
 guarantee that every call uses the preferred server.
 
 ```toml
-[[http-mcp]]
-name = "kagi"
+[session]
+tools = ["tilth"]
+remote-tools = ["kagi"]
+
+[remote-tools.kagi]
 url = "https://mcp.kagi.com/mcp"
 bearer_token_env = "KAGI_API_KEY"
 default_for = ["web_search", "web_fetch"]
 
-[[command-mcp]]
-name = "tilth"
+[tools.tilth]
 command = "tilth"
 args = ["--mcp", "--edit"]
 default_for = ["read", "write", "edit"]
@@ -97,7 +98,7 @@ default_for = ["read", "write", "edit"]
 Kagi is a normal MCP server: its tools keep their advertised names, such as
 `kagi_search_fetch` and `kagi_extract`. Loom supplies no Kagi-specific wrappers
 or argument translations. `[[mcp]]` and `[search] backend = "kagi"` are rejected;
-edit existing configuration to use the new tables. Brave and Tavily remain
+use named definitions and explicit selections. Brave and Tavily remain
 optional first-party `[search]` backends.
 
 Only the relay receives the upstream URL and HTTP credentials, over private

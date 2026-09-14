@@ -1530,8 +1530,10 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
           ])}
         />
       </Section>
-      <Section title="mcp servers">
-        <Line tone="faint">{"  mounted into every session"}</Line>
+      <Section title="selected tools">
+        <Line tone="faint">
+          {report.mcp.length ? "  required for each session" : "  No external tools selected"}
+        </Line>
         <Fields
           rows={report.mcp.flatMap((m) => [
             [
@@ -1544,7 +1546,7 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
           ])}
         />
       </Section>
-      <Section title="tools">
+      <Section title="built-in tools">
         <Fields
           rows={[
             ["loom", report.tools.loom.join(", ")],
@@ -1559,8 +1561,8 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
             [
               "disabled",
               <>
-                {report.tools.claudeDisabled.join(", ")}
-                <Line tone="faint">{"  (Claude — use fff)"}</Line>
+                {report.tools.claudeDisabled.join(", ") || "none"}
+                <Line tone="faint">{"  (Claude)"}</Line>
               </>,
             ],
             [

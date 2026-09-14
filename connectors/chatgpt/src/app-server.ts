@@ -49,6 +49,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
         const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "stdio" }>;
         const fields = [
           `command = ${value(spec.command)}`,
+          ...(s.required ? ["required = true"] : []),
           ...(spec.args?.length ? [`args = [${spec.args.map(value).join(", ")}]`] : []),
           ...(spec.env ? [`env = ${table(spec.env)}`] : []),
         ];
@@ -57,6 +58,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
       const spec = s.spec as Extract<McpServerHandle["spec"], { transport: "http" }>;
       const fields = [
         `url = ${value(spec.url)}`,
+        ...(s.required ? ["required = true"] : []),
         ...(spec.headers ? [`http_headers = ${table(spec.headers)}`] : []),
       ];
       return [s.name, `{ ${fields.join(", ")} }`] as const;

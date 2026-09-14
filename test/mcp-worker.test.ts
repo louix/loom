@@ -74,6 +74,28 @@ const http = (w: ManagedMcp) => {
   return w.handle.spec as Extract<typeof w.handle.spec, { transport: "http" }>;
 };
 
+test("AISDK rejects a required tool connection failure and closes prior clients", async () => {
+  const s = fixture();
+  try {
+    await assert.rejects(
+      McpHub.connect(
+        [
+          { name: "connected", required: true, spec: { transport: "http", url: s.url } },
+          {
+            name: "failed",
+            required: true,
+            spec: { transport: "http", url: new URL("/redirect", s.url).href },
+          },
+        ],
+        makeLogger("test"),
+      ),
+      /Required tool failed failed to connect/,
+    );
+  } finally {
+    await s.close();
+  }
+});
+
 test("external MCP worker supports real client discovery/calls with private upstream auth", async () => {
   const s = fixture();
   const w = await startMcpWorker("kagi", {

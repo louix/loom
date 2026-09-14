@@ -30,6 +30,7 @@ import type {
 import type { TranscriptStore } from "@loom/core/transcript";
 import { makeLogger } from "@loom/core/logger";
 import { withExternalMcp } from "./mcp-provider.ts";
+import { preflightTools } from "./tool-preflight.ts";
 
 const MOCK = "@loom/connector-mock";
 const CLAUDE = "@loom/connector-claude";
@@ -189,6 +190,7 @@ export class ProviderRegistry {
           };
         if (prop === "createSession" || prop === "resumeSession")
           return async (options: CreateSessionOptions | SessionRef) => {
+            if (!("oneShot" in options && options.oneShot)) await preflightTools(this.#config, id);
             if (prop === "resumeSession" && !options.initHooks)
               return target.resumeSession(options as SessionRef);
             const hooks =

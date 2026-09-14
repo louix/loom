@@ -588,7 +588,7 @@ models   = ["m1", "m2"]
       stdin.feed("\r");
       await waitFor(stdout, (text) => /loom — doctor/.test(text) && /connectors/.test(text));
       assert.match(stdout.last, /connectors/);
-      assert.match(stdout.last, /tilth/); // an mcp mount is listed
+      assert.match(stdout.last, /No external tools selected/);
       assert.match(stdout.last, /ask_user, commit/); // the loom tools row
 
       stdin.feed(ESC);

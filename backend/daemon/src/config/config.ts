@@ -13,9 +13,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { onPath } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
-import { MCP_CAPABILITIES, type McpCapability } from "@loom/core/types";
+import type { McpCapability } from "@loom/core/types";
 import { userConfigPath } from "../scaffold.ts";
 import type { PriceRow } from "./pricing.ts";
+import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
 
 /**
  * Loom configuration, loaded only from the trusted user config file.
@@ -342,13 +343,14 @@ export interface LoomConfig {
     aisdk: Record<string, AisdkProfile>;
   };
   mcp: Array<
-    { name: string; defaultFor?: McpCapability[] } & (
+    { name: string; defaultFor?: McpCapability[]; required?: boolean } & (
       | { command: string; args?: string[] }
       | { runtime: string; isolation: "vm" }
     )
   >;
   httpMcp: Array<{
     name: string;
+    required?: boolean;
     url: string;
     bearerTokenEnv: string;
     /** Inline credential, when supplied, takes precedence over the environment. */
@@ -376,7 +378,7 @@ export interface LoomConfig {
   /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
    * backend is chosen and its key env var is set. Hosted search MCP servers
-   * are configured with [[http-mcp]].
+   * are configured with [remote-tools.<name>].
    */
   search: {
     backend: "none" | "brave" | "tavily";
@@ -417,15 +419,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
     },
     aisdk: {},
   },
-  mcp: [
-    {
-      name: "tilth",
-      command: "tilth",
-      args: ["--mcp", "--edit"],
-      defaultFor: ["read", "write", "edit"],
-    },
-    { name: "fff", command: "fff-mcp", defaultFor: ["find", "grep"] },
-  ],
+  mcp: [],
   httpMcp: [],
   titles: { enabled: true, model: "" },
   pricing: { table: ".loom/models.toml" },
@@ -751,6 +745,17 @@ export const lintConfig = (
       w.push(`search: $${cfg.search.apiKeyEnv} is not set — web_search stays disabled`);
     }
   }
+  for (const m of cfg.mcp) {
+    if ("command" in m && !onPath(m.command, env))
+      w.push(`Required host tool "${m.name}": executable ${m.command} is unavailable`);
+  }
+  for (const id of [
+    ...cfg.claudeProfiles.map(claudeProfileId),
+    ...Object.keys(cfg.providers.aisdk),
+  ]) {
+    const error = toolExecutionError(cfg, id);
+    if (error) w.push(error);
+  }
   for (const m of cfg.httpMcp) {
     if (!m.bearerToken && m.bearerTokenEnv && !env[m.bearerTokenEnv])
       w.push(`MCP "${m.name}": $${m.bearerTokenEnv} is not set — session creation will fail`);
@@ -868,102 +873,11 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       ? permDefault
       : d.providers.claude.permissionDefault;
 
-  if ("mcp" in r)
-    throw new Error("[[mcp]] is no longer supported; use [[command-mcp]] or [[http-mcp]]");
   if (search["backend"] === "kagi")
     throw new Error(
-      'Configure Kagi as [[http-mcp]] with default_for = ["web_search", "web_fetch"]',
+      "Configure Kagi under [remote-tools.kagi] and select it in session.remote-tools",
     );
-  const entries = (key: string): Record<string, unknown>[] | undefined => {
-    if (!(key in r)) return undefined;
-    if (!Array.isArray(r[key])) throw new Error(key + " must be an array of tables");
-    return (r[key] as unknown[]).map(asRecord);
-  };
-  const required = (e: Record<string, unknown>, key: string): string => {
-    if (typeof e[key] !== "string" || !(e[key] as string).trim())
-      throw new Error("MCP requires " + key);
-    return e[key] as string;
-  };
-  const defaults = (e: Record<string, unknown>): McpCapability[] => {
-    if ("override" in e) throw new Error("Use MCP default_for to declare capability preferences");
-    const value = e["default_for"] ?? [];
-    if (!Array.isArray(value) || !value.every((v) => MCP_CAPABILITIES.includes(v)))
-      throw new Error("Invalid MCP default_for capability");
-    return value as McpCapability[];
-  };
-  const mcp =
-    entries("command-mcp")?.map((e) => {
-      if ("runtime" in e) {
-        if (e["isolation"] !== "vm")
-          throw new Error('Packaged command-mcp requires isolation = "vm"');
-        if (
-          ["command", "args", "env", "network", "hosts", "allowed_hosts", "mounts"].some(
-            (k) => k in e,
-          )
-        )
-          throw new Error(
-            "Packaged command-mcp uses manifest arguments, session workspace and no network; command/args/env/network/hosts/allowed_hosts/mounts are unsupported",
-          );
-        return {
-          name: required(e, "name"),
-          runtime: required(e, "runtime"),
-          isolation: "vm" as const,
-          defaultFor: defaults(e),
-        };
-      }
-      if ("isolation" in e && e["isolation"] !== "host")
-        throw new Error(
-          'Host command-mcp supports only isolation = "host"; VM execution requires runtime',
-        );
-      const args = e["args"] ?? [];
-      if (!Array.isArray(args) || !args.every((a) => typeof a === "string"))
-        throw new Error("command-mcp args must be strings");
-      return {
-        name: required(e, "name"),
-        command: required(e, "command"),
-        args: args as string[],
-        defaultFor: defaults(e),
-      };
-    }) ?? d.mcp;
-  const httpMcp =
-    entries("http-mcp")?.map((e) => {
-      if (e["bearer_token"] !== undefined && typeof e["bearer_token"] !== "string")
-        throw new Error("http-mcp bearer_token must be a string");
-      if (e["bearer_token_env"] !== undefined && typeof e["bearer_token_env"] !== "string")
-        throw new Error("http-mcp bearer_token_env must be a string");
-      const url = required(e, "url");
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new Error("http-mcp requires a valid URL");
-      }
-      if (
-        !["https:", "http:"].includes(parsed.protocol) ||
-        parsed.username ||
-        parsed.password ||
-        parsed.hash
-      )
-        throw new Error("http-mcp URL must be HTTP(S), without embedded credentials or a fragment");
-      return {
-        name: required(e, "name"),
-        url,
-        bearerTokenEnv: str(e["bearer_token_env"], ""),
-        ...(typeof e["bearer_token"] === "string" ? { bearerToken: e["bearer_token"] } : {}),
-        defaultFor: defaults(e),
-      };
-    }) ?? d.httpMcp;
-  const names = new Set<string>();
-  const roles = new Set<string>();
-  for (const m of [...mcp, ...httpMcp]) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(m.name) || m.name === "loom" || names.has(m.name))
-      throw new Error("Invalid, reserved or duplicate MCP name: " + m.name);
-    names.add(m.name);
-    for (const role of m.defaultFor ?? []) {
-      if (roles.has(role)) throw new Error("Multiple MCP defaults for " + role);
-      roles.add(role);
-    }
-  }
+  const { mcp, httpMcp } = resolveToolSelection(r);
 
   return {
     baseBranch: str(r["base_branch"], d.baseBranch),

@@ -202,6 +202,20 @@ test("Code Mode serializes command and HTTP MCP mounts into app-server config", 
   );
 });
 
+test("Codex requires explicitly selected command and remote tools", () => {
+  assert.equal(
+    mcpConfig([
+      { name: "host", required: true, spec: { transport: "stdio", command: "tool" } },
+      {
+        name: "remote",
+        required: true,
+        spec: { transport: "http", url: "https://example.invalid/mcp" },
+      },
+    ]),
+    '{ "host" = { command = "tool", required = true }, "remote" = { url = "https://example.invalid/mcp", required = true } }',
+  );
+});
+
 test("Code Mode routes auto-mode approvals through Codex's automatic reviewer", () => {
   assert.equal(approvalsReviewerFor("auto"), "auto_review");
   assert.equal(approvalsReviewerFor("acceptEdits"), "user");

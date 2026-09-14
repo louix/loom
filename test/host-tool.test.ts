@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { resolveMcpCommand } from "@loom/daemon/daemon/mcp-fallback";
-import { DEFAULT_CONFIG } from "@loom/daemon/config/config";
+import { normalizeConfig } from "@loom/daemon/config/config";
+import { parse } from "smol-toml";
+import { readFileSync } from "node:fs";
+import { exampleConfigPath } from "@loom/daemon/scaffold";
 import { onPath } from "@loom/core/paths";
 
 test("onPath finds a real binary and rejects a bogus one", () => {
@@ -12,42 +14,14 @@ test("onPath finds a real binary and rejects a bogus one", () => {
   assert.equal(onPath("/definitely/not/here"), false);
 });
 
-test("resolveMcpCommand: a non-tilth command is split, never rewritten", () => {
-  const r = resolveMcpCommand("fff-mcp --stdio", () => false);
-  assert.deepEqual(r, { command: "fff-mcp", args: ["--stdio"] });
-});
-
-test("resolveMcpCommand: tilth present → used as-is", () => {
-  const r = resolveMcpCommand("tilth --mcp --edit", (c) => c === "tilth");
-  assert.deepEqual(r, { command: "tilth", args: ["--mcp", "--edit"] });
-});
-
-test("resolveMcpCommand: legacy `tilth mcp …` is healed to the `--mcp` flag", () => {
-  const r = resolveMcpCommand("tilth mcp --edit", (c) => c === "tilth");
-  assert.equal(r.command, "tilth");
-  assert.deepEqual(r.args, ["--mcp", "--edit"]);
-  assert.match(r.note ?? "", /--mcp/);
-});
-
-test("resolveMcpCommand: tilth missing → left as-is with a note", () => {
-  const r = resolveMcpCommand("tilth mcp --edit", () => false);
-  assert.equal(r.command, "tilth");
-  assert.deepEqual(r.args, ["--mcp", "--edit"]);
-  assert.match(r.note ?? "", /not installed/);
-});
-
-// The default `[[mcp]]` command is a contract with tilth's CLI — a syntax
-// drift (e.g. `tilth mcp` vs the `--mcp` flag) makes the server exit
-// instantly and its tools silently vanish from every session. Pin the
-// shipped default to a live MCP handshake.
 test(
-  "the shipped default tilth command speaks MCP on stdio",
+  "the example host tilth definition speaks MCP on stdio",
   { skip: onPath("tilth") ? false : "tilth is not installed" },
   async () => {
-    const mount = DEFAULT_CONFIG.mcp[0]!;
+    const raw = parse(readFileSync(exampleConfigPath(), "utf8"));
+    const mount = normalizeConfig({ ...raw, session: { tools: ["tilth"] } }).mcp[0]!;
     assert.ok("command" in mount);
-    const { command, args: prefixArgs } = resolveMcpCommand(mount.command);
-    const args = [...prefixArgs, ...(mount.args ?? [])];
+    const { command, args = [] } = mount;
     assert.equal(command, "tilth");
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     try {

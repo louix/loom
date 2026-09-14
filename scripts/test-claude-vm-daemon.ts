@@ -48,7 +48,8 @@ await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
 await Deno.writeTextFile(
   join(f.root, "config/loom/config.toml"),
   `
-command-mcp=[]
+[session]
+remote-tools=["probe"]
 [providers.claude]
 cli_path=${JSON.stringify(cli)}
 model="haiku"
@@ -61,8 +62,7 @@ smolvm=${JSON.stringify(smolvm)}
 enabled=false
 [search]
 backend="none"
-[[http-mcp]]
-name="probe"
+[remote-tools.probe]
 url="http://127.0.0.1:${server.addr.port}/mcp"
 `,
 );

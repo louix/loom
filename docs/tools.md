@@ -1,0 +1,125 @@
+# Tool selection
+
+Loom separates host commands, separate tool VMs, and remote MCP services. Define
+integrations once in the trusted user config, then select them globally or per
+repo. Defining or bundling a tool does not enable it. With no selections, agents
+use their native tools and Loom's session tools. These lists configure Loom-managed
+integrations; provider-native settings and plugins remain separate.
+
+```toml
+[tools.tilth]
+command = "tilth"
+args = ["--mcp", "--edit"]
+default_for = ["read", "write", "edit"]
+
+[tools.fff]
+command = "fff-mcp"
+default_for = ["find", "grep"]
+
+[vm-tools.tilth]
+runtime = "tilth"
+default_for = ["read", "write", "edit", "find", "grep"]
+
+[remote-tools.docs]
+url = "https://docs.example.com/mcp"
+bearer_token_env = "DOCS_TOKEN"
+
+[session]
+tools = []
+vm-tools = []
+remote-tools = []
+```
+
+`tools` are executables installed on the host. Arguments are an array, never a
+shell command string. `vm-tools` use packaged runtimes in separate offline VMs;
+their manifests supply commands and arguments. They receive the repository mounts,
+including shared Git metadata, without host credentials. `remote-tools` receive
+per-session HTTP relays; inline `bearer_token` overrides `bearer_token_env`.
+
+All selected tools are required. Missing executables, runtime artifacts or selected
+remote credentials fail preflight. Connection failures are surfaced rather than
+silently dropping selected integrations. Availability checks do not boot VMs or
+prove remote connectivity; those are checked during launch. Unselected definitions
+are syntax-validated but do not require installation or credentials.
+
+## Common configurations
+
+Add these settings to the matching `[[repo]]` in your user config. Each example
+assumes the definitions above. Host/VM agent execution still uses the existing
+`isolation` settings; `[session]` contains tool selections only.
+
+### Host agent and host tools, in the current checkout
+
+```toml
+[[repo]]
+path = "~/dev/project"
+[repo.worktree]
+enabled = false
+[repo.isolation.claude]
+enabled = false
+[repo.isolation.codex]
+enabled = false
+[repo.isolation.aisdk]
+enabled = false
+[repo.session]
+tools = ["tilth", "fff"]
+vm-tools = []
+remote-tools = []
+```
+
+Set `repo.worktree.enabled = true` for separate branches and worktrees while
+keeping agent and tool execution on the host.
+
+### Host agent and a separate Tilth VM
+
+Keep the host execution settings above and replace the tool selections:
+
+```toml
+[repo.session]
+tools = []
+vm-tools = ["tilth"]
+remote-tools = []
+```
+
+Only Tilth is confined in a VM. The agent still runs on the host.
+
+### VM agent and a separate Tilth VM
+
+```toml
+[[repo]]
+path = "~/dev/project"
+[repo.worktree]
+enabled = true
+[repo.isolation.claude]
+enabled = true
+# Enable isolation.codex / isolation.aisdk too if using those engines.
+[repo.session]
+tools = []
+vm-tools = ["tilth"]
+remote-tools = ["docs"]
+```
+
+Agent VMs reject selected host tools before session resources are created. A host
+tool is never silently moved into a VM, and a failed VM never falls back to host
+execution. Node, Python and other programs inside the agent VM belong to its
+[development environment](session-environments.md), not `vm-tools`.
+
+## Selection and diagnostics
+
+Each list inherits independently from `[session]`; `[repo.session]` replaces only
+the lists it specifies. `[]` clears a group. Unknown selections, duplicate names
+within a list, or selecting the same name from different groups are errors.
+Definitions can share a name across groups, as Tilth does above.
+
+`default_for` is a capability preference, not a tool allowlist or renaming rule.
+Only one selected tool can be preferred for each capability. Unselected definitions
+can declare overlapping preferences. Native tools remain available as fallbacks
+where the agent supports them; selecting a required integration still requires it
+to connect.
+
+`loom doctor` reports selected tools with host, separate VM or remote placement
+and warns about host tools incompatible with configured VM agents. Changes apply
+after restarting the daemon; resumed sessions receive the current selections.
+
+The old `[[mcp]]`, `[[command-mcp]]` and `[[http-mcp]]` syntax is rejected. There is
+no compatibility mode or implicit Tilth/fff selection.

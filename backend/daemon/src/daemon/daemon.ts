@@ -20,7 +20,7 @@ import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
-import { resolveMcpSpec } from "./mcp-fallback.ts";
+import { preflightTools } from "./tool-preflight.ts";
 import {
   claudeProfileId,
   lintConfig,
@@ -242,7 +242,6 @@ export class Daemon {
   #sweepingWarm = false;
   /** Periodic sweep that re-derives git facts for worktree / in-place sessions. */
   #gitSweep: NodeJS.Timeout | null = null;
-  #tilthFallbackLogged = false;
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
   /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
@@ -1093,6 +1092,7 @@ export class Daemon {
     wantWorktree: boolean;
     by: string | undefined;
   }): Promise<SessionSnapshot> {
+    await this.#preflightTools(o.providerId);
     const id = randomUUID();
     this.#log.info("session_start", { sessionId: id, providerId: o.providerId });
     const aisdkProfile = this.config.providers.aisdk[o.providerId];
@@ -1255,7 +1255,10 @@ export class Daemon {
     const reason = this.#resumeBlockedReason(row);
     if (reason) return Promise.reject(new RpcError("resume_blocked", reason));
     const operation = Promise.resolve()
-      .then(() => this.#doReviveSession(id))
+      .then(async () => {
+        await this.#preflightTools(row.provider);
+        return this.#doReviveSession(id);
+      })
       .catch((error: unknown) => {
         if (this.#registry.get(id)?.status.kind === "starting")
           this.#registry.setStatus(
@@ -2576,6 +2579,7 @@ export class Daemon {
         ? parent.provider
         : this.#defaultProviderId();
       const providerId = p.provider ?? fallback;
+      await this.#preflightTools(providerId);
       const parentProvider = await this.#providers.get(providerId);
       const continuation = providerId !== parent.provider || !!this.#resumeBlockedReason(parent);
       const model =
@@ -3377,24 +3381,31 @@ export class Daemon {
   // helpers
   // -------------------------------------------------------------------------
 
-  /** Vendor-neutral MCP handles from config; mounted into every session. */
+  /** Reject invalid tool selections before allocating session resources. */
+  async #preflightTools(provider: string): Promise<void> {
+    try {
+      await preflightTools(this.config, provider);
+    } catch (error) {
+      throw new RpcError("bad_request", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Vendor-neutral handles for the selected tools. */
   #mcpHandles(): McpServerHandle[] {
     const commands: McpServerHandle[] = this.config.mcp.map((m) => {
       if ("runtime" in m)
         return {
           name: m.name,
+          ...(m.required ? { required: true } : {}),
           ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
           spec: { transport: "runtime", runtime: m.runtime, isolation: m.isolation },
         };
-      const { command, args, note } = resolveMcpSpec(m);
-      if (note && !this.#tilthFallbackLogged) {
-        this.#log.info("mcp command resolved", { name: m.name, note });
-        this.#tilthFallbackLogged = true;
-      }
+      const { command, args } = m;
       return {
         name: m.name,
+        ...(m.required ? { required: true } : {}),
         ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
-        spec: { transport: "stdio", command, args },
+        spec: { transport: "stdio", command, args: args ?? [] },
       };
     });
     const http: McpServerHandle[] = this.config.httpMcp.map((m) => {
@@ -3404,6 +3415,7 @@ export class Daemon {
         throw new Error("MCP " + m.name + ": " + m.bearerTokenEnv + " is not set");
       return {
         name: m.name,
+        ...(m.required ? { required: true } : {}),
         defaultFor: m.defaultFor,
         ...(m.bearerTokenEnv ? { credentialEnv: m.bearerTokenEnv } : {}),
         spec: {
@@ -3458,7 +3470,7 @@ export class Daemon {
               command: `runtime ${m.runtime}`,
               resolved: prepared.manifest.entrypoint,
               status: "ok",
-              note: "Prepared VM runtime; network disabled. VM boot checked at session startup.",
+              note: `Separate tool VM; network disabled. ${m.required ? "Required. " : ""}VM boot checked at session startup.`,
             };
           } catch (error) {
             return {
@@ -3470,13 +3482,13 @@ export class Daemon {
             };
           }
         }
-        const { command, args, note } = resolveMcpSpec(m);
+        const { command, args = [] } = m;
         return {
           name: m.name,
           command: m.command,
           resolved: [command, ...args].join(" "),
           status: mcpStatusOf(command),
-          note: note ?? "",
+          note: ["Host tool.", m.required ? "Required." : ""].filter(Boolean).join(" "),
         };
       }),
     );
@@ -3490,7 +3502,9 @@ export class Daemon {
         status: missing ? "missing" : "ok",
         note: missing
           ? m.bearerTokenEnv + " is not set"
-          : "Isolated HTTP relay; preferred for: " + (m.defaultFor.join(", ") || "none"),
+          : "Isolated HTTP relay; preferred for: " +
+            (m.defaultFor.join(", ") || "none") +
+            (m.required ? ". Required remote tool." : ""),
       });
     }
     const s = this.config.search;
