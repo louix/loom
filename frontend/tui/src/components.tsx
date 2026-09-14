@@ -525,7 +525,11 @@ export const detailLayout = (
     add(
       <Field label="context">
         <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
-        <Text tone="dim">{`  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`}</Text>
+        <Text tone="dim">
+          {s.contextLimit > 0
+            ? `  ${Math.round(frac * 100)}%  ${humanTokens(s.contextUsed)}/${humanTokens(s.contextLimit)}`
+            : `  ${humanTokens(s.contextUsed)}/unknown`}
+        </Text>
       </Field>,
     );
     if (compacting)

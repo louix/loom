@@ -486,7 +486,7 @@ export class SessionManager {
           : {}),
         ...(ev.cacheCreation ? { cacheCreation: ev.cacheCreation } : {}),
         contextUsed: ev.contextUsed,
-        contextLimit: ev.contextLimit,
+        ...(ev.contextLimit > 0 ? { contextLimit: ev.contextLimit } : {}),
         ...(ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0 ? { lastTurnAt: ev.ts } : {}),
         ...(ev.tokens.input > 0 || ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0
           ? { requestAt: ev.ts }

@@ -307,6 +307,68 @@ const beats = (seen: HarnessEvent[]) =>
     (e): e is Extract<HarnessEvent, { type: "compact_progress" }> => e.type === "compact_progress",
   );
 
+test("context capacity arrives before a completed turn and ignores stale model polls", async (t) => {
+  const polls: ((report: { rawMaxTokens: number; maxTokens: number }) => void)[] = [];
+  let q!: ReturnType<typeof fakeLiveQuery>;
+  __setClaudeSdk({
+    query: () => {
+      q = fakeLiveQuery();
+      return Object.assign(q, {
+        getContextUsage: () => new Promise((resolve) => polls.push(resolve)),
+      }) as never;
+    },
+  });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const e of s.events()) seen.push(e);
+  })();
+  t.after(async () => {
+    await s.close();
+    await reader;
+  });
+  await delay(20);
+  assert.equal(polls.length, 1, "startup asks for capacity without waiting for a result");
+  q.push({ type: "assistant", message: { content: [], usage: { input_tokens: 44_400 } } });
+  await delay(20);
+  polls[0]!({ rawMaxTokens: 200_000, maxTokens: 180_000 });
+  await delay(10);
+  assert.equal(s.snapshot().contextLimit, 200_000);
+  assert.equal(s.snapshot().contextUsed, 44_400, "capacity lookup preserves live usage");
+  assert.ok(
+    seen.some(
+      (e) => e.type === "context" && e.contextLimit === 200_000 && e.contextUsed === 44_400,
+    ),
+  );
+
+  await s.setModel("opus");
+  await s.setModel("sonnet");
+  polls[2]!({ rawMaxTokens: 1_000_000, maxTokens: 900_000 });
+  await delay(10);
+  polls[1]!({ rawMaxTokens: 200_000, maxTokens: 180_000 });
+  await delay(10);
+  assert.equal(
+    s.snapshot().contextLimit,
+    1_000_000,
+    "an older model lookup cannot overwrite the current one",
+  );
+  await s.setModel("sonnet");
+  polls[3]!({ rawMaxTokens: 0, maxTokens: 0 });
+  await delay(10);
+  assert.equal(
+    s.snapshot().contextLimit,
+    1_000_000,
+    "an unavailable report does not erase a known limit",
+  );
+});
+
 test("compact() holds until the compact_boundary lands, beating compact_progress meanwhile", async (t) => {
   const { s, q, seen, reader } = await setupLive(t);
   // Establish a context estimate so the beats carry a real `before`.

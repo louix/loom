@@ -330,6 +330,7 @@ class ClaudeSession implements AgentSession {
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
   #plans = new Map<string, string>();
   #interruptEpoch = 0;
+  #contextPollEpoch = 0;
   #pump: Promise<void> | null = null;
   #closing = false;
   /**
@@ -525,10 +526,38 @@ class ClaudeSession implements AgentSession {
     // both a fresh session and a resume, so a reattached daemon shows real
     // `five_hour` / `seven_day` numbers within a second instead of waiting for
     // the next spontaneous `rate_limit_event`.
-    void this.#query
+    const query = this.#query;
+    void query
       .initializationResult()
-      .then(() => this.#pollPlanUsage())
+      .then(async () => {
+        if (this.#query !== query || this.#closing) return;
+        await Promise.all([this.#pollPlanUsage(), this.#pollContextLimit()]);
+      })
       .catch(() => {});
+  }
+
+  /** Discover the window before the first turn finishes. Keep request usage
+   * from the message stream; the context report is only our source of capacity. */
+  async #pollContextLimit(): Promise<void> {
+    const q = this.#query;
+    if (!q || typeof q.getContextUsage !== "function") return;
+    const epoch = ++this.#contextPollEpoch;
+    try {
+      const report = await q.getContextUsage();
+      if (this.#closing || this.#query !== q || epoch !== this.#contextPollEpoch) return;
+      const limit = report.rawMaxTokens > 0 ? report.rawMaxTokens : report.maxTokens;
+      if (!Number.isFinite(limit) || limit <= 0) return;
+      this.#mapper.state.contextLimit = limit;
+      this.#outbox.push({
+        type: "context",
+        sessionId: this.id,
+        ts: Date.now(),
+        contextUsed: this.#mapper.state.contextUsed,
+        contextLimit: limit,
+      });
+    } catch (err) {
+      this.#log.debug("context limit poll failed", { err: String(err) });
+    }
   }
 
   /**
@@ -1043,6 +1072,7 @@ class ClaudeSession implements AgentSession {
       await this.#query?.setModel(model);
       this.#model = model;
       this.#mapper.state.model = model;
+      void this.#pollContextLimit();
     } catch (err) {
       // Keep the old model and give the caller a readable reason (matches
       // setMode / setEffort); an out-of-catalog id otherwise surfaces raw.

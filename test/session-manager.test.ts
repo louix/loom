@@ -471,6 +471,22 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(snap.costUsd, settled.costUsd);
     assert.equal(snap.contextLimit, settled.contextLimit);
     assert.deepEqual(snap.cache, settled.cache);
+
+    fs.emit({ type: "context", contextUsed: 150_000, contextLimit: 200_000 });
+    fs.emit({
+      type: "usage",
+      tokens: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextUsed: 150_001,
+      contextLimit: 0,
+    });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).contextUsed === 150_001,
+    );
+    assert.equal(
+      (await c.request<SessionSnapshot>("session.get", { id })).contextLimit,
+      200_000,
+      "a usage report without capacity must preserve the previously discovered limit",
+    );
     await c.close();
   });
 

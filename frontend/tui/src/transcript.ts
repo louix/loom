@@ -248,7 +248,7 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
     case "usage":
       return {
         glyph: "∑",
-        text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(ev.tokens.output)}out · ctx ${humanTokens(ev.contextUsed)}/${humanTokens(ev.contextLimit)}`,
+        text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(ev.tokens.output)}out · ctx ${humanTokens(ev.contextUsed)}/${ev.contextLimit > 0 ? humanTokens(ev.contextLimit) : "unknown"}`,
         tone: "dim",
       };
     case "compact": {

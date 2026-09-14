@@ -20,6 +20,14 @@ import type { ProviderInfo } from "@loom/core/wire";
 import type { PickerDest } from "@loom/tui/overlay";
 import { fleet, snap } from "./tui-fixtures.ts";
 
+test("an unknown context limit is not rendered as zero capacity or zero percent", () => {
+  const layout = detailLayout(snap({ contextUsed: 44_400, contextLimit: 0 }), { width: 80 });
+  const plain = stripVTControlCharacters(renderToString(layout.render(0), { columns: 80 }));
+  assert.ok(plain.includes("44.4k/unknown"));
+  assert.ok(!plain.includes("44.4k/0"));
+  assert.ok(!plain.includes("0%"));
+});
+
 test("shared text and fields retain blank rows and label gutters in narrow panes", () => {
   const rendered = renderToString(
     createElement(
