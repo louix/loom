@@ -274,11 +274,15 @@ const fakeLiveQuery = () => {
 /** A live session over `fakeLiveQuery`, with its event stream collected. The
  *  session is torn down via `t.after` so a failing assertion can't leave the
  *  `fakeLiveQuery` poll loop (or the event reader) spinning and wedge the run. */
-const setupLive = async (t: TestContext) => {
+const setupLive = async (
+  t: TestContext,
+  configure: (q: ReturnType<typeof fakeLiveQuery>) => void = () => {},
+) => {
   let q!: ReturnType<typeof fakeLiveQuery>;
   __setClaudeSdk({
     query: () => {
       q = fakeLiveQuery();
+      configure(q);
       return q as never;
     },
   });
@@ -367,6 +371,135 @@ test("context capacity arrives before a completed turn and ignores stale model p
     1_000_000,
     "an unavailable report does not erase a known limit",
   );
+});
+
+test("interrupt stops foreground, detached, nested and late Claude tasks", async (t) => {
+  const stopped: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { s, q } = await setupLive(t, (q) => {
+    q.interrupt = async () => {
+      await gate;
+      return { still_queued: [] };
+    };
+    Object.assign(q, {
+      stopTask: async (id: string) => {
+        stopped.push(id);
+      },
+    });
+  });
+  q.push({
+    type: "system",
+    subtype: "task_started",
+    task_id: "foreground",
+    is_backgrounded: false,
+  });
+  q.push({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: [{ task_id: "detached", task_type: "local_agent", description: "child" }],
+  });
+  await delay(20);
+  const first = s.interrupt();
+  const second = s.interrupt();
+  assert.equal(first, second, "repeat interrupts coalesce");
+  await assert.rejects(s.send("more"), /cancellation is unresolved/);
+  q.push({ type: "system", subtype: "task_started", task_id: "nested", spawn_depth: 2 });
+  await delay(20);
+  release();
+  await first;
+  assert.deepEqual(stopped.sort(), ["detached", "foreground", "nested"]);
+  q.push({ type: "system", subtype: "task_started", task_id: "late" });
+  await delay(20);
+  assert.ok(stopped.includes("late"));
+  await s.send("continue");
+  q.push({ type: "system", subtype: "task_started", task_id: "new-turn" });
+  await delay(20);
+  assert.ok(!stopped.includes("new-turn"), "new work is not cancelled by the old interrupt");
+});
+
+test("partial Claude task cancellation rejects and can be retried", async (t) => {
+  const attempts: string[] = [];
+  let fail = true;
+  const { s, q } = await setupLive(t, (q) => {
+    Object.assign(q, {
+      stopTask: async (id: string) => {
+        attempts.push(id);
+        if (id === "bad" && fail) throw new Error("stop rejected");
+      },
+    });
+  });
+  for (const id of ["good", "bad"])
+    q.push({ type: "system", subtype: "task_started", task_id: id });
+  await delay(20);
+  await assert.rejects(s.interrupt(), /cancellation incomplete.*bad/);
+  assert.deepEqual(attempts.sort(), ["bad", "good"]);
+  await assert.rejects(s.send("more"), /cancellation is unresolved/);
+  fail = false;
+  await s.interrupt();
+  assert.equal(attempts.filter((id) => id === "good").length, 1);
+  assert.equal(attempts.filter((id) => id === "bad").length, 2);
+  await s.send("continue");
+});
+
+test("child cancellation runs even if the parent interrupt fails", async (t) => {
+  let stopped = false;
+  const { s, q } = await setupLive(t, (q) => {
+    q.interrupt = async () => {
+      throw new Error("parent interrupt failed");
+    };
+    Object.assign(q, {
+      stopTask: async () => {
+        stopped = true;
+      },
+    });
+  });
+  q.push({ type: "system", subtype: "task_started", task_id: "child" });
+  await delay(20);
+  await assert.rejects(s.interrupt(), /parent interrupt failed/);
+  assert.equal(stopped, true);
+});
+
+test("an older Claude runtime cannot silently ignore child cancellation", async (t) => {
+  const { s, q } = await setupLive(t);
+  q.push({ type: "system", subtype: "task_started", task_id: "child" });
+  await delay(20);
+  await assert.rejects(s.interrupt(), /does not support stopping tasks/);
+});
+
+test("queued turns surviving Claude interrupt are reported as incomplete cancellation", async (t) => {
+  const { s } = await setupLive(t, (q) => {
+    q.interrupt = async () => ({ still_queued: ["queued-turn"] });
+  });
+  await assert.rejects(s.interrupt(), /still has 1 queued turn/);
+  await assert.rejects(s.send("more"), /cancellation is unresolved/);
+});
+
+test("a task completing while its stop request fails is already cancelled", async (t) => {
+  let reject!: (err: Error) => void;
+  const { s, q } = await setupLive(t, (q) => {
+    Object.assign(q, {
+      stopTask: () =>
+        new Promise<void>((_resolve, r) => {
+          reject = r;
+        }),
+    });
+  });
+  q.push({ type: "system", subtype: "task_started", task_id: "finished" });
+  await delay(20);
+  const stopped = s.interrupt();
+  await delay(10);
+  q.push({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "finished",
+    status: "completed",
+  });
+  await delay(20);
+  reject(new Error("task no longer exists"));
+  await stopped;
 });
 
 test("compact() holds until the compact_boundary lands, beating compact_progress meanwhile", async (t) => {
@@ -773,6 +906,20 @@ test("the guard tracks a live setMode into auto", async () => {
     "auto: now guarded",
   );
   await s.close();
+});
+
+test("interruption blocks auto-approved tools from surviving queued turns", async () => {
+  const { s, hook } = await captureHook("auto");
+  try {
+    await s.interrupt();
+    for (const tool of ["Bash", "Write", "Agent"])
+      assert.equal(
+        (await hook(preToolUse(tool, {}))).hookSpecificOutput?.permissionDecision,
+        "deny",
+      );
+  } finally {
+    await s.close();
+  }
 });
 
 test("resumeSession forwards the ref's systemPromptAppend into the CLI's systemPrompt option", async () => {

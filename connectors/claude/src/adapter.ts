@@ -19,6 +19,7 @@ import type {
   PermissionMode,
   PermissionResult,
   Query,
+  SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { HarnessEvent } from "@loom/core/events";
@@ -264,6 +265,8 @@ const parseContextTag = (s: string): number => {
 const userMessage = (text: string): SDKUserMessage => {
   return {
     type: "user",
+    // The interrupt receipt only lists UUID-stamped queued messages.
+    uuid: randomUUID(),
     message: { role: "user", content: text },
     parent_tool_use_id: null,
   } as unknown as SDKUserMessage;
@@ -331,6 +334,14 @@ class ClaudeSession implements AgentSession {
   #plans = new Map<string, string>();
   #interruptEpoch = 0;
   #contextPollEpoch = 0;
+  #taskIds = new Set<string>();
+  #finishedTaskIds = new Set<string>();
+  #backgroundTaskIds = new Set<string>();
+  #taskToolIds = new Map<string, string>();
+  #backgroundTasks: Extract<HarnessEvent, { type: "background_tasks" }>["tasks"] = [];
+  #taskStops = new Map<string, Promise<void>>();
+  #interruptOperation: Promise<void> | null = null;
+  #interruptFailed = false;
   #pump: Promise<void> | null = null;
   #closing = false;
   /**
@@ -374,6 +385,11 @@ class ClaudeSession implements AgentSession {
 
   /** Build the `query()` and start pumping its messages into the outbox. */
   start(opts: CreateSessionOptions, extra: StartExtra = {}): void {
+    this.#taskIds.clear();
+    this.#finishedTaskIds.clear();
+    this.#backgroundTaskIds.clear();
+    this.#taskToolIds.clear();
+    this.#backgroundTasks = [];
     this.#startOpts = opts;
     this.#startExtra = extra;
     const { resume, cli, promptCacheTtl, configDir } = extra;
@@ -434,6 +450,16 @@ class ClaudeSession implements AgentSession {
     const writableOutsideTree = allowedWriteRoots(configDir);
     const guardOutOfTreeWrites: HookCallback = (input) => {
       if (input.hook_event_name !== "PreToolUse") return Promise.resolve({});
+      // Auto-approved tools bypass canUseTool. A queued turn that survives
+      // the native interrupt must still be unable to perform more work.
+      if (this.#interrupted)
+        return Promise.resolve({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: "The session was interrupted.",
+          },
+        });
       if (this.#mode !== "auto") return Promise.resolve({});
       const reason = outOfTreeWriteReason(
         worktreeRoot,
@@ -590,6 +616,7 @@ class ClaudeSession implements AgentSession {
     if (!q) return;
     try {
       for await (const msg of q) {
+        this.#trackTasks(msg);
         if (msg.type === "system" && msg.subtype === "init") {
           const missing = (this.#startOpts?.mcpServers ?? []).filter(
             (server) =>
@@ -608,6 +635,12 @@ class ClaudeSession implements AgentSession {
         // Always run the mapper — it carries cumulative token / cost state
         // that must stay correct even for a turn we're suppressing.
         const events = this.#mapper.map(msg);
+        for (const event of events) {
+          if (event.type === "background_tasks") {
+            event.tasks = event.tasks.filter((task) => !this.#finishedTaskIds.has(task.id));
+            this.#backgroundTasks = event.tasks;
+          }
+        }
         // A tracked compaction ends at its `compact_boundary` — or when the
         // turn carrying it fails. Checked before the interrupt muzzle so the
         // wait (and the daemon's op gate) releases even for events we drop.
@@ -619,7 +652,12 @@ class ClaudeSession implements AgentSession {
             }
           }
         }
-        if (this.#interrupted) continue;
+        if (this.#interrupted) {
+          for (const ev of events)
+            if (ev.type === "subagent_stopped" || ev.type === "background_tasks")
+              this.#outbox.push(ev);
+          continue;
+        }
         for (const ev of events) this.#outbox.push(ev);
         // A completed turn may have moved the plan windows — refresh, throttled.
         if (
@@ -674,6 +712,8 @@ class ClaudeSession implements AgentSession {
 
   async send(input: UserInput): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    if (this.#interruptOperation || this.#interruptFailed || this.#taskStops.size > 0)
+      throw new Error("Claude cancellation is unresolved — retry interrupt before sending");
     if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     this.#interrupted = false; // a fresh user turn supersedes any prior interrupt
     this.#inbox.push(userMessage(input));
@@ -798,6 +838,7 @@ class ClaudeSession implements AgentSession {
 
   /** loom `ask_user` handler: emit a `question` event, block until answered. */
   #askUser(question: string, context: string | undefined): Promise<string> {
+    if (this.#interrupted || this.#closing) return Promise.resolve("The session was interrupted.");
     const id = randomUUID();
     const answer = this.#pending.requestQuestion(id);
     this.#outbox.push({
@@ -943,7 +984,16 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  async interrupt(): Promise<void> {
+  interrupt(): Promise<void> {
+    if (this.#interruptOperation) return this.#interruptOperation;
+    const operation = this.#interruptAll().finally(() => {
+      this.#interruptOperation = null;
+    });
+    this.#interruptOperation = operation;
+    return operation;
+  }
+
+  async #interruptAll(): Promise<void> {
     this.#interruptEpoch++;
     // Stop the live turn, and don't let anything queued behind it speak into
     // the stopped session. `#inbox.drain()` clears sends the SDK hasn't pulled
@@ -955,10 +1005,120 @@ class ClaudeSession implements AgentSession {
     // don't wait for the stream to end or `close()` to run.
     this.#rejectPending("the turn was interrupted");
     this.#inbox.drain();
-    const receipt = await this.#query?.interrupt();
-    const queued = receipt?.still_queued;
-    if (queued && queued.length > 0) {
-      this.#log.debug("interrupt left queued turns in the CLI", { count: queued.length });
+    const failures: string[] = [];
+    const parent = Promise.resolve().then(async () => {
+      try {
+        const receipt = await this.#query?.interrupt();
+        if (receipt?.still_queued?.length)
+          failures.push(`Claude still has ${receipt.still_queued.length} queued turn(s)`);
+      } catch (err) {
+        failures.push(String(err));
+      }
+    });
+    const attempted = new Set<string>();
+    const stopChildren = async (): Promise<void> => {
+      for (;;) {
+        const ids = [...this.#taskIds].filter((id) => !attempted.has(id));
+        if (!ids.length) break;
+        for (const id of ids) attempted.add(id);
+        const results = await Promise.allSettled(ids.map((id) => this.#stopTask(id)));
+        for (const result of results)
+          if (result.status === "rejected") failures.push(String(result.reason));
+      }
+    };
+    // Stop known children without waiting for the parent (which may itself be
+    // awaiting a child), then sweep registrations that arrived during its ACK.
+    await stopChildren();
+    await parent;
+    await stopChildren();
+    this.#interruptFailed = failures.length > 0;
+    if (failures.length) throw new Error(`Claude cancellation incomplete: ${failures.join("; ")}`);
+  }
+
+  #stopTask(id: string): Promise<void> {
+    const pending = this.#taskStops.get(id);
+    if (pending) return pending;
+    const q = this.#query;
+    // Defer invocation until after the promise is registered, including the
+    // missing-method case which otherwise settles before the map insertion.
+    const stop = Promise.resolve().then(async () => {
+      try {
+        if (!q || typeof q.stopTask !== "function")
+          throw new Error("this Claude runtime does not support stopping tasks");
+        await q.stopTask(id);
+        if (q === this.#query) this.#retireTask(id);
+      } catch (err) {
+        if (q === this.#query && this.#taskIds.has(id))
+          throw new Error(`task ${id}: ${String(err)}`);
+      } finally {
+        this.#taskStops.delete(id);
+      }
+    });
+    this.#taskStops.set(id, stop);
+    return stop;
+  }
+
+  #trackTasks(msg: SDKMessage): void {
+    if (msg.type !== "system") return;
+    const added: string[] = [];
+    if (msg.subtype === "task_started") {
+      if (msg.ambient || msg.skip_transcript || this.#finishedTaskIds.has(msg.task_id)) return;
+      this.#taskIds.add(msg.task_id);
+      if (msg.tool_use_id) this.#taskToolIds.set(msg.task_id, msg.tool_use_id);
+      added.push(msg.task_id);
+    } else if (msg.subtype === "task_notification") {
+      this.#retireTask(msg.task_id);
+    } else if (msg.subtype === "background_tasks_changed") {
+      const ids = new Set(
+        msg.tasks
+          .filter((task) => !task.ambient && !this.#finishedTaskIds.has(task.task_id))
+          .map((task) => task.task_id),
+      );
+      for (const id of this.#backgroundTaskIds) if (!ids.has(id)) this.#taskIds.delete(id);
+      for (const id of ids) {
+        this.#taskIds.add(id);
+        added.push(id);
+      }
+      this.#backgroundTaskIds = ids;
+    }
+    // Late task registrations must not escape an already completed interrupt.
+    if (this.#interrupted && !this.#interruptOperation && !this.#closing && !this.#rewindInFlight) {
+      for (const id of added) {
+        void this.#stopTask(id).catch((err: unknown) => {
+          this.#interruptFailed = true;
+          this.#outbox.push({
+            type: "error",
+            sessionId: this.id,
+            ts: Date.now(),
+            fatal: true,
+            message: `Claude cancellation incomplete: ${String(err)} — retry interrupt`,
+          });
+        });
+      }
+    }
+  }
+
+  #retireTask(id: string): void {
+    this.#finishedTaskIds.add(id);
+    this.#taskIds.delete(id);
+    const toolId = this.#taskToolIds.get(id);
+    this.#taskToolIds.delete(id);
+    if (toolId)
+      this.#outbox.push({
+        type: "subagent_stopped",
+        sessionId: this.id,
+        ts: Date.now(),
+        subagentId: toolId,
+      });
+    const remaining = this.#backgroundTasks.filter((task) => task.id !== id);
+    if (remaining.length !== this.#backgroundTasks.length) {
+      this.#backgroundTasks = remaining;
+      this.#outbox.push({
+        type: "background_tasks",
+        sessionId: this.id,
+        ts: Date.now(),
+        tasks: remaining,
+      });
     }
   }
 
