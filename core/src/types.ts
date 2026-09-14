@@ -203,7 +203,7 @@ export type PermissionDecision = z.infer<typeof permissionDecisionSchema>;
  * "present a plan" tool in `plan` mode).
  *
  * - `implement` — accept; the agent proceeds in the same context.
- * - `implement_fresh` — accept, but compact the context to the plan + goal
+ * - `implement_fresh` — accept, but reduce the context to the plan + goal
  *   first, so implementation starts lean. May also retarget the `model` /
  *   `effort` the implementation runs under (the plan review's `⌥p`).
  * - `revise` — the user edited the plan; the agent implements *that* text.

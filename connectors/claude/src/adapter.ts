@@ -315,9 +315,9 @@ class ClaudeSession implements AgentSession {
    *  `setModel()`. `rewind()` composes the resumed query from this (and the
    *  live `#mode` / `#effort`), not the frozen `#startOpts`. */
   #model: string | undefined;
-  /** Spans the whole `rewind()` call (incl. the async fork *and* the query
-   *  swap) — rejects a second concurrent undo, and tells `#drain`'s cleanup to
-   *  leave `#outbox` / `#inbox` open because a resumed query will reuse them. */
+  /** Spans a rewind or fresh implementation's query replacement. Rejects
+   *  concurrent transcript operations and keeps `#drain` from closing the
+   *  channels while the replacement query is being prepared. */
   #rewindInFlight = false;
   /** The args `start()` last ran with, so `rewind()` can rebuild the query. */
   #startOpts: CreateSessionOptions | null = null;
@@ -328,6 +328,8 @@ class ClaudeSession implements AgentSession {
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
+  #plans = new Map<string, string>();
+  #interruptEpoch = 0;
   #pump: Promise<void> | null = null;
   #closing = false;
   /**
@@ -392,6 +394,7 @@ class ClaudeSession implements AgentSession {
         const raw = (input as { plan?: unknown } | null)?.plan;
         const plan =
           typeof raw === "string" && raw.trim() !== "" ? raw : JSON.stringify(input ?? {});
+        this.#plans.set(reqId, plan);
         const decision = this.#pending.requestPlan(reqId);
         this.#outbox.push({
           type: "plan_review",
@@ -625,6 +628,7 @@ class ClaudeSession implements AgentSession {
 
   /** Resolve every outstanding permission / question / plan promise. */
   #rejectPending(reason: string): void {
+    this.#plans.clear();
     this.#pending.failAll({ behavior: "deny", message: reason }, `(${reason})`, {
       behavior: "deny",
       message: reason,
@@ -641,6 +645,7 @@ class ClaudeSession implements AgentSession {
 
   async send(input: UserInput): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     this.#interrupted = false; // a fresh user turn supersedes any prior interrupt
     this.#inbox.push(userMessage(input));
   }
@@ -657,6 +662,7 @@ class ClaudeSession implements AgentSession {
    */
   async compact(instructions?: string): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
+    if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     const trimmed = instructions?.trim();
     this.#inbox.push(userMessage(trimmed ? `/compact ${trimmed}` : "/compact"));
     // One tracked compaction at a time. The daemon's op gate serialises
@@ -784,6 +790,13 @@ class ClaudeSession implements AgentSession {
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     if (!this.#pending.hasPlan(id)) return; // already resolved / unknown — first writer won
 
+    const approvedPlan = this.#plans.get(id);
+    this.#plans.delete(id);
+    if (decision.action === "implement_fresh") {
+      await this.#implementFresh(decision, approvedPlan ?? "");
+      return;
+    }
+
     if (decision.action === "implement") {
       // Native exit: the SDK leaves plan mode and the turn implements. Mirror
       // the requested mode into our own snapshot so `snapshot()` (and the
@@ -822,10 +835,6 @@ class ClaudeSession implements AgentSession {
       behavior: "deny",
       message: "Plan accepted — implementing now.",
     });
-    if (decision.action === "implement_fresh") {
-      void this.#implementFresh(decision);
-      return;
-    }
     await this.setMode(decision.mode ?? "acceptEdits");
     const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";
     await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
@@ -833,31 +842,80 @@ class ClaudeSession implements AgentSession {
 
   async #implementFresh(
     decision: Extract<PlanDecision, { action: "implement_fresh" }>,
+    plan: string,
   ): Promise<void> {
+    if (!this.#startOpts) throw new Error("this session was never started");
+    if (!plan.trim()) throw new Error("fresh implementation needs the approved plan text");
+    if (this.#rewindInFlight) throw new Error("a context replacement is already in progress");
+    if (this.#closing) throw new Error("session is closing");
+
+    // Denying ExitPlanMode resumes the planning model. Close that query before
+    // resolving its review. A new query applies the implementation settings
+    // before its first inference and carries only the approved plan and goal.
+    this.#rewindInFlight = true;
+    this.#interrupted = true;
+    const interruptEpoch = this.#interruptEpoch;
     try {
-      if (decision.model) await this.setModel(decision.model);
-      if (decision.effort) await this.setEffort(decision.effort);
-      await this.compact(
-        "Keep the approved plan and the original goal verbatim. Drop the exploration transcript.",
+      this.#inbox.drain();
+      this.#inbox.close();
+      this.#query?.close();
+      this.#rejectPending("Plan approved — implementation continues in a new context.");
+      await this.#pump;
+      if (this.#closing || this.#interruptEpoch !== interruptEpoch) {
+        this.#outbox.close();
+        return;
+      }
+
+      const opts = this.#startOpts;
+      const { resume: _resume, ...extra } = this.#startExtra;
+      this.#inbox = new AsyncChannel<SDKUserMessage>();
+      this.#mapper.onQuerySwap();
+      const before = this.#mapper.state.contextUsed;
+      this.#mapper.state.providerRef = null;
+      this.#mapper.state.contextUsed = 0;
+      this.#mode = decision.mode ?? "acceptEdits";
+      this.#model = decision.model ?? this.#model;
+      this.#effort = decision.effort ?? this.#effort;
+      this.#mapper.state.model = this.#model ?? null;
+      this.#interrupted = false;
+      this.start(
+        {
+          ...opts,
+          prompt: `The plan is approved. Implement it now.\n\nOriginal goal: ${opts.prompt}\n\n${plan}`,
+          mode: this.#mode,
+          ...(this.#model ? { model: this.#model } : {}),
+          ...(this.#effort ? { effort: this.#effort } : {}),
+        },
+        extra,
       );
-      if (this.#closing) return;
-      await this.setMode(decision.mode ?? "acceptEdits");
-      await this.send("The plan is approved. Implement it now:\n\nthe plan you just presented");
+      // Invalidate undo checkpoints into the discarded native transcript.
+      this.#outbox.push({
+        type: "compact",
+        sessionId: this.id,
+        ts: Date.now(),
+        trigger: "manual",
+        before,
+        after: 0,
+        summary: plan,
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.#log.warn("plan compaction failed", { err: message });
-      if (!this.#closing)
-        this.#outbox.push({
-          type: "error",
-          sessionId: this.id,
-          ts: Date.now(),
-          message,
-          fatal: false,
-        });
+      this.#outbox.push({
+        type: "error",
+        sessionId: this.id,
+        ts: Date.now(),
+        message: `Could not start fresh implementation: ${err instanceof Error ? err.message : String(err)}`,
+        fatal: true,
+      });
+      this.#inbox.close();
+      this.#outbox.close();
+      throw err;
+    } finally {
+      this.#rewindInFlight = false;
     }
   }
 
   async interrupt(): Promise<void> {
+    this.#interruptEpoch++;
     // Stop the live turn, and don't let anything queued behind it speak into
     // the stopped session. `#inbox.drain()` clears sends the SDK hasn't pulled
     // yet; `#interrupted` (lifted by the next `send()`) muzzles a turn already

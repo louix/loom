@@ -349,22 +349,129 @@ test("compact() holds until the compact_boundary lands, beating compact_progress
   await reader;
 });
 
-test("implement fresh waits for compaction before sending the implementation turn", async (t) => {
-  let canUse!: FakeCanUseTool;
-  let q!: ReturnType<typeof fakeLiveQuery>;
-  const inputs: string[] = [];
+test("implement fresh replaces the planning query before applying the selected settings", async (t) => {
+  const calls: {
+    prompt: AsyncIterable<{ message?: { content?: string } }>;
+    options: Record<string, unknown> & { canUseTool: FakeCanUseTool };
+  }[] = [];
+  const queries: ReturnType<typeof fakeLiveQuery>[] = [];
+  const inputs: string[][] = [];
+  let oldClosed = false;
   __setClaudeSdk({
     query: (args: unknown) => {
-      const request = args as {
-        prompt: AsyncIterable<{ message?: { content?: string } }>;
-        options: { canUseTool: FakeCanUseTool };
-      };
-      canUse = request.options.canUseTool;
+      const request = args as (typeof calls)[number];
+      if (calls.length) assert.ok(oldClosed, "old query must close before starting implementation");
+      calls.push(request);
+      const received: string[] = [];
+      inputs.push(received);
       void (async () => {
-        for await (const input of request.prompt) inputs.push(input.message?.content ?? "");
+        for await (const input of request.prompt) received.push(input.message?.content ?? "");
       })();
-      q = fakeLiveQuery();
+      const q = fakeLiveQuery();
+      if (!queries.length) {
+        const close = q.close;
+        q.close = () => {
+          oldClosed = true;
+          q.push({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "stale implementation" }] },
+          });
+          close();
+        };
+      }
+      queries.push(q);
       return q as never;
+    },
+  });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "plan this",
+    model: "opus",
+    mode: "plan",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const event of s.events()) seen.push(event);
+  })();
+  t.after(async () => {
+    await s.close();
+    await reader;
+  });
+  const canUse = calls[0]!.options.canUseTool;
+  const review = canUse("ExitPlanMode", { plan: "the approved plan" }, { toolUseID: "p1" });
+  await s.respondToPlan("p1", {
+    action: "implement_fresh",
+    mode: "auto",
+    model: "sonnet",
+    effort: "high",
+  });
+  assert.equal((await review)?.behavior, "deny");
+  await delay(20);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.options.model, "sonnet");
+  assert.equal(calls[1]!.options.permissionMode, "auto");
+  assert.equal(calls[1]!.options.effort, "high");
+  assert.equal(calls[1]!.options.resume, undefined);
+  assert.equal(calls[1]!.options.cwd, "/tmp");
+  assert.deepEqual(inputs[0], ["plan this"]);
+  assert.equal(inputs[1]?.length, 1);
+  assert.match(inputs[1]![0]!, /Original goal: plan this/);
+  assert.match(inputs[1]![0]!, /the approved plan/);
+  assert.equal(s.snapshot().mode, "auto");
+  assert.equal(s.snapshot().model, "sonnet");
+  assert.ok(
+    !seen.some(
+      (e) => e.type === "error" || e.type === "compact_progress" || e.type === "assistant_text",
+    ),
+  );
+  assert.ok(
+    seen.some((e) => e.type === "compact"),
+    "discarded transcript checkpoints are invalidated",
+  );
+  await s.respondToPlan("p1", { action: "implement_fresh" });
+  assert.equal(calls.length, 2, "duplicate approval cannot start another implementation");
+});
+
+for (const stop of ["interrupt", "close"] as const) {
+  test(`implement fresh does not restart after ${stop} during teardown`, async (t) => {
+    let canUse!: FakeCanUseTool;
+    let queries = 0;
+    __setClaudeSdk({
+      query: (args: unknown) => {
+        queries++;
+        canUse = (args as { options: { canUseTool: FakeCanUseTool } }).options.canUseTool;
+        return fakeLiveQuery() as never;
+      },
+    });
+    const s = await new ClaudeProvider().createSession({
+      sessionId: "c1",
+      cwd: "/tmp",
+      prompt: "plan this",
+      mode: "plan",
+      mcpServers: [],
+      loomServer: false,
+    });
+    t.after(() => s.close());
+    const review = canUse("ExitPlanMode", { plan: "the plan" }, { toolUseID: "p1" });
+    const changing = s.respondToPlan("p1", { action: "implement_fresh", mode: "auto" });
+    await s[stop]();
+    await changing;
+    await review;
+    assert.equal(queries, 1, "stopping must not launch an implementation query");
+  });
+}
+
+test("a fresh query startup failure reaches the caller and closes the event stream", async (t) => {
+  let canUse!: FakeCanUseTool;
+  let queries = 0;
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      if (queries++) throw new Error("startup failed");
+      canUse = (args as { options: { canUseTool: FakeCanUseTool } }).options.canUseTool;
+      return fakeLiveQuery() as never;
     },
   });
   const s = await new ClaudeProvider().createSession({
@@ -376,23 +483,18 @@ test("implement fresh waits for compaction before sending the implementation tur
     loomServer: false,
   });
   t.after(() => s.close());
-
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const e of s.events()) seen.push(e);
+  })();
   const review = canUse("ExitPlanMode", { plan: "the plan" }, { toolUseID: "p1" });
-  await delay(20);
-  await s.respondToPlan("p1", { action: "implement_fresh", mode: "auto" });
+  await assert.rejects(s.respondToPlan("p1", { action: "implement_fresh" }), /startup failed/);
   await review;
-  await delay(20);
-  assert.ok(inputs.some((input) => input.startsWith("/compact")));
-  assert.ok(!inputs.some((input) => input.startsWith("The plan is approved")));
-
-  q.push({
-    type: "system",
-    subtype: "compact_boundary",
-    compact_metadata: { trigger: "manual", pre_tokens: 10_000, post_tokens: 1_000 },
-  });
-  for (let i = 0; i < 40 && !inputs.some((input) => input.startsWith("The plan is approved")); i++)
-    await delay(10);
-  assert.ok(inputs.some((input) => input.startsWith("The plan is approved")));
+  await reader;
+  assert.ok(
+    seen.some((e) => e.type === "error" && e.fatal && e.message.includes("startup failed")),
+  );
+  assert.ok(!seen.some((e) => e.type === "compact_progress"));
 });
 
 test("a failed turn without a boundary releases the compact wait", async (t) => {

@@ -1374,7 +1374,7 @@ export const PlanReview = ({
         wrap="truncate-end"
         rows={[
           ["i", "implement — the agent proceeds in this context"],
-          ["f", "implement fresh — compact to the plan + goal first"],
+          ["f", "implement fresh — start from the plan + goal"],
           ["e", "edit the plan in $EDITOR, then implement what you saved"],
           ["d", "discuss — send a note back; the agent stays in plan mode"],
         ]}

@@ -123,7 +123,7 @@ const USAGE: Record<string, string> = {
 
   what:
     implement                  proceed in the current context
-    fresh                      compact to the plan + goal, then implement
+    fresh                      start from the plan + goal, then implement
     revise <plan...>           replace the plan and implement it
     discuss <msg...>           reply; the agent stays in plan mode
 

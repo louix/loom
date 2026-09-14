@@ -1685,7 +1685,7 @@ export const mkFleetHandle = ({
       ...(impl?.effort ? { effort: impl.effort } : {}),
       ...(forking && impl ? { provider: impl.provider, plan: pl.text } : {}),
     };
-    if (!forking) return respondPlan(pl, params, "compacting, then implementing");
+    if (!forking) return respondPlan(pl, params, "implementing from the plan and goal");
     overlayActed = pl;
     show(browse);
     client
