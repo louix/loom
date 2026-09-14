@@ -3180,7 +3180,7 @@ test("environment warning stays in the frame and clears only after a compatible 
   for (const code of [0, 1, 130]) {
     const fake = mkFakeClient();
     fake.deliver(fleetOf());
-    const warning = "Environment image missing or out of date (claude).";
+    const warning = "Environment image missing or out of date.";
     const mounted = mount(
       fake.client,
       {

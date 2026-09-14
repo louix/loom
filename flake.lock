@@ -3,17 +3,17 @@
     "libkrun-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1779235645,
-        "narHash": "sha256-rmRMZ5j3HlueCAXQLydjmMq45+hwhxSLWM02VvHokcY=",
+        "lastModified": 1788983295,
+        "narHash": "sha256-WDDGSGKoXCgPYv98f0Xrurx4BwFNCJt6o0Df9lJpoLA=",
         "owner": "smol-machines",
         "repo": "libkrun",
-        "rev": "98163265197caa24a789699f16a68b98e917b65b",
+        "rev": "d3486f7a4ac99c64683e628dc6d297e29b3d381d",
         "type": "github"
       },
       "original": {
         "owner": "smol-machines",
         "repo": "libkrun",
-        "rev": "98163265197caa24a789699f16a68b98e917b65b",
+        "rev": "d3486f7a4ac99c64683e628dc6d297e29b3d381d",
         "type": "github"
       }
     },

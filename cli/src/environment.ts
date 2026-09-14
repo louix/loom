@@ -255,7 +255,7 @@ export const repoEnvironmentWarning = async (
   try {
     const config = configured ?? loadConfig(repo);
     if (!environmentEnabled(config.isolation.environment)) return null;
-    const missing: string[] = [];
+    let missing = false;
     for (const id of environmentProviders(config)) {
       const policy = environmentPolicy(config, id)!;
       try {
@@ -273,14 +273,12 @@ export const repoEnvironmentWarning = async (
             writableNix: config.isolation.environment?.nix === true,
           }))
         )
-          missing.push(id);
+          missing = true;
       } catch {
-        missing.push(id);
+        missing = true;
       }
     }
-    return missing.length
-      ? `Environment image missing or out of date (${missing.join(", ")}).`
-      : null;
+    return missing ? "Environment image missing or out of date." : null;
   } catch (error) {
     return `Could not check environment image: ${error instanceof Error ? error.message : String(error)}`;
   }

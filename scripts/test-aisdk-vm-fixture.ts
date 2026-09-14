@@ -47,7 +47,8 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
 let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
 let session: RemoteWorkerSession | undefined;
 let passed = false;
-const deadline = setTimeout(() => worker?.terminate(), 90_000);
+// Allow both cold boots their 120-second startup budget, plus the two turns.
+const deadline = setTimeout(() => worker?.terminate(), 300_000);
 try {
   for (const resume of [false, true]) {
     worker = await launchSessionVm({

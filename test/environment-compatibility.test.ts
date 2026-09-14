@@ -121,7 +121,10 @@ test("environment preflight warns only for enabled VM providers needing a prepar
     },
   });
   config.providerAccess.only = ["chatgpt"];
-  assert.match((await repoEnvironmentWarning("/repo", config))!, /missing or out of date.*chatgpt/);
+  assert.equal(
+    await repoEnvironmentWarning("/repo", config),
+    "Environment image missing or out of date.",
+  );
   config.providerAccess.disabled = ["chatgpt"];
   assert.equal(await repoEnvironmentWarning("/repo", config), null);
   config.providerAccess.disabled = [];

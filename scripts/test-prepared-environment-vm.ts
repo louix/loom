@@ -17,11 +17,9 @@ const nix = option === "--nix";
 const artifact = await Deno.realPath(runtime);
 const smolvm = await Deno.realPath(backend);
 const f = await gitFixture();
-// Match Loom's default layout: the session worktree lives inside the repo mount.
-const nestedWorkspace = join(f.repo, ".loom", "trees", "session");
-await Deno.mkdir(join(f.repo, ".loom", "trees"), { recursive: true });
-await f.git("-C", f.repo, "worktree", "move", f.workspace, nestedWorkspace);
-f.workspace = nestedWorkspace;
+// Keep the worktree outside the repo: split runtimes then need four shares
+// during preparation and five with a session profile. Exercise the x86 IRQ
+// regression without hiding a device by coalescing nested repository mounts.
 const oldState = Deno.env.get("XDG_STATE_HOME");
 Deno.env.set("XDG_STATE_HOME", join(f.root, "persistent"));
 const configHome = join(f.root, "config");

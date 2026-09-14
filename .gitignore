@@ -16,6 +16,7 @@ references/
 .loom/loom.db-shm
 .loom/trees/
 .loom/tui.json
+.loom/package-cache
 
 credentials
 .claude/worktrees/

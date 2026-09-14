@@ -4,6 +4,8 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   # Packages smolvm 1.14.6, including host disk-resizing tools on macOS.
   inputs.smolvm.url = "github:smol-machines/smolvm/5098b07eddd12377fe12f257be7f5e92be7f5840";
+  # Match the release's submodule when rebuilding its bundled libkrun.
+  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/d3486f7a4ac99c64683e628dc6d297e29b3d381d";
 
   inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
 
@@ -12,6 +14,54 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+
+      # Split session runtimes need a code share in addition to the worktree,
+      # Git metadata, credentials and profile. libkrun's legacy x86 IRQ ceiling
+      # (15) exhausts the device budget before attaching vsock. KVM's I/O APIC
+      # has 24 pins; allow virtio devices to use the remaining GSIs through 23.
+      # Keep the MP table in sync, as in firecracker-microvm/firecracker#2286.
+      hostSmolvmFor = system:
+        let
+          upstream = smolvm.packages.${system};
+          pkgs = smolvm.inputs.nixpkgs.legacyPackages.${system};
+          # Link against the release's existing firmware; only libkrun changes.
+          libkrunfw = pkgs.lib.makeOverridable ({ variant ? null }:
+            assert variant == null;
+            pkgs.runCommand "smolvm-libkrunfw" { meta.platforms = [ system ]; } ''
+              mkdir -p $out/lib
+              cp -a ${upstream.default}/libexec/smolvm/lib/libkrunfw.so* $out/lib/
+            ''
+          ) {};
+          libkrun = (upstream.libkrun.override { inherit libkrunfw; }).overrideAttrs (old: {
+            version = "2.0.0-dev";
+            src = old.src;
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              inherit (old) src;
+              hash = "sha256-Opf4QK5k5Lq0zYo5Bmo5teUvr1kBctnI2EOW+MxhMTI=";
+            };
+            # The guest cannot load the host's Nix dynamic linker. Build its
+            # embedded PID 1 statically, separately from the host shared library.
+            preBuild = (old.preBuild or "") + ''
+              CARGO_ENCODED_RUSTFLAGS="-Ctarget-feature=+crt-static" \
+                cargo build --offline --release -p krun-init --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
+              export KRUN_INIT_BINARY_PATH="$PWD/target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release/krun-init"
+            '';
+            postPatch = (old.postPatch or "") + ''
+              substituteInPlace src/arch/src/x86_64/layout.rs \
+                --replace-fail 'pub const IRQ_MAX: u32 = 15;' 'pub const IRQ_MAX: u32 = 23;'
+              substituteInPlace src/arch/src/x86_64/mptable.rs \
+                --replace-fail 'mem::size_of::<MpcIntsrcWrapper>() * 16' \
+                  'mem::size_of::<MpcIntsrcWrapper>() * (crate::IRQ_MAX as usize + 1)' \
+                --replace-fail 'for i in 0..16 {' 'for i in 0..=crate::IRQ_MAX as u8 {'
+            '';
+          });
+        in if system != "x86_64-linux" then upstream.default
+        else upstream.default.overrideAttrs (old: {
+          postInstall = (old.postInstall or "") + ''
+            rm $out/libexec/smolvm/lib/libkrun.so*
+            cp -a ${libkrun}/lib/libkrun.so* $out/libexec/smolvm/lib/
+          '';
+        });
 
       # Guests always run Linux, independently of the machine running Loom/smolvm.
       guestSystemFor = system: builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
@@ -75,7 +125,7 @@
             pkgs.ripgrep
             pkgs.deno
           ] ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux || pkgs.stdenv.hostPlatform.system == "aarch64-darwin") [
-            smolvm.packages.${pkgs.stdenv.hostPlatform.system}.default
+            (hostSmolvmFor pkgs.stdenv.hostPlatform.system)
           ];
 
           shellHook = ''
@@ -90,7 +140,7 @@
         let
           hostSystem = pkgs.stdenv.hostPlatform.system;
           guestSystem = guestSystemFor hostSystem;
-          hostSmolvm = smolvm.packages.${hostSystem}.default;
+          hostSmolvm = hostSmolvmFor hostSystem;
           hostClaude = (import nixpkgs {
             system = hostSystem;
             config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "claude-code";
@@ -110,6 +160,7 @@
           bundleSupported = pkgs.stdenv.hostPlatform.isLinux || hostSystem == "aarch64-darwin";
         in rec {
           default = loom;
+          smolvm = hostSmolvm;
           session-runtime = hostRuntimes.claude-session-runtime;
           claude-session-runtime = hostRuntimes.claude-session-runtime;
           aisdk-session-runtime = hostRuntimes.aisdk-session-runtime;
