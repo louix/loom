@@ -367,6 +367,11 @@ export class SessionManager {
       run.backgroundTasks = [];
       changed = true;
     }
+    for (const subagent of run.subagents.values()) {
+      if (!subagent.active) continue;
+      subagent.active = false;
+      changed = true;
+    }
     return changed;
   }
 
@@ -686,8 +691,7 @@ export class SessionManager {
     // the session's background tasks too — clear both now rather than wait for
     // events a torn-down stream might never send. The transition below carries
     // the cleared overlays to clients.
-    run.pending.clear();
-    run.backgroundTasks = [];
+    this.#clearOverlays(run);
     // Reflect the interrupt immediately and unconditionally — the adapter call
     // below can be slow (or, on a wedged turn, throw), and the UI must not be
     // left showing `running` either way. `interrupted` is sticky in

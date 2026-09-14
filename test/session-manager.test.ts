@@ -742,6 +742,36 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  for (const stop of ["interrupt", "stream_end"] as const) {
+    test(`${stop} retires active subagents without losing their history`, async () => {
+      const c = await client();
+      const { id, fs } = await createFake(c);
+      fs.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
+      await waitFor(
+        async () =>
+          (await c.request<SessionSnapshot>("session.get", { id })).subagents.length === 1,
+      );
+      if (stop === "interrupt") await c.request("session.interrupt", { id });
+      else await fs.close();
+      await waitFor(
+        async () =>
+          (await c.request<SessionSnapshot>("session.get", { id })).subagents[0]?.active === false,
+      );
+      const snap = await c.request<SessionSnapshot>("session.get", { id });
+      assert.deepEqual(snap.subagents, [{ id: "t1", name: "reviewer", active: false }]);
+      if (stop === "interrupt") {
+        await c.request("session.send", { id, text: "continue" });
+        fs.finishTurn();
+        await waitFor(async () => (await statusOf(c, id)) === "idle");
+        assert.equal(
+          (await c.request<SessionSnapshot>("session.get", { id })).subagents[0]?.active,
+          false,
+        );
+      }
+      await c.close();
+    });
+  }
+
   test("background tasks hold a finished turn in working_background, then release it", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
