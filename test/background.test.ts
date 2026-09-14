@@ -35,6 +35,17 @@ test("background: start, read output, then read the exit", async () => {
   assert.equal(final.output, "(no new output)");
 });
 
+test("background: stopAll waits for process exit and permits later tasks", async () => {
+  const bg = spawnTasks();
+  const a = bg.start("sleep 60");
+  const b = bg.start("sleep 60 & wait");
+  await bg.stopAll();
+  assert.equal((await bg.read(a)).running, false);
+  assert.equal((await bg.read(b)).running, false);
+  const next = bg.start("echo resumed");
+  assert.match((await bg.read(next, { waitMs: 5_000 })).output, /resumed/);
+});
+
 test("background: exit code propagates", async () => {
   const bg = spawnTasks();
   const id = bg.start("exit 3");

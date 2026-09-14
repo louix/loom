@@ -262,6 +262,37 @@ export class BackgroundTasks {
     return { output };
   }
 
+  /** Stop and await running processes, retaining their output for inspection. */
+  async stopAll(): Promise<void> {
+    await Promise.all(
+      this.#running().map(
+        (task) =>
+          new Promise<void>((resolve, reject) => {
+            const finish = (error?: Error): void => {
+              clearTimeout(timer);
+              task.child.removeListener("close", closed);
+              task.child.removeListener("error", failed);
+              if (error) reject(error);
+              else resolve();
+            };
+            const closed = (): void => finish();
+            const failed = (error: Error): void => finish(error);
+            const timer = setTimeout(
+              () => finish(new Error(`background task ${task.id} did not stop`)),
+              5_000,
+            );
+            task.child.once("close", closed);
+            task.child.once("error", failed);
+            try {
+              killGroup(task);
+            } catch (err) {
+              finish(err instanceof Error ? err : new Error(String(err)));
+            }
+          }),
+      ),
+    );
+  }
+
   /** Kill everything — the session is going away. */
   close(): void {
     for (const task of this.#tasks.values()) {

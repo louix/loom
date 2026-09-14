@@ -366,6 +366,9 @@ export class AisdkSession implements AgentSession {
     this.#failPendingGates("the turn was interrupted");
     await this.#turn?.catch(() => {});
     await this.#compaction?.catch(() => {});
+    // A child may have launched detached shell work before the abort landed.
+    // Stop it after the model/tool loops unwind so no new task can race the sweep.
+    await this.#builtins?.interrupt();
   }
 
   /** Undo: keep the first `keep` messages, discard the rest (in memory + store). */

@@ -37,4 +37,8 @@ export class BuiltinTools {
     this.#shell.close();
     this.#background.close();
   }
+
+  interrupt(): Promise<void> {
+    return this.#background.stopAll();
+  }
 }
