@@ -717,6 +717,8 @@ export class Daemon {
    */
   #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
+    const pendingMode = this.#sessions.snapshot(s.id)?.pendingMode;
+    if (pendingMode !== undefined) out = { ...out, pendingMode };
     if (this.#sessions.isStopping(s.id)) out = { ...out, stopping: true };
     if (this.#sessions.stopFailed(s.id)) out = { ...out, stopFailed: true };
     // Outstanding requests, complete enough to answer without any transcript —
@@ -2974,7 +2976,7 @@ export class Daemon {
         // A deliberate switch is also "the last mode used" for the next new session.
         this.#providerDefaults.rememberMode(mode);
         this.#publishState(snap.id);
-        return snap;
+        return this.#enrich(snap, false);
       });
     });
 

@@ -1299,15 +1299,19 @@ for (const [from, to, label] of [
   ["default", "acceptEdits", "a pure relaxation (policy axis only)"],
   ["plan", "acceptEdits", "leaving plan's read-only sandbox (sandbox axis)"],
 ] as const) {
-  test(`setMode interrupts an active turn for ${label}, since every native axis is snapshotted per turn`, async () => {
+  test(`setMode defers ${label} until the next turn without interrupting`, async () => {
     const codexHome = {
       dir: `/tmp/loom-codex-setmode-${from}-${to}`,
       authJsonPath: `/tmp/loom-codex-setmode-${from}-${to}/auth.json`,
     };
     const markerFile = join(tmpdir(), `interrupt-marker-${from}-${to}-${process.pid}.txt`);
+    const releaseFile = `${markerFile}.complete`;
+    const requestLog = `${markerFile}.requests`;
     try {
       Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
       Deno.env.set("LOOM_TEST_INTERRUPT_MARKER_FILE", markerFile);
+      Deno.env.set("LOOM_TEST_COMPLETE_TURN_FILE", releaseFile);
+      Deno.env.set("LOOM_TEST_REQUEST_LOG", requestLog);
       const s = await CodexAppServerSession.start(
         { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: from, mcpServers: [] },
         codexHome,
@@ -1315,18 +1319,51 @@ for (const [from, to, label] of [
       );
       try {
         await s.setMode(to);
+        assert.equal(s.snapshot().pendingMode, to);
+        await s.setMode(from);
         assert.equal(
-          await waitForExists(markerFile),
-          true,
-          "expected turn/interrupt to have been called",
+          s.snapshot().pendingMode,
+          undefined,
+          "cycling back cancels the deferred change",
         );
+        await s.setMode(to);
+        assert.equal(s.snapshot().status.kind, "running");
+        await s.send("continue working"); // steering still uses the current turn
+        assert.equal(
+          await waitForExists(markerFile, 50),
+          false,
+          "a mode change must not interrupt the active turn",
+        );
+        await writeFile(releaseFile, "");
+        for await (const event of s.events()) if (event.type === "result") break;
+        assert.equal(s.snapshot().pendingMode, to, "still pending between turns");
+        await rm(releaseFile);
+        await s.send("next turn");
+        assert.equal(s.snapshot().pendingMode, undefined);
+        const requests = (await readFile(requestLog, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        const starts = requests.filter((r) => r.method === "turn/start");
+        assert.equal(starts.length, 2);
+        assert.equal(
+          starts[1].params.approvalPolicy,
+          to === "default" ? "untrusted" : "on-request",
+        );
+        assert.equal(starts[1].params.sandboxPolicy.type, "workspaceWrite");
+        assert.equal(starts[1].params.approvalsReviewer, "user");
+        assert.equal(requests.filter((r) => r.method === "turn/steer").length, 1);
       } finally {
         await s.close();
       }
     } finally {
       Deno.env.delete("LOOM_TEST_HOLD_TURN");
       Deno.env.delete("LOOM_TEST_INTERRUPT_MARKER_FILE");
+      Deno.env.delete("LOOM_TEST_COMPLETE_TURN_FILE");
+      Deno.env.delete("LOOM_TEST_REQUEST_LOG");
       await rm(markerFile, { force: true });
+      await rm(releaseFile, { force: true });
+      await rm(requestLog, { force: true });
     }
   });
 }

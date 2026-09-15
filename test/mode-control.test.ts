@@ -44,7 +44,7 @@ test("a rapid cycle shows every press and applies only the mode it settles on", 
   // Feedback is immediate — before any network work — and it names the target
   // without touching the applied mode, which is still the snapshot's.
   assert.equal(m.pending("a"), "plan");
-  assert.equal(modeChipText("default", m.pending("a")), "[manual → plan]");
+  assert.equal(modeChipText("default", m.pending("a")), "[plan]");
   assert.deepEqual(m.sent, [], "nothing has gone to the daemon yet");
 
   m.ctl.cycle("a");

@@ -272,6 +272,8 @@ export class CodexAppServerSession implements AgentSession {
   #model: string;
   #effort: EffortLevel | null;
   #mode: SessionMode;
+  #appliedMode: SessionMode;
+  #startingMode: SessionMode | null = null;
   #cwd: string;
   readonly #base: string | undefined;
   readonly #dispatch: ToolDispatcher;
@@ -301,6 +303,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
     this.#mode = opts.mode;
+    this.#appliedMode = opts.mode;
     this.#cwd = opts.cwd;
     this.#base = base;
     this.#dispatch = dispatch;
@@ -591,7 +594,7 @@ export class CodexAppServerSession implements AgentSession {
    * For `implement`/`revise`, and — for now — `implement_fresh` too (its
    * context-reset/compaction is explicitly Phase 6's job per the plan doc,
    * so it's treated as a plain `implement` here rather than half-built):
-   * `setMode` unconditionally interrupts the still-running planning turn
+   * `respondToPlan` explicitly interrupts the still-running planning turn
    * (plan mode's turn was snapshotted read-only at its own `turn/start`, and
    * nothing short of a fresh turn can make it writable) and `send` starts a
    * genuinely new one carrying the revised instructions — both awaited, in
@@ -601,7 +604,7 @@ export class CodexAppServerSession implements AgentSession {
    * caller (the daemon) sees the failure too, rather than this method
    * quietly swallowing it after having already un-blocked the old turn.
    *
-   * `detachPlan`, not `resolvePlan`, on this path: `setMode` interrupting the
+   * `detachPlan`, not `resolvePlan`, on this path: interrupting the
    * planning turn (above) drains every *other* currently pending interaction
    * via `#pending.failAll` — including, if left tracked, this very plan
    * review, racing this method's own deliberate resolution and resolving it
@@ -616,12 +619,12 @@ export class CodexAppServerSession implements AgentSession {
    * while a held `thread/settings/update` response is still pending) doesn't
    * make `setMode`/`send` fail — by the time the held response arrives,
    * `this.#turnId` is already `null` (the external interrupt already ended
-   * that turn), so `setMode` sees nothing left *it* needs to interrupt, and
+   * that turn), so the internal stop sees nothing left to interrupt, and
    * `send` just starts a fresh turn as if nothing had happened. Without this
    * check, that fresh turn — and the "approved" report — would go out anyway,
    * silently overriding the very interrupt that was supposed to stop
    * everything. `generation` deliberately snapshots `#interruptGeneration`,
-   * not `#turnAbort`'s signal: `setMode`'s own internal turn-ending step
+   * not `#turnAbort`'s signal: this transition's internal turn-ending step
    * (`#endTurn`) aborts that signal too, as an expected part of *this*
    * transition succeeding, so it can't tell "an external stop happened" from
    * "the planning turn was interrupted right on schedule."
@@ -645,6 +648,10 @@ export class CodexAppServerSession implements AgentSession {
     };
     try {
       await this.setMode(decision.mode ?? "acceptEdits");
+      await ensureNotSuperseded();
+      // An approved plan needs a new writable turn; an ordinary mode change
+      // only updates the defaults and lets the current turn finish.
+      await this.#endTurn();
       await ensureNotSuperseded();
       const planText = decision.action === "revise" ? decision.plan : "the plan you just presented";
       await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
@@ -675,9 +682,8 @@ export class CodexAppServerSession implements AgentSession {
    *
    * Deliberately **not** public, and does **not** touch
    * `#interruptGeneration` — shared by the public `interrupt()` (an
-   * external, unrelated-to-any-transition stop) and `setMode`'s own internal
-   * turn-ending step (an expected part of successfully applying a mode
-   * change, including `respondToPlan`'s own transition). Only the former
+   * external, unrelated-to-any-transition stop) and `respondToPlan`'s internal
+   * turn-ending step (starting implementation in a fresh turn). Only the former
    * should ever invalidate an in-flight `respondToPlan` transition.
    */
   async #endTurn(): Promise<void> {
@@ -700,7 +706,7 @@ export class CodexAppServerSession implements AgentSession {
   }
   /**
    * The public, externally-triggered stop (a user hitting stop, the daemon
-   * tearing down a session) — as opposed to `setMode`'s own internal,
+   * tearing down a session) — as opposed to `respondToPlan`'s own internal,
    * expected turn-ending step. Bumps `#interruptGeneration` *before* doing
    * the actual work, so an in-flight `respondToPlan` transition that
    * snapshotted the generation earlier reliably observes the change as soon
@@ -714,42 +720,13 @@ export class CodexAppServerSession implements AgentSession {
   async rewind(): Promise<void> {
     throw new Error("Codex app-server rewind is not yet supported by Loom");
   }
-  /**
-   * `thread/settings/update` only ever takes effect "for subsequent turns"
-   * (confirmed via the generated `ThreadSettingsUpdateParams` doc comments):
-   * `approvalPolicy`, `sandboxPolicy` and `approvalsReviewer` are each
-   * snapshotted once, at that turn's own `turn/start` (`#startTurn` passes
-   * all three explicitly), and nothing about the currently running turn
-   * changes when the thread's default changes underneath it. The protocol
-   * also defines a `turn/settings/update` for exactly that live case, but it
-   * is absent from the freshly-generated bindings for the actually-installed
-   * `codex-cli` build (present only in the Rust source / an older/dev
-   * binding set) — calling it unconditionally, as this method used to, is a
-   * live compatibility risk, not a design choice.
-   *
-   * So: always set the thread-level default (safe, always available), then
-   * — whenever a turn is actually running and the mode is genuinely
-   * changing — interrupt that turn so the new mode is guaranteed to apply to
-   * whatever runs next, rather than silently finishing the current turn
-   * under the old settings. This is deliberately unconditional on
-   * direction, not just tightening: every one of the three native axes is
-   * turn-snapshotted, so even a pure relaxation (e.g. leaving `plan`'s
-   * read-only sandbox for `acceptEdits`) needs a fresh turn to actually take
-   * effect — a `turn/steer` on the still-running, still-read-only turn would
-   * leave the model unable to write despite the "approved" mode change. This
-   * ends the user's in-flight turn (the session goes idle); their next
-   * message (or `respondToPlan`'s own follow-up `send()`) starts a fresh one
-   * under the new mode.
-   *
-   * Calls `#endTurn` directly, not the public `interrupt()` — this is an
-   * internal, expected part of applying the mode change itself, not an
-   * external stop, and must not invalidate an in-flight `respondToPlan`
-   * transition that's the very reason this call is happening (see
-   * `#interruptGeneration`'s doc comment).
-   */
+  /** Save the mode for subsequent turns without interrupting current work.
+   * Approval policy and sandbox are fixed at turn/start, so the snapshot keeps
+   * the selection pending until a new turn actually starts with it. */
   async setMode(mode: SessionMode): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
-    const changed = mode !== this.#mode;
+    const deferred =
+      this.#turnId !== null || this.#startingMode !== null || this.#mode !== this.#appliedMode;
     await this.#rpc.request("thread/settings/update", {
       threadId: this.#threadId,
       approvalPolicy: policyFor(mode),
@@ -757,7 +734,7 @@ export class CodexAppServerSession implements AgentSession {
       sandboxPolicy: this.#sandboxPolicyFor(mode),
     });
     this.#mode = mode;
-    if (this.#turnId && changed) await this.#endTurn();
+    if (!deferred && !this.#turnId && this.#startingMode === null) this.#appliedMode = mode;
   }
   async setModel(model: string): Promise<void> {
     this.#model = model;
@@ -772,6 +749,7 @@ export class CodexAppServerSession implements AgentSession {
       model: this.#model || null,
       effort: this.#effort,
       mode: this.#mode,
+      ...(this.#mode !== this.#appliedMode ? { pendingMode: this.#mode } : {}),
       usage: this.#usage,
       contextUsed: this.#contextUsed,
       contextLimit: this.#contextLimit,
@@ -805,6 +783,8 @@ export class CodexAppServerSession implements AgentSession {
     // turn's dispatch captured the now-aborted controller, not this one.
     if (this.#turnAbort.signal.aborted) this.#turnAbort = new AbortController();
     this.#startingUsageTurn = true;
+    const mode = this.#mode;
+    this.#startingMode = mode;
     let result: unknown;
     try {
       result = await this.#rpc.request("turn/start", {
@@ -812,12 +792,14 @@ export class CodexAppServerSession implements AgentSession {
         input: [textInput(input)],
         model: this.#model || undefined,
         effort: this.#effort ?? undefined,
-        approvalPolicy: this.#oneShot ? "never" : policyFor(this.#mode),
-        approvalsReviewer: approvalsReviewerFor(this.#mode),
-        sandboxPolicy: this.#sandboxPolicy(),
+        approvalPolicy: this.#oneShot ? "never" : policyFor(mode),
+        approvalsReviewer: approvalsReviewerFor(mode),
+        sandboxPolicy: this.#sandboxPolicyFor(mode),
       });
+      this.#appliedMode = mode;
     } finally {
       this.#startingUsageTurn = false;
+      this.#startingMode = null;
     }
     this.#turnId = (result as any)?.turn?.id ?? this.#turnId;
     for (const update of this.#pendingUsage.splice(0))
@@ -838,9 +820,6 @@ export class CodexAppServerSession implements AgentSession {
       ts: now(),
       status: this.#status,
     });
-  }
-  #sandboxPolicy(): Record<string, unknown> {
-    return this.#sandboxPolicyFor(this.#mode);
   }
   #sandboxPolicyFor(mode: SessionMode): Record<string, unknown> {
     if (this.#oneShot) return { type: "readOnly", networkAccess: false };
@@ -1038,7 +1017,7 @@ export class CodexAppServerSession implements AgentSession {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
     this.#dispatch(tool, args, {
-      mode: this.#mode,
+      mode: this.#startingMode ?? this.#appliedMode,
       cwd: this.#cwd,
       ...(this.#base ? { base: this.#base } : {}),
       ...(signal ? { signal } : {}),

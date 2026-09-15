@@ -255,7 +255,7 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /\[manual\]/, "Detail shows the mode as a bracketed chip");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the permission mode
-      await delay(360); // clear the 300ms setMode debounce
+      await delay(560); // clear the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "⇧⇥ cycled manual → plan");
       assert.match(stdout.last, /\[plan\]/, "the Detail chip follows the change");
@@ -337,7 +337,7 @@ models   = ["m1", "m2"]
       await waitFor(stdout, /\[manual\]/);
       click(at("[manual]"));
       await waitFor(stdout, /\[plan\]/);
-      await delay(360); // clear the 300ms setMode debounce
+      await delay(560); // clear the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === target.id)?.mode,
@@ -375,13 +375,9 @@ models   = ["m1", "m2"]
       assert.match(stdout.last, /\[manual\]/, "the send prompt shows the session's current mode");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
-      await delay(60); // still well inside the 300ms debounce
-      assert.match(
-        stdout.last,
-        /\[manual → plan\]/,
-        "the target shows on the keypress, beside the mode the session is still in",
-      );
-      await delay(360); // clear the 300ms setMode debounce
+      await delay(60); // still well inside the 500ms debounce
+      assert.match(stdout.last, /\[plan\]/, "the chip shows the selected mode immediately");
+      await delay(560); // clear the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === snap.id)?.mode,
@@ -3049,6 +3045,55 @@ test("isolation-incompatible Claude session is read-only with a visible reason a
     handle.handleKey("F", {} as Key);
     handle.handleKey("", { return: true } as Key);
     assert.equal(fake.of("session.fork").length, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test("server-pending modes stay grey in Detail and the reply prompt until applied", async () => {
+  const { PaletteContext } = await import("@loom/tui/components");
+  const { PALETTES } = await import("@loom/tui/theme");
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  let warnings = 0;
+  const palette = {
+    ...PALETTES.dark,
+    get warn() {
+      warnings++;
+      return PALETTES.dark.warn;
+    },
+  };
+  const draw = () => {
+    const view = handle.getView();
+    warnings = 0;
+    const frame = renderToString(
+      createElement(
+        PaletteContext.Provider,
+        { value: palette },
+        view.detail.render(Date.now()),
+        createElement(PromptPane, { state: view.ui, width: 80 }),
+      ),
+    );
+    assert.equal((frame.match(/\[acceptEdits\]/g) ?? []).length, 2);
+    return warnings;
+  };
+  try {
+    // This selection came from the server, without any local keypress.
+    fake.deliver(
+      fleetOf(
+        testSession({
+          id: "a",
+          status: stateRunning,
+          mode: "acceptEdits",
+          pendingMode: "acceptEdits",
+        }),
+      ),
+    );
+    handle.handleKey("", { return: true } as Key);
+    const pendingWarnings = draw();
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning, mode: "acceptEdits" })));
+    assert.equal(draw(), pendingWarnings + 2, "both chips regain their normal colour");
   } finally {
     teardown();
   }

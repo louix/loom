@@ -324,6 +324,19 @@ const handle = (req) => {
           });
         }, 0);
       }
+      // Let tests complete a held turn naturally, without turn/interrupt.
+      const release = process.env["LOOM_TEST_COMPLETE_TURN_FILE"];
+      if (process.env["LOOM_TEST_HOLD_TURN"] && release) {
+        const timer = setInterval(() => {
+          if (!existsSync(release)) return;
+          clearInterval(timer);
+          send({
+            jsonrpc: "2.0",
+            method: "turn/completed",
+            params: { turn: { id: "fake-turn-1", status: "completed" } },
+          });
+        }, 10);
+      }
     };
     // LOOM_TEST_HOLD_TURN_START_CALL names which 1-indexed turn/start call to
     // hold (e.g. "2" holds only the *second* turn started in this session —

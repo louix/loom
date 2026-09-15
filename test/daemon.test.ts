@@ -1958,6 +1958,45 @@ const pushed = (c: LoomClient, id: string): SessionSnapshot | undefined => {
   return st.tag === "data" ? st.value.sessions.find((s) => s.id === id) : undefined;
 };
 
+test("deferred modes are published to clients and clear when the adapter applies them", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const s = await c.request<SessionSnapshot>("session.create", {
+      prompt: "deferred",
+      provider: "fake",
+    });
+    const fake = provider.session(s.id)!;
+    const snapshot = fake.snapshot.bind(fake);
+    const setMode = fake.setMode.bind(fake);
+    let deferred = false;
+    fake.setMode = async (mode) => {
+      await setMode(mode);
+      deferred = true;
+    };
+    fake.snapshot = () => ({
+      ...snapshot(),
+      ...(deferred ? { pendingMode: snapshot().mode } : {}),
+    });
+    await c.request("session.setMode", { id: s.id, mode: "plan", by: "t" });
+    await waitFor(() => pushed(c, s.id)?.pendingMode === "plan");
+    const listed = await c.request<SessionSnapshot[]>("session.list");
+    assert.equal(listed.find((row) => row.id === s.id)?.pendingMode, "plan");
+    deferred = false;
+    fake.finishTurn();
+    await waitFor(() => pushed(c, s.id)?.pendingMode === undefined);
+    assert.equal(pushed(c, s.id)?.mode, "plan");
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("overlapping mode changes apply in issue order and leave the adapter and the registry agreeing", async () => {
   const hh = await makeHarness();
   const a = await LoomClient.connect({

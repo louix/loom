@@ -478,6 +478,7 @@ export const detailLayout = (
     add(<Line tone={tone}>{children}</Line>);
   const space = () => rows.push({ tag: "space" });
   const w = inside(width);
+  mode ??= s?.pendingMode ?? null;
   const look = s ? statusLook(s.status.kind) : null;
   if (!s) {
     addLine("DETAIL", "dim");
@@ -518,7 +519,7 @@ export const detailLayout = (
           </Line>
           <Line>
             <Text tone="dim">mode </Text>
-            <Text tone="warn">{modeChipText(s.mode, mode)}</Text>
+            <Text tone={mode != null ? "dim" : "warn"}>{modeChipText(s.mode, mode)}</Text>
           </Line>
           <Line tone="dim">{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Line>
         </Box>
@@ -843,16 +844,10 @@ const MODE_HINT: Record<PromptKind, string> = {
   compact: "compact",
 };
 
-/** The `[mode]` chip: gold once it's off the mundane `manual` default (or once
- *  a change is pending), faint otherwise — the same chip the Detail pane shows
- *  for a live session. */
+/** Show the selected mode in grey until the server confirms the change. */
 const modeChip = (mode: string | null | undefined, pending?: SessionMode | null): ReactNode => {
-  const settled = !pending || pending === mode;
-  return (
-    <Line tone={!settled || (mode && mode !== "default") ? "warn" : "faint"}>
-      {modeChipText(mode, pending)}
-    </Line>
-  );
+  const settledTone = mode && mode !== "default" ? "warn" : "faint";
+  return <Line tone={pending != null ? "dim" : settledTone}>{modeChipText(mode, pending)}</Line>;
 };
 
 const promptHints = (
@@ -954,7 +949,7 @@ export const FooterArea = ({
             p,
             send ? queueFor({ ...state, outbox }, p.sessionId).length : 0,
             sess?.mode,
-            pendingMode(modes, sess?.id),
+            pendingMode(modes, sess?.id) ?? sess?.pendingMode,
           )}
         </Line>
       </Box>
@@ -1069,7 +1064,7 @@ export const PromptPane = ({
         <Line tone="accent" bold>
           {p.label}
         </Line>
-        {sess ? modeChip(sess.mode, pendingMode(modes, sess.id)) : null}
+        {sess ? modeChip(sess.mode, pendingMode(modes, sess.id) ?? sess.pendingMode) : null}
       </Box>
       <InputLine
         buf={p.buffer}

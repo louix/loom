@@ -251,6 +251,8 @@ export const adapterSnapshotSchema = z.object({
   effort: z.union([z.string(), z.null()]),
   mode: sessionModeSchema,
   usage: tokenUsageSchema,
+  /** Selected mode waiting for the next turn; absent once effective. */
+  pendingMode: sessionModeSchema.optional(),
   contextUsed: z.number(),
   contextLimit: z.number(),
   costUsd: z.number(),

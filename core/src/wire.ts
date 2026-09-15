@@ -244,6 +244,8 @@ export const sessionSnapshotSchema = z.object({
   model: z.union([z.string(), z.null()]),
   effort: z.union([z.string(), z.null()]),
   mode: z.string(),
+  /** Server-confirmed selection waiting to take effect on the next turn. */
+  pendingMode: sessionModeSchema.optional(),
   status: sessionStateSchema,
   title: z.union([z.string(), z.null()]),
   /** A user-authored note about the session — meta, not part of the event log. */

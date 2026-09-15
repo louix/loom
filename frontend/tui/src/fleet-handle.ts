@@ -294,6 +294,7 @@ const deriveView = (
   dims: { cols: number; rows: number },
 ): FleetView => {
   const sel = selectedSession(state);
+  mode ??= sel?.pendingMode ?? null;
   // The panel shows what the turn is parked on, straight off the snapshot: the
   // request's id, kind and payload travel together from here to the screen and
   // back to the RPC that answers it.

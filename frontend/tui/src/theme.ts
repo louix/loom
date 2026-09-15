@@ -298,14 +298,9 @@ export const modeLabel = (mode: string | null | undefined): string => {
   return !mode || mode === "default" ? "manual" : mode;
 };
 
-/**
- * How a mode reads while it is being changed: the mode the session is in, and
- * the one it is heading for — `manual → plan`. Both are shown because both are
- * true; a bare `plan` would claim a change the daemon has not taken yet and may
- * refuse.
- */
+/** Show the latest selection immediately; chips grey it until confirmed. */
 export const modeText = (mode: string | null | undefined, pending?: string | null): string =>
-  pending && pending !== mode ? `${modeLabel(mode)} → ${modeLabel(pending)}` : `${modeLabel(mode)}`;
+  modeLabel(pending ?? mode);
 
 /** {@link modeText} as the bracketed `[mode]` chip Detail and the prompts draw.
  *  `modeChipHit` measures the same string, so the click target follows it. */

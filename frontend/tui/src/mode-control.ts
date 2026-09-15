@@ -2,17 +2,16 @@
  * Permission-mode selection: the mode the user has cycled to, before the daemon
  * has taken it.
  *
- * The *applied* mode lives in the session snapshot and nowhere else — nothing
- * here ever writes it, and no local value is ever substituted for it. What lives
+ * The server-confirmed mode lives in the session snapshot — nothing
+ * here ever writes it. What lives
  * here is the local half of a selection in progress: a target the user has
  * chosen (`choosing`, waiting out the debounce) or one that is on the wire
  * (`applying`, optionally with the next target behind it). Idle is the absence
  * of an entry, so there is no second way to spell "nothing is being changed".
  *
- * The chip renders both halves — `manual → plan` — which is the honest reading:
- * the session is still in `manual`, and `plan` is where it is going. Replacing
- * the applied field with the target would claim a change the daemon may yet
- * reject.
+ * The chip shows the target in grey while the change is pending. Once the
+ * server responds, its snapshot owns the display, including any mode deferred
+ * until the next turn.
  */
 import { mkStore, type Store } from "./store.ts";
 import type { SessionSnapshot } from "@loom/core/wire";
@@ -98,7 +97,7 @@ export const mkModeControl = ({
   fleet,
   note,
   planPending,
-  debounceMs = 300,
+  debounceMs = 500,
 }: ModeControlDeps): ModeControl => {
   // Choosing owns its timer; leaving that variant cancels it.
   const store = mkStore<ModeChoices>({});
