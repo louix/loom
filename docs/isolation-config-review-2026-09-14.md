@@ -105,7 +105,7 @@ Sources: [config merge/selection](../backend/daemon/src/config/config.ts),
 [AISDK connection failures](../aisdk/src/mcp.ts),
 [mount expansion](../runtime/src/packaged/workspace.ts),
 [doctor](../backend/daemon/src/daemon/daemon.ts),
-[config example](../backend/daemon/config.example.toml),
+[config example](../backend/daemon/config.example.jsonc),
 [environment lifecycle](session-environments.md),
 [packaged runtimes](packaged-runtimes.md).
 

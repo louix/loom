@@ -53,13 +53,17 @@ The repo's session/worktree VM can receive additional HTTPS destinations from th
 trusted user config. This applies to commands the agent runs, such as `deno install`,
 inside the same VM; it is not a grant limited to the Claude process.
 
-```toml
-# ~/.config/loom/config.toml
-[[repo]]
-path = "~/dev/loom"
-
-[repo.isolation]
-extra_allowed_hosts = ["registry.npmjs.org"]
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/loom",
+      "isolation": {
+        "extra_allowed_hosts": ["registry.npmjs.org"],
+      },
+    },
+  ],
+}
 ```
 
 The setting belongs to repo isolation, independently of provider authentication.
@@ -173,9 +177,12 @@ Claude profile** using the CLI's normal credential persistence. The narrow
 
 The Linux Nix package bundles the runtime. Opt in for all providers in this project:
 
-```toml
-[isolation]
-enabled = true # use the runtime bundled with the Linux Nix package
+```jsonc
+{
+  "isolation": {
+    "enabled": true,
+  },
+}
 ```
 
 Each regular Claude session gets its own VM. Discovery and one-shot title jobs
@@ -277,7 +284,7 @@ substitution and locking.
 ## Project controls
 
 Use exact `[[repo]] path = "~/dev/project"` entries in the user config.
-`[repo.isolation] enabled = false` disables inherited VM isolation for every provider;
+`repo.isolation.enabled = false` disables inherited VM isolation for every provider;
 `enabled = true` uses the package-bundled runtime unless artifact/smolvm paths
 are explicitly configured or inherited. Remove development pins to follow package upgrades.
 `[repo.provider_access] only = ["claude:work"]` restricts the project to that

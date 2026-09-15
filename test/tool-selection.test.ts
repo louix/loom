@@ -1,22 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parse } from "smol-toml";
+import { parseConfig as parse } from "@loom/daemon/config/config";
 import { normalizeConfig, loadConfig, lintConfig } from "@loom/daemon/config/config";
 import { preflightTools, toolExecutionError } from "../backend/daemon/src/daemon/tool-preflight.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import { makeLogger } from "@loom/core/logger";
 
-const definitions = `
-[local-tools.tilth]
-command = "missing-host-tool"
-default_for = ["read"]
-[vm-tools.tilth]
-runtime = "tilth"
-default_for = ["read"]
-[remote-tools.docs]
-url = "https://docs.example/mcp"
-bearer_token_env = "LOOM_TEST_UNSET_TOOL_CREDENTIAL"
-`;
+const combine = (base: string, extra: string) =>
+  JSON.stringify({ ...parse(base), ...parse(extra) });
+
+const definitions = `{
+  "local-tools": {
+    "tilth": {
+      "command": "missing-host-tool",
+      "default_for": [
+        "read"
+      ]
+    }
+  },
+  "vm-tools": {
+    "tilth": {
+      "runtime": "tilth",
+      "default_for": [
+        "read"
+      ]
+    }
+  },
+  "remote-tools": {
+    "docs": {
+      "url": "https://docs.example/mcp",
+      "bearer_token_env": "LOOM_TEST_UNSET_TOOL_CREDENTIAL"
+    }
+  }
+}`;
 
 test("definitions are inert until selected; same name in different catalogs is allowed", async () => {
   const config = normalizeConfig(parse(definitions));
@@ -38,20 +54,33 @@ test("definitions are inert until selected; same name in different catalogs is a
 test("repo lists replace independently while definitions and other selections inherit", async () => {
   const dir = await Deno.makeTempDir();
   try {
-    const file = `${dir}/config.toml`;
+    const file = `${dir}/config.jsonc`;
     await Deno.writeTextFile(
       file,
-      definitions +
-        `
-[session]
-local-tools = ["tilth"]
-remote-tools = ["docs"]
-[[repo]]
-path = ${JSON.stringify(dir)}
-[repo.session]
-local-tools = []
-vm-tools = ["tilth"]
-`,
+      combine(
+        definitions,
+        `{
+  "session": {
+    "local-tools": [
+      "tilth"
+    ],
+    "remote-tools": [
+      "docs"
+    ]
+  },
+  "repo": [
+    {
+      "path": ${JSON.stringify(dir)},
+      "session": {
+        "local-tools": [],
+        "vm-tools": [
+          "tilth"
+        ]
+      }
+    }
+  ]
+}`,
+      ),
     );
     const local = loadConfig(dir, file);
     assert.deepEqual(
@@ -78,25 +107,57 @@ vm-tools = ["tilth"]
 
 test("selections reject duplicates, ambiguous preferences and unknown names", () => {
   for (const selection of [
-    'local-tools = ["tilth", "tilth"]',
-    'local-tools = ["tilth"]\nvm-tools = ["tilth"]',
-    'vm-tools = ["absent"]',
-    'remote-tools = "docs"',
+    `{
+  "local-tools": [
+    "tilth",
+    "tilth"
+  ]
+}`,
+    `{
+  "local-tools": [
+    "tilth"
+  ],
+  "vm-tools": [
+    "tilth"
+  ]
+}`,
+    `{
+  "vm-tools": [
+    "absent"
+  ]
+}`,
+    `{
+  "remote-tools": "docs"
+}`,
   ])
-    assert.throws(() => normalizeConfig(parse(definitions + `\n[session]\n${selection}`)));
+    assert.throws(() =>
+      normalizeConfig(parse(combine(definitions, JSON.stringify({ session: parse(selection) })))),
+    );
   assert.throws(
     () =>
       normalizeConfig(
-        parse(`
-[local-tools.a]
-command = "a"
-default_for = ["read"]
-[local-tools.b]
-command = "b"
-default_for = ["read"]
-[session]
-local-tools = ["a", "b"]
-`),
+        parse(`{
+  "local-tools": {
+    "a": {
+      "command": "a",
+      "default_for": [
+        "read"
+      ]
+    },
+    "b": {
+      "command": "b",
+      "default_for": [
+        "read"
+      ]
+    }
+  },
+  "session": {
+    "local-tools": [
+      "a",
+      "b"
+    ]
+  }
+}`),
       ),
     /Multiple tool defaults/,
   );
@@ -105,22 +166,37 @@ local-tools = ["a", "b"]
 test("host selection fails before runtime lookup for every VM engine, but works with host agents", async () => {
   const config = normalizeConfig(
     parse(
-      definitions +
-        `
-[session]
-local-tools = ["tilth"]
-[isolation]\nenabled=true\n[isolation.claude]
-artifact = "/claude"
-[isolation.codex]
-artifact = "/codex"
-[isolation.aisdk]
-artifact = "/aisdk"
-[chatgpt]
-model = "test"
-[custom-provider.local]
-base_url = "https://api.example/v1"
-model = "test"
-`,
+      combine(
+        definitions,
+        `{
+  "session": {
+    "local-tools": [
+      "tilth"
+    ]
+  },
+  "isolation": {
+    "enabled": true,
+    "claude": {
+      "artifact": "/claude"
+    },
+    "codex": {
+      "artifact": "/codex"
+    },
+    "aisdk": {
+      "artifact": "/aisdk"
+    }
+  },
+  "chatgpt": {
+    "model": "test"
+  },
+  "custom-provider": {
+    "local": {
+      "base_url": "https://api.example/v1",
+      "model": "test"
+    }
+  }
+}`,
+      ),
     ),
   );
   for (const provider of ["claude", "claude:work", "chatgpt", "local"])
@@ -149,7 +225,20 @@ model = "test"
 });
 
 test("selected runtime errors propagate, and required remote credentials are checked", async () => {
-  const vm = normalizeConfig(parse(definitions + '\n[session]\nvm-tools = ["tilth"]'));
+  const vm = normalizeConfig(
+    parse(
+      combine(
+        definitions,
+        `{
+  "session": {
+    "vm-tools": [
+      "tilth"
+    ]
+  }
+}`,
+      ),
+    ),
+  );
   await assert.rejects(
     preflightTools(vm, "claude", {
       onPath: () => true,
@@ -159,7 +248,20 @@ test("selected runtime errors propagate, and required remote credentials are che
     }),
     /runtime unavailable/,
   );
-  const remote = normalizeConfig(parse(definitions + '\n[session]\nremote-tools = ["docs"]'));
+  const remote = normalizeConfig(
+    parse(
+      combine(
+        definitions,
+        `{
+  "session": {
+    "remote-tools": [
+      "docs"
+    ]
+  }
+}`,
+      ),
+    ),
+  );
   const old = Deno.env.get("LOOM_TEST_UNSET_TOOL_CREDENTIAL");
   Deno.env.delete("LOOM_TEST_UNSET_TOOL_CREDENTIAL");
   try {

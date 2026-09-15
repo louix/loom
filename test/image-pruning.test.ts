@@ -182,10 +182,22 @@ test("runtime pruning defers for live leases and crash state, then removes only 
 test("global pruning sees explicit pins in other trusted repos", async () => {
   const root = await Deno.realPath(await Deno.makeTempDir());
   try {
-    const config = join(root, "config.toml");
+    const config = join(root, "config.jsonc");
     await Deno.writeTextFile(
       config,
-      `[[repo]]\npath="${root}/other"\n[repo.isolation.claude]\nartifact="/pinned-runtime"\nsmolvm="/pinned/bin/smolvm"\n`,
+      `{
+  "repo": [
+    {
+      "path": "${root}/other",
+      "isolation": {
+        "claude": {
+          "artifact": "/pinned-runtime",
+          "smolvm": "/pinned/bin/smolvm"
+        }
+      }
+    }
+  ]
+}`,
     );
     const configs = loadAllRepoConfigs(root, config);
     assert(configs.some((c) => c.isolation.runtimes?.claude?.artifact === "/pinned-runtime"));

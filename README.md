@@ -31,8 +31,8 @@ the Vercel AI SDK.
   counter, fleet-view sort (status group order: awaiting_input → running →
   interrupted → idle → error → done; recency within a group).
 - **Restart hygiene** — on startup: mid-run sessions become `interrupted`,
-  then `[auto_resume]` re-drives the ones that were actively working (a
-  `[loom]` message tells the agent to pick its turn back up from the persisted
+  then `auto_resume` re-drives the ones that were actively working (a
+  `loom` message tells the agent to pick its turn back up from the persisted
   transcript; permission/question-blocked sessions stay interrupted), child
   processes from a previous daemon epoch are signalled to exit, stale git
   index locks are cleared and worktrees pruned.
@@ -69,7 +69,7 @@ the Vercel AI SDK.
 -b loom/<id>` off the configured base (`base_branch`, else `HEAD`), where `<id>`
   is the session id truncated to its 8-char short form; uniqueness is enforced
   with a short suffix. The session's adapter runs with that worktree as its cwd.
-- **In-place mode** — `[worktree] enabled = false` (or `loom run --in-place`)
+- **In-place mode** — `worktree.enabled = false` (or `loom run --in-place`)
   runs the session directly in the repo working dir instead: no branch
   isolation, concurrent sessions can collide, and hard fork is unavailable
   (undo still works). The Detail pane shows the repo's own git state. Bare
@@ -83,14 +83,14 @@ the Vercel AI SDK.
   hook that hard-fails. Loom runs no remote operations itself.
 - **Git facts on every snapshot** — branch, commit count, ahead/behind base,
   dirty/clean, last commit subject (cached ~2s).
-- **Auto-rebase** — `[auto_rebase] enabled = true`: whenever a session goes
+- **Auto-rebase** — `auto_rebase.enabled = true`: whenever a session goes
   idle and its base branch has moved, the daemon replays the branch onto the
   new base (`mode = "merge"` for a merge commit instead). A clean update is
   silent bar an operator notice; a conflict — or an uncommitted worktree —
   leaves the tree untouched and sends the agent a message to integrate the
   base itself, once per base commit. Never fetches: it reacts to the local
   base ref moving. Off by default.
-- **Commit reminder** — `[commit_reminder]` (on by default): when a session goes
+- **Commit reminder** — `commit_reminder` (on by default): when a session goes
   idle with uncommitted changes in its worktree, the daemon sends the agent a
   one-off message suggesting it commit. One reminder per commit boundary — a
   tree left dirty on purpose stops nagging until the next commit. Never commits
@@ -114,10 +114,10 @@ the Vercel AI SDK.
   - **`commit`** — commits the session's worktree under its
     `Loom (<model>)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
-- **Tool selection** — define host commands in `[local-tools.<name>]`, separate
-  offline VM runtimes in `[vm-tools.<name>]`, and remote services in
-  `[remote-tools.<name>]`. Select them with `tools`, `vm-tools`, and
-  `remote-tools` lists under `[session]` or `[repo.session]`. Definitions
+- **Tool selection** — define host commands in `local-tools.<name>`, separate
+  offline VM runtimes in `vm-tools.<name>`, and remote services in
+  `remote-tools.<name>`. Select them with `tools`, `vm-tools`, and
+  `remote-tools` lists under `session` or `repo.session`. Definitions
   alone enable nothing; no external tools are selected by default. Selected
   tools are required. Agent VMs reject host tool selections before startup.
   `default_for` declares capability preferences without renaming tools or
@@ -210,26 +210,26 @@ still stops for anything it judges unsafe (the Claude SDK's own `auto` — not
 the flag-gated `bypassPermissions`, which Loom never uses).
 
 **Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
-in `~/.config/loom/config.toml`; credentials go in as env-var _names_ via `api_key_env`, or
+in `~/.config/loom/config.jsonc`; credentials go in as env-var _names_ via `api_key_env`, or
 inline with `api_key`.
 
-- `[custom-provider.<id>]` — an OpenAI-compatible endpoint (OpenAI, GLM,
+- `custom-provider.<id>` — an OpenAI-compatible endpoint (OpenAI, GLM,
   DeepSeek, OpenRouter, vLLM, Ollama). `base_url` required; `<id>` is the
   provider id. This is the form that becomes a plugin.
-- `[google]` / `[anthropic]` — one native profile each (`@ai-sdk/google`,
+- `google` / `anthropic` — one native profile each (`@ai-sdk/google`,
   `@ai-sdk/anthropic`); the provider id is the vendor name.
-- `[chatgpt]` — uses the ChatGPT/Codex subscription authenticated by `codex
+- `chatgpt` — uses the ChatGPT/Codex subscription authenticated by `codex
 login` in `~/.codex/auth.json`; no OpenAI API key. Its authenticated Codex
   catalogue is discovered automatically. Direct-tool models get Loom's normal
   tool, MCP, and sub-agent surface. `code_mode_only` models run through the
   locally installed `codex app-server`, which supplies Codex's full Code Mode
   host while Loom retains its MCP and approval configuration.
-- `[providers.<id>]` — additional named accounts. `sdk` selects `openai`
+- `providers.<id>` — additional named accounts. `sdk` selects `openai`
   (the default), `google`, `anthropic`, or `chatgpt`; no adapter setting is needed.
 
 Automatic titles use a cheap default for each provider. Set `title_model` in
-that provider’s table to override it (including `[providers.claude]`).
-`[titles] enabled = false` disables automatic titles globally.
+that provider’s object to override it (including `providers.claude`).
+`titles.enabled = false` disables automatic titles globally.
 
 `default_provider` picks which one new sessions use until a session is
 actually created — from then on the provider, model, and permission mode it
@@ -250,7 +250,7 @@ was created with (or later switched to) become the default for the _next_
 - **10c** — first-party `bash` (now a fresh process per call, with explicit `cwd`
   and the session environment), `edit` (exact then whitespace-insensitive string replacement), and
   `grep` (ripgrep) tools, mounted alongside the MCP + `loom` tools and gated the
-  same way. A `web_search` tool joins them when `[search]` names a backend
+  same way. A `web_search` tool joins them when `search` names a backend
   (`brave` / `tavily` / `kagi`) whose key env var is set — `kagi` talks to
   Kagi's hosted MCP server (`mcp.kagi.com`, key as a bearer token) and brings
   `web_fetch` with it: a page's full content as markdown, so a search hit can
@@ -268,7 +268,7 @@ was created with (or later switched to) become the default for the _next_
   provider; the Detail pane spells out `engine · provider / model`.
   `loom providers` and `loom models <provider>` from the CLI. Claude's picker
   list is the CLI's own model catalog, fetched once at daemon start-up (pin
-  `[providers.claude] models` to skip that); all four permission modes work,
+  `providers.claude.models` to skip that); all four permission modes work,
   including `auto` (Claude proceeds but still stops for anything it judges
   unsafe — not the flag-gated `bypassPermissions`).
 
@@ -276,14 +276,14 @@ OpenAI-compatible profiles need no `model`: the picker list comes from
 `{base_url}/models`, and a new session defaults to the last model that provider
 ran (remembered in the db, shown by `loom providers`). A model that has since
 dropped out of the endpoint's list is skipped, with a notice. Pin `model` /
-`models` only for an endpoint whose `/models` is missing or wrong; `[chatgpt]`
+`models` only for an endpoint whose `/models` is missing or wrong; `chatgpt`
 uses Codex's authenticated catalogue (including each model's maximum context), while the native Google and Anthropic
 SDKs still need a `model` (no probe).
 `loom config` (also logged at launch) lints the
 loaded config — unset key vars, providers whose model auto-detection found
 nothing, a
-keyless search backend. A first launch with no `~/.config/loom/config.toml`
-drops an annotated copy of `config.example.toml` there.
+keyless search backend. A first launch with no `~/.config/loom/config.jsonc`
+drops an annotated copy of `config.example.jsonc` there.
 
 **Context windows.** When the endpoint advertises one on its `/models` rows
 (`context_length` on OpenRouter, `context_tokens` on sference, `max_model_len`
@@ -302,7 +302,7 @@ responses (`stream_options.include_usage`) — without it, endpoints like
 sference stream no usage at all and the context meter and cost stay at zero.
 Set `include_usage = false` on a provider whose endpoint rejects the field.
 
-**Prompt caching on `[anthropic]`.** `@ai-sdk/anthropic` sets no cache
+**Prompt caching on `anthropic`.** `@ai-sdk/anthropic` sets no cache
 breakpoint of its own, so Loom asks for one on every request — the API places
 it on the last cacheable block, which caches the conversation so far for the
 next turn to read back. `prompt_cache_ttl` on the profile picks the lifetime
@@ -375,16 +375,22 @@ minutes. Claude refreshes on initialization and after completed turns, throttled
 to once per minute. These are last observed values, not a live account balance.
 
 **Repository configuration.** All configuration lives in
-`$XDG_CONFIG_HOME/loom/config.toml` (default `~/.config/loom/config.toml`).
-Add exact path-scoped overrides there:
+`$XDG_CONFIG_HOME/loom/config.jsonc` (default `~/.config/loom/config.jsonc`).
+JSONC supports comments and trailing commas. Each object in the `repo` array
+overrides defaults for one project:
 
-```toml
-[[repo]]
-path = "~/dev/my-project"
-base_branch = "main"
-
-[repo.worktree]
-enabled = true
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/my-project",
+      "base_branch": "main",
+      "worktree": {
+        "enabled": true,
+      },
+    },
+  ],
+}
 ```
 
 Matching resolves both the launch path and `repo.path` to the same Git repository
@@ -392,14 +398,14 @@ identity, including symlinks and subdirectories. For a bare repository, prefer i
 own path (for example `/project/.bare`); paths to its linked worktrees also match
 that repository. Multiple entries resolving to the same root are duplicates.
 Independent nested repositories remain separate. Missing paths can stay configured.
-Nested tables merge with global defaults; arrays replace them. Malformed repo
+Nested objects merge with global defaults; arrays replace them. Malformed repo
 entries are errors. Update the path if you move a repository. Only the user config is
 watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
 available for project instructions.
 
-**Session isolation.** `[isolation] enabled = true` defaults every provider to VM
-execution. Set `[repo.isolation] enabled = false` in a `[[repo]]` entry to run
+**Session isolation.** `isolation.enabled = true` defaults every provider to VM
+execution. Set `repo.isolation.enabled = false` in a `repo` array entry to run
 that project locally. Unlisted repositories inherit the global default (Local
 when omitted).
 In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
@@ -415,8 +421,8 @@ the inherited isolation before confirming. Cross-environment and native-provider
 forks start a fresh session with saved conversation context, rather than importing
 native history. Existing sessions are classified from saved VM state when upgrading.
 
-**Hooks (`[[hooks]]`).** Commands run asynchronously in the session's worktree.
-Declare them in `~/.config/loom/config.toml`. Use `[[repo]]` overrides or the
+**Hooks (`hooks` array).** Commands run asynchronously in the session's worktree.
+Declare them in `~/.config/loom/config.jsonc`. Use `repo` array overrides or the
 hook’s `project` field to scope them; override arrays replace global arrays.
 Changes hot-apply; changing hooks cancels old runs and clears their feedback state.
 
@@ -461,22 +467,27 @@ command's process group.
 Write detection covers Claude's editors, aisdk `edit`, tilth write/edit, and
 ChatGPT file changes. Arbitrary shell commands are not inspected for writes.
 
-```toml
-[[hooks]]
-kind = "check"
-on = "turn_end"
-match = ["**/*.ts"]
-run = "deno task lint"
-
-[[hooks]]
-on = ["waiting", "turn_end"]
-run = 'notify-send "loom" "$LOOM_MESSAGE"'
-
-[[hooks]]
-kind = "check"
-on = "file_write"
-project = "~/dev/loom"
-run = 'oxfmt "$LOOM_FILE"'
+```jsonc
+{
+  "hooks": [
+    {
+      "kind": "check",
+      "on": "turn_end",
+      "match": ["**/*.ts"],
+      "run": "deno task lint",
+    },
+    {
+      "on": ["waiting", "turn_end"],
+      "run": "notify-send \"loom\" \"$LOOM_MESSAGE\"",
+    },
+    {
+      "kind": "check",
+      "on": "file_write",
+      "project": "~/dev/loom",
+      "run": "oxfmt \"$LOOM_FILE\"",
+    },
+  ],
+}
 ```
 
 Invalid hook kinds, events, and missing commands are rejected. An invalid
@@ -484,7 +495,7 @@ reload keeps the running configuration and reports the error.
 
 **Session titles.** A session's title starts as its first message clipped to 200
 chars; after a successful turn the daemon tries to replace it with a 4–6 word
-summary through the same provider (`[titles]` config, off with `enabled = false`).
+summary through the same provider (`titles` config, off with `enabled = false`).
 Failed requests retry after later successful turns; completed titles survive
 daemon restarts. A generic `loom/<id>` branch is named from the generated title,
 or the existing title if generation fails. Branch rename failures retry without
@@ -498,7 +509,7 @@ countdown runs from the last turn against the TTL the provider was last seen
 _actually_ writing at — Loom reads the ephemeral bucket back off the response's
 `usage.cache_creation`, so the timer is measured, not assumed. Until the session
 has written cache once it falls back to the configured
-`[providers.claude] prompt_cache_ttl` (unset by default — the CLI decides, 1h on
+`providers.claude.prompt_cache_ttl` (unset by default — the CLI decides, 1h on
 a subscription within its usage limits and 5m on an API key, Bedrock, Vertex or
 Foundry) and the cache line says `· ttl assumed`; unset and unmeasured, the row
 is hidden entirely. Setting the knob pins `CLAUDE_CODE_PROMPT_CACHE_TTL`, but a
@@ -516,7 +527,7 @@ background helpers run on the CLI's separate `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_
 knob (5m unless `ENABLE_PROMPT_CACHING_1H=1`); Loom does not set it, and the
 countdown does not model it.
 
-**Keep-warm.** For any session with a known TTL — Claude, or `[anthropic]` once
+**Keep-warm.** For any session with a known TTL — Claude, or `anthropic` once
 it has written cache once — the `Space` palette's _keep cache warm_ toggle has
 the daemon babysit the cache: while the session sits idle and its cache is about
 to lapse (the `⟢` dot's red band, <8% of the TTL left, widened to a minute on a

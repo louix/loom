@@ -113,7 +113,7 @@ Only I/O; the type + coercion come from `wire.ts`.
 - `backend/daemon/src/config/config.ts` — remove `permissionDefault` from
   `LoomConfig` (`:103`), `DEFAULT_CONFIG` (`:163`), `normalizeConfig`
   (`:362-371`, `:400`). Zero readers; its enum doesn't even map to `SessionMode`.
-- `backend/daemon/config.example.toml` — drop the `permission_default` line.
+- `backend/daemon/config.example.jsonc` — drop the `permission_default` line.
 - `backend/daemon/src/store/sessions.ts` — delete `ProviderDefaultStore.mode()`
   and `rememberMode()` (`:491-499`). Leave the orphan `last_mode` row (a one-row
   cleanup isn't worth an append-only migration). `provider()` / `remember*` for

@@ -48,10 +48,25 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
     assert.equal(requests, 1);
     const fixture = await gitFixture();
     try {
-      const configFile = join(fixture.root, "config.toml");
+      const configFile = join(fixture.root, "config.jsonc");
       await Deno.writeTextFile(
         configFile,
-        `[custom-provider.fixture]\nbase_url="http://127.0.0.1:${server.addr.port}/v1"\napi_key="fixture"\n[provider_access]\nonly=["fixture"]\n[worktree]\nenabled=false\n`,
+        `{
+  "custom-provider": {
+    "fixture": {
+      "base_url": "http://127.0.0.1:${server.addr.port}/v1",
+      "api_key": "fixture"
+    }
+  },
+  "provider_access": {
+    "only": [
+      "fixture"
+    ]
+  },
+  "worktree": {
+    "enabled": false
+  }
+}`,
       );
       const daemon = await new Deno.Command(Deno.execPath(), {
         args: [

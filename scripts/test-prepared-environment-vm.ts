@@ -33,25 +33,31 @@ sleep 1`;
 const config = async (prepare: string) => {
   await Deno.mkdir(join(configHome, "loom"), { recursive: true });
   await Deno.writeTextFile(
-    join(configHome, "loom/config.toml"),
-    `default_provider="openai"
-[custom-provider.openai]
-base_url="https://api.openai.com/v1"
-[isolation]
-extra_allowed_hosts=["registry.npmjs.org"]
-[isolation.claude]
-enabled=false
-[isolation.codex]
-enabled=false
-[isolation.aisdk]
-artifact=${JSON.stringify(artifact)}
-smolvm=${JSON.stringify(smolvm)}
-[isolation.environment]
-nix=${nix}
-command_prefix=${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])}
-prepare=${JSON.stringify(prepare)}
-timeout_seconds=180
-`,
+    join(configHome, "loom/config.jsonc"),
+    `{
+  "default_provider": "openai",
+  "custom-provider": {
+    "openai": {
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "isolation": {
+    "enabled": true,
+    "extra_allowed_hosts": [
+      "registry.npmjs.org"
+    ],
+    "aisdk": {
+      "artifact": ${JSON.stringify(artifact)},
+      "smolvm": ${JSON.stringify(smolvm)}
+    },
+    "environment": {
+      "nix": ${nix},
+      "command_prefix": ${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])},
+      "prepare": ${JSON.stringify(prepare)},
+      "timeout_seconds": 180
+    }
+  }
+}`,
   );
 };
 const cli = async (cancel = false) => {

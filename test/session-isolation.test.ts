@@ -55,7 +55,20 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     }),
   };
   const config = (enabled: boolean) =>
-    `[titles]\nenabled=false\n[auto_resume]\nenabled=false\n[isolation]\nenabled=${enabled}\n[isolation.claude]\nartifact="/test-runtime"\n`;
+    `{
+  "titles": {
+    "enabled": false
+  },
+  "auto_resume": {
+    "enabled": false
+  },
+  "isolation": {
+    "enabled": ${enabled},
+    "claude": {
+      "artifact": "/test-runtime"
+    }
+  }
+}`;
   const h = await makeHarness({ connectors, config: config(true) });
   let c = await LoomClient.connect({
     repoRoot: h.repoRoot,
@@ -161,7 +174,13 @@ test("VM and local sessions share a provider, keep modes across restart, and for
 });
 
 test("VM selection without a runtime fails before allocating a session", async () => {
-  const h = await makeHarness({ config: "[titles]\nenabled=false\n" });
+  const h = await makeHarness({
+    config: `{
+  "titles": {
+    "enabled": false
+  }
+}`,
+  });
   const c = await LoomClient.connect({
     repoRoot: h.repoRoot,
     sockPath: h.sockPath,

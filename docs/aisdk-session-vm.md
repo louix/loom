@@ -8,10 +8,12 @@ Codex/ChatGPT sessions, using their respective runtimes.
 nix build .#aisdk-session-runtime --out-link /tmp/loom-aisdk-runtime
 ```
 
-```toml
-# ~/.config/loom/config.toml; also valid under [repo.isolation]
-[isolation]
-enabled = true # use the runtime bundled with the Linux Nix package
+```jsonc
+{
+  "isolation": {
+    "enabled": true,
+  },
+}
 ```
 
 `enabled = false` disables an inherited policy. Restart the daemon after changing

@@ -3,20 +3,21 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
-import { parse as parseToml } from "smol-toml";
+
 import {
   claudeProfileId,
   deepMerge,
   lintConfig,
   loadConfig,
   normalizeConfig,
+  parseConfig,
   resolveApiKey,
   slugifyProfile,
 } from "@loom/daemon/config/config";
 import { exampleConfigPath, scaffoldUserConfig, userConfigPath } from "@loom/daemon/scaffold";
 
-const cfg = (toml: string) => {
-  return normalizeConfig(parseToml(toml));
+const cfg = (text: string) => {
+  return normalizeConfig(parseConfig(text || "{}"));
 };
 
 test("an empty config yields the defaults: claude default, no aisdk profiles", () => {
@@ -27,21 +28,41 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
 
 test("[worktree] enabled defaults to true and parses a false override", () => {
   assert.equal(cfg("").worktree.enabled, true);
-  assert.equal(cfg("[worktree]\nenabled = false\n").worktree.enabled, false);
+  assert.equal(
+    cfg(`{
+  "worktree": {
+    "enabled": false
+  }
+}`).worktree.enabled,
+    false,
+  );
   // a non-boolean is ignored, not coerced
-  assert.equal(cfg('[worktree]\nenabled = "no"\n').worktree.enabled, true);
+  assert.equal(
+    cfg(`{
+  "worktree": {
+    "enabled": "no"
+  }
+}`).worktree.enabled,
+    true,
+  );
 });
 
 test("a named provider defaults to an OpenAI-compatible endpoint", () => {
-  const c = cfg(`
-[providers.deepseek]
-base_url    = "https://api.deepseek.com/v1"
-api_key_env = "DEEPSEEK_API_KEY"
-model       = "deepseek-chat"
-models      = ["deepseek-chat", "deepseek-reasoner"]
-tag         = "ds"
-title_model = "deepseek-chat"
-`);
+  const c = cfg(`{
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "tag": "ds",
+      "title_model": "deepseek-chat"
+    }
+  }
+}`);
   const p = c.providers.aisdk["deepseek"];
   assert.ok(p);
   assert.equal(p.baseUrl, "https://api.deepseek.com/v1");
@@ -53,11 +74,14 @@ title_model = "deepseek-chat"
 });
 
 test("models defaults to [model] and tag defaults to the id", () => {
-  const c = cfg(`
-[providers.local]
-base_url = "http://localhost:11434/v1"
-model    = "qwen2.5-coder"
-`);
+  const c = cfg(`{
+  "providers": {
+    "local": {
+      "base_url": "http://localhost:11434/v1",
+      "model": "qwen2.5-coder"
+    }
+  }
+}`);
   const p = c.providers.aisdk["local"];
   assert.ok(p);
   assert.deepEqual(p.models, ["qwen2.5-coder"]);
@@ -66,21 +90,30 @@ model    = "qwen2.5-coder"
 });
 
 test("an OpenAI-compatible profile needs a base_url", () => {
-  const c = cfg(`
-[providers.broken]
-model   = "x"
-`);
+  const c = cfg(`{
+  "providers": {
+    "broken": {
+      "model": "x"
+    }
+  }
+}`);
   assert.deepEqual(c.providers.aisdk, {});
 });
 
 test("[custom-provider.<id>] is an OpenAI-compatible profile — no adapter / sdk keys", () => {
-  const c = cfg(`
-[custom-provider.llmbase]
-base_url = "https://api.llmbase.ai/v1"
-api_key  = "sk-xyz"
-models   = ["big", "small"]
-tag      = "lb"
-`);
+  const c = cfg(`{
+  "custom-provider": {
+    "llmbase": {
+      "base_url": "https://api.llmbase.ai/v1",
+      "api_key": "sk-xyz",
+      "models": [
+        "big",
+        "small"
+      ],
+      "tag": "lb"
+    }
+  }
+}`);
   const p = c.providers.aisdk["llmbase"];
   assert.ok(p);
   assert.equal(p.sdk, "openai");
@@ -91,69 +124,100 @@ tag      = "lb"
   assert.equal(p.tag, "lb");
 
   // no base_url → nothing to dial → dropped
-  assert.deepEqual(cfg(`[custom-provider.x]\nmodel = "m"\n`).providers.aisdk, {});
+  assert.deepEqual(
+    cfg(`{
+  "custom-provider": {
+    "x": {
+      "model": "m"
+    }
+  }
+}`).providers.aisdk,
+    {},
+  );
   // model-less is still kept for auto-detection
   assert.equal(
-    cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels,
+    cfg(`{
+  "custom-provider": {
+    "y": {
+      "base_url": "http://y/v1"
+    }
+  }
+}`).providers.aisdk["y"]?.autoModels,
     true,
   );
 });
 
 test("include_usage defaults to true and can be turned off per provider", () => {
-  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\n`;
-  assert.equal(cfg(base).providers.aisdk["p"]?.includeUsage, true);
-  assert.equal(cfg(base + `include_usage = false\n`).providers.aisdk["p"]?.includeUsage, false);
-  // a non-boolean value doesn't flip the default
-  assert.equal(cfg(base + `include_usage = "no"\n`).providers.aisdk["p"]?.includeUsage, true);
+  const profile = (include_usage?: unknown) =>
+    normalizeConfig({ "custom-provider": { p: { base_url: "http://p/v1", include_usage } } })
+      .providers.aisdk.p;
+  assert.equal(profile()?.includeUsage, true);
+  assert.equal(profile(false)?.includeUsage, false);
+  assert.equal(profile("no")?.includeUsage, true);
 });
 
 test("prompt_cache_ttl on an aisdk profile takes 5m / 1h / off, else unset", () => {
-  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\n`;
-  const ttl = (extra = "") => cfg(base + extra).providers.aisdk["p"]?.promptCacheTtl;
-  // unset = cache at the API's own default lifetime, not "no caching"
+  const ttl = (prompt_cache_ttl?: unknown) =>
+    normalizeConfig({ "custom-provider": { p: { base_url: "http://p/v1", prompt_cache_ttl } } })
+      .providers.aisdk.p?.promptCacheTtl;
   assert.equal(ttl(), "");
-  assert.equal(ttl(`prompt_cache_ttl = "5m"\n`), "5m");
-  assert.equal(ttl(`prompt_cache_ttl = "1h"\n`), "1h");
-  assert.equal(ttl(`prompt_cache_ttl = "off"\n`), "off");
-  // junk reads as unset rather than silently disabling the cache
-  assert.equal(ttl(`prompt_cache_ttl = "60m"\n`), "");
-  assert.equal(ttl(`prompt_cache_ttl = true\n`), "");
+  for (const value of ["5m", "1h", "off"]) assert.equal(ttl(value), value);
+  assert.equal(ttl("60m"), "");
+  assert.equal(ttl(true), "");
 });
 
 test("[providers.claude] prompt_cache_ttl is unset by default — the CLI decides", () => {
   assert.equal(cfg("").providers.claude.promptCacheTtl, "");
   assert.equal(
-    cfg(`[providers.claude]\nprompt_cache_ttl = "1h"\n`).providers.claude.promptCacheTtl,
+    cfg(`{
+  "providers": {
+    "claude": {
+      "prompt_cache_ttl": "1h"
+    }
+  }
+}`).providers.claude.promptCacheTtl,
     "1h",
   );
 });
 test("[google] / [anthropic] are one native profile each, id = the vendor", () => {
-  const c = cfg(`
-[google]
-api_key_env = "GEMINI_KEY"
-model       = "gemini-2.5-pro"
-
-[anthropic]
-api_key = "sk-ant"
-model   = "claude-opus-5"
-`);
+  const c = cfg(`{
+  "google": {
+    "api_key_env": "GEMINI_KEY",
+    "model": "gemini-2.5-pro"
+  },
+  "anthropic": {
+    "api_key": "sk-ant",
+    "model": "claude-opus-5"
+  }
+}`);
   assert.equal(c.providers.aisdk["google"]?.sdk, "google");
   assert.equal(c.providers.aisdk["google"]?.model, "gemini-2.5-pro");
   assert.equal(c.providers.aisdk["anthropic"]?.sdk, "anthropic");
   assert.equal(c.providers.aisdk["anthropic"]?.model, "claude-opus-5");
   // native SDKs still need a model (no /models probe)
-  assert.deepEqual(cfg(`[google]\napi_key = "k"\n`).providers.aisdk, {});
+  assert.deepEqual(
+    cfg(`{
+  "google": {
+    "api_key": "k"
+  }
+}`).providers.aisdk,
+    {},
+  );
 });
 
 test("[chatgpt] uses Codex OAuth instead of requiring an API key", () => {
-  const c = cfg(`
-[chatgpt]
-model     = "gpt-5-codex"
-models    = ["gpt-5-codex", "gpt-5"]
-auth_path = "~/custom-codex/auth.json"
-codex_cli_path = "~/bin/codex"
-codex_builtin_web_search = true
-`);
+  const c = cfg(`{
+  "chatgpt": {
+    "model": "gpt-5-codex",
+    "models": [
+      "gpt-5-codex",
+      "gpt-5"
+    ],
+    "auth_path": "~/custom-codex/auth.json",
+    "codex_cli_path": "~/bin/codex",
+    "codex_builtin_web_search": true
+  }
+}`);
   const p = c.providers.aisdk["chatgpt"];
   assert.ok(p);
   assert.equal(p.sdk, "chatgpt");
@@ -167,52 +231,73 @@ codex_builtin_web_search = true
 });
 
 test("[chatgpt] disables Codex web search unless explicitly enabled", () => {
-  assert.equal(cfg(`[chatgpt]\n`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch, false);
   assert.equal(
-    cfg(`[chatgpt]\ncodex_builtin_web_search = true\n`).providers.aisdk["chatgpt"]
-      ?.codexBuiltinWebSearch,
+    cfg(`{
+  "chatgpt": {}
+}`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch,
+    false,
+  );
+  assert.equal(
+    cfg(`{
+  "chatgpt": {
+    "codex_builtin_web_search": true
+  }
+}`).providers.aisdk["chatgpt"]?.codexBuiltinWebSearch,
     true,
   );
 });
 
 test("a low-level sdk = chatgpt profile routes without an API key", () => {
-  const p = cfg(`
-[providers.work]
-sdk     = "chatgpt"
-model   = "gpt-5-codex"
-`).providers.aisdk["work"];
+  const p = cfg(`{
+  "providers": {
+    "work": {
+      "sdk": "chatgpt",
+      "model": "gpt-5-codex"
+    }
+  }
+}`).providers.aisdk["work"];
   assert.equal(p?.sdk, "chatgpt");
   assert.equal(p?.model, "gpt-5-codex");
 });
 
 test("named provider settings take precedence over shorthand with the same id", () => {
-  const c = cfg(`
-[custom-provider.dup]
-base_url = "http://sugar/v1"
-model    = "sugar-model"
-
-[providers.dup]
-base_url = "http://named/v1"
-model    = "named-model"
-`);
+  const c = cfg(`{
+  "custom-provider": {
+    "dup": {
+      "base_url": "http://sugar/v1",
+      "model": "sugar-model"
+    }
+  },
+  "providers": {
+    "dup": {
+      "base_url": "http://named/v1",
+      "model": "named-model"
+    }
+  }
+}`);
   assert.equal(c.providers.aisdk["dup"]?.baseUrl, "http://named/v1");
   assert.equal(c.providers.aisdk["dup"]?.model, "named-model");
 });
 
 test("openai and chatgpt profiles with no model/models are kept for auto-detection; google/anthropic dropped", () => {
-  const c = cfg(`
-[providers.auto]
-base_url = "http://x/v1"
-
-[providers.gem]
-sdk     = "google"
-
-[chatgpt]
-
-[providers.ok]
-base_url = "http://y/v1"
-models   = ["m1", "m2"]
-`);
+  const c = cfg(`{
+  "providers": {
+    "auto": {
+      "base_url": "http://x/v1"
+    },
+    "gem": {
+      "sdk": "google"
+    },
+    "ok": {
+      "base_url": "http://y/v1",
+      "models": [
+        "m1",
+        "m2"
+      ]
+    }
+  },
+  "chatgpt": {}
+}`);
   assert.equal(c.providers.aisdk["auto"]?.autoModels, true);
   assert.equal(c.providers.aisdk["chatgpt"]?.autoModels, true);
   assert.equal(c.providers.aisdk["auto"]?.model, "");
@@ -232,29 +317,35 @@ test("resolveApiKey: inline api_key wins over api_key_env; else env; else empty"
 });
 
 test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
-  const c = cfg(`
-[providers.p]
-base_url    = "http://x/v1"
-api_key_env = "DEFINITELY_UNSET_VAR"
-
-[providers.auto]
-base_url = "http://y/v1"
-
-[search]
-backend = "brave"
-`);
+  const c = cfg(`{
+  "providers": {
+    "p": {
+      "base_url": "http://x/v1",
+      "api_key_env": "DEFINITELY_UNSET_VAR"
+    },
+    "auto": {
+      "base_url": "http://y/v1"
+    }
+  },
+  "search": {
+    "backend": "brave"
+  }
+}`);
   const w = lintConfig(c, {} as NodeJS.ProcessEnv);
   assert.ok(w.some((l) => /\$DEFINITELY_UNSET_VAR is not set/.test(l)));
   assert.ok(w.some((l) => /provider "auto".*auto-detect/.test(l)));
   assert.ok(w.some((l) => /search:.*web_search stays disabled/.test(l)));
 
   // an inline api_key silences the env-var warning
-  const c2 = cfg(`
-[providers.p]
-base_url = "http://x/v1"
-api_key  = "sk-inline"
-model    = "m"
-`);
+  const c2 = cfg(`{
+  "providers": {
+    "p": {
+      "base_url": "http://x/v1",
+      "api_key": "sk-inline",
+      "model": "m"
+    }
+  }
+}`);
   assert.deepEqual(lintConfig({ ...c2, claudeProfiles: [] }, {} as NodeJS.ProcessEnv), []);
 
   // a clean config lints clean
@@ -262,39 +353,57 @@ model    = "m"
 });
 
 test("numeric config fields reject negatives / NaN; strArray keeps the valid entries", () => {
-  const c = cfg(`
-[daemon]
-idle_shutdown_minutes = -5
-
-[search]
-max_results = -2
-
-[providers.claude]
-disable_builtin = ["Grep", 5, "Glob"]
-`);
+  const c = cfg(`{
+  "daemon": {
+    "idle_shutdown_minutes": -5
+  },
+  "search": {
+    "max_results": -2
+  },
+  "providers": {
+    "claude": {
+      "disable_builtin": [
+        "Grep",
+        5,
+        "Glob"
+      ]
+    }
+  }
+}`);
   assert.equal(c.daemon.idleShutdownMinutes, 30); // default
   assert.equal(c.search.maxResults, 5); // default
   assert.deepEqual(c.providers.claude.disableBuiltin, ["Grep", "Glob"]); // stray 5 dropped, not the whole list
 });
 
 test("default_provider must be configured, else it falls back to claude", () => {
-  assert.equal(cfg(`default_provider = "ghost"`).defaultProvider, "claude");
   assert.equal(
-    cfg(`
-default_provider = "openai"
-[providers.openai]
-base_url = "http://x/v1"
-model    = "gpt-5"
-`).defaultProvider,
+    cfg(`{
+  "default_provider": "ghost"
+}`).defaultProvider,
+    "claude",
+  );
+  assert.equal(
+    cfg(`{
+  "default_provider": "openai",
+  "providers": {
+    "openai": {
+      "base_url": "http://x/v1",
+      "model": "gpt-5"
+    }
+  }
+}`).defaultProvider,
     "openai",
   );
 });
 
 test("claude is reserved for the native Claude provider", () => {
-  const c = cfg(`
-[providers.claude]
-model   = "claude-sonnet-5"
-`);
+  const c = cfg(`{
+  "providers": {
+    "claude": {
+      "model": "claude-sonnet-5"
+    }
+  }
+}`);
   assert.deepEqual(c.providers.aisdk, {});
   assert.equal(c.providers.claude.model, "claude-sonnet-5");
 });
@@ -312,32 +421,49 @@ test("deepMerge: over wins, objects merge, arrays/scalars replace", () => {
 test("loadConfig merges an exact repo override from the user file and ignores repo files", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
   try {
-    const user = join(dir, "user.toml");
+    const user = join(dir, "user.jsonc");
     mkdirSync(join(dir, ".loom"));
-    writeFileSync(join(dir, ".loom/config.toml"), "invalid TOML [ never read");
+    writeFileSync(join(dir, ".loom/config.jsonc"), "invalid TOML [ never read");
     writeFileSync(
       user,
-      `
-base_branch = "trunk"
-default_provider = "deepseek"
-[local-tools.local]
-command = "tool"
-[session]
-local-tools = []
-[providers.deepseek]
-base_url = "https://api.deepseek.com/v1"
-model = "deepseek-chat"
-[[repo]]
-path = ${JSON.stringify(dir)}
-base_branch = "main"
-[repo.session]
-local-tools = ["local"]
-[repo.providers.deepseek]
-model = "deepseek-reasoner"
-[[repo]]
-path = ${JSON.stringify(join(dir, "other"))}
-base_branch = "other"
-`,
+      `{
+  "base_branch": "trunk",
+  "default_provider": "deepseek",
+  "local-tools": {
+    "local": {
+      "command": "tool"
+    }
+  },
+  "session": {
+    "local-tools": []
+  },
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    }
+  },
+  "repo": [
+    {
+      "path": ${JSON.stringify(dir)},
+      "base_branch": "main",
+      "session": {
+        "local-tools": [
+          "local"
+        ]
+      },
+      "providers": {
+        "deepseek": {
+          "model": "deepseek-reasoner"
+        }
+      }
+    },
+    {
+      "path": ${JSON.stringify(join(dir, "other"))},
+      "base_branch": "other"
+    }
+  ]
+}`,
     );
     const c = loadConfig(dir, user);
     assert.equal(c.baseBranch, "main");
@@ -354,7 +480,7 @@ base_branch = "other"
     assert.deepEqual(other.mcp, []);
     // A parent repo entry is not a prefix grant to nested repositories/worktrees.
     assert.equal(loadConfig(join(dir, "child"), user).baseBranch, "trunk");
-    assert.equal(loadConfig(dir, join(dir, "missing.toml")).baseBranch, "main");
+    assert.equal(loadConfig(dir, join(dir, "missing.jsonc")).baseBranch, "main");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -365,15 +491,34 @@ test("repo paths support home expansion and canonical symlink identity; duplicat
   try {
     const repo = join(dir, "repo");
     const alias = join(dir, "alias");
-    const user = join(dir, "user.toml");
+    const user = join(dir, "user.jsonc");
     mkdirSync(repo);
     symlinkSync(repo, alias);
     const homePath = "~/" + relative(homedir(), repo);
-    writeFileSync(user, `[[repo]]\npath=${JSON.stringify(homePath)}\nbase_branch="dev"\n`);
+    writeFileSync(
+      user,
+      `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(homePath)},
+      "base_branch": "dev"
+    }
+  ]
+}`,
+    );
     assert.equal(loadConfig(alias, user).baseBranch, "dev");
     writeFileSync(
       user,
-      `[[repo]]\npath=${JSON.stringify(repo)}\n[[repo]]\npath=${JSON.stringify(alias)}\n`,
+      `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(repo)}
+    },
+    {
+      "path": ${JSON.stringify(alias)}
+    }
+  ]
+}`,
     );
     assert.throws(() => loadConfig(repo, user), /Duplicate repo.path/);
   } finally {
@@ -383,16 +528,51 @@ test("repo paths support home expansion and canonical symlink identity; duplicat
 
 test("invalid repo override shapes fail explicitly, including unmatched entries", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
-  const user = join(dir, "user.toml");
+  const user = join(dir, "user.jsonc");
   try {
     for (const content of [
-      'repo="bad"',
-      '[repo]\npath="/repo"',
-      "[[repo]]",
-      "[[repo]]\npath=12",
-      '[[repo]]\npath="relative/path"',
-      '[[repo]]\npath=""',
-      '[[repo]]\npath="/elsewhere"\nrepo=[]',
+      `{
+  "repo": "bad"
+}`,
+      `{
+  "repo": {
+    "path": "/repo"
+  }
+}`,
+      `{
+  "repo": [
+    {}
+  ]
+}`,
+      `{
+  "repo": [
+    {
+      "path": 12
+    }
+  ]
+}`,
+      `{
+  "repo": [
+    {
+      "path": "relative/path"
+    }
+  ]
+}`,
+      `{
+  "repo": [
+    {
+      "path": ""
+    }
+  ]
+}`,
+      `{
+  "repo": [
+    {
+      "path": "/elsewhere",
+      "repo": []
+    }
+  ]
+}`,
     ]) {
       writeFileSync(user, content);
       assert.throws(() => loadConfig(dir, user), /repo/);
@@ -405,24 +585,27 @@ test("invalid repo override shapes fail explicitly, including unmatched entries"
 // --- aisdk `sdk` backend selection --------------------------------------
 
 test("sdk defaults to openai; google/anthropic don't need a base_url", () => {
-  const c = cfg(`
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-model    = "gpt-5"
-
-[providers.gemini]
-sdk         = "google"
-api_key_env = "GEMINI_API_KEY"
-model       = "gemini-2.5-pro"
-
-[providers.claude-api]
-sdk     = "anthropic"
-model   = "claude-sonnet-5"
-
-[providers.dropped]
-sdk     = "openai"
-model   = "x"
-`);
+  const c = cfg(`{
+  "providers": {
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5"
+    },
+    "gemini": {
+      "sdk": "google",
+      "api_key_env": "GEMINI_API_KEY",
+      "model": "gemini-2.5-pro"
+    },
+    "claude-api": {
+      "sdk": "anthropic",
+      "model": "claude-sonnet-5"
+    },
+    "dropped": {
+      "sdk": "openai",
+      "model": "x"
+    }
+  }
+}`);
   assert.equal(c.providers.aisdk["openai"]?.sdk, "openai");
   assert.equal(c.providers.aisdk["gemini"]?.sdk, "google");
   assert.equal(c.providers.aisdk["gemini"]?.baseUrl, "");
@@ -432,32 +615,51 @@ model   = "x"
 });
 
 test("an unknown sdk value falls back to openai", () => {
-  const c = cfg(`
-[providers.weird]
-sdk      = "cohere"
-base_url = "http://x/v1"
-model    = "m"
-`);
+  const c = cfg(`{
+  "providers": {
+    "weird": {
+      "sdk": "cohere",
+      "base_url": "http://x/v1",
+      "model": "m"
+    }
+  }
+}`);
   assert.equal(c.providers.aisdk["weird"]?.sdk, "openai");
 });
 
 // --- [search] ---------------------------------------------------------------
 
 test("[search] parses a backend + key env + base; unknown backend → none", () => {
-  const c = cfg(`
-[search]
-backend     = "brave"
-api_key_env = "BRAVE_API_KEY"
-api_base    = "http://localhost:7777"
-max_results = 8
-`);
+  const c = cfg(`{
+  "search": {
+    "backend": "brave",
+    "api_key_env": "BRAVE_API_KEY",
+    "api_base": "http://localhost:7777",
+    "max_results": 8
+  }
+}`);
   assert.equal(c.search.backend, "brave");
   assert.equal(c.search.apiKeyEnv, "BRAVE_API_KEY");
   assert.equal(c.search.apiBase, "http://localhost:7777");
   assert.equal(c.search.maxResults, 8);
 
-  assert.throws(() => cfg(`[search]\nbackend = "kagi"\n`), /remote-tools/);
-  assert.equal(cfg(`[search]\nbackend = "google"\n`).search.backend, "none");
+  assert.throws(
+    () =>
+      cfg(`{
+  "search": {
+    "backend": "kagi"
+  }
+}`),
+    /remote-tools/,
+  );
+  assert.equal(
+    cfg(`{
+  "search": {
+    "backend": "google"
+  }
+}`).search.backend,
+    "none",
+  );
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);
 });
@@ -467,31 +669,74 @@ max_results = 8
 test("[auto_rebase] defaults off/rebase; parses enabled + mode, unknown mode → rebase", () => {
   assert.deepEqual(cfg("").autoRebase, { enabled: false, mode: "rebase" });
 
-  const c = cfg(`
-[auto_rebase]
-enabled = true
-mode    = "merge"
-`);
+  const c = cfg(`{
+  "auto_rebase": {
+    "enabled": true,
+    "mode": "merge"
+  }
+}`);
   assert.deepEqual(c.autoRebase, { enabled: true, mode: "merge" });
 
-  assert.equal(cfg(`[auto_rebase]\nmode = "cherry-pick"\n`).autoRebase.mode, "rebase");
-  assert.equal(cfg(`[auto_rebase]\nenabled = "yes"\n`).autoRebase.enabled, false);
+  assert.equal(
+    cfg(`{
+  "auto_rebase": {
+    "mode": "cherry-pick"
+  }
+}`).autoRebase.mode,
+    "rebase",
+  );
+  assert.equal(
+    cfg(`{
+  "auto_rebase": {
+    "enabled": "yes"
+  }
+}`).autoRebase.enabled,
+    false,
+  );
 });
 
 // --- [commit_reminder] --------------------------------------------------------
 
 test("[commit_reminder] defaults on; parses enabled, non-bool → default", () => {
   assert.deepEqual(cfg("").commitReminder, { enabled: true });
-  assert.equal(cfg(`[commit_reminder]\nenabled = false\n`).commitReminder.enabled, false);
-  assert.equal(cfg(`[commit_reminder]\nenabled = "yes"\n`).commitReminder.enabled, true);
+  assert.equal(
+    cfg(`{
+  "commit_reminder": {
+    "enabled": false
+  }
+}`).commitReminder.enabled,
+    false,
+  );
+  assert.equal(
+    cfg(`{
+  "commit_reminder": {
+    "enabled": "yes"
+  }
+}`).commitReminder.enabled,
+    true,
+  );
 });
 
 // --- [auto_resume] ----------------------------------------------------------
 
 test("[auto_resume] defaults on; parses enabled, non-bool → default", () => {
   assert.deepEqual(cfg("").autoResume, { enabled: true });
-  assert.equal(cfg(`[auto_resume]\nenabled = false\n`).autoResume.enabled, false);
-  assert.equal(cfg(`[auto_resume]\nenabled = "yes"\n`).autoResume.enabled, true);
+  assert.equal(
+    cfg(`{
+  "auto_resume": {
+    "enabled": false
+  }
+}`).autoResume.enabled,
+    false,
+  );
+  assert.equal(
+    cfg(`{
+  "auto_resume": {
+    "enabled": "yes"
+  }
+}`).autoResume.enabled,
+    true,
+  );
 });
 
 // --- claude profiles -----------------------------------------------------
@@ -513,56 +758,74 @@ test("no [[claude_profiles]] → a single expanded ~/.claude profile with id 'cl
 });
 
 test("a named profile gets id claude:<slug>; the first / unnamed one stays 'claude'", () => {
-  const c = cfg(`
-[[claude_profiles]]
-dir = "~/.claude"
-
-[[claude_profiles]]
-dir   = "~/.claude-work"
-name  = "Work"
-color = "yellow"
-`);
+  const c = cfg(`{
+  "claude_profiles": [
+    {
+      "dir": "~/.claude"
+    },
+    {
+      "dir": "~/.claude-work",
+      "name": "Work",
+      "color": "yellow"
+    }
+  ]
+}`);
   assert.deepEqual(c.claudeProfiles.map(claudeProfileId), ["claude", "claude:work"]);
   assert.equal(c.claudeProfiles[1]?.dir, join(homedir(), ".claude-work"));
   assert.equal(c.claudeProfiles[1]?.color, "yellow");
 });
 
 test("claude_profiles: a blank dir is dropped and a colliding id is de-duplicated", () => {
-  const c = cfg(`
-[[claude_profiles]]
-dir = ""
-
-[[claude_profiles]]
-dir = "/one/.claude"
-
-[[claude_profiles]]
-dir = "/two/.claude"
-`);
+  const c = cfg(`{
+  "claude_profiles": [
+    {
+      "dir": ""
+    },
+    {
+      "dir": "/one/.claude"
+    },
+    {
+      "dir": "/two/.claude"
+    }
+  ]
+}`);
   // both unnamed → both resolve to id "claude"; first wins, blank is gone
   assert.equal(c.claudeProfiles.length, 1);
   assert.equal(c.claudeProfiles[0]?.dir, "/one/.claude");
 });
 
 test("default_provider may name a claude profile id", () => {
-  const c = cfg(`
-default_provider = "claude:work"
-[[claude_profiles]]
-dir = "~/.claude"
-[[claude_profiles]]
-dir  = "~/.claude-work"
-name = "Work"
-`);
+  const c = cfg(`{
+  "default_provider": "claude:work",
+  "claude_profiles": [
+    {
+      "dir": "~/.claude"
+    },
+    {
+      "dir": "~/.claude-work",
+      "name": "Work"
+    }
+  ]
+}`);
   assert.equal(c.defaultProvider, "claude:work");
   // an unconfigured id still falls back to claude
-  assert.equal(cfg(`default_provider = "claude:ghost"`).defaultProvider, "claude");
+  assert.equal(
+    cfg(`{
+  "default_provider": "claude:ghost"
+}`).defaultProvider,
+    "claude",
+  );
 });
 
 test("a claude:<slug> id can't be claimed by an aisdk profile", () => {
-  const c = cfg(`
-[custom-provider."claude:work"]
-base_url = "http://localhost:1234/v1"
-model    = "x"
-`);
+  const c = cfg(`{
+  "custom-provider": {
+    "claude:work": {
+      "base_url": "http://localhost:1234/v1",
+      "model": "x"
+    }
+  }
+}`);
   assert.deepEqual(c.providers.aisdk, {});
 });
 
@@ -581,7 +844,12 @@ test("scaffoldUserConfig drops the example at the XDG path once, never overwriti
     assert.equal(readFileSync(dest, "utf8"), readFileSync(exampleConfigPath(), "utf8"));
 
     // idempotent: a second call is a no-op and leaves edits intact
-    writeFileSync(dest, 'base_branch = "trunk"\n');
+    writeFileSync(
+      dest,
+      `{
+  "base_branch": "trunk"
+}`,
+    );
     assert.equal(scaffoldUserConfig(), null);
     assert.match(readFileSync(dest, "utf8"), /trunk/);
   } finally {
@@ -593,28 +861,79 @@ test("scaffoldUserConfig drops the example at the XDG path once, never overwriti
 
 test("Claude VM routing is opt-in and requires explicit runtime paths", () => {
   assert.equal(cfg("").isolation.claude, undefined);
-  assert.equal(cfg('[isolation.claude]\nartifact="/runtime"').isolation.claude, undefined);
+  assert.equal(
+    cfg(`{
+  "isolation": {
+    "claude": {
+      "artifact": "/runtime"
+    }
+  }
+}`).isolation.claude,
+    undefined,
+  );
   assert.deepEqual(
-    cfg('[isolation]\nenabled=true\n[isolation.claude]\nartifact="/runtime"').isolation.claude,
+    cfg(`{
+  "isolation": {
+    "enabled": true,
+    "claude": {
+      "artifact": "/runtime"
+    }
+  }
+}`).isolation.claude,
     {
       artifact: "/runtime",
       smolvm: "smolvm",
     },
   );
-  assert.throws(() => cfg('[isolation.claude]\nsmolvm="/bin/smolvm"'), /requires an artifact/);
   assert.throws(
-    () => cfg('[isolation.claude]\nartifact="/runtime"\nsmolvm=false'),
+    () =>
+      cfg(`{
+  "isolation": {
+    "claude": {
+      "smolvm": "/bin/smolvm"
+    }
+  }
+}`),
+    /requires an artifact/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "isolation": {
+    "claude": {
+      "artifact": "/runtime",
+      "smolvm": false
+    }
+  }
+}`),
     /must name a path or executable/,
   );
 });
 
 test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or alternate-port access", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
-  const file = join(dir, "user.toml");
+  const file = join(dir, "user.jsonc");
   try {
     writeFileSync(
       file,
-      `[isolation.claude]\nartifact="/runtime"\n[[repo]]\npath=${JSON.stringify(dir)}\n[repo.isolation]\nextra_allowed_hosts=["Registry.Npmjs.Org", "registry.npmjs.org"]\n`,
+      `{
+  "isolation": {
+    "claude": {
+      "artifact": "/runtime"
+    }
+  },
+  "repo": [
+    {
+      "path": ${JSON.stringify(dir)},
+      "isolation": {
+        "extra_allowed_hosts": [
+          "Registry.Npmjs.Org",
+          "registry.npmjs.org"
+        ]
+      }
+    }
+  ]
+}`,
     );
     assert.deepEqual(loadConfig(dir, file).isolation.extraAllowedHosts, ["registry.npmjs.org"]);
     assert.deepEqual(loadConfig(join(dir, "other"), file).isolation.extraAllowedHosts, []);
@@ -641,7 +960,19 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
 
 test("project provider allow/deny lists and explicit VM disable override inherited defaults", () => {
   const base = cfg(
-    '[provider_access]\nonly=["claude:work"]\ndisabled=[]\n[isolation.claude]\nartifact="/tmp/runtime"',
+    `{
+  "provider_access": {
+    "only": [
+      "claude:work"
+    ],
+    "disabled": []
+  },
+  "isolation": {
+    "claude": {
+      "artifact": "/tmp/runtime"
+    }
+  }
+}`,
   );
   assert.deepEqual(base.providerAccess, { only: ["claude:work"], disabled: [] });
   const raw = deepMerge(
@@ -649,9 +980,32 @@ test("project provider allow/deny lists and explicit VM disable override inherit
     { isolation: { enabled: false } },
   );
   assert.equal(normalizeConfig(raw).isolation.claude, undefined);
-  assert.deepEqual(cfg("[provider_access]\nonly=[]").providerAccess.only, []);
-  assert.throws(() => cfg('[provider_access]\ndisabled="claude"'), /array/);
-  assert.throws(() => cfg('[isolation]\nenabled="no"'), /boolean/);
+  assert.deepEqual(
+    cfg(`{
+  "provider_access": {
+    "only": []
+  }
+}`).providerAccess.only,
+    [],
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "provider_access": {
+    "disabled": "claude"
+  }
+}`),
+    /array/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "isolation": {
+    "enabled": "no"
+  }
+}`),
+    /boolean/,
+  );
 });
 
 test("one project toggle controls all configured VM runtimes", () => {
@@ -671,28 +1025,47 @@ test("one project toggle controls all configured VM runtimes", () => {
     assert.equal(disabled.isolation.runtimes?.[name]?.artifact, `/${name}`);
   }
   assert.equal(cfg("").isolation.enabled, false);
-  assert.throws(() => cfg("[isolation.claude]\nenabled=true"), /Unknown setting/);
+  assert.throws(
+    () =>
+      cfg(`{
+  "isolation": {
+    "claude": {
+      "enabled": true
+    }
+  }
+}`),
+    /Unknown setting/,
+  );
 });
 
 test("project VM overrides inherit runtimes and leave other projects unchanged", () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-vm-project-"));
   try {
-    const file = join(dir, "config.toml");
+    const file = join(dir, "config.jsonc");
     writeFileSync(
       file,
-      `[isolation]
-enabled=true
-[isolation.claude]
-artifact="/claude"
-[isolation.aisdk]
-artifact="/aisdk"
-[isolation.codex]
-artifact="/codex"
-[[repo]]
-path=${JSON.stringify(dir)}
-[repo.isolation]
-enabled=false
-`,
+      `{
+  "isolation": {
+    "enabled": true,
+    "claude": {
+      "artifact": "/claude"
+    },
+    "aisdk": {
+      "artifact": "/aisdk"
+    },
+    "codex": {
+      "artifact": "/codex"
+    }
+  },
+  "repo": [
+    {
+      "path": ${JSON.stringify(dir)},
+      "isolation": {
+        "enabled": false
+      }
+    }
+  ]
+}`,
     );
     const local = loadConfig(dir, file);
     const vm = loadConfig(join(dir, "other"), file);
@@ -732,20 +1105,49 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
     );
     Deno.env.set("LOOM_BUNDLED_RUNTIMES", manifest);
     for (const name of ["claude", "codex", "aisdk"] as const) {
-      assert.deepEqual(cfg(`[isolation]\nenabled=true`).isolation[name], {
-        artifact: `/bundle/${name}`,
-        smolvm: "/bundle/smolvm",
-      });
-      assert.equal(cfg(`[isolation]\nenabled=false`).isolation[name], undefined);
+      assert.deepEqual(
+        cfg(`{
+  "isolation": {
+    "enabled": true
+  }
+}`).isolation[name],
+        {
+          artifact: `/bundle/${name}`,
+          smolvm: "/bundle/smolvm",
+        },
+      );
+      assert.equal(
+        cfg(`{
+  "isolation": {
+    "enabled": false
+  }
+}`).isolation[name],
+        undefined,
+      );
       assert.deepEqual(
         cfg(
-          `[isolation]\nenabled=true\n[isolation.${name}]\nartifact="/custom"\nsmolvm="/custom/smolvm"`,
+          `{
+  "isolation": {
+    "enabled": true,
+    "${name}": {
+      "artifact": "/custom",
+      "smolvm": "/custom/smolvm"
+    }
+  }
+}`,
         ).isolation[name],
         { artifact: "/custom", smolvm: "/custom/smolvm" },
       );
     }
     Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
-    assert.equal(cfg("[isolation]\nenabled=true").isolation.enabled, true);
+    assert.equal(
+      cfg(`{
+  "isolation": {
+    "enabled": true
+  }
+}`).isolation.enabled,
+      true,
+    );
   } finally {
     if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
@@ -754,21 +1156,72 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
 });
 
 test("title models are scoped to providers, including Claude profiles", () => {
-  const c = cfg(`
-[titles]
-enabled = false
-[providers.claude]
-title_model = "haiku"
-[providers.work]
-sdk = "chatgpt"
-title_model = "gpt-5-mini"
-[custom-provider.local]
-base_url = "http://localhost/v1"
-title_model = "small-local-model"
-`);
+  const c = cfg(`{
+  "titles": {
+    "enabled": false
+  },
+  "providers": {
+    "claude": {
+      "title_model": "haiku"
+    },
+    "work": {
+      "sdk": "chatgpt",
+      "title_model": "gpt-5-mini"
+    }
+  },
+  "custom-provider": {
+    "local": {
+      "base_url": "http://localhost/v1",
+      "title_model": "small-local-model"
+    }
+  }
+}`);
   assert.deepEqual(c.titles, { enabled: false });
   assert.equal(c.providers.claude.titleModel, "haiku");
   assert.equal(c.providers.aisdk.work?.titleModel, "gpt-5-mini");
   assert.equal(c.providers.aisdk.local?.titleModel, "small-local-model");
   assert.equal(cfg("").providers.claude.titleModel, "");
+});
+
+test("JSONC accepts comments, trailing commas and a BOM without changing strings", () => {
+  const raw = parseConfig(
+    "\uFEFF" +
+      `{
+    // project defaults
+    "base_branch": "trunk",
+    "notify": { "webhook": "https://example.com/a//b/*literal*/", },
+    /* repository overrides */
+    "repo": [{ "path": "/repo", "hooks": [], },],
+  }`,
+  );
+  assert.equal(raw.base_branch, "trunk");
+  assert.deepEqual(raw.notify, { webhook: "https://example.com/a//b/*literal*/" });
+  assert.deepEqual(raw.repo, [{ path: "/repo", hooks: [] }]);
+});
+
+test("JSONC rejects malformed or non-object configs instead of using partial results", () => {
+  for (const text of [
+    "",
+    "// only a comment",
+    "[]",
+    "null",
+    "false",
+    '"text"',
+    "123",
+    '{"worktree": {"enabled": false}',
+    '{"a": 1} garbage',
+    "{unquoted: true}",
+    '{"a": /* unfinished',
+    'base_branch = "main"',
+  ])
+    assert.throws(() => parseConfig(text), /JSONC|JSON object/);
+  assert.throws(
+    () => parseConfig('{\n  "api_key": "secret-value",\n  "broken": ,\n}'),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /line 3, column/);
+      assert.doesNotMatch(error.message, /secret-value/);
+      return true;
+    },
+  );
 });

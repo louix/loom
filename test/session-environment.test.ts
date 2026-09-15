@@ -84,10 +84,24 @@ test("environment configuration validates commands and bounded setup time", () =
 test("environment and presets belong to the selected trusted repo", async () => {
   const dir = await Deno.makeTempDir();
   try {
-    const file = dir + "/config.toml";
+    const file = dir + "/config.jsonc";
     await Deno.writeTextFile(
       file,
-      `[[repo]]\npath=${JSON.stringify(dir)}\n[repo.isolation]\nnetwork_presets=["javascript"]\n[repo.isolation.environment]\nprepare="custom setup"\n`,
+      `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(dir)},
+      "isolation": {
+        "network_presets": [
+          "javascript"
+        ],
+        "environment": {
+          "prepare": "custom setup"
+        }
+      }
+    }
+  ]
+}`,
     );
     assert.equal(loadConfig(dir, file).isolation.environment?.prepare, "custom setup");
     assert.equal(loadConfig(dir + "/other", file).isolation.environment?.prepare, "");

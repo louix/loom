@@ -28,8 +28,20 @@ test("base updates wait for idle, preserve the session, and queue messages throu
   let resumeCount = 0;
   const resumeGate = Promise.withResolvers<void>();
   h = await makeHarness({
-    config:
-      '[commit_reminder]\nenabled=false\n[auto_rebase]\nenabled=false\n[[hooks]]\non="init"\nrun="echo initialized >> init-count"\n',
+    config: `{
+  "commit_reminder": {
+    "enabled": false
+  },
+  "auto_rebase": {
+    "enabled": false
+  },
+  "hooks": [
+    {
+      "on": "init",
+      "run": "echo initialized >> init-count"
+    }
+  ]
+}`,
     connectors: {
       "@loom/connector-mock": async () => ({
         createProvider: async (ctx) => {
@@ -142,7 +154,15 @@ test("init failures reach non-VM agents before the first turn and do not block c
         },
       }),
     },
-    config: '[[hooks]]\nkind="check"\non="init"\nrun="echo broken-package >&2; exit 7"\n',
+    config: `{
+  "hooks": [
+    {
+      "kind": "check",
+      "on": "init",
+      "run": "echo broken-package >&2; exit 7"
+    }
+  ]
+}`,
   });
   const c = await LoomClient.connect({
     repoRoot: h.repoRoot,
@@ -205,8 +225,17 @@ test("a fork initializes its new worktree once even when its transcript is resum
     value: { ...fake.capabilities, ownsTranscript: true },
   });
   const h = await makeHarness({
-    config:
-      '[commit_reminder]\nenabled=false\n[[hooks]]\non="init"\nrun="echo init >> initialized"\n',
+    config: `{
+  "commit_reminder": {
+    "enabled": false
+  },
+  "hooks": [
+    {
+      "on": "init",
+      "run": "echo init >> initialized"
+    }
+  ]
+}`,
     connectors: { "@loom/connector-mock": async () => ({ createProvider: async () => fake }) },
   });
   const c = await LoomClient.connect({
@@ -273,7 +302,14 @@ test("queued operations make an otherwise idle session ineligible for VM replace
 
 test("provider startup failure preserves files written by init", async () => {
   const h = await makeHarness({
-    config: '[[hooks]]\non="init"\nrun="echo keep-me > initialized"\n',
+    config: `{
+  "hooks": [
+    {
+      "on": "init",
+      "run": "echo keep-me > initialized"
+    }
+  ]
+}`,
     connectors: {
       "@loom/connector-mock": async () => ({
         createProvider: async () => {

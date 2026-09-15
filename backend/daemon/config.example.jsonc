@@ -1,0 +1,108 @@
+// User config: ~/.config/loom/config.jsonc (or $XDG_CONFIG_HOME/loom/config.jsonc).
+// Comments and trailing commas are supported. Repository config files are not read.
+{
+  "base_branch": "main",
+  "worktree_dir": ".loom/trees",
+  // "default_provider": "claude",
+
+  // Git worktrees and VM execution are independent settings.
+  "worktree": { "enabled": true },
+  "isolation": { "enabled": false }, // true defaults every provider to VM
+  "auto_rebase": { "enabled": false, "mode": "rebase" }, // or "merge"
+  "auto_resume": { "enabled": true },
+  "commit_reminder": { "enabled": true },
+  "daemon": { "idle_shutdown_minutes": 30 }, // 0 disables idle shutdown
+
+  "providers": {
+    "claude": {
+      "model": "claude-sonnet-5",
+      "permission_default": "manual", // manual, plan, acceptEdits
+      // "title_model": "haiku",
+      // "models": ["opus", "sonnet", "haiku"], // omit to discover models
+      // "cli_path": "/path/to/claude",
+      // "prompt_cache_ttl": "1h", // omit to let Claude decide
+    },
+    // Additional named accounts select their backend with sdk.
+    // "work": { "sdk": "chatgpt", "config_dir": "~/.codex-work" },
+  },
+
+  // Optional Claude accounts. Omit to use ~/.claude.
+  // "claude_profiles": [
+  //   { "dir": "~/.claude-work", "name": "work", "color": "yellow" },
+  //   { "dir": "~/.claude-personal", "name": "personal" },
+  // ],
+
+  // ChatGPT uses the account authenticated by `codex login` and discovers models.
+  // "chatgpt": { "config_dir": "~/.codex" },
+  // Native API providers require a model and credentials.
+  // "google": { "api_key_env": "GEMINI_API_KEY", "model": "gemini-2.5-pro" },
+  // "anthropic": { "api_key_env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-5" },
+
+  // OpenAI-compatible endpoints discover models from base_url + /models.
+  // Set model/models only to pin the default or curate the picker.
+  // "custom-provider": {
+  //   "openai": {
+  //     "base_url": "https://api.openai.com/v1",
+  //     "api_key_env": "OPENAI_API_KEY", // or api_key for an inline credential
+  //     "title_model": "gpt-5-mini",
+  //     "tag": "oai",
+  //     "color": "cyan",
+  //   },
+  // },
+
+  // Definitions are inert until selected in the corresponding session list.
+  "session": { "local-tools": [], "vm-tools": [], "remote-tools": [] },
+  "local-tools": {
+    "tilth": {
+      "command": "tilth",
+      "args": ["--mcp", "--edit"],
+      "default_for": ["read", "write", "edit"],
+    },
+    "fff": { "command": "fff-mcp", "default_for": ["find", "grep"] },
+  },
+  "vm-tools": {
+    "tilth": {
+      "runtime": "tilth", // bundled runtime; works with local or VM agents
+      "default_for": ["read", "write", "edit", "find", "grep"],
+    },
+  },
+  // "remote-tools": {
+  //   "kagi": {
+  //     "url": "https://mcp.kagi.com/mcp",
+  //     "bearer_token_env": "KAGI_API_KEY", // or bearer_token inline
+  //     "default_for": ["web_search", "web_fetch"],
+  //   },
+  // },
+
+  "titles": { "enabled": true }, // set title_model in each provider's settings
+  "notify": { "webhook": "" },
+  // "search": { "backend": "brave", "api_key_env": "BRAVE_API_KEY" },
+
+  // Hooks run shell commands. A check reports failures to the agent;
+  // a notify hook sends no agent message. See README.md for details.
+  "hooks": [],
+
+  // Each object overrides defaults for exactly one repository (absolute or ~/ path).
+  // Objects merge recursively. Arrays replace the inherited array in full.
+  "repo": [
+    // {
+    //   "path": "~/dev/my-project",
+    //   "isolation": {
+    //     "enabled": true,
+    //     "network_presets": ["nix", "javascript"],
+    //     "extra_allowed_hosts": ["registry.npmjs.org"],
+    //     "environment": {
+    //       "nix": true,
+    //       "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
+    //       "timeout_seconds": 900,
+    //     },
+    //   },
+    //   "session": { "local-tools": [], "vm-tools": ["tilth"], "remote-tools": [] },
+    //   "provider_access": { "disabled": ["claude:work"] },
+    //   "hooks": [
+    //     { "name": "install dependencies", "on": "init", "run": "deno install --frozen", "timeout": 600 },
+    //     { "kind": "check", "on": "turn_end", "match": ["**/*.ts"], "run": "deno task lint" },
+    //   ],
+    // },
+  ],
+}

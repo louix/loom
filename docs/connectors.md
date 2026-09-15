@@ -43,7 +43,7 @@ Deno environment permission over the curated child environment; unrelated
 provider/search keys are not copied. Native launch and existing Git tools require
 subprocess permission. FFI stays disabled.
 
-`[providers.claude] worker_allowed_hosts` replaces the Deno network allowlist.
+`providers.claude.worker_allowed_hosts` replaces the Deno network allowlist.
 Defaults are `api.anthropic.com`, `claude.ai`, `platform.claude.com`,
 `registry.npmjs.org` and `npmjs.com`; an empty list denies worker network access.
 Additional proxy/API endpoints must be configured explicitly. These Deno grants
@@ -61,10 +61,10 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-Define host commands under `[local-tools.<name>]`, separate offline packaged VMs
-under `[vm-tools.<name>]`, and remote services under `[remote-tools.<name>]`.
-Select names with the three corresponding lists under `[session]` or
-`[repo.session]`. There are no implicit external tools. See
+Define host commands under `local-tools.<name>`, separate offline packaged VMs
+under `vm-tools.<name>`, and remote services under `remote-tools.<name>`.
+Select names with the three corresponding lists under `session` or
+`repo.session`. There are no implicit external tools. See
 [tool selection](tools.md) and [packaged runtimes](packaged-runtimes.md).
 Each active session gets a separate relay for each remote service. Only selected
 remote credentials are required; inline `bearer_token` overrides the env var.
@@ -79,27 +79,34 @@ Built-ins remain fallbacks where available, subject to the connector's existing
 tool settings. Permission checks are unchanged. This is agent guidance, not a
 guarantee that every call uses the preferred server.
 
-```toml
-[session]
-local-tools = ["tilth"]
-remote-tools = ["kagi"]
-
-[remote-tools.kagi]
-url = "https://mcp.kagi.com/mcp"
-bearer_token_env = "KAGI_API_KEY"
-default_for = ["web_search", "web_fetch"]
-
-[local-tools.tilth]
-command = "tilth"
-args = ["--mcp", "--edit"]
-default_for = ["read", "write", "edit"]
+```jsonc
+{
+  "session": {
+    "local-tools": ["tilth"],
+    "remote-tools": ["kagi"],
+  },
+  "remote-tools": {
+    "kagi": {
+      "url": "https://mcp.kagi.com/mcp",
+      "bearer_token_env": "KAGI_API_KEY",
+      "default_for": ["web_search", "web_fetch"],
+    },
+  },
+  "local-tools": {
+    "tilth": {
+      "command": "tilth",
+      "args": ["--mcp", "--edit"],
+      "default_for": ["read", "write", "edit"],
+    },
+  },
+}
 ```
 
 Kagi is a normal MCP server: its tools keep their advertised names, such as
 `kagi_search_fetch` and `kagi_extract`. Loom supplies no Kagi-specific wrappers
 or argument translations. `[[mcp]]` and `[search] backend = "kagi"` are rejected;
 use named definitions and explicit selections. Brave and Tavily remain
-optional first-party `[search]` backends.
+optional first-party `search` backends.
 
 Only the relay receives the upstream URL and HTTP credentials, over private
 stdin after a version handshake. Its launch policy grants the configured host
@@ -182,7 +189,7 @@ export function createProvider(ctx: ConnectorContext): AgentProvider | Promise<A
   //                  sdk, maxSteps, cliPath, promptCacheTtl — all optional)
   // ctx.transcript — a TranscriptStore, for connectors that persist their own
   //                  history (the aisdk kind); omitted for Claude
-  // ctx.search     — a resolved web_search config when `[search]` is set
+  // ctx.search     — a resolved web_search config when `search` is set
   // ctx.logger     — a scoped Logger
 }
 ```
@@ -221,13 +228,13 @@ No build step — source is `.ts`.
 
 `ProviderRegistry.#packageFor(id)`:
 
-| provider id / profile                                                  | connector package         |
-| ---------------------------------------------------------------------- | ------------------------- |
-| `claude`                                                               | `@loom/connector-claude`  |
-| `fake` / `mock`                                                        | `@loom/connector-mock`    |
-| `[chatgpt]` or `sdk = "chatgpt"`                                       | `@loom/connector-chatgpt` |
-| `[google]` or `sdk = "google"`                                         | `@loom/connector-gemini`  |
-| `[custom-provider.*]`, `[anthropic]`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
+| provider id / profile                                              | connector package         |
+| ------------------------------------------------------------------ | ------------------------- |
+| `claude`                                                           | `@loom/connector-claude`  |
+| `fake` / `mock`                                                    | `@loom/connector-mock`    |
+| `chatgpt` or `sdk = "chatgpt"`                                     | `@loom/connector-chatgpt` |
+| `google` or `sdk = "google"`                                       | `@loom/connector-gemini`  |
+| `custom-provider.*`, `anthropic`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
 
 Connector routing is internal to Loom. To add a connector, register the workspace
 package in the CLI manifest (`cli/src/connectors.ts`) and add its backend route
@@ -235,19 +242,17 @@ in `ProviderRegistry.#packageFor`. User profiles select the backend with `sdk`.
 
 ## ChatGPT subscription
 
-`[chatgpt]` uses the OAuth session created by `codex login`; it does not read an
+`chatgpt` uses the OAuth session created by `codex login`; it does not read an
 OpenAI API key or put a subscription token in Loom's configuration. At daemon
 start it lists your account's models and their reasoning efforts through a
 short-lived `codex app-server` process (`model/list`), and context limits from
 Codex's authenticated `GET /backend-api/codex/models` catalogue. A model pin
 remains optional:
 
-```toml
-[chatgpt]
-# model = "gpt-5.6-terra"           # optional pin / default
-# models = ["gpt-5.6-terra"]         # optional curated picker list
-# auth_path = "~/.codex/auth.json"  # optional; this is the default
-# config_dir = "~/.codex-work"      # optional explicit Codex home (overrides auth_path/CODEX_HOME)
+```jsonc
+{
+  "chatgpt": {},
+}
 ```
 
 Codex's directory is resolved once, in this order: explicit `config_dir` →
@@ -269,12 +274,15 @@ in turn starts Codex's Code Mode host and provides its native patching,
 approvals, steering, and sub-agent tools. Install `codex` and run `codex login`
 before using one.
 
-Set `codex_cli_path` in `[chatgpt]` (or an `sdk = "chatgpt"` provider profile)
+Set `codex_cli_path` in `chatgpt` (or an `sdk = "chatgpt"` provider profile)
 when `codex` is not on `PATH`:
 
-```toml
-[chatgpt]
-codex_cli_path = "/absolute/path/to/codex"
+```jsonc
+{
+  "chatgpt": {
+    "codex_cli_path": "/absolute/path/to/codex",
+  },
+}
 ```
 
 Loom replaces the app-server's `mcp_servers` table for every Code Mode session

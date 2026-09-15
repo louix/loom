@@ -46,25 +46,42 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
 });
 await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
 await Deno.writeTextFile(
-  join(f.root, "config/loom/config.toml"),
-  `
-[session]
-remote-tools=["probe"]
-[providers.claude]
-cli_path=${JSON.stringify(cli)}
-model="haiku"
-models=["haiku"]
-setting_sources=[]
-[isolation.claude]
-artifact=${JSON.stringify(artifact)}
-smolvm=${JSON.stringify(smolvm)}
-[titles]
-enabled=false
-[search]
-backend="none"
-[remote-tools.probe]
-url="http://127.0.0.1:${server.addr.port}/mcp"
-`,
+  join(f.root, "config/loom/config.jsonc"),
+  `{
+  "session": {
+    "remote-tools": [
+      "probe"
+    ]
+  },
+  "providers": {
+    "claude": {
+      "cli_path": ${JSON.stringify(cli)},
+      "model": "haiku",
+      "models": [
+        "haiku"
+      ],
+      "setting_sources": []
+    }
+  },
+  "isolation": {
+    "enabled": true,
+    "claude": {
+      "artifact": ${JSON.stringify(artifact)},
+      "smolvm": ${JSON.stringify(smolvm)}
+    }
+  },
+  "titles": {
+    "enabled": false
+  },
+  "search": {
+    "backend": "none"
+  },
+  "remote-tools": {
+    "probe": {
+      "url": "http://127.0.0.1:${server.addr.port}/mcp"
+    }
+  }
+}`,
 );
 let daemon: Daemon | undefined, client: LoomClient | undefined;
 let text = "";

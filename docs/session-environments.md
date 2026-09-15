@@ -7,7 +7,7 @@ Loom separates reusable environment preparation from session initialization.
   Distinct custom runtime images are prepared separately. `--provider P` selects
   that provider's runtime. Nix activation
   and `isolation.environment.prepare` must succeed before the base is published.
-- `[[hooks]] on = "init"` runs once when a conversation is created, before its opening
+- a `hooks` entry with `"on": "init"` runs once when a conversation is created, before its opening
   turn, inside its VM or on the host for a non-VM session. A failed init hook is
   shown in EVENTS and included in the agent's opening prompt so it can repair the
   project. Init does not run on resume or VM replacement.
@@ -16,29 +16,36 @@ Loom separates reusable environment preparation from session initialization.
 
 ## Configuration
 
-Add to the existing matching `[[repo]]` entry in the trusted user config:
+Add to the existing matching `repo` array entry in the trusted user config:
 
-```toml
-[[repo]]
-path = "~/dev/loom"
-
-[repo.isolation]
-network_presets = ["nix", "javascript"]
-
-[repo.isolation.environment]
-nix = true
-command_prefix = ["nix", "develop", "path:.", "--no-write-lock-file", "--command"]
-prepare = ""
-timeout_seconds = 900
-
-[[repo.hooks]]
-name = "install dependencies"
-on = "init"
-run = "deno install --frozen"
-timeout = 600
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/loom",
+      "isolation": {
+        "network_presets": ["nix", "javascript"],
+        "environment": {
+          "nix": true,
+          "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
+          "prepare": "",
+          "timeout_seconds": 900,
+        },
+      },
+      "hooks": [
+        {
+          "name": "install dependencies",
+          "on": "init",
+          "run": "deno install --frozen",
+          "timeout": 600,
+        },
+      ],
+    },
+  ],
+}
 ```
 
-Keep provider VM settings enabled where required. Non-VM sessions use the same
+Set `isolation.enabled` to true for projects that should default to VM execution. Non-VM sessions use the same
 init hook mechanism in their host working environment; the VM base settings do
 not affect them. Hooks can also be scoped with the existing `project` setting.
 Init hooks execute serially in configuration order. Both check and notify init
@@ -155,12 +162,22 @@ plain `pnpm install` needs no additional flags.
 
 For pnpm, an init command can explicitly select a shared store and copy imports:
 
-```toml
-[[repo.hooks]]
-name = "install dependencies"
-on = "init"
-run = 'pnpm install --frozen-lockfile --store-dir="$XDG_DATA_HOME/pnpm/store" --package-import-method=copy'
-timeout = 600
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/project",
+      "hooks": [
+        {
+          "name": "install dependencies",
+          "on": "init",
+          "run": "pnpm install --frozen-lockfile --store-dir=\"$XDG_DATA_HOME/pnpm/store\" --package-import-method=copy",
+          "timeout": 600,
+        },
+      ],
+    },
+  ],
+}
 ```
 
 Installed dependencies stay per worktree. Shared caches use the package manager's
@@ -187,7 +204,7 @@ policy. They grant access to the whole session VM, not just setup commands.
   source distributions for pip, uv and other Python package managers).
 
 For a repo using all three, set `network_presets = ["nix", "javascript", "python"]`
-under `[repo.isolation]`.
+under `repo.isolation`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

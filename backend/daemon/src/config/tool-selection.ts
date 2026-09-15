@@ -21,7 +21,7 @@ export const resolveToolSelection = (
 ): Pick<LoomConfig, "mcp" | "httpMcp"> => {
   if (["command-mcp", "http-mcp", "mcp"].some((key) => key in raw))
     throw new Error(
-      "MCP lists are no longer supported. Define local-tools, vm-tools or remote-tools by name and select them under [session].",
+      "MCP lists are no longer supported. Define local-tools, vm-tools or remote-tools by name and select them under session.",
     );
   const session = raw.session ?? {};
   if (!record(session)) throw new Error("session must be a table");

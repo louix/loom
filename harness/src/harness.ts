@@ -18,7 +18,7 @@ const CONNECTORS: ConnectorManifest = {
 setLogLevel("error"); // keep test output quiet
 
 // Isolate the user-level config: without this, the developer's real
-// ~/.config/loom/config.toml is deep-merged into every harness daemon (extra
+// ~/.config/loom/config.jsonc is deep-merged into every harness daemon (extra
 // providers, live credentials, start-up network probes). Point XDG at an empty
 // dir; each harness also supplies its own trusted config file.
 Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
@@ -38,8 +38,8 @@ export const makeHarness = async (
 ): Promise<Harness> => {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
   const configDir = mkdtempSync(join(tmpdir(), "loom-h-config-"));
-  const configPath = join(configDir, "config.toml");
-  writeFileSync(configPath, opts.config ?? "");
+  const configPath = join(configDir, "config.jsonc");
+  writeFileSync(configPath, opts.config ?? "{}");
   if (opts.git !== false) {
     execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
     execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);

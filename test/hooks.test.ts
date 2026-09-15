@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { parse as parseToml } from "smol-toml";
+import { parseConfig } from "@loom/daemon/config/config";
 import { LoomClient } from "@loom/client";
 import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import { writtenPaths } from "@loom/core/tool-paths";
@@ -13,7 +13,7 @@ import { makeLogger } from "@loom/core/logger";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness } from "@loom/harness";
 
-const cfg = (toml: string) => normalizeConfig(parseToml(toml));
+const cfg = (toml: string) => normalizeConfig(parseConfig(toml || "{}"));
 
 const until = async (ready: () => boolean | Promise<boolean>): Promise<void> => {
   const end = Date.now() + 3000;
@@ -73,14 +73,18 @@ test("same-named hooks run independently and overlapping writes retain every pat
     branch: null,
   };
   runner.setHooks(
-    cfg(`
-[[hooks]]
-on = "file_write"
-run = """sh -c 'touch ${started}; while ! test -e ${release}; do sleep 0.01; done; echo "$LOOM_FILE" >> ${output}'"""
-[[hooks]]
-on = "file_write"
-run = "sh -c 'touch ${other}'"
-`).hooks,
+    cfg(`{
+  "hooks": [
+    {
+      "on": "file_write",
+      "run": "sh -c 'touch ${started}; while ! test -e ${release}; do sleep 0.01; done; echo \\"$LOOM_FILE\\" >> ${output}'"
+    },
+    {
+      "on": "file_write",
+      "run": "sh -c 'touch ${other}'"
+    }
+  ]
+}`).hooks,
   );
   try {
     runner.fire("file_write", session, { files: [join(dir, "a.ts")] });
@@ -111,7 +115,16 @@ test("a failing turn_end notification never starts another agent turn", async ()
       notices++;
     },
   });
-  runner.setHooks(cfg('[[hooks]]\non="turn_end"\nrun="exit 1"').hooks);
+  runner.setHooks(
+    cfg(`{
+  "hooks": [
+    {
+      "on": "turn_end",
+      "run": "exit 1"
+    }
+  ]
+}`).hooks,
+  );
   try {
     runner.turnEnded({
       id: "s",
@@ -141,7 +154,17 @@ test("waiting, removal, reload, and shutdown invalidate feedback waiting for del
       },
       onNotice: () => {},
     });
-    runner.setHooks(cfg('[[hooks]]\nkind="check"\non="turn_end"\nrun="exit 1"').hooks);
+    runner.setHooks(
+      cfg(`{
+  "hooks": [
+    {
+      "kind": "check",
+      "on": "turn_end",
+      "run": "exit 1"
+    }
+  ]
+}`).hooks,
+    );
     const session = {
       id: "s",
       title: null,
@@ -182,7 +205,15 @@ test("interrupt kills a pending checker and prevents feedback from restarting th
     release = join(dir, "release"),
     completed = join(dir, "completed");
   const h = await makeHarness({
-    config: `[[hooks]]\nkind="check"\non="file_write"\nrun="""touch ${started}; while ! test -e ${release}; do sleep 0.01; done; touch ${completed}; echo bad; exit 1"""`,
+    config: `{
+  "hooks": [
+    {
+      "kind": "check",
+      "on": "file_write",
+      "run": "touch ${started}; while ! test -e ${release}; do sleep 0.01; done; touch ${completed}; echo bad; exit 1"
+    }
+  ]
+}`,
   });
   const c = await LoomClient.connect({
     repoRoot: h.repoRoot,
@@ -231,19 +262,27 @@ test("matchGlob: * stops at a separator, ** crosses it, and ** / matches zero di
 // --- [[hooks]] parsing --------------------------------------------------------
 
 test("[[hooks]] parses a full entry; `on` takes a bare string or a list", () => {
-  const c = cfg(`
-[[hooks]]
-name    = "lint"
-on      = ["turn_end", "file_write"]
-run     = "deno task lint"
-project = "/tmp/x"
-match   = ["**/*.ts"]
-timeout = 5
-
-[[hooks]]
-on  = "waiting"
-run = "notify-send loom"
-`);
+  const c = cfg(`{
+  "hooks": [
+    {
+      "name": "lint",
+      "on": [
+        "turn_end",
+        "file_write"
+      ],
+      "run": "deno task lint",
+      "project": "/tmp/x",
+      "match": [
+        "**/*.ts"
+      ],
+      "timeout": 5
+    },
+    {
+      "on": "waiting",
+      "run": "notify-send loom"
+    }
+  ]
+}`);
   assert.equal(c.hooks.length, 2);
   const lint = c.hooks[0]!;
   assert.deepEqual(lint.on, ["turn_end", "file_write"]);
@@ -260,42 +299,146 @@ run = "notify-send loom"
 });
 
 test("[[hooks]] rejects invalid entries and clamps timeout", () => {
-  assert.throws(() => cfg('[[hooks]]\non = "turn_end"\n'), /run/);
-  assert.throws(() => cfg('[[hooks]]\nrun = "x"\n'), /on/);
-  assert.throws(() => cfg('[[hooks]]\non = "typo"\nrun = "x"\n'), /on/);
-  assert.throws(() => cfg('[[hooks]]\non=["waiting", "typo"]\nrun="x"'), /on/);
-  assert.throws(() => cfg('[[hooks]]\nkind="check"\non="waiting"\nrun="x"'), /check hook/);
-  assert.throws(() => cfg('[[hooks]]\nkind="typo"\non="waiting"\nrun="x"'), /kind/);
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "on": "turn_end"
+    }
+  ]
+}`),
+    /run/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "run": "x"
+    }
+  ]
+}`),
+    /on/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "on": "typo",
+      "run": "x"
+    }
+  ]
+}`),
+    /on/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "on": [
+        "waiting",
+        "typo"
+      ],
+      "run": "x"
+    }
+  ]
+}`),
+    /on/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "kind": "check",
+      "on": "waiting",
+      "run": "x"
+    }
+  ]
+}`),
+    /check hook/,
+  );
+  assert.throws(
+    () =>
+      cfg(`{
+  "hooks": [
+    {
+      "kind": "typo",
+      "on": "waiting",
+      "run": "x"
+    }
+  ]
+}`),
+    /kind/,
+  );
   // de-duped, so a repeated event doesn't double-fire
-  assert.deepEqual(cfg('[[hooks]]\non = ["waiting", "waiting"]\nrun = "x"\n').hooks[0]?.on, [
-    "waiting",
-  ]);
-  assert.equal(cfg('[[hooks]]\non="waiting"\nrun="x"\ntimeout=0\n').hooks[0]?.timeoutMs, 1_000);
+  assert.deepEqual(
+    cfg(`{
+  "hooks": [
+    {
+      "on": [
+        "waiting",
+        "waiting"
+      ],
+      "run": "x"
+    }
+  ]
+}`).hooks[0]?.on,
+    ["waiting"],
+  );
   assert.equal(
-    cfg('[[hooks]]\non="waiting"\nrun="x"\ntimeout=99999\n').hooks[0]?.timeoutMs,
+    cfg(`{
+  "hooks": [
+    {
+      "on": "waiting",
+      "run": "x",
+      "timeout": 0
+    }
+  ]
+}`).hooks[0]?.timeoutMs,
+    1_000,
+  );
+  assert.equal(
+    cfg(`{
+  "hooks": [
+    {
+      "on": "waiting",
+      "run": "x",
+      "timeout": 99999
+    }
+  ]
+}`).hooks[0]?.timeoutMs,
     600_000,
   );
 });
 
 test("lintConfig flags a hook command that isn't on PATH and a match that can't apply", () => {
-  const c = cfg(`
-[[hooks]]
-on  = "waiting"
-run = "definitely-not-a-real-binary --toast"
-
-[[hooks]]
-name  = "dead-filter"
-on    = "waiting"
-match = ["**/*.ts"]
-run   = "sh -c true"
-`);
+  const c = cfg(`{
+  "hooks": [
+    {
+      "on": "waiting",
+      "run": "definitely-not-a-real-binary --toast"
+    },
+    {
+      "name": "dead-filter",
+      "on": "waiting",
+      "match": [
+        "**/*.ts"
+      ],
+      "run": "sh -c true"
+    }
+  ]
+}`);
   const warnings = lintConfig(c, {}).join("\n");
   assert.match(warnings, /definitely-not-a-real-binary` is not on PATH/);
   assert.match(warnings, /dead-filter.*match.* does nothing for waiting/s);
   // a pipeline / absolute path is the user's business — not probed
   assert.deepEqual(
     lintConfig(
-      { ...cfg('[[hooks]]\non="waiting"\nrun="X=1 foo | bar"\n'), claudeProfiles: [] },
+      { ...cfg(`{"hooks": [{"on": "waiting", "run": "X=1 foo | bar"}]}`), claudeProfiles: [] },
       {},
     ),
     [],
@@ -311,7 +454,7 @@ const marker = (path: string, extra = ""): string =>
 test("a turn_end hook runs with the turn's written files in $LOOM_FILES", async () => {
   const log = join(await Deno.makeTempDir(), "fired.log");
   const hh = await makeHarness({
-    config: `[[hooks]]\nname = "marker"\non = "turn_end"\nrun = """${marker(log)}"""\n`,
+    config: JSON.stringify({ hooks: [{ name: "marker", on: "turn_end", run: marker(log) }] }),
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -351,7 +494,7 @@ test("a waiting hook fires when the turn blocks, with the reason in the environm
   const log = join(await Deno.makeTempDir(), "waiting.log");
   const run = `sh -c 'printf "%s/%s\\n" "$LOOM_HOOK_EVENT" "$LOOM_AWAIT_REASON" >> ${log}'`;
   const hh = await makeHarness({
-    config: `[[hooks]]\nname = "toast"\non = ["waiting", "permission"]\nrun = """${run}"""\n`,
+    config: JSON.stringify({ hooks: [{ name: "toast", on: ["waiting", "permission"], run }] }),
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -378,8 +521,7 @@ test("a waiting hook fires when the turn blocks, with the reason in the environm
 
 test("a failing write hook sends its output to the agent, once per distinct failure", async () => {
   const hh = await makeHarness({
-    config:
-      '[[hooks]]\nkind = "check"\nname = "lint"\non = "turn_end"\nrun = """sh -c \'echo a.ts:1 no semicolon; exit 1\'"""\n',
+    config: `{"hooks": [{"kind": "check", "name": "lint", "on": "turn_end", "run": "sh -c 'echo a.ts:1 no semicolon; exit 1'"}]}`,
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -425,7 +567,9 @@ test("a failing write hook sends its output to the agent, once per distinct fail
 test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit", async () => {
   const log = join(await Deno.makeTempDir(), "scoped.log");
   const hh = await makeHarness({
-    config: `[[hooks]]\non = "turn_end"\nproject = "/nowhere/else"\nrun = "touch ${log}"\n`,
+    config: JSON.stringify({
+      hooks: [{ on: "turn_end", project: "/nowhere/else", run: `touch ${log}` }],
+    }),
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -446,7 +590,7 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
     // Re-point it at this repo; config changes are polled every 250ms.
     writeFileSync(
       hh.configPath,
-      `[[hooks]]\non = "turn_end"\nproject = "${hh.repoRoot}"\nrun = "touch ${log}"\n`,
+      JSON.stringify({ hooks: [{ on: "turn_end", project: hh.repoRoot, run: `touch ${log}` }] }),
     );
     await delay(600);
     fs?.emit({ type: "assistant_text", text: "again" });
@@ -463,8 +607,7 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
 test("a hook that hangs is killed at its timeout, and the agent hears why", async () => {
   const hh = await makeHarness({
     // `sleep` outlives the timeout; the kill has to reach it, not just the `sh`.
-    config:
-      '[[hooks]]\nkind = "check"\nname = "slow"\non = "turn_end"\nrun = "sleep 60"\ntimeout = 1\n',
+    config: `{"hooks": [{"kind": "check", "name": "slow", "on": "turn_end", "run": "sleep 60", "timeout": 1}]}`,
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,

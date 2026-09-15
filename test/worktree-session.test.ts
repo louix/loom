@@ -14,7 +14,13 @@ let h: Harness;
 before(async () => {
   // Disable the auto-titler: it renames `loom/<id>` branches out from under the
   // worktree, which several assertions here (and the archive/revive test) key on.
-  h = await makeHarness({ config: "[titles]\nenabled = false\n" });
+  h = await makeHarness({
+    config: `{
+  "titles": {
+    "enabled": false
+  }
+}`,
+  });
 });
 after(async () => {
   await h.cleanup();

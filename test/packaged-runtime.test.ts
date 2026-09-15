@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parse } from "smol-toml";
+import { parseConfig as parse } from "@loom/daemon/config/config";
 import { normalizeConfig } from "@loom/daemon/config/config";
 import { decodeManifest, resolveRuntime, runtimeKey } from "../runtime/src/packaged/artifact.ts";
 import { prepareRuntime } from "../cli/src/runtime.ts";
@@ -26,8 +26,22 @@ const manifest = {
   args: ["--mcp"],
 };
 test("packaged MCP config rejects ambiguous commands and unsupported permission grants", () => {
-  const base =
-    '[session]\nvm-tools=["code"]\n[vm-tools.code]\nruntime="tilth"\ndefault_for=["read","edit"]';
+  const base = `{
+  "session": {
+    "vm-tools": [
+      "code"
+    ]
+  },
+  "vm-tools": {
+    "code": {
+      "runtime": "tilth",
+      "default_for": [
+        "read",
+        "edit"
+      ]
+    }
+  }
+}`;
   assert.deepEqual(normalizeConfig(parse(base)).mcp, [
     {
       name: "code",
@@ -38,17 +52,17 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
     },
   ]);
   for (const extra of [
-    '\ncommand="tilth"',
-    "\nargs=[]",
-    '\nenv={TOKEN="secret"}',
-    "\nnetwork=true",
-    '\nhosts=["example.com"]',
-    '\nallowed_hosts=["example.com"]',
-    "\nmounts=[]",
+    { command: "tilth" },
+    { args: [] },
+    { env: { TOKEN: "secret" } },
+    { network: true },
+    { hosts: ["example.com"] },
+    { allowed_hosts: ["example.com"] },
+    { mounts: [] },
   ]) {
-    assert.throws(() => normalizeConfig(parse(base + extra)));
+    assert.throws(() => normalizeConfig({ "vm-tools": { code: { runtime: "tilth", ...extra } } }));
   }
-  assert.throws(() => normalizeConfig(parse(base.replace('runtime="tilth"', 'command="tilth"'))));
+  assert.throws(() => normalizeConfig(parse(base.replace('"runtime":', '"command":'))));
 });
 test("manifest cannot grant authority; VM mount and environment policies are fixed", () => {
   assert.deepEqual(decodeManifest(manifest), manifest);

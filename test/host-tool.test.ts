@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { normalizeConfig } from "@loom/daemon/config/config";
-import { parse } from "smol-toml";
+import { parseConfig as parse } from "@loom/daemon/config/config";
 import { readFileSync } from "node:fs";
 import { exampleConfigPath } from "@loom/daemon/scaffold";
 import { onPath } from "@loom/core/paths";
@@ -19,7 +19,7 @@ test(
   { skip: onPath("tilth") ? false : "tilth is not installed" },
   async () => {
     const raw = parse(readFileSync(exampleConfigPath(), "utf8"));
-    const mount = normalizeConfig({ ...raw, session: { tools: ["tilth"] } }).mcp[0]!;
+    const mount = normalizeConfig({ ...raw, session: { "local-tools": ["tilth"] } }).mcp[0]!;
     assert.ok("command" in mount);
     const { command, args = [] } = mount;
     assert.equal(command, "tilth");

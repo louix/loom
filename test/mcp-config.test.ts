@@ -1,29 +1,43 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parse } from "smol-toml";
+import { parseConfig as parse } from "@loom/daemon/config/config";
 import { normalizeConfig, lintConfig } from "@loom/daemon/config/config";
 import { mcpToolPreferences, toolSteer } from "@loom/runtime/instructions";
 import { codeModeInstructions } from "@loom/connector-chatgpt";
 import { decodeWorkerRequest } from "../core/src/worker.ts";
 import type { McpServerHandle } from "@loom/core/types";
 
-const config = (s: string) => normalizeConfig(parse(s));
-const http = `[session]
-remote-tools = ["research"]
-[remote-tools.research]
-url = "https://mcp.example.com/mcp"
-bearer_token_env = "SEARCH_CREDENTIAL"
-default_for = ["web_search", "web_fetch"]`;
+const config = (s: string) => normalizeConfig(parse(s || "{}"));
+const http = `{
+  "session": {
+    "remote-tools": [
+      "research"
+    ]
+  },
+  "remote-tools": {
+    "research": {
+      "url": "https://mcp.example.com/mcp",
+      "bearer_token_env": "SEARCH_CREDENTIAL",
+      "default_for": [
+        "web_search",
+        "web_fetch"
+      ]
+    }
+  }
+}`;
 
 test("named tool definitions resolve selected transports and credential references", () => {
-  const cfg = config(
-    http.replace("[session]", '[session]\nlocal-tools = ["code"]') +
-      `
-[local-tools.code]
-command = "/path with spaces/tool"
-args = ["--mcp", "literal $HOME"]
-default_for = ["read", "write", "edit"]`,
-  );
+  const cfg = normalizeConfig({
+    ...parse(http),
+    session: { "remote-tools": ["research"], "local-tools": ["code"] },
+    "local-tools": {
+      code: {
+        command: "/path with spaces/tool",
+        args: ["--mcp", "literal $HOME"],
+        default_for: ["read", "write", "edit"],
+      },
+    },
+  });
   assert.deepEqual(cfg.httpMcp, [
     {
       name: "research",
@@ -48,29 +62,86 @@ default_for = ["read", "write", "edit"]`,
   );
   assert.deepEqual(config("").mcp, []);
   assert.deepEqual(config("").httpMcp, []);
-  const inline = config(http + '\nbearer_token = "inline-secret"');
+  const inline = config(
+    http.replace('"bearer_token_env": "SEARCH_CREDENTIAL"', '"bearer_token": "inline-secret"'),
+  );
   assert.equal(inline.httpMcp[0]?.bearerToken, "inline-secret");
   assert.ok(!lintConfig(inline, {}).some((s) => s.includes("SEARCH_CREDENTIAL")));
 });
 
 test("catalogs reject old syntax and malformed definitions even when unselected", () => {
   for (const text of [
-    '[[mcp]]\nname = "old"\ncommand = "old"',
-    "command-mcp = []",
-    "http-mcp = []",
-    '[search]\nbackend = "kagi"',
-    http.replace('["web_search", "web_fetch"]', '["invented"]'),
-    http.replace('bearer_token_env = "SEARCH_CREDENTIAL"', "bearer_token_env = 42"),
-    http.replace("default_for =", "override ="),
+    `{
+  "mcp": [
+    {
+      "name": "old",
+      "command": "old"
+    }
+  ]
+}`,
+    `{
+  "command-mcp": []
+}`,
+    `{
+  "http-mcp": []
+}`,
+    `{
+  "search": {
+    "backend": "kagi"
+  }
+}`,
+    http.replace('"web_search"', '"invented"'),
+    http.replace('"bearer_token_env": "SEARCH_CREDENTIAL"', '"bearer_token_env": 42'),
+    http.replace('"default_for":', '"override":'),
     http.replace("https://mcp.example.com/mcp", "file:///tmp/key"),
     http.replace("https://mcp.example.com/mcp", "https://user:password@example.com/mcp"),
-    '[local-tools.loom]\ncommand = "tool"',
-    '[local-tools.broken]\ncommand = "tool"\nargs = [1]',
-    '[local-tools.broken]\nruntime = "tilth"',
-    '[vm-tools.broken]\nruntime = "tilth"\ncommand = "host"',
-    '[session]\nexecution = "vm"',
-    '[session]\nlocal-tools = ["missing"]',
-    "local-tools = []",
+    `{
+  "local-tools": {
+    "loom": {
+      "command": "tool"
+    }
+  }
+}`,
+    `{
+  "local-tools": {
+    "broken": {
+      "command": "tool",
+      "args": [
+        1
+      ]
+    }
+  }
+}`,
+    `{
+  "local-tools": {
+    "broken": {
+      "runtime": "tilth"
+    }
+  }
+}`,
+    `{
+  "vm-tools": {
+    "broken": {
+      "runtime": "tilth",
+      "command": "host"
+    }
+  }
+}`,
+    `{
+  "session": {
+    "execution": "vm"
+  }
+}`,
+    `{
+  "session": {
+    "local-tools": [
+      "missing"
+    ]
+  }
+}`,
+    `{
+  "local-tools": []
+}`,
   ])
     assert.throws(() => config(text), text);
 });

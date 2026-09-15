@@ -16,6 +16,7 @@
     "cli"
   ],
   "imports": {
+    "jsonc-parser": "npm:jsonc-parser@3.3.1",
     "zod": "npm:zod@4.5.4",
     "ai": "npm:ai@7.0.85",
     "ink": "npm:ink@7.1.1",

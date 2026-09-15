@@ -6,28 +6,37 @@ repo. Defining or bundling a tool does not enable it. With no selections, agents
 use their native tools and Loom's session tools. These lists configure Loom-managed
 integrations; provider-native settings and plugins remain separate.
 
-```toml
-[local-tools.tilth]
-command = "tilth"
-args = ["--mcp", "--edit"]
-default_for = ["read", "write", "edit"]
-
-[local-tools.fff]
-command = "fff-mcp"
-default_for = ["find", "grep"]
-
-[vm-tools.tilth]
-runtime = "tilth"
-default_for = ["read", "write", "edit", "find", "grep"]
-
-[remote-tools.docs]
-url = "https://docs.example.com/mcp"
-bearer_token_env = "DOCS_TOKEN"
-
-[session]
-local-tools = []
-vm-tools = []
-remote-tools = []
+```jsonc
+{
+  "local-tools": {
+    "tilth": {
+      "command": "tilth",
+      "args": ["--mcp", "--edit"],
+      "default_for": ["read", "write", "edit"],
+    },
+    "fff": {
+      "command": "fff-mcp",
+      "default_for": ["find", "grep"],
+    },
+  },
+  "vm-tools": {
+    "tilth": {
+      "runtime": "tilth",
+      "default_for": ["read", "write", "edit", "find", "grep"],
+    },
+  },
+  "remote-tools": {
+    "docs": {
+      "url": "https://docs.example.com/mcp",
+      "bearer_token_env": "DOCS_TOKEN",
+    },
+  },
+  "session": {
+    "local-tools": [],
+    "vm-tools": [],
+    "remote-tools": [],
+  },
+}
 ```
 
 `tools` are executables installed on the host. Arguments are an array, never a
@@ -44,23 +53,31 @@ are syntax-validated but do not require installation or credentials.
 
 ## Common configurations
 
-Add these settings to the matching `[[repo]]` in your user config. Each example
+Add these settings to the matching `repo` array in your user config. Each example
 assumes the definitions above. Host/VM agent execution still uses the existing
-`isolation` settings; `[session]` contains tool selections only.
+`isolation` settings; `session` contains tool selections only.
 
 ### Host agent and host tools, in the current checkout
 
-```toml
-[[repo]]
-path = "~/dev/project"
-[repo.worktree]
-enabled = false
-[repo.isolation]
-enabled = false
-[repo.session]
-local-tools = ["tilth", "fff"]
-vm-tools = []
-remote-tools = []
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/project",
+      "worktree": {
+        "enabled": false,
+      },
+      "isolation": {
+        "enabled": false,
+      },
+      "session": {
+        "local-tools": ["tilth", "fff"],
+        "vm-tools": [],
+        "remote-tools": [],
+      },
+    },
+  ],
+}
 ```
 
 Set `repo.worktree.enabled = true` for separate branches and worktrees while
@@ -70,28 +87,44 @@ keeping agent and tool execution on the host.
 
 Keep the host execution settings above and replace the tool selections:
 
-```toml
-[repo.session]
-local-tools = []
-vm-tools = ["tilth"]
-remote-tools = []
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/project",
+      "session": {
+        "local-tools": [],
+        "vm-tools": ["tilth"],
+        "remote-tools": [],
+      },
+    },
+  ],
+}
 ```
 
 Only Tilth is confined in a VM. The agent still runs on the host.
 
 ### VM agent and a separate Tilth VM
 
-```toml
-[[repo]]
-path = "~/dev/project"
-[repo.worktree]
-enabled = true
-[repo.isolation]
-enabled = true # all providers
-[repo.session]
-local-tools = []
-vm-tools = ["tilth"]
-remote-tools = ["docs"]
+```jsonc
+{
+  "repo": [
+    {
+      "path": "~/dev/project",
+      "worktree": {
+        "enabled": true,
+      },
+      "isolation": {
+        "enabled": true,
+      },
+      "session": {
+        "local-tools": [],
+        "vm-tools": ["tilth"],
+        "remote-tools": ["docs"],
+      },
+    },
+  ],
+}
 ```
 
 Agent VMs reject selected host tools before session resources are created. A host
@@ -101,7 +134,7 @@ execution. Node, Python and other programs inside the agent VM belong to its
 
 ## Selection and diagnostics
 
-Each list inherits independently from `[session]`; `[repo.session]` replaces only
+Each list inherits independently from `session`; `repo.session` replaces only
 the lists it specifies. `[]` clears a group. Unknown selections, duplicate names
 within a list, or selecting the same name from different groups are errors.
 Definitions can share a name across groups, as Tilth does above.

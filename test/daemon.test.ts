@@ -470,19 +470,24 @@ test("daemon.doctor marks a connector loaded once a session uses it", async () =
 
 test("providers.list reports claude plus configured aisdk profiles with palette colours", async () => {
   const hh = await makeHarness({
-    config: `
-default_provider = "openai"
-
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-model    = "gpt-5"
-models   = ["gpt-5", "gpt-5-mini"]
-
-[providers.deepseek]
-base_url = "https://api.deepseek.com/v1"
-model    = "deepseek-chat"
-color    = "red"
-`,
+    config: `{
+  "default_provider": "openai",
+  "providers": {
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5",
+      "models": [
+        "gpt-5",
+        "gpt-5-mini"
+      ]
+    },
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "color": "red"
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -534,14 +539,17 @@ test("providers.list expands [[claude_profiles]] into distinct ids, tags, colour
     JSON.stringify({ oauthAccount: { organizationName: "Globex" } }),
   );
   const hh = await makeHarness({
-    config: `
-[[claude_profiles]]
-dir = "~/.claude"
-
-[[claude_profiles]]
-dir  = ${JSON.stringify(workDir)}
-name = "Work"
-`,
+    config: `{
+  "claude_profiles": [
+    {
+      "dir": "~/.claude"
+    },
+    {
+      "dir": ${JSON.stringify(workDir)},
+      "name": "Work"
+    }
+  ]
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -575,12 +583,18 @@ name = "Work"
 
 test("the last model a provider ran becomes its default for new sessions", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.local]
-base_url = "http://127.0.0.1:9/v1"
-model    = "pin-a"
-models   = ["pin-a", "pin-b"]
-`,
+    config: `{
+  "providers": {
+    "local": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "pin-a",
+      "models": [
+        "pin-a",
+        "pin-b"
+      ]
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -612,12 +626,17 @@ models   = ["pin-a", "pin-b"]
 
 test("session.setEffort records the row and becomes the default effort for the next new session", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.local]
-base_url = "http://127.0.0.1:9/v1"
-model    = "pin-a"
-models   = ["pin-a"]
-`,
+    config: `{
+  "providers": {
+    "local": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "pin-a",
+      "models": [
+        "pin-a"
+      ]
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -653,12 +672,18 @@ models   = ["pin-a"]
 
 test("remembering defaults publishes a snapshot with the fresh provider list", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.local]
-base_url = "http://127.0.0.1:9/v1"
-model    = "pin-a"
-models   = ["pin-a", "pin-b"]
-`,
+    config: `{
+  "providers": {
+    "local": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "pin-a",
+      "models": [
+        "pin-a",
+        "pin-b"
+      ]
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -690,7 +715,11 @@ models   = ["pin-a", "pin-b"]
 });
 
 test("the provider and mode a session was created with become the default for the next new session", async () => {
-  const hh = await makeHarness({ config: `default_provider = "claude"\n` });
+  const hh = await makeHarness({
+    config: `{
+  "default_provider": "claude"
+}`,
+  });
   try {
     const c = await LoomClient.connect({
       repoRoot: hh.repoRoot,
@@ -740,11 +769,14 @@ test("the provider and mode a session was created with become the default for th
 
 test("session.fork copies the transcript into a new session + worktree", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.openai]
-base_url = "http://127.0.0.1:9/v1"
-model    = "gpt-5"
-`,
+    config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "gpt-5"
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -809,11 +841,14 @@ model    = "gpt-5"
 
 test("session.rewind: toTurn 0 wipes the transcript; range guard covers the ends", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.openai]
-base_url = "http://127.0.0.1:9/v1"
-model    = "gpt-5"
-`,
+    config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "gpt-5"
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -920,15 +955,18 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
     },
   ]);
   const hh = await makeHarness({
-    config: `
-[providers.oai]
-base_url = "${srv.base}"
-
-[providers.needkey]
-base_url    = "http://127.0.0.1:9/v1"
-model       = "x"
-api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
-`,
+    config: `{
+  "providers": {
+    "oai": {
+      "base_url": "${srv.base}"
+    },
+    "needkey": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "x",
+      "api_key_env": "LOOM_TEST_UNSET_KEY_VAR"
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -1014,14 +1052,17 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
 
 test("in-place sessions: no worktree, repo-root git facts, hard fork refused", async () => {
   const hh = await makeHarness({
-    config: `
-[worktree]
-enabled = false
-
-[providers.openai]
-base_url = "http://127.0.0.1:9/v1"
-model    = "gpt-5"
-`,
+    config: `{
+  "worktree": {
+    "enabled": false
+  },
+  "providers": {
+    "openai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "gpt-5"
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -1240,7 +1281,13 @@ test("[auto_resume]: a restart re-drives sessions the old daemon left mid-run", 
 });
 
 test("[auto_resume] off: a restart leaves mid-run sessions interrupted", async () => {
-  const hh = await makeHarness({ config: "[auto_resume]\nenabled = false\n" });
+  const hh = await makeHarness({
+    config: `{
+  "auto_resume": {
+    "enabled": false
+  }
+}`,
+  });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
     sockPath: hh.sockPath,
@@ -1328,7 +1375,13 @@ test("[auto_resume]: a session interrupted before the restart is left alone", as
 });
 
 test("[auto_rebase]: a clean idle replays the branch onto an advanced base, silently", async () => {
-  const hh = await makeHarness({ config: `[auto_rebase]\nenabled = true\n` });
+  const hh = await makeHarness({
+    config: `{
+  "auto_rebase": {
+    "enabled": true
+  }
+}`,
+  });
   const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -1380,7 +1433,13 @@ test("[auto_rebase]: a clean idle replays the branch onto an advanced base, sile
 });
 
 test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to integrate", async () => {
-  const hh = await makeHarness({ config: `[auto_rebase]\nenabled = true\n` });
+  const hh = await makeHarness({
+    config: `{
+  "auto_rebase": {
+    "enabled": true
+  }
+}`,
+  });
   const git = (...a: string[]) => execFileSync("git", ["-C", hh.repoRoot, ...a], { stdio: "pipe" });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -1642,8 +1701,14 @@ test("session.rebase: a conflict leaves the branch untouched and does not nudge"
   }
 });
 
-test("editing config.toml hot-applies [worktree] enabled and pushes a notice", async () => {
-  const hh = await makeHarness({ config: `[worktree]\nenabled = true\n` });
+test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", async () => {
+  const hh = await makeHarness({
+    config: `{
+  "worktree": {
+    "enabled": true
+  }
+}`,
+  });
   const cfgPath = hh.configPath;
   try {
     const c = await LoomClient.connect({
@@ -1665,7 +1730,16 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
 
     writeFileSync(
       cfgPath,
-      `[[repo]]\npath = ${JSON.stringify(hh.repoRoot)}\n[repo.worktree]\nenabled = false\n`,
+      `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(hh.repoRoot)},
+      "worktree": {
+        "enabled": false
+      }
+    }
+  ]
+}`,
     );
     await waitFor(() => notices.some((t) => /config reloaded/.test(t)));
 
@@ -1689,7 +1763,11 @@ test("editing config.toml hot-applies [worktree] enabled and pushes a notice", a
 });
 
 test("a provider-set change on disk asks for a restart rather than applying live", async () => {
-  const hh = await makeHarness({ config: `base_branch = "main"\n` });
+  const hh = await makeHarness({
+    config: `{
+  "base_branch": "main"
+}`,
+  });
   const cfgPath = hh.configPath;
   try {
     const c = await LoomClient.connect({
@@ -1704,7 +1782,15 @@ test("a provider-set change on disk asks for a restart rather than applying live
 
     writeFileSync(
       cfgPath,
-      `base_branch = "main"\n\n[custom-provider.local]\nbase_url = "http://localhost:1234/v1"\nmodel = "m"\n`,
+      `{
+  "base_branch": "main",
+  "custom-provider": {
+    "local": {
+      "base_url": "http://localhost:1234/v1",
+      "model": "m"
+    }
+  }
+}`,
     );
     await waitFor(() => notices.some((t) => /restart the daemon/.test(t)));
 
@@ -1722,7 +1808,13 @@ test("a provider-set change on disk asks for a restart rather than applying live
 });
 
 test("config reload survives atomic saves, deletion, and invalid edits", async () => {
-  const hh = await makeHarness({ config: "[worktree]\nenabled = true\n" });
+  const hh = await makeHarness({
+    config: `{
+  "worktree": {
+    "enabled": true
+  }
+}`,
+  });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
     sockPath: hh.sockPath,
@@ -1734,7 +1826,14 @@ test("config reload survives atomic saves, deletion, and invalid edits", async (
   });
   try {
     const replacement = `${hh.configPath}.new`;
-    writeFileSync(replacement, "[worktree]\nenabled = false\n");
+    writeFileSync(
+      replacement,
+      `{
+  "worktree": {
+    "enabled": false
+  }
+}`,
+    );
     renameSync(replacement, hh.configPath);
     await waitFor(() => hh.daemon.config.worktree.enabled === false);
 
@@ -1744,7 +1843,14 @@ test("config reload survives atomic saves, deletion, and invalid edits", async (
 
     rmSync(hh.configPath);
     await waitFor(() => hh.daemon.config.worktree.enabled === true);
-    writeFileSync(hh.configPath, "[worktree]\nenabled = false\n");
+    writeFileSync(
+      hh.configPath,
+      `{
+  "worktree": {
+    "enabled": false
+  }
+}`,
+    );
     await waitFor(() => hh.daemon.config.worktree.enabled === false);
   } finally {
     await c.close();
@@ -1759,10 +1865,13 @@ test("model probes resolving at bring-up publish a snapshot with the detected li
     "det-a",
   ]);
   const hh = await makeHarness({
-    config: `
-[providers.local]
-base_url = "${srv.base}"
-`,
+    config: `{
+  "providers": {
+    "local": {
+      "base_url": "${srv.base}"
+    }
+  }
+}`,
   });
   try {
     // Bring-up listens before the probes run, so a client that connects
@@ -1795,12 +1904,17 @@ base_url = "${srv.base}"
 
 test("no extra snapshot at bring-up when the provider list is fully pinned", async () => {
   const hh = await makeHarness({
-    config: `
-[providers.local]
-base_url = "http://127.0.0.1:9/v1"
-model    = "pin-a"
-models   = ["pin-a"]
-`,
+    config: `{
+  "providers": {
+    "local": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "pin-a",
+      "models": [
+        "pin-a"
+      ]
+    }
+  }
+}`,
   });
   try {
     const c = await LoomClient.connect({
@@ -1837,8 +1951,14 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
   execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
   mkdirSync(join(xdg, "loom"), { recursive: true });
   writeFileSync(
-    join(xdg, "loom", "config.toml"),
-    `[providers.claude]\ncli_path = "/nonexistent/loom-test-claude"\n`,
+    join(xdg, "loom", "config.jsonc"),
+    `{
+  "providers": {
+    "claude": {
+      "cli_path": "/nonexistent/loom-test-claude"
+    }
+  }
+}`,
   );
   let daemon: Daemon | null = null;
   try {
@@ -2380,15 +2500,28 @@ test("a mode notification for a session with no live adapter writes nothing", as
 
 test("doctor reflects configured HTTP mounts, preferences and disabled native tools", async () => {
   const hh = await makeHarness({
-    config: `
-[session]
-remote-tools = ["research"]
-[remote-tools.research]
-url = "https://example.invalid/mcp?private=do-not-display"
-default_for = ["web_search"]
-[providers.claude]
-disable_builtin = ["Read"]
-`,
+    config: `{
+  "session": {
+    "remote-tools": [
+      "research"
+    ]
+  },
+  "remote-tools": {
+    "research": {
+      "url": "https://example.invalid/mcp?private=do-not-display",
+      "default_for": [
+        "web_search"
+      ]
+    }
+  },
+  "providers": {
+    "claude": {
+      "disable_builtin": [
+        "Read"
+      ]
+    }
+  }
+}`,
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -2414,15 +2547,12 @@ disable_builtin = ["Read"]
 test("tool preflight rejects missing host executables and VM placement before allocating a session", async () => {
   for (const vm of [false, true]) {
     const hh = await makeHarness({
-      config: `
-[local-tools.files]
-command = "loom-test-missing-host-tool"
-[session]
-local-tools = ["files"]
-[providers.claude]
-models = ["fixture"]
-${vm ? '[isolation]\nenabled=true\n[isolation.claude]\nartifact = "/unused-runtime"' : ""}
-`,
+      config: JSON.stringify({
+        "local-tools": { files: { command: "loom-test-missing-host-tool" } },
+        session: { "local-tools": ["files"] },
+        providers: { claude: { models: ["fixture"] } },
+        ...(vm ? { isolation: { enabled: true, claude: { artifact: "/unused-runtime" } } } : {}),
+      }),
     });
     const c = await LoomClient.connect({
       repoRoot: hh.repoRoot,
@@ -2541,7 +2671,15 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
     await hh.daemon.stop("replace-manifest");
     writeFileSync(
       hh.configPath,
-      '[isolation]\nenabled=true\n[isolation.claude]\nartifact="/tmp/test-artifact"\nsmolvm="smolvm"\n',
+      `{
+  "isolation": {
+    "enabled": true,
+    "claude": {
+      "artifact": "/tmp/test-artifact",
+      "smolvm": "smolvm"
+    }
+  }
+}`,
     );
     const { FakeProvider } = await import("@loom/connector-mock");
     const fake = new FakeProvider();
@@ -2617,7 +2755,14 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
 
 test("disabled and missing providers stay read-only and can fork to an enabled provider", async () => {
   const hh = await makeHarness({
-    config: 'default_provider="fake"\n[provider_access]\ndisabled=["claude"]\n',
+    config: `{
+  "default_provider": "fake",
+  "provider_access": {
+    "disabled": [
+      "claude"
+    ]
+  }
+}`,
   });
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -2791,7 +2936,11 @@ test("message recall is session-scoped and ignores long tool transcripts", async
 });
 
 test("worktree creation failure keeps an error chat and opening message", async () => {
-  const hh = await makeHarness({ config: 'worktree_dir = "blocked/trees"\n' });
+  const hh = await makeHarness({
+    config: `{
+  "worktree_dir": "blocked/trees"
+}`,
+  });
   writeFileSync(join(hh.repoRoot, "blocked"), "not a directory");
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,

@@ -47,10 +47,23 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
     assert.notEqual(git(linked, "rev-parse", "HEAD"), base);
     const nested = join(linked, "subdir");
     mkdirSync(nested);
-    const configFile = join(root, "config.toml");
+    const configFile = join(root, "config.jsonc");
     writeFileSync(
       configFile,
-      `[titles]\nenabled=false\n[[repo]]\npath=${JSON.stringify(linked)}\nbase_branch="missing-falls-back-to-head"\n[repo.worktree]\nenabled=false\n`,
+      `{
+  "titles": {
+    "enabled": false
+  },
+  "repo": [
+    {
+      "path": ${JSON.stringify(linked)},
+      "base_branch": "missing-falls-back-to-head",
+      "worktree": {
+        "enabled": false
+      }
+    }
+  ]
+}`,
     );
     const paths = loomPaths(bare);
     const start = (repoRoot: string) =>

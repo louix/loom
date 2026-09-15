@@ -20,22 +20,27 @@ All four default to true. `withClaude` includes the proprietary Claude Code
 executable for the guest and the native host CLI used for authentication.
 `withCodex` also includes its native host CLI.
 
-For session VMs, set `[isolation] enabled = true` globally or
-`[repo.isolation] enabled = true` for a project. Loom resolves the runtime and smolvm
+For session VMs, set `isolation.enabled = true` globally or
+`repo.isolation.enabled = true` for a project. Loom resolves the runtime and smolvm
 from its package, so `nix profile upgrade loom` updates them together. Remove
 old `artifact` and `smolvm` pins to use these package defaults; explicit paths
 remain available for development builds.
 
 Configure Tilth with:
 
-```toml
-[session]
-local-tools = []
-vm-tools = ["tilth"]
-
-[vm-tools.tilth]
-runtime = "tilth"
-default_for = ["read", "write", "edit", "find", "grep"]
+```jsonc
+{
+  "session": {
+    "local-tools": [],
+    "vm-tools": ["tilth"],
+  },
+  "vm-tools": {
+    "tilth": {
+      "runtime": "tilth",
+      "default_for": ["read", "write", "edit", "find", "grep"],
+    },
+  },
+}
 ```
 
 Select Tilth from only one group: host `tools` or `vm-tools`. The
@@ -106,13 +111,18 @@ recovery. Automatic runtime GC and a rollback CLI are not implemented yet.
 
 Use a Nix flake reference as the runtime value, for example:
 
-```toml
-[session]
-vm-tools = ["my-tools"]
-
-[vm-tools.my-tools]
-runtime = "github:your-org/your-tools/<revision>#loom-runtime"
-isolation = "vm"
+```jsonc
+{
+  "session": {
+    "vm-tools": ["my-tools"],
+  },
+  "vm-tools": {
+    "my-tools": {
+      "runtime": "github:your-org/your-tools/<revision>#loom-runtime",
+      "isolation": "vm",
+    },
+  },
+}
 ```
 
 The selected output must be a **Loom runtime artifact**, not just an arbitrary

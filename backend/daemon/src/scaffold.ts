@@ -3,21 +3,21 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
- * The only config file: `$XDG_CONFIG_HOME/loom/config.toml`, falling back to
- * `~/.config/loom/config.toml`. Includes global defaults and [[repo]] overrides.
+ * The only config file: `$XDG_CONFIG_HOME/loom/config.jsonc`, falling back to
+ * `~/.config/loom/config.jsonc`. Includes global defaults and repo overrides.
  */
 export const userConfigPath = (): string => {
   const base = Deno.env.get("XDG_CONFIG_HOME")?.trim() || join(homedir(), ".config");
-  return join(base, "loom", "config.toml");
+  return join(base, "loom", "config.jsonc");
 };
 
-/** The `config.example.toml` shipped at the root of `@loom/daemon`. */
+/** The `config.example.jsonc` shipped at the root of `@loom/daemon`. */
 export const exampleConfigPath = (): string => {
-  return join(import.meta.dirname!, "..", "config.example.toml");
+  return join(import.meta.dirname!, "..", "config.example.jsonc");
 };
 
 /**
- * First-run convenience: drop a copy of `config.example.toml` at
+ * First-run convenience: drop a copy of `config.example.jsonc` at
  * {@link userConfigPath} when nothing is there yet, so `loom` has an obvious,
  * annotated place to configure providers. Never overwrites an existing file.
  * Returns the path when it created one, `null` otherwise (already present, or

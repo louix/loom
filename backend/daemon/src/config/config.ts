@@ -10,7 +10,7 @@ import {
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { parse as parseToml } from "smol-toml";
+import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability } from "@loom/core/types";
@@ -26,9 +26,9 @@ import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
 export type AisdkKind = "openai" | "google" | "anthropic" | "chatgpt";
 
 /**
- * One Vercel-AI-SDK provider profile. Configured as `[custom-provider.<id>]`
- * (OpenAI-compatible), `[google]` / `[anthropic]` / `[chatgpt]` (one native
- * profile per vendor), or `[providers.<id>]` with
+ * One Vercel-AI-SDK provider profile. Configured as `custom-provider.<id>`
+ * (OpenAI-compatible), `google` / `anthropic` / `chatgpt` (one native
+ * profile per vendor), or `providers.<id>` with
  * `sdk` selecting the backend.
  */
 export interface AisdkProfile {
@@ -152,7 +152,7 @@ export interface ClaudeProfile {
 }
 
 /**
- * What a `[[hooks]]` entry can fire on. Two families:
+ * What a `hooks` entry can fire on. Two families:
  *
  *  - *Write* events — `file_write` (one tool call that wrote files, fired as
  *    soon as its result lands) and `turn_end` (once per turn, with every file
@@ -193,7 +193,7 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
 const isHookEvent = (v: unknown): v is HookEvent =>
   typeof v === "string" && (HOOK_EVENTS as readonly string[]).includes(v);
 
-/** One `[[hooks]]` entry, normalized. */
+/** One `hooks` entry, normalized. */
 export type WriteHookEvent = "file_write" | "turn_end" | "init";
 
 export type HookConfig = HookFields &
@@ -208,9 +208,9 @@ interface HookFields {
    * Restrict the hook to one repo. A glob against the daemon's absolute
    * repo root (`~` expanded, `**` crosses `/`), so `~/dev/loom` pins one
    * project and `~/dev/**` covers everything under a directory. "" = every
-   * repo. Hooks inside a matching `[[repo]]` override already apply only there.
+   * repo. Hooks inside a matching `repo` override already apply only there.
    *
-   * This exists because config layering replaces arrays wholesale: a `[[repo]]` override
+   * This exists because config layering replaces arrays wholesale: a `repo` override
    * containing hooks would otherwise shadow every user-level one, so per-project
    * hooks have to be expressible in the user-level file itself.
    */
@@ -316,10 +316,10 @@ export interface LoomConfig {
       promptCacheTtl: "5m" | "1h" | "";
     };
     /**
-     * Vercel-AI-SDK providers, keyed by id. Fed by `[custom-provider.<id>]`
+     * Vercel-AI-SDK providers, keyed by id. Fed by `custom-provider.<id>`
      * (OpenAI-compatible — GLM, DeepSeek, OpenRouter, a local vLLM / Ollama),
-     * `[google]` / `[anthropic]` (native), and
-     * `[providers.<id>]` with an explicit `sdk` for additional native accounts.
+     * `google` / `anthropic` (native), and
+     * `providers.<id>` with an explicit `sdk` for additional native accounts.
      */
     aisdk: Record<string, AisdkProfile>;
   };
@@ -346,7 +346,7 @@ export interface LoomConfig {
   /**
    * Shell commands the daemon runs when something happens in a session — a
    * linter after the agent edits a file, `notify-send` when a turn parks on a
-   * question. Configured as `[[hooks]]`, in the user-level config and/or the
+   * question. Configured as `hooks`, in the user-level config and/or the
    * per-repo one.
    *
    * Unrelated to `.loom/hooks/` on disk, which holds the git `pre-push` block
@@ -456,7 +456,7 @@ export const claudeProfileId = (p: { name: string }): string => {
 };
 
 /**
- * `[[claude_profiles]]` → a stable, de-duplicated list. A missing / empty `dir`
+ * `claude_profiles` → a stable, de-duplicated list. A missing / empty `dir`
  * drops the entry; a second entry that resolves to an id already taken is
  * dropped (both flagged by {@link lintConfig}). Always returns at least the
  * default `~/.claude` profile.
@@ -491,7 +491,8 @@ const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
  * Reject invalid entries at the boundary; hot reload keeps the old config on error.
  */
 const parseHooks = (raw: unknown): HookConfig[] => {
-  if (raw !== undefined && !Array.isArray(raw)) throw new Error("hooks: use [[hooks]] entries");
+  if (raw !== undefined && !Array.isArray(raw))
+    throw new Error("hooks must be an array of objects");
   const rows = Array.isArray(raw) ? raw : [];
   if (rows.length > 64) throw new Error("hooks: at most 64 entries are supported");
   const out: HookConfig[] = [];
@@ -592,10 +593,10 @@ const buildAisdkProfile = (
 
 /**
  * Every aisdk provider profile, from all the namespaces, keyed by id:
- *  - `[custom-provider.<id>]`   — an OpenAI-compatible endpoint (implicit sdk);
+ *  - `custom-provider.<id>`   — an OpenAI-compatible endpoint (implicit sdk);
  *    the form that will become a plugin. `base_url` + `api_key` / `api_key_env`.
- *  - `[google]` / `[anthropic]` / `[chatgpt]` — one native profile each, id = the vendor.
- *  - `[providers.<id>]` — additional named profiles;
+ *  - `google` / `anthropic` / `chatgpt` — one native profile each, id = the vendor.
+ *  - `providers.<id>` — additional named profiles;
  *    its `sdk` key still selects the backend. Wins a duplicate id.
  * `claude` is reserved for the native CLI provider and is never an aisdk id.
  */
@@ -633,7 +634,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
 };
 
 /**
- * The API key for an aisdk profile / `[search]`: an inline `api_key` wins,
+ * The API key for an aisdk profile / `search`: an inline `api_key` wins,
  * else `api_key_env` is looked up in the environment, else "" (a keyless
  * local endpoint).
  */
@@ -722,7 +723,7 @@ export const lintConfig = (
 };
 
 /**
- * Parse a raw TOML tree into a fully-populated LoomConfig, filling any missing
+ * Parse a raw config object into a fully-populated LoomConfig, filling any missing
  * key from DEFAULT_CONFIG. Unknown keys are ignored. Enum-typed fields fall back
  * to the default when the value is not one of the permitted literals.
  */
@@ -802,9 +803,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       : d.providers.claude.permissionDefault;
 
   if (search["backend"] === "kagi")
-    throw new Error(
-      "Configure Kagi under [remote-tools.kagi] and select it in session.remote-tools",
-    );
+    throw new Error("Configure Kagi under remote-tools.kagi and select it in session.remote-tools");
   const { mcp, httpMcp } = resolveToolSelection(r);
 
   return {
@@ -888,10 +887,27 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   };
 };
 
-const readTomlIfPresent = (path: string): Record<string, unknown> | null => {
+/** JSONC accepts comments and trailing commas, but never partial or non-object configs. */
+export const parseConfig = (text: string): Record<string, unknown> => {
+  const errors: ParseError[] = [];
+  const parsed: unknown = parse(text.replace(/^\uFEFF/, ""), errors, { allowTrailingComma: true });
+  if (errors.length) {
+    const error = errors[0]!;
+    const before = text.replace(/^\uFEFF/, "").slice(0, error.offset);
+    const line = before.split("\n").length;
+    const column = before.length - before.lastIndexOf("\n");
+    throw new Error(
+      `Invalid JSONC at line ${line}, column ${column}: ${printParseErrorCode(error.error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("Config must be a JSON object");
+  return parsed as Record<string, unknown>;
+};
+
+const readConfigIfPresent = (path: string): Record<string, unknown> | null => {
   try {
-    const parsed = parseToml(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    return parseConfig(readFileSync(path, "utf8"));
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === "ENOENT") return null;
@@ -906,7 +922,7 @@ export const deepMerge = (
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...base };
   for (const [k, v] of Object.entries(over)) {
-    // A TOML `[__proto__]` table parses to an own key that
+    // A JSON `__proto__` property can be an own key that
     // would otherwise walk the prototype on assignment.
     if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
     const b = out[k];
@@ -941,11 +957,11 @@ const configRepoPath = (path: string): string => {
   }
 };
 
-/** User defaults plus one [[repo]] override matched by Git identity. No repo-local TOML. */
+/** User defaults plus one repo override matched by Git identity. No repo-local config. */
 export const loadConfig = (repoRoot: string, configFile = userConfigPath()): LoomConfig => {
-  const raw = readTomlIfPresent(configFile) ?? {};
+  const raw = readConfigIfPresent(configFile) ?? {};
   const { repo = [], ...defaults } = raw;
-  if (!Array.isArray(repo)) throw new Error("repo must be an array of [[repo]] tables");
+  if (!Array.isArray(repo)) throw new Error("repo must be an array of objects");
   const target = configRepoPath(resolve(repoRoot));
   const seen = new Set<string>();
   let selected: Record<string, unknown> = {};
@@ -957,7 +973,7 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       typeof entry.path !== "string" ||
       !entry.path.trim()
     )
-      throw new Error("Every [[repo]] requires a nonempty path");
+      throw new Error("Every repo entry requires a nonempty path");
     if ("repo" in entry) throw new Error("Nested repo overrides are not supported");
     const path = configRepoPath(entry.path);
     if (seen.has(path)) throw new Error(`Duplicate repo.path: ${path}`);
@@ -981,7 +997,7 @@ export const loadAllRepoConfigs = (
   configFile = userConfigPath(),
 ): LoomConfig[] => {
   const current = loadConfig(repoRoot, configFile); // validates every repo entry first
-  const raw = readTomlIfPresent(configFile) ?? {};
+  const raw = readConfigIfPresent(configFile) ?? {};
   const repos = (raw.repo ?? []) as Array<{ path: string }>;
   return [
     current,

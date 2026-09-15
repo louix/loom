@@ -234,11 +234,17 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
-  const OAI_CFG = `
-[providers.oai]
-base_url = "http://127.0.0.1:9/v1"
-models   = ["m1", "m2"]
-`;
+  const OAI_CFG = `{
+  "providers": {
+    "oai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "models": [
+        "m1",
+        "m2"
+      ]
+    }
+  }
+}`;
 
   test("⇧⇥ cycles the mode and ⌥m opens the model picker on the selected session", async () => {
     const { connect, cleanup } = await harness({ config: OAI_CFG });
@@ -1383,12 +1389,19 @@ models   = ["m1", "m2"]
 
   test("n shows the provider / model; ⌥p opens the chooser and returns to the prompt", async () => {
     const { connect, cleanup } = await harness({
-      config: `
-[providers.openai]
-base_url = "http://x/v1"
-model    = "gpt-5"
-models   = ["gpt-5", "gpt-5-mini", "o4"]
-`,
+      config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://x/v1",
+      "model": "gpt-5",
+      "models": [
+        "gpt-5",
+        "gpt-5-mini",
+        "o4"
+      ]
+    }
+  }
+}`,
     });
     const client = await connect();
     await client.request("session.createStub", {
@@ -1445,10 +1458,13 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
 
   test("⌥p model step shows an empty state when a provider has no models", async () => {
     const { connect, cleanup } = await harness({
-      config: `
-[providers.oai]
-base_url = "http://127.0.0.1:9/v1"
-`,
+      config: `{
+  "providers": {
+    "oai": {
+      "base_url": "http://127.0.0.1:9/v1"
+    }
+  }
+}`,
     });
     const client = await connect();
     await client.request("session.createStub", {
@@ -1481,12 +1497,18 @@ base_url = "http://127.0.0.1:9/v1"
 
   test("⌥p keeps what's already typed in the new-session prompt", async () => {
     const { connect, cleanup } = await harness({
-      config: `
-[providers.openai]
-base_url = "http://x/v1"
-model    = "gpt-5"
-models   = ["gpt-5", "gpt-5-mini"]
-`,
+      config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://x/v1",
+      "model": "gpt-5",
+      "models": [
+        "gpt-5",
+        "gpt-5-mini"
+      ]
+    }
+  }
+}`,
     });
     const client = await connect();
     await client.request("session.createStub", {
@@ -1721,11 +1743,14 @@ models   = ["gpt-5", "gpt-5-mini"]
 
   test("picking a turn rewinds the session and reopens the prompt pre-filled", async () => {
     const { h, connect, cleanup } = await harness({
-      config: `
-[providers.openai]
-base_url = "http://127.0.0.1:9/v1"
-model    = "gpt-5"
-`,
+      config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "gpt-5"
+    }
+  }
+}`,
     });
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.createStub", {
@@ -1789,11 +1814,14 @@ model    = "gpt-5"
 
   test("F forks the selected aisdk session; the fork shows its lineage", async () => {
     const { h, connect, cleanup } = await harness({
-      config: `
-[providers.openai]
-base_url = "http://127.0.0.1:9/v1"
-model    = "gpt-5"
-`,
+      config: `{
+  "providers": {
+    "openai": {
+      "base_url": "http://127.0.0.1:9/v1",
+      "model": "gpt-5"
+    }
+  }
+}`,
     });
     const client = await connect();
     const parent = await client.request<SessionSnapshot>("session.createStub", {

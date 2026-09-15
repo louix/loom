@@ -50,16 +50,35 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
     git("init", "-q", independent);
     assert.equal(findRepoRoot(independent), independent);
 
-    const config = join(root, "config.toml");
+    const config = join(root, "config.jsonc");
     for (const configured of [bare, bareLinked, alias, join(bareLinked, "nested")]) {
-      writeFileSync(config, `[[repo]]\npath=${JSON.stringify(configured)}\nbase_branch="shared"\n`);
+      writeFileSync(
+        config,
+        `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(configured)},
+      "base_branch": "shared"
+    }
+  ]
+}`,
+      );
       for (const launch of [bare, bareLinked, alias])
         assert.equal(loadConfig(launch, config).baseBranch, "shared");
       assert.equal(loadConfig(independent, config).baseBranch, "main");
     }
     writeFileSync(
       config,
-      `[[repo]]\npath=${JSON.stringify(bare)}\n[[repo]]\npath=${JSON.stringify(bareLinked)}\n`,
+      `{
+  "repo": [
+    {
+      "path": ${JSON.stringify(bare)}
+    },
+    {
+      "path": ${JSON.stringify(bareLinked)}
+    }
+  ]
+}`,
     );
     assert.throws(() => loadConfig(bare, config), /Duplicate repo.path/);
 

@@ -273,7 +273,7 @@ export class Daemon {
     this.#log = makeLogger("daemon");
 
     // First real launch on a machine with no user config: leave an annotated
-    // starter at ~/.config/loom/config.toml. Skipped for standalone (test /
+    // starter at ~/.config/loom/config.jsonc. Skipped for standalone (test /
     // embedded) daemons so an isolated XDG dir stays empty.
     if (!this.#standalone && !opts.configFile) {
       const created = scaffoldUserConfig();
