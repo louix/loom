@@ -19,7 +19,7 @@ assert(binary, "Pass the pinned smolvm executable");
 assert.equal(Deno.args.length, 1, "Pass only the smolvm executable");
 const smolvm = await Deno.realPath(binary);
 // Keep Unix socket paths short on macOS as well as Linux.
-const root = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-disk-" }));
+const root = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "ld-" }));
 const started = performance.now();
 const phase = (message: string) =>
   console.log(`[${((performance.now() - started) / 1000).toFixed(1)}s] ${message}`);

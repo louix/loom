@@ -83,7 +83,7 @@ for (const runtime of [
     let f = builtins.getFlake (builtins.getEnv "LOOM_HASH_SOURCE");
     in (import (f.outPath + "/packaging/macos/runtime.nix") {
       pkgs = f.inputs.nixpkgs.legacyPackages.aarch64-darwin;
-      smolvm = f.inputs.smolvm.packages.aarch64-darwin.default;
+      smolvm = f.packages.aarch64-darwin.smolvm;
       source = f.lib.guestRuntimeSource;
       runtime = "${runtime}";
       hash = f.inputs.nixpkgs.lib.fakeHash;

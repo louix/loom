@@ -41,6 +41,14 @@ export const stageGuestImage = async (b: VmBinding) => {
   await Deno.chmod(target, 0o400);
   await Deno.utime(target, 1, 1);
 };
+// OCI workloads get a minimal /dev even though the guest kernel supports loops.
+// libmount needs these nodes to attach the read-only EROFS image on macOS.
+const mountErofs = (image: string, target: string) =>
+  [
+    "[ -c /dev/loop-control ] || mknod /dev/loop-control c 10 237",
+    "[ -b /dev/loop0 ] || mknod /dev/loop0 b 7 0",
+    `mount -t erofs -o loop,ro ${image} ${target}`,
+  ].join("; ");
 const runtimeCommand = (b: VmBinding) => {
   if (b.manifest.environmentCompatibility) {
     // The image and its registered Nix closure stay fixed across Loom upgrades.
@@ -50,7 +58,7 @@ const runtimeCommand = (b: VmBinding) => {
       "mkdir -p /run/loom/store-base /run/loom/store-code",
       "mount --bind /nix/store /run/loom/store-base",
       b.manifest.closureFormat === "erofs"
-        ? "mount -t erofs -o loop,ro /run/loom/code/runtime.erofs /run/loom/store-code"
+        ? mountErofs("/run/loom/code/runtime.erofs", "/run/loom/store-code")
         : "mount --bind /run/loom/code/nix/store /run/loom/store-code",
       "ln -sfn /opt/loom/runtime /run/loom/runtime",
       ...(b.writableNix
@@ -71,8 +79,7 @@ const runtimeCommand = (b: VmBinding) => {
     const lower = b.manifest.guestImage ? "/nix/store" : "/run/loom/runtime/nix/store";
     let mountLower = `mount --bind ${lower} /run/loom/store-lower`;
     if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs")
-      mountLower =
-        "mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /run/loom/store-lower";
+      mountLower = mountErofs("/run/loom/runtime/runtime.erofs", "/run/loom/store-lower");
     mount = [
       "set -eu",
       // /storage is smolvm's ext4 disk; its overlay-backed root cannot
@@ -84,8 +91,7 @@ const runtimeCommand = (b: VmBinding) => {
       'exec "$@"',
     ].join("; ");
   } else if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs") {
-    mount =
-      'set -eu; mkdir -p /nix/store; mount -t erofs -o loop,ro /run/loom/runtime/runtime.erofs /nix/store; exec "$@"';
+    mount = `set -eu; mkdir -p /nix/store; ${mountErofs("/run/loom/runtime/runtime.erofs", "/nix/store")}; exec "$@"`;
   }
   if (b.manifest.guestImage) {
     // /run is ephemeral; the image keeps closure registration under /opt.

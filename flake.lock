@@ -3,34 +3,34 @@
     "libkrun-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1788983295,
-        "narHash": "sha256-WDDGSGKoXCgPYv98f0Xrurx4BwFNCJt6o0Df9lJpoLA=",
+        "lastModified": 1789368829,
+        "narHash": "sha256-IcGL1ZVlVCoQVrEJeYA8VfHdBRhP7dMaqgU2iXh6h9Q=",
         "owner": "smol-machines",
         "repo": "libkrun",
-        "rev": "d3486f7a4ac99c64683e628dc6d297e29b3d381d",
+        "rev": "e4d41db71faa355985b0f9106ad82c01f110860f",
         "type": "github"
       },
       "original": {
         "owner": "smol-machines",
         "repo": "libkrun",
-        "rev": "d3486f7a4ac99c64683e628dc6d297e29b3d381d",
+        "rev": "e4d41db71faa355985b0f9106ad82c01f110860f",
         "type": "github"
       }
     },
     "libkrunfw-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1778821066,
-        "narHash": "sha256-g2DxDnnh52JCPg4ktPWFBi0J9203FCncGOzB3eiCRxQ=",
+        "lastModified": 1789128406,
+        "narHash": "sha256-NBJjgRqEVgeze9ODGgj0GD/Ehc3CMCU8q/LPmiWzraQ=",
         "owner": "smol-machines",
         "repo": "libkrunfw",
-        "rev": "516ceece6aed60ccc84ac8faa459885062e39400",
+        "rev": "6ec329e11154814a4df9963a3f94f2a430f55723",
         "type": "github"
       },
       "original": {
         "owner": "smol-machines",
         "repo": "libkrunfw",
-        "rev": "516ceece6aed60ccc84ac8faa459885062e39400",
+        "rev": "6ec329e11154814a4df9963a3f94f2a430f55723",
         "type": "github"
       }
     },
@@ -96,17 +96,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1789119052,
-        "narHash": "sha256-6wKrHW3E5UTYw9tNK4edhMj6HdzsP6iE123aX4x+q9A=",
+        "lastModified": 1789470640,
+        "narHash": "sha256-1iLHpN1lBSyfRFtcbdLB3ueJQVFE7lk05/lN0yd2gKQ=",
         "owner": "smol-machines",
         "repo": "smolvm",
-        "rev": "5098b07eddd12377fe12f257be7f5e92be7f5840",
+        "rev": "9504e94e3581a1f52c414247edcbcd6d6b49a71a",
         "type": "github"
       },
       "original": {
         "owner": "smol-machines",
         "repo": "smolvm",
-        "rev": "5098b07eddd12377fe12f257be7f5e92be7f5840",
+        "rev": "9504e94e3581a1f52c414247edcbcd6d6b49a71a",
         "type": "github"
       }
     },

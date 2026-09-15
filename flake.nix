@@ -2,10 +2,11 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # Packages smolvm 1.14.6, including host disk-resizing tools on macOS.
-  inputs.smolvm.url = "github:smol-machines/smolvm/5098b07eddd12377fe12f257be7f5e92be7f5840";
-  # Match the release's submodule when rebuilding its bundled libkrun.
-  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/d3486f7a4ac99c64683e628dc6d297e29b3d381d";
+  # SmolVM 1.16.1; its Nix recipe still needs the release override below.
+  inputs.smolvm.url = "github:smol-machines/smolvm/9504e94e3581a1f52c414247edcbcd6d6b49a71a";
+  # Match the release's submodules when rebuilding its bundled libkrun.
+  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/e4d41db71faa355985b0f9106ad82c01f110860f";
+  inputs.smolvm.inputs.libkrunfw-src.url = "github:smol-machines/libkrunfw/6ec329e11154814a4df9963a3f94f2a430f55723";
 
   inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
 
@@ -24,12 +25,27 @@
         let
           upstream = smolvm.packages.${system};
           pkgs = smolvm.inputs.nixpkgs.legacyPackages.${system};
+          # The 1.16.1 tag's Nix recipe still selects 1.16.0 tarballs.
+          # Keep upstream's packaging, but use the published 1.16.1 assets.
+          release = {
+            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-5J5buubWWwOezx2LI20g53Qnt7/RMZB7J6CBn83qP+0="; };
+            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-B4lak4hIffzOjZ/zO0sKLtBPlrcVTpbuOjzUbuuHy54="; };
+            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-RLUFc5YrNO6Xm7dKV1a9EFg+IP0dNzm6ooFH0TtaJvM="; };
+          }.${system};
+          releasedSmolvm = upstream.default.overrideAttrs (_: rec {
+            version = "1.16.1";
+            sourceRoot = "smolvm-${version}-${release.platform}";
+            src = pkgs.fetchurl {
+              url = "https://github.com/smol-machines/smolvm/releases/download/v${version}/${sourceRoot}.tar.gz";
+              inherit (release) hash;
+            };
+          });
           # Link against the release's existing firmware; only libkrun changes.
           libkrunfw = pkgs.lib.makeOverridable ({ variant ? null }:
             assert variant == null;
             pkgs.runCommand "smolvm-libkrunfw" { meta.platforms = [ system ]; } ''
               mkdir -p $out/lib
-              cp -a ${upstream.default}/libexec/smolvm/lib/libkrunfw.so* $out/lib/
+              cp -a ${releasedSmolvm}/libexec/smolvm/lib/libkrunfw.so* $out/lib/
             ''
           ) {};
           libkrun = (upstream.libkrun.override { inherit libkrunfw; }).overrideAttrs (old: {
@@ -55,8 +71,8 @@
                 --replace-fail 'for i in 0..16 {' 'for i in 0..=crate::IRQ_MAX as u8 {'
             '';
           });
-        in if system != "x86_64-linux" then upstream.default
-        else upstream.default.overrideAttrs (old: {
+        in if system != "x86_64-linux" then releasedSmolvm
+        else releasedSmolvm.overrideAttrs (old: {
           postInstall = (old.postInstall or "") + ''
             rm $out/libexec/smolvm/lib/libkrun.so*
             cp -a ${libkrun}/lib/libkrun.so* $out/libexec/smolvm/lib/
