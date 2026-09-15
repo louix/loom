@@ -205,7 +205,7 @@ const anthropicCacheCreation = (meta: ProviderMetadata | undefined): CacheCreati
   const a = meta?.["anthropic"];
   // Structural, not by name: the key is the provider id, and an
   // OpenAI-compatible profile can legitimately be called "anthropic"
-  // (`[providers.anthropic] adapter = "aisdk"` with no `sdk`) — reading its
+  // (`[providers.anthropic]` with no `sdk`) — reading its
   // metadata as Anthropic's would attach a TTL to a step that has none. The
   // `cache_creation` split inside the raw usage is what nobody else emits.
   const cc = isObj(a) && isObj(a["usage"]) ? a["usage"]["cache_creation"] : undefined;

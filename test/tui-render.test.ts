@@ -236,7 +236,6 @@ describe("tui-render", { concurrency: 4 }, () => {
 
   const OAI_CFG = `
 [providers.oai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 models   = ["m1", "m2"]
 `;
@@ -1386,7 +1385,6 @@ models   = ["m1", "m2"]
     const { connect, cleanup } = await harness({
       config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://x/v1"
 model    = "gpt-5"
 models   = ["gpt-5", "gpt-5-mini", "o4"]
@@ -1449,7 +1447,6 @@ models   = ["gpt-5", "gpt-5-mini", "o4"]
     const { connect, cleanup } = await harness({
       config: `
 [providers.oai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 `,
     });
@@ -1486,7 +1483,6 @@ base_url = "http://127.0.0.1:9/v1"
     const { connect, cleanup } = await harness({
       config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://x/v1"
 model    = "gpt-5"
 models   = ["gpt-5", "gpt-5-mini"]
@@ -1727,7 +1723,6 @@ models   = ["gpt-5", "gpt-5-mini"]
     const { h, connect, cleanup } = await harness({
       config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "gpt-5"
 `,
@@ -1796,7 +1791,6 @@ model    = "gpt-5"
     const { h, connect, cleanup } = await harness({
       config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "gpt-5"
 `,

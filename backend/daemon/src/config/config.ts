@@ -28,8 +28,8 @@ export type AisdkKind = "openai" | "google" | "anthropic" | "chatgpt";
 /**
  * One Vercel-AI-SDK provider profile. Configured as `[custom-provider.<id>]`
  * (OpenAI-compatible), `[google]` / `[anthropic]` / `[chatgpt]` (one native
- * profile per vendor), or the low-level `[providers.<id>]` with
- * `adapter = "aisdk"`.
+ * profile per vendor), or `[providers.<id>]` with
+ * `sdk` selecting the backend.
  */
 export interface AisdkProfile {
   /**
@@ -60,12 +60,7 @@ export interface AisdkProfile {
   model: string;
   /** Optional explicit picker list, when `/models` can't be trusted. Defaults to `[model]`. */
   models: string[];
-  /**
-   * Per-model context-window sizes in tokens, keyed by model id. Filled from
-   * `{base_url}/models` when the endpoint advertises it (`context_length` /
-   * `max_model_len` / …); set `model_context` in the config to pin sizes for
-   * endpoints that don't report one. Wins over the built-in prefix table.
-   */
+  /** Per-model context windows discovered from the provider catalog. */
   modelContext: Record<string, number>;
   /**
    * Per-model USD-per-million prices advertised by the endpoint's `/models`
@@ -91,13 +86,6 @@ export interface AisdkProfile {
    * field outright.
    */
   includeUsage: boolean;
-  /**
-   * Per-segment ceiling on tool round-trips in one turn (`max_steps`). Not a
-   * hard turn limit — a turn whose model is still working continues past it
-   * automatically — so this is a granularity knob: raise it for a model that
-   * takes many small steps, lower it to rein one in. Default 50; clamped 1–500.
-   */
-  maxSteps: number;
   /**
    * Neither `model` nor `models` was configured (the normal case) — the daemon
    * fills `models` from `{base_url}/models` at start-up (openai-compatible
@@ -126,14 +114,8 @@ export interface AisdkProfile {
    * server-side with no request field to set, and Gemini has its own scheme.
    */
   promptCacheTtl: "5m" | "1h" | "off" | "";
-  /** Cheap model for one-shot auto-titling; "" → falls back to `titles.model`. */
+  /** Cheap model for one-shot auto-titling; "" → a cheap default for this provider. */
   titleModel: string;
-  /**
-   * Connector package that serves this profile. "" → routed by `sdk`
-   * (`google` → `@loom/connector-gemini`, else `@loom/connector-generic`).
-   * Set it to point at an out-of-tree connector.
-   */
-  connector: string;
   /**
    * Codex OAuth credentials for `sdk = "chatgpt"`. Empty uses Codex's own
    * `~/.codex/auth.json`; this is deliberately a path rather than a token so
@@ -302,17 +284,12 @@ export interface LoomConfig {
   defaultProvider: string;
   daemon: {
     idleShutdownMinutes: number;
-    /**
-     * Capacity of the in-memory push-event ring buffer, in *frames* (not bytes
-     * — a frame carrying a big tool result costs more). Sized only to cover a
-     * client's reconnect gap across the whole fleet; deeper scroll-back pages
-     * from the durable per-session `session_events` table, so this does not need
-     * to hold a long session's entire history.
-     */
   };
   providers: {
     claude: {
       model: string;
+      /** Model for automatic session titles; empty uses the provider default. */
+      titleModel: string;
       /** Models offered in the TUI picker (`M` / `⌥p`). Empty = the daemon asks
        *  the Claude CLI for its catalog at start-up; set it to pin a curated
        *  list and skip that probe. */
@@ -339,8 +316,8 @@ export interface LoomConfig {
     /**
      * Vercel-AI-SDK providers, keyed by id. Fed by `[custom-provider.<id>]`
      * (OpenAI-compatible — GLM, DeepSeek, OpenRouter, a local vLLM / Ollama),
-     * `[google]` / `[anthropic]` (native), and the low-level
-     * `[providers.<id>] adapter = "aisdk"` escape hatch.
+     * `[google]` / `[anthropic]` (native), and
+     * `[providers.<id>]` with an explicit `sdk` for additional native accounts.
      */
     aisdk: Record<string, AisdkProfile>;
   };
@@ -362,10 +339,7 @@ export interface LoomConfig {
   titles: {
     /** Auto-summarise the first message into a session title after turn 1. */
     enabled: boolean;
-    /** Model for the one-shot; empty → a per-provider cheap default. */
-    model: string;
   };
-  pricing: { table: string };
   notify: { webhook: string };
   /**
    * Shell commands the daemon runs when something happens in a session — a
@@ -412,6 +386,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   providers: {
     claude: {
       model: "claude-sonnet-5",
+      titleModel: "",
       models: [],
       permissionDefault: "default",
       settingSources: ["project"],
@@ -423,8 +398,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   },
   mcp: [],
   httpMcp: [],
-  titles: { enabled: true, model: "" },
-  pricing: { table: ".loom/models.toml" },
+  titles: { enabled: true },
   notify: { webhook: "" },
   hooks: [],
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
@@ -562,6 +536,11 @@ const parseHooks = (raw: unknown): HookConfig[] => {
   return out;
 };
 
+/** `prompt_cache_ttl` on an aisdk profile; anything unrecognised reads as unset. */
+const aisdkCacheTtl = (v: unknown): AisdkProfile["promptCacheTtl"] => {
+  return v === "5m" || v === "1h" || v === "off" ? v : "";
+};
+
 /**
  * Build one aisdk profile from a config table. `sdk = "openai"` with no
  * `base_url` is dropped (nothing to dial). No `model` / `models` is kept for
@@ -571,27 +550,6 @@ const parseHooks = (raw: unknown): HookConfig[] => {
  * Returns `null` when the table can't yield a usable
  * profile.
  */
-/** Default per-segment step ceiling; kept in step with `DEFAULT_MAX_STEPS` in
- *  `src/provider/aisdk/session.ts`. */
-const DEFAULT_AISDK_MAX_STEPS = 50;
-
-/** `prompt_cache_ttl` on an aisdk profile; anything unrecognised reads as unset. */
-const aisdkCacheTtl = (v: unknown): AisdkProfile["promptCacheTtl"] => {
-  return v === "5m" || v === "1h" || v === "off" ? v : "";
-};
-
-/** `model_context` table → per-model token sizes; junk rows are skipped. */
-const modelContextOf = (v: unknown): Record<string, number> => {
-  const out: Record<string, number> = {};
-  if (!v || typeof v !== "object") return out;
-  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    if (k === "" || (typeof val !== "number" && typeof val !== "string")) continue;
-    const n = typeof val === "string" ? Number(val) : val;
-    if (Number.isFinite(n) && n > 0) out[k] = Math.round(n);
-  }
-  return out;
-};
-
 const buildAisdkProfile = (
   id: string,
   t: Record<string, unknown>,
@@ -604,7 +562,6 @@ const buildAisdkProfile = (
   const autoModels = model === "" && models.length === 0;
   if (autoModels && sdk !== "openai" && sdk !== "chatgpt") return null;
   const effectiveModel = model || (models[0] ?? "");
-  const rawSteps = num(t["max_steps"], DEFAULT_AISDK_MAX_STEPS);
   const effectiveModelList = effectiveModel ? [effectiveModel] : [];
   return {
     sdk,
@@ -613,19 +570,17 @@ const buildAisdkProfile = (
     apiKey: str(t["api_key"], ""),
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModelList,
-    modelContext: modelContextOf(t["model_context"]),
+    modelContext: {},
     modelPricing: {},
     modelLabels: {},
     modelEfforts: {},
     modelDefaultEffort: {},
     includeUsage: t["include_usage"] === false ? false : true,
     autoModels,
-    maxSteps: Math.min(500, Math.max(1, Math.trunc(rawSteps))),
     tag: str(t["tag"], id),
     color: str(t["color"], ""),
     promptCacheTtl: aisdkCacheTtl(t["prompt_cache_ttl"]),
     titleModel: str(t["title_model"], ""),
-    connector: str(t["connector"], ""),
     authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
     configDir: t["config_dir"] ? expandTilde(str(t["config_dir"], "")) : "",
     codexCliPath: t["codex_cli_path"] ? expandTilde(str(t["codex_cli_path"], "")) : "",
@@ -638,7 +593,7 @@ const buildAisdkProfile = (
  *  - `[custom-provider.<id>]`   — an OpenAI-compatible endpoint (implicit sdk);
  *    the form that will become a plugin. `base_url` + `api_key` / `api_key_env`.
  *  - `[google]` / `[anthropic]` / `[chatgpt]` — one native profile each, id = the vendor.
- *  - `[providers.<id>]` with `adapter = "aisdk"` — the low-level escape hatch;
+ *  - `[providers.<id>]` — additional named profiles;
  *    its `sdk` key still selects the backend. Wins a duplicate id.
  * `claude` is reserved for the native CLI provider and is never an aisdk id.
  */
@@ -660,16 +615,15 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
     put(id, buildAisdkProfile(id, asRecord(t), "openai"));
   }
 
-  // [providers.<id>] adapter = "aisdk" — kept, and wins a duplicate id.
+  // Named profiles override matching shorthand profiles.
   for (const [id, t0] of Object.entries(asRecord(raw["providers"]))) {
     if (isClaudeId(id)) continue;
     const t = asRecord(t0);
-    if (t["adapter"] !== "aisdk") continue;
     const sdk: AisdkKind =
       t["sdk"] === "google" || t["sdk"] === "anthropic" || t["sdk"] === "chatgpt"
         ? t["sdk"]
         : "openai";
-    delete out[id]; // legacy form overrides the same id from the sugar namespaces
+    delete out[id]; // named profile overrides the shorthand
     put(id, buildAisdkProfile(id, t, sdk));
   }
 
@@ -850,7 +804,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const claude = asRecord(providers["claude"]);
   const aisdk = parseAisdkProfiles(r);
   const titles = asRecord(r["titles"]);
-  const pricing = asRecord(r["pricing"]);
   const notify = asRecord(r["notify"]);
   const search = asRecord(r["search"]);
 
@@ -964,6 +917,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     providers: {
       claude: {
         model: str(claude["model"], d.providers.claude.model),
+        titleModel: str(claude["title_model"], d.providers.claude.titleModel),
         models: strArray(claude["models"], d.providers.claude.models),
         permissionDefault,
         settingSources: strArray(claude["setting_sources"], d.providers.claude.settingSources),
@@ -985,9 +939,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     httpMcp,
     titles: {
       enabled: typeof titles["enabled"] === "boolean" ? titles["enabled"] : d.titles.enabled,
-      model: str(titles["model"], d.titles.model),
     },
-    pricing: { table: str(pricing["table"], d.pricing.table) },
     notify: { webhook: str(notify["webhook"], d.notify.webhook) },
     hooks: parseHooks(r["hooks"]),
     search: {

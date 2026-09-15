@@ -32,10 +32,9 @@ test("[worktree] enabled defaults to true and parses a false override", () => {
   assert.equal(cfg('[worktree]\nenabled = "no"\n').worktree.enabled, true);
 });
 
-test("a [providers.<id>] table with adapter='aisdk' becomes a profile", () => {
+test("a named provider defaults to an OpenAI-compatible endpoint", () => {
   const c = cfg(`
 [providers.deepseek]
-adapter     = "aisdk"
 base_url    = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 model       = "deepseek-chat"
@@ -56,7 +55,6 @@ title_model = "deepseek-chat"
 test("models defaults to [model] and tag defaults to the id", () => {
   const c = cfg(`
 [providers.local]
-adapter  = "aisdk"
 base_url = "http://localhost:11434/v1"
 model    = "qwen2.5-coder"
 `);
@@ -67,15 +65,10 @@ model    = "qwen2.5-coder"
   assert.equal(p.apiKeyEnv, "");
 });
 
-test("a profile without base_url or without the aisdk adapter is ignored", () => {
+test("an OpenAI-compatible profile needs a base_url", () => {
   const c = cfg(`
 [providers.broken]
-adapter = "aisdk"
 model   = "x"
-
-[providers.notours]
-base_url = "http://x/v1"
-model    = "y"
 `);
   assert.deepEqual(c.providers.aisdk, {});
 });
@@ -103,26 +96,6 @@ tag      = "lb"
   assert.equal(
     cfg(`[custom-provider.y]\nbase_url = "http://y/v1"\n`).providers.aisdk["y"]?.autoModels,
     true,
-  );
-});
-
-test("model_context parses per-model token sizes; junk rows are skipped", () => {
-  const c = cfg(`
-[custom-provider.sf]
-base_url      = "https://sf.example/v1"
-model_context = { "glm-5.3-flash" = 1048576, "glm-5" = "200000" }
-`);
-  const p = c.providers.aisdk["sf"];
-  assert.deepEqual(p?.modelContext, { "glm-5.3-flash": 1_048_576, "glm-5": 200_000 });
-  // junk: non-numeric, negative, empty key
-  const junk = cfg(
-    `[custom-provider.j]\nbase_url = "http://j/v1"\nmodel_context = { a = "nope", b = -5, "" = 7, c = 1000 }\n`,
-  ).providers.aisdk["j"];
-  assert.deepEqual(junk?.modelContext, { c: 1000 });
-  // absent → empty map
-  assert.deepEqual(
-    cfg(`[custom-provider.z]\nbase_url = "http://z/v1"\n`).providers.aisdk["z"]?.modelContext,
-    {},
   );
 });
 
@@ -154,16 +127,6 @@ test("[providers.claude] prompt_cache_ttl is unset by default — the CLI decide
     "1h",
   );
 });
-test("max_steps defaults to 50 and is clamped to 1–500", () => {
-  const base = `[custom-provider.p]\nbase_url = "http://p/v1"\nmodel = "m"\n`;
-  assert.equal(cfg(base).providers.aisdk["p"]?.maxSteps, 50);
-  assert.equal(cfg(base + `max_steps = 120\n`).providers.aisdk["p"]?.maxSteps, 120);
-  assert.equal(cfg(base + `max_steps = 0\n`).providers.aisdk["p"]?.maxSteps, 1);
-  assert.equal(cfg(base + `max_steps = 9999\n`).providers.aisdk["p"]?.maxSteps, 500);
-  assert.equal(cfg(base + `max_steps = 12.9\n`).providers.aisdk["p"]?.maxSteps, 12);
-  assert.equal(cfg(base + `max_steps = "nope"\n`).providers.aisdk["p"]?.maxSteps, 50);
-});
-
 test("[google] / [anthropic] are one native profile each, id = the vendor", () => {
   const c = cfg(`
 [google]
@@ -215,7 +178,6 @@ test("[chatgpt] disables Codex web search unless explicitly enabled", () => {
 test("a low-level sdk = chatgpt profile routes without an API key", () => {
   const p = cfg(`
 [providers.work]
-adapter = "aisdk"
 sdk     = "chatgpt"
 model   = "gpt-5-codex"
 `).providers.aisdk["work"];
@@ -223,35 +185,31 @@ model   = "gpt-5-codex"
   assert.equal(p?.model, "gpt-5-codex");
 });
 
-test("legacy [providers.<id>] adapter='aisdk' still works and wins a duplicate id", () => {
+test("named provider settings take precedence over shorthand with the same id", () => {
   const c = cfg(`
 [custom-provider.dup]
 base_url = "http://sugar/v1"
 model    = "sugar-model"
 
 [providers.dup]
-adapter  = "aisdk"
-base_url = "http://legacy/v1"
-model    = "legacy-model"
+base_url = "http://named/v1"
+model    = "named-model"
 `);
-  assert.equal(c.providers.aisdk["dup"]?.baseUrl, "http://legacy/v1");
-  assert.equal(c.providers.aisdk["dup"]?.model, "legacy-model");
+  assert.equal(c.providers.aisdk["dup"]?.baseUrl, "http://named/v1");
+  assert.equal(c.providers.aisdk["dup"]?.model, "named-model");
 });
 
 test("openai and chatgpt profiles with no model/models are kept for auto-detection; google/anthropic dropped", () => {
   const c = cfg(`
 [providers.auto]
-adapter  = "aisdk"
 base_url = "http://x/v1"
 
 [providers.gem]
-adapter = "aisdk"
 sdk     = "google"
 
 [chatgpt]
 
 [providers.ok]
-adapter  = "aisdk"
 base_url = "http://y/v1"
 models   = ["m1", "m2"]
 `);
@@ -276,12 +234,10 @@ test("resolveApiKey: inline api_key wins over api_key_env; else env; else empty"
 test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
   const c = cfg(`
 [providers.p]
-adapter     = "aisdk"
 base_url    = "http://x/v1"
 api_key_env = "DEFINITELY_UNSET_VAR"
 
 [providers.auto]
-adapter  = "aisdk"
 base_url = "http://y/v1"
 
 [search]
@@ -295,7 +251,6 @@ backend = "brave"
   // an inline api_key silences the env-var warning
   const c2 = cfg(`
 [providers.p]
-adapter  = "aisdk"
 base_url = "http://x/v1"
 api_key  = "sk-inline"
 model    = "m"
@@ -328,7 +283,6 @@ test("default_provider must be configured, else it falls back to claude", () => 
     cfg(`
 default_provider = "openai"
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://x/v1"
 model    = "gpt-5"
 `).defaultProvider,
@@ -336,10 +290,9 @@ model    = "gpt-5"
   );
 });
 
-test("claude is never treated as an aisdk profile even if adapter is set", () => {
+test("claude is reserved for the native Claude provider", () => {
   const c = cfg(`
 [providers.claude]
-adapter = "aisdk"
 model   = "claude-sonnet-5"
 `);
   assert.deepEqual(c.providers.aisdk, {});
@@ -367,19 +320,18 @@ test("loadConfig merges an exact repo override from the user file and ignores re
       `
 base_branch = "trunk"
 default_provider = "deepseek"
-[tools.local]
+[local-tools.local]
 command = "tool"
 [session]
-tools = []
+local-tools = []
 [providers.deepseek]
-adapter = "aisdk"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-chat"
 [[repo]]
 path = ${JSON.stringify(dir)}
 base_branch = "main"
 [repo.session]
-tools = ["local"]
+local-tools = ["local"]
 [repo.providers.deepseek]
 model = "deepseek-reasoner"
 [[repo]]
@@ -455,23 +407,19 @@ test("invalid repo override shapes fail explicitly, including unmatched entries"
 test("sdk defaults to openai; google/anthropic don't need a base_url", () => {
   const c = cfg(`
 [providers.openai]
-adapter  = "aisdk"
 base_url = "https://api.openai.com/v1"
 model    = "gpt-5"
 
 [providers.gemini]
-adapter     = "aisdk"
 sdk         = "google"
 api_key_env = "GEMINI_API_KEY"
 model       = "gemini-2.5-pro"
 
 [providers.claude-api]
-adapter = "aisdk"
 sdk     = "anthropic"
 model   = "claude-sonnet-5"
 
 [providers.dropped]
-adapter = "aisdk"
 sdk     = "openai"
 model   = "x"
 `);
@@ -486,7 +434,6 @@ model   = "x"
 test("an unknown sdk value falls back to openai", () => {
   const c = cfg(`
 [providers.weird]
-adapter  = "aisdk"
 sdk      = "cohere"
 base_url = "http://x/v1"
 model    = "m"
@@ -771,4 +718,24 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("title models are scoped to providers, including Claude profiles", () => {
+  const c = cfg(`
+[titles]
+enabled = false
+[providers.claude]
+title_model = "haiku"
+[providers.work]
+sdk = "chatgpt"
+title_model = "gpt-5-mini"
+[custom-provider.local]
+base_url = "http://localhost/v1"
+title_model = "small-local-model"
+`);
+  assert.deepEqual(c.titles, { enabled: false });
+  assert.equal(c.providers.claude.titleModel, "haiku");
+  assert.equal(c.providers.aisdk.work?.titleModel, "gpt-5-mini");
+  assert.equal(c.providers.aisdk.local?.titleModel, "small-local-model");
+  assert.equal(cfg("").providers.claude.titleModel, "");
 });

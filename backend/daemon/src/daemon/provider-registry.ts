@@ -180,7 +180,6 @@ export class ProviderRegistry {
     if (isClaudeId(id)) return CLAUDE;
     const profile = this.#config.providers.aisdk[id];
     if (!profile) throw new Error(`unknown provider: ${id}`);
-    if (profile.connector) return profile.connector;
     if (profile.sdk === "google") return GEMINI;
     if (profile.sdk === "chatgpt") return CHATGPT;
     return GENERIC;
@@ -349,7 +348,6 @@ export class ProviderRegistry {
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       includeUsage: p.includeUsage,
       promptCacheTtl: p.promptCacheTtl,
-      ...(p.maxSteps !== undefined ? { maxSteps: p.maxSteps } : {}),
     };
     return {
       id,

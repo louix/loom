@@ -396,7 +396,7 @@ test("mapper reports the TTL an aisdk Anthropic session wrote at", () => {
 });
 
 test("an OpenAI-compatible provider named 'anthropic' is not read as Anthropic", () => {
-  // `[providers.anthropic] adapter = "aisdk"` with no `sdk` installs an
+  // `[providers.anthropic]` with no `sdk` installs an
   // OpenAI-compatible profile whose id — and so whose providerMetadata key — is
   // "anthropic". Detecting the vendor by that name would attach a cache TTL,
   // and an out-of-band write, to a step that reported neither.

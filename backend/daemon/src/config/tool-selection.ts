@@ -3,9 +3,9 @@ import { isClaudeId } from "@loom/core/provider-id";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import type { LoomConfig } from "./config.ts";
 
-const groups = ["tools", "vm-tools", "remote-tools"] as const;
+const groups = ["local-tools", "vm-tools", "remote-tools"] as const;
 const fields = {
-  tools: { required: "command", allowed: ["command", "args", "default_for"] },
+  "local-tools": { required: "command", allowed: ["command", "args", "default_for"] },
   "vm-tools": { required: "runtime", allowed: ["runtime", "default_for"] },
   "remote-tools": {
     required: "url",
@@ -21,7 +21,7 @@ export const resolveToolSelection = (
 ): Pick<LoomConfig, "mcp" | "httpMcp"> => {
   if (["command-mcp", "http-mcp", "mcp"].some((key) => key in raw))
     throw new Error(
-      "MCP lists are no longer supported. Define tools, vm-tools or remote-tools by name and select them under [session].",
+      "MCP lists are no longer supported. Define local-tools, vm-tools or remote-tools by name and select them under [session].",
     );
   const session = raw.session ?? {};
   if (!record(session)) throw new Error("session must be a table");
@@ -128,6 +128,6 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   if (vm && host.length)
     return (
       `Provider ${provider} runs in a VM but host tools are selected: ${host.map((m) => m.name).join(", ")}. ` +
-      "Set session.tools = [] and select vm-tools or remote-tools instead."
+      "Set session.local-tools = [] and select vm-tools or remote-tools instead."
     );
 };

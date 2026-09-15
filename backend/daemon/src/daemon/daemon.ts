@@ -848,8 +848,7 @@ export class Daemon {
           if (models.length === 0) throw new Error("endpoint returned no models");
           p.models = models.map((m) => m.id);
           p.model = p.models[0] ?? "";
-          // Advertised metadata rides along; a `model_context` config pin wins
-          // over the endpoint's own claim.
+          // Carry the catalog metadata into model choices and provider requests.
           const probed: Record<string, number> = {};
           const probedPricing: Record<string, PriceRow> = {};
           const probedLabels: Record<string, string> = {};
@@ -862,7 +861,7 @@ export class Daemon {
             if (m.efforts !== undefined) probedEfforts[m.id] = m.efforts;
             if (m.defaultEffort !== undefined) probedDefaultEffort[m.id] = m.defaultEffort;
           }
-          p.modelContext = { ...probed, ...p.modelContext };
+          p.modelContext = probed;
           p.modelPricing = probedPricing;
           p.modelLabels = probedLabels;
           p.modelEfforts = probedEfforts;
@@ -1635,8 +1634,9 @@ export class Daemon {
       if (needsTitle && this.#providers.has(snap.provider)) {
         const provider = await this.#providers.get(snap.provider, snap.isolation);
         const model =
-          this.config.titles.model ||
-          this.config.providers.aisdk[snap.provider]?.titleModel ||
+          (isClaudeId(snap.provider)
+            ? this.config.providers.claude.titleModel
+            : this.config.providers.aisdk[snap.provider]?.titleModel) ||
           cheapModelFor(snap.provider);
         const title = await generateTitle({
           provider,

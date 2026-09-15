@@ -474,13 +474,11 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
 default_provider = "openai"
 
 [providers.openai]
-adapter  = "aisdk"
 base_url = "https://api.openai.com/v1"
 model    = "gpt-5"
 models   = ["gpt-5", "gpt-5-mini"]
 
 [providers.deepseek]
-adapter  = "aisdk"
 base_url = "https://api.deepseek.com/v1"
 model    = "deepseek-chat"
 color    = "red"
@@ -579,7 +577,6 @@ test("the last model a provider ran becomes its default for new sessions", async
   const hh = await makeHarness({
     config: `
 [providers.local]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "pin-a"
 models   = ["pin-a", "pin-b"]
@@ -617,7 +614,6 @@ test("session.setEffort records the row and becomes the default effort for the n
   const hh = await makeHarness({
     config: `
 [providers.local]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "pin-a"
 models   = ["pin-a"]
@@ -659,7 +655,6 @@ test("remembering defaults publishes a snapshot with the fresh provider list", a
   const hh = await makeHarness({
     config: `
 [providers.local]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "pin-a"
 models   = ["pin-a", "pin-b"]
@@ -747,7 +742,6 @@ test("session.fork copies the transcript into a new session + worktree", async (
   const hh = await makeHarness({
     config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "gpt-5"
 `,
@@ -817,7 +811,6 @@ test("session.rewind: toTurn 0 wipes the transcript; range guard covers the ends
   const hh = await makeHarness({
     config: `
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "gpt-5"
 `,
@@ -907,7 +900,7 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
   const srv = await modelsStub([
     "z-model",
     "a-model",
-    "m-model",
+    { id: "m-model", context_length: 12345 },
     // sference-style row: display name, context window, advertised pricing
     {
       id: "zai-org/GLM-5.3-Flash",
@@ -929,13 +922,9 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
   const hh = await makeHarness({
     config: `
 [providers.oai]
-adapter  = "aisdk"
 base_url = "${srv.base}"
-# a user pin for a model the endpoint says nothing about
-model_context = { "m-model" = 12345 }
 
 [providers.needkey]
-adapter     = "aisdk"
 base_url    = "http://127.0.0.1:9/v1"
 model       = "x"
 api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
@@ -977,7 +966,7 @@ api_key_env = "LOOM_TEST_UNSET_KEY_VAR"
     assert.equal(choices.get("zai-org/GLM-5.3-Flash")?.context, 1_048_576);
     // …with the endpoint's display name as the label…
     assert.equal(choices.get("zai-org/GLM-5.3-Flash")?.label, "GLM 5.3 Flash");
-    // …user-pinned via model_context…
+    // …including other endpoint-reported context sizes…
     assert.equal(choices.get("m-model")?.context, 12345);
     // …and unhinted (no table guess echoed) when nothing is known
     assert.equal(choices.get("a-model")?.context, undefined);
@@ -1030,7 +1019,6 @@ test("in-place sessions: no worktree, repo-root git facts, hard fork refused", a
 enabled = false
 
 [providers.openai]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "gpt-5"
 `,
@@ -1773,7 +1761,6 @@ test("model probes resolving at bring-up publish a snapshot with the detected li
   const hh = await makeHarness({
     config: `
 [providers.local]
-adapter  = "aisdk"
 base_url = "${srv.base}"
 `,
   });
@@ -1810,7 +1797,6 @@ test("no extra snapshot at bring-up when the provider list is fully pinned", asy
   const hh = await makeHarness({
     config: `
 [providers.local]
-adapter  = "aisdk"
 base_url = "http://127.0.0.1:9/v1"
 model    = "pin-a"
 models   = ["pin-a"]
@@ -2429,10 +2415,10 @@ test("tool preflight rejects missing host executables and VM placement before al
   for (const vm of [false, true]) {
     const hh = await makeHarness({
       config: `
-[tools.files]
+[local-tools.files]
 command = "loom-test-missing-host-tool"
 [session]
-tools = ["files"]
+local-tools = ["files"]
 [providers.claude]
 models = ["fixture"]
 ${vm ? '[isolation.claude]\nartifact = "/unused-runtime"' : ""}

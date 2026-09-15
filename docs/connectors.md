@@ -61,7 +61,7 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-Define host commands under `[tools.<name>]`, separate offline packaged VMs
+Define host commands under `[local-tools.<name>]`, separate offline packaged VMs
 under `[vm-tools.<name>]`, and remote services under `[remote-tools.<name>]`.
 Select names with the three corresponding lists under `[session]` or
 `[repo.session]`. There are no implicit external tools. See
@@ -81,7 +81,7 @@ guarantee that every call uses the preferred server.
 
 ```toml
 [session]
-tools = ["tilth"]
+local-tools = ["tilth"]
 remote-tools = ["kagi"]
 
 [remote-tools.kagi]
@@ -89,7 +89,7 @@ url = "https://mcp.kagi.com/mcp"
 bearer_token_env = "KAGI_API_KEY"
 default_for = ["web_search", "web_fetch"]
 
-[tools.tilth]
+[local-tools.tilth]
 command = "tilth"
 args = ["--mcp", "--edit"]
 default_for = ["read", "write", "edit"]
@@ -229,19 +229,9 @@ No build step — source is `.ts`.
 | `[google]` or `sdk = "google"`                                         | `@loom/connector-gemini`  |
 | `[custom-provider.*]`, `[anthropic]`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
 
-Override per profile:
-
-```toml
-[providers.my-endpoint]
-adapter   = "aisdk"
-connector = "@my-org/loom-connector-thing"
-base_url  = "https://…"
-```
-
-The connector must be a workspace member (in root `deno.json`'s `"workspace"`
-array) and listed in the CLI's manifest (`cli/src/connectors.ts`), or
-`session.create` fails with _"provider … needs connector … , which isn't in
-this build's manifest"_.
+Connector routing is internal to Loom. To add a connector, register the workspace
+package in the CLI manifest (`cli/src/connectors.ts`) and add its backend route
+in `ProviderRegistry.#packageFor`. User profiles select the backend with `sdk`.
 
 ## ChatGPT subscription
 

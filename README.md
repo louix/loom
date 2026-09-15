@@ -114,7 +114,7 @@ the Vercel AI SDK.
   - **`commit`** — commits the session's worktree under its
     `Loom (<model>)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
-- **Tool selection** — define host commands in `[tools.<name>]`, separate
+- **Tool selection** — define host commands in `[local-tools.<name>]`, separate
   offline VM runtimes in `[vm-tools.<name>]`, and remote services in
   `[remote-tools.<name>]`. Select them with `tools`, `vm-tools`, and
   `remote-tools` lists under `[session]` or `[repo.session]`. Definitions
@@ -224,9 +224,12 @@ login` in `~/.codex/auth.json`; no OpenAI API key. Its authenticated Codex
   tool, MCP, and sub-agent surface. `code_mode_only` models run through the
   locally installed `codex app-server`, which supplies Codex's full Code Mode
   host while Loom retains its MCP and approval configuration.
-- `[providers.<id>]` with `adapter = "aisdk"` and `sdk =
-"openai" | "google" | "anthropic" | "chatgpt"` — the low-level escape hatch, kept for
-  several native profiles or unusual setups.
+- `[providers.<id>]` — additional named accounts. `sdk` selects `openai`
+  (the default), `google`, `anthropic`, or `chatgpt`; no adapter setting is needed.
+
+Automatic titles use a cheap default for each provider. Set `title_model` in
+that provider’s table to override it (including `[providers.claude]`).
+`[titles] enabled = false` disables automatic titles globally.
 
 `default_provider` picks which one new sessions use until a session is
 actually created — from then on the provider, model, and permission mode it
@@ -240,7 +243,7 @@ was created with (or later switched to) become the default for the _next_
   call runs through the same permission gate as Claude: read-ish tools pass,
   edits and commands surface a `permission_request` (or run straight through in
   `acceptEdits` / `auto`). A denied call is fed back as a tool error. A turn
-  runs up to `max_steps` tool round-trips (default 50, per provider) — but if
+  runs up to 50 tool round-trips per segment — if
   the model is still working when that trips, the turn continues with a fresh
   budget rather than ending; only after five such segments does it stop, with a
   `step_limit` end marker and the session left idle so a message resumes it.
@@ -286,8 +289,7 @@ drops an annotated copy of `config.example.toml` there.
 (`context_length` on OpenRouter, `context_tokens` on sference, `max_model_len`
 on vLLM, `max_input_tokens` on LiteLLM, …) it wins over the built-in per-model
 prefix table that otherwise drives the context meter. Endpoints that report
-nothing can be pinned per provider with
-`model_context = { "<model-id>" = <tokens> }`.
+nothing use that built-in table.
 
 **Advertised pricing and names.** `/models` rows that carry per-model pricing
 (sference's `input_per_million_usd`, OpenRouter's per-token `pricing`) feed the

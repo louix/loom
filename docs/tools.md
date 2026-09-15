@@ -7,12 +7,12 @@ use their native tools and Loom's session tools. These lists configure Loom-mana
 integrations; provider-native settings and plugins remain separate.
 
 ```toml
-[tools.tilth]
+[local-tools.tilth]
 command = "tilth"
 args = ["--mcp", "--edit"]
 default_for = ["read", "write", "edit"]
 
-[tools.fff]
+[local-tools.fff]
 command = "fff-mcp"
 default_for = ["find", "grep"]
 
@@ -25,7 +25,7 @@ url = "https://docs.example.com/mcp"
 bearer_token_env = "DOCS_TOKEN"
 
 [session]
-tools = []
+local-tools = []
 vm-tools = []
 remote-tools = []
 ```
@@ -62,7 +62,7 @@ enabled = false
 [repo.isolation.aisdk]
 enabled = false
 [repo.session]
-tools = ["tilth", "fff"]
+local-tools = ["tilth", "fff"]
 vm-tools = []
 remote-tools = []
 ```
@@ -76,7 +76,7 @@ Keep the host execution settings above and replace the tool selections:
 
 ```toml
 [repo.session]
-tools = []
+local-tools = []
 vm-tools = ["tilth"]
 remote-tools = []
 ```
@@ -94,7 +94,7 @@ enabled = true
 enabled = true
 # Enable isolation.codex / isolation.aisdk too if using those engines.
 [repo.session]
-tools = []
+local-tools = []
 vm-tools = ["tilth"]
 remote-tools = ["docs"]
 ```

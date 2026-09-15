@@ -17,9 +17,9 @@ default_for = ["web_search", "web_fetch"]`;
 
 test("named tool definitions resolve selected transports and credential references", () => {
   const cfg = config(
-    http.replace("[session]", '[session]\ntools = ["code"]') +
+    http.replace("[session]", '[session]\nlocal-tools = ["code"]') +
       `
-[tools.code]
+[local-tools.code]
 command = "/path with spaces/tool"
 args = ["--mcp", "literal $HOME"]
 default_for = ["read", "write", "edit"]`,
@@ -64,13 +64,13 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
     http.replace("default_for =", "override ="),
     http.replace("https://mcp.example.com/mcp", "file:///tmp/key"),
     http.replace("https://mcp.example.com/mcp", "https://user:password@example.com/mcp"),
-    '[tools.loom]\ncommand = "tool"',
-    '[tools.broken]\ncommand = "tool"\nargs = [1]',
-    '[tools.broken]\nruntime = "tilth"',
+    '[local-tools.loom]\ncommand = "tool"',
+    '[local-tools.broken]\ncommand = "tool"\nargs = [1]',
+    '[local-tools.broken]\nruntime = "tilth"',
     '[vm-tools.broken]\nruntime = "tilth"\ncommand = "host"',
     '[session]\nexecution = "vm"',
-    '[session]\ntools = ["missing"]',
-    "tools = []",
+    '[session]\nlocal-tools = ["missing"]',
+    "local-tools = []",
   ])
     assert.throws(() => config(text), text);
 });

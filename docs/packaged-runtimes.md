@@ -30,7 +30,7 @@ Configure Tilth with:
 
 ```toml
 [session]
-tools = []
+local-tools = []
 vm-tools = ["tilth"]
 
 [vm-tools.tilth]

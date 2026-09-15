@@ -8,6 +8,7 @@ base_branch = "main" # each session branches loom/<slug> off this
 # (falls back to HEAD if the branch is missing)
 worktree_dir = ".loom/trees"
 db = ".loom/loom.db"
+# default_provider = "claude" # provider used before a session preference is remembered
 
 [worktree]
 enabled = true # true: each session gets its own git worktree + branch.
@@ -42,19 +43,18 @@ idle_shutdown_minutes = 30 # exit after N min with no sessions and no clients; 0
 
 [providers.claude]
 model = "claude-sonnet-5"
+# title_model = "haiku" # optional model for automatic session titles
 # models           = ["opus", "sonnet", "haiku"]
 # the M / ⌥p picker list. Omit it and the daemon
 # asks the Claude CLI for its catalog at start-up.
-permission_default = "manual" # manual (aka default) | plan | acceptEdits | auto
+permission_default = "manual" # manual (aka default) | plan | acceptEdits
 setting_sources = ["project"] # loads CLAUDE.md / project settings
 disable_builtin = [] # keep native tools available as fallbacks
 cli_path = "" # "" = use `claude` on PATH, else the SDK's bundled
 # binary. Set this where the bundled ELF won't run
 # (NixOS, musl, minimal containers).
-prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
-# subscription, 5m on an API key). Pinning it makes
-# the TUI's cache-liveness countdown exact; 1h cache
-# writes cost more on metered billing.
+
+# prompt_cache_ttl = "1h" # optional: "5m" or "1h"; omit to let Claude decide
 
 # Claude profiles — each is a `~/.claude`-style config dir exposed as its own
 # provider (dir handed to the CLI as CLAUDE_CONFIG_DIR). Omit this and you get
@@ -72,11 +72,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # This file holds global defaults and optional path-scoped [[repo]] overrides.
 # Repository files are never loaded as configuration. See the example at the end.
 
-# default_provider = "claude"       # which provider new sessions use when the
-# client doesn't name one (must be configured)
-
-# Non-Claude providers (milestone 10) run on the Vercel AI SDK. The @ai-sdk/*
-# package for a backend is loaded only when a session actually uses it.
+# Additional providers
 #
 # [custom-provider.<id>] — an OpenAI-compatible endpoint (OpenAI itself,
 # GLM/Zhipu, DeepSeek, OpenRouter, a local vLLM / Ollama). One block per
@@ -88,10 +84,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 #                                   # but it's a plaintext secret; prefer the env var
 # tag         = "oai"              # short label (Detail pane, `loom providers`)
 # color       = "cyan"             # Fleet-row id colour; "" → auto from a palette
-# title_model = "gpt-5-mini"        # cheap model for auto-titling; "" → titles.model
-# max_steps   = 50                  # tool round-trips per turn segment (1–500). Not a
-#                                   # hard limit — a turn still working continues past
-#                                   # it; raise for a model that takes many small steps
+# title_model = "gpt-5-mini"        # optional model for automatic session titles
 #
 # The model list comes from {base_url}/models, and a new session defaults to the
 # last model this provider ran (remembered in the db). Pin one only if the
@@ -99,11 +92,7 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # model  = "gpt-5"                  # force this model
 # models = ["gpt-5", "gpt-5-mini"]  # or a fixed picker list
 #
-# Context windows: a `context_length`-style field on /models rows (OpenRouter,
-# sference, vLLM, LiteLLM, LM Studio) is picked up automatically. Pin sizes for
-# endpoints that report none — wins over the built-in per-model table:
-# model_context = { "zai-org/GLM-5.3-Flash" = 1048576 }
-#
+# Context windows are discovered from provider metadata.
 # Advertised /models pricing, display names, and reasoning-effort support
 # (`supported_reasoning_efforts` / `default_reasoning_effort`, or OpenRouter's
 # nested `reasoning` object) are picked up too — a model that advertises efforts
@@ -129,30 +118,29 @@ prompt_cache_ttl = "1h" # "5m" | "1h" | "" (let the CLI decide: 1h on a
 # [chatgpt]
 # model     = "gpt-5.6-terra"       # optional pin / default
 # models    = ["gpt-5.6-terra"]     # optional curated picker list
-# auth_path = "~/.codex/auth.json" # optional; this is already the default
-# config_dir = "~/.codex-work"     # optional explicit Codex home; overrides auth_path/CODEX_HOME
+# config_dir = "~/.codex-work"     # optional account directory; default is CODEX_HOME or ~/.codex
 # codex_cli_path = "/usr/local/bin/codex" # optional; empty uses `codex` on PATH
-# codex_builtin_web_search = false # optional; default keeps Codex web search alongside Kagi
+# codex_builtin_web_search = false # set true to also expose Codex native web search
 #
-# Low-level escape hatch, if you need several native profiles or an unusual
-# combination: [providers.<id>] with adapter = "aisdk" and sdk =
-# "openai" | "google" | "anthropic" | "chatgpt". Same fields as above plus `sdk`, and an
-# optional `connector = "@scope/pkg"` to route the profile at a connector
-# package other than the built-in generic / gemini ones (see docs/connectors.md).
-
+# Additional named accounts use [providers.<id>]. sdk selects the backend:
+# "openai" (default), "google", "anthropic", or "chatgpt".
+# [providers.work]
+# sdk = "chatgpt"
+# config_dir = "~/.codex-work"
+#
 # Definitions do not enable tools. Each session list selects from its group.
 # Lists are inherited independently; a repo list replaces its global list.
 [session]
-tools = [] # host commands, e.g. ["tilth", "fff"]
+local-tools = [] # host commands, e.g. ["tilth", "fff"]
 vm-tools = [] # separate offline tool VMs, e.g. ["tilth"]
 remote-tools = [] # remote services, e.g. ["kagi"]
 
-[tools.tilth]
+[local-tools.tilth]
 command = "tilth" # must be installed on the host
 args = ["--mcp", "--edit"]
 default_for = ["read", "write", "edit"]
 
-[tools.fff]
+[local-tools.fff]
 command = "fff-mcp"
 default_for = ["find", "grep"]
 
@@ -171,10 +159,8 @@ default_for = ["read", "write", "edit", "find", "grep"]
 
 [titles]
 enabled = true # summarise the first message into a title after turn 1
-model = "" # "" = a per-provider cheap default (Haiku for claude)
 
-# Costs prefer provider reports, then fresh endpoint-advertised pricing.
-# Legacy [pricing].table is accepted for compatibility but no longer used.
+# Costs use provider reports and endpoint-advertised pricing.
 
 # Hooks: see README for events, environment variables, and cancellation semantics.
 # "notify" is the default and never messages the agent, including on turn_end.
@@ -227,7 +213,7 @@ max_results = 5
 # [repo.worktree]
 # enabled = true
 # [repo.session]
-# tools = []
+# local-tools = []
 # vm-tools = ["tilth"]
 # remote-tools = []
 # Agent VMs reject selected host tools. vm-tools work with host or VM agents.

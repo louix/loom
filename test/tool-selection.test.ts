@@ -7,7 +7,7 @@ import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import { makeLogger } from "@loom/core/logger";
 
 const definitions = `
-[tools.tilth]
+[local-tools.tilth]
 command = "missing-host-tool"
 default_for = ["read"]
 [vm-tools.tilth]
@@ -44,12 +44,12 @@ test("repo lists replace independently while definitions and other selections in
       definitions +
         `
 [session]
-tools = ["tilth"]
+local-tools = ["tilth"]
 remote-tools = ["docs"]
 [[repo]]
 path = ${JSON.stringify(dir)}
 [repo.session]
-tools = []
+local-tools = []
 vm-tools = ["tilth"]
 `,
     );
@@ -78,8 +78,8 @@ vm-tools = ["tilth"]
 
 test("selections reject duplicates, ambiguous preferences and unknown names", () => {
   for (const selection of [
-    'tools = ["tilth", "tilth"]',
-    'tools = ["tilth"]\nvm-tools = ["tilth"]',
+    'local-tools = ["tilth", "tilth"]',
+    'local-tools = ["tilth"]\nvm-tools = ["tilth"]',
     'vm-tools = ["absent"]',
     'remote-tools = "docs"',
   ])
@@ -88,14 +88,14 @@ test("selections reject duplicates, ambiguous preferences and unknown names", ()
     () =>
       normalizeConfig(
         parse(`
-[tools.a]
+[local-tools.a]
 command = "a"
 default_for = ["read"]
-[tools.b]
+[local-tools.b]
 command = "b"
 default_for = ["read"]
 [session]
-tools = ["a", "b"]
+local-tools = ["a", "b"]
 `),
       ),
     /Multiple tool defaults/,
@@ -108,7 +108,7 @@ test("host selection fails before runtime lookup for every VM engine, but works 
       definitions +
         `
 [session]
-tools = ["tilth"]
+local-tools = ["tilth"]
 [isolation.claude]
 artifact = "/claude"
 [isolation.codex]
