@@ -41,5 +41,7 @@ export const helpLines = (width: number): string[] =>
     "in the prompt",
     ...EDIT_ROWS.map(([key, text]) => key + "  " + text),
     "",
+    "◇  VM session · unmarked sessions run locally",
+    "",
     "loom drives worktrees only — it never pushes or touches your remotes.",
   ].flatMap((line) => wrapText(line || " ", Math.max(1, width)));

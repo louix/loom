@@ -436,8 +436,9 @@ In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
 a configured or package-bundled runtime. A disabled default still permits an
 explicit VM choice when that runtime is available.
 
-The fleet and Detail pane show `[VM]` or `[Local]`. Each session keeps its choice
-through restart, resume, and archive/reopen, even when the default changes.
+The fleet marks VM sessions with a muted `◇`; local sessions have no marker.
+The Detail pane names the environment. Each session keeps its choice through
+restart, resume, and archive/reopen, even when the default changes.
 Local execution can still use a Git worktree; VM execution requires one.
 To change an existing session's environment, press `F` to fork, then `i` to change
 the inherited isolation before confirming. Cross-environment and native-provider

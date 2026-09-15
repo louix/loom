@@ -368,8 +368,8 @@ const FleetRow = ({
   const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
   const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
-  const idText = `${forked ? `⑂${id}` : id} [${s.isolation === "vm" ? "VM" : "Local"}]`;
-  const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + 2 + cost.length + 1));
+  const idText = forked ? `⑂${id}` : id;
+  const room = Math.max(6, iw - (2 + 2 + idText.length + 3 + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
   return (
@@ -378,7 +378,8 @@ const FleetRow = ({
       <Text tone={s.status.kind === "running" ? "accent" : statusTone(s.status.kind)}>
         {glyph + " "}
       </Text>
-      <Text color={idColor}>{`${idText}  `}</Text>
+      <Text color={idColor}>{idText}</Text>
+      <Text tone="faint">{s.isolation === "vm" ? " ◇ " : "   "}</Text>
       {compacting ? (
         <Text tone="accent">{"⇊ "}</Text>
       ) : (
@@ -486,7 +487,10 @@ export const detailLayout = (
   } else {
     add(
       <Box>
-        <Line tone="dim">{`DETAIL  ${shortId(s.id)}  [${s.isolation === "vm" ? "VM" : "Local"}] `}</Line>
+        <Line tone="dim">
+          {`DETAIL  ${shortId(s.id)}`}
+          <Text tone="faint">{s.isolation === "vm" ? " · ◇ VM " : " · local "}</Text>
+        </Line>
         <Box flexGrow={1} justifyContent="flex-end">
           <Line>
             <Text tone="faint">engine </Text>
