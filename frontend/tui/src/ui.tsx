@@ -23,6 +23,7 @@ export const StyledText = ({ spans }: { spans: readonly TextSpan[] }): ReactNode
     code: palette.warn,
     link: palette.accent,
     muted: palette.dim,
+    faint: palette.faint,
     keyword: palette.accent,
     string: palette.good,
     number: palette.await_,

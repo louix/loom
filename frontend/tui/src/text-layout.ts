@@ -5,7 +5,7 @@ export interface TextStyle {
   readonly italic?: boolean;
   readonly underline?: boolean;
   readonly strikethrough?: boolean;
-  readonly role?: "heading" | "code" | "link" | "muted" | "keyword" | "string" | "number";
+  readonly role?: "heading" | "code" | "link" | "muted" | "faint" | "keyword" | "string" | "number";
 }
 export interface TextSpan extends TextStyle {
   readonly text: string;

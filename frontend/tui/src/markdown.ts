@@ -8,7 +8,7 @@ import { decodeHTML } from "npm:entities@6.0.1";
 import stringWidth from "npm:string-width@8.2.2";
 import { common, createLowlight } from "npm:lowlight@3.3.0";
 
-import type { TextStyle, TextSpan, TextRow, TextDocument, TextFormatter } from "./text-layout.ts";
+import type { TextDocument, TextFormatter, TextRow, TextSpan, TextStyle } from "./text-layout.ts";
 
 const parser = new Marked({ gfm: true });
 const highlighter = createLowlight(common);
@@ -132,7 +132,11 @@ const inline = (tokens: readonly Token[], style: TextStyle = {}, depth = 0): Tex
       case "em":
       case "del": {
         const nested = t as Tokens.Strong | Tokens.Em | Tokens.Del;
-        const property = { strong: "bold", em: "italic", del: "strikethrough" } as const;
+        const property = {
+          strong: "bold",
+          em: "italic",
+          del: "strikethrough",
+        } as const;
         out.push(...inline(nested.tokens, { ...style, [property[t.type]]: true }, depth + 1));
         break;
       }
@@ -191,7 +195,10 @@ const shadeCode = (rows: readonly TextRow[], width: number): TextRow[] =>
   rows.map((r) =>
     row([
       ...r.spans.map((s) => ({ ...s, background: "code" as const })),
-      { text: " ".repeat(Math.max(0, width - stringWidth(r.text))), background: "code" },
+      {
+        text: " ".repeat(Math.max(0, width - stringWidth(r.text))),
+        background: "code",
+      },
     ]),
   );
 
@@ -249,15 +256,16 @@ const tableRows = (table: Tokens.Table, width: number): TextRow[] => {
       });
       out.push(row(spans));
     }
-    if (index === 0) {
-      out.push(
-        row([
-          {
-            text: widths.map((n) => "─".repeat(n)).join("─┼─"),
-            role: "muted",
-          },
-        ]),
-      );
+    if (index === 0 || index < all.length - 1) {
+      const spans: TextSpan[] = [];
+      widths.forEach((n, i) => {
+        if (i) spans.push({ text: "┼", role: "muted" });
+        spans.push({
+          text: "─".repeat(n + (i > 0 ? 1 : 0) + (i < count - 1 ? 1 : 0)),
+          role: index === 0 ? "muted" : "faint",
+        });
+      });
+      out.push(row(spans));
     }
   });
   return out;
