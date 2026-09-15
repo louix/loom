@@ -255,6 +255,8 @@ export const sessionSnapshotSchema = z.object({
    *  isolation, and hard-fork is unavailable. Distinguishes an in-place session
    *  from a gc'd one (both have `worktree: null`). */
   inPlace: z.boolean(),
+  /** Immutable execution mode; absent only for legacy rows. */
+  isolation: z.enum(["vm", "local"]).optional(),
   usage: tokenUsageSchema,
   contextUsed: z.number(),
   contextLimit: z.number(),
@@ -472,6 +474,8 @@ export const providerInfoSchema = z.object({
    * (manual). Same value on every entry — it isn't per-provider.
    */
   defaultMode: sessionModeSchema,
+  defaultIsolation: z.enum(["vm", "local"]).optional(),
+  vmUnavailableReason: z.string().optional(),
   /** Short label (Detail pane, `loom ls`). */
   tag: z.string(),
   /** Fleet-row id colour — an Ink colour name, or "" for the plain default. */

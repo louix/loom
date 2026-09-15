@@ -89,10 +89,13 @@ export const environmentProviders = (config: LoomConfig): string[] => {
   });
 };
 
-const environmentPolicy = (config: LoomConfig, id: string) => {
-  if (isClaudeId(id)) return config.isolation.claude;
-  if (config.providers.aisdk[id]?.sdk === "chatgpt") return config.isolation.codex;
-  return config.isolation.aisdk;
+const environmentPolicy = (config: LoomConfig, id: string, includeAvailable = false) => {
+  let kind: "claude" | "codex" | "aisdk" = "aisdk";
+  if (isClaudeId(id)) kind = "claude";
+  else if (config.providers.aisdk[id]?.sdk === "chatgpt") kind = "codex";
+  return (
+    config.isolation[kind] ?? (includeAvailable ? config.isolation.runtimes?.[kind] : undefined)
+  );
 };
 
 export const prepareRepoEnvironment = async (repo: string, provider?: string) => {
@@ -113,7 +116,7 @@ const prepareProviderEnvironment = async (repo: string, id: string) => {
   if (!environmentEnabled(config.isolation.environment))
     throw new Error("Configure isolation.environment before preparing this repo");
   if (!isClaudeId(id) && !config.providers.aisdk[id]) throw new Error(`Unknown provider: ${id}`);
-  const policy = environmentPolicy(config, id);
+  const policy = environmentPolicy(config, id, true);
   if (!policy) throw new Error(`Provider ${id} has no configured session VM runtime`);
   const smolvm = await resolveEnvironmentBackend(policy.smolvm);
   const home = repoBaseDirectory(repo);
@@ -289,7 +292,12 @@ export const pruneRepoEnvironment = async (repo: string) => {
   repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
   const bindings = [];
-  for (const policy of [config.isolation.claude, config.isolation.codex, config.isolation.aisdk]) {
+  for (const policy of [
+    config.isolation.claude,
+    config.isolation.codex,
+    config.isolation.aisdk,
+    ...Object.values(config.isolation.runtimes ?? {}),
+  ]) {
     if (!policy) continue;
     bindings.push({
       artifact: await Deno.realPath(policy.artifact),

@@ -328,11 +328,11 @@ models   = ["m1", "m2"]
       stdin.feed(`\x1b[<0;${p.col};${p.row}M`);
 
     try {
-      await waitFor(stdout, (t) => /the other task/.test(t) && /click target task/.test(t));
+      await waitFor(stdout, (t) => /the other task/.test(t) && /click target/.test(t));
       assert.match(cursorRow(), /the other task/, "the running session is selected first");
 
-      click(at("click target task"));
-      await waitFor(stdout, () => /click target task/.test(cursorRow()));
+      click(at("click target"));
+      await waitFor(stdout, () => /click target/.test(cursorRow()));
 
       await waitFor(stdout, /\[manual\]/);
       click(at("[manual]"));
@@ -1556,15 +1556,15 @@ models   = ["gpt-5", "gpt-5-mini"]
     });
     const { stdout, stdin, app } = mount(client);
     try {
-      await waitFor(stdout, /refactor the parser/);
+      await waitFor(stdout, /refactor the p/);
       stdin.feed("/");
       await waitFor(stdout, /type to filter/); // the inline filter line on FLEET
-      assert.match(stdout.last, /refactor the parser/);
+      assert.match(stdout.last, /refactor the p/);
       assert.match(stdout.last, /update the docs/);
 
       stdin.feed("parser");
       await waitFor(stdout, (s) => !/update the docs/.test(s)); // narrowed to the match
-      assert.match(stdout.last, /refactor the parser/);
+      assert.match(stdout.last, /refactor the p/);
 
       stdin.feed("\x15"); // ⌃u — readline kill-to-start clears the filter
       await waitFor(stdout, /update the docs/); // list un-narrows with it
@@ -1820,7 +1820,9 @@ model    = "gpt-5"
     const { stdout, stdin, app } = mount(client);
     try {
       await delay(200);
-      stdin.feed("F"); // hard fork
+      stdin.feed("F"); // choose isolation before forking
+      await waitFor(stdout, /fork with Local isolation/);
+      stdin.feed("\r");
       await waitFor(stdout, /forked from .* @ turn 0/); // Detail lineage line
       assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
     } finally {
@@ -3045,6 +3047,7 @@ test("isolation-incompatible Claude session is read-only with a visible reason a
     );
     assert.match(frame, /Read-only: No VM history/);
     handle.handleKey("F", {} as Key);
+    handle.handleKey("", { return: true } as Key);
     assert.equal(fake.of("session.fork").length, 1);
   } finally {
     teardown();
@@ -3222,5 +3225,99 @@ test("environment warning stays in the frame and clears only after a compatible 
     } finally {
       stop();
     }
+  }
+});
+
+test("new-session isolation follows the provider default and can be overridden without losing the draft", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      loadableLoaded({
+        daemon: testDaemon,
+        sessions: [],
+        providers: [
+          {
+            id: "claude",
+            models: ["fixture"],
+            defaultModel: "fixture",
+            defaultEffort: "",
+            defaultMode: "default",
+            defaultIsolation: "vm",
+            tag: "Claude",
+            color: "",
+            isDefault: true,
+          },
+        ],
+      }),
+    );
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("keep this draft", {} as Key);
+    handle.handleKey("i", { meta: true } as Key);
+    const p = openPrompt(handle.getView().ui.overlay);
+    assert.equal(p?.buffer.text, "keep this draft");
+    assert(p?.t === "new");
+    assert.equal(p.settings.isolation, "local");
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.create")[0]?.params["isolation"], "local");
+  } finally {
+    teardown();
+  }
+});
+
+test("unavailable VM choice explains why and leaves the local session draft intact", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      loadableLoaded({
+        daemon: testDaemon,
+        sessions: [],
+        providers: [
+          {
+            id: "claude",
+            models: ["fixture"],
+            defaultModel: "fixture",
+            defaultEffort: "",
+            defaultMode: "default",
+            defaultIsolation: "local",
+            vmUnavailableReason: "No VM runtime is configured",
+            tag: "Claude",
+            color: "",
+            isDefault: true,
+          },
+        ],
+      }),
+    );
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("draft", {} as Key);
+    handle.handleKey("i", { meta: true } as Key);
+    const p = openPrompt(handle.getView().ui.overlay);
+    assert(p?.t === "new");
+    assert.equal(p.settings.isolation, undefined);
+    assert.equal(p.buffer.text, "draft");
+    assert.match(JSON.stringify(handle.getView().ui), /No VM runtime is configured/);
+  } finally {
+    teardown();
+  }
+});
+
+test("fork selector inherits isolation and sends an explicit override", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(fleetOf(testSession({ status: stateIdle, isolation: "vm" })));
+    handle.handleKey("F", {} as Key);
+    const overlay = handle.getView().ui.overlay;
+    assert(overlay.t === "confirm" && overlay.confirm.action === "forkSession");
+    assert.equal(overlay.confirm.isolation, "vm");
+    handle.handleKey("i", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.fork")[0]?.params["isolation"], "local");
+  } finally {
+    teardown();
   }
 });

@@ -50,7 +50,7 @@ export class ProviderRegistry {
   readonly #cache = new Map<string, Promise<AgentProvider>>();
   /** Resolved providers, in construction order — for `live()` / shutdown. */
   readonly #live: AgentProvider[] = [];
-  /** id → resolved provider, for sync capability reads once it's been built. */
+  /** Provider id + mode → resolved provider, for sync capability reads. */
   readonly #resolved = new Map<string, AgentProvider>();
   /** Connector packages whose `createProvider` has run at least once (for `daemon.doctor`). */
   readonly #loaded = new Set<string>();
@@ -108,28 +108,69 @@ export class ProviderRegistry {
 
   /** Capabilities of `id` if its provider has already been constructed this
    *  process — sync, for hot paths that can't await a lazy build. */
-  capsOf(id: string): AgentProvider["capabilities"] | undefined {
-    return this.#resolved.get(id)?.capabilities;
+  capsOf(
+    id: string,
+    isolation = this.defaultIsolation(id),
+  ): AgentProvider["capabilities"] | undefined {
+    return this.#resolved.get(`${id}:${isolation}`)?.capabilities;
   }
 
-  /** Construct (or return the cached) provider for `id`, loading its connector lazily. */
-  get(id: string): Promise<AgentProvider> {
+  /** Configured default for new sessions; existing sessions keep their recorded mode. */
+  defaultIsolation(id: string): "vm" | "local" {
+    return this.#config.isolation[this.#vmKind(id)] && id !== "fake" && id !== "mock"
+      ? "vm"
+      : "local";
+  }
+
+  #vmKind(id: string): "claude" | "aisdk" | "codex" {
+    if (isClaudeId(id)) return "claude";
+    return this.#config.providers.aisdk[id]?.sdk === "chatgpt" ? "codex" : "aisdk";
+  }
+
+  vmPolicy(id: string) {
+    const kind = this.#vmKind(id);
+    return this.#config.isolation.runtimes?.[kind] ?? this.#config.isolation[kind];
+  }
+
+  vmUnavailableReason(id: string): string | undefined {
+    if (![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(this.#packageFor(id)))
+      return "This provider has no VM backend";
+    if (!this.vmPolicy(id)) return "No VM runtime is configured for this provider";
+  }
+
+  configFor(id: string, isolation: "vm" | "local"): LoomConfig {
+    if (isolation === "vm") {
+      const reason = this.vmUnavailableReason(id);
+      if (reason) throw new Error(reason);
+    }
+    const { claude: _c, aisdk: _a, codex: _x, ...shared } = this.#config.isolation;
+    return {
+      ...this.#config,
+      isolation: {
+        ...shared,
+        ...(isolation === "vm" ? { [this.#vmKind(id)]: this.vmPolicy(id) } : {}),
+      },
+    };
+  }
+
+  get(id: string, isolation = this.defaultIsolation(id)): Promise<AgentProvider> {
     const reason = this.unavailableReason(id);
     if (reason) return Promise.reject(new Error(reason));
-    const cached = this.#cache.get(id);
+    const key = `${id}:${isolation}`;
+    const cached = this.#cache.get(key);
     if (cached) return cached;
     if (!this.#ids.has(id)) return Promise.reject(new Error(`unknown provider: ${id}`));
-    const built = this.#build(id).then((p) => {
+    const built = this.#build(id, isolation).then((p) => {
       this.#live.push(p);
-      this.#resolved.set(id, p);
+      this.#resolved.set(key, p);
       return p;
     });
     // Don't cache a rejected build forever — a later `get()` (after the env var
     // is set, the connector is installed, …) should be able to retry.
     built.catch(() => {
-      if (this.#cache.get(id) === built) this.#cache.delete(id);
+      if (this.#cache.get(key) === built) this.#cache.delete(key);
     });
-    this.#cache.set(id, built);
+    this.#cache.set(key, built);
     return built;
   }
 
@@ -145,7 +186,8 @@ export class ProviderRegistry {
     return GENERIC;
   }
 
-  async #build(id: string): Promise<AgentProvider> {
+  async #build(id: string, isolation: "vm" | "local"): Promise<AgentProvider> {
+    const effectiveConfig = this.configFor(id, isolation);
     const pkg = this.#packageFor(id);
     const load = this.#manifest[pkg];
     if (!load) {
@@ -161,6 +203,15 @@ export class ProviderRegistry {
       );
     }
     const context = this.#contextFor(id);
+    if (isolation === "vm")
+      context.config.sessionVm = {
+        ...this.vmPolicy(id)!,
+        repoRoot: this.#repoRoot,
+        extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
+        ...(this.#config.isolation.environment
+          ? { environment: this.#config.isolation.environment }
+          : {}),
+      };
     if (this.#onStartupProgress) context.onStartupProgress = this.#onStartupProgress;
     if (this.#onVmStarted) context.onVmStarted = this.#onVmStarted;
     if (context.config.sessionVm && ![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(pkg))
@@ -190,7 +241,8 @@ export class ProviderRegistry {
           };
         if (prop === "createSession" || prop === "resumeSession")
           return async (options: CreateSessionOptions | SessionRef) => {
-            if (!("oneShot" in options && options.oneShot)) await preflightTools(this.#config, id);
+            if (!("oneShot" in options && options.oneShot))
+              await preflightTools(effectiveConfig, id);
             if (prop === "resumeSession" && !options.initHooks)
               return target.resumeSession(options as SessionRef);
             const hooks =
@@ -273,18 +325,6 @@ export class ProviderRegistry {
         id,
         config: {
           cliPath: c.cliPath,
-          ...(this.#config.isolation.claude
-            ? {
-                sessionVm: {
-                  ...this.#config.isolation.claude,
-                  repoRoot: this.#repoRoot,
-                  extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
-                  ...(this.#config.isolation.environment
-                    ? { environment: this.#config.isolation.environment }
-                    : {}),
-                },
-              }
-            : {}),
           promptCacheTtl: c.promptCacheTtl,
           configDir,
           ...(c.workerAllowedHosts ? { workerAllowedHosts: c.workerAllowedHosts } : {}),
@@ -296,21 +336,7 @@ export class ProviderRegistry {
     }
     const p = this.#config.providers.aisdk[id];
     if (!p) throw new Error(`unknown provider: ${id}`);
-    const vmPolicy =
-      p.sdk === "chatgpt" ? this.#config.isolation.codex : this.#config.isolation.aisdk;
     const config: ConnectorConfig = {
-      ...(vmPolicy
-        ? {
-            sessionVm: {
-              ...vmPolicy,
-              repoRoot: this.#repoRoot,
-              extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
-              ...(this.#config.isolation.environment
-                ? { environment: this.#config.isolation.environment }
-                : {}),
-            },
-          }
-        : {}),
       model: p.model,
       models: p.models,
       baseUrl: p.baseUrl,

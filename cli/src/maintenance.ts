@@ -11,6 +11,7 @@ export const pruneRuntimeCaches = async (repo: string) => {
       config.isolation.claude,
       config.isolation.codex,
       config.isolation.aisdk,
+      ...Object.values(config.isolation.runtimes ?? {}),
     ]) {
       if (!policy) continue;
       for (const path of [policy.artifact, policy.smolvm]) {

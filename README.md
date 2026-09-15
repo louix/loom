@@ -396,6 +396,22 @@ watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
 available for project instructions.
 
+**Session isolation.** `[isolation.claude]`, `[isolation.codex]`, and
+`[isolation.aisdk]` set the default for new sessions with `enabled = true` (VM)
+or `enabled = false` (Local). Unlisted repositories inherit the global default.
+In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
+`loom run --isolation local <prompt>` (or `--isolation vm`). VM selection requires
+a configured or package-bundled runtime. A disabled default still permits an
+explicit VM choice when that runtime is available.
+
+The fleet and Detail pane show `[VM]` or `[Local]`. Each session keeps its choice
+through restart, resume, and archive/reopen, even when the default changes.
+Local execution can still use a Git worktree; VM execution requires one.
+To change an existing session's environment, press `F` to fork, then `i` to change
+the inherited isolation before confirming. Cross-environment and native-provider
+forks start a fresh session with saved conversation context, rather than importing
+native history. Existing sessions are classified from saved VM state when upgrading.
+
 **Hooks (`[[hooks]]`).** Commands run asynchronously in the session's worktree.
 Declare them in `~/.config/loom/config.toml`. Use `[[repo]]` overrides or the
 hook’s `project` field to scope them; override arrays replace global arrays.

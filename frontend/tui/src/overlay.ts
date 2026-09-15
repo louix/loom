@@ -35,6 +35,8 @@ export interface NewSessionSettings {
   provider: string | null;
   model: string | null;
   effort: string | null;
+  /** Omitted uses the selected provider default. */
+  isolation?: "vm" | "local";
 }
 
 /** Prompts that act on a session as a whole. */
@@ -160,6 +162,7 @@ export type Confirm = {
 } & (
   | { action: "restart" | "quitAll" | "gc" }
   | { action: "archiveSession"; sessionId: string }
+  | { action: "forkSession"; sessionId: string; isolation: "vm" | "local" }
   | {
       action: "deleteSession";
       sessionId: string;

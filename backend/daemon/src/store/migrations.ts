@@ -362,4 +362,6 @@ export const MIGRATIONS: string[] = [
       AND branch != 'loom/' || substr(id, 1, 8)
       AND branch != 'loom/' || id;
   `,
+  // 26 — pin execution mode per session; legacy rows are inferred by the daemon.
+  `ALTER TABLE sessions ADD COLUMN isolation TEXT CHECK (isolation IN ('vm', 'local'));`,
 ];

@@ -283,6 +283,14 @@ export class Daemon {
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
     this.#registry = new Registry(this.#db);
+    // Legacy sessions predate the mode column. Saved VM state is evidence of
+    // their actual environment; current defaults must not reclassify them.
+    for (const row of this.#registry.store.list()) {
+      if (row.isolation) continue;
+      const dir = sessionVmDirectory(this.repoRoot, row.id);
+      const vm = ["profile", "aisdk", "codex-ref"].some((name) => existsSync(join(dir, name)));
+      this.#registry.store.pinIsolation(row.id, vm ? "vm" : "local");
+    }
     this.#children = new ChildStore(this.#db);
     this.#checkpoints = new CheckpointStore(this.#db);
     this.#pmsgs = new ProviderMessageStore(this.#db);
@@ -757,7 +765,7 @@ export class Daemon {
     // snapshot so the TUI never shows it "on" where it can't act.
     const keepWarm = ttlMinutes > 0 && this.#sessions.keepWarm(s.id);
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
-    const canRewind = this.#canRewind(s.provider);
+    const canRewind = this.#canRewind(s.provider, s.isolation);
     if (canRewind !== out.canRewind) out = { ...out, canRewind };
     const reason = this.#resumeBlockedReason(s);
     out = { ...out, resumable: !reason, ...(reason ? { resumeBlockedReason: reason } : {}) };
@@ -978,6 +986,10 @@ export class Daemon {
           defaultModel: this.#defaultModelFor(id),
           defaultEffort: this.#defaultEffortFor(id),
           defaultMode: mode,
+          defaultIsolation: this.#providers.defaultIsolation(id),
+          ...(this.#providers.vmUnavailableReason(id)
+            ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
+            : {}),
           tag: profile.name || "Claude",
           color: id === "claude" ? profile.color : autoColor(profile.color),
           isDefault: def === id,
@@ -1021,6 +1033,10 @@ export class Daemon {
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
+        defaultIsolation: this.#providers.defaultIsolation(id),
+        ...(this.#providers.vmUnavailableReason(id)
+          ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
+          : {}),
         tag: p.tag || id,
         color: autoColor(p.color),
         isDefault: def === id,
@@ -1099,6 +1115,7 @@ export class Daemon {
     mode: SessionMode;
     parentId: string | null;
     wantWorktree: boolean;
+    isolation?: "vm" | "local";
     by: string | undefined;
   }): Promise<SessionSnapshot> {
     if (!o.wantWorktree && this.#worktrees.isBareRepository()) {
@@ -1107,7 +1124,13 @@ export class Daemon {
         "Bare repositories require worktrees; in-place sessions are unavailable. Enable worktrees to start a session.",
       );
     }
-    await this.#preflightTools(o.providerId);
+    const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
+    if (isolation === "vm" && !o.wantWorktree)
+      throw new RpcError(
+        "bad_request",
+        "VM isolation requires a worktree. Enable worktrees or choose Local.",
+      );
+    await this.#preflightTools(o.providerId, isolation);
     const id = randomUUID();
     this.#log.info("session_start", { sessionId: id, providerId: o.providerId });
     const aisdkProfile = this.config.providers.aisdk[o.providerId];
@@ -1132,6 +1155,7 @@ export class Daemon {
         branch: null,
         baseBranch: this.config.baseBranch,
         inPlace: !o.wantWorktree,
+        isolation,
         // Every ChatGPT session created from here on runs on Codex's app-server
         // (a provider-owned thread) — explicit so a future `grep` for
         // `history_backend = 'codex'` finds real rows, not just the absence of
@@ -1217,7 +1241,7 @@ export class Daemon {
         };
 
         this.#lastSend.set(id, o.prompt);
-        await this.#sessions.create(await this.#providers.get(o.providerId), opts);
+        await this.#sessions.create(await this.#providers.get(o.providerId, isolation), opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Init may have changed files before the provider failed. Preserve those
@@ -1271,7 +1295,7 @@ export class Daemon {
     if (reason) return Promise.reject(new RpcError("resume_blocked", reason));
     const operation = Promise.resolve()
       .then(async () => {
-        await this.#preflightTools(row.provider);
+        await this.#preflightTools(row.provider, row.isolation);
         return this.#doReviveSession(id);
       })
       .catch((error: unknown) => {
@@ -1347,7 +1371,7 @@ export class Daemon {
     const isAisdk = prof !== undefined;
     const promptAppend = systemPromptAppendFor(isAisdk, mcpHandles.length > 0, cwd, this.repoRoot);
     try {
-      await this.#sessions.resume(await this.#providers.get(row.provider), {
+      await this.#sessions.resume(await this.#providers.get(row.provider, row.isolation), {
         sessionId: id,
         providerRef,
         cwd,
@@ -1607,7 +1631,7 @@ export class Daemon {
     this.#titling.add(id);
     try {
       if (needsTitle && this.#providers.has(snap.provider)) {
-        const provider = await this.#providers.get(snap.provider);
+        const provider = await this.#providers.get(snap.provider, snap.isolation);
         const model =
           this.config.titles.model ||
           this.config.providers.aisdk[snap.provider]?.titleModel ||
@@ -1734,8 +1758,8 @@ export class Daemon {
    *  once the provider's been built, else a guess from the provider type. Every
    *  adapter Loom ships rewinds; the guess only bridges the gap before a
    *  provider's first construction. */
-  #canRewind(providerId: string): boolean {
-    const caps = this.#providers.capsOf(providerId);
+  #canRewind(providerId: string, isolation?: "vm" | "local"): boolean {
+    const caps = this.#providers.capsOf(providerId, isolation);
     if (caps) return caps.rewind;
     return this.#isAisdk(providerId) || providerId === "fake" || isClaudeId(providerId);
   }
@@ -1745,8 +1769,8 @@ export class Daemon {
    *  `capabilities.ownsTranscript` once built, else a guess from the provider
    *  type (matches every aisdk profile Loom ships) before its first
    *  construction. */
-  #ownsTranscript(providerId: string): boolean {
-    const caps = this.#providers.capsOf(providerId);
+  #ownsTranscript(providerId: string, isolation?: "vm" | "local"): boolean {
+    const caps = this.#providers.capsOf(providerId, isolation);
     if (caps) return caps.ownsTranscript;
     return this.#isAisdk(providerId);
   }
@@ -1767,6 +1791,10 @@ export class Daemon {
       return;
     const unavailable = this.#providers.unavailableReason(row.provider);
     if (unavailable) return unavailable;
+    if (row.isolation === "vm") {
+      const reason = this.#providers.vmUnavailableReason(row.provider);
+      if (reason) return `${reason}. Fork with Local isolation to continue.`;
+    }
     if (
       this.config.providers.aisdk[row.provider]?.sdk === "chatgpt" &&
       this.#registry.store.historyBackend(row.id) === "aisdk"
@@ -1778,7 +1806,7 @@ export class Daemon {
       this.#registry.store.providerRef(row.id)
     ) {
       const savedVm = existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "aisdk"));
-      const vm = !!this.config.isolation.aisdk;
+      const vm = row.isolation === "vm";
       if (vm && row.inPlace) return "VM isolation requires a worktree. Fork to continue.";
       if (savedVm !== vm)
         return "This session used a different isolation mode. Fork to continue with the current policy.";
@@ -1788,7 +1816,7 @@ export class Daemon {
       this.#registry.store.providerRef(row.id)
     ) {
       const savedVm = existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "codex-ref"));
-      const vm = !!this.config.isolation.codex;
+      const vm = row.isolation === "vm";
       if (
         vm &&
         savedVm &&
@@ -1807,7 +1835,7 @@ export class Daemon {
           row.id,
           ref,
           row.inPlace,
-          !!this.config.isolation.claude,
+          row.isolation === "vm",
         );
     }
     return undefined;
@@ -1833,7 +1861,7 @@ export class Daemon {
     // message count; one that rewinds through its own harness (Claude) → it's
     // the turn's last chain-entry UUID (from the adapter's mapper). Both live
     // in `fork_point`.
-    const forkPoint = this.#ownsTranscript(snap.provider)
+    const forkPoint = this.#ownsTranscript(snap.provider, snap.isolation)
       ? String(this.#pmsgs.count(id))
       : (this.#sessions.snapshot(id)?.rewindRef ?? "");
     // The full text that started this turn — the undo picker prefills a fresh
@@ -1968,10 +1996,7 @@ export class Daemon {
     try {
       for (const [id, previous] of this.#vmGenerations) {
         const provider = this.#registry.get(id)?.provider;
-        let policy = provider ? this.config.isolation.aisdk : undefined;
-        if (provider && isClaudeId(provider)) policy = this.config.isolation.claude;
-        else if (provider && this.config.providers.aisdk[provider]?.sdk === "chatgpt")
-          policy = this.config.isolation.codex;
+        const policy = provider ? this.#providers.vmPolicy(provider) : undefined;
         const base = await currentRepoBase(
           repoBaseDirectory(this.repoRoot),
           policy ? await Deno.realPath(policy.artifact) : undefined,
@@ -2340,6 +2365,7 @@ export class Daemon {
         mode,
         parentId,
         wantWorktree,
+        ...(p.isolation ? { isolation: p.isolation } : {}),
         by: params.by,
       });
     });
@@ -2422,7 +2448,7 @@ export class Daemon {
         turn: cp.turn,
         userText: cp.userText,
         createdAt: cp.createdAt,
-        rewindCostUsd: this.#ownsTranscript(snap.provider)
+        rewindCostUsd: this.#ownsTranscript(snap.provider, snap.isolation)
           ? this.#rewindCostUsd(model, Number(cp.forkPoint) || 0, id)
           : 0,
       }));
@@ -2433,7 +2459,7 @@ export class Daemon {
       const toTurn = params.toTurn;
       const snap = this.#registry.get(id);
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
-      const provider = await this.#providers.get(snap.provider).catch(() => null);
+      const provider = await this.#providers.get(snap.provider, snap.isolation).catch(() => null);
       if (!provider?.capabilities.rewind) {
         throw new RpcError("bad_request", "this session's provider can't undo a turn");
       }
@@ -2596,19 +2622,22 @@ export class Daemon {
         ? parent.provider
         : this.#defaultProviderId();
       const providerId = p.provider ?? fallback;
-      await this.#preflightTools(providerId);
-      const parentProvider = await this.#providers.get(providerId);
-      const continuation = providerId !== parent.provider || !!this.#resumeBlockedReason(parent);
+      const isolation =
+        p.isolation ?? parent.isolation ?? this.#providers.defaultIsolation(providerId);
+      await this.#preflightTools(providerId, isolation);
+      const parentProvider = await this.#providers.get(providerId, isolation);
+      // Changing environment carries portable context, never native history.
+      // VM transcript stores are not the host transcript store either.
+      const continuation =
+        isolation !== (parent.isolation ?? "local") ||
+        isolation === "vm" ||
+        !parentProvider.capabilities.ownsTranscript ||
+        providerId !== parent.provider ||
+        !!this.#resumeBlockedReason(parent);
       const model =
         providerId === parent.provider ? parent.model : this.#defaultModelFor(providerId);
       const effort =
         providerId === parent.provider ? parent.effort : this.#defaultEffortFor(providerId);
-      if (!parentProvider.capabilities.ownsTranscript && !continuation) {
-        throw new RpcError(
-          "bad_request",
-          "hard fork needs a provider whose transcript Loom owns (aisdk-only for now — Claude support is fork-tree F3)",
-        );
-      }
       if (parent.inPlace && !continuation) {
         throw new RpcError(
           "bad_request",
@@ -2662,6 +2691,7 @@ export class Daemon {
           worktree: wt.path,
           branch: wt.branch,
           baseBranch: wt.baseRef,
+          isolation,
         });
         this.#registry.setFields(newId, {
           forkTurn: parent.turns,
@@ -2782,7 +2812,7 @@ export class Daemon {
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       if (instructions) {
         const row = this.#registry.get(id);
-        const caps = row && this.#providers.capsOf(row.provider);
+        const caps = row && this.#providers.capsOf(row.provider, row.isolation);
         // A provider that hasn't reported real capabilities yet can't be
         // running a session already (creation always resolves the provider
         // first), so `caps` is only absent here for an unknown row.
@@ -2898,6 +2928,7 @@ export class Daemon {
           mode: runMode,
           parentId: id,
           wantWorktree: this.config.worktree.enabled,
+          ...(parent.isolation ? { isolation: parent.isolation } : {}),
           by: params.by,
         });
         await this.#sessions.respondToPlan(id, requestId, { action: "handoff" });
@@ -3053,8 +3084,8 @@ export class Daemon {
         // conservatively `false`, so a config-membership guess would wrongly
         // authorize a transcript-based switch into (or out of) it.
         const [fromProvider, toProvider] = await Promise.all([
-          this.#providers.get(row.provider),
-          this.#providers.get(provider),
+          this.#providers.get(row.provider, row.isolation),
+          this.#providers.get(provider, row.isolation),
         ]);
         if (!toProvider.capabilities.ownsTranscript || !fromProvider.capabilities.ownsTranscript) {
           throw new RpcError(
@@ -3313,6 +3344,7 @@ export class Daemon {
       this.#registry.create({
         id,
         provider: p.provider ?? "stub",
+        isolation: this.#providers.defaultIsolation(p.provider ?? "stub"),
         model: p.model ?? null,
         mode: p.mode ?? "default",
         parentId: p.parentId ?? null,
@@ -3399,9 +3431,12 @@ export class Daemon {
   // -------------------------------------------------------------------------
 
   /** Reject invalid tool selections before allocating session resources. */
-  async #preflightTools(provider: string): Promise<void> {
+  async #preflightTools(
+    provider: string,
+    isolation = this.#providers.defaultIsolation(provider),
+  ): Promise<void> {
     try {
-      await preflightTools(this.config, provider);
+      await preflightTools(this.#providers.configFor(provider, isolation), provider);
     } catch (error) {
       throw new RpcError("bad_request", error instanceof Error ? error.message : String(error));
     }

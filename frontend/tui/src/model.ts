@@ -1351,9 +1351,9 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     local.push(commandHint("effort"));
     local.push(commandHint("provider"));
     // Undo needs a rewind-capable provider (the daemon reports `canRewind`);
-    // it's conversation-only, so an in-place session can still do it. Hard fork
-    // is aisdk-only for now (fork-tree F3) and additionally needs an isolated
-    // branch, which an in-place session doesn't have.
+    // it's conversation-only, so an in-place session can still do it. Forks
+    // copy portable history where possible; native or cross-environment forks
+    // start a fresh session with saved conversation context.
     if (
       session.canRewind &&
       (status.kind === "idle" || status.kind === "interrupted") &&
@@ -1361,7 +1361,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     ) {
       local.push(commandHint("undo"));
     }
-    if ((!isClaudeId(session.provider) && !session.inPlace) || session.resumable === false) {
+    if (!session.inPlace || session.resumable === false) {
       local.push(
         commandHint("fork", {
           label: "fork",

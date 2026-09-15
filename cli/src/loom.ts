@@ -84,6 +84,7 @@ const USAGE: Record<string, string> = {
   --provider P                 provider id (see \`loom providers\`); default from config
   --model M                    model id; default from the provider
   --mode manual|plan|acceptEdits|auto
+  --isolation vm|local          override the configured session isolation default
   --in-place                   work in the repo, no worktree (overrides [worktree] enabled)
   --worktree                   force an isolated worktree + branch
   --repo <path>                act on the daemon for another repo`,
@@ -188,6 +189,7 @@ const main = async (): Promise<void> => {
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
       "in-place": { type: "boolean", default: false },
+      isolation: { type: "string" },
       worktree: { type: "boolean", default: false },
       "delete-branch": { type: "boolean", default: false },
     },
@@ -425,6 +427,8 @@ const main = async (): Promise<void> => {
         if (values["in-place"] && values.worktree) {
           need(undefined, "run: --in-place and --worktree are mutually exclusive");
         }
+        if (values.isolation && !["vm", "local"].includes(values.isolation))
+          need(undefined, "--isolation must be vm or local");
         let worktree: boolean | undefined;
         if (values.worktree) worktree = true;
         else if (values["in-place"]) worktree = false;
@@ -435,6 +439,7 @@ const main = async (): Promise<void> => {
           ...(values.model ? { model: values.model } : {}),
           ...(values.mode ? { mode: values.mode } : {}),
           ...(worktree !== undefined ? { worktree } : {}),
+          ...(values.isolation ? { isolation: values.isolation } : {}),
         });
         const where = r.inPlace ? "  in-place" : "";
         writeOut(`started ${r.id}  provider=${r.provider}  status=${r.status.kind}${where}\n`);

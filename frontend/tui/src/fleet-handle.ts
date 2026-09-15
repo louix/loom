@@ -16,7 +16,6 @@ import { helpLines } from "./help.ts";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
-import { isClaudeId } from "@loom/core/provider-id";
 import { isLiveState } from "@loom/core/session-state";
 import type { SessionMode } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
@@ -945,20 +944,6 @@ export const mkFleetHandle = ({
       }
       case "fork": {
         if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        if (isClaudeId(s.provider) && s.resumable !== false) {
-          return void dispatch({
-            t: "notice",
-            text: "hard fork isn't available for Claude sessions yet",
-            tone: "dim",
-          });
-        }
-        if (s.inPlace && s.resumable !== false) {
-          return void dispatch({
-            t: "notice",
-            text: "hard fork needs a worktree — this session runs in-place",
-            tone: "dim",
-          });
-        }
         if (s.status.kind === "awaiting_input") {
           return void dispatch({
             t: "notice",
@@ -966,27 +951,17 @@ export const mkFleetHandle = ({
             tone: "dim",
           });
         }
-        if (forkingSessions.has(s.id)) return;
-        forkingSessions.add(s.id);
-        note("Starting fork…", "dim");
-        client
-          .request<SessionSnapshot>("session.fork", { id: s.id, by: client.clientId })
-          .then((r) => {
-            dispatch({ t: "select", id: r.id });
-            dispatch({
-              t: "notice",
-              text: `forked → ${shortId(r.id)}${s.resumable === false ? " — fresh session with saved context" : ""}`,
-              tone: "good",
-            });
-          })
-          .catch((e: unknown) =>
-            dispatch({
-              t: "notice",
-              text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
-              tone: "bad",
-            }),
-          )
-          .finally(() => forkingSessions.delete(s.id));
+        show({
+          t: "confirm",
+          confirm: {
+            action: "forkSession",
+            sessionId: s.id,
+            isolation: s.isolation ?? "local",
+            title: "fork session",
+            danger: false,
+            body: "Choose the new session's isolation. The parent keeps its current environment.",
+          },
+        });
         return;
       }
       default:
@@ -1239,7 +1214,14 @@ export const mkFleetHandle = ({
     if (dest.t === "newSession")
       return show({
         t: "prompt",
-        prompt: newPrompt(newSettings(state, provider, selection.model, effort), dest.draft),
+        prompt: newPrompt(
+          {
+            ...newSettings(state, provider, selection.model, effort),
+            mode: dest.settings.mode,
+            ...(dest.settings.isolation ? { isolation: dest.settings.isolation } : {}),
+          },
+          dest.draft,
+        ),
       });
     if (dest.t === "planImpl")
       return show({
@@ -1560,6 +1542,7 @@ export const mkFleetHandle = ({
           const r = await client.request<SessionSnapshot>("session.create", {
             prompt: text,
             by,
+            ...(p.settings.isolation ? { isolation: p.settings.isolation } : {}),
             ...(p.settings.mode !== "default" ? { mode: p.settings.mode } : {}),
             ...(p.settings.provider ? { provider: p.settings.provider } : {}),
             ...(p.settings.model ? { model: p.settings.model } : {}),
@@ -1753,6 +1736,36 @@ export const mkFleetHandle = ({
     if (overlayActed === c) return;
     overlayActed = c;
     show(browse);
+    if (c.action === "forkSession") {
+      const s = sessionOf(c.sessionId);
+      if (!s) return;
+      if (forkingSessions.has(s.id)) return;
+      forkingSessions.add(s.id);
+      note("Starting fork…", "dim");
+      client
+        .request<SessionSnapshot>("session.fork", {
+          id: s.id,
+          by: client.clientId,
+          isolation: c.isolation,
+        })
+        .then((r) => {
+          dispatch({ t: "select", id: r.id });
+          dispatch({
+            t: "notice",
+            text: `forked → ${shortId(r.id)}${s.resumable === false ? " — fresh session with saved context" : ""}`,
+            tone: "good",
+          });
+        })
+        .catch((e: unknown) =>
+          dispatch({
+            t: "notice",
+            text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: "bad",
+          }),
+        )
+        .finally(() => forkingSessions.delete(s.id));
+      return;
+    }
     if (c.action === "deleteSession") {
       const id = c.sessionId;
       const alsoBranch = c.deleteBranch === true;
@@ -1915,6 +1928,22 @@ export const mkFleetHandle = ({
         if (sendTo) return void modes.cycle(sendTo);
         return;
       }
+      if (key.meta && input === "i" && p.t === "new") {
+        const provider = fleetProviders(state).find(
+          (x) => x.id === (p.settings.provider ?? defaultProviderId(state)),
+        );
+        const current = p.settings.isolation ?? provider?.defaultIsolation ?? "local";
+        if (current === "local" && provider?.vmUnavailableReason)
+          return void note(provider.vmUnavailableReason, "dim");
+        show({
+          t: "prompt",
+          prompt: {
+            ...p,
+            settings: { ...p.settings, isolation: current === "vm" ? "local" : "vm" },
+          },
+        });
+        return;
+      }
       // ⌥m swaps the model without leaving the prompt.
       if (key.meta && input === "m") {
         if (p.t === "new") {
@@ -2039,6 +2068,17 @@ export const mkFleetHandle = ({
     }
 
     if (state.overlay.t === "confirm") {
+      const confirm = state.overlay.confirm;
+      if (confirm.action === "forkSession" && input === "i") {
+        const session = sessionOf(confirm.sessionId);
+        const provider = fleetProviders(state).find((x) => x.id === session?.provider);
+        if (confirm.isolation === "local" && provider?.vmUnavailableReason)
+          return void note(provider.vmUnavailableReason, "dim");
+        return void show({
+          t: "confirm",
+          confirm: { ...confirm, isolation: confirm.isolation === "vm" ? "local" : "vm" },
+        });
+      }
       if (key.return) return runConfirm();
       if (
         input === "b" &&

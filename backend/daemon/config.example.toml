@@ -204,12 +204,16 @@ max_results = 5
 
 # Session VMs mount the full repository, including shared Git hooks/config.
 
-# Opt in to one VM per regular Claude session. The Linux Nix package bundles
+# Default to one VM per regular Claude session. The Linux Nix package bundles
 # the runtime; native Claude remains on the host for login/credential renewal.
 # History persists outside the worktree; archive retains it, delete removes it.
 # [isolation.claude]
 # enabled = true
 # The same applies to [isolation.codex] and [isolation.aisdk].
+# This is a default: use Alt+i in the new-session prompt or --isolation local
+# to run a session locally. enabled=false defaults to Local but still allows
+# an explicit VM choice when a runtime is configured or bundled. Existing
+# sessions keep their mode after a default change; fork to change environments.
 # Optional development overrides: artifact = "/path/to/runtime", smolvm = "/path/to/smolvm"
 
 # Per-repo overrides belong in this file. Use an absolute path or ~/path.

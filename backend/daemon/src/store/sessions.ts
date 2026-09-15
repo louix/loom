@@ -28,6 +28,7 @@ interface SessionRow {
   branch: string | null;
   base_branch: string | null;
   in_place: number;
+  isolation: "vm" | "local" | null;
   provider_ref: string | null;
   title_locked: number;
   fork_turn: number | null;
@@ -66,6 +67,7 @@ export interface NewSession {
   baseBranch?: string | null;
   /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
   inPlace?: boolean;
+  isolation?: "vm" | "local";
   providerRef?: string | null;
   /** Which backend actually owns this session's history (`''` = the
    *  provider's own native thread; `'aisdk'` = a legacy Loom-owned
@@ -127,8 +129,8 @@ export class SessionStore {
         .prepare(
           `INSERT INTO sessions
              (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
-              base_branch, in_place, provider_ref, history_backend, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              base_branch, in_place, provider_ref, history_backend, created_at, updated_at, isolation)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           s.id,
@@ -146,10 +148,17 @@ export class SessionStore {
           s.historyBackend ?? "",
           now,
           now,
+          s.isolation ?? null,
         );
       this.#db.prepare("INSERT INTO usage (session_id, updated_at) VALUES (?, ?)").run(s.id, now);
       this.#appendHistory(s.id, "starting", null, now);
     });
+  }
+
+  pinIsolation(id: string, isolation: "vm" | "local"): void {
+    this.#db
+      .prepare("UPDATE sessions SET isolation = ? WHERE id = ? AND isolation IS NULL")
+      .run(isolation, id);
   }
 
   get(id: string): SessionSnapshot | null {
@@ -861,6 +870,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     branch: row.branch,
     baseBranch: row.base_branch,
     inPlace: row.in_place === 1,
+    ...(row.isolation ? { isolation: row.isolation } : {}),
     usage: usage
       ? {
           input: usage.input,

@@ -368,7 +368,7 @@ const FleetRow = ({
   const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
   const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
-  const idText = forked ? `⑂${id}` : id;
+  const idText = `${forked ? `⑂${id}` : id} [${s.isolation === "vm" ? "VM" : "Local"}]`;
   const room = Math.max(6, iw - (2 + 2 + idText.length + 2 + 2 + 2 + cost.length + 1));
   const title = truncate(titleLine(s.title), room).padEnd(room);
 
@@ -485,7 +485,7 @@ export const detailLayout = (
   } else {
     add(
       <Box>
-        <Line tone="dim">{`DETAIL  ${shortId(s.id)}`}</Line>
+        <Line tone="dim">{`DETAIL  ${shortId(s.id)}  [${s.isolation === "vm" ? "VM" : "Local"}] `}</Line>
         <Box flexGrow={1} justifyContent="flex-end">
           <Line>
             <Text tone="faint">engine </Text>
@@ -870,7 +870,12 @@ const promptHints = (
   else if (p.t !== "new") bits.push("⌥o log");
   if (p.t === "new") {
     // ⇧⇥ cycles the mode the session starts in; ⌥m / ⌥p pick its model.
-    bits.push(`⇧⇥ mode:${modeLabel(p.settings.mode)}`, "⌥p provider/model", "↑↓ history");
+    bits.push(
+      `⇧⇥ mode:${modeLabel(p.settings.mode)}`,
+      "⌥p provider/model",
+      "⌥i isolation",
+      "↑↓ history",
+    );
   } else if (p.t === "session" && p.kind === "send") {
     // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
     // without leaving the half-typed message.
@@ -966,6 +971,7 @@ export const FooterArea = ({
             {p.label}
           </Line>
           {modeChip(p.settings.mode)}
+          <Text tone="accentDim">{`[${(p.settings.isolation ?? prov?.defaultIsolation) === "vm" ? "VM" : "Local"}]`}</Text>
           <Line tone="faint" {...(prov?.color ? { color: prov.color } : {})}>
             {`${prov?.tag ?? p.settings.provider ?? "?"} / ${
               p.settings.model || prov?.defaultModel || "auto"
@@ -1088,6 +1094,8 @@ export const Confirm = ({
 }): ReactNode => {
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
+  else if (confirm.action === "forkSession")
+    actionText = `fork with ${confirm.isolation === "vm" ? "VM" : "Local"} isolation (i to change)`;
   else if (confirm.action === "gc") actionText = "remove the worktrees";
   else if (confirm.action === "deleteSession")
     actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";

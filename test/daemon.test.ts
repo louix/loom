@@ -798,12 +798,14 @@ model    = "gpt-5"
     );
     hh.daemon.registry.setStatus(parent.id, stateIdle, "test");
 
-    // fork a fake session → rejected for now
+    // A provider without portable native history gets a fresh context-based fork.
     const fk = await c.request<SessionSnapshot>("session.createStub", {
       prompt: "x",
       provider: "fake",
     });
-    await assert.rejects(c.request("session.fork", { id: fk.id }), /aisdk-only/);
+    const fresh = await c.request<SessionSnapshot>("session.fork", { id: fk.id });
+    assert.equal(fresh.parentId, fk.id);
+    assert.equal(fresh.isolation, "local");
 
     await c.close();
   } finally {
@@ -2564,6 +2566,7 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
       text: "Remember the blue widget",
       injected: false,
     });
+    daemon.registry.store.pinIsolation(parent.id, "vm");
     const before = loads;
     const blocked = await client.request<SessionSnapshot>("session.get", { id: parent.id });
     assert.equal(blocked.resumable, false);

@@ -247,6 +247,8 @@ interface HookFields {
 export interface LoomConfig {
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
+    /** Available runtimes, including ones disabled as the default. */
+    runtimes?: Partial<Record<"claude" | "aisdk" | "codex", { artifact: string; smolvm: string }>>;
     claude?: { artifact: string; smolvm: string };
     aisdk?: { artifact: string; smolvm: string };
     codex?: { artifact: string; smolvm: string };
@@ -884,6 +886,25 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
+      runtimes: Object.fromEntries(
+        (["claude", "aisdk", "codex"] as const).flatMap((name) => {
+          const value = asRecord(asRecord(r["isolation"])[name]);
+          const bundle = bundledRuntime(name);
+          const artifact =
+            typeof value["artifact"] === "string" ? value["artifact"] : bundle?.artifact;
+          return artifact
+            ? [
+                [
+                  name,
+                  {
+                    artifact: expandTilde(artifact),
+                    smolvm: expandTilde(str(value["smolvm"], bundle?.smolvm ?? "smolvm")),
+                  },
+                ],
+              ]
+            : [];
+        }),
+      ),
       extraAllowedHosts: [
         ...new Set([
           ...normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
