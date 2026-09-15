@@ -1,10 +1,10 @@
 {
-  "source": "/nix/store/m46fd458k1my057k6dkrsh3l42slfl12-source",
-  "recipe": "cae8909aff281d31cd971c11ead953b54802a2bff1ce5abcffcb93aa309a247d",
+  "source": "/nix/store/1p0kxvxq6yqvm30f50cqc3k2zql2wbdd-source",
+  "recipe": "13a71645198991d8783c5a2e3e77858000630cae77b504576696c537ec41d473",
   "runtimes": {
-    "tilth-runtime": "sha256-q3bmD4m+ZX41C+3T80jfUuT/1LUfx2Xd8yxs3Qlsrl0=",
-    "claude-session-runtime": "sha256-sTIyaOeDqXDTUFX1f9V7jZkChHa8iFwpQzh9/S764YI=",
-    "codex-session-runtime": "sha256-FTNTCfM0L/IICKYNdOalJtYMO4t9c0nqpoZ4RZkh/ns=",
-    "aisdk-session-runtime": "sha256-idN7WOgchLDRXnFisDGD+w5gxqgb7UVy4mFrGECMPKA="
+    "tilth-runtime": "sha256-fZhkPSDqY5IFaZeDjHFyPlATPL9aNpwwAleyz4Y2P9k=",
+    "claude-session-runtime": "sha256-vWYRWjVT0VIml6FtvRsm1AFPHf31+DGEEge1eztXRPw=",
+    "codex-session-runtime": "sha256-vWYRWjVT0VIml6FtvRsm1AFPHf31+DGEEge1eztXRPw=",
+    "aisdk-session-runtime": "sha256-vWYRWjVT0VIml6FtvRsm1AFPHf31+DGEEge1eztXRPw="
   }
 }
