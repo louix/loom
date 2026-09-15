@@ -19,7 +19,7 @@ test(
   { skip: onPath("tilth") ? false : "tilth is not installed" },
   async () => {
     const raw = parse(readFileSync(exampleConfigPath(), "utf8"));
-    const mount = normalizeConfig({ ...raw, session: { "local-tools": ["tilth"] } }).mcp[0]!;
+    const mount = normalizeConfig({ ...raw, session: { local_tools: ["tilth"] } }).mcp[0]!;
     assert.ok("command" in mount);
     const { command, args = [] } = mount;
     assert.equal(command, "tilth");

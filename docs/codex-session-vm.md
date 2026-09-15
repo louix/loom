@@ -10,8 +10,10 @@ nix build .#codex-session-runtime --out-link /tmp/loom-codex-runtime
 
 ```jsonc
 {
-  "isolation": {
-    "enabled": true,
+  "session": {
+    "isolation": {
+      "enabled": true,
+    },
   },
 }
 ```
@@ -31,9 +33,9 @@ run inside the VM. See [repository mounts](repository-mounts.md) for the shared
 Git metadata and filesystem boundaries.
 
 Direct egress is disabled. The host HTTPS proxy permits `chatgpt.com:443` plus
-trusted `isolation.extra_allowed_hosts` for worktree commands. MCP endpoints use
+trusted `session.isolation.extra_allowed_hosts` for worktree commands. MCP endpoints use
 private relays. Native web search remains controlled by the provider's existing
-`codex_builtin_web_search` setting.
+`builtin_web_search` setting.
 
 ## Authentication
 

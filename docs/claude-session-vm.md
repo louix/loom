@@ -55,11 +55,13 @@ inside the same VM; it is not a grant limited to the Claude process.
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/loom",
-      "isolation": {
-        "extra_allowed_hosts": ["registry.npmjs.org"],
+      "session": {
+        "isolation": {
+          "extra_allowed_hosts": ["registry.npmjs.org"],
+        },
       },
     },
   ],
@@ -179,8 +181,10 @@ The Linux Nix package bundles the runtime. Opt in for all providers in this proj
 
 ```jsonc
 {
-  "isolation": {
-    "enabled": true,
+  "session": {
+    "isolation": {
+      "enabled": true,
+    },
   },
 }
 ```
@@ -283,11 +287,11 @@ substitution and locking.
 
 ## Project controls
 
-Use exact `[[repo]] path = "~/dev/project"` entries in the user config.
-`repo.isolation.enabled = false` disables inherited VM isolation for every provider;
+Use exact `"path": "~/dev/project"` entries in the `repos` array.
+`repos[].session.isolation.enabled = false` disables inherited VM isolation for every provider;
 `enabled = true` uses the package-bundled runtime unless artifact/smolvm paths
 are explicitly configured or inherited. Remove development pins to follow package upgrades.
-`[repo.provider_access] only = ["claude:work"]` restricts the project to that
+`"provider_access": {"only": ["claude:work"]}` under the entry’s `session` restricts the project to that
 provider; `disabled = ["claude:work"]` leaves other providers available. An omitted
 `only` allows all configured providers; `only = []` allows none. Restart the daemon
 after changing provider or isolation policy. Missing and disabled providers leave

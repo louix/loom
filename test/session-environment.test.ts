@@ -22,9 +22,11 @@ test("guest login profile restores the prepared PATH as literal shell data", asy
 
 test("network presets compose with exact hosts and reject unknown grants", () => {
   const config = normalizeConfig({
-    isolation: {
-      network_presets: ["nix", "javascript", "python", "nix"],
-      extra_allowed_hosts: ["REGISTRY.NPMJS.ORG", "example.com"],
+    session: {
+      isolation: {
+        network_presets: ["nix", "javascript", "python", "nix"],
+        extra_allowed_hosts: ["REGISTRY.NPMJS.ORG", "example.com"],
+      },
     },
   });
   assert(config.isolation.extraAllowedHosts.includes("cache.nixos.org"));
@@ -88,15 +90,17 @@ test("environment and presets belong to the selected trusted repo", async () => 
     await Deno.writeTextFile(
       file,
       `{
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(dir)},
-      "isolation": {
-        "network_presets": [
-          "javascript"
-        ],
-        "environment": {
-          "prepare": "custom setup"
+      "session": {
+        "isolation": {
+          "network_presets": [
+            "javascript"
+          ],
+          "environment": {
+            "prepare": "custom setup"
+          }
         }
       }
     }

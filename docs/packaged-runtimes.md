@@ -20,8 +20,8 @@ All four default to true. `withClaude` includes the proprietary Claude Code
 executable for the guest and the native host CLI used for authentication.
 `withCodex` also includes its native host CLI.
 
-For session VMs, set `isolation.enabled = true` globally or
-`repo.isolation.enabled = true` for a project. Loom resolves the runtime and smolvm
+For session VMs, set `session.isolation.enabled = true` globally or
+`repos[].session.isolation.enabled = true` for a project. Loom resolves the runtime and smolvm
 from its package, so `nix profile upgrade loom` updates them together. Remove
 old `artifact` and `smolvm` pins to use these package defaults; explicit paths
 remain available for development builds.
@@ -30,20 +30,20 @@ Configure Tilth with:
 
 ```jsonc
 {
-  "session": {
-    "local-tools": [],
-    "vm-tools": ["tilth"],
-  },
-  "vm-tools": {
+  "vm_tools": {
     "tilth": {
       "runtime": "tilth",
       "default_for": ["read", "write", "edit", "find", "grep"],
     },
   },
+  "session": {
+    "local_tools": [],
+    "vm_tools": ["tilth"],
+  },
 }
 ```
 
-Select Tilth from only one group: host `tools` or `vm-tools`. The
+Select Tilth from only one group: host `tools` or `vm_tools`. The
 runtime supplies its own `--mcp --edit` arguments. `default_for` remains a
 capability preference, not a tool-name or schema adapter.
 
@@ -113,14 +113,14 @@ Use a Nix flake reference as the runtime value, for example:
 
 ```jsonc
 {
-  "session": {
-    "vm-tools": ["my-tools"],
-  },
-  "vm-tools": {
+  "vm_tools": {
     "my-tools": {
       "runtime": "github:your-org/your-tools/<revision>#loom-runtime",
       "isolation": "vm",
     },
+  },
+  "session": {
+    "vm_tools": ["my-tools"],
   },
 }
 ```

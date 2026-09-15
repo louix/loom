@@ -4,7 +4,7 @@ import { MCP_CAPABILITIES } from "@loom/core/types";
 import type { ToolSettings } from "./schema.ts";
 import type { LoomConfig } from "./config.ts";
 
-const groups = ["local-tools", "vm-tools", "remote-tools"] as const;
+const groups = ["local_tools", "vm_tools", "remote_tools"] as const;
 /** Resolve only explicitly selected definitions into connector-neutral transports. */
 export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" | "httpMcp"> => {
   const session = raw.session;
@@ -22,7 +22,7 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
         required: true,
         defaultFor: (entry.default_for ?? []) as (typeof MCP_CAPABILITIES)[number][],
       };
-      if (group === "remote-tools")
+      if (group === "remote_tools")
         httpMcp.push({
           ...common,
           url: entry.url as string,
@@ -31,7 +31,7 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
             ? { bearerToken: entry.bearer_token as string }
             : {}),
         });
-      else if (group === "vm-tools")
+      else if (group === "vm_tools")
         mcp.push({ ...common, runtime: entry.runtime as string, isolation: "vm" });
       else
         mcp.push({
@@ -63,6 +63,6 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   if ((config.isolation.enabled || vm) && host.length)
     return (
       `Provider ${provider} runs in a VM but host tools are selected: ${host.map((m) => m.name).join(", ")}. ` +
-      "Set session.local-tools = [] and select vm-tools or remote-tools instead."
+      "Set session.local_tools = [] and select vm_tools or remote_tools instead."
     );
 };

@@ -236,12 +236,16 @@ describe("tui-render", { concurrency: 4 }, () => {
 
   const OAI_CFG = `{
   "providers": {
-    "oai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "models": [
-        "m1",
-        "m2"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "oai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "models": [
+            "m1",
+            "m2"
+          ]
+        }
+      }
     }
   }
 }`;
@@ -1391,14 +1395,18 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { connect, cleanup } = await harness({
       config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://x/v1",
-      "model": "gpt-5",
-      "models": [
-        "gpt-5",
-        "gpt-5-mini",
-        "o4"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://x/v1",
+          "model": "gpt-5",
+          "models": [
+            "gpt-5",
+            "gpt-5-mini",
+            "o4"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -1460,8 +1468,12 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { connect, cleanup } = await harness({
       config: `{
   "providers": {
-    "oai": {
-      "base_url": "http://127.0.0.1:9/v1"
+    "openai_compatible": {
+      "profiles": {
+        "oai": {
+          "base_url": "http://127.0.0.1:9/v1"
+        }
+      }
     }
   }
 }`,
@@ -1499,13 +1511,17 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { connect, cleanup } = await harness({
       config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://x/v1",
-      "model": "gpt-5",
-      "models": [
-        "gpt-5",
-        "gpt-5-mini"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://x/v1",
+          "model": "gpt-5",
+          "models": [
+            "gpt-5",
+            "gpt-5-mini"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -1745,9 +1761,13 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { h, connect, cleanup } = await harness({
       config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "gpt-5"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "gpt-5"
+        }
+      }
     }
   }
 }`,
@@ -1816,9 +1836,13 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { h, connect, cleanup } = await harness({
       config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "gpt-5"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "gpt-5"
+        }
+      }
     }
   }
 }`,

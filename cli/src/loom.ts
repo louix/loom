@@ -34,7 +34,7 @@ commands:
   tail                   stream the live event feed (Ctrl-C to stop)
 
   run <prompt...>        start a session   [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
-                         [--in-place | --worktree]  override [worktree] enabled for this session
+                         [--in-place | --worktree]  override session.worktree.enabled for this session
   send <id> <text...>    send a follow-up turn / answer
   compact <id> [text...] compact the context window (optional steer for the summary)
   interrupt <id>         stop a session mid-turn
@@ -85,21 +85,21 @@ const USAGE: Record<string, string> = {
   --model M                    model id; default from the provider
   --mode manual|plan|acceptEdits|auto
   --isolation vm|local          override the configured session isolation default
-  --in-place                   work in the repo, no worktree (overrides [worktree] enabled)
+  --in-place                   work in the repo, no worktree (overrides session.worktree.enabled)
   --worktree                   force an isolated worktree + branch
   --repo <path>                act on the daemon for another repo`,
   providers: `loom providers  — list configured providers
 
-  one row per [providers.*] / [custom-provider.*] / [anthropic] / [google] table:
+  one row per configured provider family or named profile:
   "<id> [default]  <model>  (N models)". The model shown is what a new session
   gets without --model — the last one run on that provider, else a config pin,
   else the first auto-detected id.
   --json                       machine-readable`,
   models: `loom models <provider>  — list a provider's available models
 
-  \`claude\` asks the Claude CLI for its catalog; \`chatgpt\` asks Codex's
+  \`claude\` asks the Claude CLI for its catalog; \`codex\` asks Codex's
   authenticated subscription catalog; openai-compatible providers
-  ([custom-provider.*] and the built-in openai profile) are probed at
+  (providers.openai_compatible.profiles) are probed at
   {base_url}/models. Prints one model id per line.  --json for an array.`,
   cache: `loom cache [id]  — prompt-cache effectiveness per provider/model
 
@@ -219,6 +219,8 @@ const main = async (): Promise<void> => {
     }
   })();
   await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
+  const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
+  scaffoldUserConfig();
   if (cmd === "environment") {
     if (positionals.length !== 2 || !["prepare", "prune"].includes(positionals[1]!))
       throw new Error(USAGE.environment);

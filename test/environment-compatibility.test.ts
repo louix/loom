@@ -114,19 +114,32 @@ test("compatibility metadata requires a versioned image and a bounded digest", (
 
 test("environment preflight warns only for enabled VM providers needing a prepared image", async () => {
   const config = normalizeConfig({
-    providers: { chatgpt: { adapter: "aisdk", sdk: "chatgpt" } },
-    isolation: {
-      enabled: true,
-      codex: { artifact: "/missing/runtime", smolvm: "/missing/backend" },
-      environment: { nix: true },
+    providers: {
+      codex: {
+        profiles: {
+          default: {},
+        },
+      },
+    },
+    session: {
+      isolation: {
+        enabled: true,
+        codex: {
+          artifact: "/missing/runtime",
+          smolvm: "/missing/backend",
+        },
+        environment: {
+          nix: true,
+        },
+      },
     },
   });
-  config.providerAccess.only = ["chatgpt"];
+  config.providerAccess.only = ["codex"];
   assert.equal(
     await repoEnvironmentWarning("/repo", config),
     "Environment image missing or out of date.",
   );
-  config.providerAccess.disabled = ["chatgpt"];
+  config.providerAccess.disabled = ["codex"];
   assert.equal(await repoEnvironmentWarning("/repo", config), null);
   config.providerAccess.disabled = [];
   delete config.isolation.codex;

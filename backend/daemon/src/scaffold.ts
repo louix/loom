@@ -1,53 +1,43 @@
-import { constants, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { userConfigPath } from "./config-path.ts";
+import { DEFAULT_CONFIG, HOOK_EVENTS } from "./config/config.ts";
+import { configEditorSchema } from "./config/schema.ts";
+export { userConfigPath } from "./config-path.ts";
 
-/**
- * The only config file: `$XDG_CONFIG_HOME/loom/config.jsonc`, falling back to
- * `~/.config/loom/config.jsonc`. Includes global defaults and repo overrides.
- */
-export const userConfigPath = (): string => {
-  const base = Deno.env.get("XDG_CONFIG_HOME")?.trim() || join(homedir(), ".config");
-  return join(base, "loom", "config.jsonc");
-};
-
-/** The `config.example.jsonc` shipped at the root of `@loom/daemon`. */
-export const exampleConfigPath = (): string => {
-  return join(import.meta.dirname!, "..", "config.example.jsonc");
-};
-
-/** Schema is copied beside the user config so editor support works offline. */
+export const exampleConfigPath = (): string =>
+  join(import.meta.dirname!, "..", "config.example.jsonc");
 export const exampleSchemaPath = (): string =>
   join(import.meta.dirname!, "..", "config.schema.json");
 export const userSchemaPath = (): string => join(dirname(userConfigPath()), "config.schema.json");
 
-/**
- * First-run convenience: drop a copy of `config.example.jsonc` at
- * {@link userConfigPath} when nothing is there yet, so `loom` has an obvious,
- * annotated place to configure providers. Never overwrites an existing file.
- * Returns the path when it created one, `null` otherwise (already present, or
- * the example couldn't be read).
- */
+/** Refresh editor support on launch and create a small starter on first run. */
 export const scaffoldUserConfig = (): string | null => {
   const dest = userConfigPath();
-  const src = exampleConfigPath();
-  if (!existsSync(src)) return null;
+  mkdirSync(dirname(dest), { recursive: true });
+  const schema = JSON.stringify(configEditorSchema(DEFAULT_CONFIG, HOOK_EVENTS), null, 2) + "\n";
+  if (!existsSync(userSchemaPath()) || readFileSync(userSchemaPath(), "utf8") !== schema)
+    writeFileSync(userSchemaPath(), schema);
   try {
-    mkdirSync(dirname(dest), { recursive: true });
-    const schema = exampleSchemaPath();
-    if (
-      existsSync(schema) &&
-      (!existsSync(userSchemaPath()) ||
-        readFileSync(schema, "utf8") !== readFileSync(userSchemaPath(), "utf8"))
-    )
-      copyFileSync(schema, userSchemaPath());
-    if (existsSync(dest)) return null;
-    // COPYFILE_EXCL: fail rather than clobber if the file appeared between the
-    // existsSync above and now (two daemons for two repos on first run, or a
-    // user hand-editing it immediately).
-    copyFileSync(src, dest, constants.COPYFILE_EXCL);
+    writeFileSync(
+      dest,
+      "// Loom configuration. Comments and trailing commas are supported.\n" +
+        JSON.stringify(
+          {
+            $schema: "./config.schema.json",
+            providers: { claude: {} },
+            session: {},
+            repos: [],
+          },
+          null,
+          2,
+        ) +
+        "\n",
+      { flag: "wx", mode: 0o600 },
+    );
     return dest;
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
   }
 };

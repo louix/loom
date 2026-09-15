@@ -16,8 +16,10 @@ before(async () => {
   // worktree, which several assertions here (and the archive/revive test) key on.
   h = await makeHarness({
     config: `{
-  "titles": {
-    "enabled": false
+  "session": {
+    "titles": {
+      "enabled": false
+    }
   }
 }`,
   });

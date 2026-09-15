@@ -6,7 +6,7 @@ Loom separates reusable environment preparation from session initialization.
   Claude, Codex and AISDK providers share one image and need one preparation.
   Distinct custom runtime images are prepared separately. `--provider P` selects
   that provider's runtime. Nix activation
-  and `isolation.environment.prepare` must succeed before the base is published.
+  and `session.isolation.environment.prepare` must succeed before the base is published.
 - a `hooks` entry with `"on": "init"` runs once when a conversation is created, before its opening
   turn, inside its VM or on the host for a non-VM session. A failed init hook is
   shown in EVENTS and included in the agent's opening prompt so it can repair the
@@ -16,22 +16,13 @@ Loom separates reusable environment preparation from session initialization.
 
 ## Configuration
 
-Add to the existing matching `repo` array entry in the trusted user config:
+Add to the existing matching `repos` array entry in the trusted user config:
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/loom",
-      "isolation": {
-        "network_presets": ["nix", "javascript"],
-        "environment": {
-          "nix": true,
-          "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
-          "prepare": "",
-          "timeout_seconds": 900,
-        },
-      },
       "hooks": [
         {
           "name": "install dependencies",
@@ -40,12 +31,23 @@ Add to the existing matching `repo` array entry in the trusted user config:
           "timeout": 600,
         },
       ],
+      "session": {
+        "isolation": {
+          "network_presets": ["nix", "javascript"],
+          "environment": {
+            "nix": true,
+            "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
+            "prepare": "",
+            "timeout_seconds": 900,
+          },
+        },
+      },
     },
   ],
 }
 ```
 
-Set `isolation.enabled` to true for projects that should default to VM execution. Non-VM sessions use the same
+Set `session.isolation.enabled` to true for projects that should default to VM execution. Non-VM sessions use the same
 init hook mechanism in their host working environment; the VM base settings do
 not affect them. Hooks can also be scoped with the existing `project` setting.
 Init hooks execute serially in configuration order. Both check and notify init
@@ -164,7 +166,7 @@ For pnpm, an init command can explicitly select a shared store and copy imports:
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/project",
       "hooks": [
@@ -204,7 +206,7 @@ policy. They grant access to the whole session VM, not just setup commands.
   source distributions for pip, uv and other Python package managers).
 
 For a repo using all three, set `network_presets = ["nix", "javascript", "python"]`
-under `repo.isolation`.
+under `repos[].session.isolation`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

@@ -55,7 +55,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
       writeFileSync(
         config,
         `{
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(configured)},
       "base_branch": "shared"
@@ -70,7 +70,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
     writeFileSync(
       config,
       `{
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(bare)}
     },
@@ -80,7 +80,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
   ]
 }`,
     );
-    assert.throws(() => loadConfig(bare, config), /Duplicate repo.path/);
+    assert.throws(() => loadConfig(bare, config), /Duplicate repos.path/);
 
     // Migration moves core.bare into config.worktree. Identity must survive it,
     // including discovery from Loom's own generated worktrees.

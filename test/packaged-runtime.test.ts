@@ -27,12 +27,7 @@ const manifest = {
 };
 test("packaged MCP config rejects ambiguous commands and unsupported permission grants", () => {
   const base = `{
-  "session": {
-    "vm-tools": [
-      "code"
-    ]
-  },
-  "vm-tools": {
+  "vm_tools": {
     "code": {
       "runtime": "tilth",
       "default_for": [
@@ -40,6 +35,11 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
         "edit"
       ]
     }
+  },
+  "session": {
+    "vm_tools": [
+      "code"
+    ]
   }
 }`;
   assert.deepEqual(normalizeConfig(parse(base)).mcp, [
@@ -60,7 +60,13 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
     { allowed_hosts: ["example.com"] },
     { mounts: [] },
   ]) {
-    assert.throws(() => normalizeConfig({ "vm-tools": { code: { runtime: "tilth", ...extra } } }));
+    assert.throws(() =>
+      normalizeConfig({
+        vm_tools: {
+          code: { runtime: "tilth", ...extra },
+        },
+      }),
+    );
   }
   assert.throws(() => normalizeConfig(parse(base.replace('"runtime":', '"command":'))));
 });

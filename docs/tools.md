@@ -8,7 +8,7 @@ integrations; provider-native settings and plugins remain separate.
 
 ```jsonc
 {
-  "local-tools": {
+  "local_tools": {
     "tilth": {
       "command": "tilth",
       "args": ["--mcp", "--edit"],
@@ -19,30 +19,30 @@ integrations; provider-native settings and plugins remain separate.
       "default_for": ["find", "grep"],
     },
   },
-  "vm-tools": {
+  "vm_tools": {
     "tilth": {
       "runtime": "tilth",
       "default_for": ["read", "write", "edit", "find", "grep"],
     },
   },
-  "remote-tools": {
+  "remote_tools": {
     "docs": {
       "url": "https://docs.example.com/mcp",
       "bearer_token_env": "DOCS_TOKEN",
     },
   },
   "session": {
-    "local-tools": [],
-    "vm-tools": [],
-    "remote-tools": [],
+    "local_tools": [],
+    "vm_tools": [],
+    "remote_tools": [],
   },
 }
 ```
 
 `tools` are executables installed on the host. Arguments are an array, never a
-shell command string. `vm-tools` use packaged runtimes in separate offline VMs;
+shell command string. `vm_tools` use packaged runtimes in separate offline VMs;
 their manifests supply commands and arguments. They receive the repository mounts,
-including shared Git metadata, without host credentials. `remote-tools` receive
+including shared Git metadata, without host credentials. `remote_tools` receive
 per-session HTTP relays; inline `bearer_token` overrides `bearer_token_env`.
 
 All selected tools are required. Missing executables, runtime artifacts or selected
@@ -53,7 +53,7 @@ are syntax-validated but do not require installation or credentials.
 
 ## Common configurations
 
-Add these settings to the matching `repo` array in your user config. Each example
+Add these settings to the matching `repos` array in your user config. Each example
 assumes the definitions above. Host/VM agent execution still uses the existing
 `isolation` settings; `session` contains tool selections only.
 
@@ -61,26 +61,26 @@ assumes the definitions above. Host/VM agent execution still uses the existing
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/project",
-      "worktree": {
-        "enabled": false,
-      },
-      "isolation": {
-        "enabled": false,
-      },
       "session": {
-        "local-tools": ["tilth", "fff"],
-        "vm-tools": [],
-        "remote-tools": [],
+        "local_tools": ["tilth", "fff"],
+        "vm_tools": [],
+        "remote_tools": [],
+        "worktree": {
+          "enabled": false,
+        },
+        "isolation": {
+          "enabled": false,
+        },
       },
     },
   ],
 }
 ```
 
-Set `repo.worktree.enabled = true` for separate branches and worktrees while
+Set `repos[].session.worktree.enabled = true` for separate branches and worktrees while
 keeping agent and tool execution on the host.
 
 ### Host agent and a separate Tilth VM
@@ -89,13 +89,13 @@ Keep the host execution settings above and replace the tool selections:
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/project",
       "session": {
-        "local-tools": [],
-        "vm-tools": ["tilth"],
-        "remote-tools": [],
+        "local_tools": [],
+        "vm_tools": ["tilth"],
+        "remote_tools": [],
       },
     },
   ],
@@ -108,19 +108,19 @@ Only Tilth is confined in a VM. The agent still runs on the host.
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/project",
-      "worktree": {
-        "enabled": true,
-      },
-      "isolation": {
-        "enabled": true,
-      },
       "session": {
-        "local-tools": [],
-        "vm-tools": ["tilth"],
-        "remote-tools": ["docs"],
+        "local_tools": [],
+        "vm_tools": ["tilth"],
+        "remote_tools": ["docs"],
+        "worktree": {
+          "enabled": true,
+        },
+        "isolation": {
+          "enabled": true,
+        },
       },
     },
   ],
@@ -130,11 +130,11 @@ Only Tilth is confined in a VM. The agent still runs on the host.
 Agent VMs reject selected host tools before session resources are created. A host
 tool is never silently moved into a VM, and a failed VM never falls back to host
 execution. Node, Python and other programs inside the agent VM belong to its
-[development environment](session-environments.md), not `vm-tools`.
+[development environment](session-environments.md), not `vm_tools`.
 
 ## Selection and diagnostics
 
-Each list inherits independently from `session`; `repo.session` replaces only
+Each list inherits independently from `session`; `repos[].session` replaces only
 the lists it specifies. `[]` clears a group. Unknown selections, duplicate names
 within a list, or selecting the same name from different groups are errors.
 Definitions can share a name across groups, as Tilth does above.

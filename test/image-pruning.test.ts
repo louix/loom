@@ -186,13 +186,15 @@ test("global pruning sees explicit pins in other trusted repos", async () => {
     await Deno.writeTextFile(
       config,
       `{
-  "repo": [
+  "repos": [
     {
       "path": "${root}/other",
-      "isolation": {
-        "claude": {
-          "artifact": "/pinned-runtime",
-          "smolvm": "/pinned/bin/smolvm"
+      "session": {
+        "isolation": {
+          "claude": {
+            "artifact": "/pinned-runtime",
+            "smolvm": "/pinned/bin/smolvm"
+          }
         }
       }
     }

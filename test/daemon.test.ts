@@ -473,18 +473,22 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
     config: `{
   "default_provider": "openai",
   "providers": {
-    "openai": {
-      "base_url": "https://api.openai.com/v1",
-      "model": "gpt-5",
-      "models": [
-        "gpt-5",
-        "gpt-5-mini"
-      ]
-    },
-    "deepseek": {
-      "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat",
-      "color": "red"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "https://api.openai.com/v1",
+          "model": "gpt-5",
+          "models": [
+            "gpt-5",
+            "gpt-5-mini"
+          ]
+        },
+        "deepseek": {
+          "base_url": "https://api.deepseek.com/v1",
+          "model": "deepseek-chat",
+          "color": "red"
+        }
+      }
     }
   }
 }`,
@@ -540,15 +544,18 @@ test("providers.list expands [[claude_profiles]] into distinct ids, tags, colour
   );
   const hh = await makeHarness({
     config: `{
-  "claude_profiles": [
-    {
-      "dir": "~/.claude"
-    },
-    {
-      "dir": ${JSON.stringify(workDir)},
-      "name": "Work"
+  "providers": {
+    "claude": {
+      "profiles": {
+        "default": {
+          "config_dir": "~/.claude"
+        },
+        "Work": {
+          "config_dir": ${JSON.stringify(workDir)}
+        }
+      }
     }
-  ]
+  }
 }`,
   });
   try {
@@ -585,13 +592,17 @@ test("the last model a provider ran becomes its default for new sessions", async
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "local": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "pin-a",
-      "models": [
-        "pin-a",
-        "pin-b"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "pin-a",
+          "models": [
+            "pin-a",
+            "pin-b"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -628,12 +639,16 @@ test("session.setEffort records the row and becomes the default effort for the n
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "local": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "pin-a",
-      "models": [
-        "pin-a"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "pin-a",
+          "models": [
+            "pin-a"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -674,13 +689,17 @@ test("remembering defaults publishes a snapshot with the fresh provider list", a
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "local": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "pin-a",
-      "models": [
-        "pin-a",
-        "pin-b"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "pin-a",
+          "models": [
+            "pin-a",
+            "pin-b"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -771,9 +790,13 @@ test("session.fork copies the transcript into a new session + worktree", async (
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "gpt-5"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "gpt-5"
+        }
+      }
     }
   }
 }`,
@@ -843,9 +866,13 @@ test("session.rewind: toTurn 0 wipes the transcript; range guard covers the ends
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "openai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "gpt-5"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "gpt-5"
+        }
+      }
     }
   }
 }`,
@@ -957,13 +984,17 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "oai": {
-      "base_url": "${srv.base}"
-    },
-    "needkey": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "x",
-      "api_key_env": "LOOM_TEST_UNSET_KEY_VAR"
+    "openai_compatible": {
+      "profiles": {
+        "oai": {
+          "base_url": ${JSON.stringify(srv.base)}
+        },
+        "needkey": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "x",
+          "api_key_env": "LOOM_TEST_UNSET_KEY_VAR"
+        }
+      }
     }
   }
 }`,
@@ -1053,13 +1084,19 @@ test("aisdk model auto-detection fills the picker list at start-up; config.check
 test("in-place sessions: no worktree, repo-root git facts, hard fork refused", async () => {
   const hh = await makeHarness({
     config: `{
-  "worktree": {
-    "enabled": false
-  },
   "providers": {
-    "openai": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "gpt-5"
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "gpt-5"
+        }
+      }
+    }
+  },
+  "session": {
+    "worktree": {
+      "enabled": false
     }
   }
 }`,
@@ -1283,8 +1320,10 @@ test("[auto_resume]: a restart re-drives sessions the old daemon left mid-run", 
 test("[auto_resume] off: a restart leaves mid-run sessions interrupted", async () => {
   const hh = await makeHarness({
     config: `{
-  "auto_resume": {
-    "enabled": false
+  "session": {
+    "auto_resume": {
+      "enabled": false
+    }
   }
 }`,
   });
@@ -1377,8 +1416,10 @@ test("[auto_resume]: a session interrupted before the restart is left alone", as
 test("[auto_rebase]: a clean idle replays the branch onto an advanced base, silently", async () => {
   const hh = await makeHarness({
     config: `{
-  "auto_rebase": {
-    "enabled": true
+  "session": {
+    "auto_rebase": {
+      "enabled": true
+    }
   }
 }`,
   });
@@ -1435,8 +1476,10 @@ test("[auto_rebase]: a clean idle replays the branch onto an advanced base, sile
 test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to integrate", async () => {
   const hh = await makeHarness({
     config: `{
-  "auto_rebase": {
-    "enabled": true
+  "session": {
+    "auto_rebase": {
+      "enabled": true
+    }
   }
 }`,
   });
@@ -1704,8 +1747,10 @@ test("session.rebase: a conflict leaves the branch untouched and does not nudge"
 test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", async () => {
   const hh = await makeHarness({
     config: `{
-  "worktree": {
-    "enabled": true
+  "session": {
+    "worktree": {
+      "enabled": true
+    }
   }
 }`,
   });
@@ -1731,11 +1776,13 @@ test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", 
     writeFileSync(
       cfgPath,
       `{
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(hh.repoRoot)},
-      "worktree": {
-        "enabled": false
+      "session": {
+        "worktree": {
+          "enabled": false
+        }
       }
     }
   ]
@@ -1784,10 +1831,14 @@ test("a provider-set change on disk asks for a restart rather than applying live
       cfgPath,
       `{
   "base_branch": "main",
-  "custom-provider": {
-    "local": {
-      "base_url": "http://localhost:1234/v1",
-      "model": "m"
+  "providers": {
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "http://localhost:1234/v1",
+          "model": "m"
+        }
+      }
     }
   }
 }`,
@@ -1810,8 +1861,10 @@ test("a provider-set change on disk asks for a restart rather than applying live
 test("config reload survives atomic saves, deletion, and invalid edits", async () => {
   const hh = await makeHarness({
     config: `{
-  "worktree": {
-    "enabled": true
+  "session": {
+    "worktree": {
+      "enabled": true
+    }
   }
 }`,
   });
@@ -1829,8 +1882,10 @@ test("config reload survives atomic saves, deletion, and invalid edits", async (
     writeFileSync(
       replacement,
       `{
-  "worktree": {
-    "enabled": false
+  "session": {
+    "worktree": {
+      "enabled": false
+    }
   }
 }`,
     );
@@ -1846,8 +1901,10 @@ test("config reload survives atomic saves, deletion, and invalid edits", async (
     writeFileSync(
       hh.configPath,
       `{
-  "worktree": {
-    "enabled": false
+  "session": {
+    "worktree": {
+      "enabled": false
+    }
   }
 }`,
     );
@@ -1867,8 +1924,12 @@ test("model probes resolving at bring-up publish a snapshot with the detected li
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "local": {
-      "base_url": "${srv.base}"
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": ${JSON.stringify(srv.base)}
+        }
+      }
     }
   }
 }`,
@@ -1906,12 +1967,16 @@ test("no extra snapshot at bring-up when the provider list is fully pinned", asy
   const hh = await makeHarness({
     config: `{
   "providers": {
-    "local": {
-      "base_url": "http://127.0.0.1:9/v1",
-      "model": "pin-a",
-      "models": [
-        "pin-a"
-      ]
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "http://127.0.0.1:9/v1",
+          "model": "pin-a",
+          "models": [
+            "pin-a"
+          ]
+        }
+      }
     }
   }
 }`,
@@ -2501,12 +2566,7 @@ test("a mode notification for a session with no live adapter writes nothing", as
 test("doctor reflects configured HTTP mounts, preferences and disabled native tools", async () => {
   const hh = await makeHarness({
     config: `{
-  "session": {
-    "remote-tools": [
-      "research"
-    ]
-  },
-  "remote-tools": {
+  "remote_tools": {
     "research": {
       "url": "https://example.invalid/mcp?private=do-not-display",
       "default_for": [
@@ -2520,6 +2580,11 @@ test("doctor reflects configured HTTP mounts, preferences and disabled native to
         "Read"
       ]
     }
+  },
+  "session": {
+    "remote_tools": [
+      "research"
+    ]
   }
 }`,
   });
@@ -2548,10 +2613,12 @@ test("tool preflight rejects missing host executables and VM placement before al
   for (const vm of [false, true]) {
     const hh = await makeHarness({
       config: JSON.stringify({
-        "local-tools": { files: { command: "loom-test-missing-host-tool" } },
-        session: { "local-tools": ["files"] },
+        local_tools: { files: { command: "loom-test-missing-host-tool" } },
+        session: {
+          local_tools: ["files"],
+          isolation: { enabled: vm, ...(vm ? { claude: { artifact: "/unused-runtime" } } : {}) },
+        },
         providers: { claude: { models: ["fixture"] } },
-        ...(vm ? { isolation: { enabled: true, claude: { artifact: "/unused-runtime" } } } : {}),
       }),
     });
     const c = await LoomClient.connect({
@@ -2672,11 +2739,13 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
     writeFileSync(
       hh.configPath,
       `{
-  "isolation": {
-    "enabled": true,
-    "claude": {
-      "artifact": "/tmp/test-artifact",
-      "smolvm": "smolvm"
+  "session": {
+    "isolation": {
+      "enabled": true,
+      "claude": {
+        "artifact": "/tmp/test-artifact",
+        "smolvm": "smolvm"
+      }
     }
   }
 }`,
@@ -2757,10 +2826,12 @@ test("disabled and missing providers stay read-only and can fork to an enabled p
   const hh = await makeHarness({
     config: `{
   "default_provider": "fake",
-  "provider_access": {
-    "disabled": [
-      "claude"
-    ]
+  "session": {
+    "provider_access": {
+      "disabled": [
+        "claude"
+      ]
+    }
   }
 }`,
   });

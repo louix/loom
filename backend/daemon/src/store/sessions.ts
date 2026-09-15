@@ -278,7 +278,7 @@ export class SessionStore {
 
   /**
    * Repoint every session on provider `from` to `to` — recovery for a renamed
-   * / re-keyed provider (e.g. a `[[claude_profiles]]` `name` change, which
+   * / re-keyed provider (e.g. a `providers.claude.profiles` key change, which
    * recomputes its id). Reuses {@link setFields} per row so cache-observation
    * clearing and `updated_at` stay consistent with any other provider switch.
    * Also carries over the "last used" caches (`ProviderDefaultStore` below)

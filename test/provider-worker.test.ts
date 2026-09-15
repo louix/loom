@@ -52,19 +52,25 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
       await Deno.writeTextFile(
         configFile,
         `{
-  "custom-provider": {
-    "fixture": {
-      "base_url": "http://127.0.0.1:${server.addr.port}/v1",
-      "api_key": "fixture"
+  "providers": {
+    "openai_compatible": {
+      "profiles": {
+        "fixture": {
+          "base_url": "http://127.0.0.1:${server.addr.port}/v1",
+          "api_key": "fixture"
+        }
+      }
     }
   },
-  "provider_access": {
-    "only": [
-      "fixture"
-    ]
-  },
-  "worktree": {
-    "enabled": false
+  "session": {
+    "provider_access": {
+      "only": [
+        "fixture"
+      ]
+    },
+    "worktree": {
+      "enabled": false
+    }
   }
 }`,
       );

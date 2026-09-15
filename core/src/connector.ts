@@ -22,7 +22,7 @@ export interface SearchConfig {
 
 /**
  * The config slice for one provider id, flattened from `[providers.<id>]` /
- * `[custom-provider.<id>]` / `[google]` / `[anthropic]` / `[providers.claude]`.
+ * `providers.<family>` or `providers.<family>.profiles.<name>`.
  * Every field is optional — a connector reads only the ones it needs.
  */
 const connectorConfigFields = z.object({

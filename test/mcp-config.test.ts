@@ -9,12 +9,7 @@ import type { McpServerHandle } from "@loom/core/types";
 
 const config = (s: string) => normalizeConfig(parse(s || "{}"));
 const http = `{
-  "session": {
-    "remote-tools": [
-      "research"
-    ]
-  },
-  "remote-tools": {
+  "remote_tools": {
     "research": {
       "url": "https://mcp.example.com/mcp",
       "bearer_token_env": "SEARCH_CREDENTIAL",
@@ -23,14 +18,19 @@ const http = `{
         "web_fetch"
       ]
     }
+  },
+  "session": {
+    "remote_tools": [
+      "research"
+    ]
   }
 }`;
 
 test("named tool definitions resolve selected transports and credential references", () => {
   const cfg = normalizeConfig({
     ...parse(http),
-    session: { "remote-tools": ["research"], "local-tools": ["code"] },
-    "local-tools": {
+    session: { remote_tools: ["research"], local_tools: ["code"] },
+    local_tools: {
       code: {
         command: "/path with spaces/tool",
         args: ["--mcp", "literal $HOME"],
@@ -96,14 +96,14 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
     http.replace("https://mcp.example.com/mcp", "file:///tmp/key"),
     http.replace("https://mcp.example.com/mcp", "https://user:password@example.com/mcp"),
     `{
-  "local-tools": {
+  "local_tools": {
     "loom": {
       "command": "tool"
     }
   }
 }`,
     `{
-  "local-tools": {
+  "local_tools": {
     "broken": {
       "command": "tool",
       "args": [
@@ -113,14 +113,14 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
   }
 }`,
     `{
-  "local-tools": {
+  "local_tools": {
     "broken": {
       "runtime": "tilth"
     }
   }
 }`,
     `{
-  "vm-tools": {
+  "vm_tools": {
     "broken": {
       "runtime": "tilth",
       "command": "host"
@@ -134,13 +134,13 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
 }`,
     `{
   "session": {
-    "local-tools": [
+    "local_tools": [
       "missing"
     ]
   }
 }`,
     `{
-  "local-tools": []
+  "local_tools": []
 }`,
   ])
     assert.throws(() => config(text), text);

@@ -66,12 +66,12 @@ export const toolSettingsSchema = z.object({
   session: preprocess(
     (v) => v ?? {},
     z.strictObject({
-      "local-tools": selections,
-      "vm-tools": selections,
-      "remote-tools": selections,
+      local_tools: selections,
+      vm_tools: selections,
+      remote_tools: selections,
     }),
   ),
-  "local-tools": preprocess(
+  local_tools: preprocess(
     (v) => v ?? {},
     z
       .record(
@@ -84,11 +84,11 @@ export const toolSettingsSchema = z.object({
       )
       .default({}),
   ),
-  "vm-tools": preprocess(
+  vm_tools: preprocess(
     (v) => v ?? {},
     z.record(toolName, z.strictObject({ ...toolDefaults, runtime: requiredText })).default({}),
   ),
-  "remote-tools": preprocess(
+  remote_tools: preprocess(
     (v) => v ?? {},
     z
       .record(
@@ -117,8 +117,7 @@ export const toolSettingsSchema = z.object({
 });
 export type ToolSettings = z.output<typeof toolSettingsSchema>;
 
-export const providerSchema = section({
-  sdk: z.enum(["openai", "google", "anthropic", "chatgpt"]).catch("openai"),
+const providerFields = {
   base_url: text(),
   api_key_env: text(),
   api_key: text(),
@@ -133,8 +132,15 @@ export const providerSchema = section({
   ),
   auth_path: text(),
   config_dir: text(),
-  codex_cli_path: text(),
-  codex_builtin_web_search: flag(false),
+  cli_path: text(),
+  builtin_web_search: flag(false),
+};
+
+export const providerSchema = section(providerFields);
+// Profiles stay sparse until merged with their family defaults.
+const sparseProviderSchema = z.object(providerFields).partial();
+const providerFamilySchema = sparseProviderSchema.extend({
+  profiles: z.record(z.string(), sparseProviderSchema).optional(),
 });
 
 export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) => {
@@ -170,79 +176,86 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
   return section({
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),
-    "custom-provider": preprocess(record, z.record(z.string(), providerSchema)).optional(),
-    google: providerSchema.optional(),
-    anthropic: providerSchema.optional(),
-    chatgpt: providerSchema.optional(),
     base_branch: text(d.baseBranch),
     worktree_dir: text(d.worktreeDir),
     db: text(d.db),
     default_provider: text(d.defaultProvider),
-    worktree: section({ enabled: flag(d.worktree.enabled) }),
-    auto_rebase: section({
-      enabled: flag(d.autoRebase.enabled),
-      mode: z.enum(["rebase", "merge"]).catch("rebase"),
-    }),
-    auto_resume: section({ enabled: flag(d.autoResume.enabled) }),
-    commit_reminder: section({ enabled: flag(d.commitReminder.enabled) }),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
-    titles: section({ enabled: flag(d.titles.enabled) }),
-    notify: section({ webhook: text(d.notify.webhook) }),
-    provider_access: section({ only: ids.optional(), disabled: ids.default([]) }),
-    isolation: section({
-      enabled: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Default all providers to VM execution in this project. Existing sessions keep their mode.",
-        ),
-      claude: runtime,
-      aisdk: runtime,
-      codex: runtime,
-      extra_allowed_hosts: extraHostsSchema,
-      network_presets: networkPresetsSchema,
-      environment: sessionEnvironmentSchema,
-    }),
+    session: preprocess(
+      record,
+      z.strictObject({
+        local_tools: selections,
+        vm_tools: selections,
+        remote_tools: selections,
+        worktree: section({ enabled: flag(d.worktree.enabled) }),
+        auto_rebase: section({
+          enabled: flag(d.autoRebase.enabled),
+          mode: z.enum(["rebase", "merge"]).catch("rebase"),
+        }),
+        auto_resume: section({ enabled: flag(d.autoResume.enabled) }),
+        commit_reminder: section({ enabled: flag(d.commitReminder.enabled) }),
+        titles: section({ enabled: flag(d.titles.enabled) }),
+        notify: section({ webhook: text(d.notify.webhook) }),
+        provider_access: section({ only: ids.optional(), disabled: ids.default([]) }),
+        isolation: section({
+          enabled: z
+            .boolean()
+            .default(false)
+            .describe(
+              "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+            ),
+          claude: runtime,
+          aisdk: runtime,
+          codex: runtime,
+          extra_allowed_hosts: extraHostsSchema,
+          network_presets: networkPresetsSchema,
+          environment: sessionEnvironmentSchema,
+        }),
+      }),
+    ),
     providers: preprocess(
       record,
-      z
-        .object({
-          claude: section({
-            model: text(d.providers.claude.model),
-            title_model: text(d.providers.claude.titleModel),
-            models: strings(d.providers.claude.models),
-            permission_default: preprocess(
-              (v) => (v === "manual" ? "default" : v),
-              z
-                .enum(["default", "plan", "acceptEdits", "bypassPermissions"])
-                .catch(d.providers.claude.permissionDefault),
-              z.enum(["manual", "default", "plan", "acceptEdits", "bypassPermissions"]).optional(),
+      z.strictObject({
+        claude: section({
+          model: text(d.providers.claude.model),
+          title_model: text(d.providers.claude.titleModel),
+          models: strings(d.providers.claude.models),
+          permission_default: preprocess(
+            (v) => (v === "manual" ? "default" : v),
+            z
+              .enum(["default", "plan", "acceptEdits", "bypassPermissions"])
+              .catch(d.providers.claude.permissionDefault),
+            z.enum(["manual", "default", "plan", "acceptEdits", "bypassPermissions"]).optional(),
+          ),
+          setting_sources: strings(d.providers.claude.settingSources),
+          disable_builtin: strings(d.providers.claude.disableBuiltin),
+          cli_path: text(d.providers.claude.cliPath),
+          worker_allowed_hosts: strings().optional(),
+          prompt_cache_ttl: z.enum(["5m", "1h", ""]).catch(d.providers.claude.promptCacheTtl),
+          profiles: preprocess(
+            record,
+            z.record(
+              z.string(),
+              section({
+                config_dir: text().transform((v) => v.trim()),
+                color: text().transform((v) => v.trim()),
+              }),
             ),
-            setting_sources: strings(d.providers.claude.settingSources),
-            disable_builtin: strings(d.providers.claude.disableBuiltin),
-            cli_path: text(d.providers.claude.cliPath),
-            worker_allowed_hosts: strings().optional(),
-            prompt_cache_ttl: z.enum(["5m", "1h", ""]).catch(d.providers.claude.promptCacheTtl),
-          }),
-        })
-        .catchall(providerSchema),
-    ),
-    claude_profiles: z
-      .array(
-        section({
-          dir: text().transform((v) => v.trim()),
-          name: text().transform((v) => v.trim()),
-          color: text().transform((v) => v.trim()),
+          ),
         }),
-      )
-      .catch([]),
+        codex: providerFamilySchema.optional(),
+        google: providerFamilySchema.optional(),
+        anthropic: providerFamilySchema.optional(),
+        openai_compatible: providerFamilySchema.optional(),
+      }),
+    ),
     hooks: z.array(hook).max(64).default([]),
     search: section({
       backend: preprocess(
         (v) => {
           if (v === "kagi")
             throw new Error(
-              "Configure Kagi under remote-tools.kagi and select it in session.remote-tools",
+              "Configure Kagi under remote_tools.kagi and select it in session.remote_tools",
             );
           return v;
         },
@@ -317,7 +330,7 @@ export const configEditorSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       "User defaults and exact project overrides. Objects merge; arrays replace inherited arrays.",
     properties: {
       ...settings.properties,
-      repo: { type: "array", description: "Overrides for individual repositories.", items: repo },
+      repos: { type: "array", description: "Overrides for individual repositories.", items: repo },
     },
   };
 };

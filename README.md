@@ -114,10 +114,10 @@ the Vercel AI SDK.
   - **`commit`** — commits the session's worktree under its
     `Loom (<model>)` identity, no shelling out to git. Returns the short hash,
     subject and diffstat; refuses cleanly when there's nothing to commit.
-- **Tool selection** — define host commands in `local-tools.<name>`, separate
-  offline VM runtimes in `vm-tools.<name>`, and remote services in
-  `remote-tools.<name>`. Select them with `tools`, `vm-tools`, and
-  `remote-tools` lists under `session` or `repo.session`. Definitions
+- **Tool selection** — define host commands in `local_tools.<name>`, separate
+  offline VM runtimes in `vm_tools.<name>`, and remote services in
+  `remote_tools.<name>`. Select them with `tools`, `vm_tools`, and
+  `remote_tools` lists under `session` or `repos[].session`. Definitions
   alone enable nothing; no external tools are selected by default. Selected
   tools are required. Agent VMs reject host tool selections before startup.
   `default_for` declares capability preferences without renaming tools or
@@ -209,27 +209,48 @@ edits but still gates commands; `auto` lets the agent proceed on its own but
 still stops for anything it judges unsafe (the Claude SDK's own `auto` — not
 the flag-gated `bypassPermissions`, which Loom never uses).
 
-**Non-Claude providers (milestone 10)** run on the Vercel AI SDK. Configure them
-in `~/.config/loom/config.jsonc`; credentials go in as env-var _names_ via `api_key_env`, or
-inline with `api_key`.
+**Provider configuration** lives under `providers`, grouped by family:
 
-- `custom-provider.<id>` — an OpenAI-compatible endpoint (OpenAI, GLM,
-  DeepSeek, OpenRouter, vLLM, Ollama). `base_url` required; `<id>` is the
-  provider id. This is the form that becomes a plugin.
-- `google` / `anthropic` — one native profile each (`@ai-sdk/google`,
-  `@ai-sdk/anthropic`); the provider id is the vendor name.
-- `chatgpt` — uses the ChatGPT/Codex subscription authenticated by `codex
-login` in `~/.codex/auth.json`; no OpenAI API key. Its authenticated Codex
-  catalogue is discovered automatically. Direct-tool models get Loom's normal
-  tool, MCP, and sub-agent surface. `code_mode_only` models run through the
-  locally installed `codex app-server`, which supplies Codex's full Code Mode
-  host while Loom retains its MCP and approval configuration.
-- `providers.<id>` — additional named accounts. `sdk` selects `openai`
-  (the default), `google`, `anthropic`, or `chatgpt`; no adapter setting is needed.
+- `providers.claude` — Claude CLI settings, including `cli_path` and `title_model`.
+  Named accounts go in `profiles`, with `config_dir` and optional `color`.
+- `providers.codex` — the subscription authenticated by `codex login`.
+  Set `cli_path`, `config_dir`, or `builtin_web_search` here; named profiles inherit
+  these defaults and may override them. No API key is required.
+- `providers.google` / `providers.anthropic` — native API providers. Supply a
+  `model` and credentials through `api_key_env` or `api_key`.
+- `providers.openai_compatible.profiles.<name>` — endpoints such as OpenAI,
+  OpenRouter, DeepSeek, vLLM, and Ollama. Each needs a `base_url`.
+
+For CLI and native API families, omitting `profiles` selects the default account. Named accounts have ids
+such as `claude:work` and `codex:personal`; a profile named `default` uses the family
+name alone. OpenAI-compatible endpoints use their profile name as their id.
+
+```jsonc
+{
+  "providers": {
+    "claude": {
+      "profiles": { "work": { "config_dir": "~/.claude-work" } },
+    },
+    "codex": {
+      "cli_path": "/path/to/codex",
+      "profiles": {
+        "default": { "config_dir": "~/.codex" },
+        "personal": { "config_dir": "~/.codex-personal" },
+      },
+    },
+    "openai_compatible": {
+      "profiles": { "local": { "base_url": "http://localhost:11434/v1" } },
+    },
+  },
+}
+```
 
 Automatic titles use a cheap default for each provider. Set `title_model` in
-that provider’s object to override it (including `providers.claude`).
-`titles.enabled = false` disables automatic titles globally.
+that provider's settings to override it. `session.titles.enabled = false`
+disables automatic titles. Session behavior belongs under `session`: `worktree`,
+`auto_rebase`, `auto_resume`, `commit_reminder`, `titles`, `notify`, `isolation`,
+`provider_access`, and the three tool-selection lists. Tool definitions remain
+at the top level in `local_tools`, `vm_tools`, and `remote_tools`.
 
 `default_provider` picks which one new sessions use until a session is
 actually created — from then on the provider, model, and permission mode it
@@ -276,14 +297,14 @@ OpenAI-compatible profiles need no `model`: the picker list comes from
 `{base_url}/models`, and a new session defaults to the last model that provider
 ran (remembered in the db, shown by `loom providers`). A model that has since
 dropped out of the endpoint's list is skipped, with a notice. Pin `model` /
-`models` only for an endpoint whose `/models` is missing or wrong; `chatgpt`
+`models` only for an endpoint whose `/models` is missing or wrong; `providers.codex`
 uses Codex's authenticated catalogue (including each model's maximum context), while the native Google and Anthropic
 SDKs still need a `model` (no probe).
 `loom config` (also logged at launch) lints the
 loaded config — unset key vars, providers whose model auto-detection found
 nothing, a
 keyless search backend. A first launch with no `~/.config/loom/config.jsonc`
-drops an annotated copy of `config.example.jsonc` there.
+creates a small starter config there. See [the annotated example](backend/daemon/config.example.jsonc) for more settings.
 
 **Context windows.** When the endpoint advertises one on its `/models` rows
 (`context_length` on OpenRouter, `context_tokens` on sference, `max_model_len`
@@ -376,24 +397,26 @@ to once per minute. These are last observed values, not a live account balance.
 
 **Repository configuration.** All configuration lives in
 `$XDG_CONFIG_HOME/loom/config.jsonc` (default `~/.config/loom/config.jsonc`).
-JSONC supports comments and trailing commas. Each object in the `repo` array
+JSONC supports comments and trailing commas. Each object in the `repos` array
 overrides defaults for one project:
 
 ```jsonc
 {
-  "repo": [
+  "repos": [
     {
       "path": "~/dev/my-project",
       "base_branch": "main",
-      "worktree": {
-        "enabled": true,
+      "session": {
+        "worktree": {
+          "enabled": true,
+        },
       },
     },
   ],
 }
 ```
 
-Matching resolves both the launch path and `repo.path` to the same Git repository
+Matching resolves both the launch path and `repos[].path` to the same Git repository
 identity, including symlinks and subdirectories. For a bare repository, prefer its
 own path (for example `/project/.bare`); paths to its linked worktrees also match
 that repository. Multiple entries resolving to the same root are duplicates.
@@ -404,8 +427,8 @@ watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
 available for project instructions.
 
-**Session isolation.** `isolation.enabled = true` defaults every provider to VM
-execution. Set `repo.isolation.enabled = false` in a `repo` array entry to run
+**Session isolation.** `session.isolation.enabled = true` defaults every provider to VM
+execution. Set `repos[].session.isolation.enabled = false` in a `repos` array entry to run
 that project locally. Unlisted repositories inherit the global default (Local
 when omitted).
 In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
@@ -422,7 +445,7 @@ forks start a fresh session with saved conversation context, rather than importi
 native history. Existing sessions are classified from saved VM state when upgrading.
 
 **Hooks (`hooks` array).** Commands run asynchronously in the session's worktree.
-Declare them in `~/.config/loom/config.jsonc`. Use `repo` array overrides or the
+Declare them in `~/.config/loom/config.jsonc`. Use `repos` array overrides or the
 hook’s `project` field to scope them; override arrays replace global arrays.
 Changes hot-apply; changing hooks cancels old runs and clears their feedback state.
 
@@ -742,11 +765,13 @@ Keep this property at the top of `~/.config/loom/config.jsonc`:
 }
 ```
 
-Loom ships `config.schema.json` beside the user config and refreshes it at startup.
+At startup, Loom generates `config.schema.json` from its Zod definitions in
+`$XDG_CONFIG_HOME/loom` (default `~/.config/loom`). The schema is refreshed even
+when a config already exists; existing config contents are preserved.
 Editors with JSON Schema support use it for property completion, allowed values,
 and inline diagnostics. It works offline; in VS Code, use **JSON with Comments**
 for the file's language mode. Other editors need their JSON language server enabled.
 
 The schema describes config inputs; runtime checks still resolve paths, provider
 availability, and relationships between settings. Contributors regenerate it from
-Zod with `deno task config:schema`. Tests check that the shipped schema is current.
+Zod with `deno task config:schema`. Tests check that the reference schema is current; startup generation needs no packaged schema file.

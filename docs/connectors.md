@@ -61,10 +61,10 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-Define host commands under `local-tools.<name>`, separate offline packaged VMs
-under `vm-tools.<name>`, and remote services under `remote-tools.<name>`.
+Define host commands under `local_tools.<name>`, separate offline packaged VMs
+under `vm_tools.<name>`, and remote services under `remote_tools.<name>`.
 Select names with the three corresponding lists under `session` or
-`repo.session`. There are no implicit external tools. See
+`repos[].session`. There are no implicit external tools. See
 [tool selection](tools.md) and [packaged runtimes](packaged-runtimes.md).
 Each active session gets a separate relay for each remote service. Only selected
 remote credentials are required; inline `bearer_token` overrides the env var.
@@ -81,23 +81,23 @@ guarantee that every call uses the preferred server.
 
 ```jsonc
 {
-  "session": {
-    "local-tools": ["tilth"],
-    "remote-tools": ["kagi"],
-  },
-  "remote-tools": {
+  "remote_tools": {
     "kagi": {
       "url": "https://mcp.kagi.com/mcp",
       "bearer_token_env": "KAGI_API_KEY",
       "default_for": ["web_search", "web_fetch"],
     },
   },
-  "local-tools": {
+  "local_tools": {
     "tilth": {
       "command": "tilth",
       "args": ["--mcp", "--edit"],
       "default_for": ["read", "write", "edit"],
     },
+  },
+  "session": {
+    "local_tools": ["tilth"],
+    "remote_tools": ["kagi"],
   },
 }
 ```
@@ -228,21 +228,22 @@ No build step — source is `.ts`.
 
 `ProviderRegistry.#packageFor(id)`:
 
-| provider id / profile                                              | connector package         |
-| ------------------------------------------------------------------ | ------------------------- |
-| `claude`                                                           | `@loom/connector-claude`  |
-| `fake` / `mock`                                                    | `@loom/connector-mock`    |
-| `chatgpt` or `sdk = "chatgpt"`                                     | `@loom/connector-chatgpt` |
-| `google` or `sdk = "google"`                                       | `@loom/connector-gemini`  |
-| `custom-provider.*`, `anthropic`, `sdk = "openai"` / `"anthropic"` | `@loom/connector-generic` |
+| Config family                                        | Connector package         |
+| ---------------------------------------------------- | ------------------------- |
+| `providers.claude`                                   | `@loom/connector-claude`  |
+| `fake` / `mock`                                      | `@loom/connector-mock`    |
+| `providers.codex`                                    | `@loom/connector-chatgpt` |
+| `providers.google`                                   | `@loom/connector-gemini`  |
+| `providers.openai_compatible`, `providers.anthropic` | `@loom/connector-generic` |
 
-Connector routing is internal to Loom. To add a connector, register the workspace
-package in the CLI manifest (`cli/src/connectors.ts`) and add its backend route
-in `ProviderRegistry.#packageFor`. User profiles select the backend with `sdk`.
+Connector routing is internal to Loom. To add a connector, register its package
+in the CLI manifest (`cli/src/connectors.ts`) and its route in `ProviderRegistry`.
+The config family selects the backend; named accounts live in its `profiles` map.
+The internal Codex connector package retains its existing name.
 
-## ChatGPT subscription
+## Codex subscription
 
-`chatgpt` uses the OAuth session created by `codex login`; it does not read an
+`providers.codex` uses the OAuth session created by `codex login`; it does not read an
 OpenAI API key or put a subscription token in Loom's configuration. At daemon
 start it lists your account's models and their reasoning efforts through a
 short-lived `codex app-server` process (`model/list`), and context limits from
@@ -251,7 +252,9 @@ remains optional:
 
 ```jsonc
 {
-  "chatgpt": {},
+  "providers": {
+    "codex": {},
+  },
 }
 ```
 
@@ -263,8 +266,8 @@ directory is used consistently for discovery and for every spawned
 `codex app-server` session (as that subprocess's own `CODEX_HOME`), so both
 always authenticate against the same `auth.json`.
 
-Run it with `loom run --provider chatgpt "…"`, or set
-`default_provider = "chatgpt"` in the same configuration file.
+Run it with `loom run --provider codex "…"`, or set
+`default_provider = "codex"` in the same configuration file.
 
 The connector follows each model's `tool_mode` metadata. Models without
 `code_mode_only` accept Loom's normal functions, so they can use MCP, web
@@ -274,13 +277,15 @@ in turn starts Codex's Code Mode host and provides its native patching,
 approvals, steering, and sub-agent tools. Install `codex` and run `codex login`
 before using one.
 
-Set `codex_cli_path` in `chatgpt` (or an `sdk = "chatgpt"` provider profile)
+Set `cli_path` in `providers.codex` or one of its profiles
 when `codex` is not on `PATH`:
 
 ```jsonc
 {
-  "chatgpt": {
-    "codex_cli_path": "/absolute/path/to/codex",
+  "providers": {
+    "codex": {
+      "cli_path": "/absolute/path/to/codex",
+    },
   },
 }
 ```
@@ -290,7 +295,7 @@ with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
 back through Loom's existing permission UI. HTTP MCP mounts use session relays;
 the native client receives a local access token rather than the upstream key.
-Set `codex_builtin_web_search = true` to also expose Codex's native web search.
+Set `builtin_web_search = true` to also expose Codex's native web search.
 
 This is a vendored compatibility connector over the private Codex backend,
 rather than the public OpenAI API. That backend and its accepted model IDs can

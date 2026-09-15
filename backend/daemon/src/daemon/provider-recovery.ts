@@ -1,7 +1,7 @@
 /**
  * Finds which currently-configured Claude profile owns an orphaned session.
  *
- * A Claude provider's id is derived from its `[[claude_profiles]]` `name`
+ * A Claude provider's id is derived from its `providers.claude.profiles` key
  * (`claudeProfileId` in `../config/config.ts`), so renaming a profile changes
  * the id every session on it has persisted (`sessions.provider`) — even
  * though the profile's `CLAUDE_CONFIG_DIR` (`dir`) never moved. Claude Code

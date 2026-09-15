@@ -3484,8 +3484,8 @@ export class Daemon {
 
   /**
    * Sessions whose stored `provider` id no longer resolves in the current
-   * config — typically a `[[claude_profiles]]` `name` (hence id) or a
-   * `[providers.*]` table was renamed out from under it. A Claude-family id
+   * config — typically a `providers.claude.profiles` key (hence id) or a
+   * `providers.<family>.profiles` entry was renamed out from under it. A Claude-family id
    * with a live transcript match self-heals in {@link #reviveSession}; this
    * only reports what's left — aisdk ids (no on-disk ownership evidence) and
    * Claude ids with zero/ambiguous matches — so it stays visible instead of
@@ -3498,7 +3498,7 @@ export class Daemon {
       if (this.#providers.has(id)) continue;
       w.push(
         `sessions reference provider "${id}", which no longer exists in config — ` +
-          "did you rename a [[claude_profiles]] or [providers.*] entry? " +
+          "did you rename a providers.<family>.profiles entry? " +
           `fix with \`loom relink-provider ${id} <current-id>\``,
       );
     }

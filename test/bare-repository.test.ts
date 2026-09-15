@@ -51,18 +51,22 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
     writeFileSync(
       configFile,
       `{
-  "titles": {
-    "enabled": false
-  },
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(linked)},
       "base_branch": "missing-falls-back-to-head",
-      "worktree": {
-        "enabled": false
+      "session": {
+        "worktree": {
+          "enabled": false
+        }
       }
     }
-  ]
+  ],
+  "session": {
+    "titles": {
+      "enabled": false
+    }
+  }
 }`,
     );
     const paths = loomPaths(bare);

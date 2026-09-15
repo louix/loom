@@ -36,25 +36,31 @@ const config = async (prepare: string) => {
     join(configHome, "loom/config.jsonc"),
     `{
   "default_provider": "openai",
-  "custom-provider": {
-    "openai": {
-      "base_url": "https://api.openai.com/v1"
+  "providers": {
+    "openai_compatible": {
+      "profiles": {
+        "openai": {
+          "base_url": "https://api.openai.com/v1"
+        }
+      }
     }
   },
-  "isolation": {
-    "enabled": true,
-    "extra_allowed_hosts": [
-      "registry.npmjs.org"
-    ],
-    "aisdk": {
-      "artifact": ${JSON.stringify(artifact)},
-      "smolvm": ${JSON.stringify(smolvm)}
-    },
-    "environment": {
-      "nix": ${nix},
-      "command_prefix": ${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])},
-      "prepare": ${JSON.stringify(prepare)},
-      "timeout_seconds": 180
+  "session": {
+    "isolation": {
+      "enabled": true,
+      "extra_allowed_hosts": [
+        "registry.npmjs.org"
+      ],
+      "aisdk": {
+        "artifact": ${JSON.stringify(artifact)},
+        "smolvm": ${JSON.stringify(smolvm)}
+      },
+      "environment": {
+        "nix": ${nix},
+        "command_prefix": ${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])},
+        "prepare": ${JSON.stringify(prepare)},
+        "timeout_seconds": 180
+      }
     }
   }
 }`,

@@ -9,9 +9,9 @@ import { withVmSessions } from "./vm-provider.ts";
  * actually uses, so a Claude-only daemon never evaluates `ai` / `@ai-sdk/*` and
  * an aisdk-only daemon never evaluates `@anthropic-ai/claude-agent-sdk`.
  *
- * `fake`/`mock` and the Claude profiles are always known (`[[claude_profiles]]`,
+ * `fake`/`mock` and the Claude profiles are always known (`providers.claude.profiles`,
  * defaulting to a lone `~/.claude` → id `claude`); every `[providers.<id>]` /
- * `[custom-provider.<id>]` / `[google]` / `[anthropic]` profile adds an id.
+ * `providers.<family>.profiles` entry adds an id.
  */
 import {
   claudeProfileId,
@@ -79,7 +79,7 @@ export class ProviderRegistry {
     ]);
   }
 
-  /** The `[[claude_profiles]]` entry an id serves. */
+  /** The `providers.claude.profiles` entry an id serves. */
   #claudeProfile(id: string): ClaudeProfile {
     const p = this.#config.claudeProfiles.find((x) => claudeProfileId(x) === id);
     if (!p) throw new Error(`unknown provider: ${id}`);

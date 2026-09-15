@@ -28,7 +28,7 @@ export const withExternalMcp = async (
       const host = input.mcpServers?.find((h) => h.spec.transport === "stdio");
       if (host)
         throw new Error(
-          `Host tool ${host.name} cannot be used by a VM agent; select vm-tools or remote-tools instead.`,
+          `Host tool ${host.name} cannot be used by a VM agent; select vm_tools or remote_tools instead.`,
         );
     }
     const cleanup = async () => {

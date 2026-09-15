@@ -29,18 +29,20 @@ test("base updates wait for idle, preserve the session, and queue messages throu
   const resumeGate = Promise.withResolvers<void>();
   h = await makeHarness({
     config: `{
-  "commit_reminder": {
-    "enabled": false
-  },
-  "auto_rebase": {
-    "enabled": false
-  },
   "hooks": [
     {
       "on": "init",
       "run": "echo initialized >> init-count"
     }
-  ]
+  ],
+  "session": {
+    "commit_reminder": {
+      "enabled": false
+    },
+    "auto_rebase": {
+      "enabled": false
+    }
+  }
 }`,
     connectors: {
       "@loom/connector-mock": async () => ({
@@ -226,15 +228,17 @@ test("a fork initializes its new worktree once even when its transcript is resum
   });
   const h = await makeHarness({
     config: `{
-  "commit_reminder": {
-    "enabled": false
-  },
   "hooks": [
     {
       "on": "init",
       "run": "echo init >> initialized"
     }
-  ]
+  ],
+  "session": {
+    "commit_reminder": {
+      "enabled": false
+    }
+  }
 }`,
     connectors: { "@loom/connector-mock": async () => ({ createProvider: async () => fake }) },
   });

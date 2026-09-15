@@ -17,25 +17,46 @@ import { normalizeConfig } from "../backend/daemon/src/config/config.ts";
 test("default preparation covers enabled runtimes once across provider profiles", () => {
   const config = normalizeConfig({
     providers: {
-      chatgpt: { adapter: "aisdk", sdk: "chatgpt" },
-      second: { adapter: "aisdk", sdk: "chatgpt" },
-      generic: { adapter: "aisdk", sdk: "openai", base_url: "https://example.com/v1" },
+      codex: {
+        profiles: {
+          default: {},
+          second: {},
+        },
+      },
+      openai_compatible: {
+        profiles: {
+          generic: {
+            base_url: "https://example.com/v1",
+          },
+        },
+      },
     },
-    isolation: {
-      enabled: true,
-      claude: { artifact: "/claude", smolvm: "/backend" },
-      codex: { artifact: "/codex", smolvm: "/backend" },
-      aisdk: { artifact: "/aisdk", smolvm: "/backend" },
+    session: {
+      isolation: {
+        enabled: true,
+        claude: {
+          artifact: "/claude",
+          smolvm: "/backend",
+        },
+        codex: {
+          artifact: "/codex",
+          smolvm: "/backend",
+        },
+        aisdk: {
+          artifact: "/aisdk",
+          smolvm: "/backend",
+        },
+      },
     },
   });
   const providers = environmentProviders(config);
   assert(providers.some((id) => id.startsWith("claude")));
-  assert(providers.includes("chatgpt"));
+  assert(providers.includes("codex"));
   assert(providers.includes("generic"));
   assert.equal(providers.filter((id) => config.providers.aisdk[id]?.sdk === "chatgpt").length, 1);
-  config.providerAccess.only = ["chatgpt"];
-  assert.deepEqual(environmentProviders(config), ["chatgpt"]);
-  config.providerAccess.disabled = ["chatgpt"];
+  config.providerAccess.only = ["codex"];
+  assert.deepEqual(environmentProviders(config), ["codex"]);
+  config.providerAccess.disabled = ["codex"];
   assert.deepEqual(environmentProviders(config), []);
   config.providerAccess = { disabled: [] };
   config.isolation.codex = config.isolation.claude!;

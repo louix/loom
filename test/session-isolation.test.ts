@@ -56,16 +56,18 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   };
   const config = (enabled: boolean) =>
     `{
-  "titles": {
-    "enabled": false
-  },
-  "auto_resume": {
-    "enabled": false
-  },
-  "isolation": {
-    "enabled": ${enabled},
-    "claude": {
-      "artifact": "/test-runtime"
+  "session": {
+    "titles": {
+      "enabled": false
+    },
+    "auto_resume": {
+      "enabled": false
+    },
+    "isolation": {
+      "enabled": ${enabled},
+      "claude": {
+        "artifact": "/test-runtime"
+      }
     }
   }
 }`;
@@ -176,8 +178,10 @@ test("VM and local sessions share a provider, keep modes across restart, and for
 test("VM selection without a runtime fails before allocating a session", async () => {
   const h = await makeHarness({
     config: `{
-  "titles": {
-    "enabled": false
+  "session": {
+    "titles": {
+      "enabled": false
+    }
   }
 }`,
   });
@@ -205,19 +209,39 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
   const { openDb } = await import("@loom/daemon/store/db");
   const config = normalizeConfig({
     providers: {
-      generic: { adapter: "aisdk", model: "fixture", base_url: "https://example.com" },
+      openai_compatible: {
+        profiles: {
+          generic: {
+            model: "fixture",
+            base_url: "https://example.com",
+          },
+        },
+      },
       codex: {
-        adapter: "aisdk",
-        sdk: "chatgpt",
-        model: "fixture",
-        codex_cli_path: Deno.execPath(),
+        profiles: {
+          default: {
+            model: "fixture",
+            cli_path: Deno.execPath(),
+          },
+        },
       },
     },
-    isolation: {
-      enabled: false,
-      claude: { artifact: "/claude", smolvm: Deno.execPath() },
-      codex: { artifact: "/codex", smolvm: Deno.execPath() },
-      aisdk: { artifact: "/aisdk", smolvm: Deno.execPath() },
+    session: {
+      isolation: {
+        enabled: false,
+        claude: {
+          artifact: "/claude",
+          smolvm: Deno.execPath(),
+        },
+        codex: {
+          artifact: "/codex",
+          smolvm: Deno.execPath(),
+        },
+        aisdk: {
+          artifact: "/aisdk",
+          smolvm: Deno.execPath(),
+        },
+      },
     },
   });
   const vmConfig = { ...config, isolation: { ...config.isolation, enabled: true } };

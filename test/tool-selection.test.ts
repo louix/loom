@@ -10,7 +10,7 @@ const combine = (base: string, extra: string) =>
   JSON.stringify({ ...parse(base), ...parse(extra) });
 
 const definitions = `{
-  "local-tools": {
+  "local_tools": {
     "tilth": {
       "command": "missing-host-tool",
       "default_for": [
@@ -18,7 +18,7 @@ const definitions = `{
       ]
     }
   },
-  "vm-tools": {
+  "vm_tools": {
     "tilth": {
       "runtime": "tilth",
       "default_for": [
@@ -26,7 +26,7 @@ const definitions = `{
       ]
     }
   },
-  "remote-tools": {
+  "remote_tools": {
     "docs": {
       "url": "https://docs.example/mcp",
       "bearer_token_env": "LOOM_TEST_UNSET_TOOL_CREDENTIAL"
@@ -60,25 +60,25 @@ test("repo lists replace independently while definitions and other selections in
       combine(
         definitions,
         `{
-  "session": {
-    "local-tools": [
-      "tilth"
-    ],
-    "remote-tools": [
-      "docs"
-    ]
-  },
-  "repo": [
+  "repos": [
     {
       "path": ${JSON.stringify(dir)},
       "session": {
-        "local-tools": [],
-        "vm-tools": [
+        "local_tools": [],
+        "vm_tools": [
           "tilth"
         ]
       }
     }
-  ]
+  ],
+  "session": {
+    "local_tools": [
+      "tilth"
+    ],
+    "remote_tools": [
+      "docs"
+    ]
+  }
 }`,
       ),
     );
@@ -108,36 +108,45 @@ test("repo lists replace independently while definitions and other selections in
 test("selections reject duplicates, ambiguous preferences and unknown names", () => {
   for (const selection of [
     `{
-  "local-tools": [
+  "local_tools": [
     "tilth",
     "tilth"
   ]
 }`,
     `{
-  "local-tools": [
+  "local_tools": [
     "tilth"
   ],
-  "vm-tools": [
+  "vm_tools": [
     "tilth"
   ]
 }`,
     `{
-  "vm-tools": [
+  "vm_tools": [
     "absent"
   ]
 }`,
     `{
-  "remote-tools": "docs"
+  "remote_tools": "docs"
 }`,
   ])
     assert.throws(() =>
-      normalizeConfig(parse(combine(definitions, JSON.stringify({ session: parse(selection) })))),
+      normalizeConfig(
+        parse(
+          combine(
+            definitions,
+            JSON.stringify({
+              session: parse(selection),
+            }),
+          ),
+        ),
+      ),
     );
   assert.throws(
     () =>
       normalizeConfig(
         parse(`{
-  "local-tools": {
+  "local_tools": {
     "a": {
       "command": "a",
       "default_for": [
@@ -152,7 +161,7 @@ test("selections reject duplicates, ambiguous preferences and unknown names", ()
     }
   },
   "session": {
-    "local-tools": [
+    "local_tools": [
       "a",
       "b"
     ]
@@ -169,30 +178,34 @@ test("host selection fails before runtime lookup for every VM engine, but works 
       combine(
         definitions,
         `{
-  "session": {
-    "local-tools": [
-      "tilth"
-    ]
-  },
-  "isolation": {
-    "enabled": true,
-    "claude": {
-      "artifact": "/claude"
-    },
+  "providers": {
     "codex": {
-      "artifact": "/codex"
+      "model": "test"
     },
-    "aisdk": {
-      "artifact": "/aisdk"
+    "openai_compatible": {
+      "profiles": {
+        "local": {
+          "base_url": "https://api.example/v1",
+          "model": "test"
+        }
+      }
     }
   },
-  "chatgpt": {
-    "model": "test"
-  },
-  "custom-provider": {
-    "local": {
-      "base_url": "https://api.example/v1",
-      "model": "test"
+  "session": {
+    "local_tools": [
+      "tilth"
+    ],
+    "isolation": {
+      "enabled": true,
+      "claude": {
+        "artifact": "/claude"
+      },
+      "codex": {
+        "artifact": "/codex"
+      },
+      "aisdk": {
+        "artifact": "/aisdk"
+      }
     }
   }
 }`,
@@ -231,7 +244,7 @@ test("selected runtime errors propagate, and required remote credentials are che
         definitions,
         `{
   "session": {
-    "vm-tools": [
+    "vm_tools": [
       "tilth"
     ]
   }
@@ -254,7 +267,7 @@ test("selected runtime errors propagate, and required remote credentials are che
         definitions,
         `{
   "session": {
-    "remote-tools": [
+    "remote_tools": [
       "docs"
     ]
   }

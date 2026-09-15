@@ -15,7 +15,7 @@ import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability } from "@loom/core/types";
 import { createConfigSchema, providerSchema, parseSettings } from "./schema.ts";
-import { userConfigPath } from "../scaffold.ts";
+import { userConfigPath } from "../config-path.ts";
 import type { PriceRow } from "./pricing.ts";
 import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
 
@@ -26,12 +26,7 @@ import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
  */
 export type AisdkKind = "openai" | "google" | "anthropic" | "chatgpt";
 
-/**
- * One Vercel-AI-SDK provider profile. Configured as `custom-provider.<id>`
- * (OpenAI-compatible), `google` / `anthropic` / `chatgpt` (one native
- * profile per vendor), or `providers.<id>` with
- * `sdk` selecting the backend.
- */
+/** Resolved provider profile; the config family selects its internal SDK. */
 export interface AisdkProfile {
   /**
    * Which backend: `openai` (OpenAI-compatible — the default), `google`
@@ -313,12 +308,7 @@ export interface LoomConfig {
        */
       promptCacheTtl: "5m" | "1h" | "";
     };
-    /**
-     * Vercel-AI-SDK providers, keyed by id. Fed by `custom-provider.<id>`
-     * (OpenAI-compatible — GLM, DeepSeek, OpenRouter, a local vLLM / Ollama),
-     * `google` / `anthropic` (native), and
-     * `providers.<id>` with an explicit `sdk` for additional native accounts.
-     */
+    /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
   };
   mcp: Array<
@@ -354,7 +344,7 @@ export interface LoomConfig {
   /**
    * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
    * backend is chosen and its key env var is set. Hosted search MCP servers
-   * are configured with [remote-tools.<name>].
+   * are configured with [remote_tools.<name>].
    */
   search: {
     backend: "none" | "brave" | "tavily";
@@ -436,7 +426,7 @@ export const claudeProfileId = (p: { name: string }): string => {
 };
 
 /**
- * `claude_profiles` → a stable, de-duplicated list. A missing / empty `dir`
+ * `providers.claude.profiles` → a stable, de-duplicated list. A missing / empty `dir`
  * drops the entry; a second entry that resolves to an id already taken is
  * dropped (both flagged by {@link lintConfig}). Always returns at least the
  * default `~/.claude` profile.
@@ -505,47 +495,36 @@ const buildAisdkProfile = (
     titleModel: p.title_model,
     authPath: expandTilde(p.auth_path),
     configDir: expandTilde(p.config_dir),
-    codexCliPath: expandTilde(p.codex_cli_path),
-    codexBuiltinWebSearch: p.codex_builtin_web_search,
+    codexCliPath: expandTilde(p.cli_path),
+    codexBuiltinWebSearch: p.builtin_web_search,
   };
 };
 
-/**
- * Every aisdk provider profile, from all the namespaces, keyed by id:
- *  - `custom-provider.<id>`   — an OpenAI-compatible endpoint (implicit sdk);
- *    the form that will become a plugin. `base_url` + `api_key` / `api_key_env`.
- *  - `google` / `anthropic` / `chatgpt` — one native profile each, id = the vendor.
- *  - `providers.<id>` — additional named profiles;
- *    its `sdk` key still selects the backend. Wins a duplicate id.
- * `claude` is reserved for the native CLI provider and is never an aisdk id.
- */
+/** Family defaults merge into each named profile before runtime defaults are applied. */
 const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkProfile> => {
   const out: Record<string, AisdkProfile> = {};
-  const put = (id: string, p: AisdkProfile | null): void => {
-    if (p && !isClaudeId(id) && !(id in out)) out[id] = p;
-  };
-
-  // Native providers — one profile per vendor, id = the vendor name. ChatGPT
-  // uses the locally authenticated Codex OAuth session, not an API key.
-  for (const sdk of ["google", "anthropic", "chatgpt"] as const) {
-    if (raw[sdk] && typeof raw[sdk] === "object")
-      put(sdk, buildAisdkProfile(sdk, asRecord(raw[sdk]), sdk));
+  const providers = asRecord(raw.providers);
+  for (const [family, sdk] of Object.entries({
+    codex: "chatgpt",
+    google: "google",
+    anthropic: "anthropic",
+    openai_compatible: "openai",
+  } as const)) {
+    if (!Object.hasOwn(providers, family)) continue;
+    const { profiles, ...defaults } = asRecord(providers[family]);
+    const entries =
+      profiles === undefined && family !== "openai_compatible"
+        ? { default: {} }
+        : asRecord(profiles);
+    for (const [name, overrides] of Object.entries(entries)) {
+      let id = name;
+      if (family !== "openai_compatible") id = name === "default" ? family : `${family}:${name}`;
+      if (isClaudeId(id) || id === "fake" || id === "mock" || id in out)
+        throw new Error(`Reserved or duplicate provider id: ${id}`);
+      const profile = buildAisdkProfile(id, deepMerge(defaults, asRecord(overrides)), sdk);
+      if (profile) out[id] = profile;
+    }
   }
-
-  // [custom-provider.<id>] — OpenAI-compatible, no adapter / sdk keys.
-  for (const [id, t] of Object.entries(asRecord(raw["custom-provider"]))) {
-    put(id, buildAisdkProfile(id, asRecord(t), "openai"));
-  }
-
-  // Named profiles override matching shorthand profiles.
-  for (const [id, t0] of Object.entries(asRecord(raw["providers"]))) {
-    if (isClaudeId(id)) continue;
-    const t = asRecord(t0);
-    const sdk = parseSettings(providerSchema, t).sdk;
-    delete out[id]; // named profile overrides the shorthand
-    put(id, buildAisdkProfile(id, t, sdk));
-  }
-
   return out;
 };
 
@@ -647,13 +626,15 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const r = asRecord(raw);
   if (["command-mcp", "http-mcp", "mcp"].some((key) => key in r))
     throw new Error(
-      "Define local-tools, vm-tools or remote-tools by name and select them under session.",
+      "Define local_tools, vm_tools or remote_tools by name and select them under session.",
     );
   const settings = parseSettings(settingsSchema, raw);
   const {
-    isolation,
+    session: {
+      isolation,
+      provider_access: { only, disabled },
+    },
     providers: { claude },
-    provider_access: { only, disabled },
   } = settings;
   const vmEnabled = isolation.enabled;
   const runtimes: NonNullable<LoomConfig["isolation"]["runtimes"]> = {};
@@ -663,7 +644,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     const artifact = value["artifact"] ?? bundle?.artifact;
     if (artifact === undefined) {
       if (value["smolvm"] !== undefined)
-        throw new Error(`isolation.${name} requires an artifact path`);
+        throw new Error(`session.isolation.${name} requires an artifact path`);
       continue;
     }
     runtimes[name] = {
@@ -672,7 +653,13 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     };
   }
   const aisdk = parseAisdkProfiles(r);
-  const claudeProfiles = parseClaudeProfiles(settings.claude_profiles);
+  const claudeProfiles = parseClaudeProfiles(
+    Object.entries(claude.profiles).map(([name, p]) => ({
+      name: name === "default" ? "" : name,
+      dir: p.config_dir,
+      color: p.color,
+    })),
+  );
   const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
 
   // The default provider must actually be configured; fall back to claude.
@@ -701,10 +688,10 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,
-    worktree: settings.worktree,
-    autoRebase: settings.auto_rebase,
-    autoResume: settings.auto_resume,
-    commitReminder: settings.commit_reminder,
+    worktree: settings.session.worktree,
+    autoRebase: settings.session.auto_rebase,
+    autoResume: settings.session.auto_resume,
+    commitReminder: settings.session.commit_reminder,
     db: settings.db,
     defaultProvider,
     daemon: {
@@ -728,8 +715,8 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     },
     mcp,
     httpMcp,
-    titles: settings.titles,
-    notify: settings.notify,
+    titles: settings.session.titles,
+    notify: settings.session.notify,
     hooks: settings.hooks.map((h): HookConfig => ({
       ...(h.kind === "check"
         ? { kind: h.kind, on: h.on as WriteHookEvent[] }
@@ -823,12 +810,12 @@ const configRepoPath = (path: string): string => {
 /** User defaults plus one repo override matched by Git identity. No repo-local config. */
 export const loadConfig = (repoRoot: string, configFile = userConfigPath()): LoomConfig => {
   const raw = readConfigIfPresent(configFile) ?? {};
-  const { repo = [], ...defaults } = raw;
-  if (!Array.isArray(repo)) throw new Error("repo must be an array of objects");
+  const { repos = [], ...defaults } = raw;
+  if (!Array.isArray(repos)) throw new Error("repos must be an array of objects");
   const target = configRepoPath(resolve(repoRoot));
   const seen = new Set<string>();
   let selected: Record<string, unknown> = {};
-  for (const entry of repo) {
+  for (const entry of repos) {
     if (
       !entry ||
       typeof entry !== "object" ||
@@ -836,10 +823,10 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       typeof entry.path !== "string" ||
       !entry.path.trim()
     )
-      throw new Error("Every repo entry requires a nonempty path");
-    if ("repo" in entry) throw new Error("Nested repo overrides are not supported");
+      throw new Error("Every repos entry requires a nonempty path");
+    if ("repos" in entry) throw new Error("Nested repos overrides are not supported");
     const path = configRepoPath(entry.path);
-    if (seen.has(path)) throw new Error(`Duplicate repo.path: ${path}`);
+    if (seen.has(path)) throw new Error(`Duplicate repos.path: ${path}`);
     seen.add(path);
     if (path === target) {
       const { path: _, ...overrides } = entry;
@@ -861,10 +848,10 @@ export const loadAllRepoConfigs = (
 ): LoomConfig[] => {
   const current = loadConfig(repoRoot, configFile); // validates every repo entry first
   const raw = readConfigIfPresent(configFile) ?? {};
-  const repos = (raw.repo ?? []) as Array<{ path: string }>;
+  const repos = (raw.repos ?? []) as Array<{ path: string }>;
   return [
     current,
-    normalizeConfig(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "repo"))),
+    normalizeConfig(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "repos"))),
     ...repos.map((entry) => loadConfig(configRepoPath(entry.path), configFile)),
   ];
 };
