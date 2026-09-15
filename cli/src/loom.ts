@@ -60,14 +60,14 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
-  environment: `loom environment prepare [--provider P] | loom environment prune
+  environment: `loom environment prepare | loom environment prune
 
   Build the configured environment in a disposable VM/worktree at committed HEAD,
   streaming preparation output. Publish a base for new and resumed sessions.
   Existing sessions keep running and update once idle. Worktrees and history are
   preserved; guest disks are disposable. Failures leave the previous base intact.
   prune removes obsolete bases once configured replacements exist, preserving live VMs.
-  --provider P   prepare only this provider's runtime (default: all configured VM runtimes)`,
+  All available runtime images are prepared; shared images are built once.`,
   runtime: `loom runtime prepare|status|update [runtime] | loom runtime prune
 
   prepare                      fetch/build configured runtimes outside the daemon
@@ -201,6 +201,9 @@ const main = async (): Promise<void> => {
     return void writeOut((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
   }
 
+  if (cmd === "environment" && values.provider !== undefined)
+    throw new Error("Unknown option for environment: --provider");
+
   const isTty = Deno.stdout.isTerminal() && Deno.stdin.isTerminal();
   const wantTui = cmd === "tui" || (!cmd && isTty);
   if (!cmd && !wantTui) return void writeOut(HELP + "\n");
@@ -226,14 +229,13 @@ const main = async (): Promise<void> => {
       throw new Error(USAGE.environment);
     const { prepareRepoEnvironment, pruneRepoEnvironment } = await import("./environment.ts");
     if (positionals[1] === "prune") {
-      if (values.provider) throw new Error("environment prune checks all configured runtimes");
       const result = await pruneRepoEnvironment(repoRoot);
       writeOut(
         values.json
           ? JSON.stringify(result) + "\n"
           : `Removed ${result.removed} old environment bases; retained ${result.retained}. Removed ${result.generations} runtime generations and ${result.templates} template caches.${result.deferred ? " Runtime cleanup deferred: active VMs/updates, recovery state, or unreadable metadata." : ""}\n`,
       );
-    } else await prepareRepoEnvironment(repoRoot, values.provider);
+    } else await prepareRepoEnvironment(repoRoot);
     return;
   }
   if (cmd === "runtime") {

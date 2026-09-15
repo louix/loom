@@ -89,27 +89,15 @@ export const environmentProviders = (config: LoomConfig): string[] => {
   });
 };
 
-const environmentPolicy = (config: LoomConfig, id: string, includeAvailable = false) => {
+const environmentPolicy = (config: LoomConfig, id: string) => {
   let kind: "claude" | "codex" | "aisdk" = "aisdk";
   if (isClaudeId(id)) kind = "claude";
   else if (config.providers.aisdk[id]?.sdk === "chatgpt") kind = "codex";
-  return (
-    config.isolation[kind] ?? (includeAvailable ? config.isolation.runtimes?.[kind] : undefined)
-  );
+  return config.isolation[kind];
 };
 
 /** Preparation needs runtime images, independent of provider access and session defaults. */
-export const environmentPreparationRuntimes = (config: LoomConfig, provider?: string) => {
-  if (provider) {
-    if (!isClaudeId(provider) && !config.providers.aisdk[provider]) {
-      throw new Error(`Unknown provider: ${provider}`);
-    }
-    const policy = environmentPolicy(config, provider, true);
-    if (!policy) {
-      throw new Error(`Provider ${provider} has no configured session VM runtime`);
-    }
-    return [policy];
-  }
+export const environmentPreparationRuntimes = (config: LoomConfig) => {
   const seen = new Set<string>();
   return [
     config.isolation.claude,
@@ -123,13 +111,13 @@ export const environmentPreparationRuntimes = (config: LoomConfig, provider?: st
   });
 };
 
-export const prepareRepoEnvironment = async (repo: string, provider?: string) => {
+export const prepareRepoEnvironment = async (repo: string) => {
   repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
   if (!environmentEnabled(config.isolation.environment)) {
     throw new Error("Configure isolation.environment before preparing this repo");
   }
-  const runtimes = environmentPreparationRuntimes(config, provider);
+  const runtimes = environmentPreparationRuntimes(config);
   if (!runtimes.length) {
     throw new Error("No session VM runtime images available to prepare");
   }

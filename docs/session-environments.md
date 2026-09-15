@@ -6,7 +6,7 @@ Loom separates reusable environment preparation from session initialization.
   Claude, Codex and AISDK providers share one image and need one preparation.
   Distinct custom runtime images are prepared separately, including when local
   execution is the default or no providers are enabled. Provider configuration and
-  credentials are not required. `--provider P` selects that provider's runtime. Nix activation
+  credentials are not required. Nix activation
   and `session.isolation.environment.prepare` must succeed before the base is published.
 - a `hooks` entry with `"on": "init"` runs once when a conversation is created, before its opening
   turn, inside its VM or on the host for a non-VM session. A failed init hook is

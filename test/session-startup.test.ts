@@ -89,24 +89,8 @@ test("preparation uses available images with local defaults and no provider prof
   assert.deepEqual(environmentPreparationRuntimes(config), [shared, custom]);
 });
 
-test("preparation can select a provider's available runtime while isolation is disabled", () => {
-  const shared = { artifact: "/shared", smolvm: "/backend" };
-  const codex = { artifact: "/codex", smolvm: "/backend" };
-  const config = normalizeConfig({
-    providers: { codex: { profiles: { default: {}, second: {} } } },
-    session: {
-      isolation: { enabled: false, claude: shared, codex, aisdk: shared },
-      provider_access: { disabled: ["codex"] },
-    },
-  });
-  assert.deepEqual(environmentPreparationRuntimes(config, "codex"), [codex]);
-  assert.deepEqual(environmentPreparationRuntimes(config, "codex:second"), [codex]);
-  assert.throws(() => environmentPreparationRuntimes(config, "missing"), /Unknown provider/);
-  delete config.isolation.runtimes!.codex;
-  assert.throws(
-    () => environmentPreparationRuntimes(config, "codex"),
-    /has no configured session VM runtime/,
-  );
+test("preparation has no images when no runtime is available", () => {
+  const config = normalizeConfig({ session: { isolation: { enabled: false } } });
   config.isolation.runtimes = {};
   assert.deepEqual(environmentPreparationRuntimes(config), []);
 });
