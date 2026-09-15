@@ -59,6 +59,9 @@ the Vercel AI SDK.
 
 **3 · worktree manager**
 
+- **Repository layouts** — launch Loom from a normal checkout, a linked worktree,
+  or a bare repository. `.loom/` stays in that checkout or bare repository;
+  launching from a checkout subdirectory uses the checkout root.
 - **One worktree + branch per session** — `git worktree add .loom/trees/<id>
 -b loom/<id>` off the configured base (`base_branch`, else `HEAD`), where `<id>`
   is the session id truncated to its 8-char short form; uniqueness is enforced

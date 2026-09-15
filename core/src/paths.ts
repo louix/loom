@@ -1,5 +1,6 @@
-import { accessSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 
 /**
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
@@ -26,21 +27,25 @@ export const onPath = (
 };
 
 /**
- * Walk up from `start` until a directory containing `.git` is found.
- * That directory is the repo root and the anchor for everything in `.loom/`.
+ * Ask Git for the current checkout root, or the git directory in a bare repo.
+ * Linked worktrees keep their own root as the anchor for `.loom/`.
  */
 export const findRepoRoot = (start: string = Deno.cwd()): string => {
-  let dir = resolve(start);
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) {
-      throw new Error(
-        `not inside a git repository (looked upward from ${resolve(start)}); run 'git init' first`,
-      );
-    }
-    dir = parent;
+  const git = (arg: string) =>
+    spawnSync("git", ["-C", resolve(start), "rev-parse", arg], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+  const top = git("--show-toplevel");
+  if (top.status === 0 && top.stdout.trim()) return top.stdout.trim();
+  const bare = git("--is-bare-repository");
+  if (bare.status === 0 && bare.stdout.trim() === "true") {
+    const dir = git("--absolute-git-dir");
+    if (dir.status === 0 && dir.stdout.trim()) return dir.stdout.trim();
   }
+  throw new Error(
+    `not inside a git repository (looked upward from ${resolve(start)}); run 'git init' first`,
+  );
 };
 
 export interface LoomPaths {

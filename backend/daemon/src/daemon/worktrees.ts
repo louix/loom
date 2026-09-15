@@ -17,7 +17,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
 
@@ -123,6 +123,40 @@ export class WorktreeManager {
   /** Idempotent one-time repo prep: worktree-scoped config + the push hook. */
   ensureSetup(): void {
     if (this.#setupDone) return;
+    // These settings apply only to the main worktree until worktreeConfig is
+    // enabled. Afterwards Git would inherit them in every linked worktree.
+    // Address the common directory explicitly: setup may itself run in a link.
+    const common = this.#git(["rev-parse", "--git-common-dir"]);
+    if (!common.ok) throw new Error(`git common directory failed: ${common.stderr.trim()}`);
+    const commonDir = resolve(this.#repoRoot, common.stdout.trim());
+    const sharedConfig = join(commonDir, "config");
+    const mainConfig = join(commonDir, "config.worktree");
+    const alreadyEnabled =
+      this.#gitOut(["config", "--bool", "extensions.worktreeConfig"]) === "true";
+    const checked = (args: string[]): void => {
+      const result = this.#git(args);
+      if (!result.ok)
+        throw new Error(`git config migration failed: ${result.stderr.trim() || result.error}`);
+    };
+    const migrate: string[] = [];
+    for (const key of ["core.bare", "core.worktree"]) {
+      const value = this.#git(["config", "--file", sharedConfig, "--get", key]);
+      if (value.code === 1) continue;
+      if (!value.ok) throw new Error(`git config ${key} failed: ${value.stderr.trim()}`);
+      if (
+        key === "core.bare" &&
+        this.#gitOut(["config", "--file", sharedConfig, "--bool", "core.bare"]) === "false"
+      )
+        continue;
+      // Write the main-worktree copy before enabling the extension or removing
+      // the shared value, so failed setup can be retried without losing it.
+      const existing = this.#git(["config", "--file", mainConfig, "--get", key]);
+      if (!existing.ok && existing.code !== 1)
+        throw new Error(`git config ${key} failed: ${existing.stderr.trim()}`);
+      if (!alreadyEnabled || !existing.ok)
+        checked(["config", "--file", mainConfig, "--replace-all", key, value.stdout.trimEnd()]);
+      migrate.push(key);
+    }
     // Per-worktree `git config --worktree` requires this extension. If it can't
     // be set, every later `--worktree` write silently lands in the *shared* repo
     // config instead — the last session created would repoint the main repo's
@@ -133,6 +167,7 @@ export class WorktreeManager {
         `git config extensions.worktreeConfig failed: ${ext.stderr.trim() || ext.stdout.trim()}`,
       );
     }
+    for (const key of migrate) checked(["config", "--file", sharedConfig, "--unset-all", key]);
     mkdirSync(this.#treesDir, { recursive: true });
     mkdirSync(this.#hooksDir, { recursive: true });
     const hook = join(this.#hooksDir, "pre-push");
@@ -161,8 +196,6 @@ export class WorktreeManager {
     // delegating wrappers still chain to `<repo>/.git/hooks`.
     const custom = abs(this.#gitOut(["config", "--get", "core.hooksPath"]));
     const customDir = custom && isDir(custom) ? custom : "";
-    const commonDir =
-      abs(this.#gitOut(["rev-parse", "--git-common-dir"])) || join(this.#repoRoot, ".git");
     const origHooksDir = customDir || join(commonDir, "hooks");
     if (origHooksDir !== this.#hooksDir) {
       const script = chainHookScript(origHooksDir);

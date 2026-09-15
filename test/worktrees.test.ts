@@ -463,3 +463,77 @@ test("forking in-place changes omits Loom runtime state even if not gitignored",
     cleanup();
   }
 });
+
+for (const layout of [
+  "bare",
+  "bare-enabled",
+  "bare-linked",
+  "linked",
+  "linked-core-worktree",
+] as const) {
+  test(`create and reattach from ${layout} preserve the repository and existing worktrees`, () => {
+    const { root, cleanup } = repo();
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+    try {
+      let main = root;
+      if (layout.startsWith("bare")) {
+        main = join(root, "bare.git");
+        git(root, "clone", "--bare", root, main);
+        git(main, "config", "user.name", "t");
+        git(main, "config", "user.email", "t@example.com");
+      }
+      if (layout === "linked-core-worktree") git(main, "config", "core.worktree", "..");
+      const linked = join(root, "existing");
+      git(main, "worktree", "add", "--detach", linked);
+      if (layout === "bare-enabled") git(main, "config", "extensions.worktreeConfig", "true");
+      const source = layout === "bare" || layout === "bare-enabled" ? main : linked;
+      const m = mgr(source);
+      const wt = m.create(fakeId("cccccccc"));
+      assert.equal(git(wt.path, "rev-parse", "--show-toplevel"), wt.path);
+      assert.equal(git(wt.path, "status", "--porcelain"), "");
+      assert.equal(git(linked, "rev-parse", "--show-toplevel"), Deno.realPathSync(linked));
+      assert.equal(
+        git(main, "rev-parse", "--is-bare-repository"),
+        String(layout.startsWith("bare")),
+      );
+      if (!layout.startsWith("bare"))
+        assert.equal(git(main, "rev-parse", "--show-toplevel"), Deno.realPathSync(main));
+      assert.equal(git(linked, "config", "user.name"), "t");
+      assert.equal(git(main, "config", "user.name"), "t");
+      writeFileSync(join(wt.path, "created.txt"), "session work\n");
+      git(wt.path, "add", "created.txt");
+      git(wt.path, "-c", "commit.gpgsign=false", "commit", "-qm", "session commit");
+      assert.equal(git(wt.path, "log", "-1", "--format=%an"), "Loom");
+      m.remove(wt.path);
+      const restored = mgr(source).reattach(fakeId("dddddddd"), wt.branch);
+      assert.ok(existsSync(join(restored.path, "created.txt")));
+      assert.equal(git(restored.path, "status", "--porcelain"), "");
+      m.remove(restored.path);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test("failed config migration preserves main checkout settings and can be retried", () => {
+  const { root, cleanup } = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+  try {
+    git("config", "core.worktree", "..");
+    const lock = join(root, ".git", "config.worktree.lock");
+    writeFileSync(lock, "locked");
+    const m = mgr(root);
+    assert.throws(() => m.create("blocked1"), /git config migration failed/);
+    assert.equal(git("config", "--local", "core.worktree"), "..");
+    assert.equal(git("rev-parse", "--show-toplevel"), Deno.realPathSync(root));
+    assert.equal(existsSync(join(root, ".loom", "trees", "blocked1")), false);
+    rmSync(lock);
+    const wt = m.create("retried1");
+    assert.equal(git("rev-parse", "--show-toplevel"), Deno.realPathSync(root));
+    assert.equal(m.facts(wt.path, "main")?.dirty, false);
+  } finally {
+    cleanup();
+  }
+});
