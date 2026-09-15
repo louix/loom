@@ -98,11 +98,44 @@ const environmentPolicy = (config: LoomConfig, id: string, includeAvailable = fa
   );
 };
 
+/** Preparation needs runtime images, independent of provider access and session defaults. */
+export const environmentPreparationRuntimes = (config: LoomConfig, provider?: string) => {
+  if (provider) {
+    if (!isClaudeId(provider) && !config.providers.aisdk[provider]) {
+      throw new Error(`Unknown provider: ${provider}`);
+    }
+    const policy = environmentPolicy(config, provider, true);
+    if (!policy) {
+      throw new Error(`Provider ${provider} has no configured session VM runtime`);
+    }
+    return [policy];
+  }
+  const seen = new Set<string>();
+  return [
+    config.isolation.claude,
+    config.isolation.codex,
+    config.isolation.aisdk,
+    ...Object.values(config.isolation.runtimes ?? {}),
+  ].filter((policy): policy is { artifact: string; smolvm: string } => {
+    if (!policy || seen.has(policy.artifact)) return false;
+    seen.add(policy.artifact);
+    return true;
+  });
+};
+
 export const prepareRepoEnvironment = async (repo: string, provider?: string) => {
+  repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
-  const providers = provider ? [provider] : environmentProviders(config);
-  if (!providers.length) throw new Error("No configured VM providers to prepare");
-  for (const id of providers) await prepareProviderEnvironment(repo, id);
+  if (!environmentEnabled(config.isolation.environment)) {
+    throw new Error("Configure isolation.environment before preparing this repo");
+  }
+  const runtimes = environmentPreparationRuntimes(config, provider);
+  if (!runtimes.length) {
+    throw new Error("No session VM runtime images available to prepare");
+  }
+  for (const policy of runtimes) {
+    await prepareRuntimeEnvironment(repo, config, policy);
+  }
   await pruneRepoEnvironment(repo).catch((error) =>
     console.error(
       `Environment prepared; cleanup deferred: ${error instanceof Error ? error.message : error}`,
@@ -110,14 +143,11 @@ export const prepareRepoEnvironment = async (repo: string, provider?: string) =>
   );
 };
 
-const prepareProviderEnvironment = async (repo: string, id: string) => {
-  repo = await Deno.realPath(repo);
-  const config = loadConfig(repo);
-  if (!environmentEnabled(config.isolation.environment))
-    throw new Error("Configure isolation.environment before preparing this repo");
-  if (!isClaudeId(id) && !config.providers.aisdk[id]) throw new Error(`Unknown provider: ${id}`);
-  const policy = environmentPolicy(config, id, true);
-  if (!policy) throw new Error(`Provider ${id} has no configured session VM runtime`);
+const prepareRuntimeEnvironment = async (
+  repo: string,
+  config: LoomConfig,
+  policy: { artifact: string; smolvm: string },
+) => {
   const smolvm = await resolveEnvironmentBackend(policy.smolvm);
   const home = repoBaseDirectory(repo);
   await Deno.mkdir(home, { recursive: true, mode: 0o700 });

@@ -11,10 +11,10 @@ import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
-import { environmentProviders } from "../cli/src/environment.ts";
+import { environmentPreparationRuntimes, environmentProviders } from "../cli/src/environment.ts";
 import { normalizeConfig } from "../backend/daemon/src/config/config.ts";
 
-test("default preparation covers enabled runtimes once across provider profiles", () => {
+test("environment warnings cover enabled runtimes once across provider profiles", () => {
   const config = normalizeConfig({
     providers: {
       codex: {
@@ -62,6 +62,53 @@ test("default preparation covers enabled runtimes once across provider profiles"
   config.isolation.codex = config.isolation.claude!;
   config.isolation.aisdk = config.isolation.claude!;
   assert.deepEqual(environmentProviders(config), [providers[0]]);
+});
+
+test("preparation uses available images with local defaults and no provider profiles", () => {
+  const shared = { artifact: "/shared", smolvm: "/backend" };
+  const custom = { artifact: "/custom", smolvm: "/backend" };
+  const config = normalizeConfig({
+    session: {
+      isolation: {
+        enabled: false,
+        claude: shared,
+        codex: shared,
+        aisdk: custom,
+      },
+      provider_access: { only: ["codex"], disabled: ["codex"] },
+    },
+  });
+  config.claudeProfiles = [];
+  config.providers.aisdk = {};
+  assert.deepEqual(environmentProviders(config), []);
+  assert.deepEqual(environmentPreparationRuntimes(config), [shared, custom]);
+
+  // Enabling isolation must not prepare shared images again via the active policies.
+  Object.assign(config.isolation, config.isolation.runtimes);
+  config.isolation.enabled = true;
+  assert.deepEqual(environmentPreparationRuntimes(config), [shared, custom]);
+});
+
+test("preparation can select a provider's available runtime while isolation is disabled", () => {
+  const shared = { artifact: "/shared", smolvm: "/backend" };
+  const codex = { artifact: "/codex", smolvm: "/backend" };
+  const config = normalizeConfig({
+    providers: { codex: { profiles: { default: {}, second: {} } } },
+    session: {
+      isolation: { enabled: false, claude: shared, codex, aisdk: shared },
+      provider_access: { disabled: ["codex"] },
+    },
+  });
+  assert.deepEqual(environmentPreparationRuntimes(config, "codex"), [codex]);
+  assert.deepEqual(environmentPreparationRuntimes(config, "codex:second"), [codex]);
+  assert.throws(() => environmentPreparationRuntimes(config, "missing"), /Unknown provider/);
+  delete config.isolation.runtimes!.codex;
+  assert.throws(
+    () => environmentPreparationRuntimes(config, "codex"),
+    /has no configured session VM runtime/,
+  );
+  config.isolation.runtimes = {};
+  assert.deepEqual(environmentPreparationRuntimes(config), []);
 });
 
 test("missing or incompatible prepared environments fail before VM or credential startup", async () => {
