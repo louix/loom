@@ -11,7 +11,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { onPath } from "@loom/core/paths";
+import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability } from "@loom/core/types";
 import { userConfigPath } from "../scaffold.ts";
@@ -1020,21 +1020,22 @@ export const deepMerge = (
   return out;
 };
 
-/** Canonical directory identity; missing repo entries may remain configured after a move. */
+/** Git repository identity; missing repo entries may remain configured after a move. */
 const configRepoPath = (path: string): string => {
   let expanded = path;
   if (path === "~") expanded = homedir();
   else if (path.startsWith("~/")) expanded = join(homedir(), path.slice(2));
   if (!isAbsolute(expanded)) throw new Error("repo.path must be an absolute path or start with ~/");
   try {
-    return realpathSync(expanded);
+    const canonical = realpathSync(expanded);
+    return tryFindRepoRoot(canonical) ?? canonical;
   } catch (error) {
     if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     return resolve(expanded);
   }
 };
 
-/** User defaults plus one exact path-scoped [[repo]] override. Never reads repository files. */
+/** User defaults plus one [[repo]] override matched by Git identity. No repo-local TOML. */
 export const loadConfig = (repoRoot: string, configFile = userConfigPath()): LoomConfig => {
   const raw = readTomlIfPresent(configFile) ?? {};
   const { repo = [], ...defaults } = raw;

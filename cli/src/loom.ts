@@ -208,16 +208,14 @@ const main = async (): Promise<void> => {
     return;
   }
 
-  const repoRoot =
-    values.repo ??
-    (() => {
-      try {
-        return findRepoRoot();
-      } catch (error) {
-        if (cmd === "runtime") return Deno.cwd();
-        throw error;
-      }
-    })();
+  const repoRoot = (() => {
+    try {
+      return findRepoRoot(values.repo);
+    } catch (error) {
+      if (cmd === "runtime" && !values.repo) return Deno.cwd();
+      throw error;
+    }
+  })();
   await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
   if (cmd === "environment") {
     if (positionals.length !== 2 || !["prepare", "prune"].includes(positionals[1]!))

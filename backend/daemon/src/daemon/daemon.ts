@@ -17,7 +17,13 @@ import { existsSync, watchFile, unwatchFile } from "node:fs";
 import { join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
-import { ensureLoomDir, loomPaths, onPath, type LoomPaths } from "@loom/core/paths";
+import {
+  ensureLoomDir,
+  loomPaths,
+  onPath,
+  tryFindRepoRoot,
+  type LoomPaths,
+} from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import { preflightTools } from "./tool-preflight.ts";
@@ -255,6 +261,7 @@ export class Daemon {
   #signalHandlers: Array<[Deno.Signal, () => void]> = [];
 
   private constructor(opts: DaemonStartOptions) {
+    opts = { ...opts, repoRoot: tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot };
     this.repoRoot = opts.repoRoot;
     this.#configFile = resolve(opts.configFile ?? userConfigPath());
     this.#standalone = opts.standalone ?? false;
@@ -1094,6 +1101,12 @@ export class Daemon {
     wantWorktree: boolean;
     by: string | undefined;
   }): Promise<SessionSnapshot> {
+    if (!o.wantWorktree && this.#worktrees.isBareRepository()) {
+      throw new RpcError(
+        "bad_request",
+        "Bare repositories require worktrees; in-place sessions are unavailable. Enable worktrees to start a session.",
+      );
+    }
     await this.#preflightTools(o.providerId);
     const id = randomUUID();
     this.#log.info("session_start", { sessionId: id, providerId: o.providerId });

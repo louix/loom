@@ -60,8 +60,11 @@ the Vercel AI SDK.
 **3 · worktree manager**
 
 - **Repository layouts** — launch Loom from a normal checkout, a linked worktree,
-  or a bare repository. `.loom/` stays in that checkout or bare repository;
-  launching from a checkout subdirectory uses the checkout root.
+  or a bare repository. A bare repository and all its worktrees share the bare
+  repository root, including when passed through `--repo`. Their daemon, sessions,
+  and `.loom/trees/` all live under `<bare-repo>/.loom/`. Other checkouts retain
+  their own worktree root. Subdirectories and symlinks resolve to the same root.
+  Existing `.loom/` state in a bare repository's linked worktrees is not migrated.
 - **One worktree + branch per session** — `git worktree add .loom/trees/<id>
 -b loom/<id>` off the configured base (`base_branch`, else `HEAD`), where `<id>`
   is the session id truncated to its 8-char short form; uniqueness is enforced
@@ -69,7 +72,10 @@ the Vercel AI SDK.
 - **In-place mode** — `[worktree] enabled = false` (or `loom run --in-place`)
   runs the session directly in the repo working dir instead: no branch
   isolation, concurrent sessions can collide, and hard fork is unavailable
-  (undo still works). The Detail pane shows the repo's own git state.
+  (undo still works). The Detail pane shows the repo's own git state. Bare
+  repositories require worktrees and reject in-place sessions. Their configured
+  base branch (or fallback `HEAD`) belongs to the bare repository, regardless of
+  which worktree you launch Loom from.
 - **Distinct commit identity** — `git config --worktree user.name/email` set to
   `Loom (<model>) <loom+<model>@localhost>` (e.g. `Loom (claude-sonnet-5)`) so
   tool commits are never confused with yours and say which model ran them.
@@ -379,10 +385,13 @@ base_branch = "main"
 enabled = true
 ```
 
-Matching uses the canonical daemon repository path, resolving symlinks; it does
-not match prefixes or individual session worktrees. Nested tables merge with
-global defaults; arrays replace them. Duplicate paths and malformed repo entries
-are errors. Update the path if you move a repository. Only the user config is
+Matching resolves both the launch path and `repo.path` to the same Git repository
+identity, including symlinks and subdirectories. For a bare repository, prefer its
+own path (for example `/project/.bare`); paths to its linked worktrees also match
+that repository. Multiple entries resolving to the same root are duplicates.
+Independent nested repositories remain separate. Missing paths can stay configured.
+Nested tables merge with global defaults; arrays replace them. Malformed repo
+entries are errors. Update the path if you move a repository. Only the user config is
 watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
 available for project instructions.

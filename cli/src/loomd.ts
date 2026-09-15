@@ -37,7 +37,7 @@ const main = async (): Promise<void> => {
   }
 
   setLogLevel((values["log-level"] as "debug" | "info" | "warn" | "error") ?? "info");
-  const repoRoot = values.repo ? values.repo : findRepoRoot();
+  const repoRoot = findRepoRoot(values.repo);
 
   await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
   let daemon: Daemon;

@@ -212,6 +212,11 @@ export class WorktreeManager {
 
   // --- lifecycle ----------------------------------------------------
 
+  /** Whether the manager's repository has no checkout for in-place sessions. */
+  isBareRepository(): boolean {
+    return this.#gitOut(["rev-parse", "--is-bare-repository"]) === "true";
+  }
+
   /**
    * `git worktree add <trees>/<shortId> -b loom/<shortId> <base>`, then pin the
    * commit identity and hooks path for that tree. `opts.baseRef` branches
