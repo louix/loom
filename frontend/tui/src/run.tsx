@@ -28,6 +28,7 @@ export const runTui = async (
   opts: {
     logs?: { daemon: string; tui: string };
     themeState?: string;
+    includeEventLogInEditor?: boolean;
     prepareEnvironment?: () => Promise<number>;
     checkEnvironment?: () => Promise<string | null>;
   } = {},
@@ -44,6 +45,7 @@ export const runTui = async (
     const instance = render(
       <App
         client={client}
+        includeEventLogInEditor={opts.includeEventLogInEditor ?? false}
         environmentWarning={environmentWarning}
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}

@@ -48,6 +48,7 @@ export const App = ({
   client,
   logs,
   themeState,
+  includeEventLogInEditor = false,
   prepareEnvironment,
   environmentWarning,
   checkEnvironment,
@@ -60,6 +61,7 @@ export const App = ({
   logs?: { daemon: string; tui: string };
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
+  includeEventLogInEditor?: boolean;
   prepareEnvironment?: () => Promise<number>;
   environmentWarning?: string | null;
   checkEnvironment?: () => Promise<string | null>;
@@ -84,6 +86,7 @@ export const App = ({
           return () => void stdout.off("resize", fn);
         },
       },
+      includeEventLogInEditor,
       ...(logs ? { logs } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),
       ...(environmentWarning ? { environmentWarning } : {}),

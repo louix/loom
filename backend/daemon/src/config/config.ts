@@ -209,6 +209,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
+  tui: { includeEventLogInEditor: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
     /** Project-wide default for new sessions; runtime availability is separate. */
@@ -348,6 +349,7 @@ export interface LoomConfig {
 }
 
 export const DEFAULT_CONFIG: LoomConfig = {
+  tui: { includeEventLogInEditor: false },
   baseBranch: "main",
   worktreeDir: ".loom/trees",
   providerAccess: { disabled: [] },
@@ -660,6 +662,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const { mcp, httpMcp } = resolveToolSelection(settings);
 
   return {
+    tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
     baseBranch: settings.base_branch,
     worktreeDir: settings.worktree_dir,
     providerAccess: { ...(only ? { only } : {}), disabled },

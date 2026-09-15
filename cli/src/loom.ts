@@ -297,7 +297,9 @@ const main = async (): Promise<void> => {
     setLogFile(paths.tuiLog);
 
     const { runTui } = await import("@loom/tui/run");
+    const { loadConfig } = await import("@loom/daemon/config/config");
     await runTui(client, {
+      includeEventLogInEditor: loadConfig(logRoot).tui.includeEventLogInEditor,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
       checkEnvironment: async () => {

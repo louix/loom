@@ -180,6 +180,11 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     db: text(d.db),
     default_provider: text(d.defaultProvider),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
+    tui: section({
+      include_event_log_in_editor: flag(d.tui.includeEventLogInEditor).describe(
+        "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
+      ),
+    }),
     session: preprocess(
       record,
       z.strictObject({

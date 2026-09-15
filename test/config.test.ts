@@ -26,6 +26,22 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
   assert.deepEqual(c.providers.aisdk, {});
 });
 
+test("TUI editor event log defaults to false and accepts an opt-in", () => {
+  assert.equal(cfg("").tui.includeEventLogInEditor, false);
+  assert.equal(
+    cfg('{"tui":{"include_event_log_in_editor":true}}').tui.includeEventLogInEditor,
+    true,
+  );
+  assert.equal(
+    cfg('{"tui":{"include_event_log_in_editor":false}}').tui.includeEventLogInEditor,
+    false,
+  );
+  assert.equal(
+    cfg('{"tui":{"include_event_log_in_editor":"yes"}}').tui.includeEventLogInEditor,
+    false,
+  );
+});
+
 test("[worktree] enabled defaults to true and parses a false override", () => {
   assert.equal(cfg("").worktree.enabled, true);
   assert.equal(

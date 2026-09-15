@@ -274,6 +274,8 @@ export interface MkFleetHandleInput {
   /** Path to the TUI preference file — the `t` theme persists there across
    *  restarts. Absent in tests, where nothing touches disk. */
   readonly themeState?: string;
+  /** Include the event log as a second file when editing a prompt. Default false. */
+  readonly includeEventLogInEditor?: boolean;
   readonly prepareEnvironment?: () => Promise<number>;
   readonly environmentWarning?: string | null;
   readonly checkEnvironment?: () => Promise<string | null>;
@@ -473,6 +475,7 @@ export const mkFleetHandle = ({
   term,
   logs,
   themeState,
+  includeEventLogInEditor = false,
   prepareEnvironment,
   environmentWarning: initialEnvironmentWarning,
   checkEnvironment,
@@ -790,13 +793,13 @@ export const mkFleetHandle = ({
     }
   };
 
-  /** `⌃e` — edit the open prompt's text in `$EDITOR`, with the event log alongside. */
+  /** `⌥e` — edit the prompt in `$EDITOR`, optionally including the event log. */
   const editPrompt = async (): Promise<void> => {
     const p = openPrompt(state.overlay);
     if (!p) return note("open a prompt first — press o to view the log", "dim");
     const next = await openEditor(p.buffer.text, {
       ext: p.t === "new" ? "md" : "txt",
-      aside: { name: "events.log", body: logText() },
+      ...(includeEventLogInEditor ? { aside: { name: "events.log", body: logText() } } : {}),
     });
     if (next != null) dispatch({ t: "promptSet", buffer: buffer(next.replace(/\s+$/, "")) });
   };

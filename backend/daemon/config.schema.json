@@ -373,6 +373,17 @@
       },
       "additionalProperties": false
     },
+    "tui": {
+      "type": "object",
+      "properties": {
+        "include_event_log_in_editor": {
+          "default": false,
+          "description": "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "providers": {
       "type": "object",
       "properties": {
@@ -1464,6 +1475,17 @@
                 "default": 30,
                 "type": "number",
                 "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "tui": {
+            "type": "object",
+            "properties": {
+              "include_event_log_in_editor": {
+                "default": false,
+                "description": "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
+                "type": "boolean"
               }
             },
             "additionalProperties": false

@@ -191,8 +191,8 @@ tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it (`Home`/`
   on its next step); on a Claude session the SDK queues it for the next turn
   boundary. Queued messages drain automatically and `⌥x` (in the send prompt)
   or the palette clears them. In a prompt — and on a picker's filter line — `Ctrl` carries the readline
-  motions; `⌥e` hands the text to `$EDITOR` (event log alongside to copy from;
-  nothing is sent until you press enter back in the UI), `⌥o` opens just the log
+  motions; `⌥e` hands the text to `$EDITOR` (set `tui.include_event_log_in_editor` to `true`
+  to include the event log; defaults to `false`; nothing is sent until you press enter back in the UI), `⌥o` opens just the log
   read-only, `⌥p` picks the provider-model for a new session, `⇧⇥` / `⌥m` change
   the mode / model (a new session's, or — from a send prompt — the one you're
   messaging, live), `↑`/`↓` recall earlier prompts, and a failed submit reopens

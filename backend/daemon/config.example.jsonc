@@ -5,6 +5,8 @@
   "base_branch": "main",
   "worktree_dir": ".loom/trees",
   "daemon": { "idle_shutdown_minutes": 30 },
+  // Include the event log as a second file on Alt+E (Vim/Neovim may need :wq!).
+  "tui": { "include_event_log_in_editor": false },
   "providers": {
     "claude": {
       "permission_default": "manual",

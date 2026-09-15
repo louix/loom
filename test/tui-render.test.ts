@@ -3484,3 +3484,41 @@ test("confirmed dirty archives show pending state and reject duplicate input", a
     teardown();
   }
 });
+
+for (const includeEventLogInEditor of [undefined, false, true]) {
+  test(`Alt+E includes the event log only when enabled (${includeEventLogInEditor ?? "default"})`, async () => {
+    const fake = mkFakeClient();
+    const calls: Array<{ text: string; aside?: { name: string; body: string } }> = [];
+    const handle = mkFleetHandle({
+      client: fake.client,
+      term: fakeTerm,
+      ...(includeEventLogInEditor === undefined ? {} : { includeEventLogInEditor }),
+      openEditorOverride: async (text, opts) => {
+        calls.push({ text, ...(opts?.aside ? { aside: opts.aside } : {}) });
+        return "edited input\n";
+      },
+    });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a" })));
+      fake.heads()[0]?.resolve(pageOf(3, 3, null, "a"));
+      await delay(0);
+      handle.handleKey("", { return: true } as Key);
+      handle.handleKey("draft", {} as Key);
+      handle.handleKey("e", { meta: true } as Key);
+      await delay(0);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.text, "draft");
+      if (includeEventLogInEditor) {
+        assert.equal(calls[0]?.aside?.name, "events.log");
+        assert.match(calls[0]?.aside?.body ?? "", /line-3/);
+      } else {
+        assert.equal(calls[0]?.aside, undefined);
+      }
+      assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "edited input");
+      assert.equal(fake.of("session.send").length, 0, "editing does not submit the prompt");
+    } finally {
+      teardown();
+    }
+  });
+}

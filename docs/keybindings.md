@@ -134,15 +134,15 @@ agent. Free-form replies are also accepted and sent as typed.
 
 `Alt` runs an action without dropping what you've typed:
 
-| key  | action                                                                                                                                       |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `⌥e` | edit the text in `$EDITOR`, event log opened alongside (`:wq` to return); nothing is sent until `Enter` back in the UI                       |
-| `⌥o` | open the event log in `$EDITOR`, read-only                                                                                                   |
-| `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                              |
-| `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_ |
-| `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                             |
-| `⌥p` | pick the provider / model _(new-session prompt only)_ — a model that takes a thinking-effort level asks for one as a third step              |
-| `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                     |
+| key  | action                                                                                                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `⌥e` | edit the text in `$EDITOR` (`:wq` to return); `tui.include_event_log_in_editor: true` includes the log (default `false`, may require `:wq!`); nothing is sent until `Enter` back in the UI |
+| `⌥o` | open the event log in `$EDITOR`, read-only                                                                                                                                                 |
+| `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                                                                            |
+| `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
+| `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
+| `⌥p` | pick the provider / model _(new-session prompt only)_ — a model that takes a thinking-effort level asks for one as a third step                                                            |
+| `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                                                                   |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.
