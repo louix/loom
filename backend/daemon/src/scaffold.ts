@@ -1,4 +1,4 @@
-import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -16,6 +16,11 @@ export const exampleConfigPath = (): string => {
   return join(import.meta.dirname!, "..", "config.example.jsonc");
 };
 
+/** Schema is copied beside the user config so editor support works offline. */
+export const exampleSchemaPath = (): string =>
+  join(import.meta.dirname!, "..", "config.schema.json");
+export const userSchemaPath = (): string => join(dirname(userConfigPath()), "config.schema.json");
+
 /**
  * First-run convenience: drop a copy of `config.example.jsonc` at
  * {@link userConfigPath} when nothing is there yet, so `loom` has an obvious,
@@ -25,11 +30,18 @@ export const exampleConfigPath = (): string => {
  */
 export const scaffoldUserConfig = (): string | null => {
   const dest = userConfigPath();
-  if (existsSync(dest)) return null;
   const src = exampleConfigPath();
   if (!existsSync(src)) return null;
   try {
     mkdirSync(dirname(dest), { recursive: true });
+    const schema = exampleSchemaPath();
+    if (
+      existsSync(schema) &&
+      (!existsSync(userSchemaPath()) ||
+        readFileSync(schema, "utf8") !== readFileSync(userSchemaPath(), "utf8"))
+    )
+      copyFileSync(schema, userSchemaPath());
+    if (existsSync(dest)) return null;
     // COPYFILE_EXCL: fail rather than clobber if the file appeared between the
     // existsSync above and now (two daemons for two repos on first run, or a
     // user hand-editing it immediately).

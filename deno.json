@@ -43,6 +43,7 @@
     "erasableSyntaxOnly": true
   },
   "tasks": {
+    "config:schema": "deno run -A scripts/config-schema.ts && deno run -A npm:oxfmt@0.65.0 backend/daemon/config.schema.json",
     "runtime:hashes": "deno run -A scripts/update-runtime-hashes.ts",
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
     "loom": "deno run -A --deny-net cli/src/loom.ts",

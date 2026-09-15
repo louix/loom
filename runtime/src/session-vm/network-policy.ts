@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /** Extra authority comes only from trusted host configuration. */
 export const networkPresets = {
   nix: [
@@ -16,33 +18,32 @@ export const networkPresets = {
   python: ["pypi.org", "files.pythonhosted.org"],
 } as const;
 
-export const expandNetworkPresets = (value: unknown): string[] => {
-  if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    value.length > 16 ||
-    !value.every((v) => typeof v === "string" && Object.hasOwn(networkPresets, v))
+export const networkPresetsSchema = z
+  .array(z.enum(["nix", "javascript", "python"]))
+  .max(16)
+  .default([]);
+export const extraHostsSchema = z
+  .array(
+    z
+      .string()
+      .max(253)
+      .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i),
   )
+  .max(64)
+  .default([]);
+
+export const expandNetworkPresets = (value: unknown): string[] => {
+  const result = networkPresetsSchema.safeParse(value);
+  if (!result.success)
     throw new Error(`network_presets must contain only: ${Object.keys(networkPresets).join(", ")}`);
-  return [...new Set(value.flatMap((v) => networkPresets[v as keyof typeof networkPresets]))];
+  return [...new Set(result.data.flatMap((v) => [...networkPresets[v]]))];
 };
 
 export const normalizeExtraHosts = (value: unknown): string[] => {
-  if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    value.length > 64 ||
-    !value.every(
-      (host) =>
-        typeof host === "string" &&
-        host.length <= 253 &&
-        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(
-          host,
-        ),
-    )
-  )
+  const result = extraHostsSchema.safeParse(value);
+  if (!result.success)
     throw new Error(
       "extra_allowed_hosts must contain exact DNS names (HTTPS port 443 only; no URLs, IPs or wildcards)",
     );
-  return [...new Set(value.map((host: string) => host.toLowerCase()))];
+  return [...new Set(result.data.map((host) => host.toLowerCase()))];
 };

@@ -731,3 +731,22 @@ deno task prepare
 ```
 
 The hook runs `deno task format:check` and `deno task lint`.
+
+### Config editor support
+
+Keep this property at the top of `~/.config/loom/config.jsonc`:
+
+```jsonc
+{
+  "$schema": "./config.schema.json",
+}
+```
+
+Loom ships `config.schema.json` beside the user config and refreshes it at startup.
+Editors with JSON Schema support use it for property completion, allowed values,
+and inline diagnostics. It works offline; in VS Code, use **JSON with Comments**
+for the file's language mode. Other editors need their JSON language server enabled.
+
+The schema describes config inputs; runtime checks still resolve paths, provider
+availability, and relationships between settings. Contributors regenerate it from
+Zod with `deno task config:schema`. Tests check that the shipped schema is current.

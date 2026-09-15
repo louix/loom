@@ -14,6 +14,7 @@ import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability } from "@loom/core/types";
+import { createConfigSchema, providerSchema, parseSettings } from "./schema.ts";
 import { userConfigPath } from "../scaffold.ts";
 import type { PriceRow } from "./pricing.ts";
 import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
@@ -189,9 +190,6 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "error",
   "interrupted",
 ];
-
-const isHookEvent = (v: unknown): v is HookEvent =>
-  typeof v === "string" && (HOOK_EVENTS as readonly string[]).includes(v);
 
 /** One `hooks` entry, normalized. */
 export type WriteHookEvent = "file_write" | "turn_end" | "init";
@@ -410,25 +408,7 @@ const asRecord = (v: unknown): Record<string, unknown> => {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 };
 
-const str = (v: unknown, fallback: string): string => {
-  return typeof v === "string" ? v : fallback;
-};
-
-const num = (v: unknown, fallback: number): number => {
-  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
-};
-
-/** A non-negative number, or the fallback (rejects `-1`, NaN, wrong type). */
-const nonNeg = (v: unknown, fallback: number): number => {
-  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
-};
-
-const strArray = (v: unknown, fallback: string[]): string[] => {
-  if (!Array.isArray(v)) return fallback;
-  // Keep the string entries rather than reverting the whole list (and losing an
-  // explicit `[]`) because of one stray non-string element.
-  return v.filter((x): x is string => typeof x === "string");
-};
+const settingsSchema = createConfigSchema(DEFAULT_CONFIG, HOOK_EVENTS);
 
 /** Expand a leading `~` / `~/` against the home directory; other paths pass through. */
 export const expandTilde = (p: string): string => {
@@ -461,18 +441,16 @@ export const claudeProfileId = (p: { name: string }): string => {
  * dropped (both flagged by {@link lintConfig}). Always returns at least the
  * default `~/.claude` profile.
  */
-const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
-  const rows = Array.isArray(raw) ? raw : [];
+const parseClaudeProfiles = (rows: ClaudeProfile[]): ClaudeProfile[] => {
   const out: ClaudeProfile[] = [];
   const seen = new Set<string>();
   for (const entry of rows) {
-    const e = asRecord(entry);
-    const dir = str(e["dir"], "").trim();
+    const dir = entry.dir;
     if (dir === "") continue;
     const profile: ClaudeProfile = {
       dir: expandTilde(dir),
-      name: str(e["name"], "").trim(),
-      color: str(e["color"], "").trim(),
+      name: entry.name,
+      color: entry.color,
     };
     const id = claudeProfileId(profile);
     if (seen.has(id)) continue;
@@ -482,66 +460,6 @@ const parseClaudeProfiles = (raw: unknown): ClaudeProfile[] => {
   if (out.length === 0)
     return DEFAULT_CONFIG.claudeProfiles.map((p) => ({ ...p, dir: expandTilde(p.dir) }));
   return out;
-};
-
-/** Default hook timeout; long enough for a cold typecheck, short of a hang. */
-const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
-
-/**
- * Reject invalid entries at the boundary; hot reload keeps the old config on error.
- */
-const parseHooks = (raw: unknown): HookConfig[] => {
-  if (raw !== undefined && !Array.isArray(raw))
-    throw new Error("hooks must be an array of objects");
-  const rows = Array.isArray(raw) ? raw : [];
-  if (rows.length > 64) throw new Error("hooks: at most 64 entries are supported");
-  const out: HookConfig[] = [];
-  for (const entry of rows) {
-    const e = asRecord(entry);
-    const run = str(e["run"], "").trim();
-    if (run === "" || run.length > 65536 || run.includes("\0"))
-      throw new Error(
-        "hook: run must be a non-empty command of at most 65536 characters without NUL",
-      );
-    const onRaw = Array.isArray(e["on"]) ? e["on"] : [e["on"]];
-    const on = onRaw.filter(isHookEvent);
-    if (on.length === 0 || on.length !== onRaw.length) {
-      throw new Error("hook: on must contain valid hook events");
-    }
-    const kind = e["kind"] ?? "notify";
-    if (kind !== "check" && kind !== "notify")
-      throw new Error("hook: kind must be check or notify");
-    const events = [...new Set(on)];
-    const trigger: { kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] } =
-      kind === "check"
-        ? {
-            kind,
-            on: events.map((event): WriteHookEvent => {
-              if (event !== "file_write" && event !== "turn_end" && event !== "init")
-                throw new Error("check hook: only init, file_write and turn_end are supported");
-              return event;
-            }),
-          }
-        : { kind, on: events };
-    // `match` takes one glob or a list, like `on`.
-    const matchRaw = e["match"];
-    const matchList = Array.isArray(matchRaw) ? matchRaw : [matchRaw];
-    const timeoutSec = num(e["timeout"], DEFAULT_HOOK_TIMEOUT_MS / 1000);
-    out.push({
-      name: str(e["name"], "").trim() || (run.split(/\s+/)[0] ?? "hook"),
-      ...trigger,
-      run,
-      project: expandTilde(str(e["project"], "").trim()),
-      match: strArray(matchList, []),
-      timeoutMs: Math.min(600_000, Math.max(1_000, Math.round(timeoutSec * 1000))),
-    });
-  }
-  return out;
-};
-
-/** `prompt_cache_ttl` on an aisdk profile; anything unrecognised reads as unset. */
-const aisdkCacheTtl = (v: unknown): AisdkProfile["promptCacheTtl"] => {
-  return v === "5m" || v === "1h" || v === "off" ? v : "";
 };
 
 /**
@@ -558,10 +476,11 @@ const buildAisdkProfile = (
   t: Record<string, unknown>,
   sdk: AisdkKind,
 ): AisdkProfile | null => {
-  const baseUrl = str(t["base_url"], "");
+  const p = parseSettings(providerSchema, t);
+  const baseUrl = p.base_url;
   if (sdk === "openai" && baseUrl === "") return null;
-  const model = str(t["model"], "");
-  const models = strArray(t["models"], model ? [model] : []);
+  const model = p.model;
+  const models = p.models ?? (model ? [model] : []);
   const autoModels = model === "" && models.length === 0;
   if (autoModels && sdk !== "openai" && sdk !== "chatgpt") return null;
   const effectiveModel = model || (models[0] ?? "");
@@ -569,8 +488,8 @@ const buildAisdkProfile = (
   return {
     sdk,
     baseUrl,
-    apiKeyEnv: str(t["api_key_env"], ""),
-    apiKey: str(t["api_key"], ""),
+    apiKeyEnv: p.api_key_env,
+    apiKey: p.api_key,
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModelList,
     modelContext: {},
@@ -578,16 +497,16 @@ const buildAisdkProfile = (
     modelLabels: {},
     modelEfforts: {},
     modelDefaultEffort: {},
-    includeUsage: t["include_usage"] === false ? false : true,
+    includeUsage: p.include_usage,
     autoModels,
-    tag: str(t["tag"], id),
-    color: str(t["color"], ""),
-    promptCacheTtl: aisdkCacheTtl(t["prompt_cache_ttl"]),
-    titleModel: str(t["title_model"], ""),
-    authPath: t["auth_path"] ? expandTilde(str(t["auth_path"], "")) : "",
-    configDir: t["config_dir"] ? expandTilde(str(t["config_dir"], "")) : "",
-    codexCliPath: t["codex_cli_path"] ? expandTilde(str(t["codex_cli_path"], "")) : "",
-    codexBuiltinWebSearch: t["codex_builtin_web_search"] === true,
+    tag: p.tag ?? id,
+    color: p.color,
+    promptCacheTtl: p.prompt_cache_ttl,
+    titleModel: p.title_model,
+    authPath: expandTilde(p.auth_path),
+    configDir: expandTilde(p.config_dir),
+    codexCliPath: expandTilde(p.codex_cli_path),
+    codexBuiltinWebSearch: p.codex_builtin_web_search,
   };
 };
 
@@ -622,10 +541,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
   for (const [id, t0] of Object.entries(asRecord(raw["providers"]))) {
     if (isClaudeId(id)) continue;
     const t = asRecord(t0);
-    const sdk: AisdkKind =
-      t["sdk"] === "google" || t["sdk"] === "anthropic" || t["sdk"] === "chatgpt"
-        ? t["sdk"]
-        : "openai";
+    const sdk = parseSettings(providerSchema, t).sdk;
     delete out[id]; // named profile overrides the shorthand
     put(id, buildAisdkProfile(id, t, sdk));
   }
@@ -729,36 +645,20 @@ export const lintConfig = (
  */
 export const normalizeConfig = (raw: unknown): LoomConfig => {
   const r = asRecord(raw);
-  const d = DEFAULT_CONFIG;
-
-  const daemon = asRecord(r["daemon"]);
-  const worktree = asRecord(r["worktree"]);
-  const access = asRecord(r["provider_access"]);
-  const ids = (key: string): string[] | undefined => {
-    const value = access[key];
-    if (value === undefined) return;
-    if (
-      !Array.isArray(value) ||
-      !value.every((id) => typeof id === "string" && id.trim() === id && id.length > 0)
-    )
-      throw new Error(`provider_access.${key} must be an array of provider ids`);
-    return [...new Set(value as string[])];
-  };
-  const only = ids("only");
-  const disabled = ids("disabled") ?? [];
-  const isolation = asRecord(r["isolation"]);
-  if (isolation["enabled"] !== undefined && typeof isolation["enabled"] !== "boolean")
-    throw new Error("isolation.enabled must be a boolean");
-  const vmEnabled = isolation["enabled"] === true;
+  if (["command-mcp", "http-mcp", "mcp"].some((key) => key in r))
+    throw new Error(
+      "Define local-tools, vm-tools or remote-tools by name and select them under session.",
+    );
+  const settings = parseSettings(settingsSchema, raw);
+  const {
+    isolation,
+    providers: { claude },
+    provider_access: { only, disabled },
+  } = settings;
+  const vmEnabled = isolation.enabled;
   const runtimes: NonNullable<LoomConfig["isolation"]["runtimes"]> = {};
   for (const name of ["claude", "aisdk", "codex"] as const) {
-    const value = asRecord(isolation[name]);
-    for (const key of Object.keys(value))
-      if (key !== "artifact" && key !== "smolvm")
-        throw new Error(`Unknown setting isolation.${name}.${key}`);
-    for (const key of ["artifact", "smolvm"])
-      if (value[key] !== undefined && (typeof value[key] !== "string" || !value[key].trim()))
-        throw new Error(`isolation.${name}.${key} must name a path or executable`);
+    const value = isolation[name];
     const bundle = bundledRuntime(name);
     const artifact = value["artifact"] ?? bundle?.artifact;
     if (artifact === undefined) {
@@ -767,122 +667,85 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       continue;
     }
     runtimes[name] = {
-      artifact: expandTilde(artifact as string),
-      smolvm: expandTilde(str(value["smolvm"], bundle?.smolvm ?? "smolvm")),
+      artifact: expandTilde(artifact),
+      smolvm: expandTilde(value.smolvm ?? bundle?.smolvm ?? "smolvm"),
     };
   }
-  const autoRebase = asRecord(r["auto_rebase"]);
-  const autoResume = asRecord(r["auto_resume"]);
-  const commitReminder = asRecord(r["commit_reminder"]);
-  const providers = asRecord(r["providers"]);
-  const claude = asRecord(providers["claude"]);
   const aisdk = parseAisdkProfiles(r);
-  const titles = asRecord(r["titles"]);
-  const notify = asRecord(r["notify"]);
-  const search = asRecord(r["search"]);
-
-  const claudeProfiles = parseClaudeProfiles(r["claude_profiles"]);
+  const claudeProfiles = parseClaudeProfiles(settings.claude_profiles);
   const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
 
   // The default provider must actually be configured; fall back to claude.
-  const wantDefault = str(r["default_provider"], d.defaultProvider);
+  const wantDefault = settings.default_provider;
   const defaultProvider =
     claudeIds.has(wantDefault) || wantDefault in aisdk || ["fake", "mock"].includes(wantDefault)
       ? wantDefault
       : "claude";
 
-  // "manual" is the user-facing name for "default" (you approve everything).
-  const permDefault =
-    claude["permission_default"] === "manual" ? "default" : claude["permission_default"];
-  const permissionDefault =
-    permDefault === "plan" ||
-    permDefault === "acceptEdits" ||
-    permDefault === "bypassPermissions" ||
-    permDefault === "default"
-      ? permDefault
-      : d.providers.claude.permissionDefault;
-
-  if (search["backend"] === "kagi")
-    throw new Error("Configure Kagi under remote-tools.kagi and select it in session.remote-tools");
-  const { mcp, httpMcp } = resolveToolSelection(r);
+  const { mcp, httpMcp } = resolveToolSelection(settings);
 
   return {
-    baseBranch: str(r["base_branch"], d.baseBranch),
-    worktreeDir: str(r["worktree_dir"], d.worktreeDir),
+    baseBranch: settings.base_branch,
+    worktreeDir: settings.worktree_dir,
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
       enabled: vmEnabled,
       runtimes,
       extraAllowedHosts: [
         ...new Set([
-          ...normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
-          ...expandNetworkPresets(asRecord(r["isolation"])["network_presets"]),
+          ...normalizeExtraHosts(isolation.extra_allowed_hosts),
+          ...expandNetworkPresets(isolation.network_presets),
         ]),
       ],
-      environment: normalizeSessionEnvironment(asRecord(r["isolation"])["environment"]),
+      environment: normalizeSessionEnvironment(isolation.environment),
       ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,
-    worktree: {
-      enabled: typeof worktree["enabled"] === "boolean" ? worktree["enabled"] : d.worktree.enabled,
-    },
-    autoRebase: {
-      enabled:
-        typeof autoRebase["enabled"] === "boolean" ? autoRebase["enabled"] : d.autoRebase.enabled,
-      mode: autoRebase["mode"] === "merge" ? "merge" : "rebase",
-    },
-    autoResume: {
-      enabled:
-        typeof autoResume["enabled"] === "boolean" ? autoResume["enabled"] : d.autoResume.enabled,
-    },
-    commitReminder: {
-      enabled:
-        typeof commitReminder["enabled"] === "boolean"
-          ? commitReminder["enabled"]
-          : d.commitReminder.enabled,
-    },
-    db: str(r["db"], d.db),
+    worktree: settings.worktree,
+    autoRebase: settings.auto_rebase,
+    autoResume: settings.auto_resume,
+    commitReminder: settings.commit_reminder,
+    db: settings.db,
     defaultProvider,
     daemon: {
-      idleShutdownMinutes: nonNeg(daemon["idle_shutdown_minutes"], d.daemon.idleShutdownMinutes),
+      idleShutdownMinutes: settings.daemon.idle_shutdown_minutes,
     },
     providers: {
       claude: {
-        model: str(claude["model"], d.providers.claude.model),
-        titleModel: str(claude["title_model"], d.providers.claude.titleModel),
-        models: strArray(claude["models"], d.providers.claude.models),
-        permissionDefault,
-        settingSources: strArray(claude["setting_sources"], d.providers.claude.settingSources),
-        disableBuiltin: strArray(claude["disable_builtin"], d.providers.claude.disableBuiltin),
-        cliPath: str(claude["cli_path"], d.providers.claude.cliPath),
+        model: claude.model,
+        titleModel: claude.title_model,
+        models: claude.models,
+        permissionDefault: claude.permission_default,
+        settingSources: claude.setting_sources,
+        disableBuiltin: claude.disable_builtin,
+        cliPath: claude.cli_path,
         ...(claude["worker_allowed_hosts"] !== undefined
-          ? { workerAllowedHosts: strArray(claude["worker_allowed_hosts"], []) }
+          ? { workerAllowedHosts: claude.worker_allowed_hosts }
           : {}),
-        promptCacheTtl:
-          claude["prompt_cache_ttl"] === "5m" ||
-          claude["prompt_cache_ttl"] === "1h" ||
-          claude["prompt_cache_ttl"] === ""
-            ? (claude["prompt_cache_ttl"] as "5m" | "1h" | "")
-            : d.providers.claude.promptCacheTtl,
+        promptCacheTtl: claude.prompt_cache_ttl,
       },
       aisdk,
     },
     mcp,
     httpMcp,
-    titles: {
-      enabled: typeof titles["enabled"] === "boolean" ? titles["enabled"] : d.titles.enabled,
-    },
-    notify: { webhook: str(notify["webhook"], d.notify.webhook) },
-    hooks: parseHooks(r["hooks"]),
+    titles: settings.titles,
+    notify: settings.notify,
+    hooks: settings.hooks.map((h): HookConfig => ({
+      ...(h.kind === "check"
+        ? { kind: h.kind, on: h.on as WriteHookEvent[] }
+        : { kind: h.kind, on: h.on }),
+      name: h.name || h.run.split(/\s+/)[0]!,
+      run: h.run,
+      project: expandTilde(h.project),
+      match: h.match,
+      timeoutMs: h.timeout,
+    })),
     search: {
-      backend:
-        search["backend"] === "brave" || search["backend"] === "tavily"
-          ? search["backend"]
-          : "none",
-      apiKeyEnv: str(search["api_key_env"], d.search.apiKeyEnv),
-      apiKey: str(search["api_key"], d.search.apiKey),
-      apiBase: str(search["api_base"], d.search.apiBase),
-      maxResults: Math.max(1, nonNeg(search["max_results"], d.search.maxResults)),
+      backend: settings.search.backend,
+      apiKeyEnv: settings.search.api_key_env,
+      apiKey: settings.search.api_key,
+      apiBase: settings.search.api_base,
+      maxResults: settings.search.max_results,
     },
   };
 };

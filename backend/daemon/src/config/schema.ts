@@ -1,0 +1,323 @@
+/** Config syntax and defaults. Filesystem and provider resolution belong in config.ts. */
+import { z } from "zod";
+import { MCP_CAPABILITIES } from "@loom/core/types";
+import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
+import {
+  networkPresetsSchema,
+  extraHostsSchema,
+} from "../../../../runtime/src/session-vm/network-policy.ts";
+import type { HookEvent, LoomConfig } from "./config.ts";
+
+const record = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+// Tell JSON Schema about the values users write before our lenient preprocessing.
+const editorInputs = new WeakMap<object, z.ZodType>();
+const preprocess = <T extends z.ZodType>(
+  fn: (v: unknown) => unknown,
+  schema: T,
+  input: z.ZodType = schema,
+) => {
+  const result = z.preprocess(fn, schema);
+  editorInputs.set(result, input);
+  return result;
+};
+const section = <T extends z.ZodRawShape>(shape: T) => preprocess(record, z.object(shape));
+const text = (fallback = "") => z.string().catch(fallback);
+const flag = (fallback: boolean) => z.boolean().catch(fallback);
+const strings = (fallback: string[] = []) =>
+  preprocess(
+    (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : v),
+    z.array(z.string()).catch(fallback),
+  );
+const nonNegative = (fallback: number) => z.number().nonnegative().catch(fallback);
+const ids = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .refine((v) => v.trim() === v),
+  )
+  .transform((v) => [...new Set(v)]);
+const runtime = preprocess(
+  record,
+  z.strictObject({
+    artifact: z
+      .string()
+      .refine((v) => !!v.trim(), "must name a path or executable")
+      .optional(),
+    smolvm: z
+      .string({ error: "must name a path or executable" })
+      .refine((v) => !!v.trim(), "must name a path or executable")
+      .optional(),
+  }),
+);
+
+const toolName = z
+  .string()
+  .regex(/^[a-zA-Z0-9_-]+$/)
+  .refine((v) => v !== "loom", "Reserved tool name");
+const requiredText = z.string().refine((v) => !!v.trim(), "must not be empty");
+const toolDefaults = { default_for: z.array(z.enum(MCP_CAPABILITIES)).default([]) };
+const selections = preprocess(
+  (v) => v ?? [],
+  z.array(z.string()).refine((v) => new Set(v).size === v.length, "duplicate tool selections"),
+);
+export const toolSettingsSchema = z.object({
+  session: preprocess(
+    (v) => v ?? {},
+    z.strictObject({
+      "local-tools": selections,
+      "vm-tools": selections,
+      "remote-tools": selections,
+    }),
+  ),
+  "local-tools": preprocess(
+    (v) => v ?? {},
+    z
+      .record(
+        toolName,
+        z.strictObject({
+          ...toolDefaults,
+          command: requiredText,
+          args: z.array(z.string()).default([]),
+        }),
+      )
+      .default({}),
+  ),
+  "vm-tools": preprocess(
+    (v) => v ?? {},
+    z.record(toolName, z.strictObject({ ...toolDefaults, runtime: requiredText })).default({}),
+  ),
+  "remote-tools": preprocess(
+    (v) => v ?? {},
+    z
+      .record(
+        toolName,
+        z.strictObject({
+          ...toolDefaults,
+          url: z.string().refine((value) => {
+            try {
+              const url = new URL(value);
+              return (
+                ["http:", "https:"].includes(url.protocol) &&
+                !url.username &&
+                !url.password &&
+                !url.hash
+              );
+            } catch {
+              return false;
+            }
+          }, "must be an HTTP(S) URL without embedded credentials or a fragment"),
+          bearer_token: z.string().optional(),
+          bearer_token_env: z.string().default(""),
+        }),
+      )
+      .default({}),
+  ),
+});
+export type ToolSettings = z.output<typeof toolSettingsSchema>;
+
+export const providerSchema = section({
+  sdk: z.enum(["openai", "google", "anthropic", "chatgpt"]).catch("openai"),
+  base_url: text(),
+  api_key_env: text(),
+  api_key: text(),
+  model: text(),
+  models: strings().optional(),
+  tag: z.string().optional().catch(undefined),
+  color: text(),
+  include_usage: flag(true),
+  prompt_cache_ttl: z.enum(["5m", "1h", "off", ""]).catch(""),
+  title_model: text().describe(
+    "Model for automatic session titles; omit to use this provider’s default.",
+  ),
+  auth_path: text(),
+  config_dir: text(),
+  codex_cli_path: text(),
+  codex_builtin_web_search: flag(false),
+});
+
+export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) => {
+  const hook = section({
+    run: z
+      .string()
+      .trim()
+      .min(1)
+      .max(65536)
+      .refine((v) => !v.includes("\0"), "must not contain NUL"),
+    kind: preprocess((v) => v ?? "notify", z.enum(["check", "notify"])),
+    on: preprocess(
+      (v) => (Array.isArray(v) ? v : [v]),
+      z.array(z.enum(events)).min(1),
+      z.union([z.enum(events), z.array(z.enum(events)).min(1)]),
+    ).transform((v) => [...new Set(v)]),
+    name: text().transform((v) => v.trim()),
+    project: text().transform((v) => v.trim()),
+    match: preprocess(
+      (v) => (Array.isArray(v) ? v : [v]),
+      strings(),
+      z.union([z.string(), z.array(z.string())]).optional(),
+    ),
+    timeout: z
+      .number()
+      .catch(30)
+      .describe("Hook timeout in seconds; clamped to 1–600.")
+      .transform((v) => Math.min(600_000, Math.max(1_000, Math.round(v * 1000)))),
+  }).refine(
+    (h) => h.kind !== "check" || h.on.every((e) => ["init", "file_write", "turn_end"].includes(e)),
+    "check hook: only init, file_write and turn_end are supported",
+  );
+  return section({
+    ...toolSettingsSchema.shape,
+    $schema: z.string().optional(),
+    "custom-provider": preprocess(record, z.record(z.string(), providerSchema)).optional(),
+    google: providerSchema.optional(),
+    anthropic: providerSchema.optional(),
+    chatgpt: providerSchema.optional(),
+    base_branch: text(d.baseBranch),
+    worktree_dir: text(d.worktreeDir),
+    db: text(d.db),
+    default_provider: text(d.defaultProvider),
+    worktree: section({ enabled: flag(d.worktree.enabled) }),
+    auto_rebase: section({
+      enabled: flag(d.autoRebase.enabled),
+      mode: z.enum(["rebase", "merge"]).catch("rebase"),
+    }),
+    auto_resume: section({ enabled: flag(d.autoResume.enabled) }),
+    commit_reminder: section({ enabled: flag(d.commitReminder.enabled) }),
+    daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
+    titles: section({ enabled: flag(d.titles.enabled) }),
+    notify: section({ webhook: text(d.notify.webhook) }),
+    provider_access: section({ only: ids.optional(), disabled: ids.default([]) }),
+    isolation: section({
+      enabled: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+        ),
+      claude: runtime,
+      aisdk: runtime,
+      codex: runtime,
+      extra_allowed_hosts: extraHostsSchema,
+      network_presets: networkPresetsSchema,
+      environment: sessionEnvironmentSchema,
+    }),
+    providers: preprocess(
+      record,
+      z
+        .object({
+          claude: section({
+            model: text(d.providers.claude.model),
+            title_model: text(d.providers.claude.titleModel),
+            models: strings(d.providers.claude.models),
+            permission_default: preprocess(
+              (v) => (v === "manual" ? "default" : v),
+              z
+                .enum(["default", "plan", "acceptEdits", "bypassPermissions"])
+                .catch(d.providers.claude.permissionDefault),
+              z.enum(["manual", "default", "plan", "acceptEdits", "bypassPermissions"]).optional(),
+            ),
+            setting_sources: strings(d.providers.claude.settingSources),
+            disable_builtin: strings(d.providers.claude.disableBuiltin),
+            cli_path: text(d.providers.claude.cliPath),
+            worker_allowed_hosts: strings().optional(),
+            prompt_cache_ttl: z.enum(["5m", "1h", ""]).catch(d.providers.claude.promptCacheTtl),
+          }),
+        })
+        .catchall(providerSchema),
+    ),
+    claude_profiles: z
+      .array(
+        section({
+          dir: text().transform((v) => v.trim()),
+          name: text().transform((v) => v.trim()),
+          color: text().transform((v) => v.trim()),
+        }),
+      )
+      .catch([]),
+    hooks: z.array(hook).max(64).default([]),
+    search: section({
+      backend: preprocess(
+        (v) => {
+          if (v === "kagi")
+            throw new Error(
+              "Configure Kagi under remote-tools.kagi and select it in session.remote-tools",
+            );
+          return v;
+        },
+        z.enum(["none", "brave", "tavily"]).catch("none"),
+      ),
+      api_key_env: text(d.search.apiKeyEnv),
+      api_key: text(d.search.apiKey),
+      api_base: text(d.search.apiBase),
+      max_results: nonNegative(d.search.maxResults).transform((v) => Math.max(1, v)),
+    }),
+  });
+};
+
+/** Report paths and expectations, never input values (which may be credentials). */
+export const parseSettings = <T extends z.ZodType>(schema: T, raw: unknown): z.output<T> => {
+  const result = schema.safeParse(raw);
+  if (result.success) return result.data;
+  throw new Error(
+    result.error.issues
+      .map((issue) => {
+        const path = issue.path.join(".") || "config";
+        return issue.code === "unrecognized_keys"
+          ? `Unknown setting ${path}.${issue.keys.join(", ")}`
+          : `${path}: ${issue.message}`;
+      })
+      .join("; "),
+  );
+};
+
+/** Generate editor input schemas from the same Zod definitions used at runtime. */
+export const editorSchema = (schema: z.ZodType): z.core.JSONSchema.BaseSchema =>
+  z.toJSONSchema(schema, {
+    target: "draft-07",
+    io: "input",
+    unrepresentable: "any",
+    override: ({ zodSchema, jsonSchema }) => {
+      const input = editorInputs.get(zodSchema);
+      if (input) {
+        for (const key of Object.keys(jsonSchema)) delete jsonSchema[key];
+        Object.assign(jsonSchema, editorSchema(input));
+      }
+      if (zodSchema._zod.def.type === "object") {
+        const shape = zodSchema._zod.def.shape;
+        if (jsonSchema.required)
+          jsonSchema.required = jsonSchema.required.filter(
+            (key) => !z.safeParse(shape[key]!, undefined).success,
+          );
+        if (!jsonSchema.required?.length) delete jsonSchema.required;
+        if (!zodSchema._zod.def.catchall) jsonSchema.additionalProperties = false;
+      }
+      delete jsonSchema.$schema; // only the document root needs a dialect declaration
+    },
+  });
+
+export const configEditorSchema = (d: LoomConfig, events: readonly HookEvent[]) => {
+  const settings = editorSchema(createConfigSchema(d, events));
+  const repo = structuredClone(settings);
+  delete repo.$schema;
+  repo.properties = {
+    path: {
+      type: "string",
+      minLength: 1,
+      description: "Exact repository path, absolute or starting with ~/.",
+    },
+    ...repo.properties,
+  };
+  repo.required = ["path"];
+  return {
+    ...settings,
+    title: "Loom configuration",
+    description:
+      "User defaults and exact project overrides. Objects merge; arrays replace inherited arrays.",
+    properties: {
+      ...settings.properties,
+      repo: { type: "array", description: "Overrides for individual repositories.", items: repo },
+    },
+  };
+};

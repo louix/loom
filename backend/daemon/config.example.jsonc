@@ -1,6 +1,7 @@
 // User config: ~/.config/loom/config.jsonc (or $XDG_CONFIG_HOME/loom/config.jsonc).
 // Comments and trailing commas are supported. Repository config files are not read.
 {
+  "$schema": "./config.schema.json",
   "base_branch": "main",
   "worktree_dir": ".loom/trees",
   // "default_provider": "claude",

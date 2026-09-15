@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /** Trusted host configuration; commands are executed only inside the session VM. */
 export interface SessionEnvironment {
   nix: boolean;
@@ -8,50 +10,67 @@ export interface SessionEnvironment {
   cpus: number;
 }
 
+/** Input units stay in seconds/MiB for config validation and editor schemas. */
+export const sessionEnvironmentSchema = z
+  .strictObject({
+    nix: z.boolean().default(false),
+    command_prefix: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine((v) => !v.includes("\0")),
+      )
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? []),
+    prepare: z
+      .string()
+      .max(65536)
+      .refine((v) => !v.includes("\0"))
+      .nullish()
+      .transform((v) => v ?? ""),
+    timeout_seconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(2_073_600)
+      .nullish()
+      .transform((v) => v ?? 900),
+    memory_mib: z
+      .number()
+      .int()
+      .min(512)
+      .max(65536)
+      .nullish()
+      .transform((v) => v ?? 2048),
+    cpus: z
+      .number()
+      .int()
+      .min(1)
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? 1),
+  })
+  .prefault({});
+
 export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment => {
-  const v = value === undefined ? {} : value;
-  if (!v || typeof v !== "object" || Array.isArray(v))
-    throw new Error("isolation.environment must be a table");
-  const r = v as Record<string, unknown>;
-  if (
-    Object.keys(r).some(
-      (k) =>
-        !["nix", "command_prefix", "prepare", "timeout_seconds", "memory_mib", "cpus"].includes(k),
-    )
-  )
-    throw new Error("Unknown isolation.environment setting");
-  if (r.nix !== undefined && typeof r.nix !== "boolean")
-    throw new Error("isolation.environment.nix must be a boolean");
-  const prefix = r.command_prefix ?? [];
-  if (
-    !Array.isArray(prefix) ||
-    prefix.length > 64 ||
-    !prefix.every(
-      (v) => typeof v === "string" && v.length > 0 && v.length <= 4096 && !v.includes("\0"),
-    )
-  )
-    throw new Error("isolation.environment.command_prefix must be an array of nonempty arguments");
-  const prepare = r.prepare ?? "";
-  if (typeof prepare !== "string" || prepare.length > 65536 || prepare.includes("\0"))
-    throw new Error("isolation.environment.prepare must be a shell command string");
-  const seconds = r.timeout_seconds ?? 900;
-  if (!Number.isInteger(seconds) || Number(seconds) < 1 || Number(seconds) > 2_073_600)
+  const result = sessionEnvironmentSchema.safeParse(value);
+  if (!result.success)
     throw new Error(
-      "isolation.environment.timeout_seconds must be an integer from 1 to 2073600 (24 days)",
+      result.error.issues
+        .map((i) => `isolation.environment.${i.path.join(".")}: ${i.message}`)
+        .join("; "),
     );
-  const memoryMiB = r.memory_mib ?? 2048;
-  if (!Number.isInteger(memoryMiB) || Number(memoryMiB) < 512 || Number(memoryMiB) > 65536)
-    throw new Error("isolation.environment.memory_mib must be an integer from 512 to 65536");
-  const cpus = r.cpus ?? 1;
-  if (!Number.isInteger(cpus) || Number(cpus) < 1 || Number(cpus) > 64)
-    throw new Error("isolation.environment.cpus must be an integer from 1 to 64");
+  const r = result.data;
   return {
-    memoryMiB: Number(memoryMiB),
-    cpus: Number(cpus),
-    nix: r.nix === true,
-    commandPrefix: [...prefix],
-    prepare,
-    timeoutMs: Number(seconds) * 1000,
+    nix: r.nix,
+    commandPrefix: r.command_prefix,
+    prepare: r.prepare,
+    timeoutMs: r.timeout_seconds * 1000,
+    memoryMiB: r.memory_mib,
+    cpus: r.cpus,
   };
 };
 

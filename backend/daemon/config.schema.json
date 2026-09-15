@@ -1,0 +1,1875 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "object",
+      "properties": {
+        "local-tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vm-tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remote-tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "local-tools": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "default_for": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+            }
+          },
+          "command": {
+            "type": "string"
+          },
+          "args": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["command"],
+        "additionalProperties": false
+      }
+    },
+    "vm-tools": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "default_for": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+            }
+          },
+          "runtime": {
+            "type": "string"
+          }
+        },
+        "required": ["runtime"],
+        "additionalProperties": false
+      }
+    },
+    "remote-tools": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "default_for": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+            }
+          },
+          "url": {
+            "type": "string"
+          },
+          "bearer_token": {
+            "type": "string"
+          },
+          "bearer_token_env": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    "$schema": {
+      "type": "string"
+    },
+    "custom-provider": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "sdk": {
+            "default": "openai",
+            "type": "string",
+            "enum": ["openai", "google", "anthropic", "chatgpt"]
+          },
+          "base_url": {
+            "default": "",
+            "type": "string"
+          },
+          "api_key_env": {
+            "default": "",
+            "type": "string"
+          },
+          "api_key": {
+            "default": "",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "type": "string"
+          },
+          "models": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tag": {
+            "type": "string"
+          },
+          "color": {
+            "default": "",
+            "type": "string"
+          },
+          "include_usage": {
+            "default": true,
+            "type": "boolean"
+          },
+          "prompt_cache_ttl": {
+            "default": "",
+            "type": "string",
+            "enum": ["5m", "1h", "off", ""]
+          },
+          "title_model": {
+            "default": "",
+            "description": "Model for automatic session titles; omit to use this provider’s default.",
+            "type": "string"
+          },
+          "auth_path": {
+            "default": "",
+            "type": "string"
+          },
+          "config_dir": {
+            "default": "",
+            "type": "string"
+          },
+          "codex_cli_path": {
+            "default": "",
+            "type": "string"
+          },
+          "codex_builtin_web_search": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "google": {
+      "type": "object",
+      "properties": {
+        "sdk": {
+          "default": "openai",
+          "type": "string",
+          "enum": ["openai", "google", "anthropic", "chatgpt"]
+        },
+        "base_url": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key_env": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "type": "string"
+        },
+        "models": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tag": {
+          "type": "string"
+        },
+        "color": {
+          "default": "",
+          "type": "string"
+        },
+        "include_usage": {
+          "default": true,
+          "type": "boolean"
+        },
+        "prompt_cache_ttl": {
+          "default": "",
+          "type": "string",
+          "enum": ["5m", "1h", "off", ""]
+        },
+        "title_model": {
+          "default": "",
+          "description": "Model for automatic session titles; omit to use this provider’s default.",
+          "type": "string"
+        },
+        "auth_path": {
+          "default": "",
+          "type": "string"
+        },
+        "config_dir": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_cli_path": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_builtin_web_search": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "anthropic": {
+      "type": "object",
+      "properties": {
+        "sdk": {
+          "default": "openai",
+          "type": "string",
+          "enum": ["openai", "google", "anthropic", "chatgpt"]
+        },
+        "base_url": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key_env": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "type": "string"
+        },
+        "models": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tag": {
+          "type": "string"
+        },
+        "color": {
+          "default": "",
+          "type": "string"
+        },
+        "include_usage": {
+          "default": true,
+          "type": "boolean"
+        },
+        "prompt_cache_ttl": {
+          "default": "",
+          "type": "string",
+          "enum": ["5m", "1h", "off", ""]
+        },
+        "title_model": {
+          "default": "",
+          "description": "Model for automatic session titles; omit to use this provider’s default.",
+          "type": "string"
+        },
+        "auth_path": {
+          "default": "",
+          "type": "string"
+        },
+        "config_dir": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_cli_path": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_builtin_web_search": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "chatgpt": {
+      "type": "object",
+      "properties": {
+        "sdk": {
+          "default": "openai",
+          "type": "string",
+          "enum": ["openai", "google", "anthropic", "chatgpt"]
+        },
+        "base_url": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key_env": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "type": "string"
+        },
+        "models": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tag": {
+          "type": "string"
+        },
+        "color": {
+          "default": "",
+          "type": "string"
+        },
+        "include_usage": {
+          "default": true,
+          "type": "boolean"
+        },
+        "prompt_cache_ttl": {
+          "default": "",
+          "type": "string",
+          "enum": ["5m", "1h", "off", ""]
+        },
+        "title_model": {
+          "default": "",
+          "description": "Model for automatic session titles; omit to use this provider’s default.",
+          "type": "string"
+        },
+        "auth_path": {
+          "default": "",
+          "type": "string"
+        },
+        "config_dir": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_cli_path": {
+          "default": "",
+          "type": "string"
+        },
+        "codex_builtin_web_search": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "base_branch": {
+      "default": "main",
+      "type": "string"
+    },
+    "worktree_dir": {
+      "default": ".loom/trees",
+      "type": "string"
+    },
+    "db": {
+      "default": ".loom/loom.db",
+      "type": "string"
+    },
+    "default_provider": {
+      "default": "claude",
+      "type": "string"
+    },
+    "worktree": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "auto_rebase": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "rebase",
+          "type": "string",
+          "enum": ["rebase", "merge"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "auto_resume": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "commit_reminder": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "daemon": {
+      "type": "object",
+      "properties": {
+        "idle_shutdown_minutes": {
+          "default": 30,
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "titles": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notify": {
+      "type": "object",
+      "properties": {
+        "webhook": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider_access": {
+      "type": "object",
+      "properties": {
+        "only": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "disabled": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "isolation": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+          "type": "boolean"
+        },
+        "claude": {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "string"
+            },
+            "smolvm": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "aisdk": {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "string"
+            },
+            "smolvm": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "codex": {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "string"
+            },
+            "smolvm": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "extra_allowed_hosts": {
+          "default": [],
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 253,
+            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+          }
+        },
+        "network_presets": {
+          "default": [],
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["nix", "javascript", "python"]
+          }
+        },
+        "environment": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "nix": {
+              "default": false,
+              "type": "boolean"
+            },
+            "command_prefix": {
+              "anyOf": [
+                {
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "prepare": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "timeout_seconds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2073600
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "memory_mib": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 512,
+                  "maximum": 65536
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cpus": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "type": "object",
+      "properties": {
+        "claude": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "default": "claude-sonnet-5",
+              "type": "string"
+            },
+            "title_model": {
+              "default": "",
+              "type": "string"
+            },
+            "models": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "permission_default": {
+              "type": "string",
+              "enum": ["manual", "default", "plan", "acceptEdits", "bypassPermissions"]
+            },
+            "setting_sources": {
+              "default": ["project"],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "disable_builtin": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cli_path": {
+              "default": "",
+              "type": "string"
+            },
+            "worker_allowed_hosts": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "prompt_cache_ttl": {
+              "default": "",
+              "type": "string",
+              "enum": ["5m", "1h", ""]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "sdk": {
+            "default": "openai",
+            "type": "string",
+            "enum": ["openai", "google", "anthropic", "chatgpt"]
+          },
+          "base_url": {
+            "default": "",
+            "type": "string"
+          },
+          "api_key_env": {
+            "default": "",
+            "type": "string"
+          },
+          "api_key": {
+            "default": "",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "type": "string"
+          },
+          "models": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tag": {
+            "type": "string"
+          },
+          "color": {
+            "default": "",
+            "type": "string"
+          },
+          "include_usage": {
+            "default": true,
+            "type": "boolean"
+          },
+          "prompt_cache_ttl": {
+            "default": "",
+            "type": "string",
+            "enum": ["5m", "1h", "off", ""]
+          },
+          "title_model": {
+            "default": "",
+            "description": "Model for automatic session titles; omit to use this provider’s default.",
+            "type": "string"
+          },
+          "auth_path": {
+            "default": "",
+            "type": "string"
+          },
+          "config_dir": {
+            "default": "",
+            "type": "string"
+          },
+          "codex_cli_path": {
+            "default": "",
+            "type": "string"
+          },
+          "codex_builtin_web_search": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "claude_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "default": "",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "color": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "hooks": {
+      "maxItems": 64,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["check", "notify"]
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "init",
+                  "file_write",
+                  "turn_end",
+                  "waiting",
+                  "permission",
+                  "question",
+                  "plan_review",
+                  "user_question",
+                  "error",
+                  "interrupted"
+                ]
+              },
+              {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "init",
+                    "file_write",
+                    "turn_end",
+                    "waiting",
+                    "permission",
+                    "question",
+                    "plan_review",
+                    "user_question",
+                    "error",
+                    "interrupted"
+                  ]
+                }
+              }
+            ]
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "project": {
+            "default": "",
+            "type": "string"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "timeout": {
+            "default": 30,
+            "description": "Hook timeout in seconds; clamped to 1–600.",
+            "type": "number"
+          }
+        },
+        "required": ["run"],
+        "additionalProperties": false
+      }
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "default": "none",
+          "type": "string",
+          "enum": ["none", "brave", "tavily"]
+        },
+        "api_key_env": {
+          "default": "",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "type": "string"
+        },
+        "api_base": {
+          "default": "",
+          "type": "string"
+        },
+        "max_results": {
+          "default": 5,
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "repo": {
+      "type": "array",
+      "description": "Overrides for individual repositories.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact repository path, absolute or starting with ~/."
+          },
+          "session": {
+            "type": "object",
+            "properties": {
+              "local-tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "vm-tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "remote-tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "local-tools": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "default_for": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+                  }
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["command"],
+              "additionalProperties": false
+            }
+          },
+          "vm-tools": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "default_for": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+                  }
+                },
+                "runtime": {
+                  "type": "string"
+                }
+              },
+              "required": ["runtime"],
+              "additionalProperties": false
+            }
+          },
+          "remote-tools": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "default_for": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+                  }
+                },
+                "url": {
+                  "type": "string"
+                },
+                "bearer_token": {
+                  "type": "string"
+                },
+                "bearer_token_env": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": ["url"],
+              "additionalProperties": false
+            }
+          },
+          "$schema": {
+            "type": "string"
+          },
+          "custom-provider": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "sdk": {
+                  "default": "openai",
+                  "type": "string",
+                  "enum": ["openai", "google", "anthropic", "chatgpt"]
+                },
+                "base_url": {
+                  "default": "",
+                  "type": "string"
+                },
+                "api_key_env": {
+                  "default": "",
+                  "type": "string"
+                },
+                "api_key": {
+                  "default": "",
+                  "type": "string"
+                },
+                "model": {
+                  "default": "",
+                  "type": "string"
+                },
+                "models": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "include_usage": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "prompt_cache_ttl": {
+                  "default": "",
+                  "type": "string",
+                  "enum": ["5m", "1h", "off", ""]
+                },
+                "title_model": {
+                  "default": "",
+                  "description": "Model for automatic session titles; omit to use this provider’s default.",
+                  "type": "string"
+                },
+                "auth_path": {
+                  "default": "",
+                  "type": "string"
+                },
+                "config_dir": {
+                  "default": "",
+                  "type": "string"
+                },
+                "codex_cli_path": {
+                  "default": "",
+                  "type": "string"
+                },
+                "codex_builtin_web_search": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "google": {
+            "type": "object",
+            "properties": {
+              "sdk": {
+                "default": "openai",
+                "type": "string",
+                "enum": ["openai", "google", "anthropic", "chatgpt"]
+              },
+              "base_url": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key_env": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key": {
+                "default": "",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "type": "string"
+              },
+              "models": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tag": {
+                "type": "string"
+              },
+              "color": {
+                "default": "",
+                "type": "string"
+              },
+              "include_usage": {
+                "default": true,
+                "type": "boolean"
+              },
+              "prompt_cache_ttl": {
+                "default": "",
+                "type": "string",
+                "enum": ["5m", "1h", "off", ""]
+              },
+              "title_model": {
+                "default": "",
+                "description": "Model for automatic session titles; omit to use this provider’s default.",
+                "type": "string"
+              },
+              "auth_path": {
+                "default": "",
+                "type": "string"
+              },
+              "config_dir": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_cli_path": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_builtin_web_search": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "anthropic": {
+            "type": "object",
+            "properties": {
+              "sdk": {
+                "default": "openai",
+                "type": "string",
+                "enum": ["openai", "google", "anthropic", "chatgpt"]
+              },
+              "base_url": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key_env": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key": {
+                "default": "",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "type": "string"
+              },
+              "models": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tag": {
+                "type": "string"
+              },
+              "color": {
+                "default": "",
+                "type": "string"
+              },
+              "include_usage": {
+                "default": true,
+                "type": "boolean"
+              },
+              "prompt_cache_ttl": {
+                "default": "",
+                "type": "string",
+                "enum": ["5m", "1h", "off", ""]
+              },
+              "title_model": {
+                "default": "",
+                "description": "Model for automatic session titles; omit to use this provider’s default.",
+                "type": "string"
+              },
+              "auth_path": {
+                "default": "",
+                "type": "string"
+              },
+              "config_dir": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_cli_path": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_builtin_web_search": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "chatgpt": {
+            "type": "object",
+            "properties": {
+              "sdk": {
+                "default": "openai",
+                "type": "string",
+                "enum": ["openai", "google", "anthropic", "chatgpt"]
+              },
+              "base_url": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key_env": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key": {
+                "default": "",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "type": "string"
+              },
+              "models": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tag": {
+                "type": "string"
+              },
+              "color": {
+                "default": "",
+                "type": "string"
+              },
+              "include_usage": {
+                "default": true,
+                "type": "boolean"
+              },
+              "prompt_cache_ttl": {
+                "default": "",
+                "type": "string",
+                "enum": ["5m", "1h", "off", ""]
+              },
+              "title_model": {
+                "default": "",
+                "description": "Model for automatic session titles; omit to use this provider’s default.",
+                "type": "string"
+              },
+              "auth_path": {
+                "default": "",
+                "type": "string"
+              },
+              "config_dir": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_cli_path": {
+                "default": "",
+                "type": "string"
+              },
+              "codex_builtin_web_search": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "base_branch": {
+            "default": "main",
+            "type": "string"
+          },
+          "worktree_dir": {
+            "default": ".loom/trees",
+            "type": "string"
+          },
+          "db": {
+            "default": ".loom/loom.db",
+            "type": "string"
+          },
+          "default_provider": {
+            "default": "claude",
+            "type": "string"
+          },
+          "worktree": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "auto_rebase": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": false,
+                "type": "boolean"
+              },
+              "mode": {
+                "default": "rebase",
+                "type": "string",
+                "enum": ["rebase", "merge"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "auto_resume": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "commit_reminder": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "daemon": {
+            "type": "object",
+            "properties": {
+              "idle_shutdown_minutes": {
+                "default": 30,
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "titles": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "notify": {
+            "type": "object",
+            "properties": {
+              "webhook": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "provider_access": {
+            "type": "object",
+            "properties": {
+              "only": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "disabled": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "isolation": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": false,
+                "description": "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+                "type": "boolean"
+              },
+              "claude": {
+                "type": "object",
+                "properties": {
+                  "artifact": {
+                    "type": "string"
+                  },
+                  "smolvm": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "aisdk": {
+                "type": "object",
+                "properties": {
+                  "artifact": {
+                    "type": "string"
+                  },
+                  "smolvm": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "codex": {
+                "type": "object",
+                "properties": {
+                  "artifact": {
+                    "type": "string"
+                  },
+                  "smolvm": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "extra_allowed_hosts": {
+                "default": [],
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                }
+              },
+              "network_presets": {
+                "default": [],
+                "maxItems": 16,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["nix", "javascript", "python"]
+                }
+              },
+              "environment": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "nix": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "command_prefix": {
+                    "anyOf": [
+                      {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "prepare": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 65536
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "timeout_seconds": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2073600
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "memory_mib": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 512,
+                        "maximum": 65536
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "cpus": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "providers": {
+            "type": "object",
+            "properties": {
+              "claude": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "default": "claude-sonnet-5",
+                    "type": "string"
+                  },
+                  "title_model": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "models": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "permission_default": {
+                    "type": "string",
+                    "enum": ["manual", "default", "plan", "acceptEdits", "bypassPermissions"]
+                  },
+                  "setting_sources": {
+                    "default": ["project"],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "disable_builtin": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cli_path": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "worker_allowed_hosts": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "prompt_cache_ttl": {
+                    "default": "",
+                    "type": "string",
+                    "enum": ["5m", "1h", ""]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "sdk": {
+                  "default": "openai",
+                  "type": "string",
+                  "enum": ["openai", "google", "anthropic", "chatgpt"]
+                },
+                "base_url": {
+                  "default": "",
+                  "type": "string"
+                },
+                "api_key_env": {
+                  "default": "",
+                  "type": "string"
+                },
+                "api_key": {
+                  "default": "",
+                  "type": "string"
+                },
+                "model": {
+                  "default": "",
+                  "type": "string"
+                },
+                "models": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "include_usage": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "prompt_cache_ttl": {
+                  "default": "",
+                  "type": "string",
+                  "enum": ["5m", "1h", "off", ""]
+                },
+                "title_model": {
+                  "default": "",
+                  "description": "Model for automatic session titles; omit to use this provider’s default.",
+                  "type": "string"
+                },
+                "auth_path": {
+                  "default": "",
+                  "type": "string"
+                },
+                "config_dir": {
+                  "default": "",
+                  "type": "string"
+                },
+                "codex_cli_path": {
+                  "default": "",
+                  "type": "string"
+                },
+                "codex_builtin_web_search": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "claude_profiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "dir": {
+                  "default": "",
+                  "type": "string"
+                },
+                "name": {
+                  "default": "",
+                  "type": "string"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "hooks": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["check", "notify"]
+                },
+                "on": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "init",
+                        "file_write",
+                        "turn_end",
+                        "waiting",
+                        "permission",
+                        "question",
+                        "plan_review",
+                        "user_question",
+                        "error",
+                        "interrupted"
+                      ]
+                    },
+                    {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "init",
+                          "file_write",
+                          "turn_end",
+                          "waiting",
+                          "permission",
+                          "question",
+                          "plan_review",
+                          "user_question",
+                          "error",
+                          "interrupted"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "name": {
+                  "default": "",
+                  "type": "string"
+                },
+                "project": {
+                  "default": "",
+                  "type": "string"
+                },
+                "match": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "timeout": {
+                  "default": 30,
+                  "description": "Hook timeout in seconds; clamped to 1–600.",
+                  "type": "number"
+                }
+              },
+              "required": ["run"],
+              "additionalProperties": false
+            }
+          },
+          "search": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "default": "none",
+                "type": "string",
+                "enum": ["none", "brave", "tavily"]
+              },
+              "api_key_env": {
+                "default": "",
+                "type": "string"
+              },
+              "api_key": {
+                "default": "",
+                "type": "string"
+              },
+              "api_base": {
+                "default": "",
+                "type": "string"
+              },
+              "max_results": {
+                "default": 5,
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "required": ["path"]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "title": "Loom configuration",
+  "description": "User defaults and exact project overrides. Objects merge; arrays replace inherited arrays."
+}
