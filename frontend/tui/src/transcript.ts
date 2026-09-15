@@ -9,6 +9,8 @@
  * function is what makes that impossible rather than merely unlikely.
  */
 import { mkStore, type Store } from "./store.ts";
+import { markdownText } from "./markdown.ts";
+import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
@@ -1036,6 +1038,7 @@ export interface PhysicalRow {
    *  list in assistant prose can't misread as a removed diff line. */
   readonly kind: LogLine["kind"];
   readonly seg: string;
+  readonly spans?: readonly TextSpan[];
 }
 
 /** A `+ `/`- `-prefixed line inside a `tool_call` / `tool_result` body reads as
@@ -1060,20 +1063,56 @@ export const diffSegColor = (
  * one line, not the backlog. LogLines are immutable and fall out of
  * `state.log` at its cap, so the `WeakMap` self-bounds.
  */
+// Documents survive width changes; both caches release entries with their LogLine.
+const documentCache = new WeakMap<LogLine, TextDocument>();
 const layoutCache = new WeakMap<
   LogLine,
-  { iw: number; ts: string; indent: number; segs: readonly string[] }
+  {
+    iw: number;
+    ts: string;
+    indent: number;
+    segs: readonly string[];
+    spans?: readonly (readonly TextSpan[])[];
+  }
 >();
 const lineLayout = (
   l: LogLine,
   iw: number,
-): { ts: string; indent: number; segs: readonly string[] } => {
+): {
+  ts: string;
+  indent: number;
+  segs: readonly string[];
+  spans?: readonly (readonly TextSpan[])[];
+} => {
   const hit = layoutCache.get(l);
   if (hit && hit.iw === iw) return hit;
   const ts = `${clock(l.ts)} `;
   const indent = ts.length + 2; // + "glyph "
   // Wrap each source line separately so intentional newlines are kept.
   const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
+  const width = Math.max(8, iw - indent);
+  if (
+    l.kind === "assistant_text" ||
+    l.kind === "user_message" ||
+    l.kind === "echo" ||
+    l.kind === "thinking"
+  ) {
+    let doc = documentCache.get(l);
+    if (!doc) {
+      doc = markdownText(l.full ?? l.text);
+      documentCache.set(l, doc);
+    }
+    const rows = doc.layout(width);
+    const entry = {
+      iw,
+      ts,
+      indent,
+      segs: rows.map((r) => r.text),
+      spans: rows.map((r) => r.spans),
+    };
+    layoutCache.set(l, entry);
+    return entry;
+  }
   const segs = source
     .split("\n")
     .flatMap((ln) => wrapText(ln.trim() === "" ? " " : ln, Math.max(8, iw - indent)));
@@ -1116,7 +1155,7 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
   let n = -1;
   for (const l of ctx.lines) {
     n += 1;
-    const { ts, indent, segs } = lineLayout(l, ctx.iw);
+    const { ts, indent, segs, spans } = lineLayout(l, ctx.iw);
     const lineEnd = off + segs.length;
     if (lineEnd > from) {
       const lo = Math.max(0, from - off);
@@ -1134,6 +1173,7 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
           tone: l.tone,
           kind: l.kind,
           seg: segs[i]!,
+          ...(spans ? { spans: spans[i]! } : {}),
         });
       }
       if (lineEnd >= to) break;

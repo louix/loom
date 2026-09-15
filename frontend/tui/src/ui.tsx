@@ -1,6 +1,7 @@
-import { createContext, useContext, type ComponentProps, type ReactNode } from "react";
+import { type ComponentProps, createContext, type ReactNode, useContext } from "react";
 import { Box, Text as InkText } from "ink";
 import { C, type Palette, type ThemeColor } from "./theme.ts";
+import type { TextSpan } from "./text-layout.ts";
 
 export const PaletteContext = createContext(C);
 export const useTheme = (): Palette => useContext(PaletteContext);
@@ -12,6 +13,32 @@ export const Text = ({
 }: ComponentProps<typeof InkText> & { tone?: ThemeColor }): ReactNode => {
   const theme = useTheme();
   return <InkText {...(tone ? { color: theme[tone] } : {})} {...props} />;
+};
+
+/** The only Ink adapter for prepared document spans. Colours resolve per theme. */
+export const StyledText = ({ spans }: { spans: readonly TextSpan[] }): ReactNode => {
+  const palette = useTheme();
+  const colors = {
+    heading: palette.accent,
+    code: palette.warn,
+    link: palette.accent,
+    muted: palette.dim,
+    keyword: palette.accent,
+    string: palette.good,
+    number: palette.await_,
+  };
+  return spans.map((span, i) => (
+    <InkText
+      key={i}
+      bold={span.bold ?? false}
+      italic={span.italic ?? false}
+      underline={span.underline ?? false}
+      strikethrough={span.strikethrough ?? false}
+      {...(span.role ? { color: colors[span.role] } : {})}
+    >
+      {span.text}
+    </InkText>
+  ));
 };
 
 export const Line = (props: ComponentProps<typeof Text>): ReactNode => (

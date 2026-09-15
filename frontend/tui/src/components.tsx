@@ -6,7 +6,18 @@
  */
 import { memo, type ReactNode } from "react";
 import { Box } from "ink";
-import { Field, Fields, Hints, Line, Lines, Panel, Section, Text, useTheme } from "./ui.tsx";
+import {
+  Field,
+  Fields,
+  Hints,
+  Line,
+  Lines,
+  Panel,
+  Section,
+  Text,
+  StyledText,
+  useTheme,
+} from "./ui.tsx";
 export { PaletteContext } from "./ui.tsx";
 import { rowLayout, type LayoutRow } from "./layout.ts";
 import { helpLines } from "./help.ts";
@@ -715,14 +726,14 @@ export const EventLog = memo(
                 <Text tone="faint">{r.ts}</Text>
                 <Text color={toneColor(r.tone, palette)}>{`${r.glyph} `}</Text>
                 <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.seg}
+                  {r.spans ? <StyledText spans={r.spans} /> : r.seg}
                 </Text>
               </Line>
             ) : (
               <Line key={r.key}>
                 <Text>{" ".repeat(r.indent)}</Text>
                 <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.seg}
+                  {r.spans ? <StyledText spans={r.spans} /> : r.seg}
                 </Text>
               </Line>
             ),
