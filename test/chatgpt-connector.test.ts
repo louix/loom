@@ -93,7 +93,7 @@ const repo = (): {
 test("ChatGPT provider capabilities reflect a Codex-owned thread, not a Loom-owned transcript", () => {
   const provider = createProvider({
     id: "chatgpt",
-    config: { authPath: "/definitely/not/auth.json" },
+    config: { configDir: "/definitely/not" },
     logger: makeLogger("test"),
   });
   assert.equal(provider.capabilities.forking, false);
@@ -111,7 +111,7 @@ test("createProvider rejects the obsolete direct-backend base_url setting", () =
     () =>
       createProvider({
         id: "chatgpt",
-        config: { authPath: "/definitely/not/auth.json", baseUrl: "https://example.invalid" },
+        config: { configDir: "/definitely/not", baseUrl: "https://example.invalid" },
         logger: makeLogger("test"),
       }),
     /base_url.*is not supported anymore/,
@@ -178,7 +178,7 @@ test("ChatGPTCatalog does not read credentials until list() is called", () => {
   // Constructing it must not touch ~/.codex/auth.json: a user should be able
   // to configure Loom before running `codex login`, then get the actionable
   // auth error only when the catalog is actually fetched.
-  const catalog = new ChatGPTCatalog(resolveCodexHome({ authPath: "/definitely/not/auth.json" }));
+  const catalog = new ChatGPTCatalog(resolveCodexHome({ configDir: "/definitely/not" }));
   assert.ok(catalog);
 });
 
@@ -223,41 +223,19 @@ test("Code Mode routes auto-mode approvals through Codex's automatic reviewer", 
   assert.equal(approvalsReviewerFor("plan"), "user");
 });
 
-test("resolveCodexHome: config_dir, then auth_path's parent, then CODEX_HOME, then ~/.codex", () => {
+test("resolveCodexHome: config_dir, then CODEX_HOME, then ~/.codex", () => {
   assert.equal(resolveCodexHome({ env: {} }).dir.endsWith("/.codex"), true);
   assert.equal(resolveCodexHome({ env: { CODEX_HOME: "/from/env" } }).dir, "/from/env");
-  assert.deepEqual(resolveCodexHome({ authPath: "/custom/auth.json", env: {} }), {
-    dir: "/custom",
-    authJsonPath: "/custom/auth.json",
-  });
   assert.deepEqual(resolveCodexHome({ configDir: "/explicit", env: { CODEX_HOME: "/ignored" } }), {
     dir: "/explicit",
     authJsonPath: "/explicit/auth.json",
   });
-  // Agreeing config_dir + auth_path is fine.
-  assert.deepEqual(resolveCodexHome({ configDir: "/same", authPath: "/same/auth.json", env: {} }), {
-    dir: "/same",
-    authJsonPath: "/same/auth.json",
-  });
 });
 
-test("resolveCodexHome resolves a relative config_dir/auth_path to an absolute path", () => {
-  const cwd = process.cwd();
-  assert.equal(resolveCodexHome({ configDir: "./codex", env: {} }).dir, join(cwd, "codex"));
-  const relative = resolveCodexHome({ authPath: "./codex/auth.json", env: {} });
-  assert.equal(relative.dir, join(cwd, "codex"));
-  assert.equal(relative.authJsonPath, join(cwd, "codex", "auth.json"));
-});
-
-test("resolveCodexHome rejects a disagreeing config_dir/auth_path pair and a misnamed auth_path", () => {
-  assert.throws(
-    () => resolveCodexHome({ configDir: "/a", authPath: "/b/auth.json", env: {} }),
-    /disagree/,
-  );
-  assert.throws(
-    () => resolveCodexHome({ authPath: "/custom/credentials.json", env: {} }),
-    /must name an auth\.json file/,
-  );
+test("resolveCodexHome resolves a relative config_dir to an absolute path", () => {
+  const relative = resolveCodexHome({ configDir: "./codex", env: {} });
+  assert.equal(relative.dir, join(process.cwd(), "codex"));
+  assert.equal(relative.authJsonPath, join(process.cwd(), "codex", "auth.json"));
 });
 
 test("CodexRpcClient enforces a request deadline and rejects pending requests on close", async () => {

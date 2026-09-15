@@ -27,7 +27,6 @@ in import ./mk-runtime.nix {
   executable = "loom-session";
   sessionVersion = 2;
   args = [ "${loom}/libexec/loom/runtime/src/session-vm/guest.ts" ];
-  extraRoots = [ loom ];
   # Only stable tools enter the guest image. Loom code is mounted per launch.
-  splitRuntime = true;
+  extraRoots = [ loom ];
 }

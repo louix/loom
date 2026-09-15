@@ -36,8 +36,6 @@ const connectorConfigFields = z.object({
   apiKey: z.string(),
   /** Which model backend the aisdk connectors dial. */
   sdk: z.enum(["openai", "google", "anthropic", "chatgpt"]),
-  /** Optional Codex OAuth auth.json path; omitted uses `~/.codex/auth.json`. */
-  authPath: z.string(),
   /** ChatGPT: explicit `codex` executable. Empty / omitted uses PATH. */
   codexCliPath: z.string(),
   /** Expose Codex's own web search alongside configured MCP servers. Default false. */
@@ -71,8 +69,7 @@ const connectorConfigFields = z.object({
    * default (`~/.claude`).
    *
    * ChatGPT (`sdk = "chatgpt"`): explicit Codex home directory (`auth.json`,
-   * `config.toml`). "" falls through to legacy `auth_path`'s parent, then
-   * `CODEX_HOME`, then `~/.codex`.
+   * `config.toml`). "" uses `CODEX_HOME`, then `~/.codex`.
    */
   configDir: z.string(),
 });

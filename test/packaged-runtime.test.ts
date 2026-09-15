@@ -82,6 +82,7 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
     { closureFormat: "ext4" },
     { guestImage: "../../host.tar" },
     { guestImage: "debian:latest" },
+    { guestImage: "guest-image.tar" },
   ]) {
     assert.throws(() => decodeManifest({ ...manifest, ...extra }));
   }
@@ -117,7 +118,11 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
   }
   const guestBinding: VmBinding = {
     ...imageBinding,
-    manifest: { ...imageBinding.manifest, guestImage: "guest-image.tar" },
+    manifest: {
+      ...imageBinding.manifest,
+      guestImage: "guest-image.tar",
+      environmentCompatibility: "a".repeat(64),
+    },
   };
   assert.deepEqual(decodeManifest(guestBinding.manifest), guestBinding.manifest);
   const createArgs = vmCreateArguments(guestBinding);
@@ -127,7 +132,9 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
   assert(!createArgs.includes(`${b.artifact}/nix/store:/nix/store:ro`));
   const guestExec = vmExecArguments(guestBinding);
   assert.deepEqual(guestExec.slice(-3), [manifest.entrypoint, "$(touch /tmp/unsafe)", "a b"]);
-  assert(!guestExec[guestExec.indexOf("-c") + 1]!.includes("mount -t erofs"));
+  assert(guestExec[guestExec.indexOf("-c") + 1]!.includes("mount -t erofs"));
+  assert(createArgs.includes(`${b.artifact}:/run/loom/code:ro`));
+  assert.throws(() => vmArguments({ ...b, writableNix: true }), /requires a session runtime/);
   assert.deepEqual(Object.keys(vmEnvironment(b.state)).sort(), [
     "HOME",
     "PATH",

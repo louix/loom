@@ -53,7 +53,6 @@ export const createProviderWorker = (
       if (native) {
         read.push(profile);
         write.push(profile);
-        if (config.authPath) read.push(config.authPath);
         if (config.codexCliPath?.includes("/")) read.push(config.codexCliPath);
         for (const dir of (env.PATH ?? "").split(delimiter).filter(isAbsolute))
           read.push(join(dir, "codex"));

@@ -48,18 +48,7 @@ const publish = async () => {
     });
   }
 };
-for (const runtime of [
-  "tilth-runtime",
-  "claude-session-runtime",
-  "codex-session-runtime",
-  "aisdk-session-runtime",
-]) {
-  if (runtime === "codex-session-runtime" || runtime === "aisdk-session-runtime") {
-    runtimes[runtime] = runtimes["claude-session-runtime"]!;
-    await publish();
-    console.error(`${runtime}: sharing the verified session image`);
-    continue;
-  }
+for (const runtime of ["tilth-runtime", "session-runtime"]) {
   const hash = runtimes[runtime];
   if (hash && /^sha256-[A-Za-z0-9+/]{43}=$/.test(hash)) {
     const path = await Deno.spawnAndWait(

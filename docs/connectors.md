@@ -259,9 +259,7 @@ remains optional:
 ```
 
 Codex's directory is resolved once, in this order: explicit `config_dir` →
-legacy `auth_path`'s parent directory → the `CODEX_HOME` environment variable
-→ `~/.codex`. Setting both `config_dir` and `auth_path` is only valid when they
-name the same directory — Loom rejects the config otherwise. The resolved
+the `CODEX_HOME` environment variable → `~/.codex`. The resolved
 directory is used consistently for discovery and for every spawned
 `codex app-server` session (as that subprocess's own `CODEX_HOME`), so both
 always authenticate against the same `auth.json`.

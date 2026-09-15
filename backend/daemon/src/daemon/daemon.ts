@@ -1752,7 +1752,7 @@ export class Daemon {
     let identity: Array<string | undefined> = [provider];
     if (account?.email) identity = ["claude", account.email, account.org, account.loginMethod];
     else if (profile) identity = ["claude-profile", profile.dir, account?.loginMethod];
-    else if (p) identity = [p.sdk, p.baseUrl, p.authPath || provider, resolveApiKey(p)];
+    else if (p) identity = [p.sdk, p.baseUrl, p.configDir || provider, resolveApiKey(p)];
     return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   }
 

@@ -214,10 +214,7 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
         "endpoint. Remove `base_url` from this provider's config.",
     );
   }
-  const codexHome = resolveCodexHome({
-    ...(ctx.config.configDir ? { configDir: ctx.config.configDir } : {}),
-    ...(ctx.config.authPath ? { authPath: ctx.config.authPath } : {}),
-  });
+  const codexHome = resolveCodexHome({ configDir: ctx.config.configDir ?? "" });
   const codexCliPath = ctx.config.codexCliPath || "codex";
   const catalog = new ChatGPTCatalog(codexHome);
   // A curated `models` list restricts the picker to exactly those ids

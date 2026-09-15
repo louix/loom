@@ -17,7 +17,7 @@ never proxy headers or TLS payloads. Optional Deno/Claude update traffic is disa
 
 ```sh
 # Claude's native package is unfree; allow evaluation for this build only.
-NIXPKGS_ALLOW_UNFREE=1 nix build --impure .#claude-session-runtime \
+NIXPKGS_ALLOW_UNFREE=1 nix build --impure .#session-runtime \
   --out-link /tmp/loom-claude-session-artifact
 nix develop --command deno run -A scripts/test-claude-session-vm.ts \
   /tmp/loom-claude-session-artifact
@@ -241,7 +241,7 @@ Live daemon acceptance (consumes Claude usage):
 
 ```sh
 nix develop --command deno run -A scripts/test-claude-vm-daemon.ts \
-  /path/to/claude-session-runtime /path/to/smolvm /path/to/claude
+  /path/to/session-runtime /path/to/smolvm /path/to/claude
 ```
 
 This checks an MCP tool call, daemon restart, archive/resume at a different
@@ -279,7 +279,7 @@ Credential-free acceptance test for a ready VM whose two owners are killed:
 
 ```sh
 nix develop --command deno run -A scripts/test-claude-vm-recovery.ts \
-  /path/to/claude-session-runtime /path/to/smolvm
+  /path/to/session-runtime /path/to/smolvm
 ```
 
 Unit tests cover blocked startup/missing-state cases, retryable cleanup, ownership

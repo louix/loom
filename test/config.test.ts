@@ -266,7 +266,7 @@ test("providers.codex uses Codex OAuth instead of requiring an API key", () => {
         "gpt-5-codex",
         "gpt-5"
       ],
-      "auth_path": "~/custom-codex/auth.json",
+      "config_dir": "~/custom-codex",
       "cli_path": "~/bin/codex",
       "builtin_web_search": true
     }
@@ -277,11 +277,20 @@ test("providers.codex uses Codex OAuth instead of requiring an API key", () => {
   assert.equal(p.sdk, "chatgpt");
   assert.equal(p.apiKey, "");
   assert.equal(p.apiKeyEnv, "");
-  assert.equal(p.authPath, join(homedir(), "custom-codex/auth.json"));
+  assert.equal(p.configDir, join(homedir(), "custom-codex"));
   assert.equal(p.codexCliPath, join(homedir(), "bin/codex"));
   assert.equal(p.codexBuiltinWebSearch, true);
   assert.deepEqual(p.models, ["gpt-5-codex", "gpt-5"]);
   assert.deepEqual(lintConfig({ ...c, claudeProfiles: [] }), []);
+});
+
+test("provider config rejects removed auth_path settings at family and profile scope", () => {
+  for (const codex of [
+    { auth_path: "/old/auth.json" },
+    { profiles: { default: { auth_path: "/old/auth.json" } } },
+  ]) {
+    assert.throws(() => normalizeConfig({ providers: { codex } }), /Unknown setting.*auth_path/);
+  }
 });
 
 test("providers.codex disables Codex web search unless explicitly enabled", () => {

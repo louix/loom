@@ -106,8 +106,8 @@ Loom's application code, which is mounted read-only on each launch. Source-only
 Loom upgrades reuse prepared bases. Compatibility follows the stable guest image
 and an explicit environment-format epoch, plus the host architecture/OS, exact
 smolvm executable identity and writable-Nix setting. Guest OS/tool changes or an
-incompatible environment-format change require preparation again. Custom runtimes
-without the compatibility metadata retain exact artifact matching.
+incompatible environment-format change require preparation again. Custom session runtimes must use the same current image format and include
+the environment identity metadata.
 
 The transition to this layout requires one new preparation; older bases remain
 available until replacements are prepared. Changing a repo's development dependencies or preparation command still

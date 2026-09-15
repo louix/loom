@@ -340,7 +340,6 @@ export class ProviderRegistry {
       baseUrl: p.baseUrl,
       apiKey: resolveApiKey(p),
       sdk: p.sdk,
-      ...(p.authPath ? { authPath: p.authPath } : {}),
       ...(p.configDir ? { configDir: p.configDir } : {}),
       ...(p.codexCliPath ? { codexCliPath: p.codexCliPath } : {}),
       ...(p.codexBuiltinWebSearch ? { codexBuiltinWebSearch: true } : {}),

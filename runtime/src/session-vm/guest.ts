@@ -82,13 +82,8 @@ for (const [index, spec] of mcp.entries()) {
 // Explicit preparation builds the environment; normal initialization restores it
 // before loading the provider. The proxy remains available to setup and init hooks.
 const prepare = async (output?: "inherit") => {
-  let config: SessionEnvironment | undefined;
-  try {
-    config = JSON.parse(await Deno.readTextFile("/run/loom/private/environment.json")) ?? undefined;
-  } catch (error) {
-    // Older launchers do not provide environment configuration.
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  }
+  const config: SessionEnvironment | undefined =
+    JSON.parse(await Deno.readTextFile("/run/loom/private/environment.json")) ?? undefined;
   if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
   const before = Deno.env.toObject();
   const env = output

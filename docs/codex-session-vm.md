@@ -5,7 +5,7 @@ per session. The guest artifact includes the pinned Codex executable; the host
 still needs Codex for model discovery, titles and credential renewal.
 
 ```sh
-nix build .#codex-session-runtime --out-link /tmp/loom-codex-runtime
+nix build .#session-runtime --out-link /tmp/loom-codex-runtime
 ```
 
 ```jsonc

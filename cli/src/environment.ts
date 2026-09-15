@@ -287,7 +287,8 @@ export const repoEnvironmentWarning = async (
           await Deno.readTextFile(join(artifact, "session-environment-version"))
         ).trim();
         if (
-          version !== (manifest.environmentCompatibility ? "4" : "3") ||
+          !manifest.environmentCompatibility ||
+          version !== "4" ||
           !(await hasCompatibleRepoBase(repoBaseDirectory(repo), {
             artifact,
             smolvm,

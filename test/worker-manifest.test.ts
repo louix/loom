@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { makeLogger } from "../core/src/logger.ts";
 
 test(
-  "ChatGPT worker initializes with auth_path and host isolation policy",
+  "ChatGPT worker initializes with config_dir and host isolation policy",
   { timeout: 15_000 },
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "loom-chatgpt-init-" });
@@ -16,7 +16,7 @@ test(
         id: "chatgpt-init",
         config: {
           sdk: "chatgpt",
-          authPath: `${dir}/auth.json`,
+          configDir: dir,
           codexCliPath: `${dir}/codex`,
           sessionVm: { artifact: `${dir}/artifact`, smolvm: "smolvm", repoRoot: dir },
           workerAllowedHosts: ["chatgpt.com"],

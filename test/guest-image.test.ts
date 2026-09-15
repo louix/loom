@@ -20,6 +20,7 @@ test("guest image staging preserves cache identity across sessions without shari
       entrypoint: "/nix/store/test/bin/test",
       args: [],
       guestImage: "guest-image.tar",
+      environmentCompatibility: "a".repeat(64),
     },
   };
   try {

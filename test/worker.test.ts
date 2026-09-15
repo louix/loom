@@ -59,7 +59,6 @@ test("all connector config fields round-trip; host policy stays off the wire", (
     baseUrl: "https://example.test",
     apiKey: "test-secret",
     sdk: "chatgpt",
-    authPath: "/tmp/auth.json",
     codexCliPath: "/tmp/codex",
     codexBuiltinWebSearch: true,
     maxSteps: 10,

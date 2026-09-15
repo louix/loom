@@ -49,7 +49,8 @@ export const decodeManifest = (value: unknown): RuntimeManifest => {
     !Array.isArray(v.args) ||
     !v.args.every((a) => typeof a === "string" && !a.includes("\0")) ||
     (v.closureFormat !== undefined && v.closureFormat !== "erofs") ||
-    (v.guestImage !== undefined && v.guestImage !== "guest-image.tar") ||
+    (v.guestImage !== undefined &&
+      (v.guestImage !== "guest-image.tar" || v.environmentCompatibility === undefined)) ||
     (v.environmentCompatibility !== undefined &&
       (typeof v.environmentCompatibility !== "string" ||
         !/^[a-f0-9]{64}$/.test(v.environmentCompatibility) ||

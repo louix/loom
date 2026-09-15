@@ -5,7 +5,7 @@ Google AISDK profiles. The project VM toggle also enables Claude and
 Codex/ChatGPT sessions, using their respective runtimes.
 
 ```sh
-nix build .#aisdk-session-runtime --out-link /tmp/loom-aisdk-runtime
+nix build .#session-runtime --out-link /tmp/loom-aisdk-runtime
 ```
 
 ```jsonc

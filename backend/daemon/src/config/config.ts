@@ -112,18 +112,7 @@ export interface AisdkProfile {
   promptCacheTtl: "5m" | "1h" | "off" | "";
   /** Cheap model for one-shot auto-titling; "" → a cheap default for this provider. */
   titleModel: string;
-  /**
-   * Codex OAuth credentials for `sdk = "chatgpt"`. Empty uses Codex's own
-   * `~/.codex/auth.json`; this is deliberately a path rather than a token so
-   * Loom never copies a ChatGPT subscription credential into its config or DB.
-   */
-  authPath: string;
-  /**
-   * Explicit Codex home directory for `sdk = "chatgpt"` (`auth.json`,
-   * `config.toml`). Resolution order: `config_dir` → legacy `auth_path`'s
-   * parent → `CODEX_HOME` → `~/.codex`; setting both `config_dir` and
-   * `auth_path` is only valid when they name the same directory.
-   */
+  /** Codex home directory; empty uses CODEX_HOME, then ~/.codex. */
   configDir: string;
   /** Explicit `codex` executable for `sdk = "chatgpt"`. Empty resolves `codex` on PATH. */
   codexCliPath: string;
@@ -493,7 +482,6 @@ const buildAisdkProfile = (
     color: p.color,
     promptCacheTtl: p.prompt_cache_ttl,
     titleModel: p.title_model,
-    authPath: expandTilde(p.auth_path),
     configDir: expandTilde(p.config_dir),
     codexCliPath: expandTilde(p.cli_path),
     codexBuiltinWebSearch: p.builtin_web_search,

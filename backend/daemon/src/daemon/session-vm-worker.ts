@@ -154,7 +154,10 @@ const launchSessionVmOwned = async (
   const mounts = await workspaceMounts(workspace, options.repoRoot);
   const manifest = await inspectArtifact(artifact);
   try {
-    if ((await Deno.readTextFile(join(artifact, "claude-session-version"))).trim() !== "2")
+    if (
+      !manifest.environmentCompatibility ||
+      (await Deno.readTextFile(join(artifact, "claude-session-version"))).trim() !== "2"
+    )
       throw new Error("incompatible runtime");
   } catch {
     throw new Error(
@@ -163,10 +166,7 @@ const launchSessionVmOwned = async (
   }
   if (environmentEnabled(options.environment)) {
     try {
-      if (
-        (await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !==
-        (manifest.environmentCompatibility ? "4" : "3")
-      )
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "4")
         throw new Error();
     } catch {
       throw new Error(

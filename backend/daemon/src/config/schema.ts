@@ -130,7 +130,6 @@ const providerFields = {
   title_model: text().describe(
     "Model for automatic session titles; omit to use this provider’s default.",
   ),
-  auth_path: text(),
   config_dir: text(),
   cli_path: text(),
   builtin_web_search: flag(false),
@@ -138,7 +137,7 @@ const providerFields = {
 
 export const providerSchema = section(providerFields);
 // Profiles stay sparse until merged with their family defaults.
-const sparseProviderSchema = z.object(providerFields).partial();
+const sparseProviderSchema = z.strictObject(providerFields).partial();
 const providerFamilySchema = sparseProviderSchema.extend({
   profiles: z.record(z.string(), sparseProviderSchema).optional(),
 });

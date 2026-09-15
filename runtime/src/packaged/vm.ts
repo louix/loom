@@ -50,6 +50,8 @@ const mountErofs = (image: string, target: string) =>
     `mount -t erofs -o loop,ro ${image} ${target}`,
   ].join("; ");
 const runtimeCommand = (b: VmBinding) => {
+  if (b.writableNix && !b.manifest.environmentCompatibility)
+    throw new Error("Writable Nix requires a session runtime");
   if (b.manifest.environmentCompatibility) {
     // The image and its registered Nix closure stay fixed across Loom upgrades.
     // Current code is another read-only lower layer, never saved in the base.
@@ -74,32 +76,10 @@ const runtimeCommand = (b: VmBinding) => {
     ].join("; ");
     return ["/bin/sh", "-c", script, "loom-runtime", b.manifest.entrypoint, ...b.manifest.args];
   }
-  let mount: string | undefined;
-  if (b.writableNix) {
-    const lower = b.manifest.guestImage ? "/nix/store" : "/run/loom/runtime/nix/store";
-    let mountLower = `mount --bind ${lower} /run/loom/store-lower`;
-    if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs")
-      mountLower = mountErofs("/run/loom/runtime/runtime.erofs", "/run/loom/store-lower");
-    mount = [
-      "set -eu",
-      // /storage is smolvm's ext4 disk; its overlay-backed root cannot
-      // itself be an OverlayFS upper. Keep the DB and build temp files here too.
-      "mkdir -p /nix/store /nix/var /run/loom/store-lower /storage/loom-nix/upper /storage/loom-nix/work /storage/loom-nix/var /storage/loom-nix/tmp",
-      mountLower,
-      "mount -t overlay overlay -o lowerdir=/run/loom/store-lower,upperdir=/storage/loom-nix/upper,workdir=/storage/loom-nix/work /nix/store",
-      "mount --bind /storage/loom-nix/var /nix/var",
-      'exec "$@"',
-    ].join("; ");
-  } else if (!b.manifest.guestImage && b.manifest.closureFormat === "erofs") {
-    mount = `set -eu; mkdir -p /nix/store; ${mountErofs("/run/loom/runtime/runtime.erofs", "/nix/store")}; exec "$@"`;
-  }
-  if (b.manifest.guestImage) {
-    // /run is ephemeral; the image keeps closure registration under /opt.
-    const metadata = "mkdir -p /run/loom; ln -sfn /opt/loom/runtime /run/loom/runtime";
-    mount = mount
-      ? mount.replace("set -eu; ", `set -eu; ${metadata}; `)
-      : `set -eu; ${metadata}; mount --bind /nix/store /nix/store; mount -o remount,bind,ro /nix/store; exec "$@"`;
-  }
+  const mount =
+    b.manifest.closureFormat === "erofs"
+      ? `set -eu; mkdir -p /nix/store; ${mountErofs("/run/loom/runtime/runtime.erofs", "/nix/store")}; exec "$@"`
+      : undefined;
   return [
     ...(mount ? ["/bin/sh", "-c", mount, "loom-runtime"] : []),
     b.manifest.entrypoint,
@@ -170,7 +150,7 @@ export const vmArguments = (b: VmBinding) => {
       ? []
       : [
           "-v",
-          b.writableNix || b.manifest.closureFormat === "erofs"
+          b.manifest.closureFormat === "erofs"
             ? `${b.artifact}:/run/loom/runtime:ro`
             : `${b.artifact}/nix/store:/nix/store:ro`,
         ]),

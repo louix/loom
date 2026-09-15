@@ -83,10 +83,7 @@ export const withVmSessions = async <T extends AgentProvider>(
     providerHosts = [endpoint.hostname];
   } else if (kind === "codex") {
     const cli = await executable(ctx.config.codexCliPath || "codex");
-    const profile =
-      ctx.config.configDir ||
-      (ctx.config.authPath ? resolve(ctx.config.authPath, "..") : Deno.env.get("CODEX_HOME")) ||
-      join(homedir(), ".codex");
+    const profile = ctx.config.configDir || Deno.env.get("CODEX_HOME") || join(homedir(), ".codex");
     owner = new CodexAuthOwner({
       profile,
       cli,

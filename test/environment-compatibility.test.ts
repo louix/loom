@@ -107,7 +107,7 @@ test("split runtimes launch current code on stable guest tools for directory and
 
 test("compatibility metadata requires a versioned image and a bounded digest", () => {
   assert.deepEqual(decodeManifest(manifest()), manifest());
-  for (const key of ["", "../base", "x".repeat(64), "a".repeat(65), 4])
+  for (const key of [undefined, "", "../base", "x".repeat(64), "a".repeat(65), 4])
     assert.throws(() => decodeManifest({ ...manifest(), environmentCompatibility: key }));
   assert.throws(() => decodeManifest({ ...manifest(), guestImage: undefined }));
 });

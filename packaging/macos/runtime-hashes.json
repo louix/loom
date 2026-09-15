@@ -3,8 +3,6 @@
   "recipe": "13a71645198991d8783c5a2e3e77858000630cae77b504576696c537ec41d473",
   "runtimes": {
     "tilth-runtime": "sha256-fZhkPSDqY5IFaZeDjHFyPlATPL9aNpwwAleyz4Y2P9k=",
-    "claude-session-runtime": "sha256-gaahIMrzfVbS32KpEg/s4GtgbwkJkudy3OHa6r0FBdc=",
-    "codex-session-runtime": "sha256-gaahIMrzfVbS32KpEg/s4GtgbwkJkudy3OHa6r0FBdc=",
-    "aisdk-session-runtime": "sha256-gaahIMrzfVbS32KpEg/s4GtgbwkJkudy3OHa6r0FBdc="
+    "session-runtime": "sha256-gaahIMrzfVbS32KpEg/s4GtgbwkJkudy3OHa6r0FBdc="
   }
 }

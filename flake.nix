@@ -82,21 +82,7 @@
       # Guests always run Linux, independently of the machine running Loom/smolvm.
       guestSystemFor = system: builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
       guestRuntimes = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
-        codex-session-runtime = import ./packaging/runtimes/codex.nix {
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
-          };
-          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
-        };
-        aisdk-session-runtime = import ./packaging/runtimes/aisdk.nix {
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
-          };
-          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
-        };
-        claude-session-runtime = import ./packaging/runtimes/claude.nix {
+        session-runtime = import ./packaging/runtimes/session.nix {
           pkgs = import nixpkgs {
             inherit system;
             config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
@@ -177,10 +163,7 @@
         in rec {
           default = loom;
           smolvm = hostSmolvm;
-          session-runtime = hostRuntimes.claude-session-runtime;
-          claude-session-runtime = hostRuntimes.claude-session-runtime;
-          aisdk-session-runtime = hostRuntimes.aisdk-session-runtime;
-          codex-session-runtime = hostRuntimes.codex-session-runtime;
+          session-runtime = hostRuntimes.session-runtime;
           tilth-runtime = hostRuntimes.tilth-runtime;
 
 
@@ -270,9 +253,9 @@
               };
               bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON (
                 pkgs.lib.optionalAttrs withTilth { tilth = entry "tilth" "${tilth-runtime}"; }
-                // pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${claude-session-runtime}"; }
-                // pkgs.lib.optionalAttrs withCodex { codex = entry "codex" "${codex-session-runtime}"; }
-                // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk" "${aisdk-session-runtime}"; }
+                // pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${session-runtime}"; }
+                // pkgs.lib.optionalAttrs withCodex { codex = entry "codex" "${session-runtime}"; }
+                // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk" "${session-runtime}"; }
               ));
             in
             pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
