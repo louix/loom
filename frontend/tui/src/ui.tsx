@@ -35,6 +35,7 @@ export const StyledText = ({ spans }: { spans: readonly TextSpan[] }): ReactNode
       underline={span.underline ?? false}
       strikethrough={span.strikethrough ?? false}
       {...(span.role ? { color: colors[span.role] } : {})}
+      {...(span.background ? { backgroundColor: palette.codeBg } : {})}
     >
       {span.text}
     </InkText>

@@ -16,7 +16,7 @@ import {
 const text = (source: string, width = 80) =>
   markdownText(source)
     .layout(width)
-    .map((r) => r.text)
+    .map((r) => r.text.trimEnd())
     .join("\n");
 const fixture = `## Prior findings
 
@@ -50,7 +50,7 @@ test("Markdown semantics include nested emphasis, escapes, entities, links, and 
   assert.ok(spans.some((s) => s.text === "nested" && s.bold && s.italic));
   assert.ok(spans.some((s) => s.text === "gone" && s.strikethrough));
   assert.ok(spans.some((s) => s.text === "a ** b" && s.role === "code"));
-  const body = rows.map((r) => r.text).join("\n");
+  const body = rows.map((r) => r.text.trimEnd()).join("\n");
   assert.match(body, /\*literal\* & site \(https:\/\/example.com\)/);
   assert.match(body, /<b>html<\/b>/);
 });
@@ -78,7 +78,7 @@ test("wrapping preserves styled content, Unicode graphemes, and code indentation
   for (const r of rows) assert.ok(stringWidth(r.text) <= 6);
   assert.equal(
     rows
-      .map((r) => r.text)
+      .map((r) => r.text.trimEnd())
       .join("")
       .replace(/ /g, ""),
     "你好你好你好👨‍👩‍👧‍👦éééééé",
@@ -165,7 +165,7 @@ test("code highlighting uses explicit languages, preserves tokens, and falls bac
   assert.equal(
     rows
       .slice(1)
-      .map((r) => r.text)
+      .map((r) => r.text.trimEnd())
       .join("\n"),
     source,
   );
@@ -174,13 +174,38 @@ test("code highlighting uses explicit languages, preserves tokens, and falls bac
     unknown
       .slice(1)
       .flatMap((r) => r.spans)
-      .every((s) => s.role === "code"),
+      .every((s) => !s.text.trim() || s.role === "code"),
   );
   assert.equal(
     unknown
       .slice(1)
-      .map((r) => r.text)
+      .map((r) => r.text.trimEnd())
       .join("\n"),
     source,
   );
+});
+
+test("code surfaces fill wrapped and blank rows without shading prose or quote markers", () => {
+  for (const width of [8, 24, 80]) {
+    const rows = markdownText(
+      '~~~ts\nconst greeting = "hello";\n\n  return greeting;\n~~~\n\n> a quote\n\nInline `code`.',
+    ).layout(width);
+    const shaded = rows.filter((r) => r.spans.some((s) => s.background));
+    assert.ok(shaded.length >= 4);
+    for (const r of shaded) {
+      assert.equal(stringWidth(r.text), width);
+      assert.ok(r.spans.every((s) => s.background === "code"));
+    }
+    assert.ok(shaded.some((r) => r.text.trim() === ""));
+    assert.ok(
+      rows
+        .filter((r) => /quote|Inline/.test(r.text))
+        .every((r) => r.spans.every((s) => !s.background)),
+    );
+  }
+  const nested = markdownText("> ~~~\n> x\n> ~~~").layout(20);
+  const code = nested.find((r) => r.text.includes("x"))!;
+  assert.equal(stringWidth(code.text), 20);
+  assert.equal(code.spans[0]?.background, undefined);
+  assert.ok(code.spans.slice(1).every((s) => s.background === "code"));
 });

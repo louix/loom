@@ -25,9 +25,10 @@ export type Palette = {
    *  read against that dark background. `undefined` leaves the terminal's own
    *  background untouched. */
   bg: string | undefined;
+  codeBg: string;
 };
 
-export type ThemeColor = Exclude<keyof Palette, "bg">;
+export type ThemeColor = Exclude<keyof Palette, "bg" | "codeBg">;
 
 const DARK: Palette = {
   accent: "#5eead4",
@@ -40,6 +41,7 @@ const DARK: Palette = {
   dim: "#6b7280",
   faint: "#4b5563",
   bg: undefined,
+  codeBg: "#171f2a",
 };
 
 /** Same roles, darkened/saturated for legibility against the explicit light `bg`. */
@@ -54,6 +56,7 @@ const LIGHT: Palette = {
   dim: "#4b5563",
   faint: "#9ca3af",
   bg: "#f4f4f5",
+  codeBg: "#e5e7eb",
 };
 
 /** "Argonext" — a red-on-navy terminal theme (#0d0f18 bg, #fffaf3 fg, #ff0017
@@ -74,6 +77,7 @@ const ARGONEXT: Palette = {
   dim: "#868586",
   faint: "#444444",
   bg: "#0d0f18",
+  codeBg: "#171c2b",
 };
 
 export const PALETTES: Record<ThemeMode, Palette> = {

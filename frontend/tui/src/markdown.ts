@@ -60,7 +60,8 @@ const sameStyle = (a: TextStyle, b: TextStyle): boolean =>
   a.italic === b.italic &&
   a.underline === b.underline &&
   a.strikethrough === b.strikethrough &&
-  a.role === b.role;
+  a.role === b.role &&
+  a.background === b.background;
 const append = (out: TextSpan[], text: string, style: TextStyle = {}): void => {
   if (!text) return;
   const last = out.at(-1);
@@ -184,6 +185,15 @@ const inline = (tokens: readonly Token[], style: TextStyle = {}, depth = 0): Tex
 
 const prefixRows = (rows: readonly TextRow[], first: string, rest = first): TextRow[] =>
   rows.map((r, i) => row([{ text: i === 0 ? first : rest, role: "muted" }, ...r.spans]));
+
+/** Paint the full code block width, including blank lines, without rewrapping. */
+const shadeCode = (rows: readonly TextRow[], width: number): TextRow[] =>
+  rows.map((r) =>
+    row([
+      ...r.spans.map((s) => ({ ...s, background: "code" as const })),
+      { text: " ".repeat(Math.max(0, width - stringWidth(r.text))), background: "code" },
+    ]),
+  );
 
 const tableRows = (table: Tokens.Table, width: number): TextRow[] => {
   const headers = table.header.map((c) => inline(c.tokens, { bold: true }));
@@ -317,10 +327,12 @@ const blocks = (tokens: readonly Token[], width: number, depth = 0): TextRow[] =
       case "code": {
         const code = t as Tokens.Code;
         gap();
+        const codeRows: TextRow[] = [];
         if (code.lang) {
-          out.push(...wrap([{ text: clean(code.lang), role: "muted" }], width));
+          codeRows.push(...wrap([{ text: clean(code.lang), role: "muted" }], width));
         }
-        out.push(...wrap(codeSpans(code), width, true));
+        codeRows.push(...wrap(codeSpans(code), width, true));
+        out.push(...shadeCode(codeRows, width));
         gap();
         break;
       }
