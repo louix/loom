@@ -9,8 +9,8 @@ nix build .#codex-session-runtime --out-link /tmp/loom-codex-runtime
 ```
 
 ```toml
-# ~/.config/loom/config.toml; also valid under [repo.isolation.codex]
-[isolation.codex]
+# ~/.config/loom/config.toml; also valid under [repo.isolation]
+[isolation]
 enabled = true # use the runtime bundled with the Linux Nix package
 ```
 

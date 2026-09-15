@@ -116,6 +116,7 @@ test("environment preflight warns only for enabled VM providers needing a prepar
   const config = normalizeConfig({
     providers: { chatgpt: { adapter: "aisdk", sdk: "chatgpt" } },
     isolation: {
+      enabled: true,
       codex: { artifact: "/missing/runtime", smolvm: "/missing/backend" },
       environment: { nix: true },
     },

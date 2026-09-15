@@ -593,14 +593,18 @@ test("scaffoldUserConfig drops the example at the XDG path once, never overwriti
 
 test("Claude VM routing is opt-in and requires explicit runtime paths", () => {
   assert.equal(cfg("").isolation.claude, undefined);
-  assert.deepEqual(cfg('[isolation.claude]\nartifact="/runtime"').isolation.claude, {
-    artifact: "/runtime",
-    smolvm: "smolvm",
-  });
+  assert.equal(cfg('[isolation.claude]\nartifact="/runtime"').isolation.claude, undefined);
+  assert.deepEqual(
+    cfg('[isolation]\nenabled=true\n[isolation.claude]\nartifact="/runtime"').isolation.claude,
+    {
+      artifact: "/runtime",
+      smolvm: "smolvm",
+    },
+  );
   assert.throws(() => cfg('[isolation.claude]\nsmolvm="/bin/smolvm"'), /requires an artifact/);
   assert.throws(
     () => cfg('[isolation.claude]\nartifact="/runtime"\nsmolvm=false'),
-    /must name an executable/,
+    /must name a path or executable/,
   );
 });
 
@@ -641,39 +645,67 @@ test("project provider allow/deny lists and explicit VM disable override inherit
   );
   assert.deepEqual(base.providerAccess, { only: ["claude:work"], disabled: [] });
   const raw = deepMerge(
-    { isolation: { claude: { artifact: "/tmp/runtime" } } },
-    { isolation: { claude: { enabled: false } } },
+    { isolation: { enabled: true, claude: { artifact: "/tmp/runtime" } } },
+    { isolation: { enabled: false } },
   );
   assert.equal(normalizeConfig(raw).isolation.claude, undefined);
   assert.deepEqual(cfg("[provider_access]\nonly=[]").providerAccess.only, []);
   assert.throws(() => cfg('[provider_access]\ndisabled="claude"'), /array/);
-  assert.throws(() => cfg('[isolation.claude]\nenabled="no"'), /boolean/);
+  assert.throws(() => cfg('[isolation]\nenabled="no"'), /boolean/);
 });
 
-test("AISDK VM routing accepts an artifact and can be explicitly disabled", () => {
-  const enabled = normalizeConfig({
-    isolation: { aisdk: { artifact: "/runtime", smolvm: "/bin/smolvm" } },
-  });
-  assert.deepEqual(enabled.isolation.aisdk, { artifact: "/runtime", smolvm: "/bin/smolvm" });
-  assert.equal(
-    normalizeConfig({ isolation: { aisdk: { enabled: false, artifact: "/runtime" } } }).isolation
-      .aisdk,
-    undefined,
-  );
-  assert.throws(() => normalizeConfig({ isolation: { aisdk: { enabled: true } } }));
-});
-
-test("Codex VM policy is independent of AISDK and Claude", () => {
-  const config = normalizeConfig({
+test("one project toggle controls all configured VM runtimes", () => {
+  const raw = {
     isolation: {
+      enabled: true,
+      claude: { artifact: "/claude" },
+      aisdk: { artifact: "/aisdk" },
       codex: { artifact: "/codex" },
-      aisdk: { enabled: false },
-      claude: { enabled: false },
     },
-  });
-  assert.equal(config.isolation.codex?.artifact, "/codex");
-  assert.equal(config.isolation.aisdk, undefined);
-  assert.equal(config.isolation.claude, undefined);
+  };
+  const enabled = normalizeConfig(raw);
+  const disabled = normalizeConfig(deepMerge(raw, { isolation: { enabled: false } }));
+  for (const name of ["claude", "aisdk", "codex"] as const) {
+    assert.equal(enabled.isolation[name]?.artifact, `/${name}`);
+    assert.equal(disabled.isolation[name], undefined);
+    assert.equal(disabled.isolation.runtimes?.[name]?.artifact, `/${name}`);
+  }
+  assert.equal(cfg("").isolation.enabled, false);
+  assert.throws(() => cfg("[isolation.claude]\nenabled=true"), /Unknown setting/);
+});
+
+test("project VM overrides inherit runtimes and leave other projects unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-vm-project-"));
+  try {
+    const file = join(dir, "config.toml");
+    writeFileSync(
+      file,
+      `[isolation]
+enabled=true
+[isolation.claude]
+artifact="/claude"
+[isolation.aisdk]
+artifact="/aisdk"
+[isolation.codex]
+artifact="/codex"
+[[repo]]
+path=${JSON.stringify(dir)}
+[repo.isolation]
+enabled=false
+`,
+    );
+    const local = loadConfig(dir, file);
+    const vm = loadConfig(join(dir, "other"), file);
+    assert.equal(local.isolation.enabled, false);
+    assert.equal(vm.isolation.enabled, true);
+    for (const name of ["claude", "aisdk", "codex"] as const) {
+      assert.equal(local.isolation[name], undefined);
+      assert.equal(vm.isolation[name]?.artifact, `/${name}`);
+      assert.deepEqual(local.isolation.runtimes?.[name], vm.isolation.runtimes?.[name]);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("enabled session VMs resolve package bundles while explicit paths and disable win", () => {
@@ -700,19 +732,20 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
     );
     Deno.env.set("LOOM_BUNDLED_RUNTIMES", manifest);
     for (const name of ["claude", "codex", "aisdk"] as const) {
-      assert.deepEqual(cfg(`[isolation.${name}]\nenabled=true`).isolation[name], {
+      assert.deepEqual(cfg(`[isolation]\nenabled=true`).isolation[name], {
         artifact: `/bundle/${name}`,
         smolvm: "/bundle/smolvm",
       });
-      assert.equal(cfg(`[isolation.${name}]\nenabled=false`).isolation[name], undefined);
+      assert.equal(cfg(`[isolation]\nenabled=false`).isolation[name], undefined);
       assert.deepEqual(
-        cfg(`[isolation.${name}]\nenabled=true\nartifact="/custom"\nsmolvm="/custom/smolvm"`)
-          .isolation[name],
+        cfg(
+          `[isolation]\nenabled=true\n[isolation.${name}]\nartifact="/custom"\nsmolvm="/custom/smolvm"`,
+        ).isolation[name],
         { artifact: "/custom", smolvm: "/custom/smolvm" },
       );
     }
     Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
-    assert.throws(() => cfg("[isolation.claude]\nenabled=true"), /package bundled with claude/);
+    assert.equal(cfg("[isolation]\nenabled=true").isolation.enabled, true);
   } finally {
     if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);

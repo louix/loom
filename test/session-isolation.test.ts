@@ -55,7 +55,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     }),
   };
   const config = (enabled: boolean) =>
-    `[titles]\nenabled=false\n[auto_resume]\nenabled=false\n[isolation.claude]\nartifact="/test-runtime"\nenabled=${enabled}\n`;
+    `[titles]\nenabled=false\n[auto_resume]\nenabled=false\n[isolation]\nenabled=${enabled}\n[isolation.claude]\nartifact="/test-runtime"\n`;
   const h = await makeHarness({ connectors, config: config(true) });
   let c = await LoomClient.connect({
     repoRoot: h.repoRoot,
@@ -195,11 +195,13 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
       },
     },
     isolation: {
-      claude: { enabled: false, artifact: "/claude", smolvm: Deno.execPath() },
-      codex: { enabled: false, artifact: "/codex", smolvm: Deno.execPath() },
-      aisdk: { enabled: false, artifact: "/aisdk", smolvm: Deno.execPath() },
+      enabled: false,
+      claude: { artifact: "/claude", smolvm: Deno.execPath() },
+      codex: { artifact: "/codex", smolvm: Deno.execPath() },
+      aisdk: { artifact: "/aisdk", smolvm: Deno.execPath() },
     },
   });
+  const vmConfig = { ...config, isolation: { ...config.isolation, enabled: true } };
   const seen: Array<{ id: string; artifact: string | undefined }> = [];
   const load: ConnectorManifest[string] = async () => ({
     createProvider: (ctx) => {
@@ -217,6 +219,20 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
     "@loom/connector-chatgpt": load,
     "@loom/connector-generic": load,
   });
+  const vmRegistry = new ProviderRegistry(vmConfig, new ProviderMessageStore(db), {
+    "@loom/connector-claude": load,
+    "@loom/connector-chatgpt": load,
+    "@loom/connector-generic": load,
+  });
+  for (const id of ["claude", "codex", "generic"])
+    assert.equal(vmRegistry.defaultIsolation(id), "vm");
+  const missing = new ProviderRegistry(
+    { ...vmConfig, isolation: { enabled: true, extraAllowedHosts: [] } },
+    new ProviderMessageStore(db),
+    { "@loom/connector-claude": load },
+  );
+  assert.equal(missing.defaultIsolation("claude"), "vm");
+  assert.throws(() => missing.configFor("claude", "vm"), /No VM runtime/);
   try {
     for (const [id, artifact] of [
       ["claude", "/claude"],

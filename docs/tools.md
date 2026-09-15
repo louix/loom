@@ -55,11 +55,7 @@ assumes the definitions above. Host/VM agent execution still uses the existing
 path = "~/dev/project"
 [repo.worktree]
 enabled = false
-[repo.isolation.claude]
-enabled = false
-[repo.isolation.codex]
-enabled = false
-[repo.isolation.aisdk]
+[repo.isolation]
 enabled = false
 [repo.session]
 local-tools = ["tilth", "fff"]
@@ -90,9 +86,8 @@ Only Tilth is confined in a VM. The agent still runs on the host.
 path = "~/dev/project"
 [repo.worktree]
 enabled = true
-[repo.isolation.claude]
-enabled = true
-# Enable isolation.codex / isolation.aisdk too if using those engines.
+[repo.isolation]
+enabled = true # all providers
 [repo.session]
 local-tools = []
 vm-tools = ["tilth"]

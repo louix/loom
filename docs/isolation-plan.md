@@ -30,7 +30,7 @@ not promise credential secrecy from code running inside that same VM.
 
 User-owned `~/.config/loom/config.toml` holds global policy and exact-path
 `[[repo]]` overrides. Repository files cannot grant themselves network access.
-`[repo.provider_access]` selects providers; `[repo.isolation.claude] enabled =
+`[repo.provider_access]` selects providers; `[repo.isolation] enabled =
 false` disables an inherited VM policy. Restart the daemon after policy changes.
 Incompatible or unavailable sessions remain readable and can be continued by
 forking into an enabled provider with the current isolation policy.

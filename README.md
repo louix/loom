@@ -398,9 +398,10 @@ watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
 available for project instructions.
 
-**Session isolation.** `[isolation.claude]`, `[isolation.codex]`, and
-`[isolation.aisdk]` set the default for new sessions with `enabled = true` (VM)
-or `enabled = false` (Local). Unlisted repositories inherit the global default.
+**Session isolation.** `[isolation] enabled = true` defaults every provider to VM
+execution. Set `[repo.isolation] enabled = false` in a `[[repo]]` entry to run
+that project locally. Unlisted repositories inherit the global default (Local
+when omitted).
 In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
 `loom run --isolation local <prompt>` (or `--isolation vm`). VM selection requires
 a configured or package-bundled runtime. A disabled default still permits an

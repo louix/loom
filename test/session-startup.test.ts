@@ -22,6 +22,7 @@ test("default preparation covers enabled runtimes once across provider profiles"
       generic: { adapter: "aisdk", sdk: "openai", base_url: "https://example.com/v1" },
     },
     isolation: {
+      enabled: true,
       claude: { artifact: "/claude", smolvm: "/backend" },
       codex: { artifact: "/codex", smolvm: "/backend" },
       aisdk: { artifact: "/aisdk", smolvm: "/backend" },

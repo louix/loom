@@ -117,9 +117,7 @@ export class ProviderRegistry {
 
   /** Configured default for new sessions; existing sessions keep their recorded mode. */
   defaultIsolation(id: string): "vm" | "local" {
-    return this.#config.isolation[this.#vmKind(id)] && id !== "fake" && id !== "mock"
-      ? "vm"
-      : "local";
+    return this.#config.isolation.enabled && id !== "fake" && id !== "mock" ? "vm" : "local";
   }
 
   #vmKind(id: string): "claude" | "aisdk" | "codex" {
@@ -148,6 +146,7 @@ export class ProviderRegistry {
       ...this.#config,
       isolation: {
         ...shared,
+        enabled: isolation === "vm",
         ...(isolation === "vm" ? { [this.#vmKind(id)]: this.vmPolicy(id) } : {}),
       },
     };

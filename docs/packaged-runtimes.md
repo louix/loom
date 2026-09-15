@@ -20,8 +20,8 @@ All four default to true. `withClaude` includes the proprietary Claude Code
 executable for the guest and the native host CLI used for authentication.
 `withCodex` also includes its native host CLI.
 
-For session VMs, configure `[isolation.claude]`, `[isolation.codex]` or
-`[isolation.aisdk]` with `enabled = true`. Loom resolves the runtime and smolvm
+For session VMs, set `[isolation] enabled = true` globally or
+`[repo.isolation] enabled = true` for a project. Loom resolves the runtime and smolvm
 from its package, so `nix profile upgrade loom` updates them together. Remove
 old `artifact` and `smolvm` pins to use these package defaults; explicit paths
 remain available for development builds.

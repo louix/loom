@@ -171,10 +171,10 @@ Claude profile** using the CLI's normal credential persistence. The narrow
 
 ## Daemon integration
 
-The Linux Nix package bundles the runtime. Opt in for Claude sessions:
+The Linux Nix package bundles the runtime. Opt in for all providers in this project:
 
 ```toml
-[isolation.claude]
+[isolation]
 enabled = true # use the runtime bundled with the Linux Nix package
 ```
 
@@ -277,7 +277,7 @@ substitution and locking.
 ## Project controls
 
 Use exact `[[repo]] path = "~/dev/project"` entries in the user config.
-`[repo.isolation.claude] enabled = false` disables inherited Claude VM isolation;
+`[repo.isolation] enabled = false` disables inherited VM isolation for every provider;
 `enabled = true` uses the package-bundled runtime unless artifact/smolvm paths
 are explicitly configured or inherited. Remove development pins to follow package upgrades.
 `[repo.provider_access] only = ["claude:work"]` restricts the project to that

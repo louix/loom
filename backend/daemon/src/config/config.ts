@@ -229,6 +229,8 @@ interface HookFields {
 export interface LoomConfig {
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
+    /** Project-wide default for new sessions; runtime availability is separate. */
+    enabled?: boolean;
     /** Available runtimes, including ones disabled as the default. */
     runtimes?: Partial<Record<"claude" | "aisdk" | "codex", { artifact: string; smolvm: string }>>;
     claude?: { artifact: string; smolvm: string };
@@ -372,7 +374,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   baseBranch: "main",
   worktreeDir: ".loom/trees",
   providerAccess: { disabled: [] },
-  isolation: { extraAllowedHosts: [] },
+  isolation: { enabled: false, extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
   worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
@@ -743,60 +745,31 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   };
   const only = ids("only");
   const disabled = ids("disabled") ?? [];
-  const sessionVmConfig = (name: string) => {
-    const value = asRecord(asRecord(r["isolation"])[name]);
-    if (value["enabled"] === true && value["artifact"] === undefined) {
-      const bundle = bundledRuntime(name);
-      if (!bundle)
-        throw new Error(
-          `isolation.${name} requires an artifact path or a Loom package bundled with ${name}`,
-        );
-      return { ...value, artifact: bundle.artifact, smolvm: value["smolvm"] ?? bundle.smolvm };
+  const isolation = asRecord(r["isolation"]);
+  if (isolation["enabled"] !== undefined && typeof isolation["enabled"] !== "boolean")
+    throw new Error("isolation.enabled must be a boolean");
+  const vmEnabled = isolation["enabled"] === true;
+  const runtimes: NonNullable<LoomConfig["isolation"]["runtimes"]> = {};
+  for (const name of ["claude", "aisdk", "codex"] as const) {
+    const value = asRecord(isolation[name]);
+    for (const key of Object.keys(value))
+      if (key !== "artifact" && key !== "smolvm")
+        throw new Error(`Unknown setting isolation.${name}.${key}`);
+    for (const key of ["artifact", "smolvm"])
+      if (value[key] !== undefined && (typeof value[key] !== "string" || !value[key].trim()))
+        throw new Error(`isolation.${name}.${key} must name a path or executable`);
+    const bundle = bundledRuntime(name);
+    const artifact = value["artifact"] ?? bundle?.artifact;
+    if (artifact === undefined) {
+      if (value["smolvm"] !== undefined)
+        throw new Error(`isolation.${name} requires an artifact path`);
+      continue;
     }
-    return value;
-  };
-  const claudeVm = sessionVmConfig("claude");
-  if (claudeVm["enabled"] !== undefined && typeof claudeVm["enabled"] !== "boolean")
-    throw new Error("isolation.claude.enabled must be a boolean");
-  if (
-    claudeVm["enabled"] !== false &&
-    asRecord(r["isolation"])["claude"] !== undefined &&
-    (typeof claudeVm["artifact"] !== "string" || !claudeVm["artifact"].trim())
-  )
-    throw new Error("isolation.claude requires an artifact path");
-  if (
-    claudeVm["smolvm"] !== undefined &&
-    (typeof claudeVm["smolvm"] !== "string" || !claudeVm["smolvm"].trim())
-  )
-    throw new Error("isolation.claude.smolvm must name an executable");
-  const aisdkVm = sessionVmConfig("aisdk");
-  if (aisdkVm["enabled"] !== undefined && typeof aisdkVm["enabled"] !== "boolean")
-    throw new Error("isolation.aisdk.enabled must be a boolean");
-  if (
-    aisdkVm["enabled"] !== false &&
-    asRecord(r["isolation"])["aisdk"] !== undefined &&
-    (typeof aisdkVm["artifact"] !== "string" || !aisdkVm["artifact"].trim())
-  )
-    throw new Error("isolation.aisdk requires an artifact path");
-  if (
-    aisdkVm["smolvm"] !== undefined &&
-    (typeof aisdkVm["smolvm"] !== "string" || !aisdkVm["smolvm"].trim())
-  )
-    throw new Error("isolation.aisdk.smolvm must name an executable");
-  const codexVm = sessionVmConfig("codex");
-  if (codexVm["enabled"] !== undefined && typeof codexVm["enabled"] !== "boolean")
-    throw new Error("isolation.codex.enabled must be a boolean");
-  if (
-    codexVm["enabled"] !== false &&
-    asRecord(r["isolation"])["codex"] !== undefined &&
-    (typeof codexVm["artifact"] !== "string" || !codexVm["artifact"].trim())
-  )
-    throw new Error("isolation.codex requires an artifact path");
-  if (
-    codexVm["smolvm"] !== undefined &&
-    (typeof codexVm["smolvm"] !== "string" || !codexVm["smolvm"].trim())
-  )
-    throw new Error("isolation.codex.smolvm must name an executable");
+    runtimes[name] = {
+      artifact: expandTilde(artifact as string),
+      smolvm: expandTilde(str(value["smolvm"], bundle?.smolvm ?? "smolvm")),
+    };
+  }
   const autoRebase = asRecord(r["auto_rebase"]);
   const autoResume = asRecord(r["auto_resume"]);
   const commitReminder = asRecord(r["commit_reminder"]);
@@ -839,25 +812,8 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     worktreeDir: str(r["worktree_dir"], d.worktreeDir),
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
-      runtimes: Object.fromEntries(
-        (["claude", "aisdk", "codex"] as const).flatMap((name) => {
-          const value = asRecord(asRecord(r["isolation"])[name]);
-          const bundle = bundledRuntime(name);
-          const artifact =
-            typeof value["artifact"] === "string" ? value["artifact"] : bundle?.artifact;
-          return artifact
-            ? [
-                [
-                  name,
-                  {
-                    artifact: expandTilde(artifact),
-                    smolvm: expandTilde(str(value["smolvm"], bundle?.smolvm ?? "smolvm")),
-                  },
-                ],
-              ]
-            : [];
-        }),
-      ),
+      enabled: vmEnabled,
+      runtimes,
       extraAllowedHosts: [
         ...new Set([
           ...normalizeExtraHosts(asRecord(r["isolation"])["extra_allowed_hosts"]),
@@ -865,30 +821,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         ]),
       ],
       environment: normalizeSessionEnvironment(asRecord(r["isolation"])["environment"]),
-      ...(claudeVm["enabled"] !== false && typeof claudeVm["artifact"] === "string"
-        ? {
-            claude: {
-              artifact: expandTilde(claudeVm["artifact"]),
-              smolvm: expandTilde(str(claudeVm["smolvm"], "smolvm")),
-            },
-          }
-        : {}),
-      ...(aisdkVm["enabled"] !== false && typeof aisdkVm["artifact"] === "string"
-        ? {
-            aisdk: {
-              artifact: expandTilde(aisdkVm["artifact"]),
-              smolvm: expandTilde(str(aisdkVm["smolvm"], "smolvm")),
-            },
-          }
-        : {}),
-      ...(codexVm["enabled"] !== false && typeof codexVm["artifact"] === "string"
-        ? {
-            codex: {
-              artifact: expandTilde(codexVm["artifact"]),
-              smolvm: expandTilde(str(codexVm["smolvm"], "smolvm")),
-            },
-          }
-        : {}),
+      ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,
     worktree: {

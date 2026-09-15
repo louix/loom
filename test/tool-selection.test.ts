@@ -109,7 +109,7 @@ test("host selection fails before runtime lookup for every VM engine, but works 
         `
 [session]
 local-tools = ["tilth"]
-[isolation.claude]
+[isolation]\nenabled=true\n[isolation.claude]
 artifact = "/claude"
 [isolation.codex]
 artifact = "/codex"

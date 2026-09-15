@@ -2421,7 +2421,7 @@ command = "loom-test-missing-host-tool"
 local-tools = ["files"]
 [providers.claude]
 models = ["fixture"]
-${vm ? '[isolation.claude]\nartifact = "/unused-runtime"' : ""}
+${vm ? '[isolation]\nenabled=true\n[isolation.claude]\nartifact = "/unused-runtime"' : ""}
 `,
     });
     const c = await LoomClient.connect({
@@ -2541,7 +2541,7 @@ test("isolation mismatch blocks resume before loading provider, but forks throug
     await hh.daemon.stop("replace-manifest");
     writeFileSync(
       hh.configPath,
-      '[isolation.claude]\nartifact="/tmp/test-artifact"\nsmolvm="smolvm"\n',
+      '[isolation]\nenabled=true\n[isolation.claude]\nartifact="/tmp/test-artifact"\nsmolvm="smolvm"\n',
     );
     const { FakeProvider } = await import("@loom/connector-mock");
     const fake = new FakeProvider();

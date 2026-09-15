@@ -188,7 +188,7 @@ test("global pruning sees explicit pins in other trusted repos", async () => {
       `[[repo]]\npath="${root}/other"\n[repo.isolation.claude]\nartifact="/pinned-runtime"\nsmolvm="/pinned/bin/smolvm"\n`,
     );
     const configs = loadAllRepoConfigs(root, config);
-    assert(configs.some((c) => c.isolation.claude?.artifact === "/pinned-runtime"));
+    assert(configs.some((c) => c.isolation.runtimes?.claude?.artifact === "/pinned-runtime"));
   } finally {
     await Deno.remove(root, { recursive: true });
   }

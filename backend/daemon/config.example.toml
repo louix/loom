@@ -190,17 +190,18 @@ max_results = 5
 
 # Session VMs mount the full repository, including shared Git hooks/config.
 
-# Default to one VM per regular Claude session. The Linux Nix package bundles
-# the runtime; native Claude remains on the host for login/credential renewal.
+# Default every provider to VM execution. The package selects each provider's
+# runtime automatically. Omit this setting to default to Local.
 # History persists outside the worktree; archive retains it, delete removes it.
-# [isolation.claude]
+# [isolation]
 # enabled = true
-# The same applies to [isolation.codex] and [isolation.aisdk].
 # This is a default: use Alt+i in the new-session prompt or --isolation local
 # to run a session locally. enabled=false defaults to Local but still allows
 # an explicit VM choice when a runtime is configured or bundled. Existing
 # sessions keep their mode after a default change; fork to change environments.
-# Optional development overrides: artifact = "/path/to/runtime", smolvm = "/path/to/smolvm"
+# Optional development runtime paths go in [isolation.claude],
+# [isolation.aisdk], or [isolation.codex]: artifact and smolvm.
+# These paths configure runtime availability, not the project VM default.
 
 # Per-repo overrides belong in this file. Use an absolute path or ~/path.
 # Matching uses the daemon repo root's canonical path, not a session worktree.
@@ -222,6 +223,7 @@ max_results = 5
 # Required provider API hosts are added separately. Exact DNS names, port 443 only.
 # Restart the daemon and resume sessions after changes; packaged MCPs stay offline.
 # [repo.isolation]
+# enabled = false # override the global VM default for every provider in this repo
 # extra_allowed_hosts = ["registry.npmjs.org"]
 # network_presets = ["nix", "javascript"]
 # See docs/session-environments.md. Base setup runs only during explicit preparation.
@@ -246,11 +248,6 @@ max_results = 5
 # only = ["claude:work"]
 # disabled = []
 #
-# Override inherited VM isolation for this project; restart the daemon to apply.
-# Existing incompatible sessions become read-only and can be forked.
-# [repo.isolation.claude]
-# enabled = false
-
 # Optional AISDK session VMs (OpenAI-compatible, Anthropic, Google; not Codex).
 # Build with nix build .#aisdk-session-runtime. May also be set per repo.
 # [isolation.aisdk]

@@ -1,16 +1,16 @@
 # AISDK session VMs
 
 Configure a Linux guest artifact for OpenAI-compatible, native Anthropic and
-Google AISDK profiles. Codex/ChatGPT uses a different native connector and is
-not enabled by this setting.
+Google AISDK profiles. The project VM toggle also enables Claude and
+Codex/ChatGPT sessions, using their respective runtimes.
 
 ```sh
 nix build .#aisdk-session-runtime --out-link /tmp/loom-aisdk-runtime
 ```
 
 ```toml
-# ~/.config/loom/config.toml; also valid under [repo.isolation.aisdk]
-[isolation.aisdk]
+# ~/.config/loom/config.toml; also valid under [repo.isolation]
+[isolation]
 enabled = true # use the runtime bundled with the Linux Nix package
 ```
 

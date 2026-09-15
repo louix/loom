@@ -125,7 +125,7 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   if (isClaudeId(provider)) vm = config.isolation.claude;
   else if (config.providers.aisdk[provider]?.sdk === "chatgpt") vm = config.isolation.codex;
   const host = config.mcp.filter((m) => "command" in m);
-  if (vm && host.length)
+  if ((config.isolation.enabled || vm) && host.length)
     return (
       `Provider ${provider} runs in a VM but host tools are selected: ${host.map((m) => m.name).join(", ")}. ` +
       "Set session.local-tools = [] and select vm-tools or remote-tools instead."
