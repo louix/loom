@@ -1,4 +1,5 @@
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
+import { decodeTextStream } from "../../../core/src/text-stream.ts";
 export const startupStages = {
   restore: "Restoring prepared environment…",
   init: "Running session init hooks…",
@@ -53,7 +54,7 @@ export const readStartupProgress = async (
 ) => {
   let line = "";
   let overflow = false;
-  for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+  for await (const chunk of decodeTextStream(stream)) {
     for (const part of chunk.split(/(?<=\n)/)) {
       if (!overflow) {
         line += part;

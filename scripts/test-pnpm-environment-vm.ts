@@ -3,6 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { decodeTextStream } from "../core/src/text-stream.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
@@ -80,7 +81,7 @@ node -e 'const cpu = require("cpu-features")(); if (!cpu.arch) process.exit(1); 
   });
   let output = "";
   const drain = async (stream: ReadableStream<Uint8Array>) => {
-    for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+    for await (const chunk of decodeTextStream(stream)) {
       output = (output + chunk).slice(-65536);
       console.error(chunk.trimEnd());
     }
