@@ -178,6 +178,7 @@ export const Fleet = memo(
     tick,
     width,
     now,
+    archiving = [],
   }: {
     view: FleetPaneView;
     /** The `/` filter's buffer, drawn under the title. Separate from `view`
@@ -186,6 +187,7 @@ export const Fleet = memo(
     tick: number;
     width: number;
     now: number;
+    archiving?: readonly string[];
   }): ReactNode => {
     const iw = inside(width);
     const childKeyOf = (s: SessionSnapshot): string | null =>
@@ -242,6 +244,7 @@ export const Fleet = memo(
                 now,
                 pcolor: view.providerColors,
                 compacting: entry.s.compacting !== undefined,
+                archiving: archiving.includes(entry.s.id),
               });
             case "child":
               return FleetChildRow({
@@ -335,6 +338,7 @@ const FleetRow = ({
   now,
   pcolor,
   compacting = false,
+  archiving = false,
 }: {
   s: SessionSnapshot;
   selected: boolean;
@@ -348,14 +352,15 @@ const FleetRow = ({
   pcolor: ReadonlyMap<string, string>;
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
+  archiving?: boolean;
 }): ReactNode => {
   const C = useTheme();
   const look = statusLook(s.status.kind);
-  const blocked = s.resumable === false;
+  const blocked = s.resumable === false || archiving;
   let glyph = look.glyph;
   if (["running", "starting"].includes(s.status.kind)) glyph = spinnerFrame(tick);
   if (blocked) glyph = "○";
-  if (s.stopping) glyph = "◌";
+  if (s.stopping || archiving) glyph = "◌";
   let titleColor = selected ? C.text : C.dim;
   if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
@@ -370,14 +375,17 @@ const FleetRow = ({
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
   const room = Math.max(6, iw - (2 + 2 + idText.length + 3 + 2 + 2 + cost.length + 1));
-  const title = truncate(titleLine(s.title), room).padEnd(room);
+  const title = truncate(
+    archiving ? "archiving… " + titleLine(s.title) : titleLine(s.title),
+    room,
+  ).padEnd(room);
+  let glyphTone: ThemeColor = s.status.kind === "running" ? "accent" : statusTone(s.status.kind);
+  if (archiving) glyphTone = "dim";
 
   return (
     <Line key={s.id}>
       <Text tone={selected && !focused ? "accent" : "faint"}>{selected ? "▍ " : "  "}</Text>
-      <Text tone={s.status.kind === "running" ? "accent" : statusTone(s.status.kind)}>
-        {glyph + " "}
-      </Text>
+      <Text tone={glyphTone}>{glyph + " "}</Text>
       <Text color={idColor}>{idText}</Text>
       <Text tone="faint">{s.isolation === "vm" ? " ◇ " : "   "}</Text>
       {compacting ? (
@@ -462,6 +470,7 @@ export const detailLayout = (
     queued = [],
     mode = null,
     compacting = s?.compacting ?? null,
+    archiving = false,
   }: {
     width?: number;
     account?: string;
@@ -469,6 +478,7 @@ export const detailLayout = (
     queued?: readonly string[];
     mode?: SessionMode | null;
     compacting?: { startedAt: number; before: number } | null;
+    archiving?: boolean;
   } = {},
 ) => {
   type Content = (now: number) => ReactNode;
@@ -507,9 +517,10 @@ export const detailLayout = (
     if (s.parentId && s.forkTurn != null)
       addLine(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`);
     space();
-    const status = s.stopping
+    let status = s.stopping
       ? "◌ stopping…"
       : `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
+    if (archiving) status = "◌ archiving…";
     const chip = `mode ${modeChipText(s.mode, mode)}`;
     rows.push({
       tag: "target",
@@ -518,7 +529,7 @@ export const detailLayout = (
       width: [...chip].length,
       value: () => (
         <Box gap={2}>
-          <Line tone={statusTone(s.status.kind)} bold>
+          <Line tone={archiving ? "dim" : statusTone(s.status.kind)} bold={!archiving}>
             {status}
           </Line>
           <Line>

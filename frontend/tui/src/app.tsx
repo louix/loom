@@ -284,6 +284,7 @@ const FleetArea = ({ view, handle, width }: PaneProps): ReactNode => {
     <Fleet
       view={pane}
       find={find?.buffer ?? null}
+      archiving={view.ui.archiving}
       width={width}
       tick={frame.tick}
       now={frame.now}

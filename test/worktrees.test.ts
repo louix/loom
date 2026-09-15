@@ -537,3 +537,21 @@ test("failed config migration preserves main checkout settings and can be retrie
     cleanup();
   }
 });
+
+test("async removal preserves dirty trees unless forced and keeps the branch", async () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("async123"));
+    writeFileSync(join(wt.path, "uncommitted.txt"), "keep until forced");
+    await assert.rejects(m.removeAsync(wt.path), /git worktree remove failed/);
+    assert.ok(existsSync(join(wt.path, "uncommitted.txt")));
+    await m.removeAsync(wt.path, { force: true });
+    assert.equal(existsSync(wt.path), false);
+    execFileSync("git", ["-C", root, "rev-parse", "--verify", wt.branch]);
+    const restored = m.reattach(fakeId("async123"), wt.branch);
+    assert.ok(existsSync(restored.path));
+  } finally {
+    cleanup();
+  }
+});

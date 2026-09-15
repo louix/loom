@@ -130,6 +130,7 @@ export interface TuiState {
    */
   fleet: ClientState;
   selectedId: string | null;
+  archiving: readonly string[];
   /**
    * A session just picked (create / fork / find) whose row hasn't landed in
    * the fleet yet — the snapshot carrying it can trail the RPC response.
@@ -173,6 +174,7 @@ export const initialState = (): TuiState => {
     fleet: loadableIdle,
     selectedId: null,
     selectedChild: null,
+    archiving: [],
     logFilter: "everything",
     notice: null,
     overlay: browse,
@@ -210,6 +212,7 @@ export const versionMismatchAction = (o: {
 export type Action =
   | { t: "state"; state: ClientState }
   | { t: "push"; frame: PushFrame }
+  | { t: "archivePending"; id: string; pending: boolean }
   | { t: "toggleTheme" }
   | { t: "move"; delta: number; ids?: readonly string[] }
   | { t: "select"; id: string }
@@ -252,6 +255,11 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
     case "push":
       return applyPush(s, a.frame);
 
+    case "archivePending":
+      return {
+        ...s,
+        archiving: a.pending ? [...s.archiving, a.id] : s.archiving.filter((id) => id !== a.id),
+      };
     case "toggleTheme":
       return { ...s, theme: nextThemeMode(s.theme) };
 
@@ -1425,7 +1433,8 @@ export const allowedActs = (session: SessionSnapshot | null): Set<ActName> => {
  * commands that never earn a footer slot. One entry per act; `hint` is its key.
  */
 export const commandHints = (s: TuiState & { outbox?: Outboxes }): KeyHint[] => {
-  const hints = actionsFor(selectedSession(s));
+  const archiving = s.archiving.includes(s.selectedId ?? "");
+  const hints = actionsFor(archiving ? null : selectedSession(s));
   const extra: ActName[] = [
     "doctor",
     "prepareEnvironment",
@@ -1445,7 +1454,8 @@ export const commandHints = (s: TuiState & { outbox?: Outboxes }): KeyHint[] => 
     );
   if (fleetSessions(s).some((x) => x.status.kind === "done" && x.worktree))
     hints.push(commandHint("gc"));
-  if (s.selectedId && queueFor(s, s.selectedId).length) hints.push(commandHint("clearqueue"));
+  if (!archiving && s.selectedId && queueFor(s, s.selectedId).length)
+    hints.push(commandHint("clearqueue"));
   return hints;
 };
 export const commandsFor = (s: TuiState & { outbox?: Outboxes }): PickItem[] =>
@@ -1489,6 +1499,11 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
       return [{ keys: "esc", label: "close" }];
     case "browse": {
       const sel = selectedSession(s);
+      if (sel && s.archiving.includes(sel.id))
+        return [
+          { keys: "", label: "archiving…" },
+          { keys: "↑↓", label: "move" },
+        ];
       const hints = actionsFor(sel)
         .filter((h) => h.footer)
         .map((h) => ({ keys: h.keys, label: h.label }));

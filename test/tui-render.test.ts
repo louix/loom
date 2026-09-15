@@ -3412,3 +3412,75 @@ test("fork selector inherits isolation and sends an explicit override", () => {
     teardown();
   }
 });
+
+test("archiving locks only its session and clears on success or failure", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      fleetOf(
+        testSession({ id: "a", status: stateIdle }),
+        testSession({ id: "b", status: stateIdle }),
+      ),
+    );
+    handle.handleKey("x", {} as Key);
+    assert.deepEqual(handle.getView().ui.archiving, ["a"]);
+    assert.match(
+      renderToString(createElement(FooterArea, { state: handle.getView().ui, width: 100 })),
+      /archiving…/,
+    );
+    const before = fake.calls.length;
+    for (const key of ["x", "i", "e", "X", "c"]) {
+      handle.handleKey(key, {} as Key);
+    }
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("", { tab: true, shift: true } as Key);
+    assert.equal(fake.calls.length, before);
+    assert.equal(handle.getView().ui.overlay.t, "browse");
+    handle.handleKey("", { downArrow: true } as Key);
+    assert.equal(handle.getView().ui.selectedId, "b");
+    handle.handleKey("x", {} as Key);
+    assert.deepEqual(handle.getView().ui.archiving, ["a", "b"]);
+    fake.of("session.markDone")[0]!.reject(new Error("cleanup failed"));
+    await delay(0);
+    assert.deepEqual(handle.getView().ui.archiving, ["b"]);
+    assert.match(handle.getView().ui.notice!.text, /cleanup failed/);
+    fake.of("session.markDone")[1]!.resolve({});
+    await delay(0);
+    assert.deepEqual(handle.getView().ui.archiving, []);
+  } finally {
+    teardown();
+  }
+});
+
+test("confirmed dirty archives show pending state and reject duplicate input", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      fleetOf(
+        testSession({
+          id: "a",
+          status: stateIdle,
+          git: { dirty: true } as SessionSnapshot["git"],
+        }),
+      ),
+    );
+    handle.handleKey("x", {} as Key);
+    assert.equal(handle.getView().ui.overlay.t, "confirm");
+    assert.deepEqual(handle.getView().ui.archiving, []);
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("x", {} as Key);
+    assert.deepEqual(handle.getView().ui.archiving, ["a"]);
+    assert.equal(fake.of("session.markDone").length, 1);
+    assert.equal(fake.of("session.markDone")[0]!.params.force, true);
+    fake.of("session.markDone")[0]!.resolve({});
+    await delay(0);
+    assert.deepEqual(handle.getView().ui.archiving, []);
+  } finally {
+    teardown();
+  }
+});

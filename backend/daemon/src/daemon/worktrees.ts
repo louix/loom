@@ -6,7 +6,7 @@ import { canonicalHostPath } from "../../../../core/src/host-path.ts";
  * remote operation itself. `gc` removes trees for sessions the user has marked
  * done; branches are never auto-deleted.
  */
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -394,6 +394,34 @@ export class WorktreeManager {
       throw new Error(`git worktree remove failed: ${res.stderr.trim() || res.stdout.trim()}`);
     }
     this.#log.info("worktree removed", { path });
+  }
+
+  /** Keep the daemon responsive while Git deletes a potentially large tree. */
+  async removeAsync(path: string, opts: { force?: boolean } = {}): Promise<void> {
+    const args = ["-C", this.#repoRoot, "worktree", "remove"];
+    if (opts.force) args.push("--force");
+    args.push(path);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          "git",
+          args,
+          { timeout: 15_000, maxBuffer: GIT_MAX_BUFFER },
+          (error, stdout, stderr) => {
+            if (error) {
+              reject(
+                new Error(
+                  `git worktree remove failed: ${stderr.trim() || stdout.trim() || error.message}`,
+                ),
+              );
+            } else resolve();
+          },
+        );
+      });
+      this.#log.info("worktree removed", { path });
+    } finally {
+      this.#factsCache.delete(path);
+    }
   }
 
   prune(): void {

@@ -3201,13 +3201,12 @@ export class Daemon {
           this.#cacheTtlSeen.delete(id);
           if (row.worktree && !row.inPlace) {
             try {
-              this.#worktrees.remove(row.worktree, { force: true });
+              await this.#worktrees.removeAsync(row.worktree, { force: true });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
               throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
             }
-            this.#worktrees.prune();
             this.#registry.setFields(id, { worktree: null });
           }
           const snap = this.#registry.setStatus(id, stateDone, "marked_done");

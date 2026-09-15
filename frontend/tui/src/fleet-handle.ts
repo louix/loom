@@ -305,6 +305,7 @@ const deriveView = (
   // both layout views; every overlay owns the screen.
   const showRequest =
     (state.overlay.t === "browse" || state.overlay.t === "prompt") &&
+    !state.archiving.includes(sel?.id ?? "") &&
     sel?.status.kind === "awaiting_input" &&
     request !== null;
 
@@ -358,6 +359,7 @@ const deriveView = (
     width: body.t === "sessionPane" ? cols : rightW,
     account: account,
     compacting: sel?.compacting ?? null,
+    archiving: state.archiving.includes(sel?.id ?? ""),
     queued,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
@@ -864,6 +866,22 @@ export const mkFleetHandle = ({
       .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
   };
 
+  const archiveSession = (id: string, force = false): void => {
+    if (state.archiving.includes(id)) return;
+    dispatch({ t: "archivePending", id, pending: true });
+    perform(async () => {
+      try {
+        await client.request("session.markDone", {
+          id,
+          by: client.clientId,
+          ...(force ? { force: true } : {}),
+        });
+        return "archived — branch + chat kept";
+      } finally {
+        dispatch({ t: "archivePending", id, pending: false });
+      }
+    });
+  };
   /** Park `qnav` on question `idx` and open the answer prompt there. The prompt
    *  itself carries only the session + request it resolves; which question and
    *  the answers so far live in `qnav`, which survives the prompt closing. */
@@ -882,6 +900,7 @@ export const mkFleetHandle = ({
   const runAct = (action: ActName): void => {
     const command = bindCommand(action, state.selectedId);
     if (!command) return;
+    if (command.tag === "session" && state.archiving.includes(command.sessionId)) return;
     const s =
       command.tag === "session" ? (sessionOf(command.sessionId) ?? null) : selectedSession(state);
     const name = command.name;
@@ -1134,10 +1153,7 @@ export const mkFleetHandle = ({
             },
           });
         }
-        return perform(async () => {
-          await client.request("session.markDone", { id: s.id, by });
-          return "archived — branch + chat kept";
-        });
+        return archiveSession(s.id);
       }
       case "rebase":
         return perform(async () => {
@@ -1787,11 +1803,7 @@ export const mkFleetHandle = ({
       return;
     }
     if (c.action === "archiveSession") {
-      const id = c.sessionId;
-      perform(async () => {
-        await client.request("session.markDone", { id, by: client.clientId, force: true });
-        return "archived — branch + chat kept";
-      });
+      archiveSession(c.sessionId, true);
       return;
     }
     if (c.action === "gc") {
