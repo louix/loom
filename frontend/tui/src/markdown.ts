@@ -3,10 +3,10 @@
  * cross this boundary. Keep source text in the caller; prepared documents own
  * parsing and their most recent width-dependent layout.
  */
-import { Marked, type Token, type Tokens } from "npm:marked@16.3.0";
-import { decodeHTML } from "npm:entities@6.0.1";
-import stringWidth from "npm:string-width@8.2.2";
-import { common, createLowlight } from "npm:lowlight@3.3.0";
+import { Marked, type Token, type Tokens } from "marked";
+import { decodeHTML } from "entities";
+import stringWidth from "string-width";
+import { common, createLowlight } from "lowlight";
 
 import type { TextDocument, TextFormatter, TextRow, TextSpan, TextStyle } from "./text-layout.ts";
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "ink";
-import stringWidth from "npm:string-width@8.2.2";
+import stringWidth from "string-width";
 import { markdownText, plainText } from "../frontend/tui/src/markdown.ts";
 import { EventLog } from "@loom/tui/components";
 import {
