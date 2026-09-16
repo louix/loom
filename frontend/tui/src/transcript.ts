@@ -8,22 +8,23 @@
  * draws. When those two drifted apart the viewport slid; keeping one measuring
  * function is what makes that impossible rather than merely unlikely.
  */
+import { stripVTControlCharacters } from "node:util";
 import { mkStore, type Store } from "./store.ts";
 import { markdownText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
 import { sessionStateLabel } from "@loom/core/session-state";
-import type { HistoryCursor, HistoryPage, TranscriptId, PushFrame } from "@loom/core/wire";
+import type { HistoryCursor, HistoryPage, PushFrame, TranscriptId } from "@loom/core/wire";
 import {
   C,
   clock,
   humanTokens,
   inside,
+  type Palette,
+  type Tone,
   truncate,
   wrapText,
-  type Tone,
-  type Palette,
 } from "./theme.ts";
 
 /** How much of the selected session's log to show:
@@ -206,9 +207,19 @@ const formatAskUserQuestionResult = (raw: string): string | null => {
 export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat => {
   switch (ev.type) {
     case "assistant_text":
-      return { glyph: "▪", text: oneLine(ev.text), full: body(ev.text), tone: "plain" };
+      return {
+        glyph: "▪",
+        text: oneLine(ev.text),
+        full: body(ev.text),
+        tone: "plain",
+      };
     case "thinking":
-      return { glyph: "·", text: oneLine(ev.text), full: body(ev.text), tone: "think" };
+      return {
+        glyph: "·",
+        text: oneLine(ev.text),
+        full: body(ev.text),
+        tone: "think",
+      };
     case "tool_call": {
       const desc = toolDescriptionOf(ev.input);
       return {
@@ -235,7 +246,11 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       };
     }
     case "permission_request":
-      return { glyph: "⇱", text: `${ev.tool} needs approval · req ${ev.id}`, tone: "accent" };
+      return {
+        glyph: "⇱",
+        text: `${ev.tool} needs approval · req ${ev.id}`,
+        tone: "accent",
+      };
     case "question":
       return {
         glyph: "?",
@@ -244,17 +259,32 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
         tone: "accent",
       };
     case "answer":
-      return { glyph: "↩", text: oneLine(ev.text, 120), full: body(ev.text), tone: "accent" };
+      return {
+        glyph: "↩",
+        text: oneLine(ev.text, 120),
+        full: body(ev.text),
+        tone: "accent",
+      };
     case "plan_review":
-      return { glyph: "❖", text: `plan ready for review · req ${ev.id}`, tone: "accent" };
+      return {
+        glyph: "❖",
+        text: `plan ready for review · req ${ev.id}`,
+        tone: "accent",
+      };
     case "usage":
       return {
         glyph: "∑",
-        text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(ev.tokens.output)}out · ctx ${humanTokens(ev.contextUsed)}/${ev.contextLimit > 0 ? humanTokens(ev.contextLimit) : "unknown"}`,
+        text: `+${humanTokens(ev.tokens.input)}in +${humanTokens(
+          ev.tokens.output,
+        )}out · ctx ${humanTokens(ev.contextUsed)}/${
+          ev.contextLimit > 0 ? humanTokens(ev.contextLimit) : "unknown"
+        }`,
         tone: "dim",
       };
     case "compact": {
-      const head = `context compacted ${humanTokens(ev.before)}${ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""}`;
+      const head = `context compacted ${humanTokens(ev.before)}${
+        ev.after > 0 ? ` → ${humanTokens(ev.after)}` : ""
+      }`;
       return {
         glyph: "⇊",
         text: `${head}${ev.summary ? ` · ${oneLine(ev.summary, 80)}` : ""}`,
@@ -263,15 +293,31 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       };
     }
     case "context":
-      return { glyph: "∑", text: `ctx ${humanTokens(ev.contextUsed)}`, tone: "dim" };
+      return {
+        glyph: "∑",
+        text: `ctx ${humanTokens(ev.contextUsed)}`,
+        tone: "dim",
+      };
     case "compact_progress":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
-      return { glyph: "⇊", text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`, tone: "dim" };
+      return {
+        glyph: "⇊",
+        text: `compacting… ${Math.round(ev.elapsedMs / 1000)}s`,
+        tone: "dim",
+      };
     case "rate_limit":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
-      return { glyph: "◷", text: `${ev.window ?? "plan"} ${ev.utilization ?? "?"}%`, tone: "dim" };
+      return {
+        glyph: "◷",
+        text: `${ev.window ?? "plan"} ${ev.utilization ?? "?"}%`,
+        tone: "dim",
+      };
     case "subagent_started":
-      return { glyph: "⤷", text: `sub-agent “${ev.name}” started`, tone: "dim" };
+      return {
+        glyph: "⤷",
+        text: `sub-agent “${ev.name}” started`,
+        tone: "dim",
+      };
     case "subagent_stopped":
       return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
     case "background_tasks":
@@ -293,29 +339,39 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
     case "startup_progress":
       return { glyph: "·", text: ev.message, tone: "dim" };
     case "error":
-      return { glyph: "✕", text: oneLine(ev.message, 160), full: body(ev.message), tone: "bad" };
+      return {
+        glyph: "✕",
+        text: oneLine(ev.message, 160),
+        full: body(ev.message),
+        tone: "bad",
+      };
     case "result":
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
-      if (ev.kind === "ok" && ev.stopReason === "step_limit")
+      if (ev.kind === "ok" && ev.stopReason === "step_limit") {
         return {
           glyph: "■",
           text: "turn paused — step ceiling hit repeatedly (send to continue)",
           tone: "warn",
         };
+      }
       return {
         glyph: "■",
         text: ev.kind === "ok" ? "turn complete" : "turn failed",
         tone: ev.kind === "ok" ? "good" : "bad",
       };
     case "rewind":
-      return { glyph: "↶", text: `rewound to turn ${ev.toTurn}`, tone: "accent" };
+      return {
+        glyph: "↶",
+        text: `rewound to turn ${ev.toTurn}`,
+        tone: "accent",
+      };
     case "provider_changed":
       return {
         glyph: "⇄",
-        text: `provider · ${ev.from} → ${ev.provider}${ev.model ? `/${ev.model}` : ""}${
-          ev.effort ? ` · ${ev.effort}` : ""
-        }${ev.lossy ? " · context summarized" : ""}`,
+        text: `provider · ${ev.from} → ${ev.provider}${
+          ev.model ? `/${ev.model}` : ""
+        }${ev.effort ? ` · ${ev.effort}` : ""}${ev.lossy ? " · context summarized" : ""}`,
         tone: "accent",
       };
     case "user_message":
@@ -358,7 +414,10 @@ const summarizeInput = (name: string, input: unknown): string => {
           ? ((f as Record<string, unknown>).path as string)
           : "?",
       );
-      return `  ${paths.length} file${paths.length === 1 ? "" : "s"}: ${oneLine(paths.join(", "), 80)}`;
+      return `  ${paths.length} file${paths.length === 1 ? "" : "s"}: ${oneLine(
+        paths.join(", "),
+        80,
+      )}`;
     }
     if (isReadTool(name)) {
       const path = pathOf(o);
@@ -612,7 +671,11 @@ export interface TranscriptWindow {
  */
 export type Transcript =
   | { readonly t: "unloaded" }
-  | { readonly t: "loading"; readonly sessionId: string; readonly early: readonly LogLine[] }
+  | {
+      readonly t: "loading";
+      readonly sessionId: string;
+      readonly early: readonly LogLine[];
+    }
   | {
       readonly t: "failed";
       readonly sessionId: string;
@@ -704,7 +767,10 @@ const trim = (
   let olderCursor = win.olderCursor;
   if (atOldest && frontKept) olderCursor = null;
   else if (front?.id != null) olderCursor = { olderThan: front.id };
-  return { win: { ...win, lines: kept, olderCursor }, lostTail: !fits && keep === "oldest" };
+  return {
+    win: { ...win, lines: kept, olderCursor },
+    lostTail: !fits && keep === "oldest",
+  };
 };
 
 /** Cap the pre-fetch buffer the same way a window is capped. A session that
@@ -760,7 +826,10 @@ export const headLoaded = (tr: Transcript, sessionId: string, page: HistoryPage)
     older: { t: "idle" },
   };
   const merged = mergeById(transcriptLines(tr), pageLines(page));
-  return { ...trim(base, merged, "newest", page.olderCursor === null).win, t: "tailing" };
+  return {
+    ...trim(base, merged, "newest", page.olderCursor === null).win,
+    t: "tailing",
+  };
 };
 
 /** The newest page failed. What arrived meanwhile is kept — those lines are on
@@ -1000,9 +1069,12 @@ const transcriptHeader = (l: LogLine): string | null => {
 /** Body text for the `o` / `⌥o` transcript — the header already names the role. */
 const transcriptBody = (l: LogLine): string => {
   const raw = (l.full ?? l.text).replace(/[ \t]+$/gm, "").trimEnd();
-  if (l.kind === "tool_call") return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
-  if (l.kind === "tool_result")
+  if (l.kind === "tool_call") {
+    return raw.split("\n").slice(1).join("\n").trim() || "(no arguments)";
+  }
+  if (l.kind === "tool_result") {
     return raw.replace(/^error\n/, "").trim() || (l.tone === "bad" ? "(failed)" : "ok");
+  }
   return raw;
 };
 
@@ -1088,8 +1160,16 @@ const lineLayout = (
   if (hit && hit.iw === iw) return hit;
   const ts = `${clock(l.ts)} `;
   const indent = ts.length + 2; // + "glyph "
-  // Wrap each source line separately so intentional newlines are kept.
-  const source = (l.full ?? l.text).replace(/[ \t]+$/gm, "") || "…";
+  // Output from PTYs may contain bare CRs (including CRCRLF) and cursor
+  // commands. Normalize before measuring rows: terminal controls can escape
+  // the pane even when Ink clips the text to its measured width.
+  const source =
+    stripVTControlCharacters(l.full ?? l.text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\t/g, "    ")
+      // eslint-disable-next-line no-control-regex -- only newlines may reach row splitting
+      .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
+      .replace(/ +$/gm, "") || "…";
   const width = Math.max(8, iw - indent);
   if (
     l.kind === "assistant_text" ||
@@ -1099,7 +1179,7 @@ const lineLayout = (
   ) {
     let doc = documentCache.get(l);
     if (!doc) {
-      doc = markdownText(l.full ?? l.text);
+      doc = markdownText(source);
       documentCache.set(l, doc);
     }
     const rows = doc.layout(width);
@@ -1204,8 +1284,9 @@ export const liveFrame = (tr: Transcript, frame: PushFrame, toolName?: string): 
     frame.id === undefined ||
     NON_TRANSCRIPT.has(frame.event.type) ||
     transcriptSession(tr) !== frame.event.sessionId
-  )
+  ) {
     return tr;
+  }
   return liveLine(tr, toLogLine(frame.id, frame.event, toolName));
 };
 
@@ -1281,8 +1362,9 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
   let viewKey = "";
   const publish = () => {
     const before = store.get();
-    if (before.transcript !== resource || before.scroll !== scroll)
+    if (before.transcript !== resource || before.scroll !== scroll) {
       store.set({ transcript: resource, scroll });
+    }
   };
   const commit = (tr: Transcript, older = false) => {
     if (disposed || tr === resource) return;
@@ -1456,7 +1538,9 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
       // entries stop being folded in while that is true. Jumping to the tail is
       // the action that undoes it — and the explicit retry a failed load waits
       // for.
-      if (tr.t === "detached" || tr.t === "failed") return void open(tr.sessionId);
+      if (tr.t === "detached" || tr.t === "failed") {
+        return void open(tr.sessionId);
+      }
       publish();
     },
 
