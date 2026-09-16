@@ -57,6 +57,7 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         },
       },
     },
+    { session: { isolation: { network_presets: ["rust"] } } },
     { hooks: [{ on: "turn_end", run: "check", timeout: 30 }] },
     { hooks: [{ on: ["waiting", "permission"], run: "notify", match: "*.ts" }] },
     {
@@ -67,6 +68,7 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
             vm_tools: [],
             isolation: {
               enabled: true,
+              network_presets: ["nix", "rust"],
             },
           },
         },

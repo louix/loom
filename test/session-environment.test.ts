@@ -24,7 +24,7 @@ test("network presets compose with exact hosts and reject unknown grants", () =>
   const config = normalizeConfig({
     session: {
       isolation: {
-        network_presets: ["nix", "javascript", "python", "nix"],
+        network_presets: ["nix", "javascript", "python", "rust", "nix", "rust"],
         extra_allowed_hosts: ["REGISTRY.NPMJS.ORG", "example.com"],
       },
     },
@@ -41,6 +41,16 @@ test("network presets compose with exact hosts and reject unknown grants", () =>
   assert.deepEqual(expandNetworkPresets(["python"]), ["pypi.org", "files.pythonhosted.org"]);
   assert(config.isolation.extraAllowedHosts.includes("pypi.org"));
   assert(config.isolation.extraAllowedHosts.includes("files.pythonhosted.org"));
+  for (const host of [
+    "crates.io",
+    "index.crates.io",
+    "static.crates.io",
+    "static.rust-lang.org",
+    "sh.rustup.rs",
+  ]) {
+    assert.equal(config.isolation.extraAllowedHosts.filter((h) => h === host).length, 1);
+    assert(!expandNetworkPresets(["nix"]).includes(host));
+  }
   for (const invalid of ["nix", ["cargo"], ["__proto__"], ["*"], [1]])
     assert.throws(() => expandNetworkPresets(invalid), /network_presets/);
 });

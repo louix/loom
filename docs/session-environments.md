@@ -34,7 +34,7 @@ Add to the existing matching `repos` array entry in the trusted user config:
       ],
       "session": {
         "isolation": {
-          "network_presets": ["nix", "javascript"],
+          "network_presets": ["nix", "javascript", "rust"],
           "environment": {
             "nix": true,
             "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
@@ -205,9 +205,16 @@ policy. They grant access to the whole session VM, not just setup commands.
   (Node headers for native dependency builds with node-gyp).
 - `python`: `pypi.org` and `files.pythonhosted.org` (PyPI indexes, wheels and
   source distributions for pip, uv and other Python package managers).
+- `rust`: `crates.io`, `index.crates.io`, `static.crates.io`,
+  `static.rust-lang.org`, and `sh.rustup.rs` (Cargo dependencies and rustup toolchains).
 
-For a repo using all three, set `network_presets = ["nix", "javascript", "python"]`
+For a repo using all four, set `network_presets = ["nix", "javascript", "python", "rust"]`
 under `repos[].session.isolation`.
+
+Nix builds that fetch Rust crates also need `rust`; the `nix` preset alone does
+not grant crate downloads. If preparation fails with a proxy `403 Forbidden`
+for `static.crates.io`, add `rust` to the repo's existing `network_presets` in
+the trusted user config and rerun `loom environment prepare`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

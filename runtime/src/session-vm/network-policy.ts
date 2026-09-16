@@ -16,10 +16,18 @@ export const networkPresets = {
   // node-gyp downloads matching Node headers when building native dependencies.
   javascript: ["registry.npmjs.org", "jsr.io", "npm.jsr.io", "nodejs.org"],
   python: ["pypi.org", "files.pythonhosted.org"],
+  // Cargo registry/index downloads and rustup toolchain installation.
+  rust: [
+    "crates.io",
+    "index.crates.io",
+    "static.crates.io",
+    "static.rust-lang.org",
+    "sh.rustup.rs",
+  ],
 } as const;
 
 export const networkPresetsSchema = z
-  .array(z.enum(["nix", "javascript", "python"]))
+  .array(z.enum(["nix", "javascript", "python", "rust"]))
   .max(16)
   .default([]);
 export const extraHostsSchema = z

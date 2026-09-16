@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { startEgress } from "../runtime/src/session-vm/egress.ts";
+import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
 Deno.test("session egress rejects alternate hosts, ports and IP addresses", async () => {
   const state = await Deno.makeTempDir({ dir: "/tmp" });
   const reports: Array<{ host: string; allowed: boolean }> = [];
@@ -93,7 +94,7 @@ for (const shutdown of [false, true]) {
 }
 
 Deno.test("extra hosts grant only exact HTTPS destinations and retain the provider endpoint", async () => {
-  for (const extraAllowedHosts of [[], ["registry.npmjs.org"]]) {
+  for (const extraAllowedHosts of [[], ["registry.npmjs.org"], expandNetworkPresets(["rust"])]) {
     const state = await Deno.makeTempDir({ dir: "/tmp" });
     const socket = join(state, "proxy.sock");
     const dialed: string[] = [];
@@ -112,6 +113,10 @@ Deno.test("extra hosts grant only exact HTTPS destinations and retain the provid
       for (const target of [
         "api.anthropic.com:443",
         "REGISTRY.NPMJS.ORG:443",
+        ...expandNetworkPresets(["rust"]).map((host) => `${host}:443`),
+        "static.crates.io:80",
+        "evil.static.crates.io:443",
+        "static.crates.io.evil.test:443",
         "registry.npmjs.org:80",
         "evil.registry.npmjs.org:443",
         "registry.npmjs.org.evil.test:443",
@@ -124,7 +129,7 @@ Deno.test("extra hosts grant only exact HTTPS destinations and retain the provid
           const size = await client.read(bytes);
           const allowed =
             target === "api.anthropic.com:443" ||
-            (extraAllowedHosts.length > 0 && target === "REGISTRY.NPMJS.ORG:443");
+            extraAllowedHosts.some((host) => target.toLowerCase() === `${host}:443`);
           assert.match(
             new TextDecoder().decode(bytes.subarray(0, size!)),
             allowed ? /200 Connection Established/ : /403 Forbidden/,

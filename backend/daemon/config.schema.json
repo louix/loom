@@ -168,7 +168,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": ["nix", "javascript", "python"]
+                "enum": ["nix", "javascript", "python", "rust"]
               }
             },
             "environment": {
@@ -1274,7 +1274,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": ["nix", "javascript", "python"]
+                      "enum": ["nix", "javascript", "python", "rust"]
                     }
                   },
                   "environment": {
