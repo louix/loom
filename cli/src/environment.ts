@@ -118,7 +118,7 @@ export const prepareRepoEnvironment = async (repo: string) => {
   const config = loadConfig(repo);
   if (!environmentEnabled(config.isolation.environment)) {
     const reason = config.environment.nix.autoActivate
-      ? "No flake.nix or shell.nix found at the repository root (committed HEAD for bare repos)."
+      ? "No flake.nix, shell.nix or default.nix found at the repository root (committed HEAD for bare repos)."
       : "Nix auto-activation is disabled (session.environment.nix.auto_activate).";
     throw new Error(
       `No session environment found. ${reason} Configure session.isolation.environment or enable Nix auto-activation with a project shell.`,

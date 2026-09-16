@@ -30,7 +30,7 @@ export const activateLocalEnvironment = async (
   const activation = detectNixActivation(cwd, settings);
   if (!activation) return;
   await progress(
-    `Activating Nix ${activation.kind === "flake" ? `dev shell "${activation.devShell}"` : "shell.nix"}…`,
+    `Activating Nix ${activation.kind === "flake" ? `dev shell "${activation.devShell}"` : `${activation.kind}.nix`}…`,
   );
   const directory = await Deno.makeTempDir({ prefix: "loom-activation-" });
   try {

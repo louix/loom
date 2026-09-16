@@ -50,7 +50,8 @@ if test "$1" = develop; then
   shift 4
   exec "$@"
 fi
-test "$1" = ./shell.nix
+test "$1" = ./shell.nix || test "$1" = ./default.nix
+test -f "$1"
 test "$2" = --run
 exec /bin/sh -c "$3"
 `;
@@ -147,7 +148,7 @@ test("detection is root-only, prefers flakes, and quotes legacy shell arguments"
     await Deno.writeTextFile(join(cwd, "flake.nix"), "");
     assert.equal(detectNixActivation(cwd, settings)?.kind, "flake");
     assert.equal(detectNixActivation(join(cwd, "bin"), settings), undefined);
-    const plain = await f.checkout("plain", "default.nix");
+    const plain = await f.checkout("plain", "project.nix");
     assert.equal(await activateLocalEnvironment(plain, settings, signal()), undefined);
   } finally {
     await f.close();
@@ -319,6 +320,40 @@ test("VM preparation uses automatic selection but explicit prefixes take precede
       }),
       /preparation failed/,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("default.nix activates local and VM environments after flake.nix and shell.nix", async () => {
+  const f = await fixture();
+  try {
+    const cwd = await f.checkout("fallback", "default.nix");
+    assert.deepEqual(detectNixActivation(cwd, settings), { kind: "default", devShell: "default" });
+    const progress: string[] = [];
+    const local = await activateLocalEnvironment(cwd, settings, signal(), (message) => {
+      progress.push(message);
+    });
+    assert.equal(local?.set.PROJECT_VALUE, "fallback");
+    assert.deepEqual(progress, ["Activating Nix default.nix…"]);
+    const captured = await prepareEnvironment(
+      resolveVmNixActivation(normalizeSessionEnvironment({ nix: true }), settings, cwd),
+      { cwd, shell: "/bin/sh" },
+    );
+    assert.equal(captured?.PROJECT_VALUE, "fallback");
+    assert.match(await Deno.readTextFile(join(cwd, ".activation-log")), /\.\/default\.nix --run/);
+    assert.throws(
+      () => nixActivationCommand({ kind: "default", devShell: "ci" }, ["true"]),
+      /requires flake.nix; default.nix has no named dev shells/,
+    );
+    assert.equal(
+      await activateLocalEnvironment(cwd, { ...settings, autoActivate: false }, signal()),
+      undefined,
+    );
+    await Deno.writeTextFile(join(cwd, "shell.nix"), "");
+    assert.equal(detectNixActivation(cwd, settings)?.kind, "shell");
+    await Deno.writeTextFile(join(cwd, "flake.nix"), "");
+    assert.equal(detectNixActivation(cwd, settings)?.kind, "flake");
   } finally {
     await f.close();
   }

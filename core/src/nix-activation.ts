@@ -21,7 +21,7 @@ export interface NixActivationSettings {
   devShell: string;
 }
 export interface NixActivation {
-  kind: "flake" | "shell";
+  kind: "flake" | "shell" | "default";
   devShell: string;
 }
 
@@ -40,7 +40,7 @@ export const detectNixActivation = (
   settings: NixActivationSettings,
 ): NixActivation | undefined => {
   if (!settings.autoActivate) return;
-  for (const kind of ["flake", "shell"] as const)
+  for (const kind of ["flake", "shell", "default"] as const)
     if (isFile(join(cwd, `${kind}.nix`))) return { kind, devShell: settings.devShell };
   // Bare repo identity has no checkout. Read only tree metadata, so config loading,
   // preparation preflight and session startup agree without materializing files.
@@ -48,7 +48,7 @@ export const detectNixActivation = (
     spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
   const bare = git(["rev-parse", "--is-bare-repository"]);
   if (bare.status !== 0 || bare.stdout.trim() !== "true") return;
-  const tree = git(["ls-tree", "-z", "HEAD", "--", "flake.nix", "shell.nix"]);
+  const tree = git(["ls-tree", "-z", "HEAD", "--", "flake.nix", "shell.nix", "default.nix"]);
   if (tree.status !== 0) return; // An unborn bare repository has no environment yet.
   const files = new Set(
     tree.stdout.split("\0").flatMap((entry) => {
@@ -56,7 +56,7 @@ export const detectNixActivation = (
       return match ? [match[1]!] : [];
     }),
   );
-  for (const kind of ["flake", "shell"] as const)
+  for (const kind of ["flake", "shell", "default"] as const)
     if (files.has(`${kind}.nix`)) return { kind, devShell: settings.devShell };
 };
 
@@ -75,9 +75,14 @@ export const nixActivationCommand = (activation: NixActivation, command: string[
     ];
   if (activation.devShell !== "default")
     throw new Error(
-      "session.environment.nix.dev_shell requires flake.nix; shell.nix has no named dev shells",
+      `session.environment.nix.dev_shell requires flake.nix; ${activation.kind}.nix has no named dev shells`,
     );
-  return ["nix-shell", "./shell.nix", "--run", "exec " + command.map(shellQuote).join(" ")];
+  return [
+    "nix-shell",
+    `./${activation.kind}.nix`,
+    "--run",
+    "exec " + command.map(shellQuote).join(" "),
+  ];
 };
 
 /** Explicit VM prefixes override detection. The writable guest store remains a separate setting. */

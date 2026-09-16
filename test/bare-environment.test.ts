@@ -39,7 +39,7 @@ test("bare repo Nix detection reads committed root files and preserves checkout 
   try {
     await Deno.mkdir(join(f.seed, "nested"));
     await Deno.writeTextFile(join(f.seed, "nested/flake.nix"), "");
-    await Deno.writeTextFile(join(f.seed, "default.nix"), "");
+    await Deno.writeTextFile(join(f.seed, "nested/default.nix"), "");
     f.commit();
     f.git(f.root, "clone", "--bare", f.seed, f.bare);
     assert.equal(detectNixActivation(f.bare, settings), undefined);
@@ -48,6 +48,10 @@ test("bare repo Nix detection reads committed root files and preserves checkout 
       f.commit();
       f.git(f.bare, "fetch", f.seed, "main:main");
     };
+    await Deno.writeTextFile(join(f.seed, "default.nix"), "");
+    update();
+    assert.deepEqual(detectNixActivation(f.bare, settings), { kind: "default", devShell: "ci" });
+    assert.equal(detectNixActivation(f.bare, { ...settings, autoActivate: false }), undefined);
     await Deno.writeTextFile(join(f.seed, "shell.nix"), "");
     update();
     assert.deepEqual(detectNixActivation(f.bare, settings), { kind: "shell", devShell: "ci" });
@@ -62,6 +66,8 @@ test("bare repo Nix detection reads committed root files and preserves checkout 
     await Deno.remove(join(linked, "flake.nix"));
     assert.deepEqual(detectNixActivation(linked, settings), { kind: "shell", devShell: "ci" });
     await Deno.remove(join(linked, "shell.nix"));
+    assert.equal(detectNixActivation(linked, settings)?.kind, "default");
+    await Deno.remove(join(linked, "default.nix"));
     assert.equal(
       detectNixActivation(linked, settings),
       undefined,
@@ -158,8 +164,11 @@ test("environment prepare detects bare HEAD and explains missing or disabled Nix
       assert.notEqual(output.code, 0);
       return new TextDecoder().decode(output.stderr);
     };
-    assert.match(await prepare(), /No flake.nix or shell.nix found.*committed HEAD for bare repos/);
-    await Deno.writeTextFile(join(f.seed, "shell.nix"), "");
+    assert.match(
+      await prepare(),
+      /No flake.nix, shell.nix or default.nix found.*committed HEAD for bare repos/,
+    );
+    await Deno.writeTextFile(join(f.seed, "default.nix"), "");
     f.commit();
     f.git(f.bare, "fetch", f.seed, "main:main");
     assert.match(await prepare(), /Configured smolvm executable was not found/);

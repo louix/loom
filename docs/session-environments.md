@@ -45,10 +45,12 @@ Objects merge recursively. Setting a shell name does not enable activation if
 `auto_activate` is false; a repo can explicitly enable it when globally disabled.
 Names are single flake attributes using letters, digits, hyphens or underscores.
 
-Detection checks the checkout root for `flake.nix`, then `shell.nix`.
+Detection checks the checkout root for `flake.nix`, then `shell.nix`, then
+`default.nix`. Bare repositories use committed `HEAD` for detection.
 Flakes use `nix develop path:.#<dev_shell> --no-write-lock-file --command …`.
-Legacy shells use `nix-shell ./shell.nix --run …` and require the default shell
-name. Neither `default.nix` alone nor `.envrc` triggers activation.
+Legacy shells use `nix-shell ./shell.nix --run …` or
+`nix-shell ./default.nix --run …` and require the default shell name.
+`.envrc` does not trigger activation.
 No matching file means ordinary startup. Missing Nix, missing named shells and
 activation failures stop startup before init hooks, with an error explaining how
 to repair or disable activation.
