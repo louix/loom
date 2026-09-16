@@ -3,6 +3,8 @@ import { z } from "zod";
 /** Trusted host configuration; commands are executed only inside the session VM. */
 export interface SessionEnvironment {
   nix: boolean;
+  /** Resolved automatically from the checkout; never accepted as VM config syntax. */
+  nixActivation?: import("./nix-activation.ts").NixActivation;
   commandPrefix: string[];
   prepare: string;
   timeoutMs: number;
@@ -75,7 +77,8 @@ export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment 
 };
 
 export const environmentEnabled = (env?: SessionEnvironment): boolean =>
-  !!env && (env.nix || env.commandPrefix.length > 0 || env.prepare.length > 0);
+  !!env &&
+  (env.nix || !!env.nixActivation || env.commandPrefix.length > 0 || env.prepare.length > 0);
 
 export const sessionStartupTimeout = (env?: SessionEnvironment): number =>
   120_000 + (environmentEnabled(env) ? env!.timeoutMs : 0);

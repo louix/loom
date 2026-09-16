@@ -15,6 +15,68 @@ Loom separates reusable environment preparation from session initialization.
 - Package caches live on the host; worktree dependencies and conversation history
   survive VM replacement.
 
+## Automatic Nix activation
+
+Loom enables `session.environment.nix.auto_activate` by default, for local and
+VM sessions. Configure global defaults and sparse per-repo overrides in the
+trusted user config:
+
+```jsonc
+{
+  "session": {
+    "environment": {
+      "nix": { "auto_activate": true, "dev_shell": "default" },
+    },
+  },
+  "repos": [
+    {
+      "path": "~/dev/backend",
+      "session": { "environment": { "nix": { "dev_shell": "backend" } } },
+    },
+    {
+      "path": "~/dev/manual",
+      "session": { "environment": { "nix": { "auto_activate": false } } },
+    },
+  ],
+}
+```
+
+Objects merge recursively. Setting a shell name does not enable activation if
+`auto_activate` is false; a repo can explicitly enable it when globally disabled.
+Names are single flake attributes using letters, digits, hyphens or underscores.
+
+Detection checks the checkout root for `flake.nix`, then `shell.nix`.
+Flakes use `nix develop path:.#<dev_shell> --no-write-lock-file --command …`.
+Legacy shells use `nix-shell ./shell.nix --run …` and require the default shell
+name. Neither `default.nix` alone nor `.envrc` triggers activation.
+No matching file means ordinary startup. Missing Nix, missing named shells and
+activation failures stop startup before init hooks, with an error explaining how
+to repair or disable activation.
+
+Local sessions capture exported variables before init and pass them to the
+session worker and `loom shell`. Activation is scoped to each session, never
+applied to the daemon's environment. New worker launches, including resume,
+activate again; ordinary resume does not repeat init hooks. Already running
+sessions retain their environment. Local activation has a 15-minute timeout and
+is cancelled when its provider closes. Shell functions, aliases and background
+processes are not retained. Worker scratch paths, home and provider credentials
+keep their launch values; temporary Nix build paths are not reused.
+Activation starts with the host PATH, user/locale, Nix, certificate, proxy and XDG
+settings; unrelated daemon environment variables are not forwarded.
+Native Bash commands restore the captured exports after login profiles. Activated
+Codex sessions disable login shells and shell snapshots so profiles cannot replace
+the project PATH. Interactive `loom shell` still reads the user's interactive
+shell configuration, which can intentionally override environment variables.
+
+VMs perform automatic activation only during explicit
+`loom environment prepare`, against the disposable checkout of committed HEAD.
+Set `session.isolation.environment.nix: true` to supply the private writable
+guest Nix store, and configure the required network presets. Session boots keep
+restoring the prepared environment. A nonempty explicit
+`session.isolation.environment.command_prefix` takes precedence over automatic
+detection. Changing a shell name or development dependencies requires preparation
+again, just like changing an explicit prefix.
+
 ## Configuration
 
 Add to the existing matching `repos` array entry in the trusted user config:
@@ -37,7 +99,6 @@ Add to the existing matching `repos` array entry in the trusted user config:
           "network_presets": ["nix", "javascript", "rust"],
           "environment": {
             "nix": true,
-            "command_prefix": ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
             "prepare": "",
             "timeout_seconds": 900,
           },
@@ -48,18 +109,19 @@ Add to the existing matching `repos` array entry in the trusted user config:
 }
 ```
 
-Set `session.isolation.enabled` to true for projects that should default to VM execution. Non-VM sessions use the same
-init hook mechanism in their host working environment; the VM base settings do
-not affect them. Hooks can also be scoped with the existing `project` setting.
+Set `session.isolation.enabled` to true for projects that should default to VM execution.
+Local sessions activate Nix before the same init hooks; VM base settings do not
+apply to local sessions. Hooks can also be scoped with the existing `project` setting.
 Init hooks execute serially in configuration order. Both check and notify init
 hooks report failures to the agent; notification-only behavior of other events
 is unchanged. Existing Git commit hooks continue to run through Git.
 
-The environment settings are:
+The `session.isolation.environment` settings are:
 
 - `nix`: private writable guest Nix store (default false). Does not expose the host store or daemon.
 - `command_prefix`: argument array used to enter the environment during explicit preparation.
-  It must execute the appended command and propagate its exit status.
+  It must execute the appended command and propagate its exit status. A nonempty prefix
+  overrides automatic Nix selection.
 - `prepare`: optional shell command executed inside that environment during explicit preparation.
   Use it for reusable base setup. Worktree dependency installation belongs in init hooks.
 - `timeout_seconds`: preparation budget, 1–2073600 seconds (default 900).

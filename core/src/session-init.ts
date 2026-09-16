@@ -6,6 +6,7 @@ export const runSessionInit = async <T extends CreateSessionOptions | SessionRef
   options: T,
   progress: (message: string) => void | Promise<void>,
   signal: AbortSignal,
+  environment?: Record<string, string>,
 ): Promise<T> => {
   const { initHooks } = options;
   const session = { ...options };
@@ -20,7 +21,7 @@ export const runSessionInit = async <T extends CreateSessionOptions | SessionRef
         hook.run,
         options.cwd,
         {
-          ...Deno.env.toObject(),
+          ...(environment ?? Deno.env.toObject()),
           ...initHooks.env,
           LOOM_HOOK: hook.name,
           LOOM_HOOK_EVENT: "init",

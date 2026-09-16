@@ -348,6 +348,56 @@ test("CodexAppServerSession.start/.resume and discoverCodexModels launch through
   assert.equal(specs[2]?.codexHome, codexHome);
 });
 
+test("activated Codex sessions preserve the project environment on create and resume", async () => {
+  const previous = Deno.env.get("LOOM_PROJECT_ENVIRONMENT");
+  const codexHome = {
+    dir: "/tmp/loom-codex-environment",
+    authJsonPath: "/tmp/loom-codex-environment/auth.json",
+  };
+  const specs: CodexLaunchSpec[] = [];
+  const launch: CodexLauncher = (spec) => {
+    specs.push(spec);
+    return spawnCodex(spec);
+  };
+  try {
+    for (const activated of [false, true]) {
+      if (activated) Deno.env.set("LOOM_PROJECT_ENVIRONMENT", "1");
+      else Deno.env.delete("LOOM_PROJECT_ENVIRONMENT");
+      const started = await CodexAppServerSession.start(
+        { sessionId: "environment", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+        codexHome,
+        FAKE_CODEX,
+        undefined,
+        false,
+        undefined,
+        launch,
+      );
+      await started.close();
+      const resumed = await CodexAppServerSession.resume(
+        { sessionId: "environment", providerRef: "fake-thread-1", cwd: "/tmp" },
+        codexHome,
+        FAKE_CODEX,
+        undefined,
+        false,
+        undefined,
+        launch,
+      );
+      await resumed.close();
+      for (const spec of specs.splice(0)) {
+        assert.equal(spec.args.includes("allow_login_shell=false"), activated);
+        assert.equal(spec.args.includes("features.shell_snapshot=false"), activated);
+        assert.equal(
+          spec.args.includes("shell_environment_policy.experimental_use_profile=false"),
+          activated,
+        );
+      }
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("LOOM_PROJECT_ENVIRONMENT");
+    else Deno.env.set("LOOM_PROJECT_ENVIRONMENT", previous);
+  }
+});
+
 test("resume() forwards the ref's systemPromptAppend as developerInstructions on thread/resume", async () => {
   const codexHome = {
     dir: "/tmp/loom-codex-resume-test",

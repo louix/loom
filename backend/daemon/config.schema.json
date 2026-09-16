@@ -5,6 +5,31 @@
     "session": {
       "type": "object",
       "properties": {
+        "environment": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "nix": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "auto_activate": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "dev_shell": {
+                  "default": "default",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[a-zA-Z0-9_-]+$"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "local_tools": {
           "type": "array",
           "items": {
@@ -1111,6 +1136,31 @@
           "session": {
             "type": "object",
             "properties": {
+              "environment": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "nix": {
+                    "default": {},
+                    "type": "object",
+                    "properties": {
+                      "auto_activate": {
+                        "default": true,
+                        "type": "boolean"
+                      },
+                      "dev_shell": {
+                        "default": "default",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "pattern": "^[a-zA-Z0-9_-]+$"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
               "local_tools": {
                 "type": "array",
                 "items": {

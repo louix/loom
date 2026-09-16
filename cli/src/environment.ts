@@ -7,6 +7,7 @@ import {
 } from "../../backend/daemon/src/config/config.ts";
 import { isClaudeId } from "../../core/src/provider-id.ts";
 import { environmentEnabled } from "../../core/src/session-environment.ts";
+import { resolveVmNixActivation } from "../../core/src/nix-activation.ts";
 import { launchSessionVm } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
 import {
   repoBaseDirectory,
@@ -201,7 +202,11 @@ const prepareRuntimeEnvironment = async (
       preparationOnly: true,
       auth: {},
       providerHosts: [],
-      environment: config.isolation.environment!,
+      environment: resolveVmNixActivation(
+        config.isolation.environment,
+        config.environment.nix,
+        workspace,
+      ),
       extraAllowedHosts: config.isolation.extraAllowedHosts,
     });
     vmStopped = false;

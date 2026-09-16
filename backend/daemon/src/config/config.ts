@@ -2,6 +2,10 @@ import {
   normalizeSessionEnvironment,
   type SessionEnvironment,
 } from "../../../../core/src/session-environment.ts";
+import {
+  resolveVmNixActivation,
+  type NixActivationSettings,
+} from "../../../../core/src/nix-activation.ts";
 import { bundledRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import {
   normalizeExtraHosts,
@@ -209,6 +213,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
+  environment: { nix: NixActivationSettings };
   tui: { includeEventLogInEditor: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
@@ -349,6 +354,7 @@ export interface LoomConfig {
 }
 
 export const DEFAULT_CONFIG: LoomConfig = {
+  environment: { nix: { autoActivate: true, devShell: "default" } },
   tui: { includeEventLogInEditor: false },
   baseBranch: "main",
   worktreeDir: ".loom/trees",
@@ -662,6 +668,12 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const { mcp, httpMcp } = resolveToolSelection(settings);
 
   return {
+    environment: {
+      nix: {
+        autoActivate: settings.session.environment.nix.auto_activate,
+        devShell: settings.session.environment.nix.dev_shell,
+      },
+    },
     tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
     baseBranch: settings.base_branch,
     worktreeDir: settings.worktree_dir,
@@ -824,7 +836,13 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       selected = overrides;
     }
   }
-  return normalizeConfig(deepMerge(defaults, selected));
+  const config = normalizeConfig(deepMerge(defaults, selected));
+  config.isolation.environment = resolveVmNixActivation(
+    config.isolation.environment,
+    config.environment.nix,
+    repoRoot,
+  );
+  return config;
 };
 
 /** Resolve a possibly-relative config path against the repo root. */

@@ -4,6 +4,7 @@ import {
 } from "../../../core/src/session-environment.ts";
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
+import { nixActivationCommand } from "../../../core/src/nix-activation.ts";
 import { reportStartup, readStartupProgress } from "./progress.ts";
 
 /** Debian login shells reset PATH before sourcing /etc/profile.d. */
@@ -36,6 +37,10 @@ export const prepareEnvironment = async (
     }
   }, config!.timeoutMs);
   try {
+    if (config!.nixActivation && !config!.nix)
+      throw new Error(
+        "Automatic Nix activation in a VM requires session.isolation.environment.nix: true",
+      );
     if (config!.nix) {
       reportStartup("nix");
       await options.initializeNix?.(stop.signal);
@@ -43,8 +48,7 @@ export const prepareEnvironment = async (
     if (timedOut) throw new WorkerDiagnostic("sessionEnvironmentTimeout");
     // Prefix entries and the setup body are separate argv entries. Only the
     // explicitly configured shell body is interpreted as code.
-    const argv = [
-      ...config!.commandPrefix,
+    const command = [
       options.shell,
       "-c",
       'set -e\nif [ -n "$1" ]; then printf "\\nRunning repo setup…\\n" >&2; else printf \'{"loomStartup":"prepare"}\\n\' >&2; fi\nshift\neval "$1"\nshift\nexec "$@"',
@@ -60,6 +64,9 @@ export const prepareEnvironment = async (
       fileURLToPath(new URL("./capture-environment.ts", import.meta.url)),
       snapshot,
     ];
+    let argv = command;
+    if (config!.commandPrefix.length) argv = [...config!.commandPrefix, ...command];
+    else if (config!.nixActivation) argv = nixActivationCommand(config!.nixActivation, command);
     reportStartup("activate");
     child = new Deno.Command(argv[0]!, {
       args: argv.slice(1),
@@ -93,6 +100,7 @@ export const prepareEnvironment = async (
     return env as Record<string, string>;
   } catch (error) {
     if (error instanceof WorkerDiagnostic) throw error;
+    if (options.output) console.error(error instanceof Error ? error.message : String(error));
     throw new WorkerDiagnostic(timedOut ? "sessionEnvironmentTimeout" : "sessionEnvironmentFailed");
   } finally {
     clearTimeout(timer);

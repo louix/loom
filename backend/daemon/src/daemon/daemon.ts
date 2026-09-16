@@ -2090,6 +2090,7 @@ export class Daemon {
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     this.config.worktree = next.worktree;
+    this.config.environment = next.environment;
     this.config.autoRebase = next.autoRebase;
     this.config.commitReminder = next.commitReminder;
     this.config.notify = next.notify;
@@ -2259,7 +2260,9 @@ export class Daemon {
         const session = this.#registry.get(params.id);
         if (!session) throw new RpcError("not_found", `no such session: ${params.id}`);
         if (this.#revivals.has(params.id)) throw new RpcError("busy", "The session is starting.");
-        return await this.#shells.open(this.repoRoot, session, conn);
+        return await this.#shells.open(this.repoRoot, session, conn, (cwd) =>
+          this.#providers.shellEnvironment(session.id, cwd, conn.signal),
+        );
       }),
     );
     d.register("session.closeShell", (params, { conn }) => {

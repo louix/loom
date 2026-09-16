@@ -25,6 +25,7 @@ export class SessionShells {
     repo: string,
     session: SessionSnapshot,
     connection: Connection,
+    environment?: (cwd: string) => Promise<SessionShell["environment"]>,
   ): Promise<SessionShell> {
     const cwd = session.inPlace ? repo : session.worktree;
     if (!cwd) {
@@ -47,6 +48,7 @@ export class SessionShells {
       }
       vm = vmShellCommand(binding);
     }
+    const localEnvironment = session.isolation !== "vm" ? await environment?.(cwd) : undefined;
     if (connection.signal.aborted) {
       throw new RpcError("disconnected", "Shell connection closed.");
     }
@@ -61,6 +63,7 @@ export class SessionShells {
       cwd,
       isolation: session.isolation ?? "local",
       ...(vm ? { vm } : {}),
+      ...(localEnvironment ? { environment: localEnvironment } : {}),
     };
   }
 

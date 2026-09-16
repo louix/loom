@@ -86,6 +86,17 @@ const launchOptions = (
     'cli_auth_credentials_store="file"',
     "-c",
     `mcp_servers=${mcpConfig(servers)}`,
+    // Keep the activated project environment instead of rebuilding it from login profiles.
+    ...(Deno.env.get("LOOM_PROJECT_ENVIRONMENT") === "1"
+      ? [
+          "-c",
+          "allow_login_shell=false",
+          "-c",
+          "features.shell_snapshot=false",
+          "-c",
+          "shell_environment_policy.experimental_use_profile=false",
+        ]
+      : []),
     // MCP search defaults are independent of the native web-search setting.
     ...(builtinWebSearch ? [] : ["-c", 'web_search = "disabled"']),
   ],

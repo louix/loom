@@ -1744,7 +1744,7 @@ test("session.rebase: a conflict leaves the branch untouched and does not nudge"
   }
 });
 
-test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", async () => {
+test("editing config.jsonc hot-applies worktree and Nix settings and pushes a notice", async () => {
   const hh = await makeHarness({
     config: `{
   "session": {
@@ -1780,6 +1780,7 @@ test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", 
     {
       "path": ${JSON.stringify(hh.repoRoot)},
       "session": {
+        "environment": { "nix": { "auto_activate": false, "dev_shell": "ci" } },
         "worktree": {
           "enabled": false
         }
@@ -1790,6 +1791,7 @@ test("editing config.jsonc hot-applies [worktree] enabled and pushes a notice", 
     );
     await waitFor(() => notices.some((t) => /config reloaded/.test(t)));
 
+    assert.deepEqual(hh.daemon.config.environment.nix, { autoActivate: false, devShell: "ci" });
     assert.ok(
       notices.some((t) => /config reloaded/.test(t)),
       `got notices: ${JSON.stringify(notices)}`,

@@ -134,6 +134,15 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
     output: child.stdout,
     pid: child.pid,
     exited: child.status.finally(() => drained),
+    async cleanup() {
+      for (const path of spec.cleanupPaths ?? []) {
+        try {
+          await Deno.remove(path, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+    },
     terminate() {
       try {
         child.kill("SIGKILL");

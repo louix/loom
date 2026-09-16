@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
+import { nixActivationSchema } from "../../../../core/src/nix-activation.ts";
 import {
   networkPresetsSchema,
   extraHostsSchema,
@@ -188,6 +189,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     session: preprocess(
       record,
       z.strictObject({
+        environment: z.strictObject({ nix: nixActivationSchema }).prefault({}),
         local_tools: selections,
         vm_tools: selections,
         remote_tools: selections,

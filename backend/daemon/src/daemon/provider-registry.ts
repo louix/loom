@@ -1,4 +1,10 @@
 import { runSessionInit } from "../../../../core/src/session-init.ts";
+import {
+  activateLocalEnvironment,
+  applyEnvironmentChanges,
+  localSessionEnvironment,
+  type EnvironmentChanges,
+} from "./local-environment.ts";
 import { matchGlob } from "./hooks.ts";
 import type { CreateSessionOptions, SessionRef } from "@loom/core/types";
 import { withVmSessions } from "./vm-provider.ts";
@@ -55,6 +61,13 @@ export class ProviderRegistry {
   /** Connector packages whose `createProvider` has run at least once (for `daemon.doctor`). */
   readonly #loaded = new Set<string>();
 
+  readonly #localEnvironments = new Map<string, EnvironmentChanges | undefined>();
+
+  async shellEnvironment(sessionId: string, cwd: string, signal: AbortSignal) {
+    return this.#localEnvironments.has(sessionId)
+      ? this.#localEnvironments.get(sessionId)
+      : await activateLocalEnvironment(cwd, this.#config.environment.nix, signal);
+  }
   constructor(
     config: LoomConfig,
     transcript: TranscriptStore,
@@ -239,10 +252,28 @@ export class ProviderRegistry {
           };
         if (prop === "createSession" || prop === "resumeSession")
           return async (options: CreateSessionOptions | SessionRef) => {
-            if (!("oneShot" in options && options.oneShot))
-              await preflightTools(effectiveConfig, id);
-            if (prop === "resumeSession" && !options.initHooks)
-              return target.resumeSession(options as SessionRef);
+            const oneShot = "oneShot" in options && options.oneShot;
+            if (!oneShot) await preflightTools(effectiveConfig, id);
+            const progress = (message: string) =>
+              context.onStartupProgress?.(options.sessionId, message);
+            const environment =
+              !context.config.sessionVm && !oneShot
+                ? await activateLocalEnvironment(
+                    options.cwd,
+                    this.#config.environment.nix,
+                    initStop.signal,
+                    progress,
+                  )
+                : undefined;
+            options = {
+              ...options,
+              ...(environment ? { [localSessionEnvironment]: environment } : {}),
+            };
+            if (prop === "resumeSession" && !options.initHooks) {
+              const session = await target.resumeSession(options as SessionRef);
+              this.#localEnvironments.set(options.sessionId, environment);
+              return session;
+            }
             const hooks =
               "oneShot" in options && options.oneShot
                 ? []
@@ -271,10 +302,14 @@ export class ProviderRegistry {
                   configured,
                   (message) => context.onStartupProgress?.(options.sessionId, message),
                   initStop.signal,
+                  applyEnvironmentChanges(Deno.env.toObject(), environment),
                 );
-            return prop === "createSession"
-              ? target.createSession(ready as CreateSessionOptions)
-              : target.resumeSession(ready as SessionRef);
+            const session =
+              prop === "createSession"
+                ? await target.createSession(ready as CreateSessionOptions)
+                : await target.resumeSession(ready as SessionRef);
+            if (!oneShot) this.#localEnvironments.set(options.sessionId, environment);
+            return session;
           };
         const value = Reflect.get(target, prop, target);
         return typeof value === "function" ? value.bind(target) : value;

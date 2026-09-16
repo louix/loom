@@ -1,5 +1,6 @@
 import type { LoomClient } from "@loom/client";
 import type { SessionShell } from "../../core/src/shell.ts";
+import { applyEnvironmentChanges } from "../../core/src/environment-changes.ts";
 
 /** Run a real shell while continuing to drain daemon events and hold the lease. */
 export const openSessionShell = async (client: LoomClient, id: string): Promise<number> => {
@@ -72,7 +73,10 @@ export const openSessionShell = async (client: LoomClient, id: string): Promise<
       child = new Deno.Command(executable, {
         args,
         cwd: target.cwd,
-        ...(vm ? { clearEnv: true, env: { ...vm.env, ...terminalEnv } } : {}),
+        clearEnv: true,
+        env: vm
+          ? { ...vm.env, ...terminalEnv }
+          : applyEnvironmentChanges(Deno.env.toObject(), target.environment),
         stdin: "inherit",
         stdout: "inherit",
         stderr: "inherit",
