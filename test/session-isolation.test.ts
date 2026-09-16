@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,7 +15,12 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   const state = mkdtempSync(join(tmpdir(), "loom-isolation-"));
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", state);
-  const calls: Array<{ id: string; mode: "vm" | "local"; operation: "create" | "resume" }> = [];
+  const calls: Array<{
+    id: string;
+    mode: "vm" | "local";
+    operation: "create" | "resume";
+    cwd: string;
+  }> = [];
   const instances = new Map<string, FakeProvider>();
   const builds: string[] = [];
   const connectors: ConnectorManifest = {
@@ -43,11 +48,11 @@ test("VM and local sessions share a provider, keep modes across restart, and for
           capabilities: fake.capabilities,
           listPersistedSessions: () => fake.listPersistedSessions(),
           createSession: (opts) => {
-            calls.push({ id: opts.sessionId, mode, operation: "create" });
+            calls.push({ id: opts.sessionId, mode, operation: "create", cwd: opts.cwd });
             return ready(opts.sessionId, fake.createSession(opts));
           },
           resumeSession: (opts) => {
-            calls.push({ id: opts.sessionId, mode, operation: "resume" });
+            calls.push({ id: opts.sessionId, mode, operation: "resume", cwd: opts.cwd });
             return ready(opts.sessionId, fake.resumeSession(opts));
           },
         };
@@ -126,15 +131,22 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     const inherited = await c.request<SessionSnapshot>("session.fork", { id: vm.id });
     assert.equal(inherited.isolation, "vm");
     await idle(inherited);
-    await assert.rejects(
-      c.request("session.create", {
-        prompt: "bad",
-        provider: "claude",
-        isolation: "vm",
-        worktree: false,
-      }),
-      /requires a worktree/,
-    );
+    const inPlace = await c.request<SessionSnapshot>("session.create", {
+      prompt: "VM in the existing checkout",
+      provider: "claude",
+      isolation: "vm",
+      worktree: false,
+    });
+    assert.equal(inPlace.isolation, "vm");
+    assert.equal(inPlace.inPlace, true);
+    assert.equal(inPlace.worktree, null);
+    assert.equal(inPlace.branch, null);
+    assert.equal(calls.find((x) => x.id === inPlace.id)?.cwd, h.repoRoot);
+    await idle(inPlace);
+    const scratch = join(h.repoRoot, "keep-in-place.txt");
+    writeFileSync(scratch, "uncommitted work");
+    await c.request("session.markDone", { id: inPlace.id });
+    assert.equal(readFileSync(scratch, "utf8"), "uncommitted work");
     await assert.rejects(
       c.request("session.create", { prompt: "bad", provider: "claude", isolation: "other" }),
       /invalid parameters/,
@@ -150,11 +162,15 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
     assert.equal(h.daemon.registry.get(inherited.id)?.isolation, "vm");
     assert.equal(h.daemon.registry.get(local2.id)?.isolation, "local");
-    for (const s of [vm, local]) {
+    for (const s of [vm, local, inPlace]) {
       const resumed = await c.request<SessionSnapshot>("session.resume", { id: s.id });
       assert.equal(resumed.isolation, s.isolation);
       assert.equal(calls.filter((x) => x.id === s.id).at(-1)?.mode, s.isolation);
     }
+    assert.equal(calls.filter((x) => x.id === inPlace.id).at(-1)?.cwd, h.repoRoot);
+    await c.request("session.remove", { id: inPlace.id, deleteBranch: true });
+    assert.ok(existsSync(join(h.repoRoot, ".git")));
+    assert.equal(readFileSync(scratch, "utf8"), "uncommitted work");
     const newDefault = await c.request<SessionSnapshot>("session.create", {
       prompt: "now local",
       provider: "claude",

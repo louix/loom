@@ -254,3 +254,12 @@ network presets and exact extra hosts on HTTPS port 443. Host Codex sessions kee
 network access disabled. Changing package installation from environment preparation
 to an init hook does not itself fix networking; it installs dependencies in the
 conversation's worktree.
+
+## VM execution without a worktree
+
+VM execution and Git worktrees are independent. `loom run --isolation vm --in-place`
+runs inside a session VM with the existing repository checkout as its working
+directory. Use worktrees when sessions need separate working copies and branches.
+In-place sessions share files and Git state; archiving or deleting one preserves
+the checkout, including uncommitted changes. VM profiles and history remain private
+per session. Bare repositories still require a worktree.

@@ -1126,11 +1126,6 @@ export class Daemon {
       );
     }
     const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
-    if (isolation === "vm" && !o.wantWorktree)
-      throw new RpcError(
-        "bad_request",
-        "VM isolation requires a worktree. Enable worktrees or choose Local.",
-      );
     await this.#preflightTools(o.providerId, isolation);
     const id = randomUUID();
     this.#log.info("session_start", { sessionId: id, providerId: o.providerId });
@@ -1809,7 +1804,6 @@ export class Daemon {
     ) {
       const savedVm = existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "aisdk"));
       const vm = row.isolation === "vm";
-      if (vm && row.inPlace) return "VM isolation requires a worktree. Fork to continue.";
       if (savedVm !== vm)
         return "This session used a different isolation mode. Fork to continue with the current policy.";
     }
@@ -1825,20 +1819,12 @@ export class Daemon {
         !existsSync(join(sessionVmDirectory(this.repoRoot, row.id), "profile/sessions"))
       )
         return "No saved Codex VM history. Fork to continue.";
-      if (vm && row.inPlace) return "VM isolation requires a worktree. Fork to continue.";
       if (savedVm !== vm)
         return "This session used a different isolation mode. Fork to continue with the current policy.";
     }
     if (isClaudeId(row.provider)) {
       const ref = this.#registry.store.providerRef(row.id);
-      if (ref)
-        return vmResumeBlockedReason(
-          this.repoRoot,
-          row.id,
-          ref,
-          row.inPlace,
-          row.isolation === "vm",
-        );
+      if (ref) return vmResumeBlockedReason(this.repoRoot, row.id, ref, row.isolation === "vm");
     }
     return undefined;
   }

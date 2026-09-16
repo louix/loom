@@ -89,11 +89,9 @@ export const vmResumeBlockedReason = (
   repo: string,
   id: string,
   ref: string,
-  inPlace: boolean,
   vm: boolean,
 ): string | undefined => {
   const profile = join(sessionVmDirectory(repo, id), "profile");
-  if (vm && inPlace) return "VM isolation requires a worktree. Fork to continue.";
   const savedVm =
     /^[0-9a-f-]{36}$/i.test(ref) &&
     existsSync(join(profile, "projects/loom-session", `${ref}.jsonl`));

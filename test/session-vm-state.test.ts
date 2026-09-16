@@ -19,14 +19,13 @@ test("VM resume preflight blocks both isolation changes without touching history
   Deno.env.set("XDG_STATE_HOME", root);
   try {
     const ref = "12345678-1234-1234-1234-123456789abc";
-    assert.equal(vmResumeBlockedReason(root, "host", ref, false, false), undefined);
-    assert.match(vmResumeBlockedReason(root, "host", ref, false, true)!, /Fork/);
-    assert.match(vmResumeBlockedReason(root, "host", ref, true, true)!, /worktree/);
+    assert.equal(vmResumeBlockedReason(root, "host", ref, false), undefined);
+    assert.match(vmResumeBlockedReason(root, "host", ref, true)!, /Fork/);
     const dir = join(sessionVmDirectory(root, "guest"), "profile/projects/loom-session");
     await Deno.mkdir(dir, { recursive: true });
     await Deno.writeTextFile(join(dir, `${ref}.jsonl`), "history");
-    assert.equal(vmResumeBlockedReason(root, "guest", ref, false, true), undefined);
-    assert.match(vmResumeBlockedReason(root, "guest", ref, false, false)!, /without VM/);
+    assert.equal(vmResumeBlockedReason(root, "guest", ref, true), undefined);
+    assert.match(vmResumeBlockedReason(root, "guest", ref, false)!, /without VM/);
     assert.equal(await Deno.readTextFile(join(dir, `${ref}.jsonl`)), "history");
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
