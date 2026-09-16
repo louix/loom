@@ -310,6 +310,18 @@ const main = async (): Promise<void> => {
       includeEventLogInEditor: loadConfig(logRoot).tui.includeEventLogInEditor,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
+      openShell: async (id) => {
+        const { openSessionShell } = await import("./shell.ts");
+        const { stdin } = await import("node:process");
+        // Ink detaches its key listener; pause the stream too so Deno releases
+        // the terminal reader while the shell owns foreground input.
+        stdin.pause();
+        try {
+          return await openSessionShell(client, id);
+        } finally {
+          stdin.resume();
+        }
+      },
       checkEnvironment: async () => {
         const { repoEnvironmentWarning } = await import("./environment.ts");
         return repoEnvironmentWarning(logRoot);

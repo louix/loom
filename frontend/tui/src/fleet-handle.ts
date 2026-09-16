@@ -276,6 +276,7 @@ export interface MkFleetHandleInput {
   readonly themeState?: string;
   /** Include the event log as a second file when editing a prompt. Default false. */
   readonly includeEventLogInEditor?: boolean;
+  readonly openShell?: (id: string) => Promise<number>;
   readonly prepareEnvironment?: () => Promise<number>;
   readonly environmentWarning?: string | null;
   readonly checkEnvironment?: () => Promise<string | null>;
@@ -476,6 +477,7 @@ export const mkFleetHandle = ({
   logs,
   themeState,
   includeEventLogInEditor = false,
+  openShell,
   prepareEnvironment,
   environmentWarning: initialEnvironmentWarning,
   checkEnvironment,
@@ -769,6 +771,26 @@ export const mkFleetHandle = ({
     return saved;
   };
 
+  let shellOpen = false;
+  const enterShell = async (id: string) => {
+    if (shellOpen) return;
+    if (!openShell) return note("Shell access is unavailable in this client", "bad");
+    shellOpen = true;
+    try {
+      let code = 0;
+      await term.suspendTerminal(async () => {
+        if (term.isTTY) term.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
+        code = await openShell(id);
+      });
+      if (code !== 0) note(`Shell exited with status ${code}`, "bad");
+    } catch (error) {
+      note(error instanceof Error ? error.message : String(error), "bad");
+    } finally {
+      shellOpen = false;
+      if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+    }
+  };
+
   let preparingRepo = false;
   const prepareRepo = async () => {
     if (preparingRepo) return;
@@ -1005,6 +1027,7 @@ export const mkFleetHandle = ({
     if (name === "help") return void show(state.overlay.t === "help" ? browse : { t: "help" });
     if (name === "quit") return quitTui();
     if (!s) return;
+    if (name === "shell") return void enterShell(s.id);
     if (name === "undo") {
       const sid = s.id;
       client
@@ -1842,6 +1865,7 @@ export const mkFleetHandle = ({
 
   // ---- keymap -----------------------------------------------
   const handleKey = (input: string, key: Key): void => {
+    if (shellOpen) return;
     if (!connected()) {
       if (input === "q" || (key.ctrl && input === "c")) quitTui();
       return;

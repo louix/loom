@@ -36,6 +36,7 @@ const sessionCommands = {
   title: ["e", "rename"],
   comment: ["", "add comment"],
   delete: ["X", "delete"],
+  shell: ["s", "open shell"],
   copybranch: ["y", "copy branch"],
   clearqueue: ["⌥x", "clear the queued messages"],
 } as const;

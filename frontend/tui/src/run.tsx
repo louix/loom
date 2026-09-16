@@ -29,6 +29,7 @@ export const runTui = async (
     logs?: { daemon: string; tui: string };
     themeState?: string;
     includeEventLogInEditor?: boolean;
+    openShell?: (id: string) => Promise<number>;
     prepareEnvironment?: () => Promise<number>;
     checkEnvironment?: () => Promise<string | null>;
   } = {},
@@ -50,6 +51,7 @@ export const runTui = async (
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
+        {...(opts.openShell ? { openShell: opts.openShell } : {})}
         {...(opts.prepareEnvironment ? { prepareEnvironment: opts.prepareEnvironment } : {})}
       />,
       {

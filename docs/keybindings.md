@@ -69,6 +69,11 @@ you can see what you type.
 | `c` | compact the context window (offered once the meter passes half)                                                                                                                                                          |
 | `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                             |
 
+Press `s` in browse mode to open a shell in the selected session's repository or
+worktree, inside its VM when applicable. Exit or Ctrl-D returns to the same Loom
+view. Ctrl-C belongs to the shell while it is open. You can also run
+`loom shell <session>` from another terminal.
+
 ### Second tier (palette + `?` only)
 
 | key  | action                                                                                                       |
@@ -81,6 +86,7 @@ you can see what you type.
 | —    | gc — repair sweep for a done session whose worktree removal failed at archive time; branches and rows kept   |
 | `e`  | rename the session                                                                                           |
 | —    | add / edit a comment — a user-authored note on the session, meta, not part of the event log (palette only)   |
+| `s`  | open an interactive shell in the session's environment; exit to return                                       |
 | `y`  | copy the session's branch name to the clipboard                                                              |
 | `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
 | `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |

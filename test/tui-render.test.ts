@@ -3522,3 +3522,67 @@ for (const includeEventLogInEditor of [undefined, false, true]) {
     }
   });
 }
+
+test("s hands off the selected session and restores the TUI after shell exit or failure", async () => {
+  for (const outcome of [0, 7, new Error("VM is not running")]) {
+    const fake = mkFakeClient();
+    const steps: string[] = [];
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const handle = mkFleetHandle({
+      client: fake.client,
+      term: {
+        ...fakeTerm,
+        write: (text) => steps.push(text),
+        exit: () => steps.push("quit"),
+        suspendTerminal: async (fn) => {
+          steps.push("suspend");
+          try {
+            await fn();
+          } finally {
+            steps.push("restore");
+          }
+        },
+      },
+      openShell: async (id) => {
+        steps.push("shell:" + id);
+        await gate;
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+    });
+    const stop = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ inPlace: true })));
+      handle.handleKey("", { return: true } as Key);
+      handle.handleKey("s", {} as Key);
+      const prompt = handle.getView().ui.overlay;
+      assert.equal(prompt.t, "prompt");
+      if (prompt.t === "prompt") assert.equal(prompt.prompt.buffer.text, "s");
+      assert.deepEqual(steps, [], "s is ordinary text while composing");
+      handle.handleKey("", { escape: true } as Key);
+      const before = handle.getView();
+      handle.handleKey("s", {} as Key);
+      handle.handleKey("s", {} as Key);
+      handle.handleKey("c", { ctrl: true } as Key);
+      assert.deepEqual(steps, ["suspend", "\x1b[?1006l\x1b[?1000l\x1b[?2004l", "shell:a"]);
+      finish();
+      await delay(0);
+      assert.deepEqual(steps.slice(-2), ["restore", "\x1b[?2004h\x1b[?1000h\x1b[?1006h"]);
+      assert.equal(handle.getView().sel?.id, before.sel?.id);
+      assert.equal(handle.getView().layoutView, before.layoutView);
+      assert.equal(handle.getView().ui.overlay.t, "browse");
+      if (outcome !== 0)
+        assert.match(handle.getView().ui.notice?.text ?? "", /status 7|VM is not running/);
+      handle.handleKey("", { return: true } as Key);
+      const restored = handle.getView().ui.overlay;
+      assert.equal(restored.t, "prompt");
+      if (restored.t === "prompt") assert.equal(restored.prompt.buffer.text, "s");
+    } finally {
+      finish();
+      stop();
+    }
+  }
+});

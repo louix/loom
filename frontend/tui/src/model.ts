@@ -1287,6 +1287,13 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
       return [...local, ...GLOBAL_HINTS];
     }
 
+    const shellHints =
+      status.kind !== "starting" &&
+      (session.inPlace || session.worktree) &&
+      !(session.isolation === "vm" && status.kind === "done")
+        ? [commandHint("shell")]
+        : [];
+
     // Request mode — the turn is parked on a decision. Offer only the keys that
     // resolve it (plus interrupt); mode / model / rename / undo / fork are all
     // noise while the agent is blocked, so they're dropped from both the
@@ -1307,7 +1314,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
         local.push(commandHint("deny", { footer: true }));
       }
       local.push(commandHint("interrupt", { footer: true }));
-      return [...local, ...GLOBAL_HINTS];
+      return [...local, ...shellHints, ...GLOBAL_HINTS];
     }
 
     if (
@@ -1351,6 +1358,7 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     if (status.kind === "idle" || status.kind === "error" || status.kind === "interrupted") {
       local.push(commandHint("done", { footer: true }));
     }
+    local.push(...shellHints);
     // Second tier — palette / help only (see the grammar note at the top of the
     // file). `⇧⇥` cycles the permission mode, `⌥m` its rarer sibling the model;
     // both also work inside a prompt, so you can re-mode / re-model mid-message.

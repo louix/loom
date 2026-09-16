@@ -42,12 +42,13 @@ export const openSessionShell = async (client: LoomClient, id: string): Promise<
     // Strip terminal control bytes from workspace paths before displaying them.
     // eslint-disable-next-line no-control-regex
     const clean = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, "?");
-    console.log(
-      `Session ${id.slice(0, 8)} · ${
-        target.isolation === "vm" ? "VM" : "Local"
-      } · ${clean(target.cwd)}`,
+    Deno.stdout.writeSync(
+      new TextEncoder().encode(
+        `Session ${id.slice(0, 8)} · ${
+          target.isolation === "vm" ? "VM" : "Local"
+        } · ${clean(target.cwd)}\nExit this shell to return to Loom.\n\n`,
+      ),
     );
-    console.log("Exit this shell to return to Loom.\n");
     const terminalEnv = Object.fromEntries(
       ["TERM", "COLORTERM"].flatMap((key) => {
         const value = Deno.env.get(key);

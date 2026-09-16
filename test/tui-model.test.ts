@@ -3008,3 +3008,19 @@ for (const action of ["remove", "archive"] as const) {
     );
   });
 }
+
+test("shell access follows workspace availability and stays available while an agent awaits input", () => {
+  for (const isolation of ["local", "vm"] as const) {
+    for (const workspace of [{ inPlace: true }, { worktree: "/repo/worktree" }]) {
+      assert(allowedActs(snap({ status: "idle", isolation, ...workspace })).has("shell"));
+      assert(
+        allowedActs(
+          snap({ status: "awaiting_input", awaitReason: "permission", isolation, ...workspace }),
+        ).has("shell"),
+      );
+      assert(!allowedActs(snap({ status: "starting", isolation, ...workspace })).has("shell"));
+    }
+  }
+  assert(!allowedActs(snap({ status: "done", isolation: "vm", inPlace: true })).has("shell"));
+  assert(!allowedActs(snap({ status: "idle", inPlace: false, worktree: null })).has("shell"));
+});

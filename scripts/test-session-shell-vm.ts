@@ -16,7 +16,8 @@ import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { vmShellCommand } from "../runtime/src/session-vm/shell.ts";
 
 const [artifact, smolvm] = Deno.args;
-assert(artifact && smolvm, "Pass SESSION_RUNTIME SMOLVM");
+const localOnly = Deno.args.includes("--local");
+assert(localOnly || (artifact && smolvm), "Pass SESSION_RUNTIME SMOLVM (or --local)");
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 const scriptPath = (Deno.env.get("PATH") ?? "")
   .split(":")
@@ -29,7 +30,12 @@ const scriptPath = (Deno.env.get("PATH") ?? "")
     }
   });
 assert(scriptPath, "util-linux script is required");
-const terminal = async (command: string[], cwd: string, env?: Record<string, string>) => {
+const terminal = async (
+  command: string[],
+  cwd: string,
+  env?: Record<string, string>,
+  tui = false,
+) => {
   const p = new Deno.Command(scriptPath, {
     args: ["-q", "-e", "-c", command.map(quote).join(" "), "/dev/null"],
     ...(env ? { env } : {}),
@@ -62,6 +68,10 @@ const terminal = async (command: string[], cwd: string, env?: Record<string, str
     }
   };
   try {
+    if (tui) {
+      await waitFor("more");
+      await send("s");
+    }
     while (!/[$#>] $/m.test(output)) {
       if (expired || exited) throw new Error("Shell prompt missing: " + output);
       await delay(20);
@@ -77,8 +87,13 @@ const terminal = async (command: string[], cwd: string, env?: Record<string, str
     await delay(200);
     await send("\x03");
     await delay(100);
+    output = "";
     await send("printf 'LOOM_%s\\n' SURVIVED\nexit 0\n");
     await waitFor("LOOM_SURVIVED");
+    if (tui) {
+      await waitFor("\x1b[?1049h");
+      await send("q");
+    }
     assert.equal((await p.status).code, 0, output);
     await drains;
   } finally {
@@ -126,6 +141,21 @@ try {
       s.worktree ?? h.repoRoot,
       { SHELL: "bash" },
     );
+    await terminal(
+      [
+        Deno.execPath(),
+        "run",
+        "-A",
+        fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
+        "--repo",
+        h.repoRoot,
+        "tui",
+      ],
+      s.worktree ?? h.repoRoot,
+      { SHELL: "bash", TERM: "xterm-256color" },
+      true,
+    );
+    console.log("TUI shell passed:", worktree ? "worktree" : "in-place");
     await client.request("session.markDone", { id: s.id });
     console.log("Local shell passed:", worktree ? "worktree" : "in-place");
   }
@@ -134,6 +164,8 @@ try {
   await h.cleanup();
 }
 
+if (localOnly) Deno.exit(0);
+assert(artifact && smolvm);
 const f = await gitFixture();
 try {
   for (const workspace of [f.repo, f.workspace]) {

@@ -49,6 +49,7 @@ export const App = ({
   logs,
   themeState,
   includeEventLogInEditor = false,
+  openShell,
   prepareEnvironment,
   environmentWarning,
   checkEnvironment,
@@ -62,6 +63,7 @@ export const App = ({
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
   includeEventLogInEditor?: boolean;
+  openShell?: (id: string) => Promise<number>;
   prepareEnvironment?: () => Promise<number>;
   environmentWarning?: string | null;
   checkEnvironment?: () => Promise<string | null>;
@@ -88,6 +90,7 @@ export const App = ({
       },
       includeEventLogInEditor,
       ...(logs ? { logs } : {}),
+      ...(openShell ? { openShell } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),
       ...(environmentWarning ? { environmentWarning } : {}),
       ...(checkEnvironment ? { checkEnvironment } : {}),
