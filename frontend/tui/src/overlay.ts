@@ -187,7 +187,7 @@ export interface PickItem {
 }
 
 /** Which list the picker is showing. */
-export type PickerStep = "provider" | "model" | "effort" | "undo" | "command";
+export type PickerStep = "provider" | "model" | "effort" | "undo" | "command" | "repository";
 
 /**
  * What the picker is choosing *for*: where a pick lands, and what to put back
@@ -207,7 +207,8 @@ export type PickerDest =
   /** `u` — rewind to a turn on this session. */
   | { t: "undo"; sessionId: string }
   /** The command palette; it resolves in the keymap, not here. */
-  | { t: "command" };
+  | { t: "command" }
+  | { t: "repository" };
 
 export interface Picker {
   step: PickerStep;

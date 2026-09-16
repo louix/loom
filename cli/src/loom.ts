@@ -12,6 +12,7 @@ import type { DaemonSnapshot, ModelUsage, PushFrame, SessionSnapshot } from "@lo
 import type { HarnessEvent } from "@loom/core/events";
 import { isLiveState, sessionStateLabel } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
+import { availableRepositories, rememberRepository } from "./recent-repositories.ts";
 
 const HELP = `loom ${LOOM_VERSION} — control the per-repo agent daemon
 
@@ -221,15 +222,35 @@ const main = async (): Promise<void> => {
     return;
   }
 
-  const repoRoot = (() => {
+  const handoff = wantTui ? Deno.env.get("LOOM_TUI_HANDOFF") : undefined;
+  // Do not pass the launcher's return channel to daemons, shells, or session workers.
+  Deno.env.delete("LOOM_TUI_HANDOFF");
+  if (wantTui && !Deno.env.get("NODE_ENV")) Deno.env.set("NODE_ENV", "production");
+  const repoRoot = await (async () => {
     try {
       return findRepoRoot(values.repo);
     } catch (error) {
       if (cmd === "runtime" && !values.repo) return Deno.cwd();
+      if (wantTui && !values.repo) {
+        const { pickRepository } = await import("@loom/tui/run");
+        return pickRepository(availableRepositories());
+      }
       throw error;
     }
   })();
-  await relaunchForIpc(fileURLToPath(import.meta.url), loomPaths(repoRoot).sock);
+  if (repoRoot === null) return;
+  if (wantTui && !handoff) {
+    const { launchRepositoryTui } = await import("./tui-launcher.ts");
+    const { stdin } = await import("node:process");
+    stdin.pause();
+    Deno.exitCode = await launchRepositoryTui(fileURLToPath(import.meta.url), repoRoot);
+    return;
+  }
+  await relaunchForIpc(
+    fileURLToPath(import.meta.url),
+    loomPaths(repoRoot).sock,
+    wantTui ? ["--repo", repoRoot, "tui"] : Deno.args,
+  );
   const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
   scaffoldUserConfig();
   if (cmd === "environment") {
@@ -306,7 +327,9 @@ const main = async (): Promise<void> => {
 
     const { runTui } = await import("@loom/tui/run");
     const { loadConfig } = await import("@loom/daemon/config/config");
-    await runTui(client, {
+    rememberRepository(logRoot);
+    const nextRepository = await runTui(client, {
+      repositories: availableRepositories,
       includeEventLogInEditor: loadConfig(logRoot).tui.includeEventLogInEditor,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
@@ -331,6 +354,7 @@ const main = async (): Promise<void> => {
         return prepareEnvironmentInTerminal(fileURLToPath(import.meta.url), logRoot);
       },
     });
+    if (nextRepository && handoff) writeFileSync(handoff, nextRepository);
     return;
   }
 

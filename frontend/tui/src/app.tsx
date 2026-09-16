@@ -51,6 +51,8 @@ export const App = ({
   includeEventLogInEditor = false,
   openShell,
   prepareEnvironment,
+  repositories,
+  switchRepository,
   environmentWarning,
   checkEnvironment,
   /** Test seam: override the real `$EDITOR` handoff. */
@@ -65,6 +67,8 @@ export const App = ({
   includeEventLogInEditor?: boolean;
   openShell?: (id: string) => Promise<number>;
   prepareEnvironment?: () => Promise<number>;
+  repositories?: () => string[];
+  switchRepository?: (path: string) => void;
   environmentWarning?: string | null;
   checkEnvironment?: () => Promise<string | null>;
   openEditor?: EditorHandoff;
@@ -92,6 +96,8 @@ export const App = ({
       ...(logs ? { logs } : {}),
       ...(openShell ? { openShell } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),
+      ...(repositories ? { repositories } : {}),
+      ...(switchRepository ? { switchRepository } : {}),
       ...(environmentWarning ? { environmentWarning } : {}),
       ...(checkEnvironment ? { checkEnvironment } : {}),
       ...(themeState ? { themeState } : {}),

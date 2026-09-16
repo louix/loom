@@ -1446,6 +1446,7 @@ export const commandHints = (s: TuiState & { outbox?: Outboxes }): KeyHint[] => 
   const extra: ActName[] = [
     "doctor",
     "prepareEnvironment",
+    "switchRepository",
     "viewlog",
     "logs",
     "filter",

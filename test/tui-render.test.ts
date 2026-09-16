@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
+import { RepositoryMenu } from "@loom/tui/run";
 import type { ClientState } from "@loom/client";
 import { loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import { stateAwaitingInput, stateIdle, stateRunning } from "@loom/core/session-state";
@@ -3583,6 +3584,86 @@ test("s hands off the selected session and restores the TUI after shell exit or 
     } finally {
       finish();
       stop();
+    }
+  }
+});
+
+test("repository palette filters full paths, cancels, and switches without stopping sessions", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(snap({ title: "running task", status: "running" })));
+  const switched: string[] = [];
+  const { stdout, stdin, app } = mount(fake.client, {
+    repositories: () => ["/work/one/project", "/work/two/project"],
+    switchRepository: (path) => switched.push(path),
+  });
+  const feed = async (input: string) => {
+    stdin.feed(input);
+    await delay(30);
+    await app.waitUntilRenderFlush();
+  };
+  const open = async () => {
+    await feed(" ");
+    await feed("switch repository");
+    await feed("\r");
+  };
+  try {
+    await delay(40);
+    await open();
+    assert.match(stdout.last, /SWITCH REPOSITORY/);
+    await feed(ESC);
+    assert.deepEqual(switched, []);
+    assert.match(stdout.last, /running task/);
+    await open();
+    await feed("/two/");
+    await feed("\r");
+    assert.deepEqual(switched, ["/work/two/project"]);
+    assert.ok(
+      !fake.calls.some((call) => ["daemon.stop", "session.interrupt"].includes(call.method)),
+    );
+  } finally {
+    app.unmount();
+  }
+});
+
+test("startup repository menu selects and cancels without a daemon", async () => {
+  for (const repositories of [[], ["/work/one", "/work/two"]]) {
+    const stdout = new FakeOut();
+    const stdin = new FakeIn();
+    const results: Array<string | null> = [];
+    const app = render(
+      createElement(RepositoryMenu, {
+        repositories,
+        onDone: (path) => results.push(path),
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        debug: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+    const feed = async (input: string) => {
+      stdin.feed(input);
+      await delay(30);
+      await app.waitUntilRenderFlush();
+    };
+    try {
+      await delay(40);
+      assert.match(stdout.last, /SWITCH REPOSITORY/);
+      if (repositories.length) {
+        await feed("\x1b[B");
+        await feed("\r");
+        assert.deepEqual(results, ["/work/two"]);
+      } else {
+        assert.match(stdout.last, /No recent repositories/);
+        await feed("\r");
+        assert.deepEqual(results, []);
+      }
+      await feed(ESC);
+      assert.equal(results.at(-1), null);
+    } finally {
+      app.unmount();
     }
   }
 });

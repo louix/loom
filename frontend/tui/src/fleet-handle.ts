@@ -1,3 +1,4 @@
+import { repositoryPicker } from "./repositories.ts";
 import { bindCommand, keyCommand } from "./commands.ts";
 import { helpLines } from "./help.ts";
 /**
@@ -278,6 +279,8 @@ export interface MkFleetHandleInput {
   readonly includeEventLogInEditor?: boolean;
   readonly openShell?: (id: string) => Promise<number>;
   readonly prepareEnvironment?: () => Promise<number>;
+  readonly repositories?: () => string[];
+  readonly switchRepository?: (path: string) => void;
   readonly environmentWarning?: string | null;
   readonly checkEnvironment?: () => Promise<string | null>;
   /** Test seam: stands in for the real `$EDITOR` handoff. */
@@ -479,6 +482,8 @@ export const mkFleetHandle = ({
   includeEventLogInEditor = false,
   openShell,
   prepareEnvironment,
+  repositories,
+  switchRepository,
   environmentWarning: initialEnvironmentWarning,
   checkEnvironment,
   openEditorOverride,
@@ -937,6 +942,16 @@ export const mkFleetHandle = ({
         return void viewLogs();
       case "doctor":
         return void openDoctor();
+      case "switchRepository":
+        if (!repositories || !switchRepository)
+          return void note("Repository switching is unavailable", "bad");
+        return void show({
+          t: "picker",
+          picker: repositoryPicker(
+            repositories(),
+            state.fleet.tag === "data" ? state.fleet.value.daemon.repoRoot : undefined,
+          ),
+        });
       case "prepareEnvironment":
         return void prepareRepo();
       case "model":
@@ -1341,6 +1356,13 @@ export const mkFleetHandle = ({
     overlayActed = p;
     const cur = pickerCurrent(p);
     const dest = p.dest;
+    if (p.step === "repository") {
+      if (!cur) return;
+      show(browse);
+      if (state.fleet.tag === "data" && cur.id === state.fleet.value.daemon.repoRoot) return;
+      switchRepository?.(cur.id);
+      return;
+    }
     if (p.step !== "undo" && p.step !== "command") {
       const result = selectModel(state, p);
       switch (result.tag) {

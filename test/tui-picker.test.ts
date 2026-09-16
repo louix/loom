@@ -46,3 +46,22 @@ test("picker rows stay on one line within narrow terminals", () => {
   assert.ok(output.includes("…"), output);
   assert.equal(rows.length, draw(40, "short", "key").split("\n").length);
 });
+
+test("repository picker filters full paths and explains an empty history", async () => {
+  const { repositoryPicker } = await import("../frontend/tui/src/repositories.ts");
+  const { pickerVisible } = await import("@loom/tui/overlay");
+  const { buffer } = await import("@loom/tui/editor");
+  const picker = repositoryPicker(["/work/one/project", "/work/two/project"], "/work/one/project");
+  assert.match(picker.items[0]!.hint!, /current/);
+  picker.filter = buffer("/two/");
+  assert.equal(pickerVisible(picker)[0]?.id, "/work/two/project");
+  assert.equal(pickerVisible(picker).length, 1);
+  const empty = renderToString(
+    createElement(Picker, {
+      picker: repositoryPicker([]),
+      width: 100,
+      height: 20,
+    }),
+  );
+  assert.match(empty, /No recent repositories/);
+});

@@ -15,10 +15,24 @@ export const ipcPermissions = (socket: string): string[] => {
   ];
 };
 /** CLI wrappers start without network. Re-exec once the repository/socket is known. */
-export const relaunchForIpc = async (entry: string, socket: string): Promise<void> => {
+export const relaunchForIpc = async (
+  entry: string,
+  socket: string,
+  cliArgs: string[] = Deno.args,
+): Promise<void> => {
   const exact = await Deno.permissions.query({ name: "net", host: `unix:${resolve(socket)}` });
   const broad = await Deno.permissions.query({ name: "net" });
   if (exact.state === "granted" && broad.state !== "granted") return;
+  Deno.exit(await runWithIpc(entry, socket, cliArgs));
+};
+
+/** Run one client with scoped IPC, forwarding signals while it owns the terminal. */
+export const runWithIpc = async (
+  entry: string,
+  socket: string,
+  cliArgs: string[],
+  env: Record<string, string> = {},
+): Promise<number> => {
   const args = [
     "run",
     "--cached-only",
@@ -26,7 +40,7 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
     "--node-modules-dir=manual",
     ...ipcPermissions(socket),
     entry,
-    ...Deno.args,
+    ...cliArgs,
   ];
   // Reopen the inherited terminal before starting permission-scoped Deno.
   // This gives stdin independent file flags from stdout even when /dev/pts
@@ -36,6 +50,7 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
     args: reopenStdin
       ? ["-c", 'exec "$@" < /proc/self/fd/0', "loom-ipc", Deno.execPath(), ...args]
       : args,
+    env,
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -51,7 +66,7 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
   Deno.addSignalListener("SIGINT", interrupt);
   Deno.addSignalListener("SIGQUIT", interrupt);
   try {
-    Deno.exit((await child.status).code);
+    return (await child.status).code;
   } finally {
     Deno.removeSignalListener("SIGTERM", terminate);
     Deno.removeSignalListener("SIGINT", interrupt);

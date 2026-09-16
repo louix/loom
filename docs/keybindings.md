@@ -9,6 +9,12 @@ with live output in the terminal. It refreshes the base for future sessions and
 does not require a selected session. Press Enter after completion to return;
 Ctrl-C cancels preparation and returns after cleanup.
 
+**Switch repository** opens a searchable list of recently opened repositories.
+Type to filter by name or path, use ↑/↓ and Enter to open one, or Escape to
+return. Sessions keep running in the previous repository. The same picker opens
+when you launch `loom` outside a Git repository. Open a repository once with
+`loom --repo <path>` to add it to the list.
+
 ## The grammar
 
 | modifier        | means                                                                                                                              |
