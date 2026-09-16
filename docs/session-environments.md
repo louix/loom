@@ -263,3 +263,22 @@ directory. Use worktrees when sessions need separate working copies and branches
 In-place sessions share files and Git state; archiving or deleting one preserves
 the checkout, including uncommitted changes. VM profiles and history remain private
 per session. Bare repositories still require a worktree.
+
+## Session shells
+
+Run `loom shell <session>` (a short session ID works) to open an interactive shell
+in the session's repository or worktree. Local sessions use `$SHELL`; VM sessions
+enter their running VM with its activated tools and environment. Exit the shell
+to return to your terminal. The agent can keep working while the shell is open.
+
+The VM must already be running; this command does not start or resume a session.
+VMs started before shell support need to be archived and resumed first. While a
+shell is open, archive, delete and provider changes are blocked, and automatic
+VM environment replacement waits for the shell to exit.
+
+On Linux, the credential-free terminal smoke check exercises both workspace
+layouts locally and in a real VM:
+
+```sh
+deno run -A scripts/test-session-shell-vm.ts /path/to/session-runtime /path/to/smolvm
+```

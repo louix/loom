@@ -47,6 +47,9 @@ let nextConnId = 1;
  * directions and a per-connection push subscription flag.
  */
 export class Connection {
+  readonly #abort = new AbortController();
+  /** Aborted on either local or remote disconnection. */
+  readonly signal = this.#abort.signal;
   readonly id: number = nextConnId++;
   readonly conn: FramedConn;
 
@@ -194,6 +197,7 @@ export class Connection {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#abort.abort();
     try {
       this.conn.close();
     } catch {
@@ -202,6 +206,7 @@ export class Connection {
   }
 
   #handleClose(): void {
+    this.#abort.abort();
     if (this.#closed) {
       this.#onClose(this);
       return;

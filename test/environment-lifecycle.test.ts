@@ -111,7 +111,11 @@ test("base updates wait for idle, preserve the session, and queue messages throu
       requestId: "permission",
       decision: "allow",
     });
+    const shell = await c.request<{ token: string }>("session.openShell", { id });
     old.finishTurn();
+    await delay(1100);
+    assert.equal(resumeCount, 0, "an open shell keeps the VM on its current image");
+    await c.request("session.closeShell", { token: shell.token });
     await waitFor(() => resumeCount === 1);
     assert(old.closed);
     assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status.kind, "starting");

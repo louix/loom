@@ -10,6 +10,7 @@ import type { SessionEnvironment } from "../../../core/src/session-environment.t
 import { runWorker } from "../worker/main.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup } from "./progress.ts";
+import { guestShellEnvironmentPath, shellEnvironment } from "./shell.ts";
 // Package caches outlive VM replacement; installed dependencies stay in the worktree.
 const cache = await Deno.readTextFile("/run/loom/private/cache-path").catch((error) => {
   if (error instanceof Deno.errors.NotFound) return "/storage/loom-cache";
@@ -151,6 +152,9 @@ if (preparationOnly) {
 } else
   await runWorker(async () => {
     await prepare();
+    await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
+      mode: 0o600,
+    });
     await Deno.mkdir("/etc/profile.d", { recursive: true });
     await Deno.writeTextFile(
       "/etc/profile.d/zz-loom-path.sh",

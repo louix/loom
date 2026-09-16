@@ -51,6 +51,8 @@ export const rpcParamsSchemas = {
   "daemon.doctor": empty,
   "session.list": empty,
   "session.get": session,
+  "session.openShell": session,
+  "session.closeShell": z.object({ token: text }),
   "session.history": session,
   "stats.models": z.object({ id: optionalText }),
   "session.messages": session,

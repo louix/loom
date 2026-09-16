@@ -82,6 +82,7 @@ import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
+import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager, type RebaseOutcome } from "./worktrees.ts";
@@ -239,6 +240,7 @@ export class Daemon {
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
   readonly #vmGenerations = new Map<string, string>();
+  readonly #shells = new SessionShells();
   #environmentPoll: NodeJS.Timeout | undefined;
   #checkingEnvironment = false;
   #onConfigChange = (): void => this.#reloadConfig();
@@ -2002,6 +2004,7 @@ export class Daemon {
         }
         if (
           generation === previous ||
+          this.#shells.has(id) ||
           this.#revivals.has(id) ||
           !this.#sessions.canRefresh(id) ||
           this.#hooks.isRunning(id)
@@ -2009,7 +2012,12 @@ export class Daemon {
           continue;
         const operation = this.#queue
           .run(id, async () => {
-            if (this.#stopping || !this.#sessions.canRefresh(id) || this.#hooks.isRunning(id))
+            if (
+              this.#stopping ||
+              this.#shells.has(id) ||
+              !this.#sessions.canRefresh(id) ||
+              this.#hooks.isRunning(id)
+            )
               return this.#registry.mustGet(id);
             const warm = this.#sessions.keepWarm(id);
             const stopped = this.#sessions.suspendIdle(id);
@@ -2245,6 +2253,20 @@ export class Daemon {
     d.register("daemon.doctor", () => this.#doctorReport());
 
     d.register("session.list", () => this.#enrichAll(this.#registry.listSorted()));
+
+    d.register("session.openShell", (params, { conn }) =>
+      this.#queue.run(params.id, async () => {
+        const session = this.#registry.get(params.id);
+        if (!session) throw new RpcError("not_found", `no such session: ${params.id}`);
+        if (this.#revivals.has(params.id)) throw new RpcError("busy", "The session is starting.");
+        return await this.#shells.open(this.repoRoot, session, conn);
+      }),
+    );
+    d.register("session.closeShell", (params, { conn }) => {
+      this.#shells.close(params.token, conn);
+      this.#publishState("all");
+      return {};
+    });
 
     d.register("session.get", (params) => {
       const id = params.id;
@@ -3022,6 +3044,7 @@ export class Daemon {
       // model / effort change arriving mid-swap applies to the new adapter
       // rather than to one that is being torn down.
       return this.#queue.run(id, async () => {
+        this.#shells.assertClosed(id);
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
         if (!this.#providers.has(provider)) {
@@ -3171,6 +3194,7 @@ export class Daemon {
       const id = params.id;
       const force = params.force === true;
       return this.#queue.run(id, async () => {
+        this.#shells.assertClosed(id);
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
         if (!force && row.worktree && this.#worktrees.isDirty(row.worktree)) {
@@ -3221,6 +3245,7 @@ export class Daemon {
       const alsoBranch = p["deleteBranch"] === true;
       const force = p["force"] === true;
       return this.#queue.run(id, async () => {
+        this.#shells.assertClosed(id);
         const s = this.#registry.get(id);
         if (!s) throw new RpcError("not_found", `no such session: ${id}`);
         // Removing a worktree with uncommitted / untracked changes discards that
@@ -3303,6 +3328,7 @@ export class Daemon {
           const s = this.#registry.get(t.id);
           if (!s?.worktree || !eligible(s.status.kind)) return;
           try {
+            this.#shells.assertClosed(s.id);
             // A `done` session was only interrupted, not closed — its provider
             // process is still registered with this worktree as its cwd. Close
             // it before pulling the directory out from under it.

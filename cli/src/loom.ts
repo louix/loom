@@ -22,6 +22,7 @@ commands:
   status                 daemon health and counts
   ls                     list sessions in fleet-view order
   get <id>               one session's snapshot
+  shell <id>             open an interactive shell in the session's workspace and environment
   history <id>           status history for a session
   providers              list configured providers
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
@@ -60,6 +61,13 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
+  shell: `loom shell <id>  — open a shell in the session's environment
+
+  Uses your shell locally, or a guest shell in the session's running VM.
+  Starts in the existing repo checkout or the session's worktree. Exit or Ctrl-D
+  returns to Loom; the agent keeps running. Commands are not sent to the agent.
+  The workspace must exist and a VM session must already be running.
+  --repo <path>                select the repository from any directory`,
   environment: `loom environment prepare | loom environment prune
 
   Build the configured environment in a disposable VM/worktree at committed HEAD,
@@ -322,6 +330,12 @@ const main = async (): Promise<void> => {
     }
 
     switch (cmd) {
+      case "shell": {
+        if (positionals.length !== 2 || values.json) throw new Error(USAGE.shell);
+        const { openSessionShell } = await import("./shell.ts");
+        Deno.exitCode = await openSessionShell(client, positionals[1]!);
+        break;
+      }
       case "status": {
         const s = await client.request("daemon.status");
         writeOut(JSON.stringify(s, null, 2) + "\n");
@@ -654,6 +668,7 @@ const main = async (): Promise<void> => {
 };
 
 const ID_CMDS = new Set([
+  "shell",
   "get",
   "history",
   "send",

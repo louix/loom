@@ -46,11 +46,15 @@ export const relaunchForIpc = async (entry: string, socket: string): Promise<voi
     } catch {}
   };
   Deno.addSignalListener("SIGTERM", terminate);
-  Deno.addSignalListener("SIGINT", terminate);
+  // Interactive children own Ctrl-C, including shells and editor handoffs.
+  const interrupt = Deno.stdin.isTerminal() ? () => {} : terminate;
+  Deno.addSignalListener("SIGINT", interrupt);
+  Deno.addSignalListener("SIGQUIT", interrupt);
   try {
     Deno.exit((await child.status).code);
   } finally {
     Deno.removeSignalListener("SIGTERM", terminate);
-    Deno.removeSignalListener("SIGINT", terminate);
+    Deno.removeSignalListener("SIGINT", interrupt);
+    Deno.removeSignalListener("SIGQUIT", interrupt);
   }
 };
