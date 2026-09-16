@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -33,7 +34,7 @@ const isFile = (path: string): boolean => {
   }
 };
 
-/** Inspect only the checkout root; never execute .envrc or infer a shell from default.nix. */
+/** Inspect the checkout root, or committed HEAD for a bare repo; never execute .envrc. */
 export const detectNixActivation = (
   cwd: string,
   settings: NixActivationSettings,
@@ -41,6 +42,22 @@ export const detectNixActivation = (
   if (!settings.autoActivate) return;
   for (const kind of ["flake", "shell"] as const)
     if (isFile(join(cwd, `${kind}.nix`))) return { kind, devShell: settings.devShell };
+  // Bare repo identity has no checkout. Read only tree metadata, so config loading,
+  // preparation preflight and session startup agree without materializing files.
+  const git = (args: string[]) =>
+    spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
+  const bare = git(["rev-parse", "--is-bare-repository"]);
+  if (bare.status !== 0 || bare.stdout.trim() !== "true") return;
+  const tree = git(["ls-tree", "-z", "HEAD", "--", "flake.nix", "shell.nix"]);
+  if (tree.status !== 0) return; // An unborn bare repository has no environment yet.
+  const files = new Set(
+    tree.stdout.split("\0").flatMap((entry) => {
+      const match = /^100(?:644|755) blob [0-9a-f]+\t(.+)$/.exec(entry);
+      return match ? [match[1]!] : [];
+    }),
+  );
+  for (const kind of ["flake", "shell"] as const)
+    if (files.has(`${kind}.nix`)) return { kind, devShell: settings.devShell };
 };
 
 export const shellQuote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
