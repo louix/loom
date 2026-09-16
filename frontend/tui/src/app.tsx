@@ -269,7 +269,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
             {view.environmentWarning}
           </Text>
           <Text color={C.warn} wrap="truncate">
-            Space → Prepare repo environment · loom environment prepare
+            Upgrade Loom or rebuild the configured runtime · loom runtime update
           </Text>
         </Box>
       )}

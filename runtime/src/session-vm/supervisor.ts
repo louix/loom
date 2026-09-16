@@ -169,6 +169,7 @@ try {
     join(binding.state, "egress.sock"),
     (host, allowed) => {
       network.push({ host, allowed });
+      if (!allowed) reportStartup("networkBlocked");
       if (network.length > 32) network.shift();
       status();
     },

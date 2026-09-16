@@ -18,7 +18,7 @@ let
     export LOOM_GUEST_CLAUDE=${pkgs.claude-code}/bin/claude
     export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     export NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE
-    export PATH=${pkgs.lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.curl pkgs.nix pkgs.git pkgs.gnutar pkgs.xz pkgs.deno pkgs.claude-code pkgs.codex ]}
+    export PATH=${pkgs.lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.curl pkgs.nix pkgs.devenv pkgs.git pkgs.gnutar pkgs.xz pkgs.deno pkgs.claude-code pkgs.codex ]}
     exec ${pkgs.deno}/bin/deno run -A --cached-only --node-modules-dir=manual \
       "$@"
   '';

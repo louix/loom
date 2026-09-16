@@ -2,7 +2,6 @@
 import { z } from "zod";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
-import { nixActivationSchema } from "../../../../core/src/nix-activation.ts";
 import {
   networkPresetsSchema,
   extraHostsSchema,
@@ -189,7 +188,12 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     session: preprocess(
       record,
       z.strictObject({
-        environment: z.strictObject({ nix: nixActivationSchema }).prefault({}),
+        auto_nix: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
+          ),
         local_tools: selections,
         vm_tools: selections,
         remote_tools: selections,
@@ -282,6 +286,18 @@ export const parseSettings = <T extends z.ZodType>(schema: T, raw: unknown): z.o
   throw new Error(
     result.error.issues
       .map((issue) => {
+        if (
+          issue.code === "unrecognized_keys" &&
+          issue.path.join(".") === "session" &&
+          issue.keys.includes("environment")
+        )
+          return "session.environment.nix has been replaced by session.auto_nix (boolean, default false). Remove session.environment; named shells can use an explicit VM command_prefix.";
+        if (
+          issue.code === "unrecognized_keys" &&
+          issue.path.join(".") === "session.isolation.environment" &&
+          issue.keys.includes("nix")
+        )
+          return "Remove session.isolation.environment.nix; Loom supplies the writable Nix store automatically. Use session.auto_nix to allow project shell activation.";
         const path = issue.path.join(".") || "config";
         return issue.code === "unrecognized_keys"
           ? `Unknown setting ${path}.${issue.keys.join(", ")}`

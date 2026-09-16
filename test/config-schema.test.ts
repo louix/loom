@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Ajv } from "npm:ajv@8.20.0";
@@ -8,15 +8,15 @@ import { configEditorSchema } from "../backend/daemon/src/config/schema.ts";
 import {
   DEFAULT_CONFIG,
   HOOK_EVENTS,
-  parseConfig,
   normalizeConfig,
+  parseConfig,
 } from "@loom/daemon/config/config";
 import {
-  exampleSchemaPath,
   exampleConfigPath,
+  exampleSchemaPath,
+  scaffoldUserConfig,
   userConfigPath,
   userSchemaPath,
-  scaffoldUserConfig,
 } from "@loom/daemon/scaffold";
 
 const schema = configEditorSchema(DEFAULT_CONFIG, HOOK_EVENTS);
@@ -58,8 +58,17 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
       },
     },
     { session: { isolation: { network_presets: ["rust"] } } },
+    { session: { auto_nix: true, isolation: { network_presets: ["nix"] } } },
     { hooks: [{ on: "turn_end", run: "check", timeout: 30 }] },
-    { hooks: [{ on: ["waiting", "permission"], run: "notify", match: "*.ts" }] },
+    {
+      hooks: [
+        {
+          on: ["waiting", "permission"],
+          run: "notify",
+          match: "*.ts",
+        },
+      ],
+    },
     {
       repos: [
         {
@@ -74,9 +83,13 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         },
       ],
     },
-  ])
+  ]) {
     assert.ok(validate(value), JSON.stringify(validate.errors));
+  }
   for (const value of [
+    { session: { auto_nix: "yes" } },
+    { session: { environment: { nix: { auto_activate: true } } } },
+    { session: { isolation: { environment: { nix: true } } } },
     {
       session: {
         isolation: {
@@ -125,8 +138,9 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         },
       },
     },
-  ])
+  ]) {
     assert.equal(validate(value), false, JSON.stringify(value));
+  }
 });
 
 test("scaffolding refreshes the offline schema without overwriting user settings", () => {
@@ -167,7 +181,7 @@ test("config validation errors identify fields without exposing credentials or h
       },
     },
     { hooks: [{ run: "secret-token\0", on: "turn_end" }] },
-  ])
+  ]) {
     assert.throws(
       () => normalizeConfig(raw),
       (error: unknown) => {
@@ -177,6 +191,7 @@ test("config validation errors identify fields without exposing credentials or h
         return true;
       },
     );
+  }
 });
 
 test("Zod retains the existing lenient defaults and null tool selections", () => {

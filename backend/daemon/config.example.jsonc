@@ -39,8 +39,8 @@
     // },
   },
   "session": {
-    // Activate flake.nix (preferred) or shell.nix before hooks and agent commands.
-    "environment": { "nix": { "auto_activate": true, "dev_shell": "default" } },
+    // Allow project shell activation (devenv, flake.nix, shell.nix, default.nix).
+    "auto_nix": false, // opt in globally or for individual repos
     "worktree": { "enabled": true },
     "isolation": { "enabled": false }, // VM execution; independent of worktrees
     "auto_rebase": { "enabled": false, "mode": "rebase" }, // or merge
@@ -72,8 +72,8 @@
     // {
     //   "path": "~/dev/my-project",
     //   "session": {
-    //     "environment": { "nix": { "dev_shell": "ci" } }, // or auto_activate: false
-    //     "isolation": { "enabled": true, "network_presets": ["nix", "javascript"], "environment": { "nix": true } },
+    //     "auto_nix": true,
+    //     "isolation": { "enabled": true, "network_presets": ["nix", "javascript"] },
     //     "vm_tools": ["tilth"],
     //     "provider_access": { "only": ["claude:work"] },
     //   },

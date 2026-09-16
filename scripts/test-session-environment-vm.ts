@@ -50,7 +50,6 @@ try {
     await Deno.copyFile(from, to);
   }
   const environment = normalizeSessionEnvironment({
-    nix: true,
     // This credential-free fixture retains setup diagnostics for a failed test.
     command_prefix: [
       "bash",
@@ -145,7 +144,7 @@ try {
         const status = await worker.status();
         assert(!status.network.some((entry) => !entry.allowed), JSON.stringify(status.network));
         console.log(
-          `Launch ${launch}: Nix shell and dependencies ready after ${((performance.now() - started) / 1000).toFixed(1)}s; base restored without reactivation.`,
+          `Launch ${launch}: Nix shell and dependencies ready after ${((performance.now() - started) / 1000).toFixed(1)}s; cached base reused with fresh activation.`,
         );
       } finally {
         await session.close();

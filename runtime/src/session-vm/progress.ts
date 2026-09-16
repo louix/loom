@@ -1,7 +1,6 @@
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
 import { decodeTextStream } from "../../../core/src/text-stream.ts";
 export const startupStages = {
-  restore: "Restoring prepared environment…",
   init: "Running session init hooks…",
   runtime: "Preparing VM runtime…",
   clone: "Creating writable disks from the prepared environment…",
@@ -9,7 +8,12 @@ export const startupStages = {
   cold: "No compatible prepared environment; starting from the generic runtime…",
   boot: "Starting VM…",
   nix: "Initializing Nix…",
+  networkBlocked: "VM network policy blocked a request; check network presets and allowed hosts.",
   activate: "Entering the repo environment…",
+  devenv: "Activating devenv…",
+  flake: "Activating Nix flake.nix…",
+  shell: "Activating Nix shell.nix…",
+  default: "Activating Nix default.nix…",
   prepare: "Running the prepare command…",
   provider: "Starting the agent…",
   ready: "Session ready.",
@@ -30,11 +34,14 @@ export const classifyStartupFailure = (error: unknown): StartupFailure => {
   const message = error instanceof Error ? error.message : String(error);
   if (/no more IRQs|too many.*devices/i.test(message)) return "devices";
   if (/no space left|ENOSPC/i.test(message)) return "space";
-  if (/permission denied|EACCES|operation not permitted/i.test(message)) return "permission";
+  if (/permission denied|EACCES|operation not permitted/i.test(message)) {
+    return "permission";
+  }
   if (
     /filesystem.*(?:corrupt|size)|bad superblock|short read|invalid.*(?:qcow|disk)/i.test(message)
-  )
+  ) {
     return "disk";
+  }
   return "backend";
 };
 export const startupMessage = (stage: StartupStage, elapsedSeconds?: number) =>
@@ -67,7 +74,7 @@ export const readStartupProgress = async (
           if (
             typeof value?.loomStartup === "string" &&
             Object.hasOwn(startupStages, value.loomStartup)
-          )
+          ) {
             report(
               value.loomStartup as StartupStage,
               Number.isInteger(value.elapsedSeconds) &&
@@ -76,11 +83,13 @@ export const readStartupProgress = async (
                 ? value.elapsedSeconds
                 : undefined,
             );
+          }
           if (
             typeof value?.loomStartupFailure === "string" &&
             Object.hasOwn(startupFailures, value.loomStartupFailure)
-          )
+          ) {
             failure?.(value.loomStartupFailure as StartupFailure);
+          }
         } catch {
           /* Not a startup frame. */
         }

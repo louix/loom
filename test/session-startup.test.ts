@@ -95,7 +95,7 @@ test("preparation has no images when no runtime is available", () => {
   assert.deepEqual(environmentPreparationRuntimes(config), []);
 });
 
-test("missing or incompatible prepared environments fail before VM or credential startup", async () => {
+test("missing or incompatible Nix caches do not block session startup", async () => {
   const root = await Deno.realPath(await Deno.makeTempDir());
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", root);
@@ -107,7 +107,7 @@ test("missing or incompatible prepared environments fail before VM or credential
     workspace: root,
     repoRoot: root,
     sessionDirectory: join(root, "session"),
-    environment: normalizeSessionEnvironment({ nix: true }),
+    environment: normalizeSessionEnvironment(undefined, true),
     onProgress: (message: string) => progress.push(message),
     authOwner: {
       current: () => {
@@ -118,7 +118,7 @@ test("missing or incompatible prepared environments fail before VM or credential
     },
   };
   try {
-    const missing = /No compatible prepared environment\. Run loom environment prepare/;
+    const missing = /credentials requested/;
     await assert.rejects(launchSessionVm(options), missing);
     const home = repoBaseDirectory(root);
     await Deno.mkdir(join(home, "base-old/disks"), { recursive: true });
@@ -130,7 +130,7 @@ test("missing or incompatible prepared environments fail before VM or credential
     await assert.rejects(launchSessionVm(options), missing);
     const { repoRoot: _repoRoot, ...withoutRepo } = options;
     await assert.rejects(launchSessionVm(withoutRepo), missing);
-    assert.equal(credentialsRead, false);
+    assert.equal(credentialsRead, true);
     assert.deepEqual(progress, []);
     await assert.rejects(Deno.stat(options.sessionDirectory), Deno.errors.NotFound);
     await assert.rejects(Deno.stat(join(root, ".loom")), Deno.errors.NotFound);

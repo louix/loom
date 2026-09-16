@@ -5,30 +5,10 @@
     "session": {
       "type": "object",
       "properties": {
-        "environment": {
-          "default": {},
-          "type": "object",
-          "properties": {
-            "nix": {
-              "default": {},
-              "type": "object",
-              "properties": {
-                "auto_activate": {
-                  "default": true,
-                  "type": "boolean"
-                },
-                "dev_shell": {
-                  "default": "default",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256,
-                  "pattern": "^[a-zA-Z0-9_-]+$"
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
+        "auto_nix": {
+          "default": false,
+          "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
+          "type": "boolean"
         },
         "local_tools": {
           "type": "array",
@@ -200,10 +180,6 @@
               "default": {},
               "type": "object",
               "properties": {
-                "nix": {
-                  "default": false,
-                  "type": "boolean"
-                },
                 "command_prefix": {
                   "anyOf": [
                     {
@@ -1136,30 +1112,10 @@
           "session": {
             "type": "object",
             "properties": {
-              "environment": {
-                "default": {},
-                "type": "object",
-                "properties": {
-                  "nix": {
-                    "default": {},
-                    "type": "object",
-                    "properties": {
-                      "auto_activate": {
-                        "default": true,
-                        "type": "boolean"
-                      },
-                      "dev_shell": {
-                        "default": "default",
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 256,
-                        "pattern": "^[a-zA-Z0-9_-]+$"
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                },
-                "additionalProperties": false
+              "auto_nix": {
+                "default": false,
+                "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
+                "type": "boolean"
               },
               "local_tools": {
                 "type": "array",
@@ -1331,10 +1287,6 @@
                     "default": {},
                     "type": "object",
                     "properties": {
-                      "nix": {
-                        "default": false,
-                        "type": "boolean"
-                      },
                       "command_prefix": {
                         "anyOf": [
                           {

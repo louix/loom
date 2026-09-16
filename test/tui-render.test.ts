@@ -3271,7 +3271,7 @@ test("v cycles EVENTS verbosity and the palette can change it too", async () => 
   }
 });
 
-test("environment warning stays in the frame and clears only after a compatible preparation", async () => {
+test("runtime warning stays in the frame until a compatibility recheck succeeds", async () => {
   for (const code of [0, 1, 130]) {
     const fake = mkFakeClient();
     fake.deliver(fleetOf());
@@ -3287,7 +3287,7 @@ test("environment warning stays in the frame and clears only after a compatible 
     );
     try {
       await waitFor(mounted.stdout, /Environment image missing/);
-      assert.match(mounted.stdout.last, /Prepare repo environment/);
+      assert.match(mounted.stdout.last, /Upgrade Loom or rebuild the configured runtime/);
       assert(mounted.stdout.last.trimEnd().split("\n").length <= 24);
     } finally {
       mounted.app.unmount();

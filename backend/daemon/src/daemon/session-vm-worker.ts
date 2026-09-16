@@ -2,7 +2,6 @@ import {
   environmentEnabled,
   type SessionEnvironment,
 } from "../../../../core/src/session-environment.ts";
-import { WorkerDiagnostic } from "../../../../core/src/worker.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -25,10 +24,7 @@ import {
   startupFailures,
   type StartupStage,
 } from "../../../../runtime/src/session-vm/progress.ts";
-import {
-  hasCompatibleRepoBase,
-  repoBaseDirectory,
-} from "../../../../runtime/src/session-vm/repo-base.ts";
+import { repoBaseDirectory } from "../../../../runtime/src/session-vm/repo-base.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
 import {
   sessionAuth,
@@ -128,17 +124,6 @@ const launchSessionVmOwned = async (
     throw new Error("Choose static auth or a credential owner");
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
-  if (
-    !options.preparationOnly &&
-    environmentEnabled(options.environment) &&
-    (!options.repoRoot ||
-      !(await hasCompatibleRepoBase(repoBaseDirectory(options.repoRoot), {
-        artifact,
-        smolvm,
-        ...(options.environment?.nix ? { writableNix: true } : {}),
-      })))
-  )
-    throw new WorkerDiagnostic("sessionEnvironmentMissing");
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
@@ -166,7 +151,7 @@ const launchSessionVmOwned = async (
   }
   if (environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "4")
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "5")
         throw new Error();
     } catch {
       throw new Error(
@@ -207,7 +192,7 @@ const launchSessionVmOwned = async (
     manifest,
     state,
     token: crypto.randomUUID(),
-    ...(options.environment?.nix ? { writableNix: true } : {}),
+    ...(environmentEnabled(options.environment) ? { writableNix: true } : {}),
     mounts,
     ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),

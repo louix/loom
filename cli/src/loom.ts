@@ -71,8 +71,9 @@ const USAGE: Record<string, string> = {
   --repo <path>                select the repository from any directory`,
   environment: `loom environment prepare | loom environment prune
 
-  Build the configured environment in a disposable VM/worktree at committed HEAD,
-  streaming preparation output. Publish a base for new and resumed sessions.
+  Warm the dependency cache in a disposable VM/worktree at committed HEAD,
+  streaming preparation output. Sessions activate their own checkout each launch;
+  preparation is optional and does not freeze shell exports.
   Existing sessions keep running and update once idle. Worktrees and history are
   preserved; guest disks are disposable. Failures leave the previous base intact.
   prune removes obsolete bases once configured replacements exist, preserving live VMs.

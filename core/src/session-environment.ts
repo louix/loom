@@ -2,9 +2,8 @@ import { z } from "zod";
 
 /** Trusted host configuration; commands are executed only inside the session VM. */
 export interface SessionEnvironment {
-  nix: boolean;
-  /** Resolved automatically from the checkout; never accepted as VM config syntax. */
-  nixActivation?: import("./nix-activation.ts").NixActivation;
+  /** Permission to activate the current checkout, independent of VM configuration. */
+  autoNix: boolean;
   commandPrefix: string[];
   prepare: string;
   timeoutMs: number;
@@ -15,7 +14,6 @@ export interface SessionEnvironment {
 /** Input units stay in seconds/MiB for config validation and editor schemas. */
 export const sessionEnvironmentSchema = z
   .strictObject({
-    nix: z.boolean().default(false),
     command_prefix: z
       .array(
         z
@@ -57,17 +55,21 @@ export const sessionEnvironmentSchema = z
   })
   .prefault({});
 
-export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment => {
+export const normalizeSessionEnvironment = (
+  value: unknown,
+  autoNix = false,
+): SessionEnvironment => {
   const result = sessionEnvironmentSchema.safeParse(value);
-  if (!result.success)
+  if (!result.success) {
     throw new Error(
       result.error.issues
         .map((i) => `isolation.environment.${i.path.join(".")}: ${i.message}`)
         .join("; "),
     );
+  }
   const r = result.data;
   return {
-    nix: r.nix,
+    autoNix,
     commandPrefix: r.command_prefix,
     prepare: r.prepare,
     timeoutMs: r.timeout_seconds * 1000,
@@ -77,8 +79,7 @@ export const normalizeSessionEnvironment = (value: unknown): SessionEnvironment 
 };
 
 export const environmentEnabled = (env?: SessionEnvironment): boolean =>
-  !!env &&
-  (env.nix || !!env.nixActivation || env.commandPrefix.length > 0 || env.prepare.length > 0);
+  !!env && (env.autoNix || env.commandPrefix.length > 0 || env.prepare.length > 0);
 
 export const sessionStartupTimeout = (env?: SessionEnvironment): number =>
   120_000 + (environmentEnabled(env) ? env!.timeoutMs : 0);

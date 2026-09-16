@@ -66,7 +66,7 @@ export class ProviderRegistry {
   async shellEnvironment(sessionId: string, cwd: string, signal: AbortSignal) {
     return this.#localEnvironments.has(sessionId)
       ? this.#localEnvironments.get(sessionId)
-      : await activateLocalEnvironment(cwd, this.#config.environment.nix, signal);
+      : await activateLocalEnvironment(cwd, this.#config.autoNix, signal);
   }
   constructor(
     config: LoomConfig,
@@ -260,7 +260,7 @@ export class ProviderRegistry {
               !context.config.sessionVm && !oneShot
                 ? await activateLocalEnvironment(
                     options.cwd,
-                    this.#config.environment.nix,
+                    this.#config.autoNix,
                     initStop.signal,
                     progress,
                   )

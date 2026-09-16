@@ -7,13 +7,12 @@ import {
 } from "../../backend/daemon/src/config/config.ts";
 import { isClaudeId } from "../../core/src/provider-id.ts";
 import { environmentEnabled } from "../../core/src/session-environment.ts";
-import { resolveVmNixActivation } from "../../core/src/nix-activation.ts";
+import { detectNixActivation } from "../../core/src/nix-activation.ts";
 import { launchSessionVm } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
 import {
-  repoBaseDirectory,
-  publishRepoBase,
-  hasCompatibleRepoBase,
   pruneRepoBases,
+  publishRepoBase,
+  repoBaseDirectory,
 } from "../../runtime/src/session-vm/repo-base.ts";
 import { lockSessionState, SessionVmBusyError } from "../../runtime/src/session-vm/persistence.ts";
 import { ipcPermissions } from "../../core/src/network-permissions.ts";
@@ -82,8 +81,9 @@ export const environmentProviders = (config: LoomConfig): string[] => {
     if (
       config.providerAccess.disabled.includes(id) ||
       (config.providerAccess.only && !config.providerAccess.only.includes(id))
-    )
+    ) {
       return false;
+    }
     const policy = environmentPolicy(config, id);
     if (!policy || seen.has(policy.artifact)) return false;
     seen.add(policy.artifact);
@@ -116,12 +116,16 @@ export const environmentPreparationRuntimes = (config: LoomConfig) => {
 export const prepareRepoEnvironment = async (repo: string) => {
   repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
-  if (!environmentEnabled(config.isolation.environment)) {
-    const reason = config.environment.nix.autoActivate
-      ? "No flake.nix, shell.nix or default.nix found at the repository root (committed HEAD for bare repos)."
-      : "Nix auto-activation is disabled (session.environment.nix.auto_activate).";
+  if (
+    !detectNixActivation(repo, config.autoNix, true) &&
+    !config.isolation.environment?.commandPrefix.length &&
+    !config.isolation.environment?.prepare
+  ) {
+    const reason = config.autoNix
+      ? "No devenv.nix, flake.nix, shell.nix or default.nix found at the repository root in committed HEAD (also used for bare repos)."
+      : "Nix auto-activation is disabled (session.auto_nix).";
     throw new Error(
-      `No session environment found. ${reason} Configure session.isolation.environment or enable Nix auto-activation with a project shell.`,
+      `No session environment found. ${reason} Enable session.auto_nix for a project shell, or configure an advanced preparation command.`,
     );
   }
   const runtimes = environmentPreparationRuntimes(config);
@@ -149,8 +153,9 @@ const prepareRuntimeEnvironment = async (
   // Separate from the brief publication lock: sessions may clone the old base
   // throughout a long preparation. Concurrent preparations fail immediately.
   const preparation = await lockSessionState(join(home, "preparation")).catch((error) => {
-    if (error instanceof SessionVmBusyError)
+    if (error instanceof SessionVmBusyError) {
       throw new Error("Repo environment preparation is already running");
+    }
     throw error;
   });
   const cancelled = new AbortController();
@@ -175,8 +180,9 @@ const prepareRuntimeEnvironment = async (
       stderr: "piped",
       ...(signal ? { signal } : {}),
     }).output();
-    if (!result.success)
+    if (!result.success) {
       throw new Error(`git ${args[0]} failed: ${new TextDecoder().decode(result.stderr).trim()}`);
+    }
     return new TextDecoder().decode(result.stdout).trim();
   };
   const removeWorktree = async (workspace: string) => {
@@ -207,11 +213,7 @@ const prepareRuntimeEnvironment = async (
       preparationOnly: true,
       auth: {},
       providerHosts: [],
-      environment: resolveVmNixActivation(
-        config.isolation.environment,
-        config.environment.nix,
-        workspace,
-      ),
+      ...(config.isolation.environment ? { environment: config.isolation.environment } : {}),
       extraAllowedHosts: config.isolation.extraAllowedHosts,
     });
     vmStopped = false;
@@ -224,11 +226,13 @@ const prepareRuntimeEnvironment = async (
     await worker.cleanup!();
     vmStopped = true;
     cancelled.signal.throwIfAborted();
-    if (code !== 0) throw new Error(`Environment preparation failed (exit ${code})`);
-    phase("Saving prepared base…");
+    if (code !== 0) {
+      throw new Error(`Environment preparation failed (exit ${code})`);
+    }
+    phase("Saving prepared cache…");
     await publishRepoBase(home, candidate, cancelled.signal, await Deno.realPath(policy.artifact));
     published = true;
-    phase("Environment prepared. Idle sessions will update automatically; active turns continue.");
+    phase("Cache prepared. Sessions will activate their checkout using the cached dependencies.");
   } catch (error) {
     phase(
       cancelled.signal.aborted
@@ -248,7 +252,9 @@ const prepareRuntimeEnvironment = async (
         await removeWorktree(workspace);
         await Deno.remove(temporary, { recursive: true });
       }
-      if (vmStopped && candidate && !published) await Deno.remove(candidate, { recursive: true });
+      if (vmStopped && candidate && !published) {
+        await Deno.remove(candidate, { recursive: true });
+      }
     } finally {
       preparation.close();
       Deno.removeSignalListener("SIGINT", stop);
@@ -292,28 +298,23 @@ export const repoEnvironmentWarning = async (
       const policy = environmentPolicy(config, id)!;
       try {
         const artifact = await Deno.realPath(policy.artifact);
-        const smolvm = await resolveEnvironmentBackend(policy.smolvm);
+        await resolveEnvironmentBackend(policy.smolvm);
         const manifest = await inspectArtifact(artifact);
         const version = (
           await Deno.readTextFile(join(artifact, "session-environment-version"))
         ).trim();
-        if (
-          !manifest.environmentCompatibility ||
-          version !== "4" ||
-          !(await hasCompatibleRepoBase(repoBaseDirectory(repo), {
-            artifact,
-            smolvm,
-            writableNix: config.isolation.environment?.nix === true,
-          }))
-        )
+        if (!manifest.environmentCompatibility || version !== "5") {
           missing = true;
+        }
       } catch {
         missing = true;
       }
     }
     return missing ? "Environment image missing or out of date." : null;
   } catch (error) {
-    return `Could not check environment image: ${error instanceof Error ? error.message : String(error)}`;
+    return `Could not check environment image: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 };
 
@@ -332,7 +333,7 @@ export const pruneRepoEnvironment = async (repo: string) => {
     bindings.push({
       artifact: await Deno.realPath(policy.artifact),
       smolvm: await resolveEnvironmentBackend(policy.smolvm),
-      writableNix: config.isolation.environment?.nix === true,
+      writableNix: environmentEnabled(config.isolation.environment),
     });
   }
   const sessions = await pruneRepositorySessionDisks(repo);

@@ -2090,7 +2090,8 @@ export class Daemon {
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     this.config.worktree = next.worktree;
-    this.config.environment = next.environment;
+    this.config.autoNix = next.autoNix;
+    if (this.config.isolation.environment) this.config.isolation.environment.autoNix = next.autoNix;
     this.config.autoRebase = next.autoRebase;
     this.config.commitReminder = next.commitReminder;
     this.config.notify = next.notify;
@@ -2117,7 +2118,7 @@ export class Daemon {
       JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
       JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
       JSON.stringify(next.providerAccess) !== JSON.stringify(before.providerAccess) ||
-      JSON.stringify(next.isolation) !== JSON.stringify(before.isolation) ||
+      JSON.stringify(next.isolation) !== JSON.stringify(this.config.isolation) ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       next.db !== before.db ||

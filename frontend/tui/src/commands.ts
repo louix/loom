@@ -8,7 +8,7 @@ const globalCommands = {
   help: ["?", "help"],
   quit: ["q", "quit"],
   doctor: ["", "doctor — tools, connectors, daemon"],
-  prepareEnvironment: ["", "Prepare repo environment — refresh base for future sessions"],
+  prepareEnvironment: ["", "Prepare repo environment — warm dependency cache for future sessions"],
   switchRepository: ["", "Switch repository"],
   viewlog: ["o", "view the log in $EDITOR"],
   logs: ["", "view the daemon + TUI logs in $EDITOR"],

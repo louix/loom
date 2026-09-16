@@ -2,12 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
-import {
-  detectNixActivation,
-  nixActivationCommand,
-  resolveVmNixActivation,
-} from "../core/src/nix-activation.ts";
+import { loadConfig, normalizeConfig } from "../backend/daemon/src/config/config.ts";
+import { detectNixActivation, nixActivationCommand } from "../core/src/nix-activation.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import {
   activateLocalEnvironment,
@@ -16,10 +12,13 @@ import {
 import { ProviderRegistry } from "../backend/daemon/src/daemon/provider-registry.ts";
 import { WorkerProvider } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
-import { prepareEnvironment } from "../runtime/src/session-vm/environment.ts";
+import {
+  activateSessionEnvironment,
+  prepareEnvironment,
+} from "../runtime/src/session-vm/environment.ts";
 import type { AgentSession } from "../core/src/types.ts";
 
-const settings = { autoActivate: true, devShell: "default" };
+const settings = true;
 const signal = () => new AbortController().signal;
 const transcript = {
   load: () => [],
@@ -44,6 +43,11 @@ export PROJECT_VALUE
 export HOME=/wrong-home TMPDIR=/deleted-nix-temp
 export PATH="$PWD/bin:$PATH"
 echo 'shell hook output'
+if test "$1" = shell; then
+  test "$2" = --
+  shift 2
+  exec "$@"
+fi
 if test "$1" = develop; then
   test "$3" = --no-write-lock-file
   test "$4" = --command
@@ -55,7 +59,7 @@ test -f "$1"
 test "$2" = --run
 exec /bin/sh -c "$3"
 `;
-  for (const name of ["nix", "nix-shell"]) {
+  for (const name of ["nix", "nix-shell", "devenv"]) {
     await Deno.writeTextFile(join(bin, name), script);
     await Deno.chmod(join(bin, name), 0o755);
   }
@@ -85,8 +89,16 @@ exec /bin/sh -c "$3"
   };
 };
 
-test("Nix defaults and sparse repo overrides merge before validation", async () => {
-  assert.deepEqual(normalizeConfig({}).environment.nix, settings);
+test("Nix is opt-in, independent of downloads, and repo overrides merge before validation", async () => {
+  assert.equal(normalizeConfig({}).autoNix, false);
+  assert.equal(
+    normalizeConfig({ session: { isolation: { network_presets: ["nix"] } } }).autoNix,
+    false,
+  );
+  assert.deepEqual(
+    normalizeConfig({ session: { auto_nix: true } }).isolation.extraAllowedHosts,
+    [],
+  );
   const f = await fixture();
   try {
     const repo = await f.checkout("repo");
@@ -94,27 +106,31 @@ test("Nix defaults and sparse repo overrides merge before validation", async () 
     await Deno.writeTextFile(
       configPath,
       JSON.stringify({
-        session: { environment: { nix: { auto_activate: false, dev_shell: "ci" } } },
-        repos: [{ path: repo, session: { environment: { nix: { auto_activate: true } } } }],
+        session: { auto_nix: false },
+        repos: [{ path: repo, session: { auto_nix: true } }],
       }),
     );
-    assert.deepEqual(loadConfig(repo, configPath).environment.nix, {
-      autoActivate: true,
-      devShell: "ci",
-    });
-    assert.deepEqual(loadConfig(f.root, configPath).environment.nix, {
-      autoActivate: false,
-      devShell: "ci",
-    });
-    assert.equal(loadConfig(repo, configPath).isolation.environment?.nixActivation?.devShell, "ci");
-    for (const nix of [
-      { auto_activate: "yes" },
-      { dev_shell: "" },
-      { dev_shell: "../other" },
-      { typo: true },
-    ])
-      assert.throws(() => normalizeConfig({ session: { environment: { nix } } }));
-    assert.equal(detectNixActivation(repo, { autoActivate: false, devShell: "ci" }), undefined);
+    assert.equal(loadConfig(repo, configPath).autoNix, true);
+    assert.equal(loadConfig(repo, configPath).isolation.environment?.autoNix, true);
+    assert.equal(loadConfig(f.root, configPath).autoNix, false);
+    for (const auto_nix of ["yes", {}, null, 1]) {
+      assert.throws(() => normalizeConfig({ session: { auto_nix } }), /session.auto_nix/);
+    }
+    assert.throws(
+      () =>
+        normalizeConfig({
+          session: { environment: { nix: { auto_activate: true } } },
+        }),
+      /replaced by session.auto_nix/,
+    );
+    assert.throws(
+      () =>
+        normalizeConfig({
+          session: { isolation: { environment: { nix: true } } },
+        }),
+      /supplies the writable Nix store automatically/,
+    );
+    assert.equal(detectNixActivation(repo, false), undefined);
   } finally {
     await f.close();
   }
@@ -125,12 +141,8 @@ test("detection is root-only, prefers flakes, and quotes legacy shell arguments"
   try {
     const cwd = await f.checkout("legacy", "shell.nix");
     assert.equal(detectNixActivation(cwd, settings)?.kind, "shell");
-    assert.throws(
-      () => nixActivationCommand({ kind: "shell", devShell: "ci" }, ["true"]),
-      /requires flake/,
-    );
     const value = "a b ' $(touch injected)";
-    const argv = nixActivationCommand({ kind: "shell", devShell: "default" }, [
+    const argv = nixActivationCommand({ kind: "shell" }, [
       "/bin/sh",
       "-c",
       'printf "%s" "$1"',
@@ -164,7 +176,7 @@ test("activation exports are isolated, protect launch state, and fail without fa
     const b = await f.checkout("second", "shell.nix");
     const originalPath = Deno.env.get("PATH");
     const [one, two] = await Promise.all([
-      activateLocalEnvironment(a, { ...settings, devShell: "ci" }, signal()),
+      activateLocalEnvironment(a, true, signal()),
       activateLocalEnvironment(b, settings, signal()),
     ]);
     assert.equal(one?.set.PROJECT_VALUE, "first");
@@ -175,7 +187,7 @@ test("activation exports are isolated, protect launch state, and fail without fa
     assert.equal(Deno.env.get("PATH"), originalPath);
     assert.match(
       await Deno.readTextFile(join(a, ".activation-log")),
-      /path:.#ci --no-write-lock-file --command/,
+      /path:.#default --no-write-lock-file --command/,
     );
     await Deno.writeTextFile(join(a, ".fail"), "");
     await assert.rejects(
@@ -212,7 +224,13 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
   try {
     const cwd = await f.checkout("session");
     const config = normalizeConfig({
-      hooks: [{ on: "init", run: "project-tool > init-environment; printf x >> init-count" }],
+      session: { auto_nix: true },
+      hooks: [
+        {
+          on: "init",
+          run: "project-tool > init-environment; printf x >> init-count",
+        },
+      ],
     });
     // Use a real protocol worker whose provider executes a project tool on create and resume.
     registry = new ProviderRegistry(
@@ -263,7 +281,11 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
     await sessions[0]!.close();
     await Deno.writeTextFile(join(cwd, ".value"), "resumed\n");
     sessions.push(
-      await provider.resumeSession({ sessionId: "activated", providerRef: "activated", cwd }),
+      await provider.resumeSession({
+        sessionId: "activated",
+        providerRef: "activated",
+        cwd,
+      }),
     );
     assert.equal(await Deno.readTextFile(join(cwd, "worker-environment")), "resumed");
     assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "x");
@@ -290,35 +312,38 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
   }
 });
 
-test("VM preparation uses automatic selection but explicit prefixes take precedence", async () => {
+test("VM activation is fresh without preparation, and explicit prefixes take precedence", async () => {
   const f = await fixture();
   try {
     const cwd = await f.checkout("vm");
-    const environment = resolveVmNixActivation(
-      normalizeSessionEnvironment({ nix: true }),
-      { ...settings, devShell: "ci" },
-      cwd,
+    const environment = normalizeSessionEnvironment(
+      {
+        prepare: "echo prepared > prepared",
+      },
+      true,
     );
-    const captured = await prepareEnvironment(environment, { cwd, shell: "/bin/sh" });
-    assert.equal(captured?.PROJECT_VALUE, "vm");
-    const explicit = resolveVmNixActivation(
-      normalizeSessionEnvironment({
-        command_prefix: ["/bin/sh", "-c", 'export PROJECT_VALUE=explicit; exec "$@"', "activation"],
-      }),
-      settings,
-      cwd,
-    );
-    assert.equal(explicit.nixActivation, undefined);
+    const options = { cwd, shell: "/bin/sh" };
+    assert.equal((await activateSessionEnvironment(environment, options))?.PROJECT_VALUE, "vm");
+    await assert.rejects(Deno.stat(join(cwd, "prepared")), Deno.errors.NotFound);
+    await prepareEnvironment(environment, options);
+    assert.equal(await Deno.readTextFile(join(cwd, "prepared")), "prepared\n");
+    await Deno.writeTextFile(join(cwd, ".value"), "changed\n");
     assert.equal(
-      (await prepareEnvironment(explicit, { cwd, shell: "/bin/sh" }))?.PROJECT_VALUE,
-      "explicit",
+      (await activateSessionEnvironment(environment, options))?.PROJECT_VALUE,
+      "changed",
     );
-    await assert.rejects(
-      prepareEnvironment(resolveVmNixActivation(undefined, settings, cwd), {
-        cwd,
-        shell: "/bin/sh",
-      }),
-      /preparation failed/,
+    await Deno.writeTextFile(join(cwd, ".fail"), "");
+    await assert.rejects(activateSessionEnvironment(environment, options), /Nix activation failed/);
+    const explicit = normalizeSessionEnvironment(
+      {
+        command_prefix: ["/bin/sh", "-c", 'export PROJECT_VALUE=explicit; exec "$@"', "activation"],
+      },
+      true,
+    );
+    assert.equal((await activateSessionEnvironment(explicit, options))?.PROJECT_VALUE, "explicit");
+    assert.equal(
+      await activateSessionEnvironment(normalizeSessionEnvironment(undefined), options),
+      undefined,
     );
   } finally {
     await f.close();
@@ -329,31 +354,52 @@ test("default.nix activates local and VM environments after flake.nix and shell.
   const f = await fixture();
   try {
     const cwd = await f.checkout("fallback", "default.nix");
-    assert.deepEqual(detectNixActivation(cwd, settings), { kind: "default", devShell: "default" });
+    assert.deepEqual(detectNixActivation(cwd, settings), { kind: "default" });
     const progress: string[] = [];
     const local = await activateLocalEnvironment(cwd, settings, signal(), (message) => {
       progress.push(message);
     });
     assert.equal(local?.set.PROJECT_VALUE, "fallback");
     assert.deepEqual(progress, ["Activating Nix default.nix…"]);
-    const captured = await prepareEnvironment(
-      resolveVmNixActivation(normalizeSessionEnvironment({ nix: true }), settings, cwd),
-      { cwd, shell: "/bin/sh" },
-    );
+    const captured = await prepareEnvironment(normalizeSessionEnvironment(undefined, true), {
+      cwd,
+      shell: "/bin/sh",
+    });
     assert.equal(captured?.PROJECT_VALUE, "fallback");
     assert.match(await Deno.readTextFile(join(cwd, ".activation-log")), /\.\/default\.nix --run/);
-    assert.throws(
-      () => nixActivationCommand({ kind: "default", devShell: "ci" }, ["true"]),
-      /requires flake.nix; default.nix has no named dev shells/,
-    );
-    assert.equal(
-      await activateLocalEnvironment(cwd, { ...settings, autoActivate: false }, signal()),
-      undefined,
-    );
+    assert.equal(await activateLocalEnvironment(cwd, false, signal()), undefined);
     await Deno.writeTextFile(join(cwd, "shell.nix"), "");
     assert.equal(detectNixActivation(cwd, settings)?.kind, "shell");
     await Deno.writeTextFile(join(cwd, "flake.nix"), "");
     assert.equal(detectNixActivation(cwd, settings)?.kind, "flake");
+  } finally {
+    await f.close();
+  }
+});
+
+test("devenv takes precedence and activates local and VM sessions without starting services", async () => {
+  const f = await fixture();
+  try {
+    const cwd = await f.checkout("devenv", "devenv.nix");
+    await Deno.writeTextFile(join(cwd, "flake.nix"), "");
+    assert.deepEqual(detectNixActivation(cwd, true), { kind: "devenv" });
+    assert.equal(
+      (await activateLocalEnvironment(cwd, true, signal()))?.set.PROJECT_VALUE,
+      "devenv",
+    );
+    assert.equal(
+      (
+        await activateSessionEnvironment(normalizeSessionEnvironment(undefined, true), {
+          cwd,
+          shell: "/bin/sh",
+        })
+      )?.PROJECT_VALUE,
+      "devenv",
+    );
+    const log = await Deno.readTextFile(join(cwd, ".activation-log"));
+    assert.match(log, /^shell -- /);
+    assert.equal((log.match(/^shell -- /gm) ?? []).length, 2);
+    assert.doesNotMatch(log, /^develop |^up /m);
   } finally {
     await f.close();
   }

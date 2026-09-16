@@ -7,7 +7,6 @@ import {
   detectNixActivation,
   nixActivationCommand,
   shellQuote,
-  type NixActivationSettings,
 } from "../../../../core/src/nix-activation.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { isAbsolute, join, delimiter } from "node:path";
@@ -21,16 +20,16 @@ export type { EnvironmentChanges };
 
 export const activateLocalEnvironment = async (
   cwd: string,
-  settings: NixActivationSettings,
+  allowed: boolean,
   signal: AbortSignal,
   progress: (message: string) => void | Promise<void> = () => {},
   timeoutMs = 900_000,
 ): Promise<EnvironmentChanges | undefined> => {
   signal.throwIfAborted();
-  const activation = detectNixActivation(cwd, settings);
+  const activation = detectNixActivation(cwd, allowed);
   if (!activation) return;
   await progress(
-    `Activating Nix ${activation.kind === "flake" ? `dev shell "${activation.devShell}"` : `${activation.kind}.nix`}…`,
+    `Activating ${activation.kind === "devenv" ? "devenv" : `Nix ${activation.kind}.nix`}…`,
   );
   const directory = await Deno.makeTempDir({ prefix: "loom-activation-" });
   try {
@@ -86,7 +85,7 @@ export const activateLocalEnvironment = async (
     signal.throwIfAborted();
     if (result.code !== 0)
       throw new Error(
-        `Nix activation ${result.timedOut ? "timed out" : `exited ${result.code}`}:\n${result.output || "(no output)"}\nCheck Nix and the selected dev shell, or set session.environment.nix.auto_activate to false.`,
+        `Nix activation ${result.timedOut ? "timed out" : `exited ${result.code}`}:\n${result.output || "(no output)"}\nCheck Nix and the selected dev shell, or set session.auto_nix to false.`,
       );
     if ((await Deno.stat(snapshot)).size > 1024 * 1024)
       throw new Error("Nix environment exceeds 1 MiB");

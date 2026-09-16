@@ -26,7 +26,7 @@ let
   } // pkgs.lib.optionalAttrs (sessionVersion != null) {
     guestImage = "guest-image.tar";
     # Bump the epoch for incompatible preparation/restore or store-layout changes.
-    environmentCompatibility = builtins.hashString "sha256" "loom-environment-4:${guestImage}";
+    environmentCompatibility = builtins.hashString "sha256" "loom-environment-5:${guestImage}";
   }));
 in pkgs.runCommand "loom-${executable}-runtime" {} ''
   mkdir -p $out/nix/store
@@ -37,7 +37,7 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
   ${pkgs.lib.optionalString (sessionVersion != null) ''
     cp ${guestImage} $out/guest-image.tar
     cp ${closure}/registration $out/registration
-    echo 4 > $out/session-environment-version
+    echo 5 > $out/session-environment-version
   ''}
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json

@@ -73,7 +73,6 @@ try {
     providerHosts: [],
     extraAllowedHosts: expandNetworkPresets(["nix", "javascript"]),
     environment: normalizeSessionEnvironment({
-      nix: true,
       command_prefix: ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
       prepare: `pnpm install
 node -e 'const cpu = require("cpu-features")(); if (!cpu.arch) process.exit(1); console.log("LOOM_NATIVE_ADDON_OK", cpu.arch)'`,

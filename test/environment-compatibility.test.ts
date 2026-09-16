@@ -112,7 +112,7 @@ test("compatibility metadata requires a versioned image and a bounded digest", (
   assert.throws(() => decodeManifest({ ...manifest(), guestImage: undefined }));
 });
 
-test("environment preflight warns only for enabled VM providers needing a prepared image", async () => {
+test("environment preflight warns only for enabled VM providers needing a compatible runtime", async () => {
   const config = normalizeConfig({
     providers: {
       codex: {
@@ -122,14 +122,12 @@ test("environment preflight warns only for enabled VM providers needing a prepar
       },
     },
     session: {
+      auto_nix: true,
       isolation: {
         enabled: true,
         codex: {
           artifact: "/missing/runtime",
           smolvm: "/missing/backend",
-        },
-        environment: {
-          nix: true,
         },
       },
     },

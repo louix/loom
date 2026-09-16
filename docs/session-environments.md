@@ -1,142 +1,128 @@
 # Session environments
 
-Loom separates reusable environment preparation from session initialization.
-
-- `loom environment prepare` builds a VM base from committed HEAD. The bundled
-  Claude, Codex and AISDK providers share one image and need one preparation.
-  Distinct custom runtime images are prepared separately, including when local
-  execution is the default or no providers are enabled. Provider configuration and
-  credentials are not required. Nix activation
-  and `session.isolation.environment.prepare` must succeed before the base is published.
-- a `hooks` entry with `"on": "init"` runs once when a conversation is created, before its opening
-  turn, inside its VM or on the host for a non-VM session. A failed init hook is
-  shown in EVENTS and included in the agent's opening prompt so it can repair the
-  project. Init does not run on resume or VM replacement.
-- Package caches live on the host; worktree dependencies and conversation history
-  survive VM replacement.
-
-## Automatic Nix activation
-
-Loom enables `session.environment.nix.auto_activate` by default, for local and
-VM sessions. Configure global defaults and sparse per-repo overrides in the
-trusted user config:
-
-```jsonc
-{
-  "session": {
-    "environment": {
-      "nix": { "auto_activate": true, "dev_shell": "default" },
-    },
-  },
-  "repos": [
-    {
-      "path": "~/dev/backend",
-      "session": { "environment": { "nix": { "dev_shell": "backend" } } },
-    },
-    {
-      "path": "~/dev/manual",
-      "session": { "environment": { "nix": { "auto_activate": false } } },
-    },
-  ],
-}
-```
-
-Objects merge recursively. Setting a shell name does not enable activation if
-`auto_activate` is false; a repo can explicitly enable it when globally disabled.
-Names are single flake attributes using letters, digits, hyphens or underscores.
-
-Detection checks the checkout root for `flake.nix`, then `shell.nix`, then
-`default.nix`. Bare repositories use committed `HEAD` for detection.
-Flakes use `nix develop path:.#<dev_shell> --no-write-lock-file --command …`.
-Legacy shells use `nix-shell ./shell.nix --run …` or
-`nix-shell ./default.nix --run …` and require the default shell name.
-`.envrc` does not trigger activation.
-No matching file means ordinary startup. Missing Nix, missing named shells and
-activation failures stop startup before init hooks, with an error explaining how
-to repair or disable activation.
-
-Local sessions capture exported variables before init and pass them to the
-session worker and `loom shell`. Activation is scoped to each session, never
-applied to the daemon's environment. New worker launches, including resume,
-activate again; ordinary resume does not repeat init hooks. Already running
-sessions retain their environment. Local activation has a 15-minute timeout and
-is cancelled when its provider closes. Shell functions, aliases and background
-processes are not retained. Worker scratch paths, home and provider credentials
-keep their launch values; temporary Nix build paths are not reused.
-Activation starts with the host PATH, user/locale, Nix, certificate, proxy and XDG
-settings; unrelated daemon environment variables are not forwarded.
-Native Bash commands restore the captured exports after login profiles. Activated
-Codex sessions disable login shells and shell snapshots so profiles cannot replace
-the project PATH. Interactive `loom shell` still reads the user's interactive
-shell configuration, which can intentionally override environment variables.
-
-VMs perform automatic activation only during explicit
-`loom environment prepare`, against the disposable checkout of committed HEAD.
-Set `session.isolation.environment.nix: true` to supply the private writable
-guest Nix store, and configure the required network presets. Session boots keep
-restoring the prepared environment. A nonempty explicit
-`session.isolation.environment.command_prefix` takes precedence over automatic
-detection. Changing a shell name or development dependencies requires preparation
-again, just like changing an explicit prefix.
-
-## Configuration
-
-Add to the existing matching `repos` array entry in the trusted user config:
+Enable automatic project shell activation in the trusted user config:
 
 ```jsonc
 {
   "repos": [
     {
-      "path": "~/dev/loom",
-      "hooks": [
-        {
-          "name": "install dependencies",
-          "on": "init",
-          "run": "deno install --frozen",
-          "timeout": 600,
-        },
-      ],
+      "path": "~/dev/my-project",
       "session": {
-        "isolation": {
-          "network_presets": ["nix", "javascript", "rust"],
-          "environment": {
-            "nix": true,
-            "prepare": "",
-            "timeout_seconds": 900,
-          },
-        },
+        "auto_nix": true,
+        "isolation": { "network_presets": ["nix"] },
       },
     },
   ],
 }
 ```
 
-Set `session.isolation.enabled` to true for projects that should default to VM execution.
-Local sessions activate Nix before the same init hooks; VM base settings do not
-apply to local sessions. Hooks can also be scoped with the existing `project` setting.
-Init hooks execute serially in configuration order. Both check and notify init
-hooks report failures to the agent; notification-only behavior of other events
-is unchanged. Existing Git commit hooks continue to run through Git.
+These are independent controls. `session.auto_nix` permits project shell
+activation, locally and in VMs, and defaults to false. The `nix` network preset
+allows Nix downloads through the VM proxy; it neither enables activation nor
+controls host networking. A cached shell can activate without network access.
+Other package registries or custom binary caches may need additional presets or
+exact allowed hosts.
 
-The `session.isolation.environment` settings are:
+Set `session.auto_nix` globally to enable it for all repositories, or override
+it in an existing `repos[]` entry. Repository-local Loom config is never read.
+Activation executes the project's shell hooks, so enable it for projects you
+trust.
 
-- `nix`: private writable guest Nix store (default false). Does not expose the host store or daemon.
-- `command_prefix`: argument array used to enter the environment during explicit preparation.
-  It must execute the appended command and propagate its exit status. A nonempty prefix
-  overrides automatic Nix selection.
-- `prepare`: optional shell command executed inside that environment during explicit preparation.
-  Use it for reusable base setup. Worktree dependency installation belongs in init hooks.
-- `timeout_seconds`: preparation budget, 1–2073600 seconds (default 900).
+## Activation
+
+Loom checks the current checkout root in this order:
+
+1. `devenv.nix`: `devenv shell -- <command>`
+2. `flake.nix`:
+   `nix develop path:.#default --no-write-lock-file --command <command>`
+3. `shell.nix`: `nix-shell ./shell.nix --run <command>`
+4. `default.nix`: `nix-shell ./default.nix --run <command>`
+
+No matching file means ordinary startup. `.envrc` never triggers activation.
+Loom reports the selected environment. Missing tools or a broken selected shell
+stop startup before init hooks; Loom does not silently try another file. Devenv
+activation enters its shell; Loom does not run `devenv up`.
+
+Every new session worker, including resume and VM replacement, activates its own
+checkout. Hooks, agent commands and `loom shell` receive those exports. Already
+running workers keep their environment until their next launch. Changes to shell
+files or lockfiles take effect on that next launch, even without preparation.
+
+Local activation uses host Nix/devenv. The bundled VM runtime includes both.
+Loom supplies a private writable guest Nix store automatically when an
+environment is enabled; no store switch is required. Activation permission does
+not grant additional network access.
+
+Activation captures exported variables, not shell functions, aliases or
+background processes. Worker home, scratch paths, provider executables and
+credentials retain their launch values. Local activation is scoped to the
+session and never changes the daemon's environment. Unrelated daemon credentials
+are not forwarded. Local activation has a 15-minute timeout and is cancelled
+when the provider closes.
+
+## Optional preparation
+
+`loom environment prepare` warms a reusable VM cache from a disposable checkout
+of committed HEAD. Bare repositories inspect committed HEAD as well. The bundled
+providers share one runtime and need one preparation; distinct custom runtimes
+are prepared separately. Preparation works even when local execution is the
+default or no providers are enabled, and receives no provider credentials.
+
+The reusable disk retains downloaded/built Nix packages and other cached files.
+Sessions still activate their current checkout; exported variables are never
+restored from a frozen preparation snapshot. If there is no compatible cache,
+sessions start from the bundled runtime and build/download what they need under
+the configured network policy. This may make first startup slower. Refreshing
+the cache after dependency changes is useful but not required for activation.
+
+Use an init hook for worktree dependencies:
+
+```jsonc
+"hooks": [
+  { "on": "init", "run": "deno install --frozen", "timeout": 600 },
+]
+```
+
+Init runs once when a conversation is created, after activation and before its
+opening turn. It does not repeat on resume or VM replacement. Init failures are
+reported to the agent so it can repair the project. Worktree dependencies and
+conversation history survive VM replacement.
+
+## Advanced VM setup
+
+These optional `session.isolation.environment` settings are for custom VM setup.
+They are not needed for automatic Nix activation:
+
+- `command_prefix`: argv used to enter a custom environment at preparation and
+  every session launch. It executes the appended command and propagates its exit
+  status. A nonempty prefix takes precedence over automatic detection. A named
+  flake shell can use
+  `["nix", "develop", "path:.#ci", "--no-write-lock-file", "--command"]`.
+- `prepare`: a shell command run only during explicit preparation, inside the
+  selected environment. Use it for reusable files in guest storage. Its exports
+  are not saved for sessions; put session exports in the project shell or
+  prefix.
+- `timeout_seconds`: activation/preparation budget, 1–2073600 seconds (default
+  900).
 - `memory_mib`: VM memory, 512–65536 MiB (default 2048).
 - `cpus`: VM virtual CPUs, 1–64 (default 1).
 
-Preparation captures exported environment variables in the base. Session boots
-restore them without evaluating the current worktree's flake or rerunning the
-prepare command. Exported paths into the preparation checkout are mapped to the
-session's worktree. Shell functions, aliases and background processes are not
-captured. Provider executables and launch-specific proxy/bootstrap settings retain
-precedence. A missing or incompatible base requires explicit preparation before
-starting a session with environment settings enabled.
+Local sessions use automatic detection and host resources; these advanced VM
+settings do not apply to them.
+
+## Migrating older configuration
+
+Replace `session.environment.nix.auto_activate` with `session.auto_nix`, and
+remove `session.environment`. Automatic activation now defaults to false. Remove
+`session.isolation.environment.nix`; the writable store is automatic. The old
+`dev_shell` setting is removed; custom VM shell selection can use a prefix.
+
+Preparation no longer saves exported variables for later sessions. Move exports
+from a custom `prepare` command into the project shell or `command_prefix`.
+Updated guest runtimes use environment format 5 and include devenv.
+Upgrade/rebuild older runtimes; older prepared disks are incompatible, but a new
+preparation is optional. On Apple Silicon, rebuilding the packaged runtime
+requires regenerating the macOS runtime hashes.
 
 ## Updating the base
 
@@ -148,51 +134,51 @@ keeps that base and all existing sessions intact.
 Successful preparation atomically selects the new base. New launches use it;
 live VMs switch after the agent becomes idle and pending operations, hooks,
 background tasks and user interactions have finished. The TUI shows STARTING and
-environment-update progress. Messages arriving during replacement wait for resume.
-A replacement failure is reported on the session, leaving its host files and
-history available for a later resume.
+environment-update progress. Messages arriving during replacement wait for
+resume. A replacement failure is reported on the session, leaving its host files
+and history available for a later resume.
 
-Linux uses small qcow2 writable layers; macOS uses APFS clones. Old backing bytes
-remain available to VMs still using them and are reclaimed when those VMs close.
-This temporarily requires room for both old and new bases. Guest-only files and
-processes are disposable. Host worktrees, including staged, unstaged and untracked
-changes, and native conversation profiles persist. Init is not rerun during this
-handover; dependencies such as `node_modules` and `.venv` should live in the worktree.
-If a new base changes the interpreter/ABI they need, the agent may need to reinstall them.
+Linux uses small qcow2 writable layers; macOS uses APFS clones. Old backing
+bytes remain available to VMs still using them and are reclaimed when those VMs
+close. This temporarily requires room for both old and new bases. Guest-only
+files and processes are disposable. Host worktrees, including staged, unstaged
+and untracked changes, and native conversation profiles persist. Init is not
+rerun during this handover; dependencies such as `node_modules` and `.venv`
+should live in the worktree. If a new base changes the interpreter/ABI they
+need, the agent may need to reinstall them.
 
 There is one current base per repo and runtime. Bundled providers use the same
 base; distinct custom runtimes keep separate bases. The shared image contains
-provider executables, never provider credentials. Preparation receives no provider
-credentials; each session receives only its selected authentication source and
-has private writable disks, credentials and native provider history.
+provider executables, never provider credentials. Preparation receives no
+provider credentials; each session receives only its selected authentication
+source and has private writable disks, credentials and native provider history.
 Bundled runtimes keep the guest image and its registered Nix tools separate from
 Loom's application code, which is mounted read-only on each launch. Source-only
 Loom upgrades reuse prepared bases. Compatibility follows the stable guest image
 and an explicit environment-format epoch, plus the host architecture/OS, exact
 smolvm executable identity and writable-Nix setting. Guest OS/tool changes or an
-incompatible environment-format change require preparation again. Custom session runtimes must use the same current image format and include
-the environment identity metadata.
+incompatible environment-format change skip the old cache and start cold. Custom
+session runtimes must use the same current image format and include the
+environment identity metadata.
 
-The transition to this layout requires one new preparation; older bases remain
-available until replacements are prepared. Changing a repo's development dependencies or preparation command still
-requires explicit preparation to capture those changes. The TUI checks enabled
-VM providers on launch and shows a persistent warning for missing or incompatible
-images, with **Space → Prepare repo environment** as the remedy. It rechecks after
-preparation. No VM is started or image rebuilt by this check.
+The TUI checks enabled VM providers for missing or incompatible runtime images.
+Upgrade Loom or rebuild the configured runtime when needed. A missing prepared
+cache does not produce a warning or block startup. No VM is started or image
+rebuilt by this check.
 
 In the TUI, use **Space → Prepare repo environment**. The CLI owns the terminal
-until preparation finishes; Enter returns to the TUI and Ctrl-C cancels preparation.
-The daemon and existing sessions keep running throughout.
+until preparation finishes; Enter returns to the TUI and Ctrl-C cancels
+preparation. The daemon and existing sessions keep running throughout.
 
 ## Image cleanup
 
 Successful preparation and `loom environment prune` remove bases for runtime
-images that are no longer configured, along with abandoned preparation directories.
-A missing or incompatible replacement does not preserve all historical images:
-you can reclaim obsolete images before preparing the new runtime. The current
-selection for each configured image is retained, including custom runtimes and
-legacy selections still used by a configured image.
-Bases used by live VMs retain both their disk files and Nix GC roots; shutdown or
+images that are no longer configured, along with abandoned preparation
+directories. A missing or incompatible replacement does not preserve all
+historical images: you can reclaim obsolete images before preparing the new
+runtime. The current selection for each configured image is retained, including
+custom runtimes and legacy selections still used by a configured image. Bases
+used by live VMs retain both their disk files and Nix GC roots; shutdown or
 recovery retries cleanup after releasing them. Active preparation and unfinished
 recovery state are retained. Pruning lists each retained base and its reason;
 `--json` includes the same details in `retainedBases`. A deferred runtime cache
@@ -219,23 +205,25 @@ Host worktrees, conversation profiles and package-manager caches are preserved.
 
 ## Host package caches
 
-Session and preparation VMs use `<repo>/.loom/package-cache`, through the existing
-repository mount. It is shared by the repo's VMs and survives failed preparation,
-VM replacement and daemon restarts. It contains no shared installed project environment.
+Session and preparation VMs use `<repo>/.loom/package-cache`, through the
+existing repository mount. It is shared by the repo's VMs and survives failed
+preparation, VM replacement and daemon restarts. It contains no shared installed
+project environment.
 
 Loom sets `XDG_DATA_HOME`, `DENO_DIR`, `npm_config_cache`, `PIP_CACHE_DIR` and
 `UV_CACHE_DIR` to subdirectories there. `XDG_CACHE_HOME` uses guest-owned
 `/storage/loom-cache`, because Nix's Git cache rejects host-mounted directories
-whose ownership differs from the guest user. Nix's cache and store contents remain
-in the prepared guest base. Non-VM sessions keep using their normal host
-package-cache settings. Configured network presets apply to preparation, init and agents.
+whose ownership differs from the guest user. Nix's cache and store contents
+remain in the prepared guest base. Non-VM sessions keep using their normal host
+package-cache settings. Configured network presets apply to preparation, init
+and agents.
 
 The guest preserves its temporary directory for pnpm install scripts by setting
-`pnpm_config_unsafe_perm=true` (and the older `npm_config_unsafe_perm` spelling).
-Otherwise pnpm's root-user mode redirects temporary
-files into the host-mounted `node_modules` tree, where node-gyp cannot apply
-tarball ownership (`EPERM: fchown`). This setting applies inside the session VM;
-plain `pnpm install` needs no additional flags.
+`pnpm_config_unsafe_perm=true` (and the older `npm_config_unsafe_perm`
+spelling). Otherwise pnpm's root-user mode redirects temporary files into the
+host-mounted `node_modules` tree, where node-gyp cannot apply tarball ownership
+(`EPERM: fchown`). This setting applies inside the session VM; plain
+`pnpm install` needs no additional flags.
 
 For pnpm, an init command can explicitly select a shared store and copy imports:
 
@@ -257,38 +245,43 @@ For pnpm, an init command can explicitly select a shared store and copy imports:
 }
 ```
 
-Installed dependencies stay per worktree. Shared caches use the package manager's
-own concurrency support. Guest memory and CPU settings should leave room for
-preparation alongside active sessions.
+Installed dependencies stay per worktree. Shared caches use the package
+manager's own concurrency support. Guest memory and CPU settings should leave
+room for preparation alongside active sessions.
 
 Bundled session runtimes use a pinned Debian guest image, supplied with the
-runtime. No Docker daemon or runtime image download is required. Linux validation
-uses real VMs; Apple Silicon releases additionally require regenerated runtime
-hashes and host validation as described in the packaging documentation.
+runtime. No Docker daemon or runtime image download is required. Linux
+validation uses real VMs; Apple Silicon releases additionally require
+regenerated runtime hashes and host validation as described in the packaging
+documentation.
 
 ## Network presets
 
 Presets compose with `extra_allowed_hosts`, using the same exact-name HTTPS:443
 policy. They grant access to the whole session VM, not just setup commands.
 
-- `nix`: `cache.nixos.org`, `channels.nixos.org`, `releases.nixos.org`,
-  `tarballs.nixos.org`, `github.com`, `api.github.com`, `codeload.github.com`,
-  `raw.githubusercontent.com`, `release-assets.githubusercontent.com`. This covers the official cache and common flake
-  input/registry downloads, including this repo's locked GitHub inputs.
+- `nix`: `cache.nixos.org`, `devenv.cachix.org`, `channels.nixos.org`,
+  `releases.nixos.org`, `tarballs.nixos.org`, `github.com`, `api.github.com`,
+  `codeload.github.com`, `raw.githubusercontent.com`,
+  `release-assets.githubusercontent.com`. This covers the official cache and
+  common flake input/registry downloads, including this repo's locked GitHub
+  inputs.
 - `javascript`: `registry.npmjs.org`, `jsr.io`, `npm.jsr.io`, and `nodejs.org`
   (Node headers for native dependency builds with node-gyp).
 - `python`: `pypi.org` and `files.pythonhosted.org` (PyPI indexes, wheels and
   source distributions for pip, uv and other Python package managers).
 - `rust`: `crates.io`, `index.crates.io`, `static.crates.io`,
-  `static.rust-lang.org`, and `sh.rustup.rs` (Cargo dependencies and rustup toolchains).
+  `static.rust-lang.org`, and `sh.rustup.rs` (Cargo dependencies and rustup
+  toolchains).
 
-For a repo using all four, set `network_presets = ["nix", "javascript", "python", "rust"]`
-under `repos[].session.isolation`.
+For a repo using all four, set
+`network_presets = ["nix", "javascript", "python", "rust"]` under
+`repos[].session.isolation`.
 
 Nix builds that fetch Rust crates also need `rust`; the `nix` preset alone does
-not grant crate downloads. If preparation fails with a proxy `403 Forbidden`
-for `static.crates.io`, add `rust` to the repo's existing `network_presets` in
-the trusted user config and rerun `loom environment prepare`.
+not grant crate downloads. If preparation fails with a proxy `403 Forbidden` for
+`static.crates.io`, add `rust` to the repo's existing `network_presets` in the
+trusted user config and rerun `loom environment prepare`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change
@@ -298,9 +291,9 @@ uppercase and lowercase proxy variables are supplied for package tools.
 ## Store layout and validation
 
 The immutable runtime is mounted read-only. Its closure is the OverlayFS lower
-layer; upper/work directories and the private Nix database live on smolvm's
-ext4 `/storage` disk. The root filesystem itself is overlay-backed and cannot
-serve as an upper layer. Closure registration and GC roots keep the runtime's
+layer; upper/work directories and the private Nix database live on smolvm's ext4
+`/storage` disk. The root filesystem itself is overlay-backed and cannot serve
+as an upper layer. Closure registration and GC roots keep the runtime's
 dependencies valid while additional packages are downloaded/built privately.
 Build temporary files also use `/storage`, rather than guest RAM.
 
@@ -309,48 +302,50 @@ operations/interactions, and messages arriving during VM replacement. Real-VM
 checks are available without provider credentials:
 
 ```sh
+# Automatic Nix: cold startup, fresh exports, optional preparation and offline reuse.
+deno run -A scripts/test-auto-nix-vm.ts /path/to/session-runtime /path/to/smolvm
 # Small fixture: publication, cache reuse, failure, cancellation and a live old VM.
 deno run -A scripts/test-prepared-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm
-# The same lifecycle with a writable private Nix store.
-deno run -A scripts/test-prepared-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm --nix
 # Heavier fixture: this repository's actual Nix development shell.
 deno run -A scripts/test-session-environment-vm.ts /path/to/aisdk-runtime /path/to/smolvm
 # Native addon compilation with Nix-provided pnpm and a mounted worktree.
 deno run -A scripts/test-pnpm-environment-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
-Apple Silicon disk cloning and runtime hash regeneration need validation on a Mac.
+Apple Silicon disk cloning and runtime hash regeneration need validation on a
+Mac.
 
 ### Package-manager networking
 
 The guest exports HTTP(S) proxy variables and `NODE_USE_ENV_PROXY=1` during
-preparation and session startup, including after restoring a prepared environment.
-Node/Corepack need this opt-in to use the proxy (Node 24.5+ or 22.21+); older
-Node versions need their own proxy support. Direct guest DNS/network access is
-unavailable.
+preparation and session activation. Node/Corepack need this opt-in to use the
+proxy (Node 24.5+ or 22.21+); older Node versions need their own proxy support.
+Direct guest DNS/network access is unavailable.
 
-VM-backed Codex sessions permit network access within their filesystem sandbox so
-commands can reach the guest proxy. Loom's host proxy still enforces the selected
-network presets and exact extra hosts on HTTPS port 443. Host Codex sessions keep
-network access disabled. Changing package installation from environment preparation
-to an init hook does not itself fix networking; it installs dependencies in the
-conversation's worktree.
+VM-backed Codex sessions permit network access within their filesystem sandbox
+so commands can reach the guest proxy. Loom's host proxy still enforces the
+selected network presets and exact extra hosts on HTTPS port 443. Host Codex
+sessions keep network access disabled. Changing package installation from
+environment preparation to an init hook does not itself fix networking; it
+installs dependencies in the conversation's worktree.
 
 ## VM execution without a worktree
 
-VM execution and Git worktrees are independent. `loom run --isolation vm --in-place`
-runs inside a session VM with the existing repository checkout as its working
-directory. Use worktrees when sessions need separate working copies and branches.
-In-place sessions share files and Git state; archiving or deleting one preserves
-the checkout, including uncommitted changes. VM profiles and history remain private
-per session. Bare repositories still require a worktree.
+VM execution and Git worktrees are independent.
+`loom run --isolation vm --in-place` runs inside a session VM with the existing
+repository checkout as its working directory. Use worktrees when sessions need
+separate working copies and branches. In-place sessions share files and Git
+state; archiving or deleting one preserves the checkout, including uncommitted
+changes. VM profiles and history remain private per session. Bare repositories
+still require a worktree.
 
 ## Session shells
 
-Run `loom shell <session>` (a short session ID works) to open an interactive shell
-in the session's repository or worktree. Local sessions use `$SHELL`; VM sessions
-enter their running VM with its activated tools and environment. Exit the shell
-to return to your terminal. The agent can keep working while the shell is open.
+Run `loom shell <session>` (a short session ID works) to open an interactive
+shell in the session's repository or worktree. Local sessions use `$SHELL`; VM
+sessions enter their running VM with its activated tools and environment. Exit
+the shell to return to your terminal. The agent can keep working while the shell
+is open.
 
 The VM must already be running; this command does not start or resume a session.
 VMs started before shell support need to be archived and resumed first. While a

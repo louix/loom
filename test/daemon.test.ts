@@ -1780,7 +1780,7 @@ test("editing config.jsonc hot-applies worktree and Nix settings and pushes a no
     {
       "path": ${JSON.stringify(hh.repoRoot)},
       "session": {
-        "environment": { "nix": { "auto_activate": false, "dev_shell": "ci" } },
+        "auto_nix": true,
         "worktree": {
           "enabled": false
         }
@@ -1791,7 +1791,7 @@ test("editing config.jsonc hot-applies worktree and Nix settings and pushes a no
     );
     await waitFor(() => notices.some((t) => /config reloaded/.test(t)));
 
-    assert.deepEqual(hh.daemon.config.environment.nix, { autoActivate: false, devShell: "ci" });
+    assert.equal(hh.daemon.config.autoNix, true);
     assert.ok(
       notices.some((t) => /config reloaded/.test(t)),
       `got notices: ${JSON.stringify(notices)}`,

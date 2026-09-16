@@ -11,7 +11,7 @@ import {
   publishRepoBase,
   repoBaseDirectory,
 } from "../runtime/src/session-vm/repo-base.ts";
-import { loadPreparedEnvironment } from "../runtime/src/session-vm/environment.ts";
+import { activateSessionEnvironment } from "../runtime/src/session-vm/environment.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 
 const waitFor = async (fn: () => boolean | Promise<boolean>) => {
@@ -193,32 +193,18 @@ test("init failures reach non-VM agents before the first turn and do not block c
   }
 });
 
-test("session activation restores a base snapshot without evaluating broken worktree setup", async () => {
+test("session activation evaluates its current prefix but never reruns preparation", async () => {
   const directory = await Deno.makeTempDir();
   try {
-    const snapshot = join(directory, "environment.json");
-    await Deno.writeTextFile(
-      snapshot,
-      JSON.stringify({
-        PATH: "/deleted-prepare-worktree/node_modules/.bin:/nix/store/prepared/bin",
-        PROJECT_ROOT: "/deleted-prepare-worktree",
-        SIBLING: "/deleted-prepare-worktree-other/bin",
-        PWD: "/deleted-prepare-worktree",
-        LOOM_PREPARATION_ONLY: "1",
-      }),
-    );
     const config = normalizeSessionEnvironment({
-      command_prefix: ["/missing-command"],
+      command_prefix: ["/bin/sh", "-c", 'export PROJECT_ROOT="$PWD"; exec "$@"', "activation"],
       prepare: "exit 99",
     });
-    assert.deepEqual(await loadPreparedEnvironment(config, snapshot, "/session-worktree"), {
-      PATH: "/session-worktree/node_modules/.bin:/nix/store/prepared/bin",
-      PROJECT_ROOT: "/session-worktree",
-      SIBLING: "/deleted-prepare-worktree-other/bin",
-    });
+    const options = { cwd: directory, shell: "/bin/sh" };
+    assert.equal((await activateSessionEnvironment(config, options))?.PROJECT_ROOT, directory);
     await assert.rejects(
-      loadPreparedEnvironment(config, join(directory, "missing")),
-      /loom environment prepare/,
+      activateSessionEnvironment({ ...config, commandPrefix: ["/missing-command"] }, options),
+      /preparation failed/,
     );
   } finally {
     await Deno.remove(directory, { recursive: true });

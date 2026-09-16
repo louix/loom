@@ -4,6 +4,7 @@ import { z } from "zod";
 export const networkPresets = {
   nix: [
     "cache.nixos.org",
+    "devenv.cachix.org",
     "channels.nixos.org",
     "releases.nixos.org",
     "tarballs.nixos.org",

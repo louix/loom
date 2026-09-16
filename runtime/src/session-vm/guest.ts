@@ -3,10 +3,13 @@ import { sessionAuth } from "./auth.ts";
 import {
   prepareEnvironment,
   initializeGuestNix,
-  loadPreparedEnvironment,
+  activateSessionEnvironment,
   guestPathProfile,
 } from "./environment.ts";
-import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
+import {
+  environmentEnabled,
+  type SessionEnvironment,
+} from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup } from "./progress.ts";
@@ -80,12 +83,12 @@ for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
   void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`).finished;
 }
-// Explicit preparation builds the environment; normal initialization restores it
-// before loading the provider. The proxy remains available to setup and init hooks.
+// Preparation warms the reusable disk; every session activates its current checkout.
+// The proxy remains available to activation, setup and init hooks.
 const prepare = async (output?: "inherit") => {
   const config: SessionEnvironment | undefined =
     JSON.parse(await Deno.readTextFile("/run/loom/private/environment.json")) ?? undefined;
-  if (config?.nix) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
+  if (environmentEnabled(config)) Deno.env.set("TMPDIR", "/storage/loom-nix/tmp");
   const before = Deno.env.toObject();
   const env = output
     ? await prepareEnvironment(config, {
@@ -93,9 +96,10 @@ const prepare = async (output?: "inherit") => {
         initializeNix: initializeGuestNix,
         ...(output ? { output } : {}),
       })
-    : await loadPreparedEnvironment(config);
-  if (output && env)
-    await Deno.writeTextFile("/storage/loom-environment.json", JSON.stringify(env));
+    : await activateSessionEnvironment(config, {
+        shell: before.LOOM_GUEST_SHELL!,
+        initializeNix: initializeGuestNix,
+      });
   if (!env) return;
   for (const [key, value] of Object.entries(env)) Deno.env.set(key, value);
   // Keep the pinned provider executable ahead of dev-shell tools.

@@ -2,10 +2,6 @@ import {
   normalizeSessionEnvironment,
   type SessionEnvironment,
 } from "../../../../core/src/session-environment.ts";
-import {
-  resolveVmNixActivation,
-  type NixActivationSettings,
-} from "../../../../core/src/nix-activation.ts";
 import { bundledRuntime } from "../../../../runtime/src/packaged/artifact.ts";
 import {
   normalizeExtraHosts,
@@ -213,7 +209,7 @@ interface HookFields {
 }
 
 export interface LoomConfig {
-  environment: { nix: NixActivationSettings };
+  autoNix: boolean;
   tui: { includeEventLogInEditor: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
@@ -354,7 +350,7 @@ export interface LoomConfig {
 }
 
 export const DEFAULT_CONFIG: LoomConfig = {
-  environment: { nix: { autoActivate: true, devShell: "default" } },
+  autoNix: false,
   tui: { includeEventLogInEditor: false },
   baseBranch: "main",
   worktreeDir: ".loom/trees",
@@ -668,12 +664,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const { mcp, httpMcp } = resolveToolSelection(settings);
 
   return {
-    environment: {
-      nix: {
-        autoActivate: settings.session.environment.nix.auto_activate,
-        devShell: settings.session.environment.nix.dev_shell,
-      },
-    },
+    autoNix: settings.session.auto_nix,
     tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
     baseBranch: settings.base_branch,
     worktreeDir: settings.worktree_dir,
@@ -687,7 +678,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
           ...expandNetworkPresets(isolation.network_presets),
         ]),
       ],
-      environment: normalizeSessionEnvironment(isolation.environment),
+      environment: normalizeSessionEnvironment(isolation.environment, settings.session.auto_nix),
       ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,
@@ -836,13 +827,7 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       selected = overrides;
     }
   }
-  const config = normalizeConfig(deepMerge(defaults, selected));
-  config.isolation.environment = resolveVmNixActivation(
-    config.isolation.environment,
-    config.environment.nix,
-    repoRoot,
-  );
-  return config;
+  return normalizeConfig(deepMerge(defaults, selected));
 };
 
 /** Resolve a possibly-relative config path against the repo root. */
