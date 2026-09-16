@@ -167,28 +167,30 @@ export const publishRepoBase = async (
   }
 };
 
-/** Collect unselected bases; retire obsolete selections only after all replacements exist. */
+/** Keep configured selections and VM references; obsolete runtime keys need no replacement. */
 export const pruneRepoBases = async (
   home: string,
   bindings: Array<Pick<VmBinding, "artifact" | "smolvm" | "writableNix">> | undefined,
   temporary = "/tmp",
-): Promise<{ removed: number; retained: number }> => {
+): Promise<{
+  removed: number;
+  retained: number;
+  retainedBases: Array<{ directory: string; reason: string }>;
+}> => {
   const preparing = await lockSessionState(join(home, "preparation"));
   try {
     const held = await lock(home, true);
     try {
       const selections = new Set<string>();
-      const keep = await referencedBases(temporary);
-      let allReplacementsReady = bindings !== undefined;
+      const inUse = await referencedBases(temporary);
+      const keep = new Set<string>();
       for (const binding of bindings ?? []) {
-        const base = await compatibleRepoBase(home, binding);
-        if (!base) {
-          allReplacementsReady = false;
-          continue;
-        }
+        // Pruning follows the configured image identity, not whether setup has
+        // already succeeded for every runtime/backend/Nix setting. One missing
+        // replacement must not pin all historical image selections.
         selections.add(await selectionFile(binding.artifact));
-        if ((await currentRepoBase(home)) === base) selections.add("current.json");
-        keep.add(basename(base));
+        const base = await currentRepoBase(home, binding.artifact);
+        if (base && (await currentRepoBase(home)) === base) selections.add("current.json");
       }
       // Validate all selections before changing anything. An unknown format is not garbage.
       const obsolete: string[] = [];
@@ -205,18 +207,28 @@ export const pruneRepoBases = async (
           !/^base-[a-z0-9]+$/.test(value.directory)
         )
           throw new Error("Invalid environment selection");
-        if (!allReplacementsReady) keep.add(value.directory);
-        else if (!selections.has(entry.name)) obsolete.push(path);
+        if (bindings === undefined || selections.has(entry.name)) keep.add(value.directory);
+        else obsolete.push(path);
       }
       for (const path of obsolete) await Deno.remove(path);
-      let removed = 0,
-        retained = 0;
+      let removed = 0;
+      const retainedBases: Array<{ directory: string; reason: string }> = [];
+      const retain = (directory: string, reason: string) =>
+        retainedBases.push({ directory, reason });
       for await (const entry of Deno.readDir(home)) {
         if (!/^base-[a-z0-9]+$/.test(entry.name)) continue;
         const path = join(home, entry.name);
         const info = await Deno.lstat(path);
-        if (!info.isDirectory || info.isSymlink || keep.has(entry.name)) {
-          retained++;
+        if (!info.isDirectory || info.isSymlink) {
+          retain(entry.name, "not a real base directory");
+          continue;
+        }
+        if (keep.has(entry.name)) {
+          retain(entry.name, "current selection");
+          continue;
+        }
+        if (inUse.has(entry.name)) {
+          retain(entry.name, "referenced by a running or recoverable VM");
           continue;
         }
         let owner: Deno.FsFile | undefined;
@@ -234,13 +246,14 @@ export const pruneRepoBases = async (
           }
           await Deno.remove(path, { recursive: true });
           removed++;
-        } catch {
-          retained++;
+        } catch (error) {
+          retain(entry.name, error instanceof Error ? error.message : String(error));
         } finally {
           owner?.close();
         }
       }
-      return { removed, retained };
+      retainedBases.sort((a, b) => a.directory.localeCompare(b.directory));
+      return { removed, retained: retainedBases.length, retainedBases };
     } finally {
       held.close();
     }

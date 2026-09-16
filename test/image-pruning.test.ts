@@ -65,6 +65,10 @@ test("pruning retires incompatible selections but keeps live disks and their Nix
     await Deno.mkdir(orphan);
     const report = await pruneRepoBases(f.home, [f.binding], f.root);
     assert.equal(report.removed, 1);
+    assert.deepEqual(report.retainedBases, [
+      { directory: "base-current", reason: "current selection" },
+      { directory: "base-old", reason: "referenced by a running or recoverable VM" },
+    ]);
     assert(await exists(join(f.old, "disk-runtime-root")));
     assert.equal(
       await exists(join(f.home, "current-" + digest("/old-runtime").slice(0, 32) + ".json")),
@@ -110,18 +114,9 @@ test("pruning respects preparation locks, recovery markers, backing links and va
   }
 });
 
-test("missing replacements retain selections but collect abandoned bases; malformed selections fail closed", async () => {
+test("malformed selections fail closed and symlinked bases are never followed", async () => {
   const f = await baseFixture();
   try {
-    const orphan = join(f.home, "base-abandoned");
-    await Deno.mkdir(orphan);
-    assert.equal(
-      (await pruneRepoBases(f.home, [{ ...f.binding, artifact: "/missing" }], f.root)).removed,
-      1,
-    );
-    assert.equal(await exists(orphan), false);
-    assert(await exists(f.current));
-    assert(await exists(f.old));
     const invalid = join(f.home, "current.json");
     await Deno.writeTextFile(invalid, JSON.stringify({ directory: "../outside" }));
     await assert.rejects(pruneRepoBases(f.home, [f.binding], f.root));
@@ -257,5 +252,78 @@ test("malformed runtime selections defer cleanup and template symlinks never del
     assert(await exists(join(outside, "keep")));
   } finally {
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+test("a missing runtime or changed backend does not pin every historical image", async () => {
+  for (const scenario of ["missing-runtime", "changed-backend"]) {
+    const f = await baseFixture();
+    try {
+      for (let i = 0; i < 8; i++) await f.base(`base-history${i}`, `/runtime-${i}`);
+      const bindings =
+        scenario === "missing-runtime"
+          ? [f.binding, { ...f.binding, artifact: "/not-prepared" }]
+          : [{ ...f.binding, smolvm: "/upgraded-backend" }];
+      const result = await pruneRepoBases(f.home, bindings, f.root);
+      assert.equal(result.removed, 9, scenario);
+      assert.equal(result.retained, 1, scenario);
+      assert.equal(await currentRepoBase(f.home, f.binding.artifact), f.current);
+      assert.equal(await exists(f.old), false);
+    } finally {
+      await Deno.remove(f.root, { recursive: true });
+    }
+  }
+});
+
+test("explicit pruning retires unconfigured images even before a replacement is prepared", async () => {
+  const f = await baseFixture();
+  try {
+    // A shutdown without configuration must preserve every selected image.
+    assert.equal((await pruneRepoBases(f.home, undefined, f.root)).removed, 0);
+    const custom = await f.base("base-custom", "/custom-runtime");
+    const live = join(f.root, "loom-session-vm-live");
+    await Deno.mkdir(live);
+    await Deno.writeTextFile(join(live, "base-generation"), "base-old");
+    const result = await pruneRepoBases(
+      f.home,
+      [
+        { ...f.binding, artifact: "/not-prepared" },
+        { ...f.binding, artifact: "/custom-runtime" },
+      ],
+      f.root,
+    );
+    assert.equal(result.removed, 1);
+    assert.equal(result.retained, 2);
+    assert(await exists(f.old), "a running VM keeps its obsolete base");
+    assert(await exists(custom), "other configured custom images survive");
+    assert.equal(await exists(f.current), false);
+    assert.equal(await currentRepoBase(f.home, f.binding.artifact), undefined);
+    await Deno.remove(live, { recursive: true });
+    assert.equal((await pruneRepoBases(f.home, undefined, f.root)).removed, 1);
+    assert(await exists(custom));
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+test("pruning reports recovery markers, held ownership locks and backing links", async () => {
+  const f = await baseFixture();
+  let owner: Deno.FsFile | undefined;
+  try {
+    const busy = await f.base("base-busy", "/busy-runtime");
+    const linked = await f.base("base-linked", "/linked-runtime");
+    await Deno.writeTextFile(join(f.old, "active.json"), "{}");
+    owner = await lockSessionState(busy);
+    await Deno.link(join(linked, "disks/storage.raw"), join(f.root, "backing.raw"));
+    const result = await pruneRepoBases(f.home, [f.binding], f.root);
+    assert.equal(result.removed, 0);
+    const reasons = new Map(result.retainedBases.map((base) => [base.directory, base.reason]));
+    assert.match(reasons.get("base-old")!, /active.json/);
+    assert.match(reasons.get("base-busy")!, /still running/);
+    assert.match(reasons.get("base-linked")!, /backing links/);
+    assert.equal(reasons.get("base-current"), "current selection");
+  } finally {
+    owner?.close();
+    await Deno.remove(f.root, { recursive: true });
   }
 });

@@ -122,14 +122,17 @@ The daemon and existing sessions keep running throughout.
 
 ## Image cleanup
 
-Successful preparation prunes obsolete bases once every configured VM runtime
-has a compatible replacement. This includes bases from older Loom releases and
-superseded compatibility keys. Abandoned, unselected preparation directories can
-be collected even before replacements are ready; existing selections stay
-intact. Bases used by live VMs retain both their disk files and Nix GC roots;
-shutdown or recovery retries cleanup after releasing them. Active preparation
-and unfinished recovery state are retained. Other configured runtime images are
-preserved.
+Successful preparation and `loom environment prune` remove bases for runtime
+images that are no longer configured, along with abandoned preparation directories.
+A missing or incompatible replacement does not preserve all historical images:
+you can reclaim obsolete images before preparing the new runtime. The current
+selection for each configured image is retained, including custom runtimes and
+legacy selections still used by a configured image.
+Bases used by live VMs retain both their disk files and Nix GC roots; shutdown or
+recovery retries cleanup after releasing them. Active preparation and unfinished
+recovery state are retained. Pruning lists each retained base and its reason;
+`--json` includes the same details in `retainedBases`. A deferred runtime cache
+cleanup is separate from this repository's environment base cleanup.
 
 Run `loom environment prune` to retry cleanup for this repo without rebuilding.
 It also removes legacy persistent disks and interrupted disk copies from stopped

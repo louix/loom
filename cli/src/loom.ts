@@ -241,7 +241,7 @@ const main = async (): Promise<void> => {
       writeOut(
         values.json
           ? JSON.stringify(result) + "\n"
-          : `Removed ${result.removed} old environment bases; retained ${result.retained}. Removed legacy disks from ${result.sessionDisksRemoved} sessions; deferred ${result.sessionDisksRetained}. Removed ${result.generations} runtime generations and ${result.templates} template caches.${result.deferred ? " Runtime cleanup deferred: active VMs/updates, recovery state, or unreadable metadata." : ""}\n`,
+          : `Removed ${result.removed} old environment bases; retained ${result.retained}.\n${result.retainedBases.map((base) => `  ${base.directory}: ${base.reason}\n`).join("")}Removed legacy disks from ${result.sessionDisksRemoved} sessions; deferred ${result.sessionDisksRetained}.\nRemoved ${result.generations} runtime generations and ${result.templates} template caches.${result.deferred ? " Runtime cache cleanup deferred (separate from environment bases): active VMs/updates, recovery state, or unreadable metadata." : ""}\n`,
       );
     } else await prepareRepoEnvironment(repoRoot);
     return;
