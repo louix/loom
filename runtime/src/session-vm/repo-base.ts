@@ -167,7 +167,7 @@ export const publishRepoBase = async (
   }
 };
 
-/** Remove obsolete bases after configured replacements exist. With no bindings, keep all selections. */
+/** Collect unselected bases; retire obsolete selections only after all replacements exist. */
 export const pruneRepoBases = async (
   home: string,
   bindings: Array<Pick<VmBinding, "artifact" | "smolvm" | "writableNix">> | undefined,
@@ -179,12 +179,13 @@ export const pruneRepoBases = async (
     try {
       const selections = new Set<string>();
       const keep = await referencedBases(temporary);
+      let allReplacementsReady = bindings !== undefined;
       for (const binding of bindings ?? []) {
         const base = await compatibleRepoBase(home, binding);
-        if (!base)
-          throw new Error(
-            "Prepare all configured runtime environments before pruning older images",
-          );
+        if (!base) {
+          allReplacementsReady = false;
+          continue;
+        }
         selections.add(await selectionFile(binding.artifact));
         if ((await currentRepoBase(home)) === base) selections.add("current.json");
         keep.add(basename(base));
@@ -204,7 +205,7 @@ export const pruneRepoBases = async (
           !/^base-[a-z0-9]+$/.test(value.directory)
         )
           throw new Error("Invalid environment selection");
-        if (bindings === undefined) keep.add(value.directory);
+        if (!allReplacementsReady) keep.add(value.directory);
         else if (!selections.has(entry.name)) obsolete.push(path);
       }
       for (const path of obsolete) await Deno.remove(path);

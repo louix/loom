@@ -1,6 +1,7 @@
 import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 import { existsSync } from "node:fs";
 import { recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
+import { discardSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -34,6 +35,7 @@ export const withStoppedSessionVm = async <T>(
   try {
     const recovered = await recoverSessionVm(dir);
     await assertNoActiveVm(dir);
+    await discardSessionDisks(dir);
     return await action(recovered);
   } finally {
     lock.close();
@@ -82,6 +84,38 @@ export const recoverRepositoryVms = async (
     if (!(error instanceof Deno.errors.NotFound)) report("repository", error);
   }
   return handled;
+};
+
+/** Collect legacy disks without stopping VMs or touching native conversation history. */
+export const pruneRepositorySessionDisks = async (repo: string) => {
+  const result = { sessionDisksRemoved: 0, sessionDisksRetained: 0 };
+  const root = dirname(sessionVmDirectory(repo, "scan"));
+  try {
+    if ((await Deno.realPath(root)) !== root) {
+      throw new Error("Session state must not be a symlink");
+    }
+    for await (const entry of Deno.readDir(root)) {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(entry.name)) continue;
+      const dir = join(root, entry.name);
+      let owner: Deno.FsFile | undefined;
+      try {
+        if (!entry.isDirectory || entry.isSymlink || (await Deno.realPath(dir)) !== dir) {
+          result.sessionDisksRetained++;
+          continue;
+        }
+        owner = await lockSessionState(dir);
+        await assertNoActiveVm(dir);
+        if (await discardSessionDisks(dir)) result.sessionDisksRemoved++;
+      } catch {
+        result.sessionDisksRetained++;
+      } finally {
+        owner?.close();
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return result;
 };
 
 /** Read-only preflight; never import or move native provider history across boundaries. */

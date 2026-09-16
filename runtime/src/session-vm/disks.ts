@@ -12,13 +12,19 @@ export const sessionDiskSizes = Object.entries(diskGiB).flatMap(([name, size]) =
   String(size),
 ]);
 const stems = ["storage", "overlay"] as const;
-/** Migration from persistent guest disks; host worktrees and profiles are separate. */
-export const discardSessionDisks = async (home: string) => {
-  for (const name of ["disks", "disk-runtime-root", "disk-backend-root"]) {
-    await Deno.remove(join(home, name), { recursive: true }).catch((error) => {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    });
+/** Caller holds ownership and has confirmed shutdown; profiles and host files are separate. */
+export const discardSessionDisks = async (home: string): Promise<boolean> => {
+  let removed = false;
+  for await (const entry of Deno.readDir(home)) {
+    if (
+      !["disks", "disk-runtime-root", "disk-backend-root"].includes(entry.name) &&
+      !/^\.disk-init-[a-z0-9]+$/.test(entry.name)
+    )
+      continue;
+    await Deno.remove(join(home, entry.name), { recursive: true });
+    removed = true;
   }
+  return removed;
 };
 type Identity = Pick<VmBinding, "artifact" | "smolvm" | "writableNix">;
 export class SavedDiskCompatibilityError extends Error {}

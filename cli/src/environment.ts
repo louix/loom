@@ -19,6 +19,7 @@ import { ipcPermissions } from "../../core/src/network-permissions.ts";
 import { inspectArtifact } from "../../runtime/src/packaged/artifact.ts";
 import { loomPaths } from "../../core/src/paths.ts";
 import { pruneRuntimeCaches } from "./maintenance.ts";
+import { pruneRepositorySessionDisks } from "../../backend/daemon/src/daemon/session-vm-state.ts";
 
 /** Called while Ink has suspended terminal ownership. Keep one CLI output path. */
 export const prepareEnvironmentInTerminal = async (
@@ -324,7 +325,8 @@ export const pruneRepoEnvironment = async (repo: string) => {
       writableNix: config.isolation.environment?.nix === true,
     });
   }
+  const sessions = await pruneRepositorySessionDisks(repo);
   const bases = await pruneRepoBases(repoBaseDirectory(repo), bindings);
   const caches = await pruneRuntimeCaches(repo);
-  return { ...bases, ...caches };
+  return { ...bases, ...caches, ...sessions };
 };

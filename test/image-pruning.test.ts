@@ -110,10 +110,17 @@ test("pruning respects preparation locks, recovery markers, backing links and va
   }
 });
 
-test("missing replacements and malformed selections fail closed; symlinked bases are never followed", async () => {
+test("missing replacements retain selections but collect abandoned bases; malformed selections fail closed", async () => {
   const f = await baseFixture();
   try {
-    await assert.rejects(pruneRepoBases(f.home, [{ ...f.binding, artifact: "/missing" }], f.root));
+    const orphan = join(f.home, "base-abandoned");
+    await Deno.mkdir(orphan);
+    assert.equal(
+      (await pruneRepoBases(f.home, [{ ...f.binding, artifact: "/missing" }], f.root)).removed,
+      1,
+    );
+    assert.equal(await exists(orphan), false);
+    assert(await exists(f.current));
     assert(await exists(f.old));
     const invalid = join(f.home, "current.json");
     await Deno.writeTextFile(invalid, JSON.stringify({ directory: "../outside" }));
