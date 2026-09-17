@@ -698,6 +698,10 @@ export const EventLog = memo(
   ({ view, width, spinner }: { view: LogView; width: number; spinner?: ReactNode }): ReactNode => {
     const palette = useTheme();
     const { child, rows } = view;
+    let empty = child
+      ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
+      : "  (quiet)";
+    if (view.loading) empty = "  (loading history…)";
     // Pane title: the focused child's name while drilled in, else the plain header.
     let title = "EVENTS";
     if (child) {
@@ -714,11 +718,7 @@ export const EventLog = memo(
           <Text tone="faint">{view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}</Text>
         </Box>
         {rows.length === 0 ? (
-          <Text tone="faint">
-            {child
-              ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
-              : "  (quiet)"}
-          </Text>
+          <Text tone="faint">{empty}</Text>
         ) : (
           rows.map((r) =>
             r.first ? (

@@ -3294,6 +3294,59 @@ test("v cycles EVENTS verbosity and the palette can change it too", async () => 
   }
 });
 
+test("environment checks do not block input or history loading", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(snap({ id: "a", title: "responsive session" })));
+  const check = Promise.withResolvers<string | null>();
+  const mounted = mount(fake.client, { checkEnvironment: () => check.promise });
+  try {
+    await waitFor(mounted.stdout, /loading history/);
+    assert.doesNotMatch(mounted.stdout.last, /\(quiet\)/);
+    mounted.stdin.feed("?");
+    await waitFor(mounted.stdout, /loom — keys/);
+    mounted.stdin.feed(ESC);
+    fake.heads()[0]!.resolve({ items: [], olderCursor: null });
+    await waitFor(mounted.stdout, /\(quiet\)/);
+    check.resolve("Environment image missing or out of date.");
+    await waitFor(mounted.stdout, /Environment image missing/);
+  } finally {
+    check.resolve(null);
+    mounted.app.unmount();
+  }
+});
+
+test("a late startup check cannot replace the environment preparation recheck", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf());
+  const first = Promise.withResolvers<string | null>();
+  let checks = 0;
+  const handle = mkFleetHandle({
+    client: fake.client,
+    term: {
+      ...fakeTerm,
+      suspendTerminal: async (fn) => {
+        await fn();
+      },
+    },
+    prepareEnvironment: async () => 0,
+    checkEnvironment: () => (++checks === 1 ? first.promise : Promise.resolve(null)),
+  });
+  const stop = handle.effectStart();
+  try {
+    handle.handleKey(" ", {} as Key);
+    handle.handleKey("Prepare repo environment", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    await delay(0);
+    assert.equal(checks, 2);
+    first.resolve("stale environment warning");
+    await delay(0);
+    assert.equal(handle.getView().environmentWarning, null);
+  } finally {
+    first.resolve(null);
+    stop();
+  }
+});
+
 test("runtime warning stays in the frame until a compatibility recheck succeeds", async () => {
   for (const code of [0, 1, 130]) {
     const fake = mkFakeClient();

@@ -49,12 +49,10 @@ export const runTui = async (
     // the alt screen, which App's keymap reads as fleet-selection movement.
     if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
 
-    const environmentWarning = (await opts.checkEnvironment?.()) ?? null;
     const instance = render(
       <App
         client={client}
         includeEventLogInEditor={opts.includeEventLogInEditor ?? false}
-        environmentWarning={environmentWarning}
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
@@ -68,6 +66,7 @@ export const runTui = async (
       />,
       {
         exitOnCtrlC: false,
+        maxFps: 60,
         alternateScreen: true,
         // Mosh ignores Ink's CSI E row skips and has no unique environment
         // marker. LOOM_TUI_COMPAT=1 opts into full redraws for such terminals.
@@ -132,6 +131,7 @@ export const pickRepository = async (repositories: string[]): Promise<string | n
     {
       alternateScreen: true,
       exitOnCtrlC: false,
+      maxFps: 60,
       incrementalRendering: Deno.env.get("LOOM_TUI_COMPAT") !== "1",
     },
   );

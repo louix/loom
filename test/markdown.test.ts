@@ -135,6 +135,7 @@ test("EVENTS uses formatted geometry for every viewport and keeps raw exports an
       createElement(EventLog, {
         width,
         view: {
+          loading: false,
           rows: all,
           child: null,
           tag: "",

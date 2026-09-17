@@ -554,7 +554,7 @@ export class Daemon {
     }, KEEP_WARM_SWEEP_MS);
     this.#warmSweep.unref();
 
-    this.#gitSweep = setInterval(() => this.#sweepGitFacts(), GIT_FACTS_SWEEP_MS);
+    this.#gitSweep = setInterval(() => void this.#sweepGitFacts(), GIT_FACTS_SWEEP_MS);
     this.#gitSweep.unref();
 
     this.#log.info("daemon up", {
@@ -673,9 +673,8 @@ export class Daemon {
    * tool call and per usage tick, so probing the whole fleet here would be a
    * `git` shell-out per session per token.
    */
-  #stateFrame(refreshGitFor?: string | "all"): StatePush {
-    if (refreshGitFor === "all") for (const s of this.#registry.list()) this.#refreshGitFacts(s.id);
-    else if (refreshGitFor !== undefined) this.#refreshGitFacts(refreshGitFor);
+  #stateFrame(refreshGitFor?: string): StatePush {
+    if (refreshGitFor !== undefined) void this.#refreshGitFacts(refreshGitFor);
     return {
       kind: "push",
       type: "state",
@@ -703,11 +702,19 @@ export class Daemon {
   }
 
   /** Re-probe one session's worktree so the next snapshot carries fresh facts. */
-  #refreshGitFacts(id: string): void {
+  async #refreshGitFacts(id: string): Promise<void> {
     const s = this.#registry.get(id);
     if (!s) return;
     const gitPath = s.worktree ?? (s.inPlace ? this.repoRoot : null);
-    if (gitPath) this.#worktrees.facts(gitPath, s.baseBranch);
+    if (!gitPath) return;
+    const before = this.#worktrees.cachedFacts(gitPath);
+    const after = await this.#worktrees.factsAsync(gitPath, s.baseBranch);
+    if (
+      !this.#stopping &&
+      this.#registry.get(id) &&
+      JSON.stringify(before) !== JSON.stringify(after)
+    )
+      this.#publishState();
   }
 
   /** A daemon-level advisory for the operator (config reload feedback). */
@@ -1971,24 +1978,24 @@ export class Daemon {
    * `git commit` on `main`) until that session next had activity.
    *
    * Skipped when no client is attached (no point shelling out `git` for
-   * nobody). `facts()` shells out synchronously — the sweep can't overlap
-   * itself.
+   * nobody). Probes yield between Git commands; a guard prevents overlapping sweeps.
    */
-  #sweepGitFacts(): void {
-    if (this.#stopping || this.#server.clientCount === 0) return;
-    // `facts()` is cached per path; compute once per distinct worktree, since
-    // sessions share them (every in-place session shares the repo root).
-    const seen = new Set<string>();
-    let moved = false;
-    for (const snap of this.#registry.list()) {
-      const gitPath = snap.worktree ?? (snap.inPlace ? this.repoRoot : null);
-      if (!gitPath || seen.has(gitPath)) continue;
-      seen.add(gitPath);
-      const prev = this.#worktrees.cachedFacts(gitPath);
-      const next = this.#worktrees.facts(gitPath, snap.baseBranch);
-      if (next != null && JSON.stringify(prev) !== JSON.stringify(next)) moved = true;
+  #sweepingGitFacts = false;
+  async #sweepGitFacts(): Promise<void> {
+    if (this.#stopping || this.#server.clientCount === 0 || this.#sweepingGitFacts) return;
+    this.#sweepingGitFacts = true;
+    try {
+      const seen = new Set<string>();
+      for (const snap of this.#registry.list()) {
+        if (this.#stopping || this.#server.clientCount === 0) break;
+        const gitPath = snap.worktree ?? (snap.inPlace ? this.repoRoot : null);
+        if (!gitPath || seen.has(gitPath)) continue;
+        seen.add(gitPath);
+        await this.#refreshGitFacts(snap.id);
+      }
+    } finally {
+      this.#sweepingGitFacts = false;
     }
-    if (moved) this.#publishState();
   }
 
   // -------------------------------------------------------------------------
@@ -3455,7 +3462,8 @@ export class Daemon {
     // client cannot miss one in the gap and cannot install an older baseline
     // over a newer push. The hello *result* carries handshake metadata only.
     this.#server.subscribe(ctx.conn);
-    ctx.conn.pushState(this.#stateFrame("all"));
+    ctx.conn.pushState(this.#stateFrame());
+    void this.#sweepGitFacts();
 
     this.#onActivityChange("hello");
 

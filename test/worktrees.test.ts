@@ -172,6 +172,37 @@ test("facts report branch, commits, ahead/behind, dirty, last subject", () => {
   }
 });
 
+test("advisory facts yield, share pending probes, and respect invalidation", async () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const expected = mgr(root).facts(root, "main");
+    const pending = m.factsAsync(root, "main");
+    assert.equal(m.factsAsync(root, "main"), pending);
+    assert.equal(m.cachedFacts(root), null, "Git must not finish synchronously");
+    let yielded = false;
+    const timer = setTimeout(() => {
+      yielded = true;
+    }, 0);
+    assert.deepEqual(await pending, expected);
+    clearTimeout(timer);
+    assert(yielded, "timers run while advisory Git commands are in flight");
+
+    m.invalidateFacts(root);
+    const obsolete = m.factsAsync(root, "main");
+    m.invalidateFacts(root);
+    await obsolete;
+    assert.equal(m.cachedFacts(root), null, "an invalidated probe cannot refill the cache");
+    writeFileSync(join(root, "dirty.txt"), "changed");
+    assert.equal((await m.factsAsync(root, "main"))?.dirty, true);
+    assert.deepEqual(await m.factsAsync(root, "missing-base"), m.cachedFacts(root));
+    m.invalidateFacts(root);
+    assert.equal((await m.factsAsync(root, "missing-base"))?.aheadOfBase, 0);
+  } finally {
+    cleanup();
+  }
+});
+
 test("renameBranch rebrands loom/<id> from a title, keeping the tree dir", () => {
   const { root, cleanup } = repo();
   try {

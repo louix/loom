@@ -109,6 +109,7 @@ export class WorktreeManager {
   readonly #log: Logger;
   #setupDone = false;
   #factsCache = new Map<string, { at: number; facts: GitFacts }>();
+  #factsPending = new Map<string, Promise<GitFacts | null>>();
 
   constructor(opts: WorktreeManagerOptions) {
     this.#repoRoot = canonicalHostPath(opts.repoRoot);
@@ -379,6 +380,7 @@ export class WorktreeManager {
     // Facts are keyed by worktree path (unchanged) but carry the old branch
     // name; the cache is tiny and rebuilds on the next snapshot.
     this.#factsCache.clear();
+    this.#factsPending.clear();
     this.#log.info("session branch renamed", { from: currentBranch, to: branch });
     return branch;
   }
@@ -389,7 +391,7 @@ export class WorktreeManager {
     if (opts.force) args.push("--force");
     args.push(path);
     const res = this.#git(args);
-    this.#factsCache.delete(path);
+    this.invalidateFacts(path);
     if (!res.ok) {
       throw new Error(`git worktree remove failed: ${res.stderr.trim() || res.stdout.trim()}`);
     }
@@ -420,7 +422,7 @@ export class WorktreeManager {
       });
       this.#log.info("worktree removed", { path });
     } finally {
-      this.#factsCache.delete(path);
+      this.invalidateFacts(path);
     }
   }
 
@@ -533,7 +535,7 @@ export class WorktreeManager {
    */
   restoreTo(path: string, sha: string): { ok: boolean; error: string } {
     const res = this.#git(["reset", "--hard", sha], path);
-    this.#factsCache.delete(path);
+    this.invalidateFacts(path);
     if (res.ok) {
       this.#log.info("worktree reset", { path, sha: sha.slice(0, 8) });
       return { ok: true, error: "" };
@@ -617,6 +619,53 @@ export class WorktreeManager {
     return facts;
   }
 
+  /** Advisory probes must yield while Git runs so history RPCs remain responsive. */
+  factsAsync(path: string, baseBranch: string | null): Promise<GitFacts | null> {
+    if (!path || !existsSync(path)) return Promise.resolve(null);
+    const cached = this.#factsCache.get(path);
+    if (cached && Date.now() - cached.at < FACTS_TTL_MS) return Promise.resolve(cached.facts);
+    const pending = this.#factsPending.get(path);
+    if (pending) return pending;
+    const out = (args: string[]): Promise<string> =>
+      new Promise((resolve) => {
+        execFile(
+          "git",
+          ["-C", path, ...args],
+          { timeout: 15_000, maxBuffer: GIT_MAX_BUFFER, encoding: "utf8" },
+          (error, stdout) => resolve(error ? "" : stdout.trim()),
+        );
+      });
+    let probe!: Promise<GitFacts | null>;
+    probe = (async (): Promise<GitFacts | null> => {
+      const branch = (await out(["symbolic-ref", "--short", "-q", "HEAD"])) || null;
+      const dirty = (await out(["status", "--porcelain"])).length > 0;
+      const lastCommitSubject = (await out(["log", "-1", "--format=%s"])) || null;
+      const commits = numOr0(await out(["rev-list", "--count", "HEAD"]));
+      const base = baseBranch ?? this.#baseBranch;
+      const [behind, ahead] = base
+        ? (await out(["rev-list", "--left-right", "--count", `${base}...HEAD`])).split(/\s+/)
+        : [];
+      const facts: GitFacts = {
+        branch,
+        dirty,
+        lastCommitSubject,
+        commits,
+        aheadOfBase: numOr0(ahead),
+        behindBase: numOr0(behind),
+      };
+      // A mutation/invalidation or a synchronous probe supersedes this result.
+      if (this.#factsPending.get(path) !== probe || this.#factsCache.get(path) !== cached)
+        return this.cachedFacts(path);
+      this.#factsCache.set(path, { at: Date.now(), facts });
+      return facts;
+    })();
+    this.#factsPending.set(path, probe);
+    void probe.finally(() => {
+      if (this.#factsPending.get(path) === probe) this.#factsPending.delete(path);
+    });
+    return probe;
+  }
+
   /** Last computed facts for `path`, ignoring the TTL — so a snapshot that
    *  skips the shell-out (the per-usage stream) can still carry a git line. */
   cachedFacts(path: string): GitFacts | null {
@@ -626,6 +675,7 @@ export class WorktreeManager {
   /** Drop the cached facts for `path` — call after a known mutation (a commit
    *  from the agent's tool, an undo restore) so the fleet view doesn't lag it. */
   invalidateFacts(path: string): void {
+    this.#factsPending.delete(path);
     this.#factsCache.delete(path);
   }
 
@@ -678,7 +728,7 @@ export class WorktreeManager {
 
     const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, 90_000);
     if (run.ok) {
-      this.#factsCache.delete(path);
+      this.invalidateFacts(path);
       const head = this.#gitOut(["rev-parse", "--short", "HEAD"], path);
       this.#log.info("branch synced onto base", { path, base, mode, behind, head });
       return { outcome: "updated", head, ...info };
@@ -690,7 +740,7 @@ export class WorktreeManager {
     const conflict = this.#gitOut(["diff", "--name-only", "--diff-filter=U"], path).length > 0;
     // Undo whatever half-applied state git left behind, whichever way it failed.
     const abort = this.#git([mode, "--abort"], path);
-    this.#factsCache.delete(path);
+    this.invalidateFacts(path);
     this.#log.warn("branch sync onto base failed", {
       path,
       base,

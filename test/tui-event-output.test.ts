@@ -36,6 +36,7 @@ test("tool output cannot move the cursor outside EVENTS", () => {
         createElement(EventLog, {
           width,
           view: {
+            loading: false,
             rows,
             child: null,
             tag: "",

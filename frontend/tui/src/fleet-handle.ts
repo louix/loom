@@ -498,6 +498,7 @@ export const mkFleetHandle = ({
   if (savedTheme) setThemeMode(savedTheme);
   let state = initialState();
   let environmentWarning = initialEnvironmentWarning ?? null;
+  let environmentCheck = 0;
   /** Whether the daemon has given us a snapshot to act on. The single source
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
@@ -806,7 +807,10 @@ export const mkFleetHandle = ({
       let code = 1;
       await term.suspendTerminal(async () => {
         code = await prepareEnvironment();
-        if (checkEnvironment) environmentWarning = await checkEnvironment();
+        if (checkEnvironment) {
+          environmentCheck += 1;
+          environmentWarning = await checkEnvironment();
+        }
       });
       let message = "Environment preparation failed";
       if (code === 0) message = "Repo environment prepared";
@@ -2314,6 +2318,22 @@ export const mkFleetHandle = ({
       pid: client.daemonInfo?.pid ?? null,
     });
     void reconcileVersion();
+    let stopped = false;
+    // Compatibility checks can invoke external tools; draw and accept input first.
+    if (checkEnvironment && initialEnvironmentWarning === undefined) {
+      const check = ++environmentCheck;
+      void checkEnvironment()
+        .then((warning) => {
+          if (stopped || check !== environmentCheck) return;
+          environmentWarning = warning;
+          publish();
+        })
+        .catch((error: unknown) => {
+          if (stopped || check !== environmentCheck) return;
+          environmentWarning = `Could not check environment image: ${String(error)}`;
+          publish();
+        });
+    }
 
     const offs = [
       composer.subscribe(() => {
@@ -2377,6 +2397,7 @@ export const mkFleetHandle = ({
     // The clock is armed by `settle()` after every publish (below), from the
     // frame that was just published; nothing to start here.
     return () => {
+      stopped = true;
       composer.dispose();
       clock.dispose();
       notices.dispose();

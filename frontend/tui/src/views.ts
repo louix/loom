@@ -128,6 +128,7 @@ export const fleetPaneView = (
 // ---------------------------------------------------------------------------
 
 export interface LogView {
+  readonly loading: boolean;
   /** The drilled-into child, when the pane is narrowed to one. */
   readonly child: FleetChild | null;
   /** Compact label for the current filter, for the pane header. */
@@ -169,6 +170,7 @@ export const logView = (
   return {
     child,
     tag: logFilterTag(filter),
+    loading: transcript.t === "loading",
     scrolled: off > 0,
     above,
     rows: windowRows(ctx, above, end),
