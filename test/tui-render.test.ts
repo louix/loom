@@ -3466,7 +3466,8 @@ test("unavailable VM choice explains why and leaves the local session draft inta
     assert(p?.t === "new");
     assert.equal(p.settings.isolation, undefined);
     assert.equal(p.buffer.text, "draft");
-    assert.match(JSON.stringify(handle.getView().ui), /No VM runtime is configured/);
+    assert.equal(p.feedback?.text, "No VM runtime is configured");
+    assert.equal(p.feedback?.pending, false);
   } finally {
     teardown();
   }

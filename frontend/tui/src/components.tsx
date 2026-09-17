@@ -754,11 +754,6 @@ export const EventLog = memo(
  *  rows count against it — a wide paste scrolls within the same budget. */
 export const MAX_EDITOR_ROWS = 8;
 
-/** Columns the prompt editor wraps to, given the terminal width: the footer's
- *  paddingX (1 + 1) and the 2-char caret gutter come off first. Single source
- *  of truth for both `InputLine`'s wrap and `promptRows`' height budget. */
-const editorRoom = (cols: number): number => Math.max(8, cols - 4);
-
 /** One drawn row with the block caret at `col`, windowed to `room` columns so
  *  the caret stays visible in text longer than the row. */
 const caretCell = (ln: string, col: number, room: number): ReactNode => {
@@ -787,11 +782,13 @@ export const InputLine = ({
   room,
   placeholder,
   multiline = true,
+  maxRows = MAX_EDITOR_ROWS,
 }: {
   buf: Buffer;
   room: number;
   placeholder?: string;
   multiline?: boolean;
+  maxRows?: number;
 }): ReactNode => {
   if (buf.text === "") {
     return (
@@ -819,15 +816,14 @@ export const InputLine = ({
 
   const { rows, row, col } = layoutWrapped(buf, room);
 
-  // Window to MAX_EDITOR_ROWS around the caret so the rendered height matches
-  // what `promptRows` told the layout to reserve.
+  // Keep the caret in the row budget reserved by the containing pane or modal.
   const start =
-    rows.length <= MAX_EDITOR_ROWS
+    rows.length <= maxRows
       ? 0
-      : Math.min(Math.max(0, row - Math.floor(MAX_EDITOR_ROWS / 2)), rows.length - MAX_EDITOR_ROWS);
-  const shown = rows.slice(start, start + MAX_EDITOR_ROWS);
+      : Math.min(Math.max(0, row - Math.floor(maxRows / 2)), rows.length - maxRows);
+  const shown = rows.slice(start, start + maxRows);
   const moreAbove = start > 0;
-  const moreBelow = start + MAX_EDITOR_ROWS < rows.length;
+  const moreBelow = start + maxRows < rows.length;
 
   return (
     <Box flexDirection="column">
@@ -981,33 +977,7 @@ export const FooterArea = ({
       </Box>
     );
   }
-  if (p) {
-    // `new` is the one prompt with no session to sit beside, so it draws its
-    // whole input group — label, provider/model chips, editor, hints — here.
-    const prov = providerInfo(state, p.settings.provider ?? "");
-    return (
-      <Box flexDirection="column" width={width} paddingX={1}>
-        <Box gap={1}>
-          <Line tone="accent" bold>
-            {p.label}
-          </Line>
-          {modeChip(p.settings.mode)}
-          <Text tone="accentDim">{`[${(p.settings.isolation ?? prov?.defaultIsolation) === "vm" ? "VM" : "Local"}]`}</Text>
-          <Line tone="faint" {...(prov?.color ? { color: prov.color } : {})}>
-            {`${prov?.tag ?? p.settings.provider ?? "?"} / ${
-              p.settings.model || prov?.defaultModel || "auto"
-            }`}
-          </Line>
-          <Text tone="faint">{"⌥p change"}</Text>
-        </Box>
-        <InputLine buf={p.buffer} room={editorRoom(width)} placeholder={PROMPT_PLACEHOLDER.new} />
-        <PromptFeedback p={p} width={width - 2} />
-        {/* Truncate, never wrap — this row is budgeted as exactly one line
-            (see promptRows); wrapping it grows the frame past the terminal. */}
-        <Line tone="faint">{promptHints(p, 0, null)}</Line>
-      </Box>
-    );
-  }
+  if (p?.t === "new") return <Box height={2} />;
 
   const hints = footerHints(state);
   return (
@@ -1034,26 +1004,124 @@ export const FooterArea = ({
   );
 };
 
-/** Rows the footer strip occupies, for the parent's height maths — rule +
- *  hints in browse, label + editor + hints in a prompt. The editor's budget
- *  counts word-wrapped rows at the terminal's width (same wrap the editor
- *  draws, via `editorRoom`), capped at {@link MAX_EDITOR_ROWS}. A transient
- *  notice adds its own row in browse only (the prompt footer never renders
- *  one); it must be budgeted here so the frame stays exactly `rows` tall
- *  while it's up, or Ink's repaints drift and the top bar slides off the
- *  alt screen. */
-export const promptRows = (state: TuiState, cols: number): number => {
+/** New-session input floats above the body; only replies reserve a hint row. */
+export const promptRows = (state: TuiState, _cols: number): number => {
   const p = openPrompt(state.overlay);
   if (!p) return 2 + (state.notice ? 1 : 0);
-  // A reply prompt's input is budgeted on the EVENTS pane (promptPaneRows);
-  // the footer carries just its hints row.
-  if (p.t !== "new") return 1;
-  const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, editorRoom(cols)).rows.length);
-  return 1 /* label */ + editor + 1 + feedbackLines(p, cols - 2).length; /* hints + feedback */
+  return p.t === "new" ? 2 : 1;
+};
+
+/** Shared geometry for the floating composer and its clickable mode chip. */
+export const newSessionLayout = (p: Prompt, cols: number, rows: number) => {
+  const compact = rows < 22;
+  const width = Math.max(1, Math.min(96, cols - (cols >= 44 ? 8 : 0)));
+  const padding = compact || width < 60 ? 1 : 2;
+  const room = Math.max(1, width - 2 - padding * 2 - 2);
+  const feedback = feedbackLines(p, Math.max(1, width - 2 - padding * 2));
+  const maxRows = Math.max(
+    1,
+    Math.min(MAX_EDITOR_ROWS, rows - (compact ? 6 : 13) - feedback.length),
+  );
+  const editorRows = Math.min(maxRows, layoutWrapped(p.buffer, room).rows.length);
+  const height = Math.min(rows, (compact ? 6 : 13) + editorRows + feedback.length);
+  const left = Math.max(0, Math.floor((cols - width) / 2));
+  const top = Math.max(0, Math.floor((rows - height) / 3));
+  return {
+    compact,
+    width,
+    padding,
+    room,
+    maxRows,
+    height,
+    left,
+    top,
+    modeY: top + (compact ? 4 : 7),
+    modeX: left + padding + 2,
+  };
+};
+
+export const NewSessionModal = ({
+  state,
+  cols,
+  rows,
+}: {
+  state: TuiState;
+  cols: number;
+  rows: number;
+}): ReactNode => {
+  const palette = useTheme();
+  const p = openPrompt(state.overlay);
+  if (p?.t !== "new") return null;
+  const g = newSessionLayout(p, cols, rows);
+  const prov = providerInfo(state, p.settings.provider ?? "");
+  const model = p.settings.model || prov?.defaultModel || "auto";
+  const isolation = (p.settings.isolation ?? prov?.defaultIsolation) === "vm" ? "VM" : "Local";
+  return (
+    <>
+      {/* Explicit spaces erase underlying cells even in NO_COLOR terminals. */}
+      <Box position="absolute" left={g.left} top={g.top} width={g.width} height={g.height}>
+        <Text {...(palette.bg ? { backgroundColor: palette.bg } : {})}>
+          {Array.from({ length: g.height }, () => " ".repeat(g.width)).join("\n")}
+        </Text>
+      </Box>
+      <Box
+        position="absolute"
+        left={g.left}
+        top={g.top}
+        width={g.width}
+        height={g.height}
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={palette.accent}
+        backgroundColor={palette.bg}
+        borderBackgroundColor={palette.bg}
+        paddingX={g.padding}
+        paddingY={g.compact ? 0 : 1}
+        overflow="hidden"
+      >
+        <Line tone="accent" bold>
+          ✦ new session
+        </Line>
+        {!g.compact && <Line tone="dim">Start a fresh conversation</Line>}
+        {!g.compact && <Box height={1} flexShrink={0} />}
+        <Line tone="dim">
+          <Text {...(prov?.color ? { color: prov.color } : {})}>
+            {prov?.tag ?? p.settings.provider ?? "auto"}
+          </Text>
+          {` / ${model}${p.settings.effort ? ` · ${p.settings.effort}` : ""}`}
+          <Text tone="faint">{"  ⌥p change"}</Text>
+        </Line>
+        <Box gap={1}>
+          <Box flexShrink={0}>{modeChip(p.settings.mode)}</Box>
+          <Line tone="dim">{`[${isolation}]  ⇧⇥ mode · ⌥i isolation`}</Line>
+        </Box>
+        {!g.compact && <Box height={1} flexShrink={0} />}
+        {p.feedback?.pending || p.feedback?.uncertain ? (
+          <Line tone="warn">{promptHints(p, 0)}</Line>
+        ) : (
+          <Hints
+            items={[
+              { keys: "enter", label: "start session" },
+              { keys: "esc", label: "cancel" },
+            ]}
+          />
+        )}
+        {!g.compact && <Line tone="faint">⌥⏎ newline · ⌥e editor · ↑↓ history</Line>}
+        {!g.compact && <Box height={1} flexShrink={0} />}
+        <InputLine
+          buf={p.buffer}
+          room={g.room}
+          maxRows={g.maxRows}
+          placeholder={truncate(PROMPT_PLACEHOLDER.new, Math.max(1, g.room - 2))}
+        />
+        <PromptFeedback p={p} width={g.width - 2 - g.padding * 2} />
+      </Box>
+    </>
+  );
 };
 
 /** Columns the pane prompt wraps to: the right column minus its padding (2+2)
- *  and the 2-char caret gutter — mirrors `editorRoom` for the pane. */
+ *  and the 2-char caret gutter. */
 const paneRoom = (width: number): number => Math.max(8, width - 6);
 
 /** Rows a session-targeted prompt's input group occupies on the EVENTS pane:

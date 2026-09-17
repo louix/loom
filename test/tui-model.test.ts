@@ -2723,21 +2723,21 @@ test("promptRows budgets the footer notice row in browse, never in a prompt", ()
   assert.equal(promptRows(initialState(), 100), 2);
   const noted = reduce(initialState(), { t: "notice", text: "sent", tone: "good" });
   assert.equal(promptRows(noted, 100), 3);
-  // A prompt's footer never renders the notice — its budget stays 1 + editor + 1.
+  // A prompt's footer never renders the notice — the floating composer reserves only the browse strip.
   const prompted = reduce(noted, open({ t: "prompt", prompt: newPrompt(settings) }));
-  assert.equal(promptRows(prompted, 100), 3);
+  assert.equal(promptRows(prompted, 100), 2);
 });
 
-test("promptRows counts word-wrapped editor rows at the terminal's width", () => {
+test("the floating composer does not shrink the body as the draft grows", () => {
   const withText = (text: string) =>
     reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings, text) }));
-  // "one two three" fills one row at 80 cols; at 12 cols (room 8) it wraps in two.
+  // Wrapping belongs to the modal and never grows the footer.
   const wide = withText("one two three");
-  assert.equal(promptRows(wide, 80), 3);
-  assert.equal(promptRows(wide, 12), 4);
-  // The budget never exceeds MAX_EDITOR_ROWS, however long the text wraps.
+  assert.equal(promptRows(wide, 80), 2);
+  assert.equal(promptRows(wide, 12), 2);
+  // Large pastes also keep the underlying frame stable.
   const flood = withText("word ".repeat(40));
-  assert.equal(promptRows(flood, 12), 10);
+  assert.equal(promptRows(flood, 12), 2);
 });
 
 test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => {

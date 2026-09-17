@@ -125,8 +125,8 @@ export const promptTarget = (p: Prompt): { sessionId: string | null; requestId: 
 };
 /** Where a prompt's input renders. Every prompt but `new` targets a session and
  *  draws on that session's EVENTS pane — you're replying to a specific agent,
- *  so the input sits with its transcript. `new` has no session, so it stays in
- *  the footer. */
+ *  so the input sits with its transcript. `new` has no session, so it floats above
+ *  the existing panes. */
 export const promptOnPane = (p: Prompt | null): boolean => p !== null && p.t !== "new";
 
 // ---------------------------------------------------------------------------

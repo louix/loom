@@ -39,6 +39,7 @@ import {
   detailLayout,
   type DetailLayout,
   promptPaneRows,
+  newSessionLayout,
   promptRows,
   requestPanelRows,
 } from "./components.tsx";
@@ -337,7 +338,7 @@ const deriveView = (
   const bodyFor = (): BodyKind => {
     const o = state.overlay;
     // Every overlay but the prompt owns the screen; a prompt draws over the
-    // ordinary body (in the footer, or on its session's events pane).
+    // ordinary body (floating above it, or on its session's events pane).
     if (o.t !== "browse" && o.t !== "prompt") return o;
     if (layoutView === "session") return { t: "sessionPane" };
     return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
@@ -401,6 +402,8 @@ const deriveView = (
   }
 
   const prompt = openPrompt(state.overlay);
+  // The modal owns pointer interaction, including cells over fleet rows.
+  if (prompt?.t === "new") hits.length = 0;
   if (prompt && !prompt.feedback?.pending && !prompt.feedback?.uncertain) {
     const isNew = prompt.t === "new";
     const isSend = prompt.t === "session" && prompt.kind === "send";
@@ -408,9 +411,10 @@ const deriveView = (
       const width = isNew ? cols : eventsW;
       const originX = isNew || body.t === "sessionPane" ? 1 : leftW + 2;
       const padding = isNew ? 1 : 2;
-      const x0 = originX + padding + [...prompt.label].length + 1;
+      const modal = isNew ? newSessionLayout(prompt, cols, rows) : null;
+      const x0 = modal?.modeX ?? originX + padding + [...prompt.label].length + 1;
       const chip = isNew ? modeChipText(prompt.settings.mode) : modeChipText(sel?.mode, mode);
-      const y = isNew ? rows - footerH + 1 : 3 + detailH + splitLogH;
+      const y = modal?.modeY ?? 3 + detailH + splitLogH;
       const right = originX + width - padding - 1;
       if (x0 <= right)
         hits.push({ kind: "promptMode", y, x0, x1: Math.min(right, x0 + chip.length - 1) });
@@ -1944,6 +1948,7 @@ export const mkFleetHandle = ({
         if (base === 65) return planScrollBy(3); // wheel down → toward the end
         return;
       }
+      if (openPrompt(state.overlay)?.t === "new" && (base === 64 || base === 65)) return;
       if (base === 64) return transcripts.scrollBy(3); // wheel up → back in history
       if (base === 65) return transcripts.scrollBy(-3); // wheel down → toward the tail
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
@@ -2006,7 +2011,10 @@ export const mkFleetHandle = ({
         );
         const current = p.settings.isolation ?? provider?.defaultIsolation ?? "local";
         if (current === "local" && provider?.vmUnavailableReason)
-          return void note(provider.vmUnavailableReason, "dim");
+          return void show({
+            t: "prompt",
+            prompt: { ...p, feedback: { pending: false, text: provider.vmUnavailableReason } },
+          });
         show({
           t: "prompt",
           prompt: {

@@ -41,6 +41,7 @@ import {
   Help,
   Picker,
   PromptPane,
+  NewSessionModal,
   PlanReview,
   RequestPanel,
 } from "./components.tsx";
@@ -277,6 +278,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
       {body}
       {view.body.t === "fleetOnly" ? <RequestArea view={view} width={cols} /> : null}
       <InputArea view={view} handle={handle} width={cols} />
+      <NewSessionModal state={state} cols={cols} rows={view.rows} />
       {view.environmentWarning && (
         <Box height={2} flexShrink={0} flexDirection="column">
           <Text color={C.warn} wrap="truncate">
