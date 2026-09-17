@@ -323,7 +323,7 @@ const deriveView = (
   // off the alt screen. Tiny terminals degrade; they don't corrupt.
   const cols = Math.max(1, dims.cols);
   const rows = Math.max(1, dims.rows);
-  const footerH = promptRows(state, cols);
+  const footerH = promptRows(state);
   // Which question the request panel previews — the one `qnav` is parked on,
   // which is also the one an open answer prompt is collecting. The panel sizes
   // itself to fit it (see `requestPanelRows`), so this has to be settled before

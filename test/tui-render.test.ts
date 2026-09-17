@@ -1890,7 +1890,7 @@ describe("tui-render", { concurrency: 4 }, () => {
   test("the footer notice owns a truncating row — hints + notice can never wrap", () => {
     const long = `injected “${"word ".repeat(30)}” — lands after the current tool call`;
     const state = reduce(initialState(), { t: "notice", text: long, tone: "good" });
-    assert.equal(promptRows(state, 60), 3, "the layout reserves the notice's row");
+    assert.equal(promptRows(state), 3, "the layout reserves the notice's row");
     const out = renderToString(createElement(FooterArea, { state, width: 60 }));
     const lines = stripAnsi(out).split("\n");
     assert.equal(lines.length, 3, "notice + rule + hints, nothing wrapped");

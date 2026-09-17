@@ -63,7 +63,6 @@ import {
   humanTokens,
   mmss,
   modeChipText,
-  modeLabel,
   modeText,
   shortId,
   spinnerFrame,
@@ -749,9 +748,8 @@ export const EventLog = memo(
 // input line (the prompt's editor, the pickers' filter)
 // ---------------------------------------------------------------------------
 
-/** Max rows the editor draws; `promptRows` reserves the same so the footer
- *  can't overdraw the body when a big paste / $EDITOR return lands. Wrapped
- *  rows count against it — a wide paste scrolls within the same budget. */
+/** Default editor row budget. Panes and the modal reserve wrapped rows up to
+ *  this limit; longer drafts scroll around the caret. */
 export const MAX_EDITOR_ROWS = 8;
 
 /** One drawn row with the block caret at `col`, windowed to `room` columns so
@@ -851,11 +849,10 @@ export const InputLine = ({
 };
 
 // ---------------------------------------------------------------------------
-// footer: contextual hints, or the prompt editor
+// footer hints and prompt feedback
 // ---------------------------------------------------------------------------
 
-const MODE_HINT: Record<PromptKind, string> = {
-  new: "start",
+const MODE_HINT: Record<Exclude<PromptKind, "new">, string> = {
   send: "send",
   answer: "answer",
   questions: "answer",
@@ -872,28 +869,24 @@ const modeChip = (mode: string | null | undefined, pending?: SessionMode | null)
   return <Line tone={pending != null ? "dim" : settledTone}>{modeChipText(mode, pending)}</Line>;
 };
 
+const pendingPromptHint = (p: Prompt): string | null => {
+  if (p.feedback?.uncertain) return "esc close and review session — draft saved";
+  if (p.feedback?.pending) return "Starting / sending… · esc hide (operation continues)";
+  return null;
+};
+
 const promptHints = (
-  p: Prompt,
+  p: Exclude<Prompt, { t: "new" }>,
   queued: number,
   sessionMode?: string | null,
   pendingMode?: SessionMode | null,
 ): string => {
-  if (p.feedback?.uncertain) return "esc close and review session — draft saved";
-  if (p.feedback?.pending) return "Starting / sending… · esc hide (operation continues)";
-  const bits = [`enter ${MODE_HINT[promptKind(p)]}`, "⌥⏎ newline", "⌥e editor"];
-  // a new-session prompt has no session / log yet; an AskUserQuestion answer
-  // opens the formatted question sheet rather than the event log
-  if (p.t === "questions") bits.push("⌥o view");
-  else if (p.t !== "new") bits.push("⌥o log");
-  if (p.t === "new") {
-    // ⇧⇥ cycles the mode the session starts in; ⌥m / ⌥p pick its model.
-    bits.push(
-      `⇧⇥ mode:${modeLabel(p.settings.mode)}`,
-      "⌥p provider/model",
-      "⌥i isolation",
-      "↑↓ history",
-    );
-  } else if (p.t === "session" && p.kind === "send") {
+  const pending = pendingPromptHint(p);
+  if (pending) return pending;
+  const kind = p.t === "session" || p.t === "request" ? p.kind : p.t;
+  const bits = [`enter ${MODE_HINT[kind]}`, "⌥⏎ newline", "⌥e editor"];
+  bits.push(p.t === "questions" ? "⌥o view" : "⌥o log");
+  if (p.t === "session" && p.kind === "send") {
     // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
     // without leaving the half-typed message.
     bits.push(
@@ -1005,7 +998,7 @@ export const FooterArea = ({
 };
 
 /** New-session input floats above the body; only replies reserve a hint row. */
-export const promptRows = (state: TuiState, _cols: number): number => {
+export const promptRows = (state: TuiState): number => {
   const p = openPrompt(state.overlay);
   if (!p) return 2 + (state.notice ? 1 : 0);
   return p.t === "new" ? 2 : 1;
@@ -1097,7 +1090,7 @@ export const NewSessionModal = ({
         </Box>
         {!g.compact && <Box height={1} flexShrink={0} />}
         {p.feedback?.pending || p.feedback?.uncertain ? (
-          <Line tone="warn">{promptHints(p, 0)}</Line>
+          <Line tone="warn">{pendingPromptHint(p)}</Line>
         ) : (
           <Hints
             items={[

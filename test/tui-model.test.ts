@@ -2720,12 +2720,12 @@ test("defaultModeOf reads the daemon's remembered mode, not per-provider", () =>
 // ---------------------------------------------------------------------------
 
 test("promptRows budgets the footer notice row in browse, never in a prompt", () => {
-  assert.equal(promptRows(initialState(), 100), 2);
+  assert.equal(promptRows(initialState()), 2);
   const noted = reduce(initialState(), { t: "notice", text: "sent", tone: "good" });
-  assert.equal(promptRows(noted, 100), 3);
+  assert.equal(promptRows(noted), 3);
   // A prompt's footer never renders the notice — the floating composer reserves only the browse strip.
   const prompted = reduce(noted, open({ t: "prompt", prompt: newPrompt(settings) }));
-  assert.equal(promptRows(prompted, 100), 2);
+  assert.equal(promptRows(prompted), 2);
 });
 
 test("the floating composer does not shrink the body as the draft grows", () => {
@@ -2733,18 +2733,17 @@ test("the floating composer does not shrink the body as the draft grows", () => 
     reduce(initialState(), open({ t: "prompt", prompt: newPrompt(settings, text) }));
   // Wrapping belongs to the modal and never grows the footer.
   const wide = withText("one two three");
-  assert.equal(promptRows(wide, 80), 2);
-  assert.equal(promptRows(wide, 12), 2);
+  assert.equal(promptRows(wide), 2);
   // Large pastes also keep the underlying frame stable.
   const flood = withText("word ".repeat(40));
-  assert.equal(promptRows(flood, 12), 2);
+  assert.equal(promptRows(flood), 2);
 });
 
 test("a reply prompt's input budgets on the EVENTS pane, not the footer", () => {
   const withText = (text: string) =>
     reduce(initialState(), open({ t: "prompt", prompt: sessionPrompt("send", "a", "send", text) }));
   // The footer carries only the hints row…
-  assert.equal(promptRows(withText(""), 100), 1);
+  assert.equal(promptRows(withText("")), 1);
   // …and the pane carries label + wrapped editor, capped at MAX_EDITOR_ROWS.
   assert.equal(promptPaneRows(withText("one two three"), 100), 2);
   assert.equal(promptPaneRows(withText("word ".repeat(40)), 12), 9);
