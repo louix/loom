@@ -2,9 +2,78 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement as h } from "react";
 import { Box, Text, renderToString } from "ink";
-import { NewSessionModal, newSessionLayout } from "@loom/tui/components";
+import { NewSessionModal, newSessionLayout, SelectionModal } from "@loom/tui/components";
 import { initialState } from "@loom/tui/model";
-import { newPrompt } from "@loom/tui/overlay";
+import { newPrompt, makePicker, type PickerStep } from "@loom/tui/overlay";
+
+test("every picker floats over the fleet with the selected row and actions in view", () => {
+  const steps: PickerStep[] = ["provider", "model", "effort", "command", "repository", "undo"];
+  for (const step of steps) {
+    for (const [cols, rows] of [
+      [120, 40],
+      [80, 24],
+      [44, 18],
+      [32, 12],
+    ] as const) {
+      const picker = makePicker({
+        step,
+        title: step,
+        dest: { t: "command" },
+        index: 19,
+        items: Array.from({ length: 20 }, (_, i) => ({ id: String(i), label: `choice ${i}` })),
+      });
+      const state = { ...initialState(), overlay: { t: "picker" as const, picker } };
+      const frame = renderToString(
+        h(
+          Box,
+          { width: cols, height: rows, flexDirection: "column" },
+          ...Array.from({ length: rows }, (_, i) => h(Text, { key: i }, "Z".repeat(cols))),
+          h(SelectionModal, { state, cols, rows }),
+        ),
+        { columns: cols },
+      );
+      const lines = frame.split("\n");
+      assert.equal(lines.length, rows);
+      assert.match(frame, /▍ choice 19/);
+      assert.match(frame, /enter pick · esc cancel/);
+      const top = lines.findIndex((line) => line.includes("╭"));
+      const bottom = lines.findIndex((line) => line.includes("╰"));
+      const left = lines[top]!.indexOf("╭");
+      const right = lines[top]!.indexOf("╮");
+      assert.ok(bottom > top);
+      for (const line of lines.slice(top, bottom + 1)) {
+        assert.ok(!line.slice(left, right + 1).includes("Z"), frame);
+      }
+      if (left > 0) assert.equal(lines[top]![0], "Z");
+    }
+  }
+});
+
+test("confirmation dialogs keep their border and action inside a short terminal", () => {
+  const state = {
+    ...initialState(),
+    overlay: {
+      t: "confirm" as const,
+      confirm: {
+        action: "deleteSession" as const,
+        sessionId: "a",
+        title: "Delete session?",
+        danger: true,
+        body: "Uncommitted changes will be lost. ".repeat(10),
+        branchName: "feature",
+        deleteBranch: false,
+      },
+    },
+  };
+  const frame = renderToString(
+    h(Box, { width: 60, height: 16 }, h(SelectionModal, { state, cols: 60, rows: 16 })),
+    { columns: 60 },
+  );
+  assert.equal(frame.split("\n").length, 16);
+  assert.match(frame, /Delete session/);
+  assert.match(frame, /enter/);
+  assert.match(frame, /╰.*╯/);
+});
 
 test("isolation feedback is visible inside the modal without hiding the draft", () => {
   const prompt = newPrompt(

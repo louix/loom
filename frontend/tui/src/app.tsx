@@ -32,14 +32,13 @@ import { outboxOf } from "./composer.ts";
 import { headerView, fleetPaneView, logView } from "./views.ts";
 import { PALETTES, spinnerFrame } from "./theme.ts";
 import {
-  Confirm,
   Doctor,
   EventLog,
   Fleet,
   FooterArea,
   Header,
   Help,
-  Picker,
+  SelectionModal,
   PromptPane,
   NewSessionModal,
   PlanReview,
@@ -172,13 +171,6 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
         </Box>
       );
       break;
-    case "confirm":
-      body = (
-        <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          <Confirm confirm={view.body.confirm} width={cols - 4} />
-        </Box>
-      );
-      break;
     case "plan": {
       const plan = view.body.plan;
       const ps = fleetSessions(state).find((s) => s.id === plan.sessionId);
@@ -216,13 +208,6 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
       );
       break;
     }
-    case "picker":
-      body = (
-        <Box paddingX={2} paddingTop={1} alignItems="flex-start">
-          <Picker picker={view.body.picker} width={cols - 4} height={Math.max(6, bodyH - 2)} />
-        </Box>
-      );
-      break;
     case "split":
       body = (
         <Box height={bodyH} flexShrink={0} overflow="hidden" gap={1}>
@@ -279,6 +264,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
       {view.body.t === "fleetOnly" ? <RequestArea view={view} width={cols} /> : null}
       <InputArea view={view} handle={handle} width={cols} />
       <NewSessionModal state={state} cols={cols} rows={view.rows} />
+      <SelectionModal state={state} cols={cols} rows={view.rows} />
       {view.environmentWarning && (
         <Box height={2} flexShrink={0} flexDirection="column">
           <Text color={C.warn} wrap="truncate">

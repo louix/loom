@@ -160,3 +160,50 @@ export const Hints = ({
     ))}
   </Line>
 );
+
+/** Shared placement and opaque surface for floating TUI dialogs. */
+export const modalWidth = (cols: number): number =>
+  Math.max(1, Math.min(96, cols - (cols >= 44 ? 8 : 0)));
+
+export const modalPosition = (cols: number, rows: number, width: number, height: number) => ({
+  left: Math.max(0, Math.floor((cols - width) / 2)),
+  top: Math.max(0, Math.floor((rows - height) / 3)),
+});
+
+export const FloatingLayer = ({
+  left,
+  top,
+  width,
+  height,
+  children,
+}: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  children: ReactNode;
+}): ReactNode => {
+  const theme = useTheme();
+  return (
+    <>
+      {/* Paint spaces explicitly: background colour alone leaves text visible in NO_COLOR. */}
+      <Box position="absolute" left={left} top={top} width={width} height={height}>
+        <Text {...(theme.bg ? { backgroundColor: theme.bg } : {})}>
+          {Array.from({ length: height }, () => " ".repeat(width)).join("\n")}
+        </Text>
+      </Box>
+      <Box
+        position="absolute"
+        left={left}
+        top={top}
+        width={width}
+        height={height}
+        flexDirection="column"
+        overflow="hidden"
+        backgroundColor={theme.bg}
+      >
+        {children}
+      </Box>
+    </>
+  );
+};

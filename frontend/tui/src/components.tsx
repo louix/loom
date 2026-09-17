@@ -7,6 +7,9 @@
 import { memo, type ReactNode } from "react";
 import { Box } from "ink";
 import {
+  FloatingLayer,
+  modalWidth,
+  modalPosition,
   Field,
   Fields,
   Hints,
@@ -1007,7 +1010,7 @@ export const promptRows = (state: TuiState): number => {
 /** Shared geometry for the floating composer and its clickable mode chip. */
 export const newSessionLayout = (p: Prompt, cols: number, rows: number) => {
   const compact = rows < 22;
-  const width = Math.max(1, Math.min(96, cols - (cols >= 44 ? 8 : 0)));
+  const width = modalWidth(cols);
   const padding = compact || width < 60 ? 1 : 2;
   const room = Math.max(1, width - 2 - padding * 2 - 2);
   const feedback = feedbackLines(p, Math.max(1, width - 2 - padding * 2));
@@ -1017,8 +1020,7 @@ export const newSessionLayout = (p: Prompt, cols: number, rows: number) => {
   );
   const editorRows = Math.min(maxRows, layoutWrapped(p.buffer, room).rows.length);
   const height = Math.min(rows, (compact ? 6 : 13) + editorRows + feedback.length);
-  const left = Math.max(0, Math.floor((cols - width) / 2));
-  const top = Math.max(0, Math.floor((rows - height) / 3));
+  const { left, top } = modalPosition(cols, rows, width, height);
   return {
     compact,
     width,
@@ -1050,17 +1052,8 @@ export const NewSessionModal = ({
   const model = p.settings.model || prov?.defaultModel || "auto";
   const isolation = (p.settings.isolation ?? prov?.defaultIsolation) === "vm" ? "VM" : "Local";
   return (
-    <>
-      {/* Explicit spaces erase underlying cells even in NO_COLOR terminals. */}
-      <Box position="absolute" left={g.left} top={g.top} width={g.width} height={g.height}>
-        <Text {...(palette.bg ? { backgroundColor: palette.bg } : {})}>
-          {Array.from({ length: g.height }, () => " ".repeat(g.width)).join("\n")}
-        </Text>
-      </Box>
+    <FloatingLayer left={g.left} top={g.top} width={g.width} height={g.height}>
       <Box
-        position="absolute"
-        left={g.left}
-        top={g.top}
         width={g.width}
         height={g.height}
         flexDirection="column"
@@ -1109,7 +1102,7 @@ export const NewSessionModal = ({
         )}
         {!g.compact && <Line tone="faint">⌥⏎ newline · ⌥e editor · ↑↓ history</Line>}
       </Box>
-    </>
+    </FloatingLayer>
   );
 };
 
@@ -1170,10 +1163,21 @@ export const PromptPane = ({
 export const Confirm = ({
   confirm,
   width,
+  height,
 }: {
   confirm: ConfirmState;
   width: number;
+  height?: number;
 }): ReactNode => {
+  const compact = height !== undefined && height < 12;
+  const branch = confirm.action === "deleteSession" && confirm.branchName;
+  const body = wrapText(confirm.body ?? "", Math.max(1, width - 6));
+  const capacity =
+    height === undefined ? body.length : Math.max(0, height - (compact ? 5 : 7) - (branch ? 2 : 0));
+  const shownBody = body.slice(0, capacity);
+  if (body.length > capacity && shownBody.length) {
+    shownBody[shownBody.length - 1] = truncate(`${shownBody.at(-1)} …`, Math.max(1, width - 6));
+  }
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
   else if (confirm.action === "forkSession")
@@ -1182,16 +1186,25 @@ export const Confirm = ({
   else if (confirm.action === "deleteSession")
     actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";
   return (
-    <Panel width={width} tone={confirm.danger ? "bad" : "accent"} overlay title={confirm.title}>
-      {confirm.body ? <Text tone="warn">{confirm.body}</Text> : null}
+    <Panel
+      width={width}
+      {...(height !== undefined ? { height } : {})}
+      flexShrink={0}
+      tone={confirm.danger ? "bad" : "accent"}
+      overlay
+      paddingY={compact ? 0 : 1}
+      overflow="hidden"
+      title={confirm.title}
+    >
+      {confirm.body ? <Lines tone="warn" lines={shownBody} /> : null}
       {confirm.action === "deleteSession" && confirm.branchName ? (
         <Box gap={1} marginTop={1}>
           <Text tone="accent">{"b"}</Text>
-          <Text tone={confirm.deleteBranch ? "bad" : "dim"}>
+          <Line tone={confirm.deleteBranch ? "bad" : "dim"}>
             {confirm.deleteBranch
               ? `will also delete branch ${confirm.branchName}`
               : `keep branch ${confirm.branchName}`}
-          </Text>
+          </Line>
         </Box>
       ) : null}
       <Box height={1} />
@@ -1502,9 +1515,11 @@ export const Picker = ({
   width: number;
   height: number;
 }): ReactNode => {
-  const w = inside(width);
+  const compact = height < 16;
+  const padding = width < 60 ? 1 : 2;
+  const room = Math.max(1, width - 2 - padding * 2);
   const vis = pickerVisible(picker);
-  const rows = Math.max(3, height - 7);
+  const rows = Math.max(1, height - (compact ? 9 : 11));
   const start = Math.max(
     0,
     Math.min(Math.max(0, vis.length - rows), picker.index - Math.floor(rows / 2)),
@@ -1512,51 +1527,77 @@ export const Picker = ({
   const shown = vis.slice(start, start + rows);
 
   return (
-    <Panel width={width} tone="accent" overlay title={`▸ ${picker.title.toUpperCase()}`}>
+    <Panel
+      width={width}
+      height={height}
+      flexShrink={0}
+      tone="accent"
+      overlay
+      paddingX={padding}
+      paddingY={compact ? 0 : 1}
+      overflow="hidden"
+      title={`▸ ${picker.title.toUpperCase()}`}
+    >
       {/* The prompt's input line, pinned to one row, so the filter reads as
           "type here" and takes the same readline motions. */}
-      <InputLine buf={picker.filter} room={w - 4} placeholder="type to search" multiline={false} />
-      <Text tone="faint">
+      <InputLine
+        buf={picker.filter}
+        room={Math.max(1, room - 2)}
+        placeholder={truncate("type to search", Math.max(1, room - 4))}
+        multiline={false}
+      />
+      <Line tone="faint">
         {picker.items.length === 0
           ? " "
           : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`}
-      </Text>
+      </Line>
       <Box height={1} />
-      {shown.length === 0
-        ? [
-            <Text key="none" tone="faint" wrap="wrap">
-              {picker.items.length === 0 ? (picker.emptyText ?? "nothing to pick") : "no matches"}
-            </Text>,
-          ]
-        : shown.map((it, i) => {
-            const on = start + i === picker.index;
-            return (
-              <Box key={it.id}>
-                <Box flexShrink={0}>
-                  <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
-                </Box>
-                <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                  <Line tone={on ? "text" : "dim"} bold={on}>
-                    {it.label}
-                  </Line>
-                </Box>
-                {it.hint ? (
-                  <Box marginLeft={2} flexShrink={1} minWidth={0}>
-                    <Line tone="faint">{it.hint}</Line>
+      <Box flexDirection="column" height={rows} flexShrink={0} overflow="hidden">
+        {shown.length === 0
+          ? [
+              <Lines
+                key="none"
+                tone="faint"
+                lines={wrapText(
+                  picker.items.length === 0
+                    ? (picker.emptyText ?? "nothing to pick")
+                    : "no matches",
+                  room,
+                ).slice(0, rows)}
+              />,
+            ]
+          : shown.map((it, i) => {
+              const on = start + i === picker.index;
+              return (
+                <Box key={it.id}>
+                  <Box flexShrink={0}>
+                    <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
                   </Box>
-                ) : null}
-              </Box>
-            );
-          })}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    <Line tone={on ? "text" : "dim"} bold={on}>
+                      {it.label}
+                    </Line>
+                  </Box>
+                  {it.hint ? (
+                    <Box marginLeft={2} flexShrink={1} minWidth={0}>
+                      <Line tone="faint">{it.hint}</Line>
+                    </Box>
+                  ) : null}
+                </Box>
+              );
+            })}
+      </Box>
       {start + shown.length < vis.length || start > 0 ? (
-        <Text tone="faint">{`  … ${vis.length - shown.length} more`}</Text>
-      ) : null}
+        <Line tone="faint">{`  … ${vis.length - shown.length} more`}</Line>
+      ) : (
+        <Box height={1} flexShrink={0} />
+      )}
       <Box height={1} />
-      <Text tone="faint">
+      <Line tone="faint">
         {picker.items.length === 0
           ? "enter continue · esc cancel"
-          : "type to filter · ↑↓ move · enter pick · esc cancel"}
-      </Text>
+          : "enter pick · esc cancel · ↑↓ move"}
+      </Line>
     </Panel>
   );
 };
@@ -1682,5 +1723,39 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
         </Section>
       )}
     </>
+  );
+};
+
+/** Selection and confirmation dialogs float above the unchanged fleet layout. */
+export const SelectionModal = ({
+  state,
+  cols,
+  rows,
+}: {
+  state: TuiState;
+  cols: number;
+  rows: number;
+}): ReactNode => {
+  const o = state.overlay;
+  if (o.t !== "picker" && o.t !== "confirm") return null;
+  const width = modalWidth(cols);
+  const available = Math.max(1, rows - (rows >= 14 ? 2 : 0));
+  const height =
+    o.t === "picker"
+      ? Math.min(available, 11 + Math.max(1, Math.min(8, o.picker.items.length)))
+      : Math.min(
+          available,
+          8 +
+            wrapText(o.confirm.body ?? "", Math.max(1, width - 6)).length +
+            (o.confirm.action === "deleteSession" && o.confirm.branchName ? 2 : 0),
+        );
+  return (
+    <FloatingLayer {...modalPosition(cols, rows, width, height)} width={width} height={height}>
+      {o.t === "picker" ? (
+        <Picker picker={o.picker} width={width} height={height} />
+      ) : (
+        <Confirm confirm={o.confirm} width={width} height={height} />
+      )}
+    </FloatingLayer>
   );
 };

@@ -102,7 +102,6 @@ import {
   type Overlay,
   type Prompt,
   type NewSessionSettings,
-  type Picker,
   type PickerDest,
   type PlanReview,
   type RequestPromptKind,
@@ -193,9 +192,7 @@ export type LayoutView = "overview" | "session";
 export type BodyKind =
   | { t: "help" }
   | { t: "doctor" }
-  | { t: "confirm"; confirm: Confirm }
   | { t: "plan"; plan: PlanReview }
-  | { t: "picker"; picker: Picker }
   | { t: "split" }
   | { t: "fleetOnly" }
   | { t: "sessionPane" };
@@ -337,9 +334,8 @@ const deriveView = (
 
   const bodyFor = (): BodyKind => {
     const o = state.overlay;
-    // Every overlay but the prompt owns the screen; a prompt draws over the
-    // ordinary body (floating above it, or on its session's events pane).
-    if (o.t !== "browse" && o.t !== "prompt") return o;
+    // Reading views own the body; composers and selectors float above it.
+    if (o.t === "help" || o.t === "doctor" || o.t === "plan") return o;
     if (layoutView === "session") return { t: "sessionPane" };
     return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
   };
@@ -403,7 +399,8 @@ const deriveView = (
 
   const prompt = openPrompt(state.overlay);
   // The modal owns pointer interaction, including cells over fleet rows.
-  if (prompt?.t === "new") hits.length = 0;
+  if (prompt?.t === "new" || state.overlay.t === "picker" || state.overlay.t === "confirm")
+    hits.length = 0;
   if (prompt && !prompt.feedback?.pending && !prompt.feedback?.uncertain) {
     const isNew = prompt.t === "new";
     const isSend = prompt.t === "session" && prompt.kind === "send";
@@ -1948,7 +1945,13 @@ export const mkFleetHandle = ({
         if (base === 65) return planScrollBy(3); // wheel down → toward the end
         return;
       }
-      if (openPrompt(state.overlay)?.t === "new" && (base === 64 || base === 65)) return;
+      if (
+        (openPrompt(state.overlay)?.t === "new" ||
+          state.overlay.t === "picker" ||
+          state.overlay.t === "confirm") &&
+        (base === 64 || base === 65)
+      )
+        return;
       if (base === 64) return transcripts.scrollBy(3); // wheel up → back in history
       if (base === 65) return transcripts.scrollBy(-3); // wheel down → toward the tail
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
