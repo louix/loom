@@ -9,6 +9,7 @@ import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory, currentRepoBase } from "../runtime/src/session-vm/repo-base.ts";
 import { startupStages } from "../runtime/src/session-vm/progress.ts";
+import type { VmRecord } from "../runtime/src/session-vm/inventory.ts";
 
 const [runtime, backend] = Deno.args;
 assert(runtime && backend, "Pass a rebuilt AISDK runtime and pinned smolvm");
@@ -63,6 +64,23 @@ const config = async (prepare: string) => {
 }`,
   );
 };
+const vmCli = async (...args: string[]) => {
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--cached-only",
+      "-A",
+      fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
+      "vm",
+      ...args,
+    ],
+    env: { XDG_CONFIG_HOME: configHome },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert(result.success, new TextDecoder().decode(result.stderr));
+  return new TextDecoder().decode(result.stdout);
+};
 const cli = async (cancel = false) => {
   const child = new Deno.Command(Deno.execPath(), {
     args: [
@@ -71,7 +89,7 @@ const cli = async (cancel = false) => {
       fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
       "--repo",
       f.repo,
-      "environment",
+      "vm",
       "prepare",
     ],
     env: { XDG_CONFIG_HOME: configHome },
@@ -95,7 +113,14 @@ const cli = async (cancel = false) => {
       if (output.includes("setup-output") && !finished) streamed = true;
       if (cancel && output.includes("cancel-ready") && !cancelled) {
         cancelled = true;
-        child.kill("SIGINT");
+        const inventory = JSON.parse(await vmCli("list", "--repo", f.repo, "--json")) as {
+          vms: VmRecord[];
+        };
+        const vm = inventory.vms.find(
+          (vm) => vm.kind === "prepare" && ["starting", "running"].includes(vm.state),
+        );
+        assert(vm, "foreground preparation must appear in VM inventory");
+        await vmCli("stop", vm.id);
       }
     }
   };
@@ -140,6 +165,8 @@ try {
       artifact,
       smolvm,
       sessionDirectory: directory,
+      sessionId: "prepared-test",
+      provider: "mock",
       environment,
       auth: {},
       providerHosts: [],
@@ -210,6 +237,32 @@ try {
           [],
           "Cached installation must make no network requests",
         );
+        if (!during) {
+          let vm: VmRecord | undefined;
+          for (let attempt = 0; attempt < 30; attempt++) {
+            vm = JSON.parse(await vmCli("inspect", worker.binding.token, "--json")).vm;
+            if (vm?.state === "running") break;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          assert.equal(vm?.state, "running");
+          assert.equal(vm?.sessionId, "prepared-test");
+          assert.equal(vm?.paths.runtime, artifact);
+          assert(vm?.paths.backend && vm.paths.base);
+          await vmCli("stop", worker.binding.token);
+          assert.equal(
+            JSON.parse(await vmCli("inspect", worker.binding.token, "--json")).vm.state,
+            "stopped",
+          );
+          await vmCli("rm", worker.binding.token);
+          const listed = JSON.parse(await vmCli("list", "--repo", f.repo, "--json")) as {
+            vms: VmRecord[];
+          };
+          assert(!listed.vms.some((vm) => vm.id === worker.binding.token));
+          assert.equal(
+            (await Deno.readTextFile(join(f.workspace, "base-count"))).trim(),
+            String(expectedBase),
+          );
+        }
       } finally {
         await session.close();
       }
@@ -247,7 +300,7 @@ try {
   // A new launch uses the new base and retains its host worktree.
   await start(2);
   console.log(
-    "Passed: live stdout/stderr, cached Deno install without network, refresh, failure, cancellation, and fresh disks on resume.",
+    "Passed: preparation, inventory, inspect, stop/rm, cached Deno install without network, refresh, failure, VM cancellation, and fresh disks on resume.",
   );
 } finally {
   if (oldState === undefined) Deno.env.delete("XDG_STATE_HOME");

@@ -323,6 +323,22 @@ export class Daemon {
       (sessionId, message) =>
         this.emitEvent({ type: "startup_progress", sessionId, ts: Date.now(), message }),
       (id, generation) => this.#vmGenerations.set(id, generation),
+      {
+        activity: (id) => this.#registry.get(id)?.status.kind ?? "starting",
+        stop: async (id, isCurrent) => {
+          if (!isCurrent()) return;
+          this.#startups.get(id)?.abort();
+          this.#hooks.forget(id);
+          this.#sessions.setKeepWarm(id, false);
+          await this.#queue.run(id, async () => {
+            if (!isCurrent()) return;
+            await this.#sessions.close(id);
+            this.#vmGenerations.delete(id);
+            this.#registry.setStatus(id, stateInterrupted("user"));
+            this.#publishState(id);
+          });
+        },
+      },
     );
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,

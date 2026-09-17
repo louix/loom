@@ -62,7 +62,7 @@ when the provider closes.
 
 ## Optional preparation
 
-`loom environment prepare` warms a reusable VM cache from a disposable checkout
+`loom vm prepare` warms a reusable VM cache from a disposable checkout
 of committed HEAD. Bare repositories inspect committed HEAD as well. The bundled
 providers share one runtime and need one preparation; distinct custom runtimes
 are prepared separately. Preparation works even when local execution is the
@@ -193,7 +193,7 @@ preparation. The daemon and existing sessions keep running throughout.
 
 ## Image cleanup
 
-Successful preparation and `loom environment prune` remove bases for runtime
+Successful preparation and `loom vm prune` remove bases for runtime
 images that are no longer configured, along with abandoned preparation
 directories. A missing or incompatible replacement does not preserve all
 historical images: you can reclaim obsolete images before preparing the new
@@ -205,7 +205,7 @@ recovery state are retained. Pruning lists each retained base and its reason;
 `--json` includes the same details in `retainedBases`. A deferred runtime cache
 cleanup is separate from this repository's environment base cleanup.
 
-Run `loom environment prune` to retry cleanup for this repo without rebuilding.
+Run `loom vm prune` to retry cleanup for this repo without rebuilding.
 It also removes legacy persistent disks and interrupted disk copies from stopped
 sessions, preserving their conversation profiles. Live sessions and sessions
 with unfinished recovery are skipped. Daemon startup also removes legacy disks
@@ -302,7 +302,7 @@ For a repo using all four, set
 Nix builds that fetch Rust crates also need `rust`; the `nix` preset alone does
 not grant crate downloads. If preparation fails with a proxy `403 Forbidden` for
 `static.crates.io`, add `rust` to the repo's existing `network_presets` in the
-trusted user config and rerun `loom environment prepare`.
+trusted user config and rerun `loom vm prepare`.
 
 Custom registries, source downloads and redirects may need additional exact
 hosts. Presets do not install tools, grant arbitrary internet access, or change

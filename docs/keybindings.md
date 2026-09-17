@@ -4,7 +4,7 @@ A small, consistent grammar. Learn the five rules and the keys fall out of them.
 Press `?` in the TUI for the same thing on one screen; press `Space` for a
 fuzzy, searchable list of every action valid right where you are.
 
-**Prepare repo environment** in that palette runs `loom environment prepare`
+**Prepare repo environment** in that palette runs `loom vm prepare`
 with live output in the terminal. It refreshes the base for future sessions and
 does not require a selected session. Press Enter after completion to return;
 Ctrl-C cancels preparation and returns after cleanup.

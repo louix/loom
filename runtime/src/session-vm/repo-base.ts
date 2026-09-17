@@ -172,6 +172,7 @@ export const pruneRepoBases = async (
   home: string,
   bindings: Array<Pick<VmBinding, "artifact" | "smolvm" | "writableNix">> | undefined,
   temporary = "/tmp",
+  dryRun = false,
 ): Promise<{
   removed: number;
   retained: number;
@@ -210,7 +211,7 @@ export const pruneRepoBases = async (
         if (bindings === undefined || selections.has(entry.name)) keep.add(value.directory);
         else obsolete.push(path);
       }
-      for (const path of obsolete) await Deno.remove(path);
+      if (!dryRun) for (const path of obsolete) await Deno.remove(path);
       let removed = 0;
       const retainedBases: Array<{ directory: string; reason: string }> = [];
       const retain = (directory: string, reason: string) =>
@@ -244,7 +245,7 @@ export const pruneRepoBases = async (
               if (!(error instanceof Deno.errors.NotFound)) throw error;
             }
           }
-          await Deno.remove(path, { recursive: true });
+          if (!dryRun) await Deno.remove(path, { recursive: true });
           removed++;
         } catch (error) {
           retain(entry.name, error instanceof Error ? error.message : String(error));

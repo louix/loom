@@ -21,9 +21,9 @@ export const MAX_PENDING = 128;
 
 const diagnostics = {
   sessionNixFailed:
-    "Nix activation failed. Check the project shell and session.isolation.network_presets, or disable session.auto_nix. Run loom environment prepare for build output.",
+    "Nix activation failed. Check the project shell and session.isolation.network_presets, or disable session.auto_nix. Run loom vm prepare for build output.",
   sessionNixTimeout:
-    "Nix activation timed out. Run loom environment prepare to warm the cache and inspect build output, or increase session.isolation.environment.timeout_seconds.",
+    "Nix activation timed out. Run loom vm prepare to warm the cache and inspect build output, or increase session.isolation.environment.timeout_seconds.",
   sessionEnvironmentFailed:
     "VM environment preparation failed. Check session.isolation.environment.command_prefix, prepare and network presets. The session has not started.",
   sessionEnvironmentTimeout:

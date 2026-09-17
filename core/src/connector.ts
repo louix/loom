@@ -95,6 +95,10 @@ export interface ConnectorContext {
   /** Set by the local bootstrap, never accepted from serialized connector config. */
   executionEnvironment?: "host" | "session-vm";
   /** Host-only progress before create/resume returns an agent session. */
+  vmLifecycle?: {
+    stop(sessionId: string, isCurrent: () => boolean): Promise<void>;
+    activity(sessionId: string): string;
+  };
   onVmStarted?: (sessionId: string, generation: string) => void;
   onStartupProgress?: (sessionId: string, message: string) => void;
   /** The provider id this instance serves. */

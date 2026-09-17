@@ -30,7 +30,7 @@ commands:
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
   runtime prepare|status|update|prune [runtime]  manage optional packaged MCP runtimes
-  environment prepare|prune  prepare the repo environment or remove obsolete bases
+  vm                     prepare, inspect and manage VM lifecycles
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -69,15 +69,7 @@ const USAGE: Record<string, string> = {
   returns to Loom; the agent keeps running. Commands are not sent to the agent.
   The workspace must exist and a VM session must already be running.
   --repo <path>                select the repository from any directory`,
-  environment: `loom environment prepare | loom environment prune
 
-  Warm the dependency cache in a disposable VM/worktree at committed HEAD,
-  streaming preparation output. Sessions activate their own checkout each launch;
-  preparation is optional and does not freeze shell exports.
-  Existing sessions keep running and update once idle. Worktrees and history are
-  preserved; guest disks are disposable. Failures leave the previous base intact.
-  prune removes obsolete bases once configured replacements exist, preserving live VMs.
-  All available runtime images are prepared; shared images are built once.`,
   runtime: `loom runtime prepare|status|update [runtime] | loom runtime prune
 
   prepare                      fetch/build configured runtimes outside the daemon
@@ -195,6 +187,8 @@ const main = async (): Promise<void> => {
       text: { type: "string" },
       id: { type: "string" },
       force: { type: "boolean", default: false },
+      wide: { type: "boolean" },
+      "dry-run": { type: "boolean" },
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
@@ -207,12 +201,15 @@ const main = async (): Promise<void> => {
 
   if (values.version) return void writeOut(`loom ${LOOM_VERSION}\n`);
   const cmd = positionals[0];
+  if (cmd === "vm") {
+    const { vmCommand } = await import("./vm.ts");
+    writeOut(await vmCommand(Deno.args));
+    return;
+  }
+  if (cmd === "environment") throw new Error("Unknown command: environment. Use loom vm --help.");
   if (values.help) {
     return void writeOut((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
   }
-
-  if (cmd === "environment" && values.provider !== undefined)
-    throw new Error("Unknown option for environment: --provider");
 
   const isTty = Deno.stdout.isTerminal() && Deno.stdin.isTerminal();
   const wantTui = cmd === "tui" || (!cmd && isTty);
@@ -254,20 +251,6 @@ const main = async (): Promise<void> => {
   );
   const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
   scaffoldUserConfig();
-  if (cmd === "environment") {
-    if (positionals.length !== 2 || !["prepare", "prune"].includes(positionals[1]!))
-      throw new Error(USAGE.environment);
-    const { prepareRepoEnvironment, pruneRepoEnvironment } = await import("./environment.ts");
-    if (positionals[1] === "prune") {
-      const result = await pruneRepoEnvironment(repoRoot);
-      writeOut(
-        values.json
-          ? JSON.stringify(result) + "\n"
-          : `Removed ${result.removed} old environment bases; retained ${result.retained}.\n${result.retainedBases.map((base) => `  ${base.directory}: ${base.reason}\n`).join("")}Removed legacy disks from ${result.sessionDisksRemoved} sessions; deferred ${result.sessionDisksRetained}.\nRemoved ${result.generations} runtime generations and ${result.templates} template caches.${result.deferred ? " Runtime cache cleanup deferred (separate from environment bases): active VMs/updates, recovery state, or unreadable metadata." : ""}\n`,
-      );
-    } else await prepareRepoEnvironment(repoRoot);
-    return;
-  }
   if (cmd === "runtime") {
     const { runtimeCommand } = await import("./runtime.ts");
     writeOut(

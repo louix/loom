@@ -25,7 +25,7 @@ export const startupFailures = {
   space: "The VM backend ran out of disk space. Free space on the host before retrying.",
   permission:
     "The VM backend could not access a required file or device. Check host filesystem and virtualization permissions.",
-  disk: "The VM disk or filesystem is invalid. Run loom environment prepare to rebuild the prepared base.",
+  disk: "The VM disk or filesystem is invalid. Run loom vm prepare to rebuild the prepared base.",
   backend: "The VM backend failed before the agent could start.",
 } as const;
 export type StartupFailure = keyof typeof startupFailures;

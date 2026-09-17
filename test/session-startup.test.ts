@@ -236,6 +236,8 @@ test("discarding legacy guest disks preserves host profiles and worktree changes
     await Deno.writeTextFile(join(home, "session/disks/storage.raw"), "guest-only");
     await Deno.writeTextFile(join(home, "session/profile/history"), "conversation");
     await Deno.writeTextFile(join(home, "unstaged"), "host change");
+    assert.equal(await discardSessionDisks(join(home, "session"), true), true);
+    assert.equal(await Deno.readTextFile(join(home, "session/disks/storage.raw")), "guest-only");
     await discardSessionDisks(join(home, "session"));
     await discardSessionDisks(join(home, "session"));
     await assert.rejects(Deno.stat(join(home, "session/disks")), Deno.errors.NotFound);

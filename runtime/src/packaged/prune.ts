@@ -14,7 +14,9 @@ export const pruneRuntimeCache = async (
   home: string,
   protectedPaths: string[],
   temporary = "/tmp",
+  dryRun = false,
 ): Promise<CachePruneResult> => {
+  const removedPaths = new Set<string>();
   const result = { generations: 0, templates: 0, deferred: false };
   const guard = await vmMaintenanceLock(true, temporary);
   if (!guard) return { ...result, deferred: true };
@@ -85,7 +87,8 @@ export const pruneRuntimeCache = async (
             // A generation interrupted before its lock was written cannot have been selected.
             if (!(error instanceof Deno.errors.NotFound)) continue;
           }
-          await Deno.remove(path, { recursive: true });
+          if (!dryRun) await Deno.remove(path, { recursive: true });
+          removedPaths.add(path);
           result.generations++;
         }
       } catch {
@@ -102,6 +105,7 @@ export const pruneRuntimeCache = async (
     for (const source of await entries(home)) {
       if (!/^[a-f0-9]{64}$/.test(source.name) || !source.isDirectory || source.isSymlink) continue;
       for (const entry of await entries(join(home, source.name))) {
+        if (removedPaths.has(join(home, source.name, entry.name))) continue;
         if (!/^generation-[a-z0-9]+$/.test(entry.name) || !entry.isDirectory || entry.isSymlink)
           continue;
         try {
@@ -125,7 +129,7 @@ export const pruneRuntimeCache = async (
           keepTemplates.has(entry.name)
         )
           continue;
-        await Deno.remove(join(cache, entry.name), { recursive: true });
+        if (!dryRun) await Deno.remove(join(cache, entry.name), { recursive: true });
         result.templates++;
       }
     return result;

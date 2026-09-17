@@ -63,7 +63,11 @@ test("pruning retires incompatible selections but keeps live disks and their Nix
     await Deno.writeTextFile(join(state, "base-generation"), "base-old");
     const orphan = join(f.home, "base-orphan");
     await Deno.mkdir(orphan);
+    const preview = await pruneRepoBases(f.home, [f.binding], f.root, true);
+    assert(await exists(orphan));
+    assert(await exists(join(f.home, "current-" + digest("/old-runtime").slice(0, 32) + ".json")));
     const report = await pruneRepoBases(f.home, [f.binding], f.root);
+    assert.deepEqual(preview, report);
     assert.equal(report.removed, 1);
     assert.deepEqual(report.retainedBases, [
       { directory: "base-current", reason: "current selection" },
@@ -169,7 +173,11 @@ test("runtime pruning defers for live leases and crash state, then removes only 
     const updating = await lockSessionState(source);
     assert((await pruneRuntimeCache(home, protect, root)).deferred);
     updating.close();
+    const preview = await pruneRuntimeCache(home, protect, root, true);
+    assert(await exists(old));
+    assert(await exists(sharedBackend));
     const result = await pruneRuntimeCache(home, protect, root);
+    assert.deepEqual(preview, result);
     assert.deepEqual(result, { generations: 2, templates: 1, deferred: false });
     assert.equal(await exists(old), false);
     assert.equal(await exists(sharedBackend), false);

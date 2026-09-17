@@ -13,7 +13,7 @@ export const sessionDiskSizes = Object.entries(diskGiB).flatMap(([name, size]) =
 ]);
 const stems = ["storage", "overlay"] as const;
 /** Caller holds ownership and has confirmed shutdown; profiles and host files are separate. */
-export const discardSessionDisks = async (home: string): Promise<boolean> => {
+export const discardSessionDisks = async (home: string, dryRun = false): Promise<boolean> => {
   let removed = false;
   for await (const entry of Deno.readDir(home)) {
     if (
@@ -21,7 +21,7 @@ export const discardSessionDisks = async (home: string): Promise<boolean> => {
       !/^\.disk-init-[a-z0-9]+$/.test(entry.name)
     )
       continue;
-    await Deno.remove(join(home, entry.name), { recursive: true });
+    if (!dryRun) await Deno.remove(join(home, entry.name), { recursive: true });
     removed = true;
   }
   return removed;

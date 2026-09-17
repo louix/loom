@@ -168,7 +168,7 @@ test("environment prepare detects bare HEAD and explains missing or disabled Nix
           "--config",
           fileURLToPath(new URL("../deno.json", import.meta.url)),
           fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
-          "environment",
+          "vm",
           "prepare",
         ],
         env: { XDG_CONFIG_HOME: configHome },

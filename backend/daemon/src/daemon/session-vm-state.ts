@@ -87,7 +87,7 @@ export const recoverRepositoryVms = async (
 };
 
 /** Collect legacy disks without stopping VMs or touching native conversation history. */
-export const pruneRepositorySessionDisks = async (repo: string) => {
+export const pruneRepositorySessionDisks = async (repo: string, dryRun = false) => {
   const result = { sessionDisksRemoved: 0, sessionDisksRetained: 0 };
   const root = dirname(sessionVmDirectory(repo, "scan"));
   try {
@@ -105,7 +105,7 @@ export const pruneRepositorySessionDisks = async (repo: string) => {
         }
         owner = await lockSessionState(dir);
         await assertNoActiveVm(dir);
-        if (await discardSessionDisks(dir)) result.sessionDisksRemoved++;
+        if (await discardSessionDisks(dir, dryRun)) result.sessionDisksRemoved++;
       } catch {
         result.sessionDisksRetained++;
       } finally {

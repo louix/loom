@@ -171,6 +171,15 @@ export const withVmSessions = async <T extends AgentProvider>(
         await launches.launch({
           onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
           workspace: input.cwd,
+          sessionId: input.sessionId,
+          provider: ctx.id,
+          ...(ctx.vmLifecycle
+            ? {
+                onStop: (isCurrent: () => boolean) =>
+                  ctx.vmLifecycle!.stop(input.sessionId, isCurrent),
+                activity: () => ctx.vmLifecycle!.activity(input.sessionId),
+              }
+            : {}),
           artifact: vm.artifact,
           smolvm,
           sessionDirectory,

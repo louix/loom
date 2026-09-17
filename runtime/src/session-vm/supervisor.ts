@@ -73,6 +73,7 @@ const status = () => {
     join(binding.state, "status.json.tmp"),
     JSON.stringify({
       phase,
+      backendDirectory: machineDirectory ?? null,
       execPid: phase === "running" ? child?.pid : undefined,
       network,
     }),
@@ -215,6 +216,7 @@ try {
   const diskHome = binding.preparationOnly ? binding.sessionDirectory! : binding.state;
   const diskDirectory = join(diskHome, "disks");
   machineDirectory = await command(["machine", "data-dir", "--name", sessionVmName]);
+  status();
   let saved = false;
   if (binding.repoBaseDirectory) {
     saved = await seedRepoBase(binding.repoBaseDirectory, diskHome, binding, cancelled.signal);

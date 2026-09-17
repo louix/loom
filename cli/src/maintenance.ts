@@ -4,7 +4,7 @@ import { pruneRuntimeCache } from "../../runtime/src/packaged/prune.ts";
 import { join } from "node:path";
 
 /** Preserve explicit runtime pins in every configured repo, including disabled providers. */
-export const pruneRuntimeCaches = async (repo: string) => {
+export const pruneRuntimeCaches = async (repo: string, dryRun = false) => {
   const paths = new Set<string>();
   for (const config of loadAllRepoConfigs(repo)) {
     for (const policy of [
@@ -35,5 +35,5 @@ export const pruneRuntimeCaches = async (repo: string) => {
       }
     }
   }
-  return await pruneRuntimeCache(runtimeHome(), [...paths]);
+  return await pruneRuntimeCache(runtimeHome(), [...paths], "/tmp", dryRun);
 };

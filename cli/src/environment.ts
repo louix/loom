@@ -48,7 +48,7 @@ export const prepareEnvironmentInTerminal = async (
         entry,
         "--repo",
         repo,
-        "environment",
+        "vm",
         "prepare",
       ],
       stdin: "inherit",
@@ -211,6 +211,9 @@ const prepareRuntimeEnvironment = async (
       repoRoot: repo,
       sessionDirectory: candidate,
       preparationOnly: true,
+      onStop: async () => {
+        cancelled.abort();
+      },
       auth: {},
       providerHosts: [],
       ...(config.isolation.environment ? { environment: config.isolation.environment } : {}),
@@ -319,7 +322,7 @@ export const repoEnvironmentWarning = async (
 };
 
 /** Explicit and post-preparation collection, scoped to this repo's configured images. */
-export const pruneRepoEnvironment = async (repo: string) => {
+export const pruneRepoEnvironment = async (repo: string, dryRun = false) => {
   repo = await Deno.realPath(repo);
   const config = loadConfig(repo);
   const bindings = [];
@@ -336,8 +339,8 @@ export const pruneRepoEnvironment = async (repo: string) => {
       writableNix: environmentEnabled(config.isolation.environment),
     });
   }
-  const sessions = await pruneRepositorySessionDisks(repo);
-  const bases = await pruneRepoBases(repoBaseDirectory(repo), bindings);
-  const caches = await pruneRuntimeCaches(repo);
-  return { ...bases, ...caches, ...sessions };
+  const sessions = await pruneRepositorySessionDisks(repo, dryRun);
+  const bases = await pruneRepoBases(repoBaseDirectory(repo), bindings, "/tmp", dryRun);
+  const caches = await pruneRuntimeCaches(repo, dryRun);
+  return { dryRun, ...bases, ...caches, ...sessions };
 };

@@ -2,6 +2,11 @@ import {
   environmentEnabled,
   type SessionEnvironment,
 } from "../../../../core/src/session-environment.ts";
+import {
+  registerVm,
+  type VmOwner,
+  type VmRecord,
+} from "../../../../runtime/src/session-vm/inventory.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -33,6 +38,10 @@ import {
 } from "../../../../runtime/src/session-vm/auth.ts";
 
 export interface SessionVmOptions {
+  sessionId?: string;
+  provider?: string;
+  onStop?: (isCurrent: () => boolean) => Promise<void>;
+  activity?: () => string;
   onProgress?: (message: string) => void;
   workspace: string;
   artifact: string;
@@ -57,6 +66,7 @@ export interface SessionVmOptions {
 }
 export interface SessionVmStatus {
   phase: string;
+  backendDirectory?: string | null;
   execPid?: number;
   network: Array<{ host: string; allowed: boolean }>;
 }
@@ -200,7 +210,34 @@ const launchSessionVmOwned = async (
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
     ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),
   };
+  let inventory: VmOwner | undefined;
+  const inventoryPaths: VmRecord["paths"] = {
+    workspace,
+    runtime: artifact,
+    state,
+    session: sessionDirectory ?? null,
+    profile:
+      sessionDirectory && !options.preparationOnly ? join(sessionDirectory, "profile") : null,
+    backend: null,
+    base: null,
+  };
   try {
+    inventory = await registerVm({
+      version: 1,
+      id: binding.token,
+      repo: await Deno.realPath(options.repoRoot ?? workspace),
+      kind: options.preparationOnly ? "prepare" : "session",
+      sessionId: options.sessionId ?? null,
+      provider: options.provider ?? null,
+      workload: options.preparationOnly ? "dependency cache" : (options.activity?.() ?? "starting"),
+      state: "starting",
+      createdAt: new Date().toISOString(),
+      stoppedAt: null,
+      observedAt: new Date().toISOString(),
+      source: "owner",
+      error: null,
+      paths: inventoryPaths,
+    });
     const root = new URL("../../../../", import.meta.url);
     const child = spawn(
       Deno.execPath(),
@@ -311,10 +348,18 @@ const launchSessionVmOwned = async (
             if (sessionDirectory) await finishSessionState(sessionDirectory, binding.token);
           },
         });
-      })().catch((error) => {
-        cleanup = undefined;
-        throw error;
-      }));
+      })()
+        .then(
+          () => inventory?.finish(),
+          async (error) => {
+            await inventory?.finish(error);
+            throw error;
+          },
+        )
+        .catch((error) => {
+          cleanup = undefined;
+          throw error;
+        }));
     void exited.then(clean, clean).catch(() => {});
     let stopping = false;
     const worker = {
@@ -343,6 +388,36 @@ const launchSessionVmOwned = async (
       },
       cleanup: clean,
     };
+    inventory.serve(
+      async () => {
+        await options.onStop?.(() => !ended.signal.aborted);
+        worker.terminate();
+        await clean();
+      },
+      async () => {
+        let phase = "starting";
+        try {
+          const status: SessionVmStatus = await worker.status();
+          phase = status.phase;
+          inventoryPaths.backend = status.backendDirectory ?? null;
+          const generation = await sessionVmGeneration(state);
+          inventoryPaths.base =
+            generation && binding.repoBaseDirectory
+              ? join(binding.repoBaseDirectory, generation)
+              : null;
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+        let vmState: VmRecord["state"] = phase === "running" ? "running" : "starting";
+        if (stopping) vmState = "stopping";
+        return {
+          state: vmState,
+          paths: inventoryPaths,
+          workload:
+            options.activity?.() ?? (options.preparationOnly ? "dependency cache" : lastStage),
+        };
+      },
+    );
     if (options.authOwner) {
       subscribing = (async () => {
         // Wait until the supervisor has written its initial credential snapshot.
@@ -373,6 +448,7 @@ const launchSessionVmOwned = async (
     return worker;
   } catch (error) {
     await remove(state);
+    await inventory?.finish();
     throw error;
   }
 };

@@ -27,7 +27,7 @@ explicit base preparation, with incremental work for subsequent sessions.
 
 ## Prepare or refresh the repo base
 
-Command: `loom environment prepare`.
+Command: `loom vm prepare`.
 
 1. Create a disposable host worktree from the repo's HEAD. Report that revision;
    preparation does not include uncommitted changes from the active checkout.
@@ -87,7 +87,7 @@ sessions. It is a repo action and does not require a selected session.
 
 For the first implementation, use the existing terminal-suspension mechanism:
 
-1. Suspend the TUI and run the same `loom environment prepare` command for the
+1. Suspend the TUI and run the same `loom vm prepare` command for the
    current repo, with inherited terminal input/output and the same config.
 2. Show the same live phases and command output as a direct CLI invocation.
 3. Leave the completion/error visible until the user returns to the TUI. Ctrl-C
