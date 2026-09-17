@@ -66,6 +66,7 @@ Deno.addSignalListener("SIGTERM", stop);
 Deno.addSignalListener("SIGINT", stop);
 const deadline = setTimeout(stop, sessionStartupTimeout(environment));
 const network: Array<{ host: string; allowed: boolean }> = [];
+const blockedHosts = new Set<string>();
 let phase = "starting";
 const status = () => {
   Deno.writeTextFileSync(
@@ -169,7 +170,11 @@ try {
     join(binding.state, "egress.sock"),
     (host, allowed) => {
       network.push({ host, allowed });
-      if (!allowed) reportStartup("networkBlocked");
+      // Report each blocked host once; retries would otherwise flood progress.
+      if (!allowed && !blockedHosts.has(host) && blockedHosts.size < 32) {
+        blockedHosts.add(host);
+        reportStartup("networkBlocked", undefined, host);
+      }
       if (network.length > 32) network.shift();
       status();
     },
@@ -231,7 +236,7 @@ try {
   // Never expose raw vendor stderr: it can contain credentials.
   const diagnostics = binding.preparationOnly
     ? child.stderr.pipeTo(Deno.stderr.writable, { preventClose: true })
-    : readStartupProgress(child.stderr, reportStartup);
+    : readStartupProgress(child.stderr, (stage, elapsed) => reportStartup(stage, elapsed));
   void diagnostics.catch(stop);
   const output = child.stdout
     .pipeThrough(

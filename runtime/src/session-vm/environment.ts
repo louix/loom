@@ -78,7 +78,7 @@ export const prepareEnvironment = async (
     }).spawn();
     const diagnostics = options.output
       ? undefined
-      : readStartupProgress(child.stderr, reportStartup);
+      : readStartupProgress(child.stderr, (stage, elapsed) => reportStartup(stage, elapsed));
     const result = await child.status;
     await diagnostics;
     if (timedOut)

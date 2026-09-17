@@ -245,9 +245,9 @@ const launchSessionVmOwned = async (
     const startup = !options.preparationOnly
       ? readStartupProgress(
           Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
-          (stage, elapsed) => {
+          (stage, elapsed, host) => {
             lastStage = stage;
-            options.onProgress?.(startupMessage(stage, elapsed));
+            options.onProgress?.(startupMessage(stage, elapsed, host));
           },
           (code) => {
             failure = new Error(startupFailures[code]);

@@ -44,19 +44,28 @@ export const classifyStartupFailure = (error: unknown): StartupFailure => {
   }
   return "backend";
 };
-export const startupMessage = (stage: StartupStage, elapsedSeconds?: number) =>
-  startupStages[stage] + (elapsedSeconds === undefined ? "" : ` (${elapsedSeconds}s elapsed)`);
-export const reportStartup = (stage: StartupStage, elapsedSeconds?: number) =>
+/** Egress already reduces blocked authorities to this alphabet; anything else is dropped. */
+const safeHost = (value: unknown) =>
+  typeof value === "string" && /^[a-zA-Z0-9.:[\]? -]{1,200}$/.test(value) ? value : undefined;
+export const startupMessage = (stage: StartupStage, elapsedSeconds?: number, host?: string) =>
+  (stage === "networkBlocked" && host
+    ? `VM network policy blocked a request to ${host}; check network presets and allowed hosts.`
+    : startupStages[stage]) + (elapsedSeconds === undefined ? "" : ` (${elapsedSeconds}s elapsed)`);
+export const reportStartup = (stage: StartupStage, elapsedSeconds?: number, host?: string) =>
   console.error(
     Deno.env.get("LOOM_PREPARATION_ONLY") === "1"
-      ? startupMessage(stage, elapsedSeconds)
-      : JSON.stringify({ loomStartup: stage, elapsedSeconds }),
+      ? startupMessage(stage, elapsedSeconds, host)
+      : JSON.stringify({
+          loomStartup: stage,
+          elapsedSeconds,
+          host: safeHost(host),
+        }),
   );
 
-/** Discard vendor diagnostics; only known phase names cross this channel. */
+/** Discard vendor diagnostics; only known phase names (and sanitized hosts) cross this channel. */
 export const readStartupProgress = async (
   stream: ReadableStream<Uint8Array>,
-  report: (stage: StartupStage, elapsedSeconds?: number) => void,
+  report: (stage: StartupStage, elapsedSeconds?: number, host?: string) => void,
   failure?: (code: StartupFailure) => void,
 ) => {
   let line = "";
@@ -82,6 +91,7 @@ export const readStartupProgress = async (
                 value.elapsedSeconds <= 86400
                 ? value.elapsedSeconds
                 : undefined,
+              safeHost(value.host),
             );
           }
           if (

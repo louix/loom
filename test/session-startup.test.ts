@@ -205,6 +205,29 @@ test("startup diagnostics expose only known causes and bounded elapsed times", a
   assert.equal(classifyStartupFailure(new Error("unrecognized: secret-token")), "backend");
 });
 
+test("blocked-network progress names the host only when it is sanitized", async () => {
+  const messages: string[] = [];
+  await readStartupProgress(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        for (const value of [
+          { loomStartup: "networkBlocked", host: "evil.example:443" },
+          { loomStartup: "networkBlocked", host: "<script>secret-token" },
+          { loomStartup: "boot", host: "ignored.example:443" },
+        ])
+          c.enqueue(new TextEncoder().encode(JSON.stringify(value) + "\n"));
+        c.close();
+      },
+    }),
+    (stage, elapsed, host) => messages.push(startupMessage(stage, elapsed, host)),
+  );
+  assert.deepEqual(messages, [
+    "VM network policy blocked a request to evil.example:443; check network presets and allowed hosts.",
+    startupMessage("networkBlocked"),
+    startupMessage("boot"),
+  ]);
+});
+
 test("discarding legacy guest disks preserves host profiles and worktree changes", async () => {
   const home = await Deno.makeTempDir();
   try {
