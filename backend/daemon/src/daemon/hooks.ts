@@ -39,6 +39,8 @@ export interface HookRunnerOptions {
   onFeedback: (sessionId: string, text: string, signal: AbortSignal) => Promise<void>;
   /** Surface an operator-facing advisory (a waiting hook that failed). */
   onNotice: (text: string, tone: "info" | "warn") => void;
+  /** Current TUI presence, evaluated when an event fires. */
+  tuiPresence?: () => { connected: boolean; focused: boolean };
 }
 
 /**
@@ -210,6 +212,11 @@ export class HookRunner {
     const write = event === "file_write" || event === "turn_end";
     for (const hook of this.#hooks) {
       if (!hook.on.some((e) => e === event)) continue;
+      if (hook.kind === "notify" && hook.when !== "always") {
+        const presence = this.#opts.tuiPresence?.();
+        if (hook.when === "unfocused" && presence?.focused) continue;
+        if (hook.when === "disconnected" && presence?.connected) continue;
+      }
       if (write && hook.match.length > 0 && !this.#matchesAny(hook, session, files)) continue;
       if (event === "file_write") {
         for (const file of files) {

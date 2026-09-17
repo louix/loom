@@ -51,6 +51,8 @@ export class Connection {
   /** Aborted on either local or remote disconnection. */
   readonly signal = this.#abort.signal;
   readonly id: number = nextConnId++;
+  /** null = ordinary RPC client; TUIs register their terminal focus explicitly. */
+  tuiFocused: boolean | null = null;
   readonly conn: FramedConn;
 
   /** Set once the client completes the `hello` handshake. */

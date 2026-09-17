@@ -184,6 +184,8 @@ export type HookConfig = HookFields &
 interface HookFields {
   /** Label for logs and the agent-facing failure message; defaults to `run`'s first word. */
   name: string;
+  /** Notification delivery gate; defaults to always. */
+  when: "always" | "unfocused" | "disconnected";
   /** The command, run through `sh -c` in the session's worktree. */
   run: string;
   /**
@@ -717,6 +719,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         : { kind: h.kind, on: h.on }),
       name: h.name || h.run.split(/\s+/)[0]!,
       run: h.run,
+      when: h.when,
       project: expandTilde(h.project),
       match: h.match,
       timeoutMs: h.timeout,

@@ -454,11 +454,23 @@ Changes hot-apply; changing hooks cancels old runs and clears their feedback sta
 | --------- | --------------------------------------------------------------------------------- |
 | `kind`    | `"notify"` (default) never messages the agent; `"check"` sends failures back      |
 | `on`      | event or list; checks accept only `file_write` and `turn_end`                     |
+| `when`    | notifications: `"always"` (default), `"unfocused"`, or `"disconnected"`           |
 | `run`     | command passed to `sh -c`                                                         |
 | `name`    | optional display label, defaults to the command's first word; duplicates are fine |
 | `project` | repo-root glob, with `~` expansion; empty means every repo                        |
 | `match`   | path glob or list, matched against absolute and worktree-relative paths           |
 | `timeout` | seconds; default 30, clamped to 1–600                                             |
+
+`when: "unfocused"` fires when no TUI connected to this daemon has terminal
+focus, including when none is connected. `"disconnected"` fires only when no TUI
+is connected; CLI commands do not count. A new TUI assumes focus until the terminal
+reports otherwise. Terminal focus reporting must be supported (in tmux, enable
+`set -g focus-events on`); without it a connected TUI remains treated as focused.
+The condition is checked when the event occurs; changing focus does not replay
+past events. Check hooks always run regardless of focus.
+
+For example, add `"when": "unfocused"` to a notification hook with
+`"on": ["waiting", "turn_end"]`.
 
 `file_write` runs once per successfully written path. Each hook runs serially:
 if another write arrives while it runs, that path is retained for a later run.

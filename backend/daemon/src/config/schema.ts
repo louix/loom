@@ -156,6 +156,10 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       z.array(z.enum(events)).min(1),
       z.union([z.enum(events), z.array(z.enum(events)).min(1)]),
     ).transform((v) => [...new Set(v)]),
+    when: z
+      .enum(["always", "unfocused", "disconnected"])
+      .default("always")
+      .describe("Notification hooks: always, no focused TUI, or no connected TUI."),
     name: text().transform((v) => v.trim()),
     project: text().transform((v) => v.trim()),
     match: preprocess(
@@ -168,10 +172,13 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       .catch(30)
       .describe("Hook timeout in seconds; clamped to 1–600.")
       .transform((v) => Math.min(600_000, Math.max(1_000, Math.round(v * 1000)))),
-  }).refine(
-    (h) => h.kind !== "check" || h.on.every((e) => ["init", "file_write", "turn_end"].includes(e)),
-    "check hook: only init, file_write and turn_end are supported",
-  );
+  })
+    .refine(
+      (h) =>
+        h.kind !== "check" || h.on.every((e) => ["init", "file_write", "turn_end"].includes(e)),
+      "check hook: only init, file_write and turn_end are supported",
+    )
+    .refine((h) => h.kind !== "check" || h.when === "always", "check hooks must use when: always");
   return section({
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),

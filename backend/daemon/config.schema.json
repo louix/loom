@@ -1039,6 +1039,12 @@
               }
             ]
           },
+          "when": {
+            "default": "always",
+            "description": "Notification hooks: always, no focused TUI, or no connected TUI.",
+            "type": "string",
+            "enum": ["always", "unfocused", "disconnected"]
+          },
           "name": {
             "default": "",
             "type": "string"
@@ -2145,6 +2151,12 @@
                       }
                     }
                   ]
+                },
+                "when": {
+                  "default": "always",
+                  "description": "Notification hooks: always, no focused TUI, or no connected TUI.",
+                  "type": "string",
+                  "enum": ["always", "unfocused", "disconnected"]
                 },
                 "name": {
                   "default": "",

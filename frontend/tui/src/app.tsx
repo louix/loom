@@ -5,7 +5,8 @@
  * publishes. JSX with no bundler — `@oxc-node` transforms `.tsx` on the fly.
  */
 import { useEffect, useState, useSyncExternalStore, useMemo, type ReactNode } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, usePaste, useStdout } from "ink";
+import { terminalFocus, PASTE_KEY } from "./terminal-focus.ts";
 import { PaletteContext, useTheme } from "./ui.tsx";
 import { absurd } from "@loom/core/absurd";
 import { showConnectionError } from "@loom/client";
@@ -77,6 +78,15 @@ export const App = ({
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
+  const [focus] = useState(() => terminalFocus(client));
+  useEffect(() => {
+    const stop = focus.start();
+    if (stdout.isTTY) stdout.write("\x1b[?1004h");
+    return () => {
+      if (stdout.isTTY) stdout.write("\x1b[?1004l");
+      stop();
+    };
+  }, [focus, stdout]);
 
   const [handle] = useState(() =>
     mkFleetHandle({
@@ -107,7 +117,16 @@ export const App = ({
   );
 
   useEffect(handle.effectStart, [handle]);
-  useInput(handle.handleKey);
+  useInput((input, key) => {
+    // Ink strips the leading ESC from CSI focus reports.
+    if (input === "[I" || input === "[O") {
+      focus.set(input === "[I");
+      return;
+    }
+    handle.handleKey(input, key);
+  });
+  // Bracketed pastes bypass focus decoding, even for literal "[I" / "[O".
+  usePaste((input) => handle.handleKey(input, PASTE_KEY));
   const view = useSyncExternalStore(handle.subscribe, handle.getView);
 
   return (

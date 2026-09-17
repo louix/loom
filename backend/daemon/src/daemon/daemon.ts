@@ -337,6 +337,7 @@ export class Daemon {
         this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
       },
       onNotice: (text, tone) => this.#emitNotice(text, tone),
+      tuiPresence: () => this.#server.tuiPresence,
     });
     this.#hooks.setHooks(this.config.hooks);
     this.#sessions = new SessionManager({
@@ -2157,6 +2158,10 @@ export class Daemon {
     const d = this.#dispatcher;
 
     d.register("hello", (params, ctx) => this.#hHello(params, ctx));
+    d.register("tui.focus", (params, ctx) => {
+      ctx.conn.tuiFocused = params.focused;
+      return { ok: true };
+    });
 
     d.register("ping", (params) => {
       const nonce = params.nonce;

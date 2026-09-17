@@ -117,6 +117,18 @@ export class SocketServer {
     return n;
   }
 
+  /** Only registered TUIs count, not CLI commands or other subscribers. */
+  get tuiPresence(): { connected: boolean; focused: boolean } {
+    let connected = false;
+    let focused = false;
+    for (const conn of this.#conns) {
+      if (conn.tuiFocused === null) continue;
+      connected = true;
+      focused ||= conn.tuiFocused;
+    }
+    return { connected, focused };
+  }
+
   get connectionCount(): number {
     return this.#conns.size;
   }

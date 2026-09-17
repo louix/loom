@@ -40,6 +40,7 @@ const plan = planFields
 /** Public RPC input contracts. Domain checks (busy, capabilities, ownership) stay in handlers. */
 export const rpcParamsSchemas = {
   hello: helloParamsSchema.partial(),
+  "tui.focus": z.object({ focused: z.boolean().nullable() }),
   ping: z.object({ nonce: z.unknown().optional() }),
   "daemon.status": empty,
   "daemon.shutdown": empty,

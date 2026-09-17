@@ -2248,6 +2248,29 @@ const fakeTerm: Term = {
   onResize: () => () => {},
 };
 
+test("terminal focus reports stay out of prompts, including fragmented reports and pasted literals", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf());
+  const { stdin, stdout, app } = mount(fake.client);
+  try {
+    await waitFor(stdout, () => fake.of("tui.focus").length === 1);
+    stdin.feed("n");
+    await delay(30);
+    stdin.feed(`${ESC}[`);
+    stdin.feed("O");
+    await waitFor(stdout, () => fake.of("tui.focus").length === 2);
+    assert.equal(fake.of("tui.focus")[1]?.params["focused"], false);
+    stdin.feed(`${ESC}[I`);
+    await waitFor(stdout, () => fake.of("tui.focus").length === 3);
+    stdin.feed(`${ESC}[200~literal [I [O${ESC}[201~`);
+    await waitFor(stdout, /literal \[I \[O/);
+    assert.equal(fake.of("tui.focus").length, 3);
+  } finally {
+    app.unmount();
+  }
+  assert.equal(fake.of("tui.focus").at(-1)?.params["focused"], null);
+});
+
 test("repo preparation palette action suspends and restores the terminal without session RPCs", async () => {
   for (const code of [0, 1, 130]) {
     const fake = mkFakeClient();
