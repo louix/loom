@@ -548,6 +548,15 @@ export const resolveApiKey = (
  * to `claude`, so that's not re-checked here. Logged at daemon start-up and
  * available over `config.check` / `loom config`.
  */
+/** `sh` builtins and reserved words — never on PATH, yet always runnable. */
+const SH_BUILTINS = new Set(
+  (
+    ". : break continue eval exec exit export readonly return set shift times trap unset " +
+    "alias bg cd command false fg getopts hash jobs kill read type ulimit umask unalias wait " +
+    "true echo printf test pwd local source if for while until case"
+  ).split(" "),
+);
+
 export const lintConfig = (
   cfg: LoomConfig,
   env: Record<string, string | undefined> = Deno.env.toObject(),
@@ -580,7 +589,7 @@ export const lintConfig = (
     // probing — a pipeline, a `VAR=x cmd`, or an absolute path is the user's
     // business. This catches the common miss: `notify-send` on a box without it.
     const word = h.run.split(/\s+/)[0] ?? "";
-    if (/^[\w.-]+$/.test(word) && !onPath(word, env)) {
+    if (/^[\w.-]+$/.test(word) && !SH_BUILTINS.has(word) && !onPath(word, env)) {
       w.push(`hook "${h.name}": \`${word}\` is not on PATH — the hook will fail every time`);
     }
     if (h.match.length > 0 && !h.on.some((e) => e === "file_write" || e === "turn_end")) {

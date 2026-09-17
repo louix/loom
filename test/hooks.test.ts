@@ -435,6 +435,17 @@ test("lintConfig flags a hook command that isn't on PATH and a match that can't 
   const warnings = lintConfig(c, {}).join("\n");
   assert.match(warnings, /definitely-not-a-real-binary` is not on PATH/);
   assert.match(warnings, /dead-filter.*match.* does nothing for waiting/s);
+  // shell builtins aren't on PATH but always run
+  assert.deepEqual(
+    lintConfig(
+      {
+        ...cfg(`{"hooks": [{"on": "waiting", "run": "export FOO=1 && foo"}]}`),
+        claudeProfiles: [],
+      },
+      {},
+    ),
+    [],
+  );
   // a pipeline / absolute path is the user's business — not probed
   assert.deepEqual(
     lintConfig(
