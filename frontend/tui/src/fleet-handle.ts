@@ -1940,20 +1940,18 @@ export const mkFleetHandle = ({
       const col = Number(mouse[2]);
       const row = Number(mouse[3]);
       const base = rawBtn & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
-      if (state.overlay.t === "plan") {
-        if (base === 64) return planScrollBy(-3); // wheel up → toward the top
-        if (base === 65) return planScrollBy(3); // wheel down → toward the end
-        return;
-      }
-      if (
-        (openPrompt(state.overlay)?.t === "new" ||
+      if (base === 64 || base === 65) {
+        if (
+          openPrompt(state.overlay)?.t === "new" ||
           state.overlay.t === "picker" ||
-          state.overlay.t === "confirm") &&
-        (base === 64 || base === 65)
-      )
-        return;
-      if (base === 64) return transcripts.scrollBy(3); // wheel up → back in history
-      if (base === 65) return transcripts.scrollBy(-3); // wheel down → toward the tail
+          state.overlay.t === "confirm"
+        )
+          return;
+        // One wheel step for both readers. Plans count from the top; events
+        // count backwards from the live tail.
+        const delta = base === 64 ? -3 : 3;
+        return state.overlay.t === "plan" ? planScrollBy(delta) : transcripts.scrollBy(-delta);
+      }
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
       // or the mode chip. Only in browse — overlays own the screen.
       if (

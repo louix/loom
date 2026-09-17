@@ -185,11 +185,11 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
           }
         : undefined;
       body = (
-        <Box paddingX={2} paddingTop={1} alignItems="flex-start">
+        <Box width={cols} height={bodyH} flexShrink={0} overflow="hidden">
           <PlanReview
             plan={plan}
-            width={cols - 4}
-            height={Math.max(8, bodyH - 2)}
+            width={cols}
+            height={bodyH}
             scroll={view.planScroll}
             {...(ps ? { ctx: { used: ps.contextUsed, limit: ps.contextLimit } } : {})}
             {...(plan.impl

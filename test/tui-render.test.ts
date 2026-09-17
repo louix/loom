@@ -868,6 +868,11 @@ describe("tui-render", { concurrency: 4 }, () => {
       }
       await waitFor(stdout, /pinline-30/);
 
+      stdin.feed("\x1b[<64;10;10M"); // wheel up moves three rows into history
+      await waitFor(stdout, (frame) => /pinline-27/.test(frame) && !/pinline-28/.test(frame));
+      assert.doesNotMatch(stdout.last, /pinline-30/);
+      stdin.feed("\x1b[<65;10;10M"); // wheel down returns to the live tail
+      await waitFor(stdout, /pinline-30/);
       // Scroll back a couple of pages: the border turns accent and older lines
       // are now in view, the live tail is gone.
       stdin.feed("\x1b[5~");
@@ -1208,6 +1213,12 @@ describe("tui-render", { concurrency: 4 }, () => {
         "the scroll-position indicator",
       );
 
+      stdin.feed("\x1b[<65;10;10M"); // wheel down, same three-row step as EVENTS
+      await delay(120);
+      assert.match(stdout.last, /↕ lines 4–/);
+      stdin.feed("\x1b[<64;10;10M"); // wheel up
+      await delay(120);
+      assert.match(stdout.last, /↕ lines 1–/);
       stdin.feed("\x1b[6~"); // PgDn
       await delay(120);
       assert.match(stdout.last, /25\. step 25 of the plan/, "PgDn reveals the tail");

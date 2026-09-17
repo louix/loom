@@ -1416,13 +1416,6 @@ export const PlanReview = ({
 }): ReactNode => {
   const w = inside(width);
   const lines = plan.text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
-  // Fixed chrome around the plan body: title + spacer + scroll line + spacer +
-  // context meter + mode + implement-fresh + forks + spacer + 4 actions +
-  // spacer + hint (15 rows), plus the border and paddingY rows (4).
-  const WINDOW = Math.max(3, height - 19);
-  const off = Math.min(Math.max(0, scroll ?? 0), Math.max(0, lines.length - WINDOW));
-  const body = lines.slice(off, off + WINDOW);
-  const overflow = lines.length > WINDOW;
   const frac = ctx && ctx.limit > 0 ? Math.min(1, ctx.used / ctx.limit) : null;
 
   const shown =
@@ -1437,10 +1430,29 @@ export const PlanReview = ({
     (providerForks ||
       (impl.model !== undefined && impl.model !== (cur.model ?? undefined)) ||
       (impl.effort !== undefined && impl.effort !== (cur.effort ?? undefined)));
+  // Border (2), title/spacers/position (5), target + mode (2), actions (4),
+  // and final spacer/hint (2). Optional metadata consumes one row each.
+  const window = Math.max(0, height - 15 - Number(frac !== null) - Number(providerForks));
+  const off = Math.min(Math.max(0, scroll ?? 0), Math.max(0, lines.length - window));
+  const body = lines.slice(off, off + window);
+  const overflow = lines.length > window;
   return (
-    <Panel width={width} tone="await_" overlay title={"❖ PLAN REVIEW"}>
+    <Panel
+      width={width}
+      height={height}
+      flexShrink={0}
+      overflow="hidden"
+      tone="await_"
+      title={"❖ PLAN REVIEW"}
+    >
       <Box height={1} />
-      <Lines lines={body} tone="text" />
+      <Box height={window} flexShrink={0} flexDirection="column" overflow="hidden">
+        {body.map((line, i) => (
+          <Line key={i} tone="text">
+            {line || " "}
+          </Line>
+        ))}
+      </Box>
       <Line tone="faint">
         {overflow
           ? `  ↕ lines ${off + 1}–${off + body.length} of ${lines.length}  ·  PgUp/PgDn`
@@ -1448,12 +1460,12 @@ export const PlanReview = ({
       </Line>
       <Box height={1} />
       {frac !== null && ctx ? (
-        <Text>
+        <Line>
           <Text tone={contextHeatTone(frac)}>{bar(frac, 16)}</Text>
           <Text tone="dim">
             {`  ${Math.round(frac * 100)}% context · ${humanTokens(ctx.used)}/${humanTokens(ctx.limit)}`}
           </Text>
-        </Text>
+        </Line>
       ) : null}
       <Line>
         {"implementation mode "}
@@ -1475,7 +1487,7 @@ export const PlanReview = ({
         <Text tone="faint">{"  ·  ⌥p retarget"}</Text>
       </Line>
       {providerForks ? (
-        <Text tone="faint">{"  different provider — implements in a fresh forked session"}</Text>
+        <Line tone="faint">{"  different provider — implements in a fresh forked session"}</Line>
       ) : null}
       <Box height={1} />
       <Fields
