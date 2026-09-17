@@ -1,3 +1,4 @@
+import { signalOf } from "../backend/daemon/src/daemon/startup.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { writeFileSync } from "node:fs";
@@ -1805,4 +1806,33 @@ test("reported zero cost remains authoritative", async () => {
   assert.equal(s.costSource, "provider");
   assert.equal(s.costUsd, 0);
   await c.close();
+});
+
+test("interrupt cancels a session before its provider is ready", async () => {
+  const c = await client();
+  const entered = Promise.withResolvers<string>();
+  fake().createSession = async (opts) => {
+    entered.resolve(opts.sessionId);
+    const signal = signalOf(opts)!;
+    await new Promise<void>((resolve) =>
+      signal.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    signal.throwIfAborted();
+    throw new Error("unreachable");
+  };
+  try {
+    const creating = c.request<SessionSnapshot>("session.create", {
+      provider: "fake",
+      prompt: "accidental new chat",
+    });
+    const id = await entered.promise;
+    const stopped = await c.request<SessionSnapshot>("session.interrupt", { id });
+    assert.equal(stopped.status.kind, "interrupted");
+    const created = await creating;
+    assert.equal(created.status.kind, "interrupted");
+    assert.equal(fake().session(id), undefined);
+    assert.equal(await statusOf(c, id), "interrupted");
+  } finally {
+    await c.close();
+  }
 });

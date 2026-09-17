@@ -1,3 +1,5 @@
+import { startupSignal } from "./startup.ts";
+import { stateInterrupted } from "@loom/core/session-state";
 import type { RpcParams } from "@loom/core/rpc-params";
 import {
   currentRepoBase,
@@ -196,6 +198,7 @@ export class Daemon {
   readonly epoch: string = randomUUID();
   readonly startedAt: number = Date.now();
 
+  readonly #startups = new Map<string, AbortController>();
   #log: Logger;
   #db: Db;
   #registry: Registry;
@@ -1161,6 +1164,8 @@ export class Daemon {
         ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
       });
 
+      const startup = new AbortController();
+      this.#startups.set(id, startup);
       this.#publishState();
 
       // The opening prompt is a user message like any follow-up — put it on the
@@ -1239,7 +1244,10 @@ export class Daemon {
         };
 
         this.#lastSend.set(id, o.prompt);
-        await this.#sessions.create(await this.#providers.get(o.providerId, isolation), opts);
+        const provider = await this.#providers.get(o.providerId, isolation);
+        startup.signal.throwIfAborted();
+        Object.assign(opts, { [startupSignal]: startup.signal });
+        await this.#sessions.create(provider, opts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Init may have changed files before the provider failed. Preserve those
@@ -1251,6 +1259,11 @@ export class Daemon {
             /* best effort */
           }
           this.#registry.setFields(id, { worktree: null });
+        }
+        if (startup.signal.aborted) {
+          this.#registry.setStatus(id, stateInterrupted("user"));
+          this.#publishState(id);
+          return;
         }
         const failure = `could not start session: ${message}`;
         this.#registry.setStatus(id, stateError(failure));
@@ -1265,6 +1278,8 @@ export class Daemon {
         throw new RpcError(err instanceof RpcError ? err.code : "provider_error", failure, {
           sessionId: id,
         });
+      } finally {
+        this.#startups.delete(id);
       }
     });
 
@@ -2813,6 +2828,14 @@ export class Daemon {
 
     d.register("session.interrupt", async (params) => {
       const id = params.id;
+      const startup = this.#startups.get(id);
+      if (startup && !this.#sessions.has(id)) {
+        startup.abort();
+        this.#hooks.forget(id);
+        this.#registry.setStatus(id, stateInterrupted("user"));
+        this.#publishState(id);
+        return this.#registry.mustGet(id);
+      }
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       this.#hooks.forget(id);
       await this.#sessions.interrupt(id);

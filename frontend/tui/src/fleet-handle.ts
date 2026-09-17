@@ -1617,7 +1617,7 @@ export const mkFleetHandle = ({
           dispatch({ t: "pushHistory", text });
           // No local echo — the daemon emits a `user_message` for the opening
           // prompt too, so it's in the log for every client and after a reopen.
-          return `started ${shortId(r.id)}`;
+          return r.status.kind === "interrupted" ? "startup cancelled" : `started ${shortId(r.id)}`;
         }
         case "session":
           return runSession(p.kind, p.sessionId);

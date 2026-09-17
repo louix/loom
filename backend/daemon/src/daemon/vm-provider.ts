@@ -1,3 +1,4 @@
+import { startWorker, signalOf } from "./startup.ts";
 import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
@@ -121,98 +122,104 @@ export const withVmSessions = async <T extends AgentProvider>(
     connector = "@loom/connector-claude";
     auth = apiKey ? { ANTHROPIC_API_KEY: apiKey } : { CLAUDE_CODE_OAUTH_TOKEN: oauth! };
   }
-  const start = async (input: CreateSessionOptions | SessionRef, resume: boolean) => {
-    const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
-    await stoppedSessionVm(vm.repoRoot, input.sessionId);
-    if (resume && kind !== "aisdk") {
-      const ref = (input as SessionRef).providerRef;
-      if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error(`Invalid ${kind} resume reference`);
-      try {
-        if (kind === "claude") {
-          await Deno.stat(join(sessionDirectory, "profile/projects/loom-session", `${ref}.jsonl`));
-        } else {
-          if ((await Deno.readTextFile(join(sessionDirectory, "codex-ref"))) !== ref)
-            throw new Error("different thread");
-          await Deno.stat(join(sessionDirectory, "profile/sessions"));
+  const start = async (input: CreateSessionOptions | SessionRef, resume: boolean) =>
+    startWorker(input, async (own) => {
+      const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
+      await stoppedSessionVm(vm.repoRoot, input.sessionId);
+      if (resume && kind !== "aisdk") {
+        const ref = (input as SessionRef).providerRef;
+        if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error(`Invalid ${kind} resume reference`);
+        try {
+          if (kind === "claude") {
+            await Deno.stat(
+              join(sessionDirectory, "profile/projects/loom-session", `${ref}.jsonl`),
+            );
+          } else {
+            if ((await Deno.readTextFile(join(sessionDirectory, "codex-ref"))) !== ref)
+              throw new Error("different thread");
+            await Deno.stat(join(sessionDirectory, "profile/sessions"));
+          }
+        } catch {
+          throw new Error(
+            "No saved VM history for this session; host-worker sessions cannot yet be imported into a VM",
+          );
         }
-      } catch {
-        throw new Error(
-          "No saved VM history for this session; host-worker sessions cannot yet be imported into a VM",
-        );
       }
-    }
-    const relays: Array<{ port: number; guestPort: number }> = [];
-    const servers = (input.mcpServers ?? []).map((server): McpServerHandle => {
-      if (server.spec?.transport !== "http")
-        throw new Error(
-          `MCP ${server.name}: VM sessions require a daemon-managed HTTP or packaged runtime endpoint`,
+      const relays: Array<{ port: number; guestPort: number }> = [];
+      const servers = (input.mcpServers ?? []).map((server): McpServerHandle => {
+        if (server.spec?.transport !== "http")
+          throw new Error(
+            `MCP ${server.name}: VM sessions require a daemon-managed HTTP or packaged runtime endpoint`,
+          );
+        const url = new URL(server.spec.url);
+        if (
+          url.protocol !== "http:" ||
+          url.hostname !== "127.0.0.1" ||
+          !url.port ||
+          url.username ||
+          url.password
+        )
+          throw new Error("VM MCP endpoints must be daemon-managed loopback HTTP servers");
+        if (relays.length >= 32) throw new Error("Too many session MCP endpoints");
+        const guestPort = 3130 + relays.length;
+        relays.push({ port: Number(url.port), guestPort });
+        url.port = String(guestPort);
+        return { ...server, spec: { ...server.spec, url: url.toString() } };
+      });
+      signalOf(input)?.throwIfAborted();
+      const worker = own(
+        await launches.launch({
+          onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
+          workspace: input.cwd,
+          artifact: vm.artifact,
+          smolvm,
+          sessionDirectory,
+          repoRoot: vm.repoRoot,
+          mcpRelays: relays,
+          ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
+          ...(vm.environment ? { environment: vm.environment } : {}),
+          ...(owner ? { authOwner: owner } : { auth }),
+          ...(providerHosts ? { providerHosts } : {}),
+        }),
+      );
+      try {
+        const { session } = await RemoteWorkerSession.connect(
+          input.sessionId,
+          ctx.id,
+          mockLaunchSpec(input.cwd),
+          () => worker,
+          { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
+          {
+            connector,
+            config,
+            ...(ctx.baseBranch ? { baseBranch: ctx.baseBranch } : {}),
+          },
         );
-      const url = new URL(server.spec.url);
-      if (
-        url.protocol !== "http:" ||
-        url.hostname !== "127.0.0.1" ||
-        !url.port ||
-        url.username ||
-        url.password
-      )
-        throw new Error("VM MCP endpoints must be daemon-managed loopback HTTP servers");
-      if (relays.length >= 32) throw new Error("Too many session MCP endpoints");
-      const guestPort = 3130 + relays.length;
-      relays.push({ port: Number(url.port), guestPort });
-      url.port = String(guestPort);
-      return { ...server, spec: { ...server.spec, url: url.toString() } };
+        if (kind === "aisdk") await session.attachTranscript(ctx.transcript!);
+        const options = { ...input, mcpServers: servers };
+        session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
+        await session.start(
+          resume
+            ? { method: "resume", args: [options as SessionRef] }
+            : { method: "create", args: [options as CreateSessionOptions] },
+        );
+        if (kind === "codex")
+          await Deno.writeTextFile(join(sessionDirectory, "codex-ref"), session.providerRef!, {
+            mode: 0o600,
+          });
+        else if (kind === "aisdk")
+          await Deno.writeTextFile(join(sessionDirectory, "aisdk"), "1", { mode: 0o600 });
+        ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
+        ctx.onStartupProgress?.(input.sessionId, "Session ready.");
+        return kind === "claude" && owner
+          ? refreshOnAuthFailure(session, () => owner!.current(true))
+          : session;
+      } catch (error) {
+        worker.terminate();
+        await worker.cleanup?.();
+        throw error;
+      }
     });
-    const worker = await launches.launch({
-      onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
-      workspace: input.cwd,
-      artifact: vm.artifact,
-      smolvm,
-      sessionDirectory,
-      repoRoot: vm.repoRoot,
-      mcpRelays: relays,
-      ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
-      ...(vm.environment ? { environment: vm.environment } : {}),
-      ...(owner ? { authOwner: owner } : { auth }),
-      ...(providerHosts ? { providerHosts } : {}),
-    });
-    try {
-      const { session } = await RemoteWorkerSession.connect(
-        input.sessionId,
-        ctx.id,
-        mockLaunchSpec(input.cwd),
-        () => worker,
-        { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
-        {
-          connector,
-          config,
-          ...(ctx.baseBranch ? { baseBranch: ctx.baseBranch } : {}),
-        },
-      );
-      if (kind === "aisdk") await session.attachTranscript(ctx.transcript!);
-      const options = { ...input, mcpServers: servers };
-      session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
-      await session.start(
-        resume
-          ? { method: "resume", args: [options as SessionRef] }
-          : { method: "create", args: [options as CreateSessionOptions] },
-      );
-      if (kind === "codex")
-        await Deno.writeTextFile(join(sessionDirectory, "codex-ref"), session.providerRef!, {
-          mode: 0o600,
-        });
-      else if (kind === "aisdk")
-        await Deno.writeTextFile(join(sessionDirectory, "aisdk"), "1", { mode: 0o600 });
-      ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
-      ctx.onStartupProgress?.(input.sessionId, "Session ready.");
-      return kind === "claude" && owner
-        ? refreshOnAuthFailure(session, () => owner!.current(true))
-        : session;
-    } catch (error) {
-      worker.terminate();
-      await worker.cleanup?.();
-      throw error;
-    }
-  };
   return new Proxy(base, {
     get(target, prop) {
       if (prop === "createSession")

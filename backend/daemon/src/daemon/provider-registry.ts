@@ -1,3 +1,4 @@
+import { signalOf } from "./startup.ts";
 import { runSessionInit } from "../../../../core/src/session-init.ts";
 import {
   activateLocalEnvironment,
@@ -252,6 +253,8 @@ export class ProviderRegistry {
           };
         if (prop === "createSession" || prop === "resumeSession")
           return async (options: CreateSessionOptions | SessionRef) => {
+            const signal = signalOf(options);
+            signal?.throwIfAborted();
             const oneShot = "oneShot" in options && options.oneShot;
             if (!oneShot) await preflightTools(effectiveConfig, id);
             const progress = (message: string) =>
@@ -261,10 +264,11 @@ export class ProviderRegistry {
                 ? await activateLocalEnvironment(
                     options.cwd,
                     this.#config.autoNix,
-                    initStop.signal,
+                    signal ? AbortSignal.any([initStop.signal, signal]) : initStop.signal,
                     progress,
                   )
                 : undefined;
+            signal?.throwIfAborted();
             options = {
               ...options,
               ...(environment ? { [localSessionEnvironment]: environment } : {}),
@@ -301,9 +305,10 @@ export class ProviderRegistry {
               : await runSessionInit(
                   configured,
                   (message) => context.onStartupProgress?.(options.sessionId, message),
-                  initStop.signal,
+                  signal ? AbortSignal.any([initStop.signal, signal]) : initStop.signal,
                   applyEnvironmentChanges(Deno.env.toObject(), environment),
                 );
+            signal?.throwIfAborted();
             const session =
               prop === "createSession"
                 ? await target.createSession(ready as CreateSessionOptions)

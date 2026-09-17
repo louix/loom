@@ -1,3 +1,4 @@
+import { startWorker } from "./startup.ts";
 import { makeLogger } from "@loom/core/logger";
 import {
   applyLocalSessionEnvironment,
@@ -462,49 +463,51 @@ export class WorkerProvider implements AgentProvider {
   async #start(
     command: Extract<WorkerCommand, { method: "create" | "resume" }>,
   ): Promise<AgentSession> {
-    const opts = command.args[0];
-    const role = command.method === "create" && command.args[0].oneShot ? "title" : "session";
-    const spec = this.spec(opts.cwd, role);
-    if (role === "session")
-      applyLocalSessionEnvironment(
+    return startWorker(command.args[0], async (own) => {
+      const opts = command.args[0];
+      const role = command.method === "create" && command.args[0].oneShot ? "title" : "session";
+      const spec = this.spec(opts.cwd, role);
+      if (role === "session")
+        applyLocalSessionEnvironment(
+          spec,
+          (opts as LocalSessionEnvironment)[localSessionEnvironment],
+        );
+      // Only assigned MCP loopback endpoints are added to this session's grant.
+      for (const server of opts.mcpServers ?? []) {
+        if (server.spec.transport === "http")
+          spec.permissions.net.push(new URL(server.spec.url).host);
+      }
+      const { session } = await RemoteWorkerSession.connect(
+        opts.sessionId,
+        this.id,
         spec,
-        (opts as LocalSessionEnvironment)[localSessionEnvironment],
+        (spec) => own(this.launch(spec)),
+        10_000,
+        this.profile,
+        role,
       );
-    // Only assigned MCP loopback endpoints are added to this session's grant.
-    for (const server of opts.mcpServers ?? []) {
-      if (server.spec.transport === "http")
-        spec.permissions.net.push(new URL(server.spec.url).host);
-    }
-    const { session } = await RemoteWorkerSession.connect(
-      opts.sessionId,
-      this.id,
-      spec,
-      this.launch,
-      10_000,
-      this.profile,
-      role,
-    );
-    try {
-      if (this.transcript && role === "session") await session.attachTranscript(this.transcript);
-      if (role === "title" && command.method === "create") {
-        const {
-          workspaceRoot: _workspace,
-          repoInstructions: _instructions,
-          subagents: _agents,
-          ...title
-        } = command.args[0];
-        await session.start({
-          method: "create",
-          args: [
-            { ...title, cwd: spec.cwd, mcpServers: [], loomServer: false, settingSources: [] },
-          ],
-        });
-      } else await session.start(command);
-      return session;
-    } catch (e) {
-      await session.close();
-      throw e;
-    }
+      try {
+        if (this.transcript && role === "session") await session.attachTranscript(this.transcript);
+        if (role === "title" && command.method === "create") {
+          const {
+            workspaceRoot: _workspace,
+            repoInstructions: _instructions,
+            subagents: _agents,
+            ...title
+          } = command.args[0];
+          await session.start({
+            method: "create",
+            args: [
+              { ...title, cwd: spec.cwd, mcpServers: [], loomServer: false, settingSources: [] },
+            ],
+          });
+        } else await session.start(command);
+        return session;
+      } catch (e) {
+        await session.close();
+        throw e;
+      }
+    });
   }
   createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     return this.#start({ method: "create", args: [opts] });

@@ -7,6 +7,7 @@
  * per session through `#enqueue`; `interrupt` / `close` deliberately preempt
  * that chain rather than queue behind it.
  */
+import { signalOf } from "./startup.ts";
 import type { BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
 import {
@@ -204,6 +205,10 @@ export class SessionManager {
   async create(provider: AgentProvider, opts: CreateSessionOptions): Promise<void> {
     const started = performance.now();
     const session = await provider.createSession(opts);
+    if (signalOf(opts)?.aborted) {
+      await session.close();
+      signalOf(opts)!.throwIfAborted();
+    }
     this.#hooks.log.info("adapter_ready", {
       sessionId: opts.sessionId,
       providerId: provider.id,
