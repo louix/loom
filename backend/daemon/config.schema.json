@@ -997,6 +997,11 @@
             "minLength": 1,
             "maxLength": 65536
           },
+          "async": {
+            "default": false,
+            "description": "Run init alongside the agent; only valid for init hooks.",
+            "type": "boolean"
+          },
           "kind": {
             "type": "string",
             "enum": ["check", "notify"]
@@ -2109,6 +2114,11 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 65536
+                },
+                "async": {
+                  "default": false,
+                  "description": "Run init alongside the agent; only valid for init hooks.",
+                  "type": "boolean"
                 },
                 "kind": {
                   "type": "string",

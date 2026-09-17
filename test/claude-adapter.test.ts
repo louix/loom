@@ -980,3 +980,42 @@ test("setEffort rejects a value the CLI's live flag settings don't support, with
 
   await s.close();
 });
+
+test("Claude registers async init on a new fork but does not retain it across query restarts", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args) => {
+      captured.push(args.options as Record<string, unknown>);
+      return fakeQuery([
+        { type: "system", subtype: "init", session_id: "init-source", model: "claude-sonnet-5" },
+      ]) as never;
+    },
+    forkSession: async () => ({ sessionId: "init-rewound" }),
+  });
+  const provider = new ClaudeProvider();
+  const session = await provider.resumeSession({
+    sessionId: "init-fork",
+    providerRef: "fork",
+    cwd: "/tmp",
+    initHooks: {
+      env: {},
+      hooks: [{ name: "setup", run: "echo setup", timeoutMs: 1000, async: true }],
+    },
+  });
+  try {
+    assert.match(
+      JSON.stringify(captured[0]?.systemPrompt),
+      /Initialization is running: echo setup/,
+    );
+    assert.match(JSON.stringify(captured[0]?.settings), /"async":true/);
+    const end = Date.now() + 2000;
+    while (!session.providerRef) {
+      assert(Date.now() < end);
+      await delay(10);
+    }
+    await session.rewind(0, "keep-this");
+    assert.equal(captured[1]?.settings, undefined);
+  } finally {
+    await session.close();
+  }
+});

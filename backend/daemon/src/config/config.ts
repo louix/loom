@@ -182,6 +182,7 @@ export type HookConfig = HookFields &
   ({ kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] });
 
 interface HookFields {
+  async?: boolean;
   /** Label for logs and the agent-facing failure message; defaults to `run`'s first word. */
   name: string;
   /** Notification delivery gate; defaults to always. */
@@ -723,6 +724,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       project: expandTilde(h.project),
       match: h.match,
       timeoutMs: h.timeout,
+      async: h.async,
     })),
     search: {
       backend: settings.search.backend,

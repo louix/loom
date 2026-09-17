@@ -123,9 +123,23 @@ export const serveWorker = async (
       };
       session =
         r.method === "create"
-          ? await provider.createSession(await runSessionInit(r.args[0], initProgress, stop.signal))
+          ? await provider.createSession(
+              await runSessionInit(
+                r.args[0],
+                initProgress,
+                stop.signal,
+                undefined,
+                provider.supportsAsyncInit ?? false,
+              ),
+            )
           : await provider.resumeSession(
-              await runSessionInit(r.args[0], initProgress, stop.signal),
+              await runSessionInit(
+                r.args[0],
+                initProgress,
+                stop.signal,
+                undefined,
+                provider.supportsAsyncInit ?? false,
+              ),
             );
       if (closing) {
         await session.close();

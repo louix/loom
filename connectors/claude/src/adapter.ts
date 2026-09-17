@@ -7,6 +7,7 @@
  *
  * Auth is not brokered here — the SDK uses Claude's OAuth in `~/.claude`.
  */
+import { claudeInitHooks } from "./init-hooks.ts";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
@@ -384,8 +385,21 @@ class ClaudeSession implements AgentSession {
     return this.#mapper.state.providerRef;
   }
 
+  #initDirectory: string | undefined;
+
   /** Build the `query()` and start pumping its messages into the outbox. */
   start(opts: CreateSessionOptions, extra: StartExtra = {}): void {
+    let init: ReturnType<typeof claudeInitHooks> | undefined;
+    if (opts.initHooks?.hooks.length && !opts.oneShot) {
+      this.#initDirectory = Deno.makeTempDirSync({ prefix: "loom-init-" });
+      init = claudeInitHooks(opts, this.#initDirectory);
+      opts = {
+        ...opts,
+        systemPromptAppend: [opts.systemPromptAppend, init.context].filter(Boolean).join("\n\n"),
+      };
+    }
+    opts = { ...opts };
+    delete opts.initHooks;
     this.#taskIds.clear();
     this.#finishedTaskIds.clear();
     this.#backgroundTaskIds.clear();
@@ -492,6 +506,7 @@ class ClaudeSession implements AgentSession {
     const env = queryEnv({ promptCacheTtl, configDir });
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
+      ...(init ? { settings: init.settings } : {}),
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,
@@ -546,7 +561,12 @@ class ClaudeSession implements AgentSession {
         : {}),
     };
 
-    this.#query = sdk.query({ prompt: this.#inbox, options });
+    try {
+      this.#query = sdk.query({ prompt: this.#inbox, options });
+    } catch (error) {
+      if (init && this.#initDirectory) Deno.removeSync(this.#initDirectory, { recursive: true });
+      throw error;
+    }
     this.#pump = this.#drain();
 
     // Prime the plan rate-limit windows once the CLI handshake lands — covers
@@ -1282,6 +1302,8 @@ class ClaudeSession implements AgentSession {
     this.#outbox.close();
     this.#inbox.close();
     await this.#pump?.catch(() => {});
+    if (this.#initDirectory)
+      await Deno.remove(this.#initDirectory, { recursive: true }).catch(() => {});
   }
 }
 
@@ -1301,6 +1323,7 @@ export interface ClaudeProviderOptions {
 }
 
 export class ClaudeProvider implements AgentProvider {
+  readonly supportsAsyncInit = true;
   readonly id: string;
   readonly capabilities = CAPS;
 
@@ -1361,6 +1384,7 @@ export class ClaudeProvider implements AgentProvider {
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
       cwd: ref.cwd,
+      ...(ref.initHooks ? { initHooks: ref.initHooks } : {}),
       prompt: "", // resume replays in-flight state; the next real turn comes via send()
       mode: ref.mode ?? "default",
       mcpServers: ref.mcpServers ?? [],

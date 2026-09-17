@@ -63,6 +63,7 @@ export interface AisdkProviderOptions {
 }
 
 export class AisdkProvider implements AgentProvider {
+  readonly supportsAsyncInit = true;
   readonly id: string;
   readonly capabilities: ProviderCapabilities;
 
@@ -134,6 +135,7 @@ export class AisdkProvider implements AgentProvider {
     if (messages.length > 0) this.#store.append(opts.sessionId, messages);
     const s = new AisdkSession({
       sessionId: opts.sessionId,
+      ...(opts.initHooks ? { initHooks: opts.initHooks } : {}),
       modelId,
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),
@@ -166,6 +168,7 @@ export class AisdkProvider implements AgentProvider {
     }
     const s = new AisdkSession({
       sessionId: ref.sessionId,
+      ...(ref.initHooks ? { initHooks: ref.initHooks } : {}),
       modelId: ref.model || this.#defaultModel,
       ...(ref.effort ? { effort: ref.effort } : {}),
       ...(this.#providerOptionsName ? { providerOptionsName: this.#providerOptionsName } : {}),

@@ -18,27 +18,27 @@ import { searchTool } from "./search.ts";
 
 export class BuiltinTools {
   readonly #shell: BashShell;
-  readonly #background: BackgroundTasks;
+  readonly background: BackgroundTasks;
   readonly tools: ToolSet;
 
   constructor(cwd: string, search?: SearchConfig) {
     this.#shell = new BashShell(cwd);
-    this.#background = new BackgroundTasks(cwd);
+    this.background = new BackgroundTasks(cwd);
     this.tools = {
       bash: bashTool(this.#shell),
       edit: editTool(cwd),
       grep: grepTool(cwd),
-      ...backgroundTools(this.#background),
+      ...backgroundTools(this.background),
       ...(search ? { web_search: searchTool(search) } : {}),
     } as ToolSet;
   }
 
   close(): void {
     this.#shell.close();
-    this.#background.close();
+    this.background.close();
   }
 
   interrupt(): Promise<void> {
-    return this.#background.stopAll();
+    return this.background.stopAll(true);
   }
 }

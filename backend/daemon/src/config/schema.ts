@@ -150,6 +150,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       .min(1)
       .max(65536)
       .refine((v) => !v.includes("\0"), "must not contain NUL"),
+    async: flag(false).describe("Run init alongside the agent; only valid for init hooks."),
     kind: preprocess((v) => v ?? "notify", z.enum(["check", "notify"])),
     on: preprocess(
       (v) => (Array.isArray(v) ? v : [v]),
@@ -178,7 +179,11 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
         h.kind !== "check" || h.on.every((e) => ["init", "file_write", "turn_end"].includes(e)),
       "check hook: only init, file_write and turn_end are supported",
     )
-    .refine((h) => h.kind !== "check" || h.when === "always", "check hooks must use when: always");
+    .refine((h) => h.kind !== "check" || h.when === "always", "check hooks must use when: always")
+    .refine(
+      (h) => !h.async || h.on.every((e) => e === "init"),
+      "async is only supported for init hooks",
+    );
   return section({
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),

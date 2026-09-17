@@ -82,6 +82,7 @@ const lifecycleReport = (
 interface Task {
   readonly id: string;
   readonly child: ChildProcess;
+  readonly keepOnInterrupt: boolean;
   /** Output since the last read, clamped live by {@link collapseLive}. */
   unread: string;
   /** Characters the live clamp discarded since the last read. */
@@ -113,24 +114,38 @@ export class BackgroundTasks {
   }
 
   /** Spawn `command` detached in its own process group; returns the id at once. */
-  start(command: string, timeoutMs: number = DEFAULT_BG_TIMEOUT_MS): string {
+  start(
+    command: string,
+    timeoutMs: number = DEFAULT_BG_TIMEOUT_MS,
+    options: {
+      env?: Record<string, string>;
+      shell?: "sh";
+      keepOnInterrupt?: boolean;
+      onComplete?: (result: BackgroundReadResult) => void;
+    } = {},
+  ): string {
     const running = this.#running().length;
-    if (running >= MAX_RUNNING) {
+    if (!options.keepOnInterrupt && running >= MAX_RUNNING) {
       throw new Error(
         `${running} background tasks are already running — kill one with background_kill first`,
       );
     }
     const id = `bg-${this.#nextId++}`;
-    const child = spawn("bash", ["--noprofile", "--norc", "-c", command], {
-      cwd: this.#cwd,
-      env: toolSpawnEnv(),
-      // stdin ignored: a background task must never block waiting for input.
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true, // own process group — see killGroup
-    });
+    const child = spawn(
+      options.shell ?? "bash",
+      options.shell ? ["-c", command] : ["--noprofile", "--norc", "-c", command],
+      {
+        cwd: this.#cwd,
+        env: { ...toolSpawnEnv(), ...options.env },
+        // stdin ignored: a background task must never block waiting for input.
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true, // own process group — see killGroup
+      },
+    );
     const task: Task = {
       id,
       child,
+      keepOnInterrupt: options.keepOnInterrupt ?? false,
       unread: "",
       dropped: 0,
       lifecycle: { phase: "running", timer: null, timedOut: false },
@@ -162,11 +177,18 @@ export class BackgroundTasks {
     });
     // Fires after `'exit'`, once stdout/stderr have flushed and closed — the
     // point at which a `read` can stop waiting for more output.
+    let reported = false;
+    const report = () => {
+      if (reported) return;
+      reported = true;
+      options.onComplete?.({ ...lifecycleReport(task.lifecycle), output: task.unread });
+    };
     child.on("close", () => {
       const { exitCode, timedOut } =
         task.lifecycle.phase === "running" ? { exitCode: null, timedOut: false } : task.lifecycle;
       task.lifecycle = { phase: "closed", exitCode, timedOut };
       task.wake?.();
+      report();
     });
     child.on("error", (err) => {
       // Spawn failure (bash missing, ENOMEM): surface it as the task's output.
@@ -174,6 +196,7 @@ export class BackgroundTasks {
       task.lifecycle = { phase: "closed", exitCode: null, timedOut: false };
       task.unread += `bash: ${err.message}\n`;
       task.wake?.();
+      report();
     });
     if (timeoutMs > 0) {
       // Spawn events are async — the task is still `running` here.
@@ -263,33 +286,35 @@ export class BackgroundTasks {
   }
 
   /** Stop and await running processes, retaining their output for inspection. */
-  async stopAll(): Promise<void> {
+  async stopAll(interrupt = false): Promise<void> {
     await Promise.all(
-      this.#running().map(
-        (task) =>
-          new Promise<void>((resolve, reject) => {
-            const finish = (error?: Error): void => {
-              clearTimeout(timer);
-              task.child.removeListener("close", closed);
-              task.child.removeListener("error", failed);
-              if (error) reject(error);
-              else resolve();
-            };
-            const closed = (): void => finish();
-            const failed = (error: Error): void => finish(error);
-            const timer = setTimeout(
-              () => finish(new Error(`background task ${task.id} did not stop`)),
-              5_000,
-            );
-            task.child.once("close", closed);
-            task.child.once("error", failed);
-            try {
-              killGroup(task);
-            } catch (err) {
-              finish(err instanceof Error ? err : new Error(String(err)));
-            }
-          }),
-      ),
+      this.#running()
+        .filter((task) => !interrupt || !task.keepOnInterrupt)
+        .map(
+          (task) =>
+            new Promise<void>((resolve, reject) => {
+              const finish = (error?: Error): void => {
+                clearTimeout(timer);
+                task.child.removeListener("close", closed);
+                task.child.removeListener("error", failed);
+                if (error) reject(error);
+                else resolve();
+              };
+              const closed = (): void => finish();
+              const failed = (error: Error): void => finish(error);
+              const timer = setTimeout(
+                () => finish(new Error(`background task ${task.id} did not stop`)),
+                5_000,
+              );
+              task.child.once("close", closed);
+              task.child.once("error", failed);
+              try {
+                killGroup(task);
+              } catch (err) {
+                finish(err instanceof Error ? err : new Error(String(err)));
+              }
+            }),
+        ),
     );
   }
 

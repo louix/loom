@@ -307,6 +307,7 @@ export class ProviderRegistry {
                   (message) => context.onStartupProgress?.(options.sessionId, message),
                   signal ? AbortSignal.any([initStop.signal, signal]) : initStop.signal,
                   applyEnvironmentChanges(Deno.env.toObject(), environment),
+                  [CLAUDE, GENERIC, GEMINI].includes(pkg),
                 );
             signal?.throwIfAborted();
             const session =

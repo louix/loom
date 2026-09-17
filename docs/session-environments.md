@@ -88,6 +88,27 @@ opening turn. It does not repeat on resume or VM replacement. Init failures are
 reported to the agent so it can repair the project. Worktree dependencies and
 conversation history survive VM replacement.
 
+For setup that can overlap with agent work, opt into background initialization:
+
+```jsonc
+"hooks": [
+  { "on": "init", "run": "pnpm install --frozen-lockfile", "timeout": 600, "async": true },
+]
+```
+
+Blocking hooks finish first; async hooks then run alongside the agent. The agent
+receives “Initialization is running: `<command>`” and completion or failure
+context. AI SDK sessions expose the task through `background_output` and
+`background_kill`. Claude uses native async hooks, with output and exit-status
+file paths in its context. Claude's wrapper uses Bash and GNU `timeout`
+(included in Loom's runtime). Hook timeouts still apply. AI SDK init tasks
+survive turn interruption and are stopped when the session closes.
+
+`async` is only valid for hooks whose event is `init`. Claude and AI SDK
+providers support it; other connectors retain blocking initialization. Async
+init is not rerun on resume or VM replacement, including if replacement
+interrupted it.
+
 ## Advanced VM setup
 
 These optional `session.isolation.environment` settings are for custom VM setup.

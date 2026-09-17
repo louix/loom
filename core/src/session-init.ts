@@ -7,13 +7,17 @@ export const runSessionInit = async <T extends CreateSessionOptions | SessionRef
   progress: (message: string) => void | Promise<void>,
   signal: AbortSignal,
   environment?: Record<string, string>,
+  deferAsync = true,
 ): Promise<T> => {
   const { initHooks } = options;
   const session = { ...options };
   delete session.initHooks;
   if (!initHooks || ("oneShot" in options && options.oneShot)) return session;
+  const background = initHooks.hooks.filter((hook) => hook.async && deferAsync);
+  if (background.length) session.initHooks = { ...initHooks, hooks: background };
   const failures: string[] = [];
   for (const hook of initHooks.hooks) {
+    if (hook.async && deferAsync) continue;
     signal.throwIfAborted();
     await progress(`Running init hook: ${hook.name}…`);
     try {

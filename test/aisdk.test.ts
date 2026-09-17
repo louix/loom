@@ -1993,3 +1993,90 @@ test("output-only steps preserve the last known context size", () => {
   assert.equal(event?.type, "usage");
   if (event?.type === "usage") assert.equal(event.contextUsed, 100);
 });
+
+test("async init lets AI SDK answer immediately and reports completion on a later turn", async () => {
+  const { db, cleanup } = tmpDb();
+  const cwd = await Deno.makeTempDir();
+  const store = new ProviderMessageStore(db);
+  const seen: string[] = [];
+  const model = new MockLanguageModelV3({
+    doStream: async (opts) => {
+      seen.push(JSON.stringify(opts.prompt));
+      assert(opts.tools?.some((t) => t.type === "function" && t.name === "background_output"));
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: "Working." },
+            { type: "text-end", id: "t" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              usage: streamUsage({ noCache: 1, output: 1 }),
+            },
+          ],
+        }),
+      };
+    },
+  }) as unknown as LanguageModel;
+  const p = provider(() => model, store);
+  const s = await p.createSession({
+    sessionId: "s1",
+    cwd,
+    prompt: "work",
+    mode: "default",
+    mcpServers: [],
+    initHooks: {
+      env: { INIT_MARKER: "initialized" },
+      hooks: [
+        {
+          name: "install",
+          async: true,
+          timeoutMs: 5000,
+          run: 'echo once >> count; while [ ! -f release ]; do sleep 0.02; done; echo "$INIT_MARKER"; echo done > done',
+        },
+      ],
+    },
+  });
+  try {
+    await drain(s.events(), (e) => e.type === "result");
+    assert.match(seen[0]!, /Initialization is running/);
+    assert.match(seen[0]!, /bg-1/);
+    await assert.rejects(Deno.stat(join(cwd, "done")), Deno.errors.NotFound);
+    await s.interrupt();
+    await Deno.writeTextFile(join(cwd, "release"), "");
+    const end = Date.now() + 5000;
+    while (true) {
+      try {
+        await Deno.stat(join(cwd, "done"));
+        break;
+      } catch (e) {
+        if (!(e instanceof Deno.errors.NotFound)) throw e;
+        assert(Date.now() < end);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    while (!JSON.stringify(store.load("s1")).includes("Initialization finished:")) {
+      assert(Date.now() < end, "Completion was not persisted while idle");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await s.send("continue");
+    await drain(s.events(), (e) => e.type === "result");
+    assert(
+      seen
+        .slice(1)
+        .some(
+          (prompt) => prompt.includes("Initialization finished:") && prompt.includes("initialized"),
+        ),
+    );
+    await s.close();
+    const resumed = await p.resumeSession({ sessionId: "s1", providerRef: "s1", cwd });
+    await resumed.close();
+    assert.equal((await Deno.readTextFile(join(cwd, "count"))).trim(), "once");
+  } finally {
+    await s.close();
+    cleanup();
+    await Deno.remove(cwd, { recursive: true });
+  }
+});

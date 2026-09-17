@@ -108,6 +108,7 @@ export const agentDefinitionSpecSchema = z.object({
 export type AgentDefinitionSpec = z.infer<typeof agentDefinitionSpecSchema>;
 
 export const initHookSchema = z.object({
+  async: z.boolean().optional(),
   name: z.string(),
   run: z.string().max(65536),
   timeoutMs: z.number().min(1000).max(600000),
@@ -317,6 +318,8 @@ export interface AgentSession {
 }
 
 export interface AgentProvider {
+  /** The connector consumes deferred init hooks before its first turn. */
+  readonly supportsAsyncInit?: boolean;
   close?(): Promise<void>;
   readonly id: string;
   readonly capabilities: ProviderCapabilities;

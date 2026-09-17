@@ -24,6 +24,7 @@ import { AsyncChannel } from "@loom/core/channel";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import type {
   AdapterSnapshot,
+  CreateSessionOptions,
   AgentSession,
   EffortLevel,
   McpServerHandle,
@@ -84,6 +85,7 @@ const SUBAGENT_SYSTEM =
 
 export interface AisdkSessionOptions {
   sessionId: string;
+  initHooks?: CreateSessionOptions["initHooks"];
   modelId: string;
   /** Resolve a model id (from config / `setModel`) to a live model. */
   makeModel: (id: string) => LanguageModel;
@@ -213,6 +215,39 @@ export class AisdkSession implements AgentSession {
     this.#maxSteps = Math.max(1, Math.trunc(opts.maxSteps ?? DEFAULT_MAX_STEPS));
     this.#log = opts.log ?? makeLogger("aisdk").child(opts.sessionId.slice(0, 8));
     this.#messages = [...opts.messages];
+    if (opts.initHooks?.hooks.length && !opts.oneShot) {
+      this.#builtins = new BuiltinTools(this.#cwd, this.#search);
+      for (const hook of opts.initHooks.hooks) {
+        const id = this.#builtins.background.start(hook.run, hook.timeoutMs, {
+          shell: "sh",
+          env: {
+            ...opts.initHooks.env,
+            LOOM_HOOK: hook.name,
+            LOOM_HOOK_EVENT: "init",
+            LOOM_SESSION_ID: this.id,
+          },
+          keepOnInterrupt: true,
+          onComplete: (result) => {
+            if (this.#closing) return;
+            let outcome = result.exitCode === 0 ? "finished" : "failed";
+            if (result.timedOut) outcome = "timed out";
+            const content = `[loom] Initialization ${outcome}: ${hook.run} (background task ${id}).\n${result.output.slice(0, 8000)}`;
+            if (this.#turnRunning || this.#compacting) this.#injections.push(content);
+            else {
+              const message: ModelMessage = { role: "user", content };
+              this.#messages.push(message);
+              this.#store?.append(this.id, [message]);
+            }
+          },
+        });
+        const message: ModelMessage = {
+          role: "user",
+          content: `[loom] Initialization is running: ${hook.run} (background task ${id}).`,
+        };
+        this.#messages.push(message);
+        this.#store?.append(this.id, [message]);
+      }
+    }
     this.#mapper = new AisdkEventMapper(opts.sessionId, opts.modelId, (m) => this.#limitFor(m));
     this.#snap = {
       status: stateStarting,
@@ -494,6 +529,7 @@ export class AisdkSession implements AgentSession {
     if (!this.#baseToolsPromise) {
       this.#baseToolsPromise = (async () => {
         const base: ToolSet = {};
+        const hasInitTasks = this.#builtins !== null;
         // MCP servers claim their names first: a configured server offering a
         // builtin's name (fff's `grep`) replaces it — the tool steer points
         // the model at those servers, so it must see their tools, not ours.
@@ -515,10 +551,14 @@ export class AisdkSession implements AgentSession {
           );
           Object.assign(base, this.#planAndTaskTools());
           // Builtins fill only the names no MCP server claimed.
-          this.#builtins = new BuiltinTools(this.#cwd, this.#search);
+          this.#builtins ??= new BuiltinTools(this.#cwd, this.#search);
           for (const [name, t] of Object.entries(this.#builtins.tools)) {
             if (!(name in base)) base[name] = t;
           }
+        }
+        if (this.#builtins && hasInitTasks) {
+          const { background_output, background_kill } = this.#builtins.tools;
+          Object.assign(base, { background_output, background_kill });
         }
         // Annotate the mounted set with the servers' readOnlyHint declarations,
         // dropping any whose name a first-party tool replaced.
