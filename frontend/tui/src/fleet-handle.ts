@@ -344,12 +344,13 @@ const deriveView = (
   };
   const body = bodyFor();
 
-  // Fleet column: 32-col floor where the terminal affords it, yielding below
-  // ~53 cols so `leftW + 1 + rightW` always sums to `cols`. Narrow views each
-  // own the full width.
+  // Fleet column: 40% of the width, capped at 80 cols so wide terminals
+  // hand the surplus to DETAIL/EVENTS. 32-col floor where the terminal affords
+  // it, yielding below ~53 cols so `leftW + 1 + rightW` always sums to `cols`.
+  // Narrow views each own the full width.
   const leftW = narrow
     ? cols
-    : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
+    : Math.min(Math.max(32, Math.min(80, Math.round(cols * 0.4))), Math.max(8, cols - 21));
   const rightW = narrow ? cols : Math.max(1, cols - leftW - 1);
   const eventsW = body.t === "split" ? rightW : cols;
   // Inside the session column the request panel's rows come out of the log,
