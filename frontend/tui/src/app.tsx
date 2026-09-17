@@ -234,6 +234,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
             {promptOnPane(openPrompt(state.overlay)) ? (
               <InputArea view={view} handle={handle} width={rightW} pane />
             ) : null}
+            <RequestArea view={view} width={rightW} />
           </Box>
         </Box>
       );
@@ -256,6 +257,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
           {promptOnPane(openPrompt(state.overlay)) ? (
             <InputArea view={view} handle={handle} width={cols} pane />
           ) : null}
+          <RequestArea view={view} width={cols} />
         </Box>
       );
       break;
@@ -273,14 +275,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
     >
       <Header view={header} width={cols} />
       {body}
-      {view.showRequest ? (
-        <RequestPanel
-          request={view.request}
-          queued={view.requestCount}
-          width={cols}
-          questionIdx={view.questionIdx}
-        />
-      ) : null}
+      {view.body.t === "fleetOnly" ? <RequestArea view={view} width={cols} /> : null}
       <InputArea view={view} handle={handle} width={cols} />
       {view.environmentWarning && (
         <Box height={2} flexShrink={0} flexDirection="column">
@@ -364,6 +359,18 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
   );
   return <EventLog view={pane} width={width} spinner={spinner} />;
 };
+
+/** The selected session's pending request (approve / answer / plan review) —
+ *  session-scoped, so drawn at the DETAIL/EVENTS column's width. */
+const RequestArea = ({ view, width }: Omit<PaneProps, "handle">): ReactNode =>
+  view.showRequest ? (
+    <RequestPanel
+      request={view.request}
+      queued={view.requestCount}
+      width={width}
+      questionIdx={view.questionIdx}
+    />
+  ) : null;
 
 const InputArea = ({
   view,

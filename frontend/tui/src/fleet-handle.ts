@@ -307,8 +307,9 @@ const deriveView = (
   const request = sel ? activeRequest(fleetSessions(state), sel.id) : null;
   const requestCount = sel ? requestsFor(fleetSessions(state), sel.id).length : 0;
 
-  // The approve / answer / plan panel sits full-width just above the footer in
-  // both layout views; every overlay owns the screen.
+  // The approve / answer / plan panel is session-scoped, so it sits at the foot
+  // of the DETAIL/EVENTS column (full-width below the body only in the narrow
+  // fleet-only view, which hides that column); every overlay owns the screen.
   const showRequest =
     (state.overlay.t === "browse" || state.overlay.t === "prompt") &&
     !state.archiving.includes(sel?.id ?? "") &&
@@ -327,7 +328,6 @@ const deriveView = (
   // itself to fit it (see `requestPanelRows`), so this has to be settled before
   // the row budget.
   const questionIdx = liveQNav(state.qnav, sel?.id, request?.id)?.idx ?? 0;
-  const requestH = showRequest ? requestPanelRows(request, cols, questionIdx) : 0;
 
   // Below this width the three-column split starves every column (~20 cols each
   // on a phone-sized SSH window), so `overview` is the fleet list alone — the
@@ -344,7 +344,6 @@ const deriveView = (
   };
   const body = bodyFor();
 
-  const bodyH = Math.max(1, rows - 1 - footerH - requestH);
   // Fleet column: 32-col floor where the terminal affords it, yielding below
   // ~53 cols so `leftW + 1 + rightW` always sums to `cols`. Narrow views each
   // own the full width.
@@ -352,6 +351,13 @@ const deriveView = (
     ? cols
     : Math.min(Math.max(32, Math.round(cols * 0.4)), Math.max(8, cols - 21));
   const rightW = narrow ? cols : Math.max(1, cols - leftW - 1);
+  const eventsW = body.t === "split" ? rightW : cols;
+  // Inside the session column the request panel's rows come out of the log,
+  // not the fleet list; the fleet-only body stacks it below.
+  const requestInPane = body.t === "split" || body.t === "sessionPane";
+  const requestH = showRequest ? requestPanelRows(request, eventsW, questionIdx) : 0;
+
+  const bodyH = Math.max(1, rows - 1 - footerH - (requestInPane ? 0 : requestH));
 
   const account = sel ? providerAccountOf(state, sel.provider) : "";
 
@@ -362,7 +368,7 @@ const deriveView = (
   const detail = detailLayout(sel, {
     mode,
     engineColor: sel ? providerColorOf(state, sel.provider) : "",
-    width: body.t === "sessionPane" ? cols : rightW,
+    width: eventsW,
     account: account,
     compacting: sel?.compacting ?? null,
     archiving: state.archiving.includes(sel?.id ?? ""),
@@ -371,11 +377,10 @@ const deriveView = (
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.
   const detailH = detail.height;
-  const eventsW = body.t === "sessionPane" ? cols : rightW;
   // A session-targeted prompt draws its input group under the EVENTS log (its
   // label + editor rows) — budget them against the log's height.
   const paneH = promptPaneRows(state, eventsW);
-  const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH);
+  const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH - (requestInPane ? requestH : 0));
   const logPage = Math.max(1, splitLogH - 3);
 
   const layout = fleetLayout({ ...state, find }, fleetRowBudget(bodyH, find !== null));
