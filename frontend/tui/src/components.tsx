@@ -1089,6 +1089,14 @@ export const NewSessionModal = ({
           <Line tone="dim">{`[${isolation}]  ⇧⇥ mode · ⌥i isolation`}</Line>
         </Box>
         {!g.compact && <Box height={1} flexShrink={0} />}
+        <InputLine
+          buf={p.buffer}
+          room={g.room}
+          maxRows={g.maxRows}
+          placeholder={truncate(PROMPT_PLACEHOLDER.new, Math.max(1, g.room - 2))}
+        />
+        <PromptFeedback p={p} width={g.width - 2 - g.padding * 2} />
+        {!g.compact && <Box height={1} flexShrink={0} />}
         {p.feedback?.pending || p.feedback?.uncertain ? (
           <Line tone="warn">{pendingPromptHint(p)}</Line>
         ) : (
@@ -1100,14 +1108,6 @@ export const NewSessionModal = ({
           />
         )}
         {!g.compact && <Line tone="faint">⌥⏎ newline · ⌥e editor · ↑↓ history</Line>}
-        {!g.compact && <Box height={1} flexShrink={0} />}
-        <InputLine
-          buf={p.buffer}
-          room={g.room}
-          maxRows={g.maxRows}
-          placeholder={truncate(PROMPT_PLACEHOLDER.new, Math.max(1, g.room - 2))}
-        />
-        <PromptFeedback p={p} width={g.width - 2 - g.padding * 2} />
       </Box>
     </>
   );

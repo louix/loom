@@ -50,7 +50,9 @@ test("new-session modal covers the background and keeps its mode hit aligned aft
       assert.match(frame, /✦ new session/);
       assert.match(frame, /enter start session/);
       const inputRow = lines.findIndex((line) => /▍|⋮/.test(line));
-      assert.ok(inputRow > lines.findIndex((line) => line.includes("enter start session")));
+      const lastInputRow = lines.findLastIndex((line) => /▍|⋮/.test(line));
+      assert.ok(lastInputRow < lines.findIndex((line) => line.includes("enter start session")));
+      assert.ok(inputRow > lines.findIndex((line) => line.includes("fake / model")));
       assert.ok(inputRow > g.modeY - 1);
       assert.equal(lines[g.modeY - 1]?.slice(g.modeX - 1, g.modeX + 5), "[plan]");
       assert.equal(lines[g.top]?.[g.left], "╭");
