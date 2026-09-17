@@ -997,7 +997,7 @@ export class Daemon {
           ...(this.#providers.vmUnavailableReason(id)
             ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
             : {}),
-          tag: profile.name || "Claude",
+          tag: profile.tag ?? (profile.name || "Claude"),
           color: id === "claude" ? profile.color : autoColor(profile.color),
           isDefault: def === id,
           ...(account ? { account: { loginMethod: account.loginMethod, org: account.org } } : {}),
@@ -1044,7 +1044,7 @@ export class Daemon {
         ...(this.#providers.vmUnavailableReason(id)
           ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
           : {}),
-        tag: p.tag || id,
+        tag: p.tag,
         color: autoColor(p.color),
         isDefault: def === id,
       });

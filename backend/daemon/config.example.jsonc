@@ -13,8 +13,10 @@
       // "cli_path": "/path/to/claude",
       // "title_model": "haiku",
       // Omit profiles to use ~/.claude. Named accounts appear as claude:work, etc.
+      // tag sets the display label without changing the provider id.
+      // A family-level tag is inherited unless a profile overrides it.
       // "profiles": {
-      //   "work": { "config_dir": "~/.claude-work", "color": "yellow" },
+      //   "work": { "config_dir": "~/.claude-work", "tag": "Work Claude", "color": "yellow" },
       //   "personal": { "config_dir": "~/.claude-personal" },
       // },
     },
@@ -25,7 +27,7 @@
       // "builtin_web_search": true,
       // "profiles": {
       //   "default": { "config_dir": "~/.codex" }, // provider id: codex
-      //   "work": { "config_dir": "~/.codex-work", "color": "cyan" }, // codex:work
+      //   "work": { "config_dir": "~/.codex-work", "tag": "Work Codex", "color": "cyan" }, // codex:work
       // },
     },
     // Native API families follow the same pattern; require a model and credentials.

@@ -391,6 +391,9 @@
         "claude": {
           "type": "object",
           "properties": {
+            "tag": {
+              "type": "string"
+            },
             "model": {
               "default": "claude-sonnet-5",
               "type": "string"
@@ -450,6 +453,9 @@
                 "properties": {
                   "config_dir": {
                     "default": "",
+                    "type": "string"
+                  },
+                  "tag": {
                     "type": "string"
                   },
                   "color": {
@@ -1509,6 +1515,9 @@
               "claude": {
                 "type": "object",
                 "properties": {
+                  "tag": {
+                    "type": "string"
+                  },
                   "model": {
                     "default": "claude-sonnet-5",
                     "type": "string"
@@ -1568,6 +1577,9 @@
                       "properties": {
                         "config_dir": {
                           "default": "",
+                          "type": "string"
+                        },
+                        "tag": {
                           "type": "string"
                         },
                         "color": {

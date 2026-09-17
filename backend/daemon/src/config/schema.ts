@@ -117,13 +117,15 @@ export const toolSettingsSchema = z.object({
 });
 export type ToolSettings = z.output<typeof toolSettingsSchema>;
 
+const providerTag = z.string().optional().catch(undefined);
+
 const providerFields = {
   base_url: text(),
   api_key_env: text(),
   api_key: text(),
   model: text(),
   models: strings().optional(),
-  tag: z.string().optional().catch(undefined),
+  tag: providerTag,
   color: text(),
   include_usage: flag(true),
   prompt_cache_ttl: z.enum(["5m", "1h", "off", ""]).catch(""),
@@ -239,6 +241,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       record,
       z.strictObject({
         claude: section({
+          tag: providerTag,
           model: text(d.providers.claude.model),
           title_model: text(d.providers.claude.titleModel),
           models: strings(d.providers.claude.models),
@@ -260,6 +263,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
               z.string(),
               section({
                 config_dir: text().transform((v) => v.trim()),
+                tag: providerTag,
                 color: text().transform((v) => v.trim()),
               }),
             ),

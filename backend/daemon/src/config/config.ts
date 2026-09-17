@@ -130,8 +130,10 @@ export interface AisdkProfile {
 export interface ClaudeProfile {
   /** Config dir, tilde-expanded and absolute after `normalizeConfig`. */
   dir: string;
-  /** Display label + id-slug source; "" → the base `claude` id, tag "Claude". */
+  /** Profile name and id-slug source; "" → the base `claude` id. */
   name: string;
+  /** Resolved display label: configured tag, profile name, then provider name. */
+  tag?: string;
   /** Fleet-row id colour (Ink name); "" → auto-assign from a palette. */
   color: string;
 }
@@ -435,6 +437,7 @@ const parseClaudeProfiles = (rows: ClaudeProfile[]): ClaudeProfile[] => {
     const profile: ClaudeProfile = {
       dir: expandTilde(dir),
       name: entry.name,
+      ...(entry.tag !== undefined ? { tag: entry.tag } : {}),
       color: entry.color,
     };
     const id = claudeProfileId(profile);
@@ -470,6 +473,8 @@ const buildAisdkProfile = (
   if (autoModels && sdk !== "openai" && sdk !== "chatgpt") return null;
   const effectiveModel = model || (models[0] ?? "");
   const effectiveModelList = effectiveModel ? [effectiveModel] : [];
+  let defaultTag = id;
+  if (sdk === "chatgpt") defaultTag = id === "codex" ? "Codex" : id.slice("codex:".length);
   return {
     sdk,
     baseUrl,
@@ -484,7 +489,7 @@ const buildAisdkProfile = (
     modelDefaultEffort: {},
     includeUsage: p.include_usage,
     autoModels,
-    tag: p.tag ?? id,
+    tag: p.tag ?? defaultTag,
     color: p.color,
     promptCacheTtl: p.prompt_cache_ttl,
     titleModel: p.title_model,
@@ -651,9 +656,13 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     Object.entries(claude.profiles).map(([name, p]) => ({
       name: name === "default" ? "" : name,
       dir: p.config_dir,
+      ...(p.tag !== undefined ? { tag: p.tag } : {}),
       color: p.color,
     })),
   );
+  for (const profile of claudeProfiles) {
+    profile.tag = profile.tag ?? claude.tag ?? (profile.name || "Claude");
+  }
   const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
 
   // The default provider must actually be configured; fall back to claude.

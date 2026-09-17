@@ -532,7 +532,7 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
   }
 });
 
-test("providers.list expands [[claude_profiles]] into distinct ids, tags, colours and accounts", async () => {
+test("providers.list uses Claude profile tags without changing ids, colours or accounts", async () => {
   const workDir = mkdtempSync(join(tmpdir(), "loom-claude-work-"));
   writeFileSync(
     join(workDir, ".credentials.json"),
@@ -551,7 +551,8 @@ test("providers.list expands [[claude_profiles]] into distinct ids, tags, colour
           "config_dir": "~/.claude"
         },
         "Work": {
-          "config_dir": ${JSON.stringify(workDir)}
+          "config_dir": ${JSON.stringify(workDir)},
+          "tag": "Work Claude"
         }
       }
     }
@@ -579,7 +580,7 @@ test("providers.list expands [[claude_profiles]] into distinct ids, tags, colour
     assert.equal(byId.get("claude")?.color, ""); // base profile stays plain
     const work = byId.get("claude:work");
     assert.ok(work, "the named profile is its own provider");
-    assert.equal(work?.tag, "Work");
+    assert.equal(work?.tag, "Work Claude");
     assert.notEqual(work?.color, ""); // auto-assigned from the palette
     assert.deepEqual(work?.account, { loginMethod: "Claude Enterprise account", org: "Globex" });
   } finally {

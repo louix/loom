@@ -54,6 +54,8 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
       providers: {
         claude: {
           permission_default: "manual",
+          tag: "Claude account",
+          profiles: { work: { config_dir: "~/.claude-work", tag: "Work Claude" } },
         },
       },
     },

@@ -1576,3 +1576,35 @@ test("repository overrides merge family and named profile settings before defaul
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("Claude and Codex labels use tag, then profile name, then provider name", () => {
+  for (const family of ["claude", "codex"] as const) {
+    const label = family === "claude" ? "Claude" : "Codex";
+    const labels = (settings: unknown) => {
+      const c = normalizeConfig({ providers: { [family]: settings } });
+      return family === "claude"
+        ? c.claudeProfiles.map((p) => [claudeProfileId(p), p.tag])
+        : Object.entries(c.providers.aisdk).map(([id, p]) => [id, p.tag]);
+    };
+    assert.deepEqual(labels({}), [[family, label]]);
+    assert.deepEqual(labels({ tag: "Account" }), [[family, "Account"]]);
+    const profiles = {
+      default: { config_dir: "/profiles/default" },
+      work: { config_dir: "/profiles/work" },
+      custom: { config_dir: "/profiles/custom", tag: "My account" },
+      blank: { config_dir: "/profiles/blank", tag: "" },
+    };
+    assert.deepEqual(labels({ profiles }), [
+      [family, label],
+      [family + ":work", "work"],
+      [family + ":custom", "My account"],
+      [family + ":blank", ""],
+    ]);
+    assert.deepEqual(labels({ tag: "Inherited", profiles }), [
+      [family, "Inherited"],
+      [family + ":work", "Inherited"],
+      [family + ":custom", "My account"],
+      [family + ":blank", ""],
+    ]);
+  }
+});

@@ -856,7 +856,7 @@ export const newSettings = (
 export const providerPickItems = (s: TuiState): PickItem[] => {
   return fleetProviders(s).map((p) => ({
     id: p.id,
-    label: p.tag || p.id,
+    label: p.tag ?? p.id,
     hint: [
       p.isDefault ? "default" : "",
       p.defaultModel || (p.models.length ? `${p.models.length} models` : ""),
@@ -965,7 +965,7 @@ export const pickerStep = (
   },
 ): Overlay => {
   const pid = o.chosen.provider ?? "";
-  const tag = providerInfo(s, pid)?.tag || pid;
+  const tag = providerInfo(s, pid)?.tag ?? pid;
   // The ⌥p retarget wizard says so in its title — it stages onto the plan
   // review rather than switching anything live.
   const lead = o.dest.t === "planImpl" ? "retarget · " : "";
