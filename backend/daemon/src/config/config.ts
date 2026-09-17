@@ -195,9 +195,8 @@ interface HookFields {
    * project and `~/dev/**` covers everything under a directory. "" = every
    * repo. Hooks inside a matching `repo` override already apply only there.
    *
-   * This exists because config layering replaces arrays wholesale: a `repo` override
-   * containing hooks would otherwise shadow every user-level one, so per-project
-   * hooks have to be expressible in the user-level file itself.
+   * Global hooks are inherited by every repo; matching repo hooks append to them.
+   * Use this field to restrict a global hook to a project or group of projects.
    */
   project: string;
   /**
@@ -832,7 +831,18 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       selected = overrides;
     }
   }
-  return normalizeConfig(deepMerge(defaults, selected));
+  const merged = deepMerge(defaults, selected);
+  // Hooks are additive across repo layers; other arrays keep replacement semantics.
+  // Validate both layers so an override cannot hide malformed inherited hooks.
+  for (const layer of [defaults, selected]) {
+    if (layer.hooks !== undefined && !Array.isArray(layer.hooks))
+      throw new Error("hooks must be an array");
+  }
+  merged.hooks = [
+    ...((defaults.hooks as unknown[] | undefined) ?? []),
+    ...((selected.hooks as unknown[] | undefined) ?? []),
+  ];
+  return normalizeConfig(merged);
 };
 
 /** Resolve a possibly-relative config path against the repo root. */

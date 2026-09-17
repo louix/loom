@@ -517,7 +517,12 @@ test("deepMerge: over wins, objects merge, arrays/scalars replace", () => {
     { a: 1, nested: { x: 1, y: 2 }, list: [1, 2], keep: "me" },
     { a: 2, nested: { y: 3, z: 4 }, list: [9] },
   );
-  assert.deepEqual(merged, { a: 2, nested: { x: 1, y: 3, z: 4 }, list: [9], keep: "me" });
+  assert.deepEqual(merged, {
+    a: 2,
+    nested: { x: 1, y: 3, z: 4 },
+    list: [9],
+    keep: "me",
+  });
 });
 
 test("loadConfig merges an exact repo override from the user file and ignores repo files", () => {
@@ -591,6 +596,71 @@ test("loadConfig merges an exact repo override from the user file and ignores re
     // A parent repo entry is not a prefix grant to nested repositories/worktrees.
     assert.equal(loadConfig(join(dir, "child"), user).baseBranch, "trunk");
     assert.equal(loadConfig(dir, join(dir, "missing.jsonc")).baseBranch, "main");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("repo hooks append to global hooks without changing other array inheritance", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cfg-"));
+  const user = join(dir, "user.jsonc");
+  const globalHook = {
+    name: "shared",
+    on: ["waiting", "turn_end"],
+    when: "unfocused",
+    run: "true",
+  };
+  const repoHook = { name: "shared", on: "init", run: "echo setup" };
+  const write = (hooks: unknown, repo: Record<string, unknown>) =>
+    writeFileSync(
+      user,
+      JSON.stringify({
+        hooks,
+        session: { provider_access: { disabled: ["global-provider"] } },
+        repos: [{ path: dir, ...repo }],
+      }),
+    );
+  try {
+    write([globalHook], {
+      hooks: [repoHook],
+      session: { provider_access: { disabled: ["repo-provider"] } },
+    });
+    const config = loadConfig(dir, user);
+    assert.deepEqual(
+      config.hooks.map((h) => [h.name, h.run, h.when]),
+      [
+        ["shared", "true", "unfocused"],
+        ["shared", "echo setup", "always"],
+      ],
+    );
+    assert.deepEqual(config.hooks, loadConfig(dir, user).hooks, "reload must not accumulate hooks");
+    assert.deepEqual(
+      loadConfig(join(dir, "other"), user).hooks.map((h) => h.run),
+      ["true"],
+    );
+    assert.deepEqual(config.providerAccess.disabled, ["repo-provider"]);
+
+    for (const repo of [{}, { hooks: [] }]) {
+      write([globalHook], repo);
+      assert.deepEqual(
+        loadConfig(dir, user).hooks.map((h) => h.run),
+        ["true"],
+      );
+    }
+    write(undefined, { hooks: [repoHook] });
+    assert.deepEqual(
+      loadConfig(dir, user).hooks.map((h) => h.run),
+      ["echo setup"],
+    );
+    write(undefined, {});
+    assert.deepEqual(loadConfig(dir, user).hooks, []);
+
+    for (const invalid of [null, "bad", {}, [{ on: "waiting" }]]) {
+      write(invalid, { hooks: [repoHook] });
+      assert.throws(() => loadConfig(dir, user));
+      write([globalHook], { hooks: invalid });
+      assert.throws(() => loadConfig(dir, user));
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1092,7 +1162,7 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
       ["registry.npmjs.org:443"],
       ["127.0.0.1"],
       ["::1"],
-    ])
+    ]) {
       assert.throws(
         () =>
           normalizeConfig({
@@ -1104,6 +1174,7 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
           }),
         /extra_allowed_hosts/,
       );
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1127,7 +1198,10 @@ test("project provider allow/deny lists and explicit VM disable override inherit
   }
 }`,
   );
-  assert.deepEqual(base.providerAccess, { only: ["claude:work"], disabled: [] });
+  assert.deepEqual(base.providerAccess, {
+    only: ["claude:work"],
+    disabled: [],
+  });
   const raw = deepMerge(
     {
       session: {
@@ -1395,7 +1469,9 @@ test("JSONC accepts comments, trailing commas and a BOM without changing strings
   }`,
   );
   assert.equal(raw.base_branch, "trunk");
-  assert.deepEqual(raw.session, { notify: { webhook: "https://example.com/a//b/*literal*/" } });
+  assert.deepEqual(raw.session, {
+    notify: { webhook: "https://example.com/a//b/*literal*/" },
+  });
   assert.deepEqual(raw.repos, [{ path: "/repo", hooks: [] }]);
 });
 
@@ -1413,8 +1489,9 @@ test("JSONC rejects malformed or non-object configs instead of using partial res
     "{unquoted: true}",
     '{"a": /* unfinished',
     'base_branch = "main"',
-  ])
+  ]) {
     assert.throws(() => parseConfig(text), /JSONC|JSON object/);
+  }
   assert.throws(
     () => parseConfig('{\n  "api_key": "secret-value",\n  "broken": ,\n}'),
     (error: unknown) => {
@@ -1437,7 +1514,11 @@ test("Codex profiles inherit family defaults and can override or clear them", ()
         builtin_web_search: true,
         profiles: {
           default: {},
-          work: { config_dir: "~/.codex-work", models: ["three"], builtin_web_search: false },
+          work: {
+            config_dir: "~/.codex-work",
+            models: ["three"],
+            builtin_web_search: false,
+          },
           clean: { cli_path: "", title_model: "" },
         },
       },
@@ -1473,7 +1554,12 @@ test("repository overrides merge family and named profile settings before defaul
         repos: [
           {
             path: dir,
-            providers: { codex: { title_model: "small", profiles: { work: { model: "two" } } } },
+            providers: {
+              codex: {
+                title_model: "small",
+                profiles: { work: { model: "two" } },
+              },
+            },
             session: { auto_resume: { enabled: false } },
           },
         ],

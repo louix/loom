@@ -421,7 +421,8 @@ identity, including symlinks and subdirectories. For a bare repository, prefer i
 own path (for example `/project/.bare`); paths to its linked worktrees also match
 that repository. Multiple entries resolving to the same root are duplicates.
 Independent nested repositories remain separate. Missing paths can stay configured.
-Nested objects merge with global defaults; arrays replace them. Malformed repo
+Nested objects merge with global defaults; arrays replace them, except `hooks`,
+which append repository hooks after global hooks. Malformed repo
 entries are errors. Update the path if you move a repository. Only the user config is
 watched for reloads; settings that require a daemon restart still report that.
 Repository-local config files are not read or created. `.loom/LOOM.md` remains
@@ -447,7 +448,9 @@ native history. Existing sessions are classified from saved VM state when upgrad
 
 **Hooks (`hooks` array).** Commands run asynchronously in the session's worktree.
 Declare them in `~/.config/loom/config.jsonc`. Use `repos` array overrides or the
-hook’s `project` field to scope them; override arrays replace global arrays.
+hook’s `project` field to scope them. Repository hooks append to global hooks;
+an empty repo `hooks` array still inherits global hooks. Hooks with the same name
+remain separate entries, so give each command only once across the two layers.
 Changes hot-apply; changing hooks cancels old runs and clears their feedback state.
 
 | key       | meaning                                                                           |

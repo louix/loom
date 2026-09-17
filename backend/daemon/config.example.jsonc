@@ -67,7 +67,8 @@
   //   "kagi": { "url": "https://mcp.kagi.com/mcp", "bearer_token_env": "KAGI_API_KEY", "default_for": ["web_search", "web_fetch"] },
   // },
   "hooks": [],
-  // Objects merge recursively; arrays replace inherited arrays.
+  // Objects merge recursively; arrays replace inherited arrays, except hooks:
+  // repo hooks append to global hooks (an empty array still inherits globals).
   "repos": [
     // {
     //   "path": "~/dev/my-project",
