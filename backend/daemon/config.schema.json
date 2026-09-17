@@ -118,7 +118,7 @@
           "properties": {
             "enabled": {
               "default": false,
-              "description": "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+              "description": "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
               "type": "boolean"
             },
             "claude": {
@@ -1242,7 +1242,7 @@
                 "properties": {
                   "enabled": {
                     "default": false,
-                    "description": "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+                    "description": "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
                     "type": "boolean"
                   },
                   "claude": {

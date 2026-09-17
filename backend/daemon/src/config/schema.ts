@@ -226,7 +226,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             .boolean()
             .default(false)
             .describe(
-              "Default all providers to VM execution in this project. Existing sessions keep their mode.",
+              "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
             ),
           claude: runtime,
           aisdk: runtime,

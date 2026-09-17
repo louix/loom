@@ -150,7 +150,8 @@ export class ProviderRegistry {
   vmUnavailableReason(id: string): string | undefined {
     if (![CLAUDE, GENERIC, GEMINI, CHATGPT].includes(this.#packageFor(id)))
       return "This provider has no VM backend";
-    if (!this.vmPolicy(id)) return "No VM runtime is configured for this provider";
+    if (!this.vmPolicy(id))
+      return `No VM runtime artifact is configured. Use a Nix build with bundled runtimes or set session.isolation.${this.#vmKind(id)}.artifact.`;
   }
 
   configFor(id: string, isolation: "vm" | "local"): LoomConfig {

@@ -435,7 +435,15 @@ when omitted).
 In the new-session prompt, `⌥i` switches VM/Local; the CLI equivalent is
 `loom run --isolation local <prompt>` (or `--isolation vm`). VM selection requires
 a configured or package-bundled runtime. A disabled default still permits an
-explicit VM choice when that runtime is available.
+explicit VM choice when that runtime is available. Despite its name, `enabled` controls
+only the default, not whether VM execution is permitted.
+
+A direct `deno run` launch does not automatically supply runtime artifacts. Nix
+builds that bundle runtimes set `LOOM_BUNDLED_RUNTIMES` in their launchers; when
+running from source, supply that manifest or configure the appropriate
+`session.isolation.{claude,aisdk,codex}.artifact` and `smolvm` paths explicitly.
+Runtime artifacts are shared across provider profiles; the runtime family selects
+the worker used inside the VM.
 
 The fleet marks VM sessions with a muted `◇`; local sessions have no marker.
 The Detail pane names the environment. Each session keeps its choice through
