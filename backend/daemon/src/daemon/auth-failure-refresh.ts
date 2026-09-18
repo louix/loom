@@ -14,7 +14,9 @@ export const refreshOnAuthFailure = <T extends AgentSession>(
             if (
               !attempted &&
               event.type === "error" &&
-              /\b401\b|authentication_error|invalid authentication credentials/i.test(event.message)
+              /\b401\b|authentication_(?:error|failed)|invalid authentication credentials/i.test(
+                event.message,
+              )
             ) {
               attempted = true;
               // Display the failure immediately; renewal prepares a later explicit send.
