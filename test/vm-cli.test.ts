@@ -8,6 +8,7 @@ import {
   resolveVm,
   stopVm,
   removeVm,
+  legacyVmStates,
   type VmRecord,
 } from "../runtime/src/session-vm/inventory.ts";
 import { writeRecoveryFile } from "../runtime/src/session-vm/persistence.ts";
@@ -42,6 +43,43 @@ const fixture = async () => {
   });
   return { root, home, record };
 };
+
+Deno.test("MCP inventory retains session and tool identity after stopping", async () => {
+  const f = await fixture();
+  const r: VmRecord = {
+    ...f.record(),
+    kind: "mcp",
+    sessionId: "session-full-id",
+    workload: "tilth",
+  };
+  r.paths.state = join(f.root, "loom-vm-fixture");
+  r.paths.session = null;
+  const owner = await registerVm(r, f.home);
+  try {
+    await Deno.mkdir(r.paths.state);
+    const listed = await listVms(undefined, f.home);
+    assert.equal(listed.errors.length, 0);
+    assert.equal(listed.vms[0]!.sessionId, r.sessionId);
+    assert.deepEqual(await legacyVmStates(listed.vms, f.root), []);
+    assert.match(formatVmList(listed.vms), /mcp\s+session-\s+claude \/ tilth/);
+    assert.match(formatVmList(listed.vms, true), /session-full-id/);
+    owner.serve(
+      async () => {
+        await Deno.remove(r.paths.state);
+        await owner.finish();
+      },
+      async () => ({ state: "running" }),
+    );
+    const stopped = await stopVm(r.id, f.home, 3000);
+    assert.equal(stopped.state, "stopped");
+    assert.equal(stopped.sessionId, r.sessionId);
+    assert.equal(stopped.workload, "tilth");
+    await removeVm(r.id, f.home);
+  } finally {
+    await owner.finish();
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
 
 Deno.test("missing ownership locks are reported and never recreated by removal", async () => {
   const f = await fixture();

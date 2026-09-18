@@ -34,8 +34,9 @@ the terminal. Without --repo, use the current repository (including bare repos).
   list: `loom vm list [--repo <path>] [--wide] [--json]
 
 List known instances across this user's repositories, including stopped records.
---repo filters to one repository; --wide adds absolute repository/runtime/state
-paths. VM state is separate from session activity. Unknown legacy state is
+--repo filters to one repository; --wide adds full session IDs and absolute
+repository/runtime/state paths. MCP VMs show their owning session and tool name.
+VM state is separate from session activity. Untracked state is
 reported separately. Does not start a daemon or perform recovery.`,
   inspect: `loom vm inspect <vm-id> [--repo <path>] [--json]
 
@@ -93,7 +94,7 @@ export const formatVmList = (vms: VmRecord[], wide = false) => {
       vm.state,
       wide ? vm.repo : basename(vm.repo),
       vm.kind,
-      vm.sessionId?.slice(0, 8) ?? "-",
+      (wide ? vm.sessionId : vm.sessionId?.slice(0, 8)) ?? "-",
       [vm.provider, vm.workload].filter(Boolean).join(" / "),
       age(vm.createdAt),
       ...(wide ? [vm.paths.runtime, vm.paths.state] : []),
@@ -203,7 +204,7 @@ export const vmCommand = async (args: string[]): Promise<string> => {
     if (values.json) return JSON.stringify({ ...all, vms, legacyStates: legacy }) + "\n";
     for (const error of all.errors) console.error(safe(error));
     for (const path of legacy)
-      console.error("Unregistered VM state (repo/owner unknown): " + safe(path));
+      console.error("Untracked VM state (repo/session/activity unknown): " + safe(path));
     for (const vm of vms) if (vm.error) console.error(vm.id.slice(0, 8) + ": " + safe(vm.error));
     return formatVmList(vms, values.wide);
   }

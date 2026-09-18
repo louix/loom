@@ -11,12 +11,21 @@ import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transpor
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
 import type { ManagedMcp } from "./mcp-worker.ts";
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
+import { findRepoRoot } from "@loom/core/paths";
+import { registerVm, type VmOwner } from "../../../../runtime/src/session-vm/inventory.ts";
+
+export interface McpVmIdentity {
+  sessionId: string;
+  provider: string;
+  repo?: string | undefined;
+}
 
 const startRuntimeMcpOwned = async (
   name: string,
   runtime: string,
   workspace: string,
   launch: WorkerLauncher = launchLocalWorker,
+  identity?: McpVmIdentity,
 ): Promise<ManagedMcp> => {
   requireVmHost();
   const { lock, manifest } = await resolveRuntime(runtime);
@@ -34,8 +43,42 @@ const startRuntimeMcpOwned = async (
     state,
     token: crypto.randomUUID() + crypto.randomUUID(),
   };
+  let owner: VmOwner | undefined;
   let child: ReturnType<WorkerLauncher>;
   try {
+    let repo = identity?.repo;
+    if (!repo) {
+      try {
+        repo = findRepoRoot(cwd);
+      } catch {
+        repo = cwd;
+      }
+    }
+    const now = new Date().toISOString();
+    owner = await registerVm({
+      version: 1,
+      id: crypto.randomUUID(),
+      repo,
+      kind: "mcp",
+      sessionId: identity?.sessionId ?? null,
+      provider: identity?.provider ?? null,
+      workload: name,
+      state: "starting",
+      createdAt: now,
+      stoppedAt: null,
+      observedAt: now,
+      source: "owner",
+      error: null,
+      paths: {
+        workspace: cwd,
+        runtime: lock.artifact,
+        state,
+        session: null,
+        profile: null,
+        backend: null,
+        base: null,
+      },
+    });
     vmArguments(binding);
     for (const dir of ["home", "cache", "data", "config"])
       await Deno.mkdir(join(state, dir), { mode: 0o700 });
@@ -56,7 +99,13 @@ const startRuntimeMcpOwned = async (
       },
     });
   } catch (error) {
-    await Deno.remove(state, { recursive: true });
+    try {
+      await Deno.remove(state, { recursive: true });
+      await owner?.finish();
+    } catch (cleanupError) {
+      await owner?.finish(cleanupError);
+      throw cleanupError;
+    }
     throw error;
   }
   const writer = new FrameWriter(child.input);
@@ -78,8 +127,14 @@ const startRuntimeMcpOwned = async (
         // Covers SIGKILL/crash of the Deno supervisor as well as normal cleanup.
         await reapVm(binding);
         await Deno.remove(state, { recursive: true });
+        await owner?.finish();
       }
-    })());
+    })().catch(async (error) => {
+      await owner?.finish(error);
+      throw error;
+    }));
+  let ready = false;
+  owner!.serve(close, async () => ({ state: ready ? "running" : "starting" }));
   // Supervisor death revokes the session capability and reaps its VM.
   void child.exited
     .then(
@@ -117,6 +172,12 @@ const startRuntimeMcpOwned = async (
       }),
     ]);
     await retainDiskTemplates(state, lock.smolvm);
+    if (closing) {
+      await closing;
+      throw new Error("MCP VM stopped during startup");
+    }
+    ready = true;
+    await owner!.update({ state: "running" });
     return {
       handle: {
         name,

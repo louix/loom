@@ -10,7 +10,7 @@ export interface VmRecord {
   version: 1;
   id: string;
   repo: string;
-  kind: "session" | "prepare";
+  kind: "session" | "prepare" | "mcp";
   sessionId: string | null;
   provider: string | null;
   workload: string;
@@ -74,7 +74,7 @@ const read = async (home: string, id: string): Promise<VmRecord> => {
     !r ||
     r.version !== 1 ||
     r.id !== id ||
-    !["session", "prepare"].includes(r.kind) ||
+    !["session", "prepare", "mcp"].includes(r.kind) ||
     !["starting", "running", "stopping", "stopped", "orphaned", "unknown"].includes(r.state) ||
     typeof r.repo !== "string" ||
     !isAbsolute(r.repo) ||
@@ -266,7 +266,7 @@ export const registerVm = async (record: VmRecord, home = vmInventoryHome()): Pr
               ? { state: "orphaned", error: message(error) }
               : {
                   state: "stopped",
-                  workload: "stopped",
+                  workload: record.kind === "mcp" ? record.workload : "stopped",
                   stoppedAt: new Date().toISOString(),
                   error: null,
                 },

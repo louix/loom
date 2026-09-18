@@ -18,6 +18,52 @@ import { makeLogger } from "@loom/core/logger";
 import { McpHub } from "../aisdk/src/mcp.ts";
 import type { CreateSessionOptions, McpServerHandle } from "@loom/core/types";
 
+test("runtime MCP creation and resume carry the Loom session and repository identity", async () => {
+  const identities: unknown[] = [];
+  const provider = await withExternalMcp(
+    () => new FakeProvider(),
+    { id: "claude:personal", config: {}, logger: makeLogger("test") },
+    undefined,
+    async (name, _runtime, cwd, _launch, identity) => {
+      identities.push({ cwd, ...identity });
+      return {
+        handle: { name, spec: { transport: "http", url: "http://127.0.0.1:1/mcp" } },
+        pid: 0,
+        exited: new Promise(() => {}),
+        close: async () => {},
+      };
+    },
+    "/repo",
+  );
+  const mcpServers: McpServerHandle[] = [
+    { name: "tilth", spec: { transport: "runtime", runtime: "tilth", isolation: "vm" } },
+  ];
+  const created = await provider.createSession({
+    sessionId: "loom-session",
+    cwd: "/repo/.loom/trees/session",
+    prompt: "",
+    mode: "default",
+    mcpServers,
+  });
+  await created.close();
+  const resumed = await provider.resumeSession({
+    sessionId: "loom-session",
+    providerRef: "provider-specific-id",
+    cwd: "/repo/.loom/trees/session",
+    mcpServers,
+  });
+  await resumed.close();
+  assert.deepEqual(
+    identities,
+    Array(2).fill({
+      cwd: "/repo/.loom/trees/session",
+      sessionId: "loom-session",
+      provider: "claude:personal",
+      repo: "/repo",
+    }),
+  );
+});
+
 const fixture = () => {
   const requests: Array<{ auth: string | null; method: string; path: string }> = [];
   const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (req) => {
