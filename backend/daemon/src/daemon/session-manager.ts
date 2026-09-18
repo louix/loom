@@ -158,6 +158,10 @@ export class SessionManager {
     return this.#running.has(id);
   }
 
+  isEnded(id: string): boolean {
+    return this.#running.get(id)?.ended ?? false;
+  }
+
   ids(): string[] {
     return [...this.#running.keys()];
   }

@@ -1836,3 +1836,136 @@ test("interrupt cancels a session before its provider is ready", async () => {
     await c.close();
   }
 });
+
+for (const failure of [false, true]) {
+  for (const command of ["session.resume", "session.send"] as const) {
+    test(`${command} recovers ${failure ? "a failed" : "an ended"} stream without restarting the daemon`, async () => {
+      const c = await client();
+      try {
+        const { id, fs } = await createFake(c);
+        fs.emit({ type: "assistant_text", text: "saved work" });
+        await waitFor(async () => (await statusOf(c, id)) === "running");
+        if (failure) fs.fail("OAuth access token has been revoked");
+        fs.endStream();
+        await waitFor(async () => (await statusOf(c, id)) === (failure ? "error" : "interrupted"));
+
+        const before = await c.request<SessionSnapshot>("session.get", { id });
+        const result = await c.request<SessionSnapshot & { injected?: boolean }>(
+          command,
+          command === "session.send" ? { id, text: "continue after login" } : { id },
+        );
+        const fresh = fake().session(id)!;
+        assert.notEqual(fresh, fs);
+        assert.equal(fs.closed, true);
+        assert.equal(fresh.resumed, true);
+        assert.equal(fresh.providerRef, fs.providerRef);
+        assert.equal(result.worktree, before.worktree);
+        assert.equal(result.branch, before.branch);
+        assert.deepEqual(fs.sends, []);
+        assert.deepEqual(fresh.sends, command === "session.send" ? ["continue after login"] : []);
+        assert.equal(result.status.kind, command === "session.send" ? "running" : "idle");
+        if (command === "session.send") assert.equal(result.injected, false);
+      } finally {
+        await c.close();
+      }
+    });
+  }
+}
+
+test("concurrent resume and send wait for ended-worker cleanup and share one replacement", async () => {
+  const c = await client();
+  const other = await client();
+  const sender = await client();
+  const release = Promise.withResolvers<void>();
+  const resume = FakeProviderClass.prototype.resumeSession;
+  try {
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "assistant_text", text: "saved work" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+    fs.endStream();
+    await waitFor(async () => (await statusOf(c, id)) === "interrupted");
+    const entered = Promise.withResolvers<void>();
+    const close = fs.close.bind(fs);
+    fs.close = async () => {
+      entered.resolve();
+      await release.promise;
+      await close();
+    };
+    let resumes = 0;
+    FakeProviderClass.prototype.resumeSession = async function (ref) {
+      resumes++;
+      assert.equal(fs.closed, true);
+      return await resume.call(this, ref);
+    };
+    const first = c.request("session.resume", { id });
+    await entered.promise;
+    const second = other.request("session.resume", { id });
+    const send = sender.request("session.send", { id, text: "continue" });
+    await delay(20);
+    assert.equal(resumes, 0);
+    release.resolve();
+    await Promise.all([first, second, send]);
+    assert.equal(resumes, 1);
+    assert.deepEqual(fake().session(id)!.sends, ["continue"]);
+  } finally {
+    FakeProviderClass.prototype.resumeSession = resume;
+    release.resolve();
+    await c.close();
+    await other.close();
+    await sender.close();
+  }
+});
+
+test("resume still rejects a live session after a recoverable provider error", async () => {
+  const c = await client();
+  try {
+    const { id, fs } = await createFake(c);
+    fs.fail("authentication failed");
+    await waitFor(async () => (await statusOf(c, id)) === "error");
+    await assert.rejects(c.request("session.resume", { id }), /session is already running/);
+    await c.request("session.send", { id, text: "retry" });
+    assert.equal(fake().session(id), fs);
+    assert.equal(fs.closed, false);
+    assert.deepEqual(fs.sends, ["retry"]);
+  } finally {
+    await c.close();
+  }
+});
+
+test("a crashed stream remains resumable after a failed authentication retry", async () => {
+  const c = await client();
+  const create = FakeProviderClass.prototype.createSession;
+  const resume = FakeProviderClass.prototype.resumeSession;
+  try {
+    FakeProviderClass.prototype.createSession = async function (opts) {
+      const session = await create.call(this, opts);
+      const events = session.events.bind(session);
+      session.events = async function* () {
+        yield* events();
+        throw new Error("Session VM connection ended");
+      };
+      return session;
+    };
+    const { id, fs } = await createFake(c);
+    FakeProviderClass.prototype.createSession = create;
+    fs.emit({ type: "assistant_text", text: "saved work" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+    fs.endStream();
+    await waitFor(async () => (await statusOf(c, id)) === "error");
+    FakeProviderClass.prototype.resumeSession = async () => {
+      throw new Error("Provider authentication: needs login");
+    };
+    await assert.rejects(c.request("session.resume", { id }), /needs login/);
+    assert.equal(fs.closed, true);
+    assert.equal(await statusOf(c, id), "error");
+    FakeProviderClass.prototype.resumeSession = resume;
+    const restored = await c.request<SessionSnapshot>("session.resume", { id });
+    assert.equal(restored.status.kind, "idle");
+    assert.equal(fake().session(id)!.resumed, true);
+    assert.deepEqual(fake().session(id)!.sends, []);
+  } finally {
+    FakeProviderClass.prototype.createSession = create;
+    FakeProviderClass.prototype.resumeSession = resume;
+    await c.close();
+  }
+});

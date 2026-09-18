@@ -1314,10 +1314,9 @@ export class Daemon {
   }
 
   /**
-   * Re-instantiate the adapter for a session that isn't currently live (a
-   * daemon restart left it `interrupted`, or its last turn ended). Caller must
-   * have checked `!#sessions.has(id)`. Returns the fresh snapshot; the caller
-   * publishes it.
+   * Re-instantiate the adapter for a session that is absent or whose event stream
+   * ended. The old adapter is cleaned up under the revival gate before replacement.
+   * Returns the fresh snapshot; the caller publishes it.
    */
   #reviveSession(id: string): Promise<SessionSnapshot> {
     const pending = this.#revivals.get(id);
@@ -1363,6 +1362,7 @@ export class Daemon {
   }
 
   async #reviveLocked(id: string): Promise<SessionSnapshot> {
+    if (this.#sessions.isEnded(id)) await this.#sessions.close(id);
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
     // An archived (`done`) session had its worktree reclaimed but its branch and
@@ -2429,7 +2429,8 @@ export class Daemon {
 
     d.register("session.resume", async (params) => {
       const id = params.id;
-      if (this.#sessions.has(id)) throw new RpcError("conflict", "session is already running");
+      if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
+        throw new RpcError("conflict", "session is already running");
       const snap = await this.#reviveSession(id);
       this.#publishState(snap.id);
       this.#onActivityChange("session-resumed");
@@ -2445,7 +2446,7 @@ export class Daemon {
         // A cold session (daemon restarted, or a turn that ended) is brought back
         // transparently — `send` is the one verb for "talk to this session", it
         // doesn't need a separate resume step.
-        if (!this.#sessions.has(id)) {
+        if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
           const revived = await this.#reviveSession(id);
           // An archived session's revive restores a worktree and flips it off
           // `done` — push that before the turn's own updates so clients don't
