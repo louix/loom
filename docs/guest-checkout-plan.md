@@ -117,8 +117,10 @@ Per connection the relay:
    with an `ERR` pkt-line. No path is ever resolved from the request.
 3. Reads `<sessionDirectory>/git-policy.json`. This is the only mutable input;
    it is host-owned and written atomically by the daemon (`writeRecoveryFile`).
-4. Spawns `git` on the host with cwd `<gitCommonDir>` and the argv below,
-   passing `GIT_PROTOCOL=version=2` only when the request asked for it.
+4. Spawns `git` on the host with cwd `<gitCommonDir>` and the argv below. The
+   child's environment is built from scratch and never contains `GIT_PROTOCOL`,
+   so both services speak protocol v0 whatever the request line asked for. This
+   is a security requirement, not a simplification; see "Ref policy".
 5. Pipes the socket to the child's stdio in both directions until either side
    closes. Idle timeout 120 s, at most 4 concurrent children per session.
 
@@ -142,11 +144,12 @@ request line, then bytes.
 `upload-pack` argv:
 
 ```
-git -c transfer.hideRefs=refs/
+git -c transfer.hideRefs=HEAD
+    -c transfer.hideRefs=refs/
     -c transfer.hideRefs=!refs/heads/<base>
     -c transfer.hideRefs=!refs/heads/<branch>
     -c transfer.hideRefs=!<entry>           (one per `visible` entry; none by default)
-    -c uploadpack.allowFilter=true
+    -c uploadpack.allowFilter=false
     -c uploadpack.allowAnySHA1InWant=false
     -c uploadpack.allowTipSHA1InWant=false
     -c uploadpack.allowReachableSHA1InWant=false
@@ -156,8 +159,24 @@ git -c transfer.hideRefs=refs/
 Later `hideRefs` entries win, so `refs/` hides everything and the negated
 entries expose the parent branch and the session branch, and nothing else.
 Sibling sessions' branches, the user's other branches, tags and anything under
-`refs/loom` are neither advertised nor fetchable by hash. `allowFilter` permits
-the partial clone below.
+`refs/loom` are neither advertised nor fetchable by hash.
+
+Three details carry that guarantee. Each was checked against real Git with a
+throwaway repository before being written down:
+
+- `HEAD` is hidden separately. `refs/` does not cover it, and an advertised
+  `HEAD` discloses whatever commit the host checkout is on, which may be a
+  hidden branch.
+- Protocol v0 only. Under protocol v2 `upload-pack` serves any object named in
+  a `want`, hidden or not, and ignores the `allow*SHA1InWant` settings. The
+  same request under v0 fails with "Server does not allow request for
+  unadvertised object".
+- No partial clone. Lazy blob fetches are by-hash wants, so a
+  `--filter=blob:none` clone only works with `allowReachableSHA1InWant`, and
+  Git computes that reachability from all refs including hidden ones: with it
+  enabled a hidden commit was fetchable. The clone is therefore a full clone of
+  the visible refs, and `allowFilter` is off so a guest cannot create a clone
+  that later needs by-hash wants.
 
 `base` is always a branch name. For a new session it is the configured base
 branch. A fork inherits its parent's `base`: today a fork's row records the
@@ -255,11 +274,10 @@ starts serving, driven by `/run/loom/private/checkout.json`:
 ```
 
 1. If `<path>/.git` does not exist:
-   `git clone --no-checkout --filter=blob:none --branch <base>
-git://127.0.0.1:3129/repo <path>`. Partial clone keeps first start fast on
-   large repositories; blobs are fetched lazily through the same relay while
-   the VM runs. Then `git checkout -B <branch> origin/<branch>`; the host created
-   that ref, so it always exists.
+   `git clone --no-checkout --branch <base> git://127.0.0.1:3129/repo <path>`.
+   This is a full clone of the two visible branches over a local socket. Then
+   `git checkout -B <branch> origin/<branch>`; the host created that ref, so it
+   always exists.
 2. If it exists: `git remote set-url origin git://127.0.0.1:3129/repo`, then
    if the checked-out branch differs from `branch` and the old name is the
    session's previous name, `git branch -m`. Then `git fetch --prune origin`.
@@ -342,7 +360,7 @@ The explorer's three grep targets are the full call-site list:
 | undo `restoreWorktree`               | host `reset --hard`                           | `git.reset`                                                                                                                                                                                                                                                                                 |
 | fork                                 | `worktree add` at parent HEAD + `copyChanges` | parent must not be mid-turn (the existing `session.fork` gate), `git.push` if its VM is running, byte-copy `<parent>/checkout` → `<child>/checkout` (reflink where possible), host creates `loom/<child>` at parent's host tip, child setup renames the branch and prunes stale remote refs |
 | archive (`done`)                     | `worktree remove`, keep branch                | stop VM, `git.push` first if running, refuse if dirty unless `force`, remove checkout dir, keep branch and profile                                                                                                                                                                          |
-| reopen after archive                 | `reattach`                                    | setup step clones again; `--filter=blob:none` keeps that cheap                                                                                                                                                                                                                              |
+| reopen after archive                 | `reattach`                                    | setup step clones again                                                                                                                                                                                                                                                                     |
 | `session.remove`                     | remove worktree, optional branch delete       | remove checkout dir + profile, optional branch delete                                                                                                                                                                                                                                       |
 | `gc`                                 | reclaim failed worktree removal               | reclaim a checkout dir whose removal failed                                                                                                                                                                                                                                                 |
 | hygiene at startup                   | clear stale `index.lock`, `worktree prune`    | nothing; the clone's locks are the guest's business                                                                                                                                                                                                                                         |
@@ -430,9 +448,9 @@ and reopened archived sessions, never a running one.
 are not accepted. The default is empty: the guest reads the parent branch and
 its own branch only.
 
-There is no object-sharing or clone-cache option. First start pays for a
-partial clone through the relay; dependency and toolchain warmth comes from the
-prepared base.
+There is no object-sharing, partial-clone or clone-cache option. First start
+pays for a full clone of the visible branches through the relay; dependency and
+toolchain warmth comes from the prepared base.
 
 ## Storage and lifecycle
 
@@ -462,7 +480,7 @@ wherever the last push left it; the next turn end pushes whatever is ahead.
 | hooks / config written by the agent run on the host | yes, on next host Git command     | no: host Git never opens the clone; receive-pack hooks are forced to a Loom directory |
 | `.git` file redirect in the worktree                | yes, if a human runs Git there    | the clone is outside the repo and outside any path the TUI or daemon offers           |
 | moving or deleting other refs                       | yes, shared `.git`                | `update` hook: own branch only; `denyDeletes`                                         |
-| reading sibling sessions' branches or user branches | yes                               | hidden by `hideRefs`; not fetchable by hash                                           |
+| reading sibling sessions' branches or user branches | yes                               | hidden by `hideRefs` including `HEAD`; protocol v0 only, so not fetchable by hash     |
 | malformed objects                                   | written directly into host `.git` | `receive.fsckObjects`; `upload-pack --strict`                                         |
 | filling the host object store                       | unbounded                         | `receive.maxInputSize`; connection and process caps                                   |
 | reaching another Git remote                         | blocked by network policy         | unchanged; the guest `pre-push` guard is only a courtesy                              |
@@ -504,10 +522,12 @@ Deterministic, no VM:
 
 - `test/git-relay.test.ts`: pkt-line parsing and rejection (bad service, bad
   path, oversize, slow client), `upload-pack` over the relay against a fixture
-  repo shows only the parent branch and own branch (no tags, no sibling
-  session, nothing by hash), a fork's policy names the inherited base branch,
-  a `visible_refs` entry exposes exactly that prefix, `--filter=blob:none` clone
-  succeeds, `receive-pack` accepts a push to the own branch including
+  repo shows only the parent branch and own branch (no `HEAD`, no tags, no
+  sibling session) with the host checked out on a hidden branch, a hidden commit
+  and a hidden blob are refused by hash when the client requests protocol v2, a
+  `--filter` clone is refused, a fork's policy names the inherited base branch,
+  a `visible_refs` entry exposes exactly that prefix, `receive-pack` accepts a
+  push to the own branch including
   non-fast-forward, rejects another branch, a delete, and a push while the
   branch is checked out on the host, the repository's own `pre-receive` never
   runs, and a policy-file change takes effect on the next connection.
