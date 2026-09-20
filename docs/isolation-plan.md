@@ -51,6 +51,9 @@ forking into an enabled provider with the current isolation policy.
    separately from the native host launcher.
 3. Consider removing provider filesystem and registry access only as a separate
    policy change. It is intentionally available today.
+4. Replace the repository mount with a per-session clone and a host-side Git
+   relay, so agent-written hooks and config never reach host Git. Proposed in
+   [guest checkouts](guest-checkout-plan.md).
 
 Earlier worker and shared-provider-VM proposals are retained in Git history.
 They are not the current topology or an additional implementation requirement.
