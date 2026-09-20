@@ -89,6 +89,11 @@ export interface WorktreeManagerOptions {
   hooksDir: string;
   /** Configured base branch (`config.baseBranch`). */
   baseBranch: string;
+  /**
+   * Root of this repository's session clones. Host Git never runs inside it: a
+   * clone's config and hooks are agent-written.
+   */
+  cloneRoot?: string;
   log: Logger;
 }
 
@@ -106,6 +111,7 @@ export class WorktreeManager {
   readonly #treesDir: string;
   readonly #hooksDir: string;
   readonly #baseBranch: string;
+  readonly #cloneRoot: string | null;
   readonly #log: Logger;
   #setupDone = false;
   #factsCache = new Map<string, { at: number; facts: GitFacts }>();
@@ -116,7 +122,21 @@ export class WorktreeManager {
     this.#treesDir = canonicalHostPath(opts.treesDir);
     this.#hooksDir = canonicalHostPath(opts.hooksDir);
     this.#baseBranch = opts.baseBranch;
+    this.#cloneRoot = opts.cloneRoot ? canonicalHostPath(opts.cloneRoot) : null;
     this.#log = opts.log;
+  }
+
+  /** True for a session clone. Callers ask the guest, or read host refs, instead. */
+  isClone(path: string | null | undefined): boolean {
+    if (!path || !this.#cloneRoot) return false;
+    const p = canonicalHostPath(path);
+    return p === this.#cloneRoot || p.startsWith(this.#cloneRoot + "/");
+  }
+
+  /** Backstop behind every Git spawn here, so a missed call site fails instead of running. */
+  #hostOnly(path: string): string {
+    if (this.isClone(path)) throw new Error("Host Git must not open a session clone");
+    return path;
   }
 
   // --- setup ----------------------------------------------------------
@@ -389,7 +409,7 @@ export class WorktreeManager {
   remove(path: string, opts: { force?: boolean } = {}): void {
     const args = ["worktree", "remove"];
     if (opts.force) args.push("--force");
-    args.push(path);
+    args.push(this.#hostOnly(path));
     const res = this.#git(args);
     this.invalidateFacts(path);
     if (!res.ok) {
@@ -402,7 +422,7 @@ export class WorktreeManager {
   async removeAsync(path: string, opts: { force?: boolean } = {}): Promise<void> {
     const args = ["-C", this.#repoRoot, "worktree", "remove"];
     if (opts.force) args.push("--force");
-    args.push(path);
+    args.push(this.#hostOnly(path));
     try {
       await new Promise<void>((resolve, reject) => {
         execFile(
@@ -445,12 +465,16 @@ export class WorktreeManager {
     if (this.pendingGitOp(source))
       throw new Error("Finish the parent's Git operation before forking");
     const run = (args: string[], cwd = source, input?: string): string => {
-      const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
-        encoding: "utf8",
-        timeout: 30_000,
-        maxBuffer: GIT_MAX_BUFFER,
-        ...(input === undefined ? {} : { input }),
-      });
+      const r = spawnSync(
+        "git",
+        ["-c", "core.hooksPath=/dev/null", "-C", this.#hostOnly(cwd), ...args],
+        {
+          encoding: "utf8",
+          timeout: 30_000,
+          maxBuffer: GIT_MAX_BUFFER,
+          ...(input === undefined ? {} : { input }),
+        },
+      );
       if (r.error || r.status !== 0)
         throw new Error(r.error?.message || r.stderr || "Could not copy worktree changes");
       return r.stdout;
@@ -619,9 +643,64 @@ export class WorktreeManager {
     return facts;
   }
 
+  // --- clone sessions: host refs only ---------------------------------
+
+  /**
+   * A clone session's branch, with no worktree. The host creates the ref once;
+   * every later movement is a push from the guest through the relay.
+   */
+  createBranch(id: string, opts: { baseRef?: string } = {}): { branch: string; baseRef: string } {
+    this.ensureSetup();
+    if (opts.baseRef && !this.#git(["rev-parse", "--verify", "--quiet", opts.baseRef]).ok)
+      throw new Error(`base ref "${opts.baseRef}" does not resolve`);
+    const baseRef = opts.baseRef ?? this.#resolveBase();
+    const branch = this.#uniqueBranch(id);
+    const res = this.#git(["branch", branch, baseRef]);
+    if (!res.ok) throw new Error(`git branch failed: ${res.stderr.trim() || res.error}`);
+    return { branch, baseRef };
+  }
+
+  /** The published tip of a branch, read from the host repository. */
+  branchHead(branch: string): string | null {
+    return this.#gitOut(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) || null;
+  }
+
+  /**
+   * Facts for a clone session from host refs. They describe what the guest has
+   * published; `dirty` is unknown on the host and reads false.
+   */
+  refFacts(branch: string, baseBranch: string | null): GitFacts | null {
+    const key = `ref:${branch}`;
+    const cached = this.#factsCache.get(key);
+    if (cached && Date.now() - cached.at < FACTS_TTL_MS) return cached.facts;
+    const ref = `refs/heads/${branch}`;
+    if (!this.#git(["rev-parse", "--verify", "--quiet", ref]).ok) return null;
+    const lastCommitSubject = this.#gitOut(["log", "-1", "--format=%s", ref]) || null;
+    const commits = numOr0(this.#gitOut(["rev-list", "--count", ref]));
+    let aheadOfBase = 0;
+    let behindBase = 0;
+    const base = baseBranch ?? this.#baseBranch;
+    if (base && this.#git(["rev-parse", "--verify", "--quiet", base]).ok) {
+      const lr = this.#gitOut(["rev-list", "--left-right", "--count", `${base}...${ref}`]);
+      const [behind, ahead] = lr.split(/\s+/);
+      behindBase = numOr0(behind);
+      aheadOfBase = numOr0(ahead);
+    }
+    const facts: GitFacts = {
+      branch,
+      commits,
+      aheadOfBase,
+      behindBase,
+      dirty: false,
+      lastCommitSubject,
+    };
+    this.#factsCache.set(key, { at: Date.now(), facts });
+    return facts;
+  }
+
   /** Advisory probes must yield while Git runs so history RPCs remain responsive. */
   factsAsync(path: string, baseBranch: string | null): Promise<GitFacts | null> {
-    if (!path || !existsSync(path)) return Promise.resolve(null);
+    if (!path || !existsSync(path) || this.isClone(path)) return Promise.resolve(null);
     const cached = this.#factsCache.get(path);
     if (cached && Date.now() - cached.at < FACTS_TTL_MS) return Promise.resolve(cached.facts);
     const pending = this.#factsPending.get(path);
@@ -810,7 +889,7 @@ export class WorktreeManager {
   }
 
   #git(args: string[], cwd?: string, timeout = 15_000): GitResult {
-    const res = spawnSync("git", ["-C", cwd ?? this.#repoRoot, ...args], {
+    const res = spawnSync("git", ["-C", this.#hostOnly(cwd ?? this.#repoRoot), ...args], {
       encoding: "utf8",
       timeout,
       maxBuffer: GIT_MAX_BUFFER,

@@ -364,4 +364,6 @@ export const MIGRATIONS: string[] = [
   `,
   // 26 — pin execution mode per session; legacy rows are inferred by the daemon.
   `ALTER TABLE sessions ADD COLUMN isolation TEXT CHECK (isolation IN ('vm', 'local'));`,
+  // 27 — how the session reaches the repository; NULL is a host worktree (or in-place).
+  `ALTER TABLE sessions ADD COLUMN checkout TEXT CHECK (checkout IN ('worktree', 'clone'));`,
 ];

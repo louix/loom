@@ -29,6 +29,7 @@ interface SessionRow {
   base_branch: string | null;
   in_place: number;
   isolation: "vm" | "local" | null;
+  checkout: "worktree" | "clone" | null;
   provider_ref: string | null;
   title_locked: number;
   fork_turn: number | null;
@@ -227,6 +228,7 @@ export class SessionStore {
       worktree: string | null;
       branch: string | null;
       baseBranch: string | null;
+      checkout: "worktree" | "clone" | null;
       providerRef: string | null;
       forkTurn: number | null;
     }>,
@@ -245,6 +247,7 @@ export class SessionStore {
       worktree: "worktree",
       branch: "branch",
       baseBranch: "base_branch",
+      checkout: "checkout",
       providerRef: "provider_ref",
       forkTurn: "fork_turn",
     };
@@ -871,6 +874,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     baseBranch: row.base_branch,
     inPlace: row.in_place === 1,
     ...(row.isolation ? { isolation: row.isolation } : {}),
+    ...(row.checkout === "clone" ? { checkout: row.checkout } : {}),
     usage: usage
       ? {
           input: usage.input,

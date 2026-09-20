@@ -6,6 +6,7 @@ import {
   chmodSync,
   constants,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -583,6 +584,83 @@ test("async removal preserves dirty trees unless forced and keeps the branch", a
     const restored = m.reattach(fakeId("async123"), wt.branch);
     assert.ok(existsSync(restored.path));
   } finally {
+    cleanup();
+  }
+});
+
+test("a clone session gets a branch and ref facts without a worktree", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const made = m.createBranch(fakeId("dddddddd"));
+    assert.deepEqual(made, { branch: "loom/dddddddd", baseRef: "main" });
+    assert.equal(m.list().length, 1, "no worktree was added");
+    assert.equal(m.branchHead(made.branch), m.branchHead("main"));
+    assert.equal(m.branchHead("loom/missing"), null);
+    assert.throws(
+      () => m.createBranch(fakeId("eeeeeeee"), { baseRef: "nope" }),
+      /does not resolve/,
+    );
+
+    // The guest publishes by pushing; stand in for that by moving the ref on the host.
+    execFileSync("git", ["-C", root, "commit", "-q", "--allow-empty", "-m", "on main"]);
+    const tip = execFileSync(
+      "git",
+      ["-C", root, "commit-tree", "-p", made.branch, "-m", "from guest", "HEAD^{tree}"],
+      { encoding: "utf8" },
+    ).trim();
+    execFileSync("git", ["-C", root, "update-ref", `refs/heads/${made.branch}`, tip]);
+    assert.deepEqual(m.refFacts(made.branch, "main"), {
+      branch: made.branch,
+      commits: 2,
+      aheadOfBase: 1,
+      behindBase: 1,
+      dirty: false,
+      lastCommitSubject: "from guest",
+    });
+    assert.equal(m.refFacts("loom/missing", "main"), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("host Git refuses to open a session clone, even one that redirects Git", async () => {
+  const { root, cleanup } = repo();
+  const cloneRoot = mkdtempSync(join(tmpdir(), "loom-clones-"));
+  try {
+    const clone = join(cloneRoot, "session", "checkout");
+    mkdirSync(clone, { recursive: true });
+    const marker = join(cloneRoot, "ran-on-host");
+    // What an agent could leave behind: a repository whose config runs a command.
+    execFileSync("git", ["init", "-q", clone]);
+    execFileSync("git", ["-C", clone, "config", "core.fsmonitor", `touch ${marker}; false`]);
+    const m = new WorktreeManager({
+      repoRoot: root,
+      treesDir: join(root, ".loom", "trees"),
+      hooksDir: join(root, ".loom", "hooks"),
+      baseBranch: "main",
+      cloneRoot,
+      log: makeLogger("test"),
+    });
+    assert.equal(m.isClone(clone), true);
+    assert.equal(m.isClone(root), false);
+    for (const probe of [
+      () => m.isDirty(clone),
+      () => m.headSha(clone),
+      () => m.facts(clone, "main"),
+      () => m.pendingGitOp(clone),
+      () => m.restoreTo(clone, "HEAD"),
+      () => m.syncOntoBase(clone, "main", "rebase"),
+      () => m.setIdentity(clone, "model"),
+      () => m.remove(clone, { force: true }),
+      () => m.copyChanges(clone, root),
+    ])
+      assert.throws(probe, /must not open a session clone/);
+    await assert.rejects(m.removeAsync(clone, { force: true }), /must not open a session clone/);
+    assert.equal(await m.factsAsync(clone, "main"), null);
+    assert.ok(!existsSync(marker), "the clone's config ran on the host");
+  } finally {
+    rmSync(cloneRoot, { recursive: true, force: true });
     cleanup();
   }
 });

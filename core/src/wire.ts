@@ -259,6 +259,8 @@ export const sessionSnapshotSchema = z.object({
   inPlace: z.boolean(),
   /** Immutable execution mode; absent only for legacy rows. */
   isolation: z.enum(["vm", "local"]).optional(),
+  /** `clone`: `worktree` is a private clone that host Git must never open. Absent otherwise. */
+  checkout: z.enum(["worktree", "clone"]).optional(),
   usage: tokenUsageSchema,
   contextUsed: z.number(),
   contextLimit: z.number(),
