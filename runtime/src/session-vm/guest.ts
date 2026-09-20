@@ -17,6 +17,7 @@ import {
   guestGitPort,
   guestGitSocket,
   prepareCheckout,
+  publishCheckout,
   type Checkout,
 } from "./checkout.ts";
 import { startGuestRelay } from "./guest-relay.ts";
@@ -173,24 +174,41 @@ if (preparationOnly) {
     Deno.exit(1);
   }
 } else
-  await runWorker(async () => {
-    // The clone comes first: environment activation reads the project's files.
-    if (checkout) {
-      reportStartup("checkout");
-      try {
-        await prepareCheckout(checkout);
-      } catch {
-        throw new WorkerDiagnostic("sessionCheckoutFailed");
+  await runWorker(
+    async () => {
+      // The clone comes first: environment activation reads the project's files.
+      if (checkout) {
+        reportStartup("checkout");
+        try {
+          await prepareCheckout(checkout);
+        } catch {
+          throw new WorkerDiagnostic("sessionCheckoutFailed");
+        }
       }
-    }
-    await prepare();
-    await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
-      mode: 0o600,
-    });
-    await Deno.mkdir("/etc/profile.d", { recursive: true });
-    await Deno.writeTextFile(
-      "/etc/profile.d/zz-loom-path.sh",
-      guestPathProfile(Deno.env.get("PATH")!),
-    );
-    reportStartup("provider");
-  }, "session-vm");
+      await prepare();
+      await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
+        mode: 0o600,
+      });
+      await Deno.mkdir("/etc/profile.d", { recursive: true });
+      await Deno.writeTextFile(
+        "/etc/profile.d/zz-loom-path.sh",
+        guestPathProfile(Deno.env.get("PATH")!),
+      );
+      reportStartup("provider");
+    },
+    "session-vm",
+    async (event) => {
+      if (!checkout || event.type !== "result") return;
+      // The host ref is current before the daemon learns the turn ended. The daemon
+      // republishes the spec after a rename; a failed push is retried next turn.
+      try {
+        await publishCheckout(
+          checkoutSchema.parse(
+            JSON.parse(await Deno.readTextFile("/run/loom/private/checkout.json")),
+          ),
+        );
+      } catch {
+        /* the host shows the branch as unpublished */
+      }
+    },
+  );

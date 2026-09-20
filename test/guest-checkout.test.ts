@@ -5,6 +5,7 @@ import {
   CheckoutError,
   checkoutSchema,
   prepareCheckout,
+  publishCheckout,
   pushCheckout,
 } from "../runtime/src/session-vm/checkout.ts";
 
@@ -133,6 +134,32 @@ Deno.test("a host rename moves the local branch with its unpublished commits", a
       await f.git(path, "rev-parse", "--abbrev-ref", "@{upstream}"),
       "origin/loom/fix-login",
     );
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("turn end follows a rename made while the session runs", async () => {
+  const { f, options, path, spec, commit } = await setup();
+  try {
+    await prepareCheckout(spec, options);
+    await commit(path, "first.txt");
+    assert.equal((await publishCheckout(spec, options)).pushed, true);
+    // The title arrives mid-session: the host renames its ref and republishes the spec.
+    await f.git(f.host, "branch", "-m", "loom/own", "loom/fix-login");
+    await f.setPolicy({ branch: "loom/fix-login", base: "main" });
+    await commit(path, "second.txt");
+    const renamed = {
+      ...spec,
+      branch: "loom/fix-login",
+      identity: { ...identity, name: "Loom (b)" },
+    };
+    const published = await publishCheckout(renamed, options);
+    assert.equal(published.pushed, true);
+    assert.equal(await f.git(f.host, "rev-parse", "loom/fix-login"), published.head);
+    assert.equal(await f.git(path, "symbolic-ref", "--short", "HEAD"), "loom/fix-login");
+    assert.equal(await f.git(path, "config", "user.name"), "Loom (b)");
+    assert.equal((await publishCheckout(renamed, options)).pushed, false);
   } finally {
     await f.close();
   }

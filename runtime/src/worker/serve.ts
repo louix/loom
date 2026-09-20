@@ -10,6 +10,7 @@ import {
   type WorkerRequest,
 } from "../../../core/src/worker.ts";
 import type { AgentProvider, AgentSession } from "../../../core/src/types.ts";
+import type { HarnessEvent } from "../../../core/src/events.ts";
 import { FrameWriter, readFrames } from "./transport.ts";
 
 /** Connector code lives on this side only. The injected loader is also a test seam. */
@@ -18,6 +19,8 @@ export const serveWorker = async (
   output: WritableStream<Uint8Array>,
   load: (binding: WorkerBinding, transcript: WorkerTranscript) => Promise<AgentProvider>,
   onShutdown: () => void = () => {},
+  /** Runs before an event is forwarded; the guest publishes its branch before a turn ends. */
+  beforeEvent: (event: HarnessEvent) => Promise<void> = async () => {},
 ): Promise<void> => {
   const writer = new FrameWriter(output);
   const stop = new AbortController();
@@ -55,6 +58,7 @@ export const serveWorker = async (
       if ("dropped" in stream && stream.dropped !== 0) throw new Error("connector event overflow");
       if (event.sessionId !== binding?.sessionId)
         throw new Error("connector emitted wrong session");
+      await beforeEvent(event);
       await publish();
       if (!closing) await writer.send({ kind: "event", seq: ++seq, event });
     }

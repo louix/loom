@@ -245,6 +245,33 @@
                 }
               },
               "additionalProperties": false
+            },
+            "checkout": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "default": "mount",
+                  "description": "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
+                  "type": "string",
+                  "enum": ["mount", "clone"]
+                },
+                "visible_refs": {
+                  "default": [],
+                  "description": "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+                  "maxItems": 32,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "max_push_bytes": {
+                  "default": 536870912,
+                  "type": "integer",
+                  "minimum": 1048576,
+                  "maximum": 68719476736
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -1366,6 +1393,33 @@
                             "type": "null"
                           }
                         ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "checkout": {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "default": "mount",
+                        "description": "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
+                        "type": "string",
+                        "enum": ["mount", "clone"]
+                      },
+                      "visible_refs": {
+                        "default": [],
+                        "description": "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+                        "maxItems": 32,
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "max_push_bytes": {
+                        "default": 536870912,
+                        "type": "integer",
+                        "minimum": 1048576,
+                        "maximum": 68719476736
                       }
                     },
                     "additionalProperties": false

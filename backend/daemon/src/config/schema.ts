@@ -6,6 +6,7 @@ import {
   networkPresetsSchema,
   extraHostsSchema,
 } from "../../../../runtime/src/session-vm/network-policy.ts";
+import { gitVisibleRefsSchema } from "../../../../runtime/src/session-vm/git-relay.ts";
 import type { HookEvent, LoomConfig } from "./config.ts";
 
 const record = (v: unknown): Record<string, unknown> =>
@@ -234,6 +235,23 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           extra_allowed_hosts: extraHostsSchema,
           network_presets: networkPresetsSchema,
           environment: sessionEnvironmentSchema,
+          checkout: section({
+            mode: z
+              .enum(["mount", "clone"])
+              .default("mount")
+              .describe(
+                "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
+              ),
+            visible_refs: gitVisibleRefsSchema.describe(
+              "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+            ),
+            max_push_bytes: z
+              .number()
+              .int()
+              .min(1024 * 1024)
+              .max(64 * 1024 * 1024 * 1024)
+              .default(512 * 1024 * 1024),
+          }),
         }),
       }),
     ),

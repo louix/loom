@@ -8,6 +8,7 @@ import { armWorkerShutdown, exitWorker } from "./shutdown.ts";
 export const runWorker = async (
   beforeInitialize: () => Promise<void> = async () => {},
   executionEnvironment: ConnectorContext["executionEnvironment"] = "host",
+  beforeEvent?: Parameters<typeof serveWorker>[4],
 ) => {
   await serveWorker(
     Deno.stdin.readable,
@@ -32,6 +33,7 @@ export const runWorker = async (
       });
     },
     armWorkerShutdown,
+    beforeEvent,
   ).catch(() => {
     exitWorker(1);
   });

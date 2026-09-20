@@ -226,6 +226,8 @@ export interface LoomConfig {
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
     environment?: SessionEnvironment;
+    /** How new VM sessions reach the repository. Absent means mount. */
+    checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
   };
   baseBranch: string;
   worktreeDir: string;
@@ -699,6 +701,11 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         ]),
       ],
       environment: normalizeSessionEnvironment(isolation.environment, settings.session.auto_nix),
+      checkout: {
+        mode: isolation.checkout.mode,
+        visibleRefs: isolation.checkout.visible_refs,
+        maxPushBytes: isolation.checkout.max_push_bytes,
+      },
       ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,

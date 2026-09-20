@@ -81,20 +81,33 @@ export const prepareCheckout = async (
     await must("remote", "set-url", "origin", remote);
   else await must("remote", "add", "origin", remote);
 
-  // The host renames the session branch from its title, and a fork starts as a
-  // copy of its parent's clone. Either way the old name is ours to move.
-  const previous = (await run("config", "--local", "--get", sessionBranchKey)).out;
-  if (previous && previous !== spec.branch) {
-    const hasPrevious = (await run("show-ref", "--verify", "--quiet", `refs/heads/${previous}`)).ok;
-    const hasCurrent = (await run("show-ref", "--verify", "--quiet", local)).ok;
-    if (hasPrevious && !hasCurrent) await must("branch", "-m", previous, spec.branch);
-  }
+  await followRename(spec, run, must);
 
   await must("fetch", "-q", "--prune", "origin");
   const created = !(await run("show-ref", "--verify", "--quiet", local)).ok;
   // The host creates the session ref before the first start, so it is always there.
   if (created) await must("checkout", "-q", "-B", spec.branch, `origin/${spec.branch}`);
 
+  await pinBranch(spec, must);
+  return { created, head: await must("rev-parse", "HEAD") };
+};
+type Git = ReturnType<typeof runner>;
+
+/**
+ * The host renames the session branch from its title, and a fork starts as a copy
+ * of its parent's clone. Either way the old name is ours to move.
+ */
+const followRename = async (spec: Checkout, run: Git["run"], must: Git["must"]) => {
+  const previous = (await run("config", "--local", "--get", sessionBranchKey)).out;
+  if (!previous || previous === spec.branch) return;
+  const has = async (name: string) =>
+    (await run("show-ref", "--verify", "--quiet", `refs/heads/${name}`)).ok;
+  if ((await has(previous)) && !(await has(spec.branch)))
+    await must("branch", "-m", previous, spec.branch);
+};
+
+const pinBranch = async (spec: Checkout, must: Git["must"]) => {
+  const local = `refs/heads/${spec.branch}`;
   const settings: Array<[string, string]> = [
     [sessionBranchKey, spec.branch],
     [`branch.${spec.branch}.remote`, "origin"],
@@ -105,7 +118,15 @@ export const prepareCheckout = async (
     ["user.email", spec.identity.email],
   ];
   for (const [key, value] of settings) await must("config", "--local", "--replace-all", key, value);
-  return { created, head: await must("rev-parse", "HEAD") };
+};
+
+/** Turn end: adopt the current branch name and identity, then publish. */
+export const publishCheckout = async (input: Checkout, options: CheckoutOptions = {}) => {
+  const spec = checkoutSchema.parse(input);
+  const { run, must } = runner(spec.path, options);
+  await followRename(spec, run, must);
+  await pinBranch(spec, must);
+  return await pushCheckout(spec, options);
 };
 
 /** Publish the session branch to the host. Safe to repeat; a no-op when current. */

@@ -15,6 +15,17 @@ const prefixSchema = z
   .string()
   .refine((v) => v.startsWith("refs/") && v !== "refs/" && validPath(v.replace(/\/$/, "")));
 
+/** Trusted host configuration. Sibling sessions stay hidden whatever it lists. */
+export const gitVisibleRefsSchema = z
+  .array(
+    prefixSchema.refine(
+      (v) => v !== "refs/heads/" && v !== "refs/heads" && !v.startsWith("refs/heads/loom"),
+      "session branches cannot be made visible",
+    ),
+  )
+  .max(32)
+  .default([]);
+
 export const gitPolicySchema = z.strictObject({
   /** The only ref the guest may move. */
   branch: gitBranchSchema,
