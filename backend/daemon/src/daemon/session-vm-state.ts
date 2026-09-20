@@ -17,6 +17,9 @@ export const sessionVmDirectory = (repo: string, id: string) => {
   return canonicalHostPath(join(root, "loom/session-vms", key, id));
 };
 
+/** Every clone session of this repository lives under here; host Git never enters it. */
+export const sessionCloneRoot = (repo: string) => dirname(sessionVmDirectory(repo, "root"));
+
 /** Keep the lock through recovery and the caller's filesystem mutation. */
 export const withStoppedSessionVm = async <T>(
   repo: string,
@@ -42,7 +45,14 @@ export const withStoppedSessionVm = async <T>(
   }
 };
 export const removeSessionVmProfile = async (repo: string, id: string) => {
-  for (const name of ["profile", "disks", "disk-runtime-root", "disk-backend-root"]) {
+  for (const name of [
+    "profile",
+    "disks",
+    "disk-runtime-root",
+    "disk-backend-root",
+    "checkout",
+    "git-policy.json",
+  ]) {
     try {
       await Deno.remove(join(sessionVmDirectory(repo, id), name), { recursive: true });
     } catch (error) {

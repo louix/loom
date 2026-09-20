@@ -98,6 +98,16 @@ export interface ConnectorContext {
   vmLifecycle?: {
     stop(sessionId: string, isCurrent: () => boolean): Promise<void>;
     activity(sessionId: string): string;
+    /** Set for a session that works in a private clone behind the Git relay. */
+    clone?(sessionId: string):
+      | {
+          branch: string;
+          base: string;
+          visible?: string[];
+          identity: { name: string; email: string };
+          maxPushBytes?: number;
+        }
+      | undefined;
   };
   onVmStarted?: (sessionId: string, generation: string) => void;
   onStartupProgress?: (sessionId: string, message: string) => void;

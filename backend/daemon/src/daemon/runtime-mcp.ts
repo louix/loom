@@ -13,12 +13,22 @@ import type { ManagedMcp } from "./mcp-worker.ts";
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { findRepoRoot } from "@loom/core/paths";
 import { registerVm, type VmOwner } from "../../../../runtime/src/session-vm/inventory.ts";
+import { sessionCloneRoot } from "./session-vm-state.ts";
 
 export interface McpVmIdentity {
   sessionId: string;
   provider: string;
   repo?: string | undefined;
 }
+
+/**
+ * workspaceMounts runs Git in the workspace. A session clone is agent-written, so host
+ * Git never opens it: the tool VM gets the clone and nothing of the repository.
+ */
+export const mcpWorkspaceMounts = async (cwd: string, repo?: string): Promise<string[]> =>
+  repo !== undefined && cwd.startsWith(sessionCloneRoot(repo) + "/")
+    ? [cwd]
+    : await workspaceMounts(cwd);
 
 const startRuntimeMcpOwned = async (
   name: string,
@@ -31,7 +41,7 @@ const startRuntimeMcpOwned = async (
   const { lock, manifest } = await resolveRuntime(runtime);
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
-  const mounts = await workspaceMounts(cwd);
+  const mounts = await mcpWorkspaceMounts(cwd, identity?.repo);
   const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" }));
   const binding: VmBinding = {
     version: 1,

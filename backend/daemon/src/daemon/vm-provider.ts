@@ -185,6 +185,9 @@ export const withVmSessions = async <T extends AgentProvider>(
           sessionDirectory,
           repoRoot: vm.repoRoot,
           mcpRelays: relays,
+          ...(ctx.vmLifecycle?.clone?.(input.sessionId)
+            ? { clone: ctx.vmLifecycle.clone(input.sessionId)! }
+            : {}),
           ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
           ...(vm.environment ? { environment: vm.environment } : {}),
           ...(owner ? { authOwner: owner } : { auth }),

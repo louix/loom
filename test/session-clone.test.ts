@@ -115,3 +115,27 @@ Deno.test("host preparation writes the policy and never opens the clone with Git
     await f.close();
   }
 });
+
+Deno.test("tool VMs for a clone session mount the clone without running Git in it", async () => {
+  const { mcpWorkspaceMounts } = await import("../backend/daemon/src/daemon/runtime-mcp.ts");
+  const { sessionVmDirectory } = await import("../backend/daemon/src/daemon/session-vm-state.ts");
+  const f = await gitFixture();
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", join(f.root, "state"));
+  try {
+    const clone = sessionCheckoutPath(sessionVmDirectory(f.repo, "session-1"));
+    await Deno.mkdir(clone, { recursive: true });
+    const marker = join(f.root, "ran-on-host");
+    await f.git("init", "-q", clone);
+    // A redirected Git directory and an executing config are both agent-writable.
+    await f.git("-C", clone, "config", "core.fsmonitor", `touch ${marker}; false`);
+    assert.deepEqual(await mcpWorkspaceMounts(clone, f.repo), [clone]);
+    await assert.rejects(Deno.stat(marker), Deno.errors.NotFound);
+    // A host worktree still gets the repository and its Git directory.
+    assert.deepEqual(await mcpWorkspaceMounts(f.workspace, f.repo), [f.workspace, f.repo]);
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await f.close();
+  }
+});

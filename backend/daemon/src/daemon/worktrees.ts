@@ -26,7 +26,7 @@ import type { GitFacts } from "@loom/core/wire";
  * — commits carry the model that ran the session, not just "claude". No model
  * (the daemon couldn't resolve one) falls back to the bare `Loom` identity.
  */
-const identity = (model: string): { name: string; email: string } => {
+export const commitIdentity = (model: string): { name: string; email: string } => {
   if (!model) return { name: "Loom", email: "loom@localhost" };
   return {
     name: `Loom (${model})`,
@@ -279,7 +279,7 @@ export class WorktreeManager {
     // A failure here is fatal: a worktree with no `core.hooksPath` has no
     // push-block hook, and one with no `user.email` commits under whatever
     // ambient identity git finds. Tear the tree down rather than run it unsafe.
-    const ident = identity(opts.model ?? "");
+    const ident = commitIdentity(opts.model ?? "");
     for (const [key, value] of [
       ["user.name", ident.name],
       ["user.email", ident.email],
@@ -331,7 +331,7 @@ export class WorktreeManager {
 
     // Same "always commit as Loom, never push" guarantee as `create` — and
     // just as fatal if it can't be established.
-    const ident = identity(opts.model ?? "");
+    const ident = commitIdentity(opts.model ?? "");
     for (const [key, value] of [
       ["user.name", ident.name],
       ["user.email", ident.email],
@@ -362,7 +362,7 @@ export class WorktreeManager {
    * must never run unconfigured).
    */
   setIdentity(path: string, model: string): void {
-    const ident = identity(model);
+    const ident = commitIdentity(model);
     for (const [key, value] of [
       ["user.name", ident.name],
       ["user.email", ident.email],
@@ -653,7 +653,10 @@ export class WorktreeManager {
     this.ensureSetup();
     if (opts.baseRef && !this.#git(["rev-parse", "--verify", "--quiet", opts.baseRef]).ok)
       throw new Error(`base ref "${opts.baseRef}" does not resolve`);
-    const baseRef = opts.baseRef ?? this.#resolveBase();
+    let baseRef = opts.baseRef ?? this.#resolveBase();
+    // The relay exposes the base by name, so a clone session needs a branch, not HEAD.
+    if (baseRef === "HEAD") baseRef = this.#gitOut(["symbolic-ref", "--short", "-q", "HEAD"]);
+    if (!baseRef) throw new Error("clone sessions need a base branch; HEAD is detached");
     const branch = this.#uniqueBranch(id);
     const res = this.#git(["branch", branch, baseRef]);
     if (!res.ok) throw new Error(`git branch failed: ${res.stderr.trim() || res.error}`);

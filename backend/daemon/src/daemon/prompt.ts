@@ -26,11 +26,13 @@ export const systemPromptAppendFor = (
   withMcp: boolean,
   cwd: string,
   repoRoot: string,
+  /** Where `.loom/LOOM.md` is read from. A session clone is agent-written, so never there. */
+  instructionsDir: string = cwd,
 ): string =>
   [
     ...(aisdk ? [AISDK_SYSTEM] : []),
     ...(aisdk && !withMcp ? [] : [toolSteer(cwd, { askUser: true, commit: true, status: true })]),
-    repoInstructionsFor(cwd, repoRoot),
+    repoInstructionsFor(instructionsDir, repoRoot),
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");

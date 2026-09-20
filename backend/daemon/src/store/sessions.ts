@@ -69,6 +69,8 @@ export interface NewSession {
   /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
   inPlace?: boolean;
   isolation?: "vm" | "local";
+  /** `clone`: the worktree path is a private clone host Git never opens. */
+  checkout?: "worktree" | "clone";
   providerRef?: string | null;
   /** Which backend actually owns this session's history (`''` = the
    *  provider's own native thread; `'aisdk'` = a legacy Loom-owned
@@ -130,8 +132,9 @@ export class SessionStore {
         .prepare(
           `INSERT INTO sessions
              (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
-              base_branch, in_place, provider_ref, history_backend, created_at, updated_at, isolation)
-           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              base_branch, in_place, provider_ref, history_backend, created_at, updated_at, isolation,
+              checkout)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           s.id,
@@ -150,6 +153,7 @@ export class SessionStore {
           now,
           now,
           s.isolation ?? null,
+          s.checkout ?? null,
         );
       this.#db.prepare("INSERT INTO usage (session_id, updated_at) VALUES (?, ?)").run(s.id, now);
       this.#appendHistory(s.id, "starting", null, now);

@@ -19,6 +19,8 @@ export interface HookSession {
   status: string;
   worktree: string | null;
   branch: string | null;
+  /** The worktree is a private clone: agent-written, and never a place to run host commands. */
+  clone?: boolean;
 }
 
 /** A session snapshot, reduced to what a hook needs. */
@@ -30,6 +32,7 @@ export const hookSessionOf = (s: SessionSnapshot): HookSession => ({
   status: s.status.kind,
   worktree: s.worktree,
   branch: s.branch,
+  ...(s.checkout === "clone" ? { clone: true } : {}),
 });
 
 export interface HookRunnerOptions {
@@ -208,10 +211,15 @@ export class HookRunner {
     session: HookSession,
     ctx: { files?: string[]; reason?: AwaitReason; detail?: string } = {},
   ): void {
-    const files = ctx.files ?? [];
+    // Hooks run on the host. For a clone session that rules out check hooks, which run
+    // project commands over agent-written files, and any path into the clone, which a
+    // symlink could point elsewhere. Notify hooks still fire, from the repository root.
+    if (session.clone && event === "file_write") return;
+    const files = session.clone ? [] : (ctx.files ?? []);
     const write = event === "file_write" || event === "turn_end";
     for (const hook of this.#hooks) {
       if (!hook.on.some((e) => e === event)) continue;
+      if (session.clone && hook.kind === "check") continue;
       if (hook.kind === "notify" && hook.when !== "always") {
         const presence = this.#opts.tuiPresence?.();
         if (hook.when === "unfocused" && presence?.focused) continue;
@@ -230,7 +238,7 @@ export class HookRunner {
 
   /** Does any written file match the hook's `match` globs? */
   #matchesAny(hook: HookConfig, session: HookSession, files: string[]): boolean {
-    const cwd = session.worktree ?? this.#opts.repoRoot;
+    const cwd = session.clone ? this.#opts.repoRoot : (session.worktree ?? this.#opts.repoRoot);
     return files.some((f) => {
       const rel = relative(cwd, f);
       return hook.match.some((g) => matchGlob(g, f) || matchGlob(g, rel));
@@ -286,7 +294,7 @@ export class HookRunner {
     ctx: { reason?: AwaitReason; detail?: string },
     signal: AbortSignal,
   ): Promise<Attempt> {
-    const cwd = session.worktree ?? this.#opts.repoRoot;
+    const cwd = session.clone ? this.#opts.repoRoot : (session.worktree ?? this.#opts.repoRoot);
     const env: Record<string, string> = {
       ...Deno.env.toObject(),
       LOOM_HOOK: hook.name,
@@ -297,7 +305,7 @@ export class HookRunner {
       LOOM_SESSION_PROVIDER: session.provider,
       LOOM_SESSION_MODEL: session.model ?? "",
       LOOM_SESSION_STATUS: session.status,
-      LOOM_WORKTREE: session.worktree ?? "",
+      LOOM_WORKTREE: session.clone ? "" : (session.worktree ?? ""),
       LOOM_BRANCH: session.branch ?? "",
       LOOM_FILES: files.join("\n"),
       LOOM_FILE: files[0] ?? "",

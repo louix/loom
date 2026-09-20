@@ -13,9 +13,13 @@ import {
   withStoppedSessionVm,
   removeSessionVmProfile,
   recoverRepositoryVms,
+  sessionCloneRoot,
 } from "./session-vm-state.ts";
+import { sessionCheckoutPath, writeGitPolicy } from "../../../../runtime/src/session-vm/clone.ts";
+import { readRecovery } from "../../../../runtime/src/session-vm/recovery.ts";
+import { writeRecoveryFile } from "../../../../runtime/src/session-vm/persistence.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, rmSync, watchFile, unwatchFile } from "node:fs";
 import { join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
@@ -87,7 +91,7 @@ import { SessionManager } from "./session-manager.ts";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
-import { WorktreeManager, type RebaseOutcome } from "./worktrees.ts";
+import { WorktreeManager, commitIdentity, type RebaseOutcome } from "./worktrees.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest } from "@loom/core/connector";
 import {
@@ -313,6 +317,7 @@ export class Daemon {
       treesDir: resolveAgainstRepo(opts.repoRoot, this.config.worktreeDir),
       hooksDir: join(this.paths.dir, "hooks"),
       baseBranch: this.config.baseBranch,
+      cloneRoot: sessionCloneRoot(opts.repoRoot),
       log: this.#log.child("worktrees"),
     });
     this.#providers = new ProviderRegistry(
@@ -325,6 +330,18 @@ export class Daemon {
       (id, generation) => this.#vmGenerations.set(id, generation),
       {
         activity: (id) => this.#registry.get(id)?.status.kind ?? "starting",
+        clone: (id) => {
+          const row = this.#registry.get(id);
+          if (row?.checkout !== "clone" || !row.branch) return;
+          const checkout = this.config.isolation.checkout;
+          return {
+            branch: row.branch,
+            base: row.baseBranch ?? this.config.baseBranch,
+            visible: checkout?.visibleRefs ?? [],
+            identity: commitIdentity(row.model || row.provider),
+            ...(checkout ? { maxPushBytes: checkout.maxPushBytes } : {}),
+          };
+        },
         stop: async (id, isCurrent) => {
           if (!isCurrent()) return;
           this.#startups.get(id)?.abort();
@@ -717,14 +734,43 @@ export class Daemon {
     };
   }
 
+  /** A clone's identity lives in its spec; the guest adopts it at the next turn end or start. */
+  #setCommitIdentity(row: SessionSnapshot, model: string): void {
+    if (!row.worktree) return;
+    if (row.checkout === "clone") void this.#publishCloneBranch(row.id).catch(() => {});
+    else this.#worktrees.setIdentity(row.worktree, model);
+  }
+
+  /** Remove a session's directory: a host worktree through Git, a clone as plain files. */
+  #removeWorkdir(path: string, force: boolean): void {
+    if (this.#worktrees.isClone(path)) rmSync(path, { recursive: true, force: true });
+    else this.#worktrees.remove(path, { force });
+  }
+
+  /** Where repo instructions are read from. A clone is agent-written: a symlinked LOOM.md
+   *  there would pull a host file into the prompt, so clone sessions read the host checkout. */
+  #instructionsDir(cwd: string): string {
+    return this.#worktrees.isClone(cwd) ? this.repoRoot : cwd;
+  }
+
+  /** Facts-cache key: a host path Git may open, or `ref:<branch>` for a clone session. */
+  #gitKey(s: SessionSnapshot): string | null {
+    if (s.checkout === "clone") return s.branch ? `ref:${s.branch}` : null;
+    return s.worktree ?? (s.inPlace ? this.repoRoot : null);
+  }
+
   /** Re-probe one session's worktree so the next snapshot carries fresh facts. */
   async #refreshGitFacts(id: string): Promise<void> {
     const s = this.#registry.get(id);
     if (!s) return;
-    const gitPath = s.worktree ?? (s.inPlace ? this.repoRoot : null);
+    const gitPath = this.#gitKey(s);
     if (!gitPath) return;
     const before = this.#worktrees.cachedFacts(gitPath);
-    const after = await this.#worktrees.factsAsync(gitPath, s.baseBranch);
+    // A clone is never opened by host Git: its facts are what it has published.
+    const after =
+      s.checkout === "clone"
+        ? this.#worktrees.refFacts(s.branch!, s.baseBranch)
+        : await this.#worktrees.factsAsync(gitPath, s.baseBranch);
     if (
       !this.#stopping &&
       this.#registry.get(id) &&
@@ -801,8 +847,13 @@ export class Daemon {
     const reason = this.#resumeBlockedReason(s);
     out = { ...out, resumable: !reason, ...(reason ? { resumeBlockedReason: reason } : {}) };
     // An in-place session works in the repo root; show that dir's git state.
-    const gitPath = out.worktree ?? (out.inPlace ? this.repoRoot : null);
-    if (gitPath) {
+    const gitPath = this.#gitKey(out);
+    if (gitPath && out.checkout === "clone") {
+      const git = withGit
+        ? this.#worktrees.refFacts(out.branch!, out.baseBranch)
+        : this.#worktrees.cachedFacts(gitPath);
+      if (git) out = { ...out, git };
+    } else if (gitPath) {
       // `withGit` false (the per-usage stream) still carries the last-known
       // facts so the TUI's git line doesn't collapse to "no worktree" mid-turn.
       const git = withGit
@@ -1161,6 +1212,7 @@ export class Daemon {
     const aisdkProfile = this.config.providers.aisdk[o.providerId];
 
     let wt: { path: string; branch: string; baseRef: string } | null = null;
+    let clonePath: string | null = null;
     // The row and the adapter are created under one hold on the session queue.
     // Between them the session is in the registry but has no run attached, so a
     // `session.setMode` landing in that window would take the inactive path and
@@ -1220,7 +1272,28 @@ export class Daemon {
         this.#providerDefaults.rememberProvider(o.providerId);
         this.#providerDefaults.rememberMode(o.mode);
 
-        if (o.wantWorktree) {
+        if (
+          o.wantWorktree &&
+          isolation === "vm" &&
+          this.config.isolation.checkout?.mode === "clone"
+        ) {
+          try {
+            const made = this.#worktrees.createBranch(id);
+            clonePath = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
+            this.#registry.setFields(id, {
+              worktree: clonePath,
+              branch: made.branch,
+              baseBranch: made.baseRef,
+              checkout: "clone",
+            });
+            this.#publishState(id);
+          } catch (cause) {
+            throw new RpcError(
+              "worktree_error",
+              `could not create the session branch: ${cause instanceof Error ? cause.message : cause}`,
+            );
+          }
+        } else if (o.wantWorktree) {
           try {
             wt = this.#worktrees.create(id, { model: o.model || o.providerId });
           } catch (cause) {
@@ -1236,7 +1309,7 @@ export class Daemon {
           });
           this.#publishState(id);
         }
-        const cwd = wt ? wt.path : this.repoRoot;
+        const cwd = wt ? wt.path : (clonePath ?? this.repoRoot);
         const isClaude = isClaudeId(o.providerId);
         const isAisdk = aisdkProfile !== undefined;
         const mcpHandles = this.#mcpHandles();
@@ -1245,6 +1318,7 @@ export class Daemon {
           mcpHandles.length > 0,
           cwd,
           this.repoRoot,
+          this.#instructionsDir(cwd),
         );
         const opts: CreateSessionOptions = {
           sessionId: id,
@@ -1258,7 +1332,7 @@ export class Daemon {
             ? {
                 loomServer: true,
                 systemPromptAppend: promptAppend,
-                repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+                repoInstructions: repoInstructionsFor(this.#instructionsDir(cwd), this.repoRoot),
                 workspaceRoot: cwd,
               }
             : {}),
@@ -1370,7 +1444,13 @@ export class Daemon {
     // on it. An in-place archived session has no branch to restore; it just
     // resumes in the repo root.
     let worktree = row.worktree;
-    if (!worktree && row.branch && !row.inPlace) {
+    if (!worktree && row.branch && row.checkout === "clone") {
+      // The guest rebuilds or repairs its clone from the branch; the host only names the place.
+      if (!this.#worktrees.branchHead(row.branch))
+        throw new RpcError("worktree_error", `branch "${row.branch}" no longer exists`);
+      worktree = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
+      this.#registry.setFields(id, { worktree });
+    } else if (!worktree && row.branch && !row.inPlace) {
       try {
         const wt = this.#worktrees.reattach(id, row.branch, { model: row.model || row.provider });
         worktree = wt.path;
@@ -1406,7 +1486,13 @@ export class Daemon {
     const mcpHandles = this.#mcpHandles();
     const isClaude = isClaudeId(row.provider);
     const isAisdk = prof !== undefined;
-    const promptAppend = systemPromptAppendFor(isAisdk, mcpHandles.length > 0, cwd, this.repoRoot);
+    const promptAppend = systemPromptAppendFor(
+      isAisdk,
+      mcpHandles.length > 0,
+      cwd,
+      this.repoRoot,
+      this.#instructionsDir(cwd),
+    );
     try {
       await this.#sessions.resume(await this.#providers.get(row.provider, row.isolation), {
         sessionId: id,
@@ -1419,7 +1505,7 @@ export class Daemon {
         ...(isClaude || isAisdk
           ? {
               systemPromptAppend: promptAppend,
-              repoInstructions: repoInstructionsFor(cwd, this.repoRoot),
+              repoInstructions: repoInstructionsFor(this.#instructionsDir(cwd), this.repoRoot),
               workspaceRoot: cwd,
             }
           : {}),
@@ -1502,6 +1588,13 @@ export class Daemon {
     // transitions — not rewind / fork, which set idle directly). Good moment to
     // pull the branch up to its base and, failing that, to flag a worktree the
     // agent left with uncommitted changes.
+    // A clone publishes its branch just before its turn-end event, so the cached
+    // ref facts are stale exactly now.
+    if (state.kind === "idle") {
+      const ended = this.#registry.get(id);
+      if (ended?.checkout === "clone" && ended.branch)
+        this.#worktrees.invalidateFacts(`ref:${ended.branch}`);
+    }
     if (state.kind === "idle" && !this.#maybeAutoRebase(id)) this.#maybeCommitNudge(id);
 
     this.#fireStatusHooks(snap, state);
@@ -1552,6 +1645,8 @@ export class Daemon {
     if (this.#stopping || !this.config.autoRebase.enabled) return false;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return false; // in-place sessions have no branch to move
+    // A clone's branch is moved only by its guest; syncing it is a guest operation.
+    if (snap.checkout === "clone") return false;
     return this.#syncOntoBase(id, true).nudged;
   }
 
@@ -1564,7 +1659,7 @@ export class Daemon {
    */
   #syncOntoBase(id: string, nudge: boolean): { outcome: RebaseOutcome | null; nudged: boolean } {
     const snap = this.#registry.get(id);
-    if (!snap?.worktree) return { outcome: null, nudged: false };
+    if (!snap?.worktree || snap.checkout === "clone") return { outcome: null, nudged: false };
 
     const { mode } = this.config.autoRebase;
     const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
@@ -1630,6 +1725,8 @@ export class Daemon {
     if (this.#stopping || !this.config.commitReminder.enabled) return;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return; // in-place sessions have no isolated tree
+    // Only the guest knows whether a clone is dirty.
+    if (snap.checkout === "clone") return;
 
     const store = this.#registry.store;
     if (!this.#worktrees.isDirty(snap.worktree)) {
@@ -1705,7 +1802,34 @@ export class Daemon {
     if (!snap?.title || !snap.worktree || snap.status.kind === "done") return;
     if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
     const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
-    if (branch !== snap.branch) this.#registry.setFields(id, { branch });
+    if (branch === snap.branch) return;
+    this.#registry.setFields(id, { branch });
+    if (snap.checkout === "clone") void this.#publishCloneBranch(id).catch(() => {});
+  }
+
+  /**
+   * After a host-side rename: repoint the relay's policy, then republish the spec a
+   * running guest re-reads at turn end. The guest is idle when titles arrive, and a
+   * push that races the rename is refused and retried.
+   */
+  async #publishCloneBranch(id: string): Promise<void> {
+    const row = this.#registry.get(id);
+    if (row?.checkout !== "clone" || !row.branch) return;
+    const directory = sessionVmDirectory(this.repoRoot, id);
+    const base = row.baseBranch ?? this.config.baseBranch;
+    await writeGitPolicy(directory, {
+      branch: row.branch,
+      base,
+      visible: this.config.isolation.checkout?.visibleRefs ?? [],
+    });
+    const running = await readRecovery(directory).catch(() => undefined);
+    if (!running?.git || running.recovery.reaped) return;
+    await writeRecoveryFile(join(running.state, "private"), "checkout.json", {
+      ...running.git.checkout,
+      branch: row.branch,
+      base,
+      identity: commitIdentity(row.model || row.provider),
+    });
   }
 
   /**
@@ -1900,8 +2024,12 @@ export class Daemon {
     // Where the working tree is at this turn boundary, so `session.rewind` can
     // offer to restore it (or at least report how far it has drifted). Skipped
     // for in-place sessions — no isolated worktree to reset.
-    const headSha = snap.worktree ? (this.#worktrees.headSha(snap.worktree) ?? "") : "";
-    const headDirty = snap.worktree ? this.#worktrees.isDirty(snap.worktree) : false;
+    // A clone publishes before its turn-end event, so the host ref is that turn's HEAD.
+    const clone = snap.checkout === "clone";
+    let headSha = "";
+    if (clone) headSha = (snap.branch && this.#worktrees.branchHead(snap.branch)) || "";
+    else if (snap.worktree) headSha = this.#worktrees.headSha(snap.worktree) ?? "";
+    const headDirty = !clone && snap.worktree ? this.#worktrees.isDirty(snap.worktree) : false;
     this.#checkpoints.record(id, {
       turn: snap.turns,
       providerRef: this.#registry.store.providerRef(id) ?? "",
@@ -2004,7 +2132,7 @@ export class Daemon {
       const seen = new Set<string>();
       for (const snap of this.#registry.list()) {
         if (this.#stopping || this.#server.clientCount === 0) break;
-        const gitPath = snap.worktree ?? (snap.inPlace ? this.repoRoot : null);
+        const gitPath = this.#gitKey(snap);
         if (!gitPath || seen.has(gitPath)) continue;
         seen.add(gitPath);
         await this.#refreshGitFacts(snap.id);
@@ -2584,15 +2712,28 @@ export class Daemon {
         laterCommits: string[];
         restored: boolean;
       } | null = null;
+      // A clone's drift is read from what it has published; the host never opens it.
+      const clone = snap.checkout === "clone";
+      if (restoreWorktree && clone)
+        throw new RpcError(
+          "bad_request",
+          "this session works in a private clone — ask the agent to reset its branch instead",
+        );
       if (wt && checkpointSha) {
-        const currentSha = this.#worktrees.headSha(wt) ?? "";
-        const dirty = this.#worktrees.isDirty(wt);
+        const currentSha = clone
+          ? ((snap.branch && this.#worktrees.branchHead(snap.branch)) ?? "")
+          : (this.#worktrees.headSha(wt) ?? "");
+        const dirty = clone ? false : this.#worktrees.isDirty(wt);
         if (currentSha !== checkpointSha || dirty) {
           worktreeDrift = {
             checkpointSha,
             currentSha,
             dirty,
-            laterCommits: this.#worktrees.commitsBetween(wt, checkpointSha, currentSha),
+            laterCommits: this.#worktrees.commitsBetween(
+              clone ? this.repoRoot : wt,
+              checkpointSha,
+              currentSha,
+            ),
             restored: false,
           };
         }
@@ -2713,17 +2854,35 @@ export class Daemon {
       const context = continuation
         ? forkContext(id, this.#sessionEvents.page(id, { limit: 5000 }))
         : "";
-      const source = parent.inPlace ? this.repoRoot : parent.worktree;
+      // A clone parent is read through its published branch; its directory is off limits.
+      const parentClone = parent.checkout === "clone";
+      const parentDir = parent.inPlace ? this.repoRoot : parent.worktree;
+      const source = parentClone ? null : parentDir;
       if (source && !this.#worktrees.headSha(source))
         throw new RpcError("worktree_error", "The parent worktree is missing or has no HEAD");
       const baseRef = source ? this.#worktrees.headSha(source)! : parent.branch;
       const newId = randomUUID();
+      const childClone = isolation === "vm" && this.config.isolation.checkout?.mode === "clone";
       let wt;
       try {
-        wt = this.#worktrees.create(newId, {
-          ...(baseRef ? { baseRef } : {}),
-          model: model || providerId,
-        });
+        if (childClone) {
+          // The relay names the base, so a fork inherits a branch, never the fork point's SHA.
+          const inherited =
+            parent.baseBranch && this.#worktrees.branchHead(parent.baseBranch)
+              ? parent.baseBranch
+              : this.config.baseBranch;
+          const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
+          wt = {
+            slug: newId.slice(0, 8),
+            path: sessionCheckoutPath(sessionVmDirectory(this.repoRoot, newId)),
+            branch: made.branch,
+            baseRef: inherited,
+          };
+        } else
+          wt = this.#worktrees.create(newId, {
+            ...(baseRef ? { baseRef } : {}),
+            model: model || providerId,
+          });
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
@@ -2737,7 +2896,9 @@ export class Daemon {
         // the adapter — an omitted mode stored `default` while the adapter
         // actually resumed in the parent's mode.
         const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
-        if (source) this.#worktrees.copyChanges(source, wt.path);
+        // Uncommitted work crosses only between host worktrees; a clone starts from the
+        // parent's published tip.
+        if (source && !childClone) this.#worktrees.copyChanges(source, wt.path);
         this.#registry.create({
           id: newId,
           provider: providerId,
@@ -2750,6 +2911,7 @@ export class Daemon {
           branch: wt.branch,
           baseBranch: wt.baseRef,
           isolation,
+          ...(childClone ? { checkout: "clone" as const } : {}),
         });
         this.#registry.setFields(newId, {
           forkTurn: parent.turns,
@@ -2777,8 +2939,9 @@ export class Daemon {
               mcpHandles.length > 0,
               wt.path,
               this.repoRoot,
+              this.#instructionsDir(wt.path),
             ),
-            repoInstructions: repoInstructionsFor(wt.path, this.repoRoot),
+            repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
             workspaceRoot: wt.path,
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
@@ -2803,6 +2966,7 @@ export class Daemon {
               mcpHandles.length > 0,
               wt.path,
               this.repoRoot,
+              this.#instructionsDir(wt.path),
             ),
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
@@ -2812,7 +2976,7 @@ export class Daemon {
         let removed = false;
         try {
           await withStoppedSessionVm(this.repoRoot, newId, () =>
-            this.#worktrees.remove(wt.path, { force: true }),
+            this.#removeWorkdir(wt.path, true),
           );
           removed = true;
         } catch (rmErr) {
@@ -2903,6 +3067,11 @@ export class Daemon {
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       if (!snap.worktree)
         throw new RpcError("bad_request", "session runs in place — no branch to rebase");
+      if (snap.checkout === "clone")
+        throw new RpcError(
+          "bad_request",
+          "this session works in a private clone — ask the agent to rebase onto its base branch",
+        );
       return this.#syncOntoBase(id, false).outcome ?? { outcome: "no-base" as const };
     });
 
@@ -3056,7 +3225,7 @@ export class Daemon {
         const snap = this.#registry.setFields(id, { model });
         // Later commits carry the model that runs them — re-point the worktree
         // identity after a deliberate switch.
-        if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
+        this.#setCommitIdentity(row, model);
         // A deliberate switch is also "the last model used" for this provider.
         if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
           this.#providerDefaults.remember(row.provider, model);
@@ -3136,7 +3305,7 @@ export class Daemon {
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
           });
-          if (row.worktree && model) this.#worktrees.setIdentity(row.worktree, model);
+          if (model) this.#setCommitIdentity(row, model);
           if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
             if (model) this.#providerDefaults.remember(row.provider, model);
             if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
@@ -3183,6 +3352,7 @@ export class Daemon {
             mcpHandles.length > 0,
             cwd,
             this.repoRoot,
+            this.#instructionsDir(cwd),
           ),
           model,
           ...(effort ? { effort } : {}),
@@ -3199,7 +3369,7 @@ export class Daemon {
         }
 
         const snap = this.#registry.setFields(id, { provider, model, effort });
-        if (row.worktree) this.#worktrees.setIdentity(row.worktree, model);
+        this.#setCommitIdentity(row, model);
         this.#providerDefaults.remember(provider, model);
         if (effort) this.#providerDefaults.rememberEffort(provider, effort);
         this.#providerDefaults.rememberProvider(provider);
@@ -3253,7 +3423,8 @@ export class Daemon {
         this.#shells.assertClosed(id);
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-        if (!force && row.worktree && this.#worktrees.isDirty(row.worktree)) {
+        const clone = row.checkout === "clone";
+        if (!force && !clone && row.worktree && this.#worktrees.isDirty(row.worktree)) {
           throw new RpcError(
             "bad_request",
             "the worktree has uncommitted changes — commit them, or archive with force to discard",
@@ -3267,7 +3438,10 @@ export class Daemon {
           this.#cacheTtlSeen.delete(id);
           if (row.worktree && !row.inPlace) {
             try {
-              await this.#worktrees.removeAsync(row.worktree, { force: true });
+              // Only the guest knows whether a clone is dirty, so archiving keeps it
+              // on disk unless forced; resuming repairs or rebuilds it either way.
+              if (!clone) await this.#worktrees.removeAsync(row.worktree, { force: true });
+              else if (force) this.#removeWorkdir(row.worktree, true);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
@@ -3308,7 +3482,7 @@ export class Daemon {
         // work silently. Make the caller opt in, the way `gc` already threads
         // `force` — the row / transcript deletion is inherently destructive, but
         // live file changes deserve an explicit ack.
-        if (!force && s.worktree && this.#worktrees.isDirty(s.worktree)) {
+        if (!force && s.worktree && s.checkout !== "clone" && this.#worktrees.isDirty(s.worktree)) {
           throw new RpcError(
             "bad_request",
             "the worktree has uncommitted changes — commit them, or pass force to discard",
@@ -3321,7 +3495,7 @@ export class Daemon {
           this.#cacheTtlSeen.delete(id);
           if (s.worktree) {
             try {
-              this.#worktrees.remove(s.worktree, { force: true });
+              this.#removeWorkdir(s.worktree, true);
             } catch (err) {
               // The tree is still on disk. Dropping the row now would orphan it —
               // `gc` iterates rows, so nothing could ever reclaim it. Keep the row,
@@ -3390,7 +3564,9 @@ export class Daemon {
             // it before pulling the directory out from under it.
             if (this.#sessions.has(s.id)) await this.#sessions.close(s.id);
             await withStoppedSessionVm(this.repoRoot, s.id, async () => {
-              this.#worktrees.remove(s.worktree!, { force });
+              // A kept clone may hold unpublished work; reclaim it only when forced.
+              if (s.checkout === "clone" && !force) return;
+              this.#removeWorkdir(s.worktree!, force);
               const snap = this.#registry.setFields(s.id, { worktree: null });
               this.#publishState(snap.id);
               removed.push(s.id);
