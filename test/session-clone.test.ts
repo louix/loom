@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { gitFixture } from "../scripts/lib/git-fixture.ts";
+import { vmCreateArguments, vmGitArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
+import {
+  prepareCloneBinding,
+  sessionCheckoutPath,
+  writeGitPolicy,
+} from "../runtime/src/session-vm/clone.ts";
+
+const identity = { name: "Loom (test)", email: "loom+test@localhost" };
+
+Deno.test("clone sessions mount the clone and the relay socket, never the repository", () => {
+  const sessionDirectory = "/home/test/.local/state/loom/session-vms/hash/id";
+  const path = sessionCheckoutPath(sessionDirectory);
+  const b: VmBinding = {
+    version: 1,
+    workspace: path,
+    artifact: "/nix/store/runtime",
+    state: "/tmp/loom-session-vm-test",
+    smolvm: "/bin/smolvm",
+    token: "test",
+    sessionDirectory,
+    mounts: [],
+    manifest: {
+      version: 1,
+      system: "x86_64-linux",
+      backend: "smolvm",
+      entrypoint: "/nix/store/runtime/bin/worker",
+      args: [],
+    },
+    git: {
+      dir: "/home/test/repo/.git",
+      policy: join(sessionDirectory, "git-policy.json"),
+      checkout: { path, branch: "loom/abc", base: "main", identity },
+    },
+  };
+  assert.deepEqual(vmGitArguments(b), [
+    "-v",
+    `${path}:${path}`,
+    "--mount-socket",
+    "/tmp/loom-session-vm-test/git.sock:/run/loom/git.sock",
+  ]);
+  const create = [...vmCreateArguments(b), ...vmGitArguments(b)];
+  assert.ok(
+    !create.some((arg) => arg.includes("/home/test/repo")),
+    "the repository is not mounted",
+  );
+  assert.equal(create[create.indexOf("-w") + 1], path);
+  const { git: _, ...mounted } = b;
+  assert.deepEqual(vmGitArguments(mounted), []);
+
+  const git = b.git!;
+  for (const broken of [
+    { ...b, mounts: ["/home/test/repo"] },
+    { ...b, mounts: undefined },
+    { ...b, packageCache: "/home/test/repo/.loom/package-cache" },
+    { ...b, preparationOnly: true },
+    { ...b, workspace: "/home/test/repo" },
+    { ...b, sessionDirectory: undefined },
+    { ...b, git: { ...git, checkout: { ...git.checkout, path: "/home/test/repo" } } },
+  ])
+    assert.throws(() => vmGitArguments(broken as VmBinding));
+});
+
+Deno.test("host preparation writes the policy and never opens the clone with Git", async () => {
+  const f = await gitFixture();
+  try {
+    const sessionDirectory = join(f.root, "state/session");
+    await Deno.mkdir(sessionDirectory, { recursive: true });
+    // Linked worktrees resolve to the shared repository, which is what the relay serves.
+    const git = await prepareCloneBinding(f.workspace, sessionDirectory, {
+      branch: "loom/abc",
+      base: "main",
+      identity,
+    });
+    assert.equal(git.dir, f.commonDir);
+    assert.equal(git.checkout.path, join(sessionDirectory, "checkout"));
+    assert.deepEqual([...Deno.readDirSync(git.checkout.path)], []);
+    assert.deepEqual(JSON.parse(await Deno.readTextFile(git.policy)), {
+      branch: "loom/abc",
+      base: "main",
+      visible: [],
+    });
+    assert.equal((await Deno.stat(git.policy)).mode! & 0o777, 0o600);
+
+    // An agent-written .git in the clone must not influence the host.
+    await Deno.writeTextFile(join(git.checkout.path, ".git"), "gitdir: /nonexistent\n");
+    const again = await prepareCloneBinding(f.repo, sessionDirectory, {
+      branch: "loom/renamed",
+      base: "main",
+      visible: ["refs/tags/"],
+      identity,
+      maxPushBytes: 1024,
+    });
+    assert.equal(again.dir, f.commonDir);
+    assert.equal(again.maxPushBytes, 1024);
+    assert.equal(JSON.parse(await Deno.readTextFile(again.policy)).branch, "loom/renamed");
+
+    await assert.rejects(
+      writeGitPolicy(sessionDirectory, { branch: "-x", base: "main", visible: [] }),
+    );
+    await assert.rejects(
+      prepareCloneBinding(f.repo, sessionDirectory, { branch: "a..b", base: "main", identity }),
+    );
+    assert.equal(JSON.parse(await Deno.readTextFile(again.policy)).branch, "loom/renamed");
+
+    await Deno.remove(git.checkout.path, { recursive: true });
+    await Deno.symlink(f.repo, git.checkout.path);
+    await assert.rejects(
+      prepareCloneBinding(f.repo, sessionDirectory, { branch: "loom/abc", base: "main", identity }),
+      /symlink/,
+    );
+  } finally {
+    await f.close();
+  }
+});

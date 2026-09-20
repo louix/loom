@@ -2,6 +2,7 @@
 import { isAbsolute, join } from "node:path";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
 import type { RuntimeManifest } from "./artifact.ts";
+import { guestGitSocket } from "../session-vm/checkout.ts";
 export interface VmBinding {
   version: 1;
   artifact: string;
@@ -18,6 +19,20 @@ export interface VmBinding {
   mounts?: string[];
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
+  /** Clone sessions: the guest's only Git remote and the clone it prepares. */
+  git?: {
+    /** The host repository's common Git directory. Never mounted. */
+    dir: string;
+    /** Host-owned ref policy, read by the relay per connection. */
+    policy: string;
+    maxPushBytes?: number;
+    checkout: {
+      path: string;
+      branch: string;
+      base: string;
+      identity: { name: string; email: string };
+    };
+  };
 }
 export const sessionVmName = "loom-session";
 // Guest UID differs from host file ownership. All mounted repositories are
@@ -166,6 +181,22 @@ export const vmArguments = (b: VmBinding) => {
 
     "--",
     ...runtimeCommand(b),
+  ];
+};
+/** A clone session mounts its clone and the relay socket, and nothing of the repository. */
+export const vmGitArguments = (b: VmBinding): string[] => {
+  if (!b.git) return [];
+  const path = b.git.checkout.path;
+  if (!b.sessionDirectory || path !== join(b.sessionDirectory, "checkout") || path !== b.workspace)
+    throw new Error("Session clone must be the session's checkout directory");
+  if ((b.mounts ?? [b.workspace]).length > 0 || b.packageCache)
+    throw new Error("Clone sessions must not mount the repository");
+  if (b.preparationOnly) throw new Error("Preparation does not use a session clone");
+  return [
+    "-v",
+    `${path}:${path}`,
+    "--mount-socket",
+    `${join(b.state, "git.sock")}:${guestGitSocket}`,
   ];
 };
 export const vmCreateArguments = (

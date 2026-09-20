@@ -8,6 +8,7 @@ import { z } from "zod";
 import { gitBranchSchema } from "./git-relay.ts";
 
 export const guestGitPort = 3129;
+export const guestGitSocket = "/run/loom/git.sock";
 export const guestGitRemote = `git://127.0.0.1:${guestGitPort}/repo`;
 
 export const checkoutSchema = z.strictObject({

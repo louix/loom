@@ -24,6 +24,10 @@ import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
 import {
+  prepareCloneBinding,
+  type SessionClone,
+} from "../../../../runtime/src/session-vm/clone.ts";
+import {
   readStartupProgress,
   startupMessage,
   startupFailures,
@@ -63,6 +67,8 @@ export interface SessionVmOptions {
   preparationOnly?: boolean;
   repoRoot?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
+  /** Work in a private clone served by the Git relay instead of mounting the repository. */
+  clone?: SessionClone;
 }
 export interface SessionVmStatus {
   phase: string;
@@ -137,16 +143,32 @@ const launchSessionVmOwned = async (
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
-  const packageCache = options.repoRoot
-    ? join(await Deno.realPath(options.repoRoot), ".loom/package-cache")
-    : undefined;
+  if (options.clone && (!options.repoRoot || !options.sessionDirectory || options.preparationOnly))
+    throw new Error("Clone sessions need a repository and a session directory");
+  // The shared package cache lives inside the repository, which clone sessions never mount.
+  const packageCache =
+    options.repoRoot && !options.clone
+      ? join(await Deno.realPath(options.repoRoot), ".loom/package-cache")
+      : undefined;
   if (packageCache) {
     await Deno.mkdir(packageCache, { recursive: true, mode: 0o700 });
     if ((await Deno.realPath(packageCache)) !== packageCache)
       throw new Error("Package cache must not be a symlink");
   }
+  let git: VmBinding["git"];
+  if (options.clone) {
+    await Deno.mkdir(options.sessionDirectory!, { recursive: true, mode: 0o700 });
+    git = await prepareCloneBinding(
+      await Deno.realPath(options.repoRoot!),
+      await Deno.realPath(options.sessionDirectory!),
+      options.clone,
+    );
+  }
   const workspace = await Deno.realPath(options.workspace);
-  const mounts = await workspaceMounts(workspace, options.repoRoot);
+  if (git && workspace !== git.checkout.path)
+    throw new Error("Clone session workspace must be the session clone");
+  // workspaceMounts runs Git in the workspace; host Git never opens a session clone.
+  const mounts = git ? [] : await workspaceMounts(workspace, options.repoRoot);
   const manifest = await inspectArtifact(artifact);
   try {
     if (
@@ -207,6 +229,7 @@ const launchSessionVmOwned = async (
     ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
+    ...(git ? { git } : {}),
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
     ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),
   };

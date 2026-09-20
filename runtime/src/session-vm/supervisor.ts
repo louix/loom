@@ -12,6 +12,7 @@ import {
   reapVm,
   sessionVmName,
   vmCreateArguments,
+  vmGitArguments,
   vmEnvironment,
   vmExecArguments,
   stageGuestImage,
@@ -25,6 +26,7 @@ import {
 } from "./persistence.ts";
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
+import { startGitRelay } from "./git-relay.ts";
 import { readFrames } from "../worker/transport.ts";
 import { reportStartup, readStartupProgress, classifyStartupFailure } from "./progress.ts";
 import { seedRepoBase, pruneRepoBases } from "./repo-base.ts";
@@ -203,6 +205,21 @@ try {
     const socket = join(binding.state, `mcp-${index}.sock`);
     relays.push(startMcpRelay(socket, relay.port));
     create.push("--mount-socket", `${socket}:/run/loom/mcp-${index}.sock`);
+  }
+  if (binding.git) {
+    create.push(...vmGitArguments(binding));
+    relays.push(
+      startGitRelay(join(binding.state, "git.sock"), {
+        gitDir: binding.git.dir,
+        policyFile: binding.git.policy,
+        ...(binding.git.maxPushBytes ? { maxPushBytes: binding.git.maxPushBytes } : {}),
+      }),
+    );
+    await Deno.writeTextFile(
+      join(binding.state, "private/checkout.json"),
+      JSON.stringify(binding.git.checkout),
+      { mode: 0o600 },
+    );
   }
   await Deno.writeTextFile(
     join(binding.state, "private/mcp.json"),

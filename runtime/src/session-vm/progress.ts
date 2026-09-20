@@ -7,6 +7,7 @@ export const startupStages = {
   copy: "Copying VM disks…",
   cold: "No compatible prepared environment; starting from the generic runtime…",
   boot: "Starting VM…",
+  checkout: "Preparing the session clone…",
   nix: "Initializing Nix…",
   networkBlocked: "VM network policy blocked a request; check network presets and allowed hosts.",
   activate: "Entering the repo environment…",

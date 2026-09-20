@@ -11,6 +11,14 @@ import {
   type SessionEnvironment,
 } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
+import { WorkerDiagnostic } from "../../../core/src/worker.ts";
+import {
+  checkoutSchema,
+  guestGitPort,
+  guestGitSocket,
+  prepareCheckout,
+  type Checkout,
+} from "./checkout.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup } from "./progress.ts";
 import { guestShellEnvironmentPath, shellEnvironment } from "./shell.ts";
@@ -82,6 +90,17 @@ const mcp: Array<{ guestPort: number }> = JSON.parse(
 for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
   void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`).finished;
+}
+// Clone sessions reach the host repository only through this relay.
+let checkout: Checkout | undefined;
+try {
+  checkout = checkoutSchema.parse(
+    JSON.parse(await Deno.readTextFile("/run/loom/private/checkout.json")),
+  );
+  const endpoint = Deno.listen({ hostname: "127.0.0.1", port: guestGitPort });
+  void startGuestRelay(endpoint, guestGitSocket).finished;
+} catch (error) {
+  if (!(error instanceof Deno.errors.NotFound)) throw error;
 }
 // Preparation warms the reusable disk; every session activates its current checkout.
 // The proxy remains available to activation, setup and init hooks.
@@ -155,6 +174,15 @@ if (preparationOnly) {
   }
 } else
   await runWorker(async () => {
+    // The clone comes first: environment activation reads the project's files.
+    if (checkout) {
+      reportStartup("checkout");
+      try {
+        await prepareCheckout(checkout);
+      } catch {
+        throw new WorkerDiagnostic("sessionCheckoutFailed");
+      }
+    }
     await prepare();
     await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
       mode: 0o600,

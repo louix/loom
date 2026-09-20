@@ -28,6 +28,8 @@ const diagnostics = {
     "VM environment preparation failed. Check session.isolation.environment.command_prefix, prepare and network presets. The session has not started.",
   sessionEnvironmentTimeout:
     "VM environment preparation timed out. Check the network policy or increase isolation.environment.timeout_seconds. The session has not started.",
+  sessionCheckoutFailed:
+    "The session clone could not be prepared from the host repository. Check that the session branch still exists, then resume. The session has not started.",
   claudeCliPath:
     "providers.claude.cli_path is not an executable file. Set it to an installed Claude executable and restart the daemon.",
   claudeBundledCli:
