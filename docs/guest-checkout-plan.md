@@ -385,6 +385,26 @@ This runs in your own checkout under your own identity, on refs the host
 trusts. After you take commits, `r` (`session.rebase`) makes the session rebase
 onto the base, which drops the patches now present there.
 
+### Later: a per-session status view
+
+A `git status`-style view per session (branch, ahead/behind, unpushed commits,
+staged, unstaged and untracked files, optionally a diff) is wanted later and is
+not part of these phases. The design leaves room for it:
+
+- It is one more guest request, `git.status`, in the same family as `git.facts`.
+  The guest handler can call `statusInWorktree` (`core/src/status.ts`), which
+  already backs the agent's `status` tool and already bounds the patch. Worktree
+  sessions call the same function on the host, so the view has one data shape.
+- Commit-level data (ahead/behind, `<base>..<branch>` log, `git cherry` marks)
+  comes from host refs and works whether or not the VM is running.
+- Working-tree data exists only in the guest. The daemon must not run Git in
+  the checkout to get it. For a stopped VM the view shows the result cached at
+  the last turn end, marked stale, rather than starting a VM to refresh.
+- The result is untrusted text. File names and diff content come from the
+  agent, so the daemon bounds the size and the renderer neutralises terminal
+  control sequences, the way `clean` in `frontend/tui/src/markdown.ts` and `safe`
+  in `cli/src/vm.ts` already do.
+
 ## Configuration
 
 ```jsonc
@@ -516,6 +536,8 @@ host, `loom shell` lands in the checkout, archive and reopen.
 3. **Default.** Flip `mode` to `clone` for VM sessions, move
    `repository-mounts.md` under the mount option, update `isolation-plan.md`'s
    boundary list.
+
+Later, outside these phases: the per-session status view (`git.status`).
 
 ## Decisions
 
