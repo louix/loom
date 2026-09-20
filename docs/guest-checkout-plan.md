@@ -58,7 +58,6 @@ host
   │
   ├─ <repo>/.git ─────────────── host refs: refs/heads/loom/<id8> (host creates,
   │                               guest pushes, host never rewrites)
-  ├─ <repo>/.loom/hooks/receive/update ── ref policy, host-owned
   │
   ├─ supervisor (trusted, per session)
   │    ├─ egress relay   <state>/egress.sock → CONNECT proxy       (unchanged)
@@ -125,9 +124,8 @@ Per connection the relay:
    closes. Idle timeout 120 s, at most 4 concurrent children per session.
 
 `options` carries `gitDir` (the host repository's common directory, from the
-binding), `policyFile`, and `hooksDir` (`<repo>/.loom/hooks/receive`). The
-supervisor gets these through the existing bootstrap frame; `VmBinding` gains
-`git?: { dir: string; policy: string; hooks: string }`.
+binding) and `policyFile`. The supervisor gets these through the existing
+bootstrap frame; `VmBinding` gains `git?: { dir: string; policy: string }`.
 
 The relay never interprets pack data, never parses refs and never runs any Git
 command other than the two services. It is the "purpose-built raw relay": one
@@ -187,41 +185,51 @@ child loses nothing, because its own branch starts at the parent's tip.
 Tags are hidden by default, so `git describe` in the guest finds none. A
 repository whose build needs them lists `refs/tags/` in `visible_refs`.
 
-`receive-pack` argv, with `LOOM_SESSION_BRANCH=<branch>` in the environment:
+`receive-pack` argv:
 
 ```
-git -c core.hooksPath=<repo>/.loom/hooks/receive
+git -c receive.hideRefs=HEAD
+    -c receive.hideRefs=refs/
+    -c receive.hideRefs=!refs/heads/<branch>
+    -c core.hooksPath=/dev/null
     -c receive.denyDeletes=true
+    -c receive.denyNonFastForwards=false
     -c receive.denyCurrentBranch=refuse
     -c receive.fsckObjects=true
     -c receive.maxInputSize=<configurable, default 512 MiB>
     -c receive.advertisePushOptions=false
-    -c transfer.hideRefs=... (same list)
+    -c receive.autogc=false
     receive-pack .
 ```
 
-`<repo>/.loom/hooks/receive/update`, written by `WorktreeManager.ensureSetup`
-next to the existing `pre-push` guard, mode 0755:
+The write policy is the receive-side hide list: `receive-pack` refuses to
+update or create a hidden ref ("deny updating a hidden ref"), and the only ref
+left visible to it is the session branch. The base branch is readable through
+`upload-pack` but hidden from `receive-pack`, so it cannot be pushed. The push
+advertisement therefore names one ref and no `.have` lines for hidden history.
 
-```sh
-#!/bin/sh
-# Installed by Loom. A session push may only move that session's own branch.
-[ "$1" = "refs/heads/$LOOM_SESSION_BRANCH" ] || {
-  echo "loom: this session may only push refs/heads/$LOOM_SESSION_BRANCH" >&2
-  exit 1
-}
-exit 0
-```
+An earlier draft enforced this with a Loom-owned `update` hook under
+`<repo>/.loom/hooks`. That directory is inside the repository, which mount-mode
+sessions can write, and an executable policy file is one more thing to protect.
+The hide list needs no file at all. `core.hooksPath=/dev/null` means the
+repository's own `pre-receive`, `update` and `post-receive` hooks never run for
+session pushes, regardless of the host repository's config. Command-line config
+is read after the repository's, and later `hideRefs` entries win, so nothing in
+the host config can re-expose a ref.
 
-Forcing `core.hooksPath` means the repository's own `pre-receive`, `update` and
-`post-receive` hooks never run for session pushes, regardless of the host
-repository's config. Non-fast-forward updates to the session branch are allowed;
-deletes are refused by config. `denyCurrentBranch=refuse` covers the case where
-you have checked the session branch out on the host to look at it: the push is
-refused with Git's message, and the guest sees it as a push error.
+Non-fast-forward updates to the session branch are allowed; deletes are refused
+by config. `denyCurrentBranch=refuse` covers the case where you have checked
+the session branch out on the host to look at it: the push is refused with
+Git's message, and the guest sees it as a push error. `autogc=false` keeps a
+session push from starting maintenance in your repository.
 
-Everything here is host-owned: the hook file, the policy file, the argv. The
-guest supplies only pack data and ref names, which the hook checks.
+Both services run with an environment built from scratch and with global and
+system Git config disabled, so only the repository's own config and the argv
+above apply. Branch names in the policy file are validated against a
+conservative subset of `check-ref-format` before they reach a `-c` value.
+
+Everything here is host-owned: the policy file and the argv. The guest supplies
+only pack data and ref names.
 
 ## Guest side
 
@@ -479,7 +487,7 @@ wherever the last push left it; the next turn end pushes whatever is ahead.
 | --------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------- |
 | hooks / config written by the agent run on the host | yes, on next host Git command     | no: host Git never opens the clone; receive-pack hooks are forced to a Loom directory |
 | `.git` file redirect in the worktree                | yes, if a human runs Git there    | the clone is outside the repo and outside any path the TUI or daemon offers           |
-| moving or deleting other refs                       | yes, shared `.git`                | `update` hook: own branch only; `denyDeletes`                                         |
+| moving or deleting other refs                       | yes, shared `.git`                | receive-side `hideRefs`: own branch only; `denyDeletes`                               |
 | reading sibling sessions' branches or user branches | yes                               | hidden by `hideRefs` including `HEAD`; protocol v0 only, so not fetchable by hash     |
 | malformed objects                                   | written directly into host `.git` | `receive.fsckObjects`; `upload-pack --strict`                                         |
 | filling the host object store                       | unbounded                         | `receive.maxInputSize`; connection and process caps                                   |
@@ -503,8 +511,8 @@ running it is still your review.
 - Existing rows have `checkout = null`, read as `worktree`. They keep their
   worktrees until archived. Reopening an archived session under `mode: "clone"`
   clones its branch; the branch is all that survives archive today anyway.
-- `WorktreeManager.ensureSetup` also writes the `receive/update` hook, so a
-  daemon upgrade prepares every repository before the first clone session.
+- The relay needs nothing installed in the repository, so a daemon upgrade
+  requires no per-repository preparation.
 - Runtime artifacts change (new guest stage, new relay); bump
   `session-environment-version`. Prepared bases are disk state only and remain
   valid; `loom vm prepare` still mounts a disposable host worktree because the
@@ -547,7 +555,7 @@ host, `loom shell` lands in the checkout, archive and reopen.
 
 ## Phases
 
-1. **Relay and checkout.** `git-relay.ts`, `receive/update` hook, `checkout.ts`,
+1. **Relay and checkout.** `git-relay.ts`, `checkout.ts`,
    guest port `3129`, `VmBinding.git`, config and store columns, `SessionCheckout`
    seam with `GuestClone` covering create, cwd, facts, push, commit tool, shell,
    archive, remove, gc. Behind `mode: "clone"`.
@@ -589,7 +597,7 @@ Later, outside these phases: the per-session status view (`git.status`).
   protocol over a fixed relay is the same idea with `git fetch` semantics.
 - **`GIT_NAMESPACE` per session on the host.** Would let the guest push any
   name into a namespace the host then promotes. Two hops and a promotion step
-  for no gain over an `update` hook.
+  for no gain over the receive-side hide list.
 - **Approval gate on push.** Bulkhead needs one because its remote is public.
   Here the remote is a private branch on your own machine and the gate is the
   merge or cherry-pick you do anyway.
