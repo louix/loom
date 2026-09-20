@@ -31,3 +31,23 @@ Stop the old daemon before upgrading and rebuild runtime artifacts. Old prepared
 disks require a compatible runtime; this change invalidates the old artifact.
 
 Validate with test/workspace-mounts.test.ts and scripts/test-real-git-vm.ts.
+
+## Clone mode
+
+Everything above describes `session.isolation.checkout.mode = "mount"`, the
+default. With `"clone"`, a new VM session mounts none of this. It works in a
+private clone whose only remote is a host relay that lets it read its base
+branch and its own branch and push its own branch only, so hooks and config the
+agent writes never reach host Git. The session branch in your repository is
+kept current at every turn end; take commits from it with ordinary Git.
+
+```jsonc
+{ "session": { "isolation": { "checkout": { "mode": "clone" } } } }
+```
+
+Existing sessions keep the mode they were created with. Auto-rebase, undo's
+worktree restore, the commit reminder and `check` hooks are not yet available
+in clone mode. See [guest checkouts](guest-checkout-plan.md) for the design and
+the current status. Validate with test/git-relay.test.ts,
+test/guest-checkout.test.ts, test/clone-session.test.ts and
+scripts/test-guest-checkout-vm.ts.

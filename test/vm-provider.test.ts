@@ -70,6 +70,11 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     const progress: string[] = [];
     const generations: string[] = [];
     const base: AgentProvider = new FakeProvider();
+    const clone = {
+      branch: "loom/session",
+      base: "main",
+      identity: { name: "Loom (test)", email: "loom+test@localhost" },
+    };
     const provider = await withVmSessions(
       base,
       {
@@ -89,6 +94,12 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         transcript: new WorkerTranscript("session", () => {}),
         onStartupProgress: (_, message) => progress.push(message),
         onVmStarted: (_, generation) => generations.push(generation),
+        vmLifecycle: {
+          stop: async () => {},
+          activity: () => "running",
+          // Only the daemon knows which sessions work in a clone.
+          clone: (id) => (id === "session" ? clone : undefined),
+        },
       },
       kind,
       createLauncher,
@@ -120,6 +131,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       const created = await provider.createSession(options);
       await created.close();
       assert.deepEqual(launches[0]!.mcpRelays, [{ port: 4567, guestPort: 3130 }]);
+      assert.deepEqual(launches[0]!.clone, clone);
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);
       assert.equal(
         !!launches[0]!.authOwner,
