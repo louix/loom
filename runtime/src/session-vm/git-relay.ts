@@ -9,7 +9,7 @@ import { z } from "zod";
 const component = /^(?!\.)(?!.*\.\.)(?!.*\.lock$)(?!.*\.$)[A-Za-z0-9._+@-]+$/;
 const validPath = (value: string) =>
   value.length <= 200 && !value.includes("@{") && value.split("/").every((c) => component.test(c));
-const branchSchema = z.string().refine((v) => !v.startsWith("-") && validPath(v));
+export const gitBranchSchema = z.string().refine((v) => !v.startsWith("-") && validPath(v));
 /** Extra readable ref prefixes. A trailing slash exposes a whole namespace. */
 const prefixSchema = z
   .string()
@@ -17,9 +17,9 @@ const prefixSchema = z
 
 export const gitPolicySchema = z.strictObject({
   /** The only ref the guest may move. */
-  branch: branchSchema,
+  branch: gitBranchSchema,
   /** The branch the session was created from. Read-only. */
-  base: branchSchema,
+  base: gitBranchSchema,
   visible: z.array(prefixSchema).max(32).default([]),
 });
 export type GitPolicy = z.infer<typeof gitPolicySchema>;

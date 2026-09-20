@@ -281,20 +281,32 @@ starts serving, driven by `/run/loom/private/checkout.json`:
 }
 ```
 
-1. If `<path>/.git` does not exist:
-   `git clone --no-checkout --branch <base> git://127.0.0.1:3129/repo <path>`.
-   This is a full clone of the two visible branches over a local socket. Then
-   `git checkout -B <branch> origin/<branch>`; the host created that ref, so it
-   always exists.
-2. If it exists: `git remote set-url origin git://127.0.0.1:3129/repo`, then
-   if the checked-out branch differs from `branch` and the old name is the
-   session's previous name, `git branch -m`. Then `git fetch --prune origin`.
-3. Always: set `branch.<branch>.remote/merge`, `remote.origin.push =
-+refs/heads/<branch>:refs/heads/<branch>`, `user.name`/`user.email` from
-   `identity`, and `core.hooksPath` to a guest-private directory holding a
-   `pre-push` that refuses any remote except `origin`. That hook is an accident
-   guard for the agent, not a security control; the agent can remove it and
-   gains nothing, because no other remote is reachable.
+`prepareCheckout` runs the same idempotent steps for a first start, a resume, a
+renamed branch and a directory copied from a forked parent:
+
+1. `git init` if `<path>/.git` is missing. It is `init` and `fetch`, not `clone`:
+   the directory may already hold provider files (Codex pre-creates `.agents` and
+   `.codex`), which `clone` refuses, and an interrupted first start has to be
+   able to continue.
+2. Point `origin` at `git://127.0.0.1:3129/repo`, adding or repairing it.
+3. If `loom.sessionBranch` in the clone's config names a different branch than
+   `branch`, `git branch -m` it. That covers a host-side rename from the title
+   and a fork, whose clone still carries its parent's branch name. Unpublished
+   commits and working-tree changes move with it.
+4. `git fetch --prune origin`: a full fetch of the two visible branches over a
+   local socket. After a fork this prunes the parent's tracking ref, which is a
+   hidden sibling now.
+5. If the local branch does not exist, `git checkout -B <branch>
+origin/<branch>`; the host created that ref, so it always exists. An existing
+   local branch is never reset: the clone is the source of truth and the host
+   ref follows it.
+6. Set `loom.sessionBranch`, `branch.<branch>.remote/merge`,
+   `remote.origin.push = +refs/heads/<branch>:refs/heads/<branch>` and
+   `user.name`/`user.email` from `identity`.
+
+It does not set `core.hooksPath`. An earlier draft installed a courtesy
+`pre-push` guard there, but that would override hook managers such as husky in
+the agent's own clone, and it guarded nothing: no other remote is reachable.
 
 Setup failures are reported through the existing `startupStages` /
 `reportStartup` path as a new `checkout` stage and put the session in `error`.
@@ -491,7 +503,7 @@ wherever the last push left it; the next turn end pushes whatever is ahead.
 | reading sibling sessions' branches or user branches | yes                               | hidden by `hideRefs` including `HEAD`; protocol v0 only, so not fetchable by hash     |
 | malformed objects                                   | written directly into host `.git` | `receive.fsckObjects`; `upload-pack --strict`                                         |
 | filling the host object store                       | unbounded                         | `receive.maxInputSize`; connection and process caps                                   |
-| reaching another Git remote                         | blocked by network policy         | unchanged; the guest `pre-push` guard is only a courtesy                              |
+| reaching another Git remote                         | blocked by network policy         | unchanged                                                                             |
 | relay request forgery (other path, other service)   | n/a                               | fixed path, two services, one pkt-line, no shell                                      |
 | symlinks in the checkout read by host tools         | same for the worktree             | `check` hooks run in the guest; notify-hook paths are `realPath`-checked              |
 | provider credential in the guest                    | access-only token                 | unchanged                                                                             |
@@ -541,7 +553,7 @@ Deterministic, no VM:
   runs, and a policy-file change takes effect on the next connection.
 - `test/guest-checkout.test.ts`: `checkout.ts` against a relay on a Unix socket
   (it only needs a listener, not a VM): fresh clone, resume, rename reconcile,
-  identity, `pre-push` guard, and the fork-copy prune.
+  identity, interrupted first start, and the fork-copy rename and prune.
 - `test/worktree-session.test.ts` gains a `GuestClone` variant of each lifecycle
   case using the mock connector with the guest-side `git.*` handlers run
   in-process against the checkout dir.
