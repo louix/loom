@@ -10,7 +10,7 @@ the guest. The clone's `origin` is the host repository, reached through a
 per-session relay that serves exactly two Git services and enforces the ref
 policy on the host side:
 
-- read: the base branch, the session's own branch, and tags;
+- read: the branch the session was created from and the session's own branch;
 - write: the session's own branch, and nothing else.
 
 Nothing the agent writes is ever read as Git configuration, hooks, or refs by
@@ -135,7 +135,7 @@ request line, then bytes.
 `git-policy.json`:
 
 ```json
-{ "branch": "loom/<id8>", "base": "main", "visible": ["refs/tags/"] }
+{ "branch": "loom/<id8>", "base": "main", "visible": [] }
 ```
 
 `upload-pack` argv:
@@ -144,7 +144,7 @@ request line, then bytes.
 git -c transfer.hideRefs=refs/
     -c transfer.hideRefs=!refs/heads/<base>
     -c transfer.hideRefs=!refs/heads/<branch>
-    -c transfer.hideRefs=!refs/tags/        (and each `visible` entry)
+    -c transfer.hideRefs=!<entry>           (one per `visible` entry; none by default)
     -c uploadpack.allowFilter=true
     -c uploadpack.allowAnySHA1InWant=false
     -c uploadpack.allowTipSHA1InWant=false
@@ -153,9 +153,19 @@ git -c transfer.hideRefs=refs/
 ```
 
 Later `hideRefs` entries win, so `refs/` hides everything and the negated
-entries expose the base, the session branch and tags. Sibling sessions'
-branches, the user's other branches and anything under `refs/loom` are neither
-advertised nor fetchable by hash. `allowFilter` permits the partial clone below.
+entries expose the parent branch and the session branch, and nothing else.
+Sibling sessions' branches, the user's other branches, tags and anything under
+`refs/loom` are neither advertised nor fetchable by hash. `allowFilter` permits
+the partial clone below.
+
+`base` is always a branch name. For a new session it is the configured base
+branch. A fork inherits its parent's `base`: today a fork's row records the
+parent's HEAD SHA as `baseBranch`, which `hideRefs` cannot name, and the
+parent's session branch stays hidden from the child like any other sibling. The
+child loses nothing, because its own branch starts at the parent's tip.
+
+Tags are hidden by default, so `git describe` in the guest finds none. A
+repository whose build needs them lists `refs/tags/` in `visible_refs`.
 
 `receive-pack` argv, with `LOOM_SESSION_BRANCH=<branch>` in the environment:
 
@@ -221,6 +231,13 @@ TUI never shows it as a place to go.
 `git rev-parse` in the workspace on the host. `session-vm-worker.ts` and
 `runtime-mcp.ts` pass `[checkout]` directly. The same applies to packaged MCP
 VMs (Tilth): they mount the checkout only, never the host repository.
+
+The shared package cache at `<repoRoot>/.loom/package-cache` lives inside the
+repository mount, so clone sessions do not get it: the launcher leaves
+`VmBinding.packageCache` unset, no `cache-path` is written, and `guest.ts`
+already falls back to `/storage/loom-cache` on the session disk. That disk is
+seeded from the prepared base, so `loom vm prepare` is what makes package
+installs warm. No replacement host-side cache is designed here.
 
 ### Setup
 
@@ -311,27 +328,27 @@ The explorer's three grep targets are the full call-site list:
 - `row.worktree ?? this.repoRoot` for adapter cwd, shell and reattach → the
   clone path; unchanged in shape.
 
-| touchpoint                           | HostWorktree (today)                          | GuestClone                                                                                                                                                                                                                     |
-| ------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| create                               | `worktree add -b`                             | `git branch loom/<id8> <base>` on host; write `checkout.json` + `git-policy.json`                                                                                                                                              |
-| adapter cwd / `LOOM_WORKTREE`        | worktree path                                 | checkout path                                                                                                                                                                                                                  |
-| git facts, 15 s sweep                | host `git -C <wt>`                            | host refs for ahead/behind + `git.facts` from the guest; sweep sends the request when clients are connected                                                                                                                    |
-| commit identity                      | `git config --worktree`                       | `identity` in `checkout.json`; `setIdentity` after a model switch rewrites it and, if running, sends `git.rename`-style config update                                                                                          |
-| branch rename from title             | `git branch -m` on host                       | host `branch -m` + policy file update + `git.rename` to the guest; a stopped VM reconciles at next setup                                                                                                                       |
-| auto-rebase, `r`, `session.rebase`   | host `syncOntoBase`                           | daemon compares host refs; if behind, sends `git.sync`; same outcomes and nudges                                                                                                                                               |
-| commit reminder                      | host `isDirty`                                | `dirty` from the last `git.facts`                                                                                                                                                                                              |
-| checkpoints (`headSha`, `headDirty`) | host                                          | from `git.facts` at turn end                                                                                                                                                                                                   |
-| undo `restoreWorktree`               | host `reset --hard`                           | `git.reset`                                                                                                                                                                                                                    |
-| fork                                 | `worktree add` at parent HEAD + `copyChanges` | stop or quiesce parent, `git.push`, byte-copy `<parent>/checkout` → `<child>/checkout` (reflink where possible), host creates `loom/<child>` at parent's host tip, child setup renames the branch and prunes stale remote refs |
-| archive (`done`)                     | `worktree remove`, keep branch                | stop VM, `git.push` first if running, refuse if dirty unless `force`, remove checkout dir, keep branch and profile                                                                                                             |
-| reopen after archive                 | `reattach`                                    | setup step clones again; `--filter=blob:none` keeps that cheap                                                                                                                                                                 |
-| `session.remove`                     | remove worktree, optional branch delete       | remove checkout dir + profile, optional branch delete                                                                                                                                                                          |
-| `gc`                                 | reclaim failed worktree removal               | reclaim a checkout dir whose removal failed                                                                                                                                                                                    |
-| hygiene at startup                   | clear stale `index.lock`, `worktree prune`    | nothing; the clone's locks are the guest's business                                                                                                                                                                            |
-| `loom shell`, TUI `s`                | VM exec at the worktree                       | VM exec at the checkout, unchanged; `session-shell.ts` already refuses a host fallback for VM sessions                                                                                                                         |
-| `commit`/`status` tools              | guest git at the mounted worktree             | guest git at the checkout; `commit` also pushes                                                                                                                                                                                |
-| `copybranch`, `gitLineText`          | branch                                        | unchanged; add an `unpushed` marker when guest HEAD ≠ host ref                                                                                                                                                                 |
-| `workspaceMounts`                    | worktree + repo + common dir                  | `[checkout]` only                                                                                                                                                                                                              |
+| touchpoint                           | HostWorktree (today)                          | GuestClone                                                                                                                                                                                                                                                                                  |
+| ------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| create                               | `worktree add -b`                             | `git branch loom/<id8> <base>` on host; write `checkout.json` + `git-policy.json`                                                                                                                                                                                                           |
+| adapter cwd / `LOOM_WORKTREE`        | worktree path                                 | checkout path                                                                                                                                                                                                                                                                               |
+| git facts, 15 s sweep                | host `git -C <wt>`                            | host refs for ahead/behind + `git.facts` from the guest; sweep sends the request when clients are connected                                                                                                                                                                                 |
+| commit identity                      | `git config --worktree`                       | `identity` in `checkout.json`; `setIdentity` after a model switch rewrites it and, if running, sends `git.rename`-style config update                                                                                                                                                       |
+| branch rename from title             | `git branch -m` on host                       | host `branch -m` + policy file update + `git.rename` to the guest; a stopped VM reconciles at next setup                                                                                                                                                                                    |
+| auto-rebase, `r`, `session.rebase`   | host `syncOntoBase`                           | daemon compares host refs; if behind, sends `git.sync`; same outcomes and nudges                                                                                                                                                                                                            |
+| commit reminder                      | host `isDirty`                                | `dirty` from the last `git.facts`                                                                                                                                                                                                                                                           |
+| checkpoints (`headSha`, `headDirty`) | host                                          | from `git.facts` at turn end                                                                                                                                                                                                                                                                |
+| undo `restoreWorktree`               | host `reset --hard`                           | `git.reset`                                                                                                                                                                                                                                                                                 |
+| fork                                 | `worktree add` at parent HEAD + `copyChanges` | parent must not be mid-turn (the existing `session.fork` gate), `git.push` if its VM is running, byte-copy `<parent>/checkout` → `<child>/checkout` (reflink where possible), host creates `loom/<child>` at parent's host tip, child setup renames the branch and prunes stale remote refs |
+| archive (`done`)                     | `worktree remove`, keep branch                | stop VM, `git.push` first if running, refuse if dirty unless `force`, remove checkout dir, keep branch and profile                                                                                                                                                                          |
+| reopen after archive                 | `reattach`                                    | setup step clones again; `--filter=blob:none` keeps that cheap                                                                                                                                                                                                                              |
+| `session.remove`                     | remove worktree, optional branch delete       | remove checkout dir + profile, optional branch delete                                                                                                                                                                                                                                       |
+| `gc`                                 | reclaim failed worktree removal               | reclaim a checkout dir whose removal failed                                                                                                                                                                                                                                                 |
+| hygiene at startup                   | clear stale `index.lock`, `worktree prune`    | nothing; the clone's locks are the guest's business                                                                                                                                                                                                                                         |
+| `loom shell`, TUI `s`                | VM exec at the worktree                       | VM exec at the checkout, unchanged; `session-shell.ts` already refuses a host fallback for VM sessions                                                                                                                                                                                      |
+| `commit`/`status` tools              | guest git at the mounted worktree             | guest git at the checkout; `commit` also pushes                                                                                                                                                                                                                                             |
+| `copybranch`, `gitLineText`          | branch                                        | unchanged; add an `unpushed` marker when guest HEAD ≠ host ref                                                                                                                                                                                                                              |
+| `workspaceMounts`                    | worktree + repo + common dir                  | `[checkout]` only                                                                                                                                                                                                                                                                           |
 
 Hooks (`hooks.ts`): for clone sessions, `check` hooks run in the guest through
 `git.hook`, because their commands (`deno task lint`, `oxfmt`) execute
@@ -405,9 +422,8 @@ one commit per logical change, and the `commit` tool already exists for it.
     "isolation": {
       "checkout": {
         "mode": "clone", // "clone" | "mount"; mount is today's layout
-        "visible_refs": [], // extra host refs readable by the guest, e.g. "refs/heads/develop"
+        "visible_refs": [], // extra host refs readable by the guest, e.g. "refs/tags/"
         "max_push_bytes": 536870912,
-        "share_objects": false, // mount the host object store read-only as an alternate
       },
     },
   },
@@ -420,16 +436,12 @@ and reopened archived sessions, never a running one.
 
 `visible_refs` entries are exact ref prefixes under `refs/`, validated like
 `extra_allowed_hosts`. They are appended as negated `hideRefs` entries. Wildcards
-are not accepted.
+are not accepted. The default is empty: the guest reads the parent branch and
+its own branch only.
 
-`share_objects` is a performance option for very large repositories where even a
-partial clone is slow: the host's `.git/objects` is mounted read-only into the
-guest and the clone's `objects/info/alternates` points at it. Objects are
-content-addressed and inert, and the mount carries no refs, config or hooks. It
-does let the guest read any object in the repository by hash, including other
-sessions' commits, and a host `git gc` can prune objects the clone still
-depends on if the base branch is rewritten. Off by default; archive runs
-`git repack -a -d` in the guest before dropping the alternate.
+There is no object-sharing or clone-cache option. First start pays for a
+partial clone through the relay; dependency and toolchain warmth comes from the
+prepared base.
 
 ## Storage and lifecycle
 
@@ -465,7 +477,6 @@ wherever the last push left it; the next turn end pushes whatever is ahead.
 | reaching another Git remote                         | blocked by network policy         | unchanged; the guest `pre-push` guard is only a courtesy                              |
 | relay request forgery (other path, other service)   | n/a                               | fixed path, two services, one pkt-line, no shell                                      |
 | symlinks in the checkout read by host tools         | same for the worktree             | `check` hooks run in the guest; notify-hook paths are `realPath`-checked              |
-| host `git gc` racing guest objects                  | n/a                               | only with `share_objects`; documented                                                 |
 | provider credential in the guest                    | access-only token                 | unchanged                                                                             |
 
 `receive-pack` and `upload-pack` run on the host as the user, but so do they
@@ -502,7 +513,9 @@ Deterministic, no VM:
 
 - `test/git-relay.test.ts`: pkt-line parsing and rejection (bad service, bad
   path, oversize, slow client), `upload-pack` over the relay against a fixture
-  repo shows only base, own branch and tags, `--filter=blob:none` clone
+  repo shows only the parent branch and own branch (no tags, no sibling
+  session, nothing by hash), a fork's policy names the inherited base branch,
+  a `visible_refs` entry exposes exactly that prefix, `--filter=blob:none` clone
   succeeds, `receive-pack` accepts a push to the own branch including
   non-fast-forward, rejects another branch, a delete, and a push while the
   branch is checked out on the host, the repository's own `pre-receive` never
@@ -539,14 +552,18 @@ host, `loom shell` lands in the checkout, archive and reopen.
 
 Phase 1 has no dependency on the rest and is the recommended first commit.
 
+## Decisions
+
+- Visibility is the parent branch plus the session's own branch. Everything
+  else, tags included, is opt-in through `visible_refs`.
+- Fork requires a parent that is not mid-turn. `session.fork` already enforces
+  this for transcript reasons; the directory copy relies on the same gate and
+  adds no snapshot-commit machinery.
+- No cache work. No shared object store, no host package cache for clone
+  sessions. `loom vm prepare` covers warm starts.
+
 ## Open questions
 
-- Should the base branch be the only visible head, or all non-`loom/` heads?
-  The design picks base plus tags and makes the rest opt-in through
-  `visible_refs`. Agents that need `git log develop..HEAD` will say so.
-- Fork of a running parent copies a directory while the guest may be writing.
-  Requiring the parent to be idle is the simple rule; the alternative is a
-  fork-snapshot commit pushed and reset, which costs a history rewrite.
 - Whether `loom land` should offer `--squash` once per-commit landing exists.
 - Codex sessions create `.agents`/`.codex` inside the workspace for Bubblewrap;
   with the checkout on a host directory that continues to work, but verify.
@@ -557,8 +574,7 @@ Phase 1 has no dependency on the rest and is the recommended first commit.
   (2a3c4ff). Open-ended surface.
 - **Mount the worktree, private guest `.git` with alternates.** Keeps live file
   visibility on the host at the cost of an agent-writable `.git` file in a
-  directory humans do visit. Rejected as the default; a variant of
-  `share_objects` if visibility turns out to matter.
+  directory humans do visit. Rejected.
 - **Bundle relay per turn** (Bulkhead's ADR-0004). Same inert-exchange property,
   but batchy, unconditional and not what Git's own tooling expects. A live pack
   protocol over a fixed relay is the same idea with `git fetch` semantics.
