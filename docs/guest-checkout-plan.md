@@ -17,8 +17,9 @@ Nothing the agent writes is ever read as Git configuration, hooks, or refs by
 the host. Commits reach the host as pushed objects, which is the trust model
 every Git forge already runs against untrusted pushers.
 
-The host-side product is a landing flow: pick some or all of a session's
-commits and cherry-pick them onto the checkout you are sitting in.
+The host-side product is the branch itself. Pushes are automatic, so
+`loom/<id8>` in your repository always holds the session's commits, and you
+merge or cherry-pick from it with your own Git. Loom adds no landing command.
 
 ## Non-goals
 
@@ -279,8 +280,8 @@ push, all of them Loom code running in the guest:
 
 - the `commit` tool, after a successful commit;
 - the worker at `turn_end`, if HEAD differs from `origin/<branch>`;
-- the daemon on request (`git.push` below), used before fork, before archive
-  and by `loom land` to make sure the host has the tip.
+- the daemon on request (`git.push` below), used before fork and before
+  archive to make sure the host has the tip.
 
 Pushes use the configured `+` refspec, so a rewritten branch (undo, rebase in
 the guest, an agent `commit --amend`) just replaces the host ref. Because the
@@ -367,52 +368,22 @@ Wire: no new RPCs for the sandbox itself. `session.rebase`, `session.rewind`,
 `session.fork`, `session.markDone`, `session.remove`, `session.gc` keep their
 parameters and route through the seam.
 
-## Landing commits on the host
+## Taking commits on the host
 
-This is the operator-facing half and is independent of the sandbox change; it
-works for worktree sessions today because it reads only host refs.
-
-RPC `session.commits { id }` returns, oldest first, the commits on
-`<base>..refs/heads/<branch>` with `sha`, `subject`, `author`, `date`,
-`shortstat`, and `applied: boolean` from `git cherry <base> <branch>` (patch-id
-equivalence, so a commit already cherry-picked onto the base shows as applied
-without any bookkeeping table). For a running clone session the daemon sends
-`git.push` first so the list is current.
-
-CLI:
+There is no Loom command for this. The session branch is an ordinary host ref
+that auto-push keeps current, the TUI's `copybranch` puts its name on the
+clipboard, and the `unpushed` marker says when the guest is ahead of it:
 
 ```sh
-loom land <id>                    # interactive picker in a TTY; lists otherwise
-loom land <id> --all              # every unapplied commit, in order
-loom land <id> <sha> [<sha>...]   # these, in branch order regardless of argument order
-loom land <id> --onto <ref>       # cherry-pick onto a ref instead of the current checkout
-loom land <id> --dry-run
-loom land <id> --then-rebase      # afterwards ask the session to rebase onto base
+git log --oneline main..loom/<branch>          # what the session did
+git cherry -v main loom/<branch>               # `-` marks patches already on main
+git cherry-pick -x <sha>...                    # take some
+git merge loom/<branch>                        # or take all
 ```
 
-The CLI applies the picks itself with `git cherry-pick -x <sha>...` in the
-checkout it was launched from, after checking that checkout's
-`--git-common-dir` is the daemon's repository. `-x` appends the origin SHA to
-each landed commit's message, which is the provenance trail. A bare repository
-root has no checkout, so there `--onto` is required or the command is run from
-a linked worktree. Cherry-pick runs in the user's own checkout under the user's
-own identity; it is ordinary host Git on host-trusted refs.
-
-On a conflict the command stops, leaves Git's cherry-pick state in place, and
-prints the standard continue/abort instructions. It does not attempt a
-resolution. `--then-rebase` sends `session.rebase` after a clean landing; the
-session's rebase drops the patches now present on base, so the picker is empty
-next time.
-
-TUI: `L` on a session opens a picker overlay from `session.commits`: one row per
-commit, applied ones dimmed with a `✓`, space toggles, `a` selects all
-unapplied, enter applies through the same code path as the CLI in the TUI's
-launch cwd, `esc` cancels. Progress and conflicts show in the event stream as
-operator notices. `land` joins the `Space` palette.
-
-Squashing on landing is deliberately not in scope. Small commits from the agent
-are what make per-commit landing useful; `.loom/LOOM.md` is the place to ask for
-one commit per logical change, and the `commit` tool already exists for it.
+This runs in your own checkout under your own identity, on refs the host
+trusts. After you take commits, `r` (`session.rebase`) makes the session rebase
+onto the base, which drops the patches now present there.
 
 ## Configuration
 
@@ -485,9 +456,9 @@ parsing with fsck on, which is the surface every hosted forge exposes to
 anonymous pushers.
 
 What this does not do: it does not make the pushed _content_ safe to execute.
-A landed commit can change `deno.json`, `.githooks/` or a build script, exactly
-as a pull request can. `loom land` puts commits into your checkout; running them
-is still your review.
+A session commit can change `deno.json`, `.githooks/` or a build script, exactly
+as a pull request can. Merging or cherry-picking it puts it in your checkout;
+running it is still your review.
 
 ## Compatibility and migration
 
@@ -526,8 +497,6 @@ Deterministic, no VM:
 - `test/worktree-session.test.ts` gains a `GuestClone` variant of each lifecycle
   case using the mock connector with the guest-side `git.*` handlers run
   in-process against the checkout dir.
-- `test/land.test.ts`: `session.commits` ordering and `applied` marks, CLI
-  cherry-pick, `-x` trailers, conflict stop, `--onto`, bare-root error.
 - `test/session-hooks.test.ts`: check hooks route to the guest; notify hook path
   escape is rejected.
 
@@ -538,19 +507,15 @@ host, `loom shell` lands in the checkout, archive and reopen.
 
 ## Phases
 
-1. **Landing.** `session.commits`, `loom land`, TUI `L`. Host-only, ships
-   against today's worktrees, and is the part you use every day.
-2. **Relay and checkout.** `git-relay.ts`, `receive/update` hook, `checkout.ts`,
+1. **Relay and checkout.** `git-relay.ts`, `receive/update` hook, `checkout.ts`,
    guest port `3129`, `VmBinding.git`, config and store columns, `SessionCheckout`
    seam with `GuestClone` covering create, cwd, facts, push, commit tool, shell,
    archive, remove, gc. Behind `mode: "clone"`.
-3. **Lifecycle parity.** `git.sync`, `git.reset`, `git.rename`, `git.hook`,
+2. **Lifecycle parity.** `git.sync`, `git.reset`, `git.rename`, `git.hook`,
    fork by directory copy, check hooks in the guest, `unpushed` marker.
-4. **Default.** Flip `mode` to `clone` for VM sessions, move
+3. **Default.** Flip `mode` to `clone` for VM sessions, move
    `repository-mounts.md` under the mount option, update `isolation-plan.md`'s
    boundary list.
-
-Phase 1 has no dependency on the rest and is the recommended first commit.
 
 ## Decisions
 
@@ -561,10 +526,12 @@ Phase 1 has no dependency on the rest and is the recommended first commit.
   adds no snapshot-commit machinery.
 - No cache work. No shared object store, no host package cache for clone
   sessions. `loom vm prepare` covers warm starts.
+- No landing command. Auto-push keeps the host branch current and ordinary Git
+  does the rest. A picker over `git cherry` can be added later without touching
+  the sandbox design, since it would read only host refs.
 
 ## Open questions
 
-- Whether `loom land` should offer `--squash` once per-commit landing exists.
 - Codex sessions create `.agents`/`.codex` inside the workspace for Bubblewrap;
   with the checkout on a host directory that continues to work, but verify.
 
@@ -583,4 +550,4 @@ Phase 1 has no dependency on the rest and is the recommended first commit.
   for no gain over an `update` hook.
 - **Approval gate on push.** Bulkhead needs one because its remote is public.
   Here the remote is a private branch on your own machine and the gate is the
-  cherry-pick you do anyway.
+  merge or cherry-pick you do anyway.
