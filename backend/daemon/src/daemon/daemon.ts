@@ -19,7 +19,7 @@ import { sessionCheckoutPath, writeGitPolicy } from "../../../../runtime/src/ses
 import { readRecovery } from "../../../../runtime/src/session-vm/recovery.ts";
 import { writeRecoveryFile } from "../../../../runtime/src/session-vm/persistence.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, rmSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, mkdirSync, rmSync, watchFile, unwatchFile } from "node:fs";
 import { join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
@@ -741,6 +741,16 @@ export class Daemon {
     else this.#worktrees.setIdentity(row.worktree, model);
   }
 
+  /**
+   * A clone session's directory, created here because it is resolved before the session
+   * VM launches: tool VMs start first and mount it. The guest fills it.
+   */
+  #clonePath(id: string): string {
+    const path = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    return path;
+  }
+
   /** Remove a session's directory: a host worktree through Git, a clone as plain files. */
   #removeWorkdir(path: string, force: boolean): void {
     if (this.#worktrees.isClone(path)) rmSync(path, { recursive: true, force: true });
@@ -1279,7 +1289,7 @@ export class Daemon {
         ) {
           try {
             const made = this.#worktrees.createBranch(id);
-            clonePath = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
+            clonePath = this.#clonePath(id);
             this.#registry.setFields(id, {
               worktree: clonePath,
               branch: made.branch,
@@ -1448,7 +1458,7 @@ export class Daemon {
       // The guest rebuilds or repairs its clone from the branch; the host only names the place.
       if (!this.#worktrees.branchHead(row.branch))
         throw new RpcError("worktree_error", `branch "${row.branch}" no longer exists`);
-      worktree = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
+      worktree = this.#clonePath(id);
       this.#registry.setFields(id, { worktree });
     } else if (!worktree && row.branch && !row.inPlace) {
       try {
@@ -2874,7 +2884,7 @@ export class Daemon {
           const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
           wt = {
             slug: newId.slice(0, 8),
-            path: sessionCheckoutPath(sessionVmDirectory(this.repoRoot, newId)),
+            path: this.#clonePath(newId),
             branch: made.branch,
             baseRef: inherited,
           };

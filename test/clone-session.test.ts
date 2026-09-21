@@ -110,6 +110,8 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     assert.equal(created.branch, `loom/${created.id.slice(0, 8)}`);
     assert.equal(created.baseBranch, "main");
     assert.equal(cwds.get(created.id), clonePath);
+    // Tool VMs resolve the path before the session VM launches, so it exists already.
+    assert.ok(existsSync(clonePath));
     assert.equal(git("rev-parse", created.branch!), git("rev-parse", "main"));
     assert.equal(git("worktree", "list", "--porcelain").match(/^worktree /gm)?.length, 1);
     assert.deepEqual(lifecycle?.clone?.(created.id), {
