@@ -2,10 +2,12 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # SmolVM 1.16.1; its Nix recipe still needs the release override below.
-  inputs.smolvm.url = "github:smol-machines/smolvm/9504e94e3581a1f52c414247edcbcd6d6b49a71a";
+  # SmolVM 1.16.2; its Nix recipe still needs the release override below. 1.16.2 fixes
+  # `machine exec -i` stranding stdin past 4096 bytes (smolvm#1314), which hung any worker
+  # request larger than that, such as a session create with long paths or a long prompt.
+  inputs.smolvm.url = "github:smol-machines/smolvm/ebffebe0ca924f9f59c3c0c79e551916319c8da5";
   # Match the release's submodules when rebuilding its bundled libkrun.
-  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/e4d41db71faa355985b0f9106ad82c01f110860f";
+  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/d2b7c30f83382849b17c47df87862b56322c2bd4";
   inputs.smolvm.inputs.libkrunfw-src.url = "github:smol-machines/libkrunfw/6ec329e11154814a4df9963a3f94f2a430f55723";
 
   inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
@@ -25,15 +27,15 @@
         let
           upstream = smolvm.packages.${system};
           pkgs = smolvm.inputs.nixpkgs.legacyPackages.${system};
-          # The 1.16.1 tag's Nix recipe still selects 1.16.0 tarballs.
-          # Keep upstream's packaging, but use the published 1.16.1 assets.
+          # The release tags' Nix recipe lags the published tarballs.
+          # Keep upstream's packaging, but use the published 1.16.2 assets.
           release = {
-            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-5J5buubWWwOezx2LI20g53Qnt7/RMZB7J6CBn83qP+0="; };
-            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-B4lak4hIffzOjZ/zO0sKLtBPlrcVTpbuOjzUbuuHy54="; };
-            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-RLUFc5YrNO6Xm7dKV1a9EFg+IP0dNzm6ooFH0TtaJvM="; };
+            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-HNMmRJILg1ti+75ULnnghUglYr/wHYFwBJm5AvN1W04="; };
+            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-k4LVeYeXRLv+zijVgj+x5G8IViCqdK5kzs81ckveEeY="; };
+            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-JH+Vq8xOHppQwKCoJqaoVdw1CSNyqwhczImPwDOrhK4="; };
           }.${system};
           releasedSmolvm = upstream.default.overrideAttrs (_: rec {
-            version = "1.16.1";
+            version = "1.16.2";
             sourceRoot = "smolvm-${version}-${release.platform}";
             src = pkgs.fetchurl {
               url = "https://github.com/smol-machines/smolvm/releases/download/v${version}/${sourceRoot}.tar.gz";
