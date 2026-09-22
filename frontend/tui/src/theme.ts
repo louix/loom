@@ -51,7 +51,7 @@ const DARK: Palette = {
   dim: "#6b7280",
   faint: "#4b5563",
   bg: undefined,
-  codeBg: "#171f2a",
+  codeBg: "#161616",
   document: {
     text: "#e5e7eb",
     link: "#5eead4",
@@ -75,7 +75,7 @@ const LIGHT: Palette = {
   dim: "#4b5563",
   faint: "#9ca3af",
   bg: "#f4f4f5",
-  codeBg: "#e5e7eb",
+  codeBg: "#ebebec",
   document: {
     text: "#111827",
     link: "#0f766e",
@@ -105,7 +105,7 @@ const ARGONEXT: Palette = {
   dim: "#868586",
   faint: "#444444",
   bg: "#0d0f18",
-  codeBg: "#171c2b",
+  codeBg: "#14151a",
   document: {
     text: "#fffaf3",
     link: "#ff6b7d",
