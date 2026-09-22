@@ -29,6 +29,7 @@ commands:
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
+  mcp prepare|status|update [name]  manage configured MCP servers
   runtime prepare|status|update|prune [runtime]  manage optional packaged MCP runtimes
   vm                     prepare, inspect and manage VM lifecycles
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
@@ -70,6 +71,11 @@ const USAGE: Record<string, string> = {
   The workspace must exist and a VM session must already be running.
   --repo <path>                select the repository from any directory`,
 
+  mcp: `loom mcp prepare|status|update [name] [--smolvm PATH] [--json]
+
+  Prepare a configured local MCP without changing the repository environment.
+  Without a name, operate on selected MCP servers. HTTP servers need no package.
+  Updates are explicit; running sessions keep their server and permission grants.`,
   runtime: `loom runtime prepare|status|update [runtime] | loom runtime prune
 
   prepare                      fetch/build configured runtimes outside the daemon
@@ -228,7 +234,7 @@ const main = async (): Promise<void> => {
     try {
       return findRepoRoot(values.repo);
     } catch (error) {
-      if (cmd === "runtime" && !values.repo) return Deno.cwd();
+      if ((cmd === "runtime" || cmd === "mcp") && !values.repo) return Deno.cwd();
       if (wantTui && !values.repo) {
         const { pickRepository } = await import("@loom/tui/run");
         return pickRepository(availableRepositories());
@@ -251,6 +257,16 @@ const main = async (): Promise<void> => {
   );
   const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
   scaffoldUserConfig();
+  if (cmd === "mcp") {
+    const { mcpCommand } = await import("./mcp.ts");
+    writeOut(
+      await mcpCommand(positionals.slice(1), repoRoot, {
+        json: values.json,
+        ...(values.smolvm ? { smolvm: values.smolvm } : {}),
+      }),
+    );
+    return;
+  }
   if (cmd === "runtime") {
     const { runtimeCommand } = await import("./runtime.ts");
     writeOut(

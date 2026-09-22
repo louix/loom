@@ -51,6 +51,7 @@ export const withExternalMcp = async (
                 sessionId: input.sessionId,
                 provider: context.id,
                 repo: repoRoot ?? context.config.sessionVm?.repoRoot,
+                ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
               })
             : await start(handle.name, handle.spec);
         workers.push(worker);

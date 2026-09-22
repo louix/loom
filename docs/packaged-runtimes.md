@@ -1,10 +1,15 @@
 # Packaged MCP runtimes
 
 Loom can run prepared command MCP packages in per-session smolvm guests. This
-backend supports Linux/KVM and Apple Silicon macOS, a writable session
-workspace, and **no guest network access or credentials**. HTTP MCPs continue to
+backend supports Linux/KVM and Apple Silicon macOS. Unified MCP definitions grant
+workspace and network access separately; legacy VM tools retain a writable
+workspace and offline networking. No host credentials are inherited. HTTP MCPs continue to
 use the external HTTP worker. Host command MCPs remain available through
 explicit `command` entries.
+
+See [MCP server configuration](tools.md) for the unified schema and
+`loom mcp prepare|status|update`. Generic Nix packages can now be wrapped by Loom;
+the artifact-level workflow below remains available.
 
 ## Use tilth
 
@@ -234,8 +239,8 @@ fixture paths for diagnosis. These checks replace the removed tilth spike suite.
 
 Linux x86_64 and Apple Silicon validation use Tilth 0.10.1 and smolvm 1.8.1. See
 the [macOS validation record](review-2026-09/macos.md) for exact coverage and
-remaining live checks. Networked command MCPs remain deferred until a concrete
-stdio-only server needs them; current networked MCPs use the HTTP worker.
+remaining live checks. Unified command MCP definitions can grant exact DNS names through smolvm;
+these resolve to IP allowlists at startup, permitting all ports on those IPs.
 
 ## Host and guest packaging boundary
 

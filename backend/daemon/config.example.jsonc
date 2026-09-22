@@ -52,24 +52,22 @@
     "commit_reminder": { "enabled": true },
     "titles": { "enabled": true }, // title_model belongs to each provider
     "notify": { "webhook": "" },
-    "local_tools": [],
-    "vm_tools": [],
-    "remote_tools": [],
+    "mcp_servers": [], // e.g. ["tilth", "kagi"] after configuring credentials
   },
-  // Definitions are inert until selected in session.local_tools/vm_tools/remote_tools.
-  "local_tools": {
+  // Definitions are inert until selected in session.mcp_servers.
+  "mcp_servers": {
     "tilth": {
-      "command": "tilth",
-      "args": ["--mcp", "--edit"],
-      "default_for": ["read", "write", "edit"],
+      "source": { "kind": "runtime", "ref": "tilth" }, // bundled Nix artifact
+      "execution": "vm",
+      "grants": { "workspace": "read-write", "network": [] },
+      "default_for": ["read", "write", "edit", "find", "grep"],
+    },
+    "kagi": {
+      "source": { "kind": "http", "url": "https://mcp.kagi.com/mcp" },
+      "auth": { "bearer_token_env": "KAGI_API_KEY" },
+      "default_for": ["web_search", "web_fetch"],
     },
   },
-  "vm_tools": {
-    "tilth": { "runtime": "tilth", "default_for": ["read", "write", "edit", "find", "grep"] },
-  },
-  // "remote_tools": {
-  //   "kagi": { "url": "https://mcp.kagi.com/mcp", "bearer_token_env": "KAGI_API_KEY", "default_for": ["web_search", "web_fetch"] },
-  // },
   "hooks": [],
   // Objects merge recursively; arrays replace inherited arrays, except hooks:
   // repo hooks append to global hooks (an empty array still inherits globals).
@@ -80,7 +78,7 @@
     //   "session": {
     //     "auto_nix": true,
     //     "isolation": { "enabled": true, "network_presets": ["nix", "javascript"] },
-    //     "vm_tools": ["tilth"],
+    //     "mcp_servers": ["tilth"],
     //     "provider_access": { "only": ["claude:work"] },
     //   },
     //   "hooks": [{ "on": "init", "run": "deno install --frozen", "timeout": 600 }],

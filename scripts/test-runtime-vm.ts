@@ -17,7 +17,14 @@ const report = [];
 let completed = false;
 await Deno.writeTextFile(join(scratch, "host-only"), "outside-workspace-sentinel");
 try {
-  for (const mode of ["close", "parent-eof", "worker-kill", "startup-eof"] as const) {
+  for (const mode of [
+    "close",
+    "read-only",
+    "none",
+    "parent-eof",
+    "worker-kill",
+    "startup-eof",
+  ] as const) {
     console.error(`Testing ${mode}...`);
     const workspace = join(scratch, mode);
     await Deno.mkdir(workspace);
@@ -30,23 +37,36 @@ try {
     let child: WorkerProcess | undefined;
     let input: WritableStreamDefaultWriter<Uint8Array> | undefined;
     let state = "";
-    const launching = startRuntimeMcp("tilth", runtime, workspace, (spec) => {
-      state = spec.cwd;
-      child = launchLocalWorker(spec);
-      input = child.input.getWriter();
-      const sink = input;
-      return {
-        ...child,
-        input: new WritableStream({
-          write: async (chunk) => {
-            await sink.write(chunk);
-            // The first write is the binding. EOF here exercises daemon death during boot.
-            if (mode === "startup-eof") await sink.close();
-          },
-          close: () => sink.close(),
-        }),
-      };
-    });
+    const launching = startRuntimeMcp(
+      "tilth",
+      runtime,
+      workspace,
+      (spec) => {
+        state = spec.cwd;
+        child = launchLocalWorker(spec);
+        input = child.input.getWriter();
+        const sink = input;
+        return {
+          ...child,
+          input: new WritableStream({
+            write: async (chunk) => {
+              await sink.write(chunk);
+              // The first write is the binding. EOF here exercises daemon death during boot.
+              if (mode === "startup-eof") await sink.close();
+            },
+            close: () => sink.close(),
+          }),
+        };
+      },
+      {
+        sessionId: crypto.randomUUID(),
+        provider: "test",
+        grants: {
+          workspace: mode === "none" || mode === "read-only" ? mode : "read-write",
+          network: [],
+        },
+      },
+    );
     if (mode === "startup-eof") {
       await assert.rejects(launching);
       await assert.rejects(Deno.stat(state), Deno.errors.NotFound);
@@ -73,6 +93,30 @@ try {
         name: "tilth_read",
         arguments: { path: join(workspace, "code.ts") },
       });
+      if (mode === "none" || mode === "read-only") {
+        assert.equal(JSON.stringify(read).includes("before = true"), mode === "read-only");
+        await rpc("tools/call", {
+          name: "tilth_write",
+          arguments: {
+            files: [
+              {
+                path: join(workspace, "code.ts"),
+                mode: "overwrite",
+                overwrite: true,
+                content: "changed",
+              },
+            ],
+          },
+        });
+        assert.equal(
+          await Deno.readTextFile(join(workspace, "code.ts")),
+          "export const before = true;\n",
+        );
+        await worker.close();
+        await assert.rejects(Deno.stat(state), Deno.errors.NotFound);
+        report.push({ mode, passed: true });
+        continue;
+      }
       assert.match(JSON.stringify(read), /before = true/);
       if (mode === "close") {
         const listed = await rpc("tools/list");

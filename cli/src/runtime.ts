@@ -1,3 +1,5 @@
+import { parseNixMcpRuntime } from "../../core/src/mcp-config.ts";
+import { nixMcpBuildArgs } from "./mcp-package.ts";
 /** Network-enabled installation commands, deliberately outside the daemon. */
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +69,8 @@ export const prepareRuntime = async (
       }
     }
   }
-  const flake = recipe(source);
+  const packageSource = parseNixMcpRuntime(source);
+  const flake = packageSource ? undefined : recipe(source);
   let previousBackend: string | undefined;
   if (opts.update) {
     try {
@@ -116,7 +119,7 @@ export const prepareRuntime = async (
       "--no-write-lock-file",
       "--out-link",
       join(generation, "artifact"),
-      flake,
+      ...(packageSource ? await nixMcpBuildArgs(packageSource, checked) : [flake!]),
     ]);
     const artifact = await Deno.realPath(join(generation, "artifact"));
     const manifest = await inspectArtifact(artifact);

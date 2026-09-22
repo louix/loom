@@ -1,3 +1,4 @@
+import { mcpGrantsSchema } from "./mcp-config.ts";
 import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
 const effortLevelSchema = z.string();
@@ -82,6 +83,7 @@ export const mcpServerHandleSchema = z.object({
       transport: z.literal("runtime"),
       runtime: z.string(),
       isolation: z.literal("vm"),
+      grants: mcpGrantsSchema.optional(),
     }),
     z.object({
       transport: z.literal("stdio"),

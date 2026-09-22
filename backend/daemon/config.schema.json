@@ -2,6 +2,122 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "mcp_servers": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "default_for": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+            }
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "nix"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "executable": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._+-]*$"
+                  },
+                  "args": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": ["kind", "ref", "executable"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "runtime"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["kind", "ref"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "http"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "url"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "execution": {
+            "type": "string",
+            "const": "vm"
+          },
+          "grants": {
+            "type": "object",
+            "properties": {
+              "workspace": {
+                "default": "none",
+                "type": "string",
+                "enum": ["none", "read-only", "read-write"]
+              },
+              "network": {
+                "default": [],
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "bearer_token_env": {
+                "type": "string"
+              }
+            },
+            "required": ["bearer_token_env"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["source"],
+        "additionalProperties": false
+      }
+    },
     "session": {
       "type": "object",
       "properties": {
@@ -23,6 +139,12 @@
           }
         },
         "remote_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcp_servers": {
           "type": "array",
           "items": {
             "type": "string"
@@ -1152,6 +1274,122 @@
             "minLength": 1,
             "description": "Exact repository path, absolute or starting with ~/."
           },
+          "mcp_servers": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "default_for": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
+                  }
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "nix"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "executable": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._+-]*$"
+                        },
+                        "args": {
+                          "default": [],
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": ["kind", "ref", "executable"],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "runtime"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["kind", "ref"],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "http"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "url"],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "execution": {
+                  "type": "string",
+                  "const": "vm"
+                },
+                "grants": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "default": "none",
+                      "type": "string",
+                      "enum": ["none", "read-only", "read-write"]
+                    },
+                    "network": {
+                      "default": [],
+                      "maxItems": 64,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 253,
+                        "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "auth": {
+                  "type": "object",
+                  "properties": {
+                    "bearer_token_env": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["bearer_token_env"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["source"],
+              "additionalProperties": false
+            }
+          },
           "session": {
             "type": "object",
             "properties": {
@@ -1173,6 +1411,12 @@
                 }
               },
               "remote_tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mcp_servers": {
                 "type": "array",
                 "items": {
                   "type": "string"

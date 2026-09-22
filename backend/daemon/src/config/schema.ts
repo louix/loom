@@ -1,5 +1,6 @@
 /** Config syntax and defaults. Filesystem and provider resolution belong in config.ts. */
 import { z } from "zod";
+import { mcpSourceSchema, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
 import {
@@ -63,13 +64,37 @@ const selections = preprocess(
   (v) => v ?? [],
   z.array(z.string()).refine((v) => new Set(v).size === v.length, "duplicate tool selections"),
 );
+export const mcpDefinitionSchema = z
+  .strictObject({
+    ...toolDefaults,
+    source: mcpSourceSchema,
+    execution: z.literal("vm").optional(),
+    grants: mcpGrantsSchema.optional(),
+    auth: z.strictObject({ bearer_token_env: requiredText }).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.source.kind === "http") {
+      if (value.execution || value.grants)
+        ctx.addIssue({
+          code: "custom",
+          message: "Remote MCPs cannot receive local execution or filesystem/network grants",
+        });
+    } else {
+      if (value.execution !== "vm")
+        ctx.addIssue({ code: "custom", message: "Local MCPs require execution: vm" });
+      if (value.auth)
+        ctx.addIssue({ code: "custom", message: "Bearer auth is only supported for HTTP MCPs" });
+    }
+  });
 export const toolSettingsSchema = z.object({
+  mcp_servers: z.record(toolName, mcpDefinitionSchema).default({}),
   session: preprocess(
     (v) => v ?? {},
     z.strictObject({
       local_tools: selections,
       vm_tools: selections,
       remote_tools: selections,
+      mcp_servers: selections,
     }),
   ),
   local_tools: preprocess(
@@ -217,6 +242,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
         local_tools: selections,
         vm_tools: selections,
         remote_tools: selections,
+        mcp_servers: selections,
         worktree: section({ enabled: flag(d.worktree.enabled) }),
         auto_rebase: section({
           enabled: flag(d.autoRebase.enabled),

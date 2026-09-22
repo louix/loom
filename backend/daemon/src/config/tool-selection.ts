@@ -1,4 +1,5 @@
 /** Trusted tool catalogs are independent of the tools selected for a session. */
+import { nixMcpRuntime, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
 import { isClaudeId } from "@loom/core/provider-id";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import type { ToolSettings } from "./schema.ts";
@@ -39,6 +40,25 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
           command: entry.command as string,
           args: (entry.args ?? []) as string[],
         });
+    }
+  }
+  for (const name of session.mcp_servers) {
+    if (!Object.hasOwn(raw.mcp_servers, name)) throw new Error(`Unknown MCP server ${name}`);
+    const entry = raw.mcp_servers[name]!;
+    const common = { name, required: true, defaultFor: entry.default_for };
+    if (entry.source.kind === "http") {
+      httpMcp.push({
+        ...common,
+        url: entry.source.url,
+        bearerTokenEnv: entry.auth?.bearer_token_env ?? "",
+      });
+    } else {
+      mcp.push({
+        ...common,
+        runtime: entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref,
+        isolation: "vm",
+        grants: mcpGrantsSchema.parse(entry.grants ?? {}),
+      });
     }
   }
   const names = new Set<string>();

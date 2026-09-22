@@ -3981,7 +3981,12 @@ export class Daemon {
           name: m.name,
           ...(m.required ? { required: true } : {}),
           ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
-          spec: { transport: "runtime", runtime: m.runtime, isolation: m.isolation },
+          spec: {
+            transport: "runtime",
+            runtime: m.runtime,
+            isolation: m.isolation,
+            ...(m.grants ? { grants: m.grants } : {}),
+          },
         };
       const { command, args } = m;
       return {

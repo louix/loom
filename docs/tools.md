@@ -1,4 +1,133 @@
-# Tool selection
+# MCP servers
+
+Define servers in trusted user configuration and select them under
+`session.mcp_servers`. Definitions and preparation do not enable a server.
+Each local server runs in its own per-session smolvm container/VM, independently
+of the agent's execution mode.
+
+```jsonc
+{
+  "mcp_servers": {
+    "tilth": {
+      "source": { "kind": "runtime", "ref": "tilth" },
+      "execution": "vm",
+      "grants": { "workspace": "read-write", "network": [] },
+      "default_for": ["read", "write", "edit", "find", "grep"],
+    },
+    "kagi": {
+      "source": { "kind": "http", "url": "https://mcp.kagi.com/mcp" },
+      "auth": { "bearer_token_env": "KAGI_API_KEY" },
+      "default_for": ["web_search", "web_fetch"],
+    },
+  },
+  "session": { "mcp_servers": ["tilth", "kagi"] },
+}
+```
+
+Tilth uses the bundled, pinned Nix runtime. Kagi uses the existing authenticated
+HTTP relay: its API key stays in the relay and is omitted from provider child
+environments. No Kagi-specific tools or argument adapters are involved.
+
+## Permissions
+
+Local definitions require `execution: "vm"`. Omitted grants mean
+`{ "workspace": "none", "network": [] }`.
+
+- `workspace`: `none`, `read-only`, or `read-write`. The VM mount enforces
+  read-only access. No workspace grant means no repository mount and a disposable
+  guest working directory.
+- `network`: exact DNS names, e.g. `["api.example.com"]`. Empty means offline.
+  This uses smolvm's `--allow-host`: names resolve at VM start and permit traffic
+  to those IP addresses on all ports. It is an IP allowlist, not an HTTPS
+  hostname/path filter; other services sharing an allowed IP are reachable.
+  There is no automatic inheritance from agent or build-time network access.
+
+Workspace access follows the session's existing checkout layout. Mounted Git
+worktrees can require the main repository and shared Git metadata; their grants
+cover those mounts too. Private-clone sessions expose their private workspace
+instead. Read-only also prevents writes to the exposed Git metadata and caches.
+
+Artifacts cannot grant permissions. Extra host mounts, persistent server caches,
+and local secret injection are not supported by this initial schema. Unknown
+grant fields fail validation. HTTP definitions reject local grants and
+`execution`: Loom controls the endpoint and authentication, not the remote
+service's operating system.
+
+## Packaging and preparation
+
+Use a Nix package for a new local MCP; Loom builds its runtime wrapper:
+
+```jsonc
+{
+  "mcp_servers": {
+    "my-tools": {
+      "source": {
+        "kind": "nix",
+        "ref": "github:your-org/your-tools/<revision>#my-mcp",
+        "executable": "my-mcp",
+        "args": ["--stdio"],
+      },
+      "execution": "vm",
+      "grants": { "workspace": "read-only", "network": ["api.example.com"] },
+    },
+  },
+}
+```
+
+The package must include its interpreters and subprocess dependencies.
+Preparation resolves the flake to an immutable reference and wraps the package
+using Loom's pinned nixpkgs and runtime helper. Package lookup checks
+`packages.<linux-system>.<attribute>`, then `legacyPackages`, then the full
+attribute path. No fragment means `default`. Arguments are data, never shell
+commands or Nix expressions. Guest packages target the matching Linux CPU;
+custom builds on macOS need a configured Linux builder. The maintained Tilth
+bundle avoids that build step.
+
+```sh
+loom mcp prepare my-tools
+loom mcp status
+loom mcp update my-tools
+```
+
+Commands accept `--json`, `--repo`, and `--smolvm`. A name addresses a definition,
+even if unselected; without a name they operate on selected unified definitions.
+HTTP servers need no package: these commands check credential availability, while
+connectivity and tool discovery are checked at session launch.
+
+Preparation may fetch/build dependencies, validates the artifact and roots it
+against Nix GC. A successful generation is reused until explicitly updated.
+Failed updates preserve the previous selection. Source/entrypoint/argument changes
+get a new artifact identity; permission changes do not rebuild the package.
+Launch never installs dependencies.
+
+`source: { "kind": "runtime", "ref": "tilth" }` selects a bundled artifact.
+A custom flake producing a Loom artifact can also be used as a runtime reference.
+Bundled runtimes update with Loom, not through `mcp update`.
+`loom runtime prepare|status|update|prune` remains available.
+`loom vm prepare` exclusively prepares the repository development environment.
+
+## Selection and lifetime
+
+All selected servers are required. Missing artifacts or credentials fail
+preflight; connection failures fail launch. Definitions are syntax-validated even
+when unselected. Duplicate selections, unknown names and competing
+`default_for` preferences fail validation.
+
+Repository `session.mcp_servers` lists replace the global list; `[]` clears it.
+Definitions merge using the existing trusted user-config rules. Existing sessions
+retain their running servers and grants. Restart the daemon to apply changed
+definitions or selections; new/resumed sessions then use the current configuration.
+There is no live tool-list refresh or grant mutation.
+
+## Legacy tool selections
+
+The existing `local_tools`, `vm_tools`, and `remote_tools` definitions and lists
+remain supported. They can coexist with unified definitions, but selecting the
+same server name twice is an error. Legacy VM definitions retain read-write
+workspace access and offline networking. Host commands remain explicitly
+unsandboxed local integrations.
+
+# Legacy configuration examples
 
 Loom separates host commands, separate tool VMs, and remote MCP services. Define
 integrations once in the trusted user config, then select them globally or per

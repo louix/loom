@@ -1,3 +1,4 @@
+import { mcpGrantsSchema, type McpGrants } from "../../../../core/src/mcp-config.ts";
 import {
   attachDiskTemplates,
   retainDiskTemplates,
@@ -20,6 +21,7 @@ export interface McpVmIdentity {
   sessionId: string;
   provider: string;
   repo?: string | undefined;
+  grants?: McpGrants;
 }
 
 /**
@@ -42,8 +44,10 @@ const startRuntimeMcpOwned = async (
   const { lock, manifest } = await resolveRuntime(runtime);
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
-  const mounts = await mcpWorkspaceMounts(cwd, identity?.repo);
+  const grants = identity?.grants ? mcpGrantsSchema.parse(identity.grants) : undefined;
+  const mounts = grants?.workspace === "none" ? [] : await mcpWorkspaceMounts(cwd, identity?.repo);
   const privateWorkspace =
+    grants?.workspace !== "none" &&
     identity?.repo &&
     cwd.startsWith(sessionCloneRoot(identity.repo) + "/") &&
     workspaceMount(cwd).host !== cwd
@@ -60,6 +64,7 @@ const startRuntimeMcpOwned = async (
     ...(privateWorkspace ? { privateWorkspace } : {}),
     state,
     token: crypto.randomUUID() + crypto.randomUUID(),
+    ...(grants ? { mcpGrants: grants } : {}),
   };
   let owner: VmOwner | undefined;
   let child: ReturnType<WorkerLauncher>;

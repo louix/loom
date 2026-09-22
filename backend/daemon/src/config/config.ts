@@ -1,3 +1,6 @@
+import type { McpGrants } from "../../../../core/src/mcp-config.ts";
+import type { z } from "zod";
+import type { mcpDefinitionSchema } from "./schema.ts";
 import {
   normalizeSessionEnvironment,
   type SessionEnvironment,
@@ -312,10 +315,11 @@ export interface LoomConfig {
     /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
   };
+  mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
     { name: string; defaultFor?: McpCapability[]; required?: boolean } & (
       | { command: string; args?: string[] }
-      | { runtime: string; isolation: "vm" }
+      | { runtime: string; isolation: "vm"; grants?: McpGrants }
     )
   >;
   httpMcp: Array<{
@@ -741,6 +745,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     },
     mcp,
     httpMcp,
+    mcpServers: settings.mcp_servers,
     titles: settings.session.titles,
     notify: settings.session.notify,
     hooks: settings.hooks.map((h): HookConfig => ({

@@ -18,7 +18,7 @@ import { makeLogger } from "@loom/core/logger";
 import { McpHub } from "../aisdk/src/mcp.ts";
 import type { CreateSessionOptions, McpServerHandle } from "@loom/core/types";
 
-test("runtime MCP creation and resume carry the Loom session and repository identity", async () => {
+test("runtime MCP creation and resume carry identity and server-specific grants", async () => {
   const identities: unknown[] = [];
   const provider = await withExternalMcp(
     () => new FakeProvider(),
@@ -36,7 +36,15 @@ test("runtime MCP creation and resume carry the Loom session and repository iden
     "/repo",
   );
   const mcpServers: McpServerHandle[] = [
-    { name: "tilth", spec: { transport: "runtime", runtime: "tilth", isolation: "vm" } },
+    {
+      name: "tilth",
+      spec: {
+        transport: "runtime",
+        runtime: "tilth",
+        isolation: "vm",
+        grants: { workspace: "read-only", network: ["example.com"] },
+      },
+    },
   ];
   const created = await provider.createSession({
     sessionId: "loom-session",
@@ -60,6 +68,7 @@ test("runtime MCP creation and resume carry the Loom session and repository iden
       sessionId: "loom-session",
       provider: "claude:personal",
       repo: "/repo",
+      grants: { workspace: "read-only", network: ["example.com"] },
     }),
   );
 });

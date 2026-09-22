@@ -1,3 +1,4 @@
+import { mcpGrantsSchema, type McpGrants } from "../../../core/src/mcp-config.ts";
 /** Fixed-policy VM launch and reaping, shared by supervisor and daemon fallback. */
 import { isAbsolute, join } from "node:path";
 import type { SessionEnvironment } from "../../../core/src/session-environment.ts";
@@ -19,6 +20,8 @@ export interface VmBinding {
   repoBaseDirectory?: string;
   packageCache?: string;
   mounts?: string[];
+  /** Only command MCPs set this; agent VM policy is separate. */
+  mcpGrants?: McpGrants;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
   /** Clone sessions: the guest's only Git remote and the clone it prepares. */
@@ -112,10 +115,22 @@ export const vmEnvironment = (state: string) => {
     PATH: "/usr/bin:/bin",
   };
 };
-export const guestWorkingDirectory = (b: Pick<VmBinding, "workspace" | "privateWorkspace">) =>
-  b.privateWorkspace ? "/workspace/checkout" : b.workspace;
+export const guestWorkingDirectory = (
+  b: Pick<VmBinding, "workspace" | "privateWorkspace" | "mcpGrants">,
+) => {
+  if (b.mcpGrants?.workspace === "none") return "/tmp";
+  return b.privateWorkspace ? "/workspace/checkout" : b.workspace;
+};
 
 export const vmArguments = (b: VmBinding) => {
+  const grants = b.mcpGrants ? mcpGrantsSchema.parse(b.mcpGrants) : undefined;
+  const mountMode = grants?.workspace === "read-only" ? ":ro" : "";
+  let workspaceVolumes: string[] = [];
+  if (grants?.workspace !== "none") {
+    workspaceVolumes = b.privateWorkspace
+      ? ["-v", `${b.privateWorkspace}:/workspace${mountMode}`]
+      : (b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}${mountMode}`]);
+  }
   if (b.privateWorkspace) {
     if (
       b.workspace !== join(b.privateWorkspace, "checkout") ||
@@ -190,9 +205,8 @@ export const vmArguments = (b: VmBinding) => {
             : `${b.artifact}/nix/store:/nix/store:ro`,
         ]),
     ...(b.manifest.environmentCompatibility ? ["-v", `${b.artifact}:/run/loom/code:ro`] : []),
-    ...(b.privateWorkspace
-      ? ["-v", `${b.privateWorkspace}:/workspace`]
-      : (b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}`])),
+    ...workspaceVolumes,
+    ...(grants?.network ?? []).flatMap((host) => ["--allow-host", host]),
     "-w",
     guestWorkingDirectory(b),
     "-e",
