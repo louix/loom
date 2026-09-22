@@ -1,4 +1,9 @@
-import { sessionVmName, type VmBinding, vmEnvironment } from "../packaged/vm.ts";
+import {
+  sessionVmName,
+  type VmBinding,
+  vmEnvironment,
+  guestWorkingDirectory,
+} from "../packaged/vm.ts";
 
 export const guestShellEnvironmentPath = "/run/loom/shell-env.sh";
 
@@ -23,7 +28,7 @@ export const vmShellCommand = (binding: VmBinding) => ({
     "-i",
     "-t",
     "-w",
-    binding.workspace,
+    guestWorkingDirectory(binding),
     "--",
     "/bin/sh",
     "-c",

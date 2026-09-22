@@ -13,6 +13,7 @@ import type { ManagedMcp } from "./mcp-worker.ts";
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { findRepoRoot } from "@loom/core/paths";
 import { registerVm, type VmOwner } from "../../../../runtime/src/session-vm/inventory.ts";
+import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import { sessionCloneRoot } from "./session-vm-state.ts";
 
 export interface McpVmIdentity {
@@ -27,7 +28,7 @@ export interface McpVmIdentity {
  */
 export const mcpWorkspaceMounts = async (cwd: string, repo?: string): Promise<string[]> =>
   repo !== undefined && cwd.startsWith(sessionCloneRoot(repo) + "/")
-    ? [cwd]
+    ? [workspaceMount(cwd).host]
     : await workspaceMounts(cwd);
 
 const startRuntimeMcpOwned = async (
@@ -42,6 +43,12 @@ const startRuntimeMcpOwned = async (
   const cwd = await Deno.realPath(resolve(workspace));
   if (!(await Deno.stat(cwd)).isDirectory) throw new Error("VM workspace must be a directory");
   const mounts = await mcpWorkspaceMounts(cwd, identity?.repo);
+  const privateWorkspace =
+    identity?.repo &&
+    cwd.startsWith(sessionCloneRoot(identity.repo) + "/") &&
+    workspaceMount(cwd).host !== cwd
+      ? workspaceMount(cwd).host
+      : undefined;
   const state = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-" }));
   const binding: VmBinding = {
     version: 1,
@@ -49,7 +56,8 @@ const startRuntimeMcpOwned = async (
     smolvm: lock.smolvm,
     manifest,
     workspace: cwd,
-    mounts,
+    mounts: privateWorkspace ? [] : mounts,
+    ...(privateWorkspace ? { privateWorkspace } : {}),
     state,
     token: crypto.randomUUID() + crypto.randomUUID(),
   };
@@ -101,7 +109,11 @@ const startRuntimeMcpOwned = async (
         new URL("../../../../runtime/src/packaged/main.ts", import.meta.url),
       ),
       permissions: {
-        read: [state, lock.artifact, ...(binding.mounts ?? [cwd])],
+        read: [
+          state,
+          lock.artifact,
+          ...(privateWorkspace ? [privateWorkspace] : (binding.mounts ?? [cwd])),
+        ],
         write: [state],
         env: [],
         run: [lock.smolvm],

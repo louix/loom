@@ -51,6 +51,7 @@ export const removeSessionVmProfile = async (repo: string, id: string) => {
     "disk-runtime-root",
     "disk-backend-root",
     "checkout",
+    "workspace",
     "git-policy.json",
   ]) {
     try {

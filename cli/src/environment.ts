@@ -1,4 +1,5 @@
 /** Foreground, credential-free preparation. The published base is never writable. */
+import { initializeWorkspace } from "../../runtime/src/session-vm/workspace.ts";
 import { join, resolve } from "node:path";
 import {
   claudeProfileId,
@@ -196,13 +197,43 @@ const prepareRuntimeEnvironment = async (
   try {
     const revision = await git(["rev-parse", "HEAD"], cancelled.signal);
     phase(`Preparing session environment for ${repo} at ${revision.slice(0, 12)}`);
-    phase("Creating disposable worktree (committed HEAD)…");
+    phase("Creating disposable preparation checkout (committed HEAD)…");
     temporary = await Deno.realPath(
       await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-prepare-" }),
     );
-    const workspace = join(temporary, "worktree");
-    await git(["worktree", "add", "--detach", workspace, revision], cancelled.signal);
     candidate = await Deno.makeTempDir({ dir: home, prefix: "base-" });
+    const privateWorkspace =
+      config.isolation.checkout?.mode === "clone"
+        ? await initializeWorkspace(candidate)
+        : undefined;
+    const workspace = privateWorkspace
+      ? join(privateWorkspace, "checkout")
+      : join(temporary, "worktree");
+    if (privateWorkspace) {
+      // All host Git operations happen before this disposable clone is exposed to the guest.
+      await git(
+        ["clone", "--no-local", "--no-hardlinks", "--no-checkout", repo, workspace],
+        cancelled.signal,
+      );
+      const checked = await new Deno.Command("git", {
+        args: [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "core.fsmonitor=false",
+          "-C",
+          workspace,
+          "checkout",
+          "--detach",
+          revision,
+        ],
+        stdin: "null",
+        stdout: "null",
+        stderr: "piped",
+        signal: cancelled.signal,
+      }).output();
+      if (!checked.success) throw new Error(new TextDecoder().decode(checked.stderr));
+    } else await git(["worktree", "add", "--detach", workspace, revision], cancelled.signal);
     cancelled.signal.throwIfAborted();
     worker = await launchSessionVm({
       workspace,
@@ -211,6 +242,7 @@ const prepareRuntimeEnvironment = async (
       repoRoot: repo,
       sessionDirectory: candidate,
       preparationOnly: true,
+      ...(privateWorkspace ? { privateWorkspace } : {}),
       onStop: async () => {
         cancelled.abort();
       },

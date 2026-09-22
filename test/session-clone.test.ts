@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gitFixture } from "../scripts/lib/git-fixture.ts";
 import { vmCreateArguments, vmGitArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
 import {
@@ -16,6 +16,7 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
   const b: VmBinding = {
     version: 1,
     workspace: path,
+    privateWorkspace: dirname(path),
     artifact: "/nix/store/runtime",
     state: "/tmp/loom-session-vm-test",
     smolvm: "/bin/smolvm",
@@ -32,12 +33,10 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
     git: {
       dir: "/home/test/repo/.git",
       policy: join(sessionDirectory, "git-policy.json"),
-      checkout: { path, branch: "loom/abc", base: "main", identity },
+      checkout: { path: "/workspace/checkout", branch: "loom/abc", base: "main", identity },
     },
   };
   assert.deepEqual(vmGitArguments(b), [
-    "-v",
-    `${path}:${path}`,
     "--mount-socket",
     "/tmp/loom-session-vm-test/git.sock:/run/loom/git.sock",
   ]);
@@ -46,7 +45,8 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
     !create.some((arg) => arg.includes("/home/test/repo")),
     "the repository is not mounted",
   );
-  assert.equal(create[create.indexOf("-w") + 1], path);
+  assert.equal(create[create.indexOf("-w") + 1], "/workspace/checkout");
+  assert.ok(create.includes(`${dirname(path)}:/workspace`));
   const { git: _, ...mounted } = b;
   assert.deepEqual(vmGitArguments(mounted), []);
 
@@ -75,8 +75,9 @@ Deno.test("host preparation writes the policy and never opens the clone with Git
       identity,
     });
     assert.equal(git.dir, f.commonDir);
-    assert.equal(git.checkout.path, join(sessionDirectory, "checkout"));
-    assert.deepEqual([...Deno.readDirSync(git.checkout.path)], []);
+    const path = sessionCheckoutPath(sessionDirectory);
+    assert.equal(git.checkout.path, "/workspace/checkout");
+    assert.deepEqual([...Deno.readDirSync(path)], []);
     assert.deepEqual(JSON.parse(await Deno.readTextFile(git.policy)), {
       branch: "loom/abc",
       base: "main",
@@ -85,7 +86,7 @@ Deno.test("host preparation writes the policy and never opens the clone with Git
     assert.equal((await Deno.stat(git.policy)).mode! & 0o777, 0o600);
 
     // An agent-written .git in the clone must not influence the host.
-    await Deno.writeTextFile(join(git.checkout.path, ".git"), "gitdir: /nonexistent\n");
+    await Deno.writeTextFile(join(path, ".git"), "gitdir: /nonexistent\n");
     const again = await prepareCloneBinding(f.repo, sessionDirectory, {
       branch: "loom/renamed",
       base: "main",
@@ -105,8 +106,8 @@ Deno.test("host preparation writes the policy and never opens the clone with Git
     );
     assert.equal(JSON.parse(await Deno.readTextFile(again.policy)).branch, "loom/renamed");
 
-    await Deno.remove(git.checkout.path, { recursive: true });
-    await Deno.symlink(f.repo, git.checkout.path);
+    await Deno.remove(path, { recursive: true });
+    await Deno.symlink(f.repo, path);
     await assert.rejects(
       prepareCloneBinding(f.repo, sessionDirectory, { branch: "loom/abc", base: "main", identity }),
       /symlink/,
@@ -129,7 +130,7 @@ Deno.test("tool VMs for a clone session mount the clone without running Git in i
     await f.git("init", "-q", clone);
     // A redirected Git directory and an executing config are both agent-writable.
     await f.git("-C", clone, "config", "core.fsmonitor", `touch ${marker}; false`);
-    assert.deepEqual(await mcpWorkspaceMounts(clone, f.repo), [clone]);
+    assert.deepEqual(await mcpWorkspaceMounts(clone, f.repo), [dirname(clone)]);
     await assert.rejects(Deno.stat(marker), Deno.errors.NotFound);
     // A host worktree still gets the repository and its Git directory.
     assert.deepEqual(await mcpWorkspaceMounts(f.workspace, f.repo), [f.workspace, f.repo]);

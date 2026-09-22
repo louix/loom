@@ -119,12 +119,12 @@ export const prepareEnvironment = async (
   }
 };
 
-/** Each session activates its current checkout. Preparation commands run only when warming the base. */
+/** Activate and reconcile the current checkout; preparation remains a separate command. */
 export const activateSessionEnvironment = (
   config: SessionEnvironment | undefined,
   options: Parameters<typeof prepareEnvironment>[1],
 ): Promise<Record<string, string> | undefined> =>
-  prepareEnvironment(config ? { ...config, prepare: "" } : undefined, options);
+  prepareEnvironment(config ? { ...config, prepare: config.init ?? "" } : undefined, options);
 
 /** The immutable artifact supplies both store files and their reference metadata. */
 export const initializeGuestNix = async (signal: AbortSignal): Promise<void> => {

@@ -15,6 +15,8 @@ import {
   recoverRepositoryVms,
   sessionCloneRoot,
 } from "./session-vm-state.ts";
+import { seedRepoWorkspace } from "../../../../runtime/src/session-vm/repo-base.ts";
+import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import { sessionCheckoutPath, writeGitPolicy } from "../../../../runtime/src/session-vm/clone.ts";
 import { readRecovery } from "../../../../runtime/src/session-vm/recovery.ts";
 import { writeRecoveryFile } from "../../../../runtime/src/session-vm/persistence.ts";
@@ -745,15 +747,26 @@ export class Daemon {
    * A clone session's directory, created here because it is resolved before the session
    * VM launches: tool VMs start first and mount it. The guest fills it.
    */
-  #clonePath(id: string): string {
-    const path = sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id));
-    mkdirSync(path, { recursive: true, mode: 0o700 });
+  async #clonePath(id: string, provider: string): Promise<string> {
+    const directory = sessionVmDirectory(this.repoRoot, id);
+    const path = sessionCheckoutPath(directory);
+    if (workspaceMount(path).host !== path) {
+      let kind: "claude" | "codex" | "aisdk" = "aisdk";
+      if (isClaudeId(provider)) kind = "claude";
+      else if (this.config.providers.aisdk[provider]?.sdk === "chatgpt") kind = "codex";
+      await seedRepoWorkspace(
+        repoBaseDirectory(this.repoRoot),
+        directory,
+        this.config.isolation[kind]?.artifact,
+      );
+    } else mkdirSync(path, { recursive: true, mode: 0o700 });
     return path;
   }
 
   /** Remove a session's directory: a host worktree through Git, a clone as plain files. */
   #removeWorkdir(path: string, force: boolean): void {
-    if (this.#worktrees.isClone(path)) rmSync(path, { recursive: true, force: true });
+    if (this.#worktrees.isClone(path))
+      rmSync(workspaceMount(path).host, { recursive: true, force: true });
     else this.#worktrees.remove(path, { force });
   }
 
@@ -1289,7 +1302,7 @@ export class Daemon {
         ) {
           try {
             const made = this.#worktrees.createBranch(id);
-            clonePath = this.#clonePath(id);
+            clonePath = await this.#clonePath(id, o.providerId);
             this.#registry.setFields(id, {
               worktree: clonePath,
               branch: made.branch,
@@ -1458,7 +1471,7 @@ export class Daemon {
       // The guest rebuilds or repairs its clone from the branch; the host only names the place.
       if (!this.#worktrees.branchHead(row.branch))
         throw new RpcError("worktree_error", `branch "${row.branch}" no longer exists`);
-      worktree = this.#clonePath(id);
+      worktree = await this.#clonePath(id, row.provider);
       this.#registry.setFields(id, { worktree });
     } else if (!worktree && row.branch && !row.inPlace) {
       try {
@@ -2884,7 +2897,7 @@ export class Daemon {
           const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
           wt = {
             slug: newId.slice(0, 8),
-            path: this.#clonePath(newId),
+            path: await this.#clonePath(newId, providerId),
             branch: made.branch,
             baseRef: inherited,
           };

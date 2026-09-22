@@ -199,8 +199,13 @@ try {
       "-v",
       `${binding.sessionDirectory}/profile:/tmp/loom-home/${auth.codexOauth ? ".codex" : ".claude"}`,
     );
-  if (binding.packageCache)
-    await Deno.writeTextFile(join(binding.state, "private/cache-path"), binding.packageCache);
+  if (binding.packageCache || binding.privateWorkspace)
+    await Deno.writeTextFile(
+      join(binding.state, "private/cache-path"),
+      binding.privateWorkspace ? "/workspace/cache" : binding.packageCache!,
+    );
+  if (binding.privateWorkspace)
+    await Deno.writeTextFile(join(binding.state, "private/workspace"), "/workspace");
   for (const [index, relay] of (binding.mcpRelays ?? []).entries()) {
     const socket = join(binding.state, `mcp-${index}.sock`);
     relays.push(startMcpRelay(socket, relay.port));

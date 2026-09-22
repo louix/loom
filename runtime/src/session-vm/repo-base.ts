@@ -10,6 +10,7 @@ import {
   createSessionDisks,
   SavedDiskCompatibilityError,
 } from "./disks.ts";
+import { initializeWorkspace, privateWorkspacePath, exists } from "./workspace.ts";
 import { environmentIdentity } from "./environment-identity.ts";
 import { writeRecoveryFile, lockSessionState, assertNoActiveVm } from "./persistence.ts";
 import { referencedBases } from "../packaged/maintenance.ts";
@@ -101,6 +102,22 @@ export const hasCompatibleRepoBase = async (
   const held = await lock(home, false);
   try {
     return (await compatibleRepoBase(home, b)) !== undefined;
+  } finally {
+    held.close();
+  }
+};
+
+/** Copy a published workspace while holding the base publication lock. */
+export const seedRepoWorkspace = async (home: string, directory: string, artifact?: string) => {
+  if (await exists(privateWorkspacePath(directory))) return await initializeWorkspace(directory);
+  const held = await lock(home, false);
+  try {
+    const base = await currentRepoBase(home, artifact);
+    const prepared = base ? privateWorkspacePath(base) : undefined;
+    return await initializeWorkspace(
+      directory,
+      prepared && (await exists(prepared)) ? prepared : undefined,
+    );
   } finally {
     held.close();
   }

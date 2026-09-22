@@ -10,6 +10,7 @@ import { LoomClient } from "@loom/client";
 import { FakeProvider } from "@loom/connector-mock";
 import type { ConnectorContext, ConnectorManifest } from "@loom/core/connector";
 import type { SessionSnapshot } from "@loom/core/wire";
+import { sessionCheckoutPath } from "../runtime/src/session-vm/clone.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 
 test("clone sessions live on host refs and the daemon never runs Git in the clone", async () => {
@@ -104,7 +105,7 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
       prompt: "work in a clone",
       provider: "claude",
     });
-    const clonePath = join(sessionVmDirectory(h.repoRoot, created.id), "checkout");
+    const clonePath = sessionCheckoutPath(sessionVmDirectory(h.repoRoot, created.id));
     assert.equal(created.checkout, "clone");
     assert.equal(created.worktree, clonePath);
     assert.equal(created.branch, `loom/${created.id.slice(0, 8)}`);

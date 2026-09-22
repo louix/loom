@@ -1,5 +1,7 @@
 /** Host-side preparation of a clone session: its directory, ref policy and relay binding. */
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { privateWorkspacePath, workspaceMount } from "./workspace.ts";
 import type { VmBinding } from "../packaged/vm.ts";
 import { checkoutSchema } from "./checkout.ts";
 import { gitPolicySchema, type GitPolicy } from "./git-relay.ts";
@@ -14,7 +16,10 @@ export interface SessionClone {
 }
 
 /** The clone lives beside the provider profile, outside the repository and any host Git path. */
-export const sessionCheckoutPath = (sessionDirectory: string) => join(sessionDirectory, "checkout");
+export const sessionCheckoutPath = (sessionDirectory: string) =>
+  existsSync(join(sessionDirectory, "checkout"))
+    ? join(sessionDirectory, "checkout")
+    : join(privateWorkspacePath(sessionDirectory), "checkout");
 const policyName = "git-policy.json";
 
 /** The relay reads this per connection, so a rename applies to a running session. */
@@ -50,7 +55,7 @@ export const prepareCloneBinding = async (
     policy: join(sessionDirectory, policyName),
     ...(clone.maxPushBytes ? { maxPushBytes: clone.maxPushBytes } : {}),
     checkout: checkoutSchema.parse({
-      path,
+      path: workspaceMount(path).checkout,
       branch: clone.branch,
       base: clone.base,
       identity: clone.identity,

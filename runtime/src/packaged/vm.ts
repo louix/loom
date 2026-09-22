@@ -9,6 +9,8 @@ export interface VmBinding {
   smolvm: string;
   manifest: RuntimeManifest;
   workspace: string;
+  /** One private host workspace mapped to stable paths in every guest. */
+  privateWorkspace?: string;
   state: string;
   token: string;
   /** Private guest OverlayFS upper, never a writable host store. */
@@ -110,7 +112,21 @@ export const vmEnvironment = (state: string) => {
     PATH: "/usr/bin:/bin",
   };
 };
+export const guestWorkingDirectory = (b: Pick<VmBinding, "workspace" | "privateWorkspace">) =>
+  b.privateWorkspace ? "/workspace/checkout" : b.workspace;
+
 export const vmArguments = (b: VmBinding) => {
+  if (b.privateWorkspace) {
+    if (
+      b.workspace !== join(b.privateWorkspace, "checkout") ||
+      (b.mounts ?? []).length ||
+      b.packageCache ||
+      !isAbsolute(b.privateWorkspace) ||
+      /[:,;|\n\0]/.test(b.privateWorkspace) ||
+      (b.sessionDirectory && b.privateWorkspace !== join(b.sessionDirectory, "workspace"))
+    )
+      throw new Error("Invalid private workspace mount");
+  }
   for (const path of b.mounts ?? [b.workspace]) {
     if (!isAbsolute(path) || path === "/" || /[:,;|\n\0]/.test(path))
       throw new Error("Unsupported repository mount path");
@@ -170,9 +186,11 @@ export const vmArguments = (b: VmBinding) => {
             : `${b.artifact}/nix/store:/nix/store:ro`,
         ]),
     ...(b.manifest.environmentCompatibility ? ["-v", `${b.artifact}:/run/loom/code:ro`] : []),
-    ...(b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}`]),
+    ...(b.privateWorkspace
+      ? ["-v", `${b.privateWorkspace}:/workspace`]
+      : (b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}`])),
     "-w",
-    b.workspace,
+    guestWorkingDirectory(b),
     "-e",
     "HOME=/tmp/loom-home",
     "-e",
@@ -186,15 +204,24 @@ export const vmArguments = (b: VmBinding) => {
 /** A clone session mounts its clone and the relay socket, and nothing of the repository. */
 export const vmGitArguments = (b: VmBinding): string[] => {
   if (!b.git) return [];
+  if (
+    b.privateWorkspace &&
+    (b.workspace !== join(b.privateWorkspace, "checkout") ||
+      b.privateWorkspace !== join(b.sessionDirectory ?? "", "workspace"))
+  )
+    throw new Error("Invalid private clone workspace");
   const path = b.git.checkout.path;
-  if (!b.sessionDirectory || path !== join(b.sessionDirectory, "checkout") || path !== b.workspace)
+  if (
+    !b.sessionDirectory ||
+    path !== guestWorkingDirectory(b) ||
+    (!b.privateWorkspace && path !== join(b.sessionDirectory, "checkout"))
+  )
     throw new Error("Session clone must be the session's checkout directory");
   if ((b.mounts ?? [b.workspace]).length > 0 || b.packageCache)
     throw new Error("Clone sessions must not mount the repository");
   if (b.preparationOnly) throw new Error("Preparation does not use a session clone");
   return [
-    "-v",
-    `${path}:${path}`,
+    ...(b.privateWorkspace ? [] : ["-v", `${path}:${path}`]),
     "--mount-socket",
     `${join(b.state, "git.sock")}:${guestGitSocket}`,
   ];
@@ -221,7 +248,7 @@ export const vmExecArguments = (b: VmBinding) => [
   sessionVmName,
   "-i",
   "-w",
-  b.workspace,
+  guestWorkingDirectory(b),
   "-e",
   "HOME=/tmp/loom-home",
   "-e",

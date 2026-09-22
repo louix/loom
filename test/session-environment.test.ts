@@ -4,7 +4,11 @@ import {
   normalizeSessionEnvironment,
   sessionStartupTimeout,
 } from "../core/src/session-environment.ts";
-import { prepareEnvironment, guestPathProfile } from "../runtime/src/session-vm/environment.ts";
+import {
+  prepareEnvironment,
+  activateSessionEnvironment,
+  guestPathProfile,
+} from "../runtime/src/session-vm/environment.ts";
 import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
 import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
 import { vmArguments, vmCreateArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
@@ -64,6 +68,8 @@ test("environment configuration validates commands and bounded setup time", () =
     { command_prefix: [""] },
     { command_prefix: ["bad\0arg"] },
     { prepare: false },
+    { init: false },
+    { init: "bad\0command" },
     { timeout_seconds: 0 },
     { timeout_seconds: 2_073_601 },
     { timeout_seconds: 1.5 },
@@ -143,6 +149,24 @@ test("configured activation precedes arbitrary setup and preserves exports for t
     assert.equal(env?.LOOM_TEST_ACTIVATED, "a b; $(literal)");
     assert.equal(env?.LOOM_TEST_PREPARED, "yes");
     assert.equal(await prepareEnvironment(undefined, { shell: "/missing" }), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+test("session init runs after activation without repeating preparation", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const config = normalizeSessionEnvironment({
+      command_prefix: ["/bin/sh", "-c", 'export LOOM_TEST_ACTIVATED=yes; exec "$@"', "activation"],
+      prepare: "echo prepared >> prepare-count",
+      init: 'test "$LOOM_TEST_ACTIVATED" = yes; echo initialized >> init-count',
+    });
+    await prepareEnvironment(config, { shell: "/bin/sh", cwd: dir });
+    await activateSessionEnvironment(config, { shell: "/bin/sh", cwd: dir });
+    await activateSessionEnvironment(config, { shell: "/bin/sh", cwd: dir });
+    assert.equal(await Deno.readTextFile(dir + "/prepare-count"), "prepared\n");
+    assert.equal(await Deno.readTextFile(dir + "/init-count"), "initialized\ninitialized\n");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

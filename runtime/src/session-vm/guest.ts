@@ -40,6 +40,15 @@ for (const [key, path] of Object.entries({
   await Deno.mkdir(path, { recursive: true });
   Deno.env.set(key, path);
 }
+try {
+  const workspace = await Deno.readTextFile("/run/loom/private/workspace");
+  Deno.env.set("LOOM_WORKSPACE", workspace);
+  Deno.env.set("LOOM_CHECKOUT", workspace + "/checkout");
+  Deno.env.set("LOOM_CACHE", workspace + "/cache");
+  Deno.env.set("XDG_CACHE_HOME", workspace + "/cache");
+} catch (error) {
+  if (!(error instanceof Deno.errors.NotFound)) throw error;
+}
 // pnpm's root-user lifecycle mode otherwise moves TMPDIR into node_modules.
 // Keep extraction on guest storage: virtiofs cannot apply tarball ownership.
 // Package scripts already run inside this session's VM as the guest user.
@@ -168,6 +177,15 @@ if (preparationOnly) {
   Deno.env.set("LOOM_PREPARATION_ONLY", "1");
   try {
     await prepare("inherit");
+    if (Deno.env.get("LOOM_WORKSPACE")) {
+      const clean = await new Deno.Command("git", {
+        args: ["diff", "--quiet", "HEAD", "--"],
+        stdin: "null",
+        stdout: "null",
+        stderr: "inherit",
+      }).output();
+      if (!clean.success) throw new Error("Preparation modified tracked files");
+    }
     Deno.exit(0);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

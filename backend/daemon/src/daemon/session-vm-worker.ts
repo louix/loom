@@ -20,6 +20,8 @@ import {
   finishSessionState,
   lockSessionState,
 } from "../../../../runtime/src/session-vm/persistence.ts";
+import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
+import { guestWorkingDirectory } from "../../../../runtime/src/packaged/vm.ts";
 import { workspaceMounts } from "../../../../runtime/src/packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../../../../runtime/src/packaged/vm.ts";
 import { cleanupSessionVm } from "../../../../runtime/src/session-vm/cleanup.ts";
@@ -69,6 +71,7 @@ export interface SessionVmOptions {
   mcpRelays?: Array<{ port: number; guestPort: number }>;
   /** Work in a private clone served by the Git relay instead of mounting the repository. */
   clone?: SessionClone;
+  privateWorkspace?: string;
 }
 export interface SessionVmStatus {
   phase: string;
@@ -147,7 +150,7 @@ const launchSessionVmOwned = async (
     throw new Error("Clone sessions need a repository and a session directory");
   // The shared package cache lives inside the repository, which clone sessions never mount.
   const packageCache =
-    options.repoRoot && !options.clone
+    options.repoRoot && !options.clone && !options.privateWorkspace
       ? join(await Deno.realPath(options.repoRoot), ".loom/package-cache")
       : undefined;
   if (packageCache) {
@@ -165,10 +168,21 @@ const launchSessionVmOwned = async (
     );
   }
   const workspace = await Deno.realPath(options.workspace);
-  if (git && workspace !== git.checkout.path)
+  const privateWorkspace =
+    options.privateWorkspace ??
+    (git && workspaceMount(workspace).host !== workspace
+      ? workspaceMount(workspace).host
+      : undefined);
+  if (privateWorkspace && (await Deno.realPath(privateWorkspace)) !== privateWorkspace)
+    throw new Error("Private workspace must not be a symlink");
+  if (
+    git &&
+    guestWorkingDirectory({ workspace, ...(privateWorkspace ? { privateWorkspace } : {}) }) !==
+      git.checkout.path
+  )
     throw new Error("Clone session workspace must be the session clone");
   // workspaceMounts runs Git in the workspace; host Git never opens a session clone.
-  const mounts = git ? [] : await workspaceMounts(workspace, options.repoRoot);
+  const mounts = git || privateWorkspace ? [] : await workspaceMounts(workspace, options.repoRoot);
   const manifest = await inspectArtifact(artifact);
   try {
     if (
@@ -230,6 +244,7 @@ const launchSessionVmOwned = async (
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
     ...(git ? { git } : {}),
+    ...(privateWorkspace ? { privateWorkspace } : {}),
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
     ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),
   };

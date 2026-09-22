@@ -2,6 +2,7 @@ import { startWorker, signalOf } from "./startup.ts";
 import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
+import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ConnectorContext } from "@loom/core/connector";
@@ -145,6 +146,8 @@ export const withVmSessions = async <T extends AgentProvider>(
           );
         }
       }
+      const clone = ctx.vmLifecycle?.clone?.(input.sessionId);
+      const guestCwd = clone ? workspaceMount(input.cwd).checkout : input.cwd;
       const relays: Array<{ port: number; guestPort: number }> = [];
       const servers = (input.mcpServers ?? []).map((server): McpServerHandle => {
         if (server.spec?.transport !== "http")
@@ -198,7 +201,7 @@ export const withVmSessions = async <T extends AgentProvider>(
         const { session } = await RemoteWorkerSession.connect(
           input.sessionId,
           ctx.id,
-          mockLaunchSpec(input.cwd),
+          mockLaunchSpec(guestCwd),
           () => worker,
           { startupMs: sessionStartupTimeout(vm.environment), requestMs: 120_000 },
           {
@@ -208,7 +211,15 @@ export const withVmSessions = async <T extends AgentProvider>(
           },
         );
         if (kind === "aisdk") await session.attachTranscript(ctx.transcript!);
-        const options = { ...input, mcpServers: servers };
+        const options = {
+          ...input,
+          cwd: guestCwd,
+          ...(input.workspaceRoot ? { workspaceRoot: guestCwd } : {}),
+          ...(input.systemPromptAppend
+            ? { systemPromptAppend: input.systemPromptAppend.replaceAll(input.cwd, guestCwd) }
+            : {}),
+          mcpServers: servers,
+        };
         session.onStartupProgress = (message) => ctx.onStartupProgress?.(input.sessionId, message);
         await session.start(
           resume
