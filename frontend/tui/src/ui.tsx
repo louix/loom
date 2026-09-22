@@ -16,17 +16,18 @@ export const Text = ({
 };
 
 /** The only Ink adapter for prepared document spans. Colours resolve per theme. */
-export const StyledText = ({ spans }: { spans: readonly TextSpan[] }): ReactNode => {
+export const StyledText = ({
+  spans,
+  subdued = false,
+}: {
+  spans: readonly TextSpan[];
+  subdued?: boolean;
+}): ReactNode => {
   const palette = useTheme();
   const colors = {
-    heading: palette.accent,
-    code: palette.warn,
-    link: palette.accent,
-    muted: palette.dim,
-    faint: palette.faint,
-    keyword: palette.accent,
-    string: palette.good,
-    number: palette.await_,
+    ...palette.document,
+    heading: palette.document.text,
+    code: palette.document.text,
   };
   return spans.map((span, i) => (
     <InkText
@@ -35,8 +36,8 @@ export const StyledText = ({ spans }: { spans: readonly TextSpan[] }): ReactNode
       italic={span.italic ?? false}
       underline={span.underline ?? false}
       strikethrough={span.strikethrough ?? false}
-      {...(span.role ? { color: colors[span.role] } : {})}
-      {...(span.background ? { backgroundColor: palette.codeBg } : {})}
+      color={subdued ? palette.document.muted : colors[span.role ?? "text"]}
+      {...(!subdued && span.background ? { backgroundColor: palette.codeBg } : {})}
     >
       {span.text}
     </InkText>

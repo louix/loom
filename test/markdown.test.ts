@@ -1,11 +1,20 @@
+import type { SessionInteraction } from "@loom/core/interaction";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "ink";
 import stringWidth from "string-width";
 import { markdownText, plainText } from "../frontend/tui/src/markdown.ts";
-import { EventLog } from "@loom/tui/components";
 import {
+  PlanReview,
+  RequestPanel,
+  requestPanelRows,
+  askQuestionLines,
+  EventLog,
+} from "@loom/tui/components";
+import {
+  queuedLine,
+  formatEvent,
   logContext,
   type LogLine,
   totalRows,
@@ -191,7 +200,7 @@ test("code surfaces fill wrapped and blank rows without shading prose or quote m
     const rows = markdownText(
       '~~~ts\nconst greeting = "hello";\n\n  return greeting;\n~~~\n\n> a quote\n\nInline `code`.',
     ).layout(width);
-    const shaded = rows.filter((r) => r.spans.some((s) => s.background));
+    const shaded = rows.filter((r) => r.spans.length && r.spans.every((s) => s.background));
     assert.ok(shaded.length >= 4);
     for (const r of shaded) {
       assert.equal(stringWidth(r.text), width);
@@ -199,9 +208,7 @@ test("code surfaces fill wrapped and blank rows without shading prose or quote m
     }
     assert.ok(shaded.some((r) => r.text.trim() === ""));
     assert.ok(
-      rows
-        .filter((r) => /quote|Inline/.test(r.text))
-        .every((r) => r.spans.every((s) => !s.background)),
+      rows.filter((r) => /quote/.test(r.text)).every((r) => r.spans.every((s) => !s.background)),
     );
   }
   const nested = markdownText("> ~~~\n> x\n> ~~~").layout(20);
@@ -209,4 +216,149 @@ test("code surfaces fill wrapped and blank rows without shading prose or quote m
   assert.equal(stringWidth(code.text), 20);
   assert.equal(code.spans[0]?.background, undefined);
   assert.ok(code.spans.slice(1).every((s) => s.background === "code"));
+});
+
+test("human messages and queued input retain literal lines while questions use Markdown", () => {
+  const source = "build started\n  build failed\n\n**literal**\n- item";
+  for (const kind of ["user_message", "answer"] as const) {
+    const event = { type: kind, text: source, ts: 0, sessionId: "s", id: "a", injected: false };
+    const line: LogLine = { id: null, sessionId: "s", kind, ts: 0, ...formatEvent(event) };
+    const ctx = logContext([line], 100);
+    assert.equal(
+      windowRows(ctx, 0, totalRows(ctx))
+        .map((r) => r.seg)
+        .join("\n"),
+      source,
+    );
+  }
+  const queued = queuedLine("s", source);
+  const ctx = logContext([queued], 100);
+  assert.equal(
+    windowRows(ctx, 0, totalRows(ctx))
+      .map((r) => r.seg)
+      .join("\n"),
+    "queued: " + source,
+  );
+  const question: LogLine = {
+    id: null,
+    sessionId: "s",
+    kind: "question",
+    ts: 0,
+    ...formatEvent({
+      type: "question",
+      sessionId: "s",
+      id: "q",
+      question: "**Choose** a `path`",
+      ts: 0,
+    }),
+  };
+  const rows = windowRows(logContext([question], 100), 0, 10);
+  assert.equal(rows[0]?.seg, "Choose a path");
+  assert.ok(rows[0]?.spans?.some((s) => s.bold));
+});
+
+test("formatted question and plan previews fit their measured height", () => {
+  const questions = [
+    {
+      question: "**Choose**\n\n- carefully",
+      header: "Choice",
+      options: [{ label: "`first`", description: "**recommended**" }, { label: "second" }],
+    },
+  ];
+  const requests: SessionInteraction[] = [
+    {
+      kind: "question",
+      id: "q",
+      at: 0,
+      question: "**Choose**\n\n- carefully",
+      context: "See `file.ts`",
+    },
+    { kind: "user_question", id: "q", at: 0, tool: "AskUserQuestion", input: { questions } },
+    { kind: "plan_review", id: "p", at: 0, plan: "# Choose\n\n- carefully\n\n`file.ts`" },
+  ];
+  for (const width of [32, 80]) {
+    for (const request of requests) {
+      const out = renderToString(createElement(RequestPanel, { request, width }));
+      assert.equal(out.split("\n").length, requestPanelRows(request, width));
+      assert.ok(out.includes("Choose"));
+      assert.ok(!out.includes("**Choose**"));
+      assert.ok(!out.includes("`file.ts`"));
+    }
+    const lines = askQuestionLines(questions, 0, width - 4);
+    assert.ok(lines.some((l) => l.includes("a) first")));
+    assert.ok(lines.some((l) => l.includes("recommended")));
+    assert.ok(lines.some((l) => l.includes("b) second")));
+  }
+});
+
+test("plan review scrolls formatted rows and clamps to the final row", () => {
+  const plan = {
+    text: Array.from({ length: 25 }, (_, i) => "# Section " + i).join("\n\n"),
+    mode: "plan" as const,
+  };
+  const first = renderToString(
+    createElement(PlanReview, { plan, width: 80, height: 24, scroll: 0 }),
+  );
+  const last = renderToString(
+    createElement(PlanReview, { plan, width: 80, height: 24, scroll: 999 }),
+  );
+  assert.ok(first.includes("Section 0"));
+  assert.ok(!first.includes("# Section"));
+  assert.ok(!first.includes("Section 24"));
+  assert.ok(last.includes("Section 24"));
+  assert.equal(first.split("\n").length, 24);
+  assert.equal(last.split("\n").length, 24);
+});
+
+test("inline code shades only its content and document controls stay inert", () => {
+  const spans = markdownText("Before `code` after").layout(80)[0]!.spans;
+  assert.deepEqual(
+    spans.filter((s) => s.background).map((s) => s.text),
+    ["code"],
+  );
+  assert.equal(text("\x1b[31m**red**\x1b[0m"), "red");
+});
+
+test("document styling follows each theme independently of status colors", async () => {
+  // Color support is detected when Ink loads, so use a fresh process even in NO_COLOR CI.
+  const script = `
+    import { createElement } from "react";
+    import { renderToString } from "ink";
+    import { PaletteContext, StyledText } from "${new URL("../frontend/tui/src/ui.tsx", import.meta.url).href}";
+    import { PALETTES } from "${new URL("../frontend/tui/src/theme.ts", import.meta.url).href}";
+    const spans = [
+      {text:"Heading", role:"heading", bold:true},
+      {text:"code", role:"code", background:"code"},
+      {text:"link", role:"link"}, {text:"const", role:"keyword"},
+      {text:"42", role:"number"}, {text:"comment", role:"muted"}
+    ];
+    const output = Object.values(PALETTES).map(palette => {
+      const render = (p, subdued = false) => renderToString(
+        createElement(PaletteContext.Provider, { value:p },
+          createElement(StyledText, {spans, subdued})));
+      return [
+        render(palette),
+        render({...palette, accent:"#010203", warn:"#040506", good:"#070809", await_:"#101112"}),
+        render({...palette, document:{...palette.document, keyword:"#abcdef"}}),
+        render(palette, true),
+        render({...palette, document:{...palette.document, keyword:"#abcdef", link:"#abcdef", text:"#abcdef"}}, true)
+      ];
+    });
+    console.log(JSON.stringify(output));
+  `;
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", script],
+    env: { FORCE_COLOR: "3" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert.equal(result.code, 0, new TextDecoder().decode(result.stderr));
+  const output: string[][] = JSON.parse(new TextDecoder().decode(result.stdout));
+  for (const [regular, statuses, keyword, subdued, subduedChanged] of output) {
+    assert.ok(regular!.includes("\x1b["), "test must exercise actual terminal colors");
+    assert.equal(statuses, regular);
+    assert.notEqual(keyword, regular);
+    assert.equal(subduedChanged, subdued);
+    assert.ok(!subdued!.includes("[48;"), "thinking has no code background");
+  }
 });

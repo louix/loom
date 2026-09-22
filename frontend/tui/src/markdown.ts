@@ -3,6 +3,7 @@
  * cross this boundary. Keep source text in the caller; prepared documents own
  * parsing and their most recent width-dependent layout.
  */
+import { stripVTControlCharacters } from "node:util";
 import { Marked, type Token, type Tokens } from "marked";
 import { decodeHTML } from "entities";
 import stringWidth from "string-width";
@@ -49,8 +50,10 @@ const codeSpans = (code: Tokens.Code): readonly TextSpan[] => {
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 // Treat control sequences as text, never as instructions to the terminal.
 const clean = (s: string): string =>
-  // eslint-disable-next-line no-control-regex -- terminal input must not carry control codes
-  s.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+  stripVTControlCharacters(s)
+    .replace(/\r\n?/g, "\n")
+    // eslint-disable-next-line no-control-regex -- terminal input must not carry control codes
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const row = (spans: readonly TextSpan[]): TextRow => ({
   text: spans.map((s) => s.text).join(""),
   spans,
@@ -144,6 +147,7 @@ const inline = (tokens: readonly Token[], style: TextStyle = {}, depth = 0): Tex
         append(out, clean((t as Tokens.Codespan).text), {
           ...style,
           role: "code",
+          background: "code",
         });
         break;
       case "link":

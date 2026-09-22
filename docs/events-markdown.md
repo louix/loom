@@ -1,8 +1,16 @@
 # Markdown in EVENTS
 
-Conversation events (assistant text, user messages, queued echoes, and expanded
-thinking) render as Markdown. Tool output retains literal text and existing diff
-colours. Stored events and editor exports retain their original source.
+Assistant text, expanded thinking, questions (including context and choice descriptions),
+and plan reviews render as Markdown. User messages, queued echoes, and answers
+remain literal, preserving line breaks and indentation. Tool output retains literal
+text and existing diff colours. Stored events and editor exports retain their original source.
+
+Document colors are independent of UI status colors in each theme. Headings use bold
+body text, links use a document accent, and inline code uses a subtle background.
+Code blocks have dedicated syntax colors; comments and destinations use readable muted
+text. Thinking uses a uniform subdued foreground without code backgrounds.
+Question/plan previews measure and paint the same formatted rows, capped at 14 body
+rows; the full plan overlay scrolls through formatted rows.
 
 ## Replacement boundary
 

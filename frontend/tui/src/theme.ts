@@ -26,9 +26,19 @@ export type Palette = {
    *  background untouched. */
   bg: string | undefined;
   codeBg: string;
+  /** Document colors are independent of UI status colors. */
+  document: {
+    text: string;
+    link: string;
+    muted: string;
+    faint: string;
+    keyword: string;
+    string: string;
+    number: string;
+  };
 };
 
-export type ThemeColor = Exclude<keyof Palette, "bg" | "codeBg">;
+export type ThemeColor = Exclude<keyof Palette, "bg" | "codeBg" | "document">;
 
 const DARK: Palette = {
   accent: "#5eead4",
@@ -42,6 +52,15 @@ const DARK: Palette = {
   faint: "#4b5563",
   bg: undefined,
   codeBg: "#171f2a",
+  document: {
+    text: "#e5e7eb",
+    link: "#5eead4",
+    muted: "#9ca3af",
+    faint: "#4b5563",
+    keyword: "#93c5fd",
+    string: "#86efac",
+    number: "#d8b4fe",
+  },
 };
 
 /** Same roles, darkened/saturated for legibility against the explicit light `bg`. */
@@ -57,6 +76,15 @@ const LIGHT: Palette = {
   faint: "#9ca3af",
   bg: "#f4f4f5",
   codeBg: "#e5e7eb",
+  document: {
+    text: "#111827",
+    link: "#0f766e",
+    muted: "#4b5563",
+    faint: "#9ca3af",
+    keyword: "#1d4ed8",
+    string: "#166534",
+    number: "#7e22ce",
+  },
 };
 
 /** "Argonext" — a red-on-navy terminal theme (#0d0f18 bg, #fffaf3 fg, #ff0017
@@ -78,6 +106,15 @@ const ARGONEXT: Palette = {
   faint: "#444444",
   bg: "#0d0f18",
   codeBg: "#171c2b",
+  document: {
+    text: "#fffaf3",
+    link: "#ff6b7d",
+    muted: "#aaa6ad",
+    faint: "#444444",
+    keyword: "#79bfff",
+    string: "#abe05a",
+    number: "#c8a0ff",
+  },
 };
 
 export const PALETTES: Record<ThemeMode, Palette> = {

@@ -10,7 +10,7 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import { mkStore, type Store } from "./store.ts";
-import { markdownText } from "./markdown.ts";
+import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
@@ -597,6 +597,7 @@ export const queuedLine = (sessionId: string, text: string): LogLine => ({
   kind: "echo",
   glyph: "▸",
   text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
+  full: `queued: ${text}`,
   tone: "dim",
   ts: 0,
 });
@@ -1175,11 +1176,17 @@ const lineLayout = (
     l.kind === "assistant_text" ||
     l.kind === "user_message" ||
     l.kind === "echo" ||
+    l.kind === "answer" ||
+    l.kind === "question" ||
     l.kind === "thinking"
   ) {
     let doc = documentCache.get(l);
     if (!doc) {
-      doc = markdownText(source);
+      const format =
+        l.kind === "user_message" || l.kind === "echo" || l.kind === "answer"
+          ? plainText
+          : markdownText;
+      doc = format(source);
       documentCache.set(l, doc);
     }
     const rows = doc.layout(width);

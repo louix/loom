@@ -5,7 +5,7 @@ import { SessionTabs } from "./session-tabs.tsx";
  * load its hook), so the only build step is still "none". Every component is a
  * pure projection of the narrow view its pane is handed — see `views.ts`.
  */
-import { memo, type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import { Box } from "ink";
 import {
   FloatingLayer,
@@ -23,6 +23,8 @@ import {
   useTheme,
 } from "./ui.tsx";
 export { PaletteContext } from "./ui.tsx";
+import { markdownText, plainText } from "./markdown.ts";
+import type { TextRow } from "./text-layout.ts";
 import { rowLayout, type LayoutRow } from "./layout.ts";
 import { helpLines } from "./help.ts";
 import { absurd } from "@loom/core/absurd";
@@ -730,14 +732,14 @@ export const EventLog = memo(
                 <Text tone="faint">{r.ts}</Text>
                 <Text color={toneColor(r.tone, palette)}>{`${r.glyph} `}</Text>
                 <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.spans ? <StyledText spans={r.spans} /> : r.seg}
+                  {r.spans ? <StyledText spans={r.spans} subdued={r.kind === "thinking"} /> : r.seg}
                 </Text>
               </Line>
             ) : (
               <Line key={r.key}>
                 <Text>{" ".repeat(r.indent)}</Text>
                 <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.spans ? <StyledText spans={r.spans} /> : r.seg}
+                  {r.spans ? <StyledText spans={r.spans} subdued={r.kind === "thinking"} /> : r.seg}
                 </Text>
               </Line>
             ),
@@ -1231,62 +1233,92 @@ const REQUEST_PANEL_CHROME = 4;
 /** Body rows for a non-question request (command / diff / path dump) — the
  *  historic fixed size, kept for those. */
 const REQUEST_PANEL_MIN_BODY = 4;
-/** Ceiling on the request panel's body. An `AskUserQuestion` grows the panel to
- *  fit the active question's options rather than clipping them, but never past
+/** Ceiling on the request panel's body. Questions and plans grow the panel to
+ *  fit their formatted content, but never past
  *  this — the fleet list would otherwise scroll off screen. `⌥o` shows the
- *  whole call, and ⇥ / ⇧⇥ cycle the other questions into view one at a time. */
+ *  whole call, and ← / → cycle the other questions into view one at a time. */
 const REQUEST_PANEL_MAX_BODY = 14;
 
-/** Height reserved for {@link RequestPanel} in the layout for a non-question
- *  request. Question requests size dynamically — see {@link requestPanelRows}. */
+/** Height reserved for {@link RequestPanel} for a permission
+ *  request. Questions and plans size dynamically — see {@link requestPanelRows}. */
 export const REQUEST_PANEL_ROWS = REQUEST_PANEL_CHROME + REQUEST_PANEL_MIN_BODY;
 
-/** One `AskUserQuestion` question as lettered choices — the prompt text, then
- *  `a) label — description` per option, each wrapped to `w`. `active` (0-based,
- *  clamped) picks which question; progress (N/M) lives in the panel title.
- *  Unclamped — callers size the panel to fit (see {@link requestPanelRows}). */
-export const askQuestionLines = (
-  qs: AskUserQuestionItem[],
-  active: number,
-  w: number,
-): string[] => {
+/** Format content separately from the fixed option letters. */
+const askQuestionRows = (qs: AskUserQuestionItem[], active: number, w: number): TextRow[] => {
   const q = qs[Math.max(0, Math.min(qs.length - 1, active))];
   if (!q) return [];
-  const lines: string[] = [...wrapText(q.question, w)];
+  const rows = [...markdownText(q.question).layout(w)];
   q.options.forEach((opt, oi) => {
-    const letter = String.fromCharCode(97 + oi);
-    const desc = opt.description ? ` — ${opt.description}` : "";
-    lines.push(...wrapText(`  ${letter}) ${opt.label}${desc}`, w));
+    const prefix = `  ${String.fromCharCode(97 + oi)}) `;
+    const source = opt.label + (opt.description ? ` — ${opt.description}` : "");
+    const gutter = w > prefix.length ? prefix : "";
+    markdownText(source)
+      .layout(Math.max(1, w - gutter.length))
+      .forEach((r, i) => {
+        const lead = i === 0 ? gutter : " ".repeat(gutter.length);
+        rows.push({ text: lead + r.text, spans: [{ text: lead }, ...r.spans] });
+      });
   });
-  return lines;
+  return rows;
 };
 
-/** `AskUserQuestion` rendered as lettered choices for one question at a time.
- *  Falls back to the generic raw-JSON dump if the call didn't match the
- *  expected shape. */
-const describeAskUserQuestion = (input: unknown, w: number, active = 0): string[] => {
-  const qs = parseAskUserQuestions(input);
-  if (qs.length === 0) return describeRequest(input, w);
-  return askQuestionLines(qs, active, w).slice(0, REQUEST_PANEL_MAX_BODY);
+export const askQuestionLines = (qs: AskUserQuestionItem[], active: number, w: number): string[] =>
+  askQuestionRows(qs, active, w).map((r) => r.text);
+
+/** Shared geometry for question/plan previews and their painted rows. */
+const prepareRequestRows = (
+  request: SessionInteraction,
+  w: number,
+  active: number,
+): readonly TextRow[] | null => {
+  if (request.kind === "question") {
+    return markdownText(
+      request.question + (request.context ? "\n\n" + request.context : ""),
+    ).layout(w);
+  }
+  if (request.kind === "plan_review") return markdownText(request.plan).layout(w);
+  if (request.kind === "user_question") {
+    const qs = parseAskUserQuestions(request.input);
+    if (qs.length) return askQuestionRows(qs, active, w);
+  }
+  return null;
 };
 
-/** Rows {@link RequestPanel} needs to show `pending` at `width` without
- *  clipping the active question. Non-question requests keep the fixed
- *  {@link REQUEST_PANEL_ROWS}; an `AskUserQuestion` grows to fit question
- *  `questionIdx`'s options, capped at {@link REQUEST_PANEL_MAX_BODY}. */
+// Requests are immutable snapshots. Share the last layout between measurement,
+// painting and animation frames without retaining resolved requests.
+const requestLayoutCache = new WeakMap<
+  SessionInteraction,
+  {
+    width: number;
+    active: number;
+    rows: readonly TextRow[] | null;
+  }
+>();
+const requestDocumentRows = (
+  request: SessionInteraction,
+  width: number,
+  active: number,
+): readonly TextRow[] | null => {
+  const hit = requestLayoutCache.get(request);
+  if (hit?.width === width && hit.active === active) return hit.rows;
+  const rows = prepareRequestRows(request, width, active);
+  requestLayoutCache.set(request, { width, active, rows });
+  return rows;
+};
+
 export const requestPanelRows = (
   request: SessionInteraction | null,
   width: number,
   questionIdx = 0,
 ): number => {
-  if (request?.kind !== "user_question") return REQUEST_PANEL_ROWS;
-  const qs = parseAskUserQuestions(request.input);
-  if (qs.length === 0) return REQUEST_PANEL_ROWS;
-  const body = Math.max(
-    REQUEST_PANEL_MIN_BODY,
-    Math.min(REQUEST_PANEL_MAX_BODY, askQuestionLines(qs, questionIdx, inside(width)).length),
+  const rows = request && requestDocumentRows(request, inside(width), questionIdx);
+  return (
+    REQUEST_PANEL_CHROME +
+    Math.max(
+      REQUEST_PANEL_MIN_BODY,
+      Math.min(REQUEST_PANEL_MAX_BODY, rows?.length ?? REQUEST_PANEL_MIN_BODY),
+    )
   );
-  return REQUEST_PANEL_CHROME + body;
 };
 
 const describeRequest = (input: unknown, w: number): string[] => {
@@ -1329,33 +1361,30 @@ export const RequestPanel = ({
   const w = inside(width);
   if (request === null) return null;
   const capacity = requestPanelRows(request, width, questionIdx) - REQUEST_PANEL_CHROME;
-  const box = (title: string, body: string[], hint: string, context?: string): ReactNode => (
+  const documentRows = requestDocumentRows(request, w, questionIdx);
+  const box = (title: string, body: string[], hint: string): ReactNode => (
     <Panel width={width} tone="await_" title={title}>
-      <Lines lines={body.slice(0, capacity)} tone="text" />
-      {context && body.length < capacity && <Line tone="faint">{context}</Line>}
+      <Box height={capacity} flexDirection="column" overflow="hidden">
+        {(documentRows ?? body.flatMap((s) => plainText(s).layout(w)))
+          .slice(0, capacity)
+          .map((r, i) => (
+            <Line key={i} tone="text">
+              <StyledText spans={r.spans} />
+            </Line>
+          ))}
+      </Box>
       <Line tone="faint">{hint}</Line>
     </Panel>
   );
-  const lines = (text: string, max: number): string[] =>
-    wrapText(text.replace(/\s+/g, " ").trim(), w).slice(0, max);
   // "…and N more" is the whole reason the panel takes a count: answering the
   // one on screen leaves the others outstanding and the turn still blocked.
   const alsoQueued = queued > 1 ? `  ·  ${queued - 1} more queued` : "";
 
   return foldInteraction<ReactNode>({
-    onQuestion: (q) =>
-      box(
-        "? QUESTION",
-        lines(q.question, 4),
-        `a answer  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
-        q.context ? truncate(q.context.replace(/\s+/g, " ").trim(), w) : undefined,
-      ),
-    onPlanReview: (p) =>
-      box(
-        "❖ PLAN REVIEW",
-        lines(p.plan, 5),
-        `a review  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
-      ),
+    onQuestion: () =>
+      box("? QUESTION", [], `a answer  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`),
+    onPlanReview: () =>
+      box("❖ PLAN REVIEW", [], `a review  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`),
     onUserQuestion: (u) => {
       const qs = parseAskUserQuestions(u.input);
       // Title position marker: which question of this call we're on, plus —
@@ -1368,7 +1397,7 @@ export const RequestPanel = ({
         .join(" · ");
       return box(
         `? QUESTION${pos ? ` (${pos})` : ""}`,
-        describeAskUserQuestion(u.input, w, questionIdx),
+        documentRows ? [] : describeRequest(u.input, w),
         `a answer  ·  d deny${
           qs.length > 1 ? "  ·  ←/→ question" : ""
         }  ·  ⌥o / o view  ·  i interrupt${alsoQueued}`,
@@ -1417,7 +1446,8 @@ export const PlanReview = ({
   target?: { tag: string; color: string };
 }): ReactNode => {
   const w = inside(width);
-  const lines = plan.text.split("\n").flatMap((ln) => (ln === "" ? [""] : wrapText(ln, w)));
+  const document = useMemo(() => markdownText(plan.text), [plan.text]);
+  const lines = document.layout(w);
   const frac = ctx && ctx.limit > 0 ? Math.min(1, ctx.used / ctx.limit) : null;
 
   const shown =
@@ -1451,7 +1481,7 @@ export const PlanReview = ({
       <Box height={window} flexShrink={0} flexDirection="column" overflow="hidden">
         {body.map((line, i) => (
           <Line key={i} tone="text">
-            {line || " "}
+            <StyledText spans={line.spans} />
           </Line>
         ))}
       </Box>
