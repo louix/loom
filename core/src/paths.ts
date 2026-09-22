@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 
 /**
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
@@ -80,7 +82,35 @@ export interface LoomPaths {
   trees: string;
 }
 
-export const loomPaths = (repoRoot: string): LoomPaths => {
+/** Resolve an exact configured directory, or a repository-specific XDG data path. */
+export const worktreeDirectory = (
+  repoRoot: string,
+  configured = "",
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string => {
+  const home = env["HOME"] || homedir();
+  if (configured) {
+    if (configured === "~") return home;
+    if (configured.startsWith("~/")) return resolve(home, configured.slice(2));
+    return resolve(repoRoot, configured);
+  }
+  let identity = resolve(repoRoot);
+  try {
+    identity = realpathSync(identity);
+  } catch {
+    // Paths are also used before a repository has been created.
+  }
+  const name =
+    basename(identity)
+      .replace(/[^a-zA-Z0-9._-]/g, "-")
+      .slice(0, 48) || "repo";
+  const hash = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  const xdg = env["XDG_DATA_HOME"];
+  const data = xdg && isAbsolute(xdg) ? xdg : join(home, ".local", "share");
+  return join(data, "loom", "worktrees", `${name}-${hash}`);
+};
+
+export const loomPaths = (repoRoot: string, configuredTrees = ""): LoomPaths => {
   const dir = join(repoRoot, ".loom");
   return {
     repoRoot,
@@ -91,14 +121,13 @@ export const loomPaths = (repoRoot: string): LoomPaths => {
     log: join(dir, "daemon.log"),
     tuiLog: join(dir, "tui.log"),
     tuiState: join(dir, "tui.json"),
-    trees: join(dir, "trees"),
+    trees: worktreeDirectory(repoRoot, configuredTrees),
   };
 };
 
-/** Create `.loom/` (and `.loom/trees/`) if missing. */
+/** Create repository-local state. WorktreeManager creates its directory on demand. */
 export const ensureLoomDir = (paths: LoomPaths): void => {
   mkdirSync(paths.dir, { recursive: true });
-  mkdirSync(paths.trees, { recursive: true });
 };
 
 /**

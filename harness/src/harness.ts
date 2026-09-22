@@ -22,6 +22,7 @@ setLogLevel("error"); // keep test output quiet
 // providers, live credentials, start-up network probes). Point XDG at an empty
 // dir; each harness also supplies its own trusted config file.
 Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
+Deno.env.set("XDG_DATA_HOME", mkdtempSync(join(tmpdir(), "loom-data-")));
 
 export interface Harness {
   repoRoot: string;
@@ -86,6 +87,7 @@ export const makeHarness = async (
     async cleanup() {
       await daemon.stop("test-cleanup").catch(() => {});
       rmSync(configDir, { recursive: true, force: true });
+      rmSync(loomPaths(repoRoot).trees, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     },
   } as Harness;

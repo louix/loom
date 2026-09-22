@@ -6,7 +6,12 @@ import { vmArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
 Deno.test("repo mounts retain external worktree pointers without mounting their common parent", async () => {
   const f = await gitFixture();
   try {
-    assert.deepEqual(await workspaceMounts(f.workspace, f.repo), [f.workspace, f.repo]);
+    const sibling = f.root + "/sibling";
+    await f.git("-C", f.repo, "worktree", "add", "-b", "sibling", sibling);
+    const mounts = await workspaceMounts(f.workspace, f.repo);
+    assert.deepEqual(mounts, [f.workspace, f.repo]);
+    assert.ok(!mounts.some((path) => sibling === path || sibling.startsWith(path + "/")));
+    assert.equal(await f.git("-C", f.workspace, "rev-parse", "--git-common-dir"), f.commonDir);
     assert.deepEqual(await workspaceMounts(f.repo), [f.repo]);
     const nested = f.repo + "/nested";
     await Deno.mkdir(nested);

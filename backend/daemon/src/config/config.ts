@@ -363,7 +363,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false },
   baseBranch: "main",
-  worktreeDir: ".loom/trees",
+  worktreeDir: "",
   providerAccess: { disabled: [] },
   isolation: { enabled: false, extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],

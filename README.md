@@ -62,10 +62,10 @@ the Vercel AI SDK.
 - **Repository layouts** — launch Loom from a normal checkout, a linked worktree,
   or a bare repository. A bare repository and all its worktrees share the bare
   repository root, including when passed through `--repo`. Their daemon, sessions,
-  and `.loom/trees/` all live under `<bare-repo>/.loom/`. Other checkouts retain
-  their own worktree root. Subdirectories and symlinks resolve to the same root.
+  and logs live under `<bare-repo>/.loom/`; session worktrees live in Loom's data directory.
+  Other checkouts retain their own worktree root. Subdirectories and symlinks resolve to the same root.
   Existing `.loom/` state in a bare repository's linked worktrees is not migrated.
-- **One worktree + branch per session** — `git worktree add .loom/trees/<id>
+- **One worktree + branch per session** — `git worktree add <worktree_dir>/<id>
 -b loom/<id>` off the configured base (`base_branch`, else `HEAD`), where `<id>`
   is the session id truncated to its 8-char short form; uniqueness is enforced
   with a short suffix. The session's adapter runs with that worktree as its cwd.
@@ -690,9 +690,25 @@ loom done <id>                  # archive: stop it, drop the worktree, keep the 
 loom gc --force                # repair sweep for worktrees an archive left behind
 ```
 
-Each session gets its own worktree under `.loom/trees/<id>` on a
-`loom/<id>` branch, committed under a `Loom (<model>)` identity, with pushing
-blocked. Integrate the branch yourself, in your own git — Loom never does.
+Each session gets its own worktree under
+`~/.local/share/loom/worktrees/<repo-name>-<path-hash>/<id>` (or
+`$XDG_DATA_HOME/loom/worktrees/…`) on a `loom/<id>` branch, committed under
+a `Loom (<model>)` identity, with pushing blocked. Integrate the branch yourself,
+in your own git — Loom never does.
+
+Set `worktree_dir` in your user config, globally or in a `repos[]` entry, to
+choose an exact directory, including another drive:
+
+```jsonc
+{ "repos": [{ "path": "~/dev/my-project", "worktree_dir": "/mnt/ssd/loom/my-project" }] }
+```
+
+Absolute paths, `~/` paths and paths relative to the repository are supported.
+Use a separate override directory for each repository. Omit the setting or use
+`""` for the automatic default; an explicit `".loom/trees"` keeps the old layout.
+Restart the daemon after changing it. Existing sessions keep their recorded
+paths; new sessions and revived archived sessions use the new location.
+Repository-local state and steering files remain in `.loom/`.
 
 Repo-specific steering goes in `.loom/LOOM.md` — init commands, how to
 typecheck, house conventions. When present, its content is injected into every

@@ -8,9 +8,17 @@ repository and the selected worktree at their original absolute paths. External
 Git common directories are mounted too, so linked worktree pointers remain valid.
 Preparation uses the same layout with a disposable worktree.
 
-Keep session worktrees inside the repository (the default `.loom/trees` layout).
-External worktrees need another mount; the current x86 Linux backend can exhaust
-its virtual-device IRQs when combined with a persistent provider profile.
+Session worktrees default to `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/<id>`
+(`~/.local/share` when unset). Only the selected external worktree is mounted,
+so the repository mount no longer exposes sibling session worktrees.
+Existing worktrees under `.loom/trees` remain visible through that repository mount
+until those sessions are archived. The `worktree_dir` config setting overrides
+the directory, including a location on another drive.
+
+External worktrees require another mount. Older x86 Linux VM configurations
+have exhausted virtual-device IRQs with additional mounts and a persistent
+provider profile. Host Git and mount-layout tests cover external paths; a real
+VM run is still needed to verify the device limit on a given backend.
 
 Real Git runs inside the VM for agents, setup scripts and packaged MCP tools.
 There is no Git shim, host Git worker or command allowlist. Commits and edits are
@@ -24,8 +32,8 @@ inside the guest and their commands must be available there. A rejecting
 `pre-commit` hook fails the Git command and returns its output to the agent.
 Loom's `workspace_start` hook runs on worker creation and resume in both VM and host sessions.
 
-This trusts agents with the mounted repository: shared hooks/config and sibling
-worktrees are accessible. Changes to hooks/config can execute code when Git later
+This trusts agents with the mounted repository: shared hooks/config and any
+worktrees still nested inside it are accessible. Changes to hooks/config can execute code when Git later
 runs on the host. Files and secrets inside the repo are not isolated from agents.
 Unmounted home directories, provider profiles and private VM state remain outside
 the repo mount. Network allowlists and per-session VM lifetimes are unchanged.

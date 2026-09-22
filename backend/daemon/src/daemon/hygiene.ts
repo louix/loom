@@ -49,7 +49,7 @@ export const pidAlive = (pid: number): boolean => {
  *     re-drives the actively-working ones (blocked ones stay parked)
  *   - child processes (Claude CLI, MCP servers) from a prior daemon epoch are
  *     signalled to exit and their bookkeeping rows dropped
- *   - stale git index locks under `.loom/trees/` are removed and worktrees pruned
+ *   - stale git index locks in current and legacy tree directories are removed
  */
 export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
   const { paths, registry, children, epoch, log } = input;
@@ -112,15 +112,16 @@ const tidyWorktrees = (
   log: Logger,
 ): { clearedLocks: string[]; worktreePruned: boolean } => {
   const clearedLocks: string[] = [];
-  if (existsSync(paths.trees)) {
+  for (const trees of new Set([paths.trees, join(paths.dir, "trees")])) {
+    if (!existsSync(trees)) continue;
     let entries: string[] = [];
     try {
-      entries = readdirSync(paths.trees);
+      entries = readdirSync(trees);
     } catch {
       entries = [];
     }
     for (const name of entries) {
-      const treeDir = join(paths.trees, name);
+      const treeDir = join(trees, name);
       try {
         if (!statSync(treeDir).isDirectory()) continue;
       } catch {

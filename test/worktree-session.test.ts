@@ -93,7 +93,8 @@ test("session.create gives the session its own worktree + branch off base", asyn
     provider: "fake",
   });
   // Both the worktree dir and the branch are named after the session id.
-  assert.ok(s.worktree && s.worktree.includes(`/.loom/trees/${s.id.slice(0, 8)}`));
+  assert.equal(s.worktree, join(h.daemon.paths.trees, s.id.slice(0, 8)));
+  assert.ok(!s.worktree.startsWith(h.repoRoot + "/"));
   assert.equal(s.branch, `loom/${s.id.slice(0, 8)}`);
   assert.equal(s.baseBranch, "main");
   assert.ok(existsSync(s.worktree as string));

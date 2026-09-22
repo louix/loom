@@ -375,7 +375,8 @@
       "type": "string"
     },
     "worktree_dir": {
-      "default": ".loom/trees",
+      "default": "",
+      "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
       "type": "string"
     },
     "db": {
@@ -1524,7 +1525,8 @@
             "type": "string"
           },
           "worktree_dir": {
-            "default": ".loom/trees",
+            "default": "",
+            "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
             "type": "string"
           },
           "db": {

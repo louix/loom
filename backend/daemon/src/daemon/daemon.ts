@@ -326,6 +326,7 @@ export class Daemon {
       if (created) this.#log.info("wrote a starter config", { path: created });
     }
     this.config = loadConfig(this.repoRoot, this.#configFile);
+    this.paths.trees = loomPaths(this.repoRoot, this.config.worktreeDir).trees;
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
     this.#registry = new Registry(this.#db);
@@ -351,7 +352,7 @@ export class Daemon {
     });
     this.#worktrees = new WorktreeManager({
       repoRoot: opts.repoRoot,
-      treesDir: resolveAgainstRepo(opts.repoRoot, this.config.worktreeDir),
+      treesDir: this.paths.trees,
       hooksDir: join(this.paths.dir, "hooks"),
       baseBranch: this.config.baseBranch,
       cloneRoot: sessionCloneRoot(opts.repoRoot),

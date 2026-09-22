@@ -194,7 +194,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),
     base_branch: text(d.baseBranch),
-    worktree_dir: text(d.worktreeDir),
+    worktree_dir: text(d.worktreeDir).describe(
+      "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
+    ),
     db: text(d.db),
     default_provider: text(d.defaultProvider),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),

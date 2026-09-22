@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findRepoRoot, loomPaths } from "@loom/core/paths";
+import { findRepoRoot, loomPaths, worktreeDirectory } from "@loom/core/paths";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { makeLogger } from "@loom/core/logger";
 import { loadConfig } from "@loom/daemon/config/config";
@@ -84,7 +84,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
 
     // Migration moves core.bare into config.worktree. Identity must survive it,
     // including discovery from Loom's own generated worktrees.
-    const paths = loomPaths(bare);
+    const paths = loomPaths(bare, join(root, "trees"));
     const manager = new WorktreeManager({
       repoRoot: bare,
       treesDir: paths.trees,
@@ -96,6 +96,36 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
     for (const launch of [bare, bareLinked, alias, session.path])
       assert.equal(findRepoRoot(launch), bare);
     assert.throws(() => findRepoRoot(root), /not inside a git repository/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("worktree directories use persistent XDG storage with distinct canonical repository identities", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "loom-tree-paths-")));
+  try {
+    const repo = join(root, "one", "project");
+    const other = join(root, "two", "project");
+    const alias = join(root, "alias");
+    mkdirSync(repo, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    symlinkSync(repo, alias);
+    const env = { HOME: join(root, "home"), XDG_DATA_HOME: join(root, "data") };
+    const path = worktreeDirectory(repo, "", env);
+    assert.ok(path.startsWith(join(env.XDG_DATA_HOME, "loom", "worktrees", "project-")));
+    assert.equal(worktreeDirectory(alias, "", env), path);
+    assert.notEqual(worktreeDirectory(other, "", env), path);
+    const fallback = worktreeDirectory(repo, "", { HOME: env.HOME });
+    assert.ok(fallback.startsWith(join(env.HOME, ".local", "share", "loom", "worktrees") + "/"));
+    assert.equal(
+      worktreeDirectory(repo, "", { HOME: env.HOME, XDG_DATA_HOME: "relative" }),
+      fallback,
+    );
+    assert.equal(worktreeDirectory(repo, "", { HOME: env.HOME, XDG_DATA_HOME: "" }), fallback);
+    assert.equal(worktreeDirectory(repo, "/mnt/ssd/trees", env), "/mnt/ssd/trees");
+    assert.equal(worktreeDirectory(repo, "~/trees", env), join(env.HOME, "trees"));
+    assert.equal(worktreeDirectory(repo, ".loom/trees", env), join(repo, ".loom", "trees"));
+    assert.equal(loomPaths(repo, "/mnt/ssd/trees").trees, "/mnt/ssd/trees");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

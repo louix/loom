@@ -3,7 +3,9 @@
 {
   "$schema": "./config.schema.json",
   "base_branch": "main",
-  "worktree_dir": ".loom/trees",
+  // Empty uses ~/.local/share/loom/worktrees/<repo>-<hash> (respects XDG_DATA_HOME).
+  // Override per repo with an absolute, ~/ or repo-relative directory.
+  "worktree_dir": "",
   "daemon": { "idle_shutdown_minutes": 30 },
   // Include the event log as a second file on Alt+E (Vim/Neovim may need :wq!).
   "tui": { "include_event_log_in_editor": false },
@@ -74,6 +76,7 @@
   "repos": [
     // {
     //   "path": "~/dev/my-project",
+    //   "worktree_dir": "/mnt/fast-drive/loom/my-project",
     //   "session": {
     //     "auto_nix": true,
     //     "isolation": { "enabled": true, "network_presets": ["nix", "javascript"] },
