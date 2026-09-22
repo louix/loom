@@ -3970,3 +3970,79 @@ test("session inspection RPC reads the selected local checkout and reports missi
     await cleanup();
   }
 });
+
+for (const outcome of ["success", "cancelled", "failure"] as const) {
+  test(`new-session ${outcome} never takes focus from an existing reply prompt`, async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      const a = testSession({ id: "a", status: stateIdle });
+      const b = snap({ id: "b", status: "starting", createdAt: 2 });
+      fake.deliver(fleetOf(a));
+      handle.handleKey("n", {} as Key);
+      handle.handleKey("new work", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      const create = fake.of("session.create")[0]!;
+      assert.ok(create);
+      assert.equal(handle.getView().ui.selectedId, "a");
+      assert.equal(handle.getView().ui.overlay.t, "browse");
+      fake.deliver(fleetOf(b, a));
+      assert.equal(handle.getView().ui.selectedId, "a");
+      await delay(110); // A deliberate new interaction after the submit latch.
+      handle.handleKey("", { return: true } as Key);
+      handle.handleKey("reply in progress", {} as Key);
+      const overlay = handle.getView().ui.overlay;
+      assert.equal(openPrompt(overlay)?.buffer.text, "reply in progress");
+
+      if (outcome === "failure") {
+        create.reject(
+          Object.assign(new Error("Provider startup failed"), { data: { sessionId: "b" } }),
+        );
+      } else {
+        create.resolve(
+          snap({ id: "b", status: outcome === "success" ? "running" : "interrupted" }),
+        );
+      }
+      await delay(0);
+      assert.equal(handle.getView().ui.selectedId, "a");
+      assert.equal(handle.getView().ui.overlay, overlay);
+      assert.match(
+        handle.getView().ui.notice?.text ?? "",
+        { success: /started/, cancelled: /cancelled/, failure: /Provider startup failed/ }[outcome],
+      );
+    } finally {
+      teardown();
+    }
+  });
+}
+
+test("overlapping creates completing in reverse order never change a manual selection", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const a = testSession({ id: "a", status: stateIdle });
+    const b = snap({ id: "b", status: "starting", createdAt: 2 });
+    const c = snap({ id: "c", status: "starting", createdAt: 3 });
+    fake.deliver(fleetOf(a));
+    for (const text of ["first", "second"]) {
+      handle.handleKey("n", {} as Key);
+      handle.handleKey(text, {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      await delay(110);
+    }
+    assert.equal(fake.of("session.create").length, 2);
+    fake.deliver(fleetOf(a, b, c));
+    handle.handleKey("k", {} as Key); // Select b above a.
+    assert.equal(handle.getView().ui.selectedId, "b");
+    fake.of("session.create")[1]!.resolve(c);
+    await delay(0);
+    assert.equal(handle.getView().ui.selectedId, "b");
+    fake.of("session.create")[0]!.resolve(b);
+    await delay(0);
+    assert.equal(handle.getView().ui.selectedId, "b");
+  } finally {
+    teardown();
+  }
+});

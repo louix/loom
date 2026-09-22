@@ -1,4 +1,4 @@
-import type { SessionState, SessionStateKind } from "@loom/core/events";
+import type { SessionState } from "@loom/core/events";
 import type { SessionSnapshot } from "@loom/core/wire";
 import {
   SessionStore,
@@ -8,17 +8,8 @@ import {
 } from "../store/sessions.ts";
 import type { Db } from "../store/db.ts";
 
-/** Fleet-view group order (design spec §4). Lower rank sorts first. */
-const GROUP_RANK: Record<SessionStateKind, number> = {
-  awaiting_input: 0,
-  running: 1,
-  starting: 1, // transient — sits with running
-  working_background: 2, // settled main loop, background work still in flight
-  interrupted: 3,
-  idle: 4,
-  error: 5,
-  done: 6,
-};
+import { sortSessions as sortSnapshots } from "@loom/core/session-order";
+export { sortSnapshots };
 
 /**
  * Owns session state: a thin, write-through layer over SessionStore that adds
@@ -54,7 +45,7 @@ export class Registry {
     return this.#store.list();
   }
 
-  /** Snapshots in fleet-view order: by status group, then recency within group. */
+  /** Snapshots in fleet-view order: status group, then newest-created first. */
   listSorted(): SessionSnapshot[] {
     return sortSnapshots(this.#store.list());
   }
@@ -94,15 +85,3 @@ export class Registry {
     this.#store.delete(id);
   }
 }
-
-export const sortSnapshots = (list: SessionSnapshot[]): SessionSnapshot[] => {
-  return [...list].sort((a, b) => {
-    const ga = GROUP_RANK[a.status.kind] ?? 9;
-    const gb = GROUP_RANK[b.status.kind] ?? 9;
-    if (ga !== gb) return ga - gb;
-    // awaiting_input: oldest prompt first (longest-blocked is most urgent).
-    if (a.status.kind === "awaiting_input") return a.updatedAt - b.updatedAt;
-    // every other group: most recently active first.
-    return b.updatedAt - a.updatedAt;
-  });
-};

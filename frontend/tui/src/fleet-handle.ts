@@ -1745,8 +1745,7 @@ export const mkFleetHandle = ({
             ...(p.settings.model ? { model: p.settings.model } : {}),
             ...(p.settings.effort ? { effort: p.settings.effort } : {}),
           });
-          dispatch({ t: "select", id: r.id });
-          dispatch({ t: "pushHistory", text });
+          // Creation runs in the background. Completion never owns selection.
           // No local echo — the daemon emits a `user_message` for the opening
           // prompt too, so it's in the log for every client and after a reopen.
           return r.status.kind === "interrupted" ? "startup cancelled" : `started ${shortId(r.id)}`;
@@ -1790,11 +1789,14 @@ export const mkFleetHandle = ({
           }
           return;
         }
-        // The daemon saved both the message and error on this session.
-        // Select it so the failure stays visible in its detail / event history.
+        // The daemon saved the message and error on this session. Report where
+        // to inspect it without taking focus from whatever the user is doing.
         const failedSession = (e as { data?: { sessionId?: unknown } })?.data?.sessionId;
         if ((p.t === "new" || sendTo !== null) && typeof failedSession === "string") {
-          dispatch({ t: "select", id: failedSession });
+          note(
+            `session ${shortId(failedSession)}: ${e instanceof Error ? e.message : String(e)}`,
+            "bad",
+          );
           return;
         }
         // The connection dropped mid-request — the daemon may have run it to

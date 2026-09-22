@@ -7,6 +7,8 @@
 import { commandHint, type ActName, type KeyHint } from "./commands.ts";
 export type { ActName, KeyHint } from "./commands.ts";
 import { absurd } from "@loom/core/absurd";
+import { sortSessions } from "@loom/core/session-order";
+export { sortSessions };
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import type {
@@ -542,28 +544,6 @@ const applyPush = (s: TuiState, frame: PushFrame): TuiState => {
 // ---------------------------------------------------------------------------
 // selection / ordering
 // ---------------------------------------------------------------------------
-
-const RANK: Record<SessionStateKind, number> = {
-  awaiting_input: 0,
-  running: 1,
-  starting: 2,
-  working_background: 3,
-  interrupted: 4,
-  idle: 5,
-  error: 6,
-  done: 7,
-};
-
-/** Fleet-view order: by status group, then most-recently-active first. */
-export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[] => {
-  return [...list].sort((a, b) => {
-    const r = RANK[a.status.kind] - RANK[b.status.kind];
-    if (r !== 0) return r;
-    if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
-    if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
-    return a.id < b.id ? -1 : Number(a.id > b.id);
-  });
-};
 
 /** One live child of a fleet row: a background task or an in-flight sub-agent. */
 export interface FleetChild {

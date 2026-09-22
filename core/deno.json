@@ -4,6 +4,7 @@
     "./absurd": "./src/absurd.ts",
     "./events": "./src/events.ts",
     "./session-state": "./src/session-state.ts",
+    "./session-order": "./src/session-order.ts",
     "./interaction": "./src/interaction.ts",
     "./loadable": "./src/loadable.ts",
     "./wire": "./src/wire.ts",

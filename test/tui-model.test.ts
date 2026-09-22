@@ -214,9 +214,9 @@ test("hello keeps the current selection when that session is still present", () 
   assert.equal(s.selectedId, "b");
 });
 
-test("sortSessions: status group first, then most-recently-updated", () => {
-  const older = snap({ id: "old", status: "running", updatedAt: 10 });
-  const newer = snap({ id: "new", status: "running", updatedAt: 99 });
+test("sortSessions: status group first, then newest-created regardless of activity", () => {
+  const older = snap({ id: "old", status: "running", createdAt: 10, updatedAt: 999 });
+  const newer = snap({ id: "new", status: "running", createdAt: 99, updatedAt: 99 });
   const waiting = snap({ id: "wait", status: "awaiting_input" });
   assert.deepEqual(
     sortSessions([older, newer, waiting]).map((x) => x.id),
@@ -2990,9 +2990,9 @@ test("session recall restores persisted messages independently of global history
 
 for (const action of ["remove", "archive"] as const) {
   test(`${action} selects the previous surviving row and handles list boundaries`, () => {
-    const a = snap({ id: "a", status: "running", updatedAt: 3 });
-    const b = snap({ id: "b", status: "running", updatedAt: 2 });
-    const c = snap({ id: "c", status: "running", updatedAt: 1 });
+    const a = snap({ id: "a", status: "running", createdAt: 3 });
+    const b = snap({ id: "b", status: "running", createdAt: 2 });
+    const c = snap({ id: "c", status: "running", createdAt: 1 });
     const change = (id: string) => (action === "archive" ? [snap({ id, status: "done" })] : []);
     const select = (id: string) =>
       reduce(reduce(initialState(), fleet([c, a, b])), { t: "select", id });
