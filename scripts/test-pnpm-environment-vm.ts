@@ -72,10 +72,16 @@ try {
     auth: {},
     providerHosts: [],
     extraAllowedHosts: expandNetworkPresets(["nix", "javascript"]),
+    prepareHooks: [
+      {
+        name: "native addon",
+        timeoutMs: 900_000,
+        run: `pnpm install
+node -e 'const cpu = require("cpu-features")(); if (!cpu.arch) process.exit(1); console.log("LOOM_NATIVE_ADDON_OK", cpu.arch)'`,
+      },
+    ],
     environment: normalizeSessionEnvironment({
       command_prefix: ["nix", "develop", "path:.", "--no-write-lock-file", "--command"],
-      prepare: `pnpm install
-node -e 'const cpu = require("cpu-features")(); if (!cpu.arch) process.exit(1); console.log("LOOM_NATIVE_ADDON_OK", cpu.arch)'`,
     }),
   });
   let output = "";

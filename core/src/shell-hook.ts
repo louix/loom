@@ -14,6 +14,7 @@ export const executeShellHook = (
   env: Record<string, string>,
   timeoutMs: number,
   signal: AbortSignal,
+  output?: "inherit",
 ): Promise<HookAttempt> => {
   signal.throwIfAborted();
   return new Promise<Attempt>((settle, fail) => {
@@ -23,7 +24,7 @@ export const executeShellHook = (
     const child = spawn("sh", ["-c", command], {
       cwd,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", output ?? "pipe", output ?? "pipe"],
       detached: true,
     });
     let out = "";
@@ -31,8 +32,8 @@ export const executeShellHook = (
     const append = (chunk: Buffer): void => {
       if (out.length < OUTPUT_CAP) out += chunk.toString("utf8");
     };
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
     const kill = (): void => {
       try {
         if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");

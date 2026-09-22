@@ -26,9 +26,9 @@ export const runWorkspacePrepare = async (
       },
       hook.timeoutMs,
       signal,
+      "inherit",
     );
     signal.throwIfAborted();
-    if (result.output) report(result.output);
     if (result.code !== 0)
       throw new Error(
         "workspace_prepare hook " +

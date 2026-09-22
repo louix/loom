@@ -58,3 +58,17 @@ Deno.test("workspace lifecycle configuration rejects removed commands and async 
   });
   assert.equal(config.hooks[0]?.timeoutMs, 3_600_000);
 });
+
+Deno.test("preparation streams complete output, including the end of a long failure log", async () => {
+  const module = new URL("../core/src/workspace-prepare.ts", import.meta.url).href;
+  const source = `import {runWorkspacePrepare} from ${JSON.stringify(module)};
+await runWorkspacePrepare([{name:"long log",run:"head -c 9000 /dev/zero; printf END_OF_FAILURE_LOG; exit 7",timeoutMs:1000}],Deno.cwd(),new AbortController().signal);`;
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", source],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert.equal(result.success, false);
+  assert(new TextDecoder().decode(result.stdout).endsWith("END_OF_FAILURE_LOG"));
+  assert.match(new TextDecoder().decode(result.stderr), /long log failed \(exit 7\)/);
+});

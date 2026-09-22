@@ -34,6 +34,7 @@ const config = async (prepare: string) => {
   await Deno.writeTextFile(
     join(configHome, "loom/config.jsonc"),
     `{
+  "hooks": [{ "on": "workspace_prepare", "run": ${JSON.stringify(prepare)}, "timeout": 180 }],
   "default_provider": "openai",
   "providers": {
     "openai_compatible": {
@@ -56,7 +57,6 @@ const config = async (prepare: string) => {
       },
       "environment": {
         "command_prefix": ${JSON.stringify(["sh", "-c", 'echo activation-output; exec "$@"', "activation"])},
-        "prepare": ${JSON.stringify(prepare)},
         "timeout_seconds": 180
       }
     }
@@ -153,9 +153,7 @@ try {
   const selected = await currentRepoBase(home, artifact);
   // A fresh worktree must materialize dependencies entirely from the VM cache.
   const directory = join(f.root, "session");
-  const environment = normalizeSessionEnvironment({
-    prepare: "exit 99", // A session must never evaluate preparation against its worktree.
-  });
+  const environment = normalizeSessionEnvironment({ command_prefix: ["env"] });
   const start = async (expectedBase: number, during?: () => Promise<void>) => {
     const progress: string[] = [];
     const worker = await launchSessionVm({
