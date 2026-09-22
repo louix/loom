@@ -934,7 +934,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       await delay(80);
       stdin.feed("and another");
       await delay(80);
-      stdin.feed("\x1b\r"); // ⌥⏎ — queue for turn end
+      stdin.feed("\x1bq"); // ⌥q — queue for turn end
       await delay(120);
       assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
@@ -966,7 +966,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       await delay(80);
       stdin.feed("later note");
       await delay(80);
-      stdin.feed("\x1b\r"); // ⌥⏎ — queue for turn end
+      stdin.feed("\x1bq"); // ⌥q — queue for turn end
       await delay(150);
       assert.match(stdout.last, /▸ 1 queued/);
 
@@ -2377,14 +2377,54 @@ const pageOf = (
   olderCursor,
 });
 
-/** Open `send` on the selected row, type `text`, and ⌥⏎ it into the queue. */
+/** Open `send` on the selected row, type `text`, and ⌥q it into the queue. */
 const queueFollowUp = (handle: FleetHandle, text: string): void => {
   handle.handleKey("", { return: true } as Key);
   for (const ch of text) handle.handleKey(ch, {} as Key);
-  handle.handleKey("", { meta: true, return: true } as Key);
+  handle.handleKey("q", { meta: true } as Key);
 };
 
 describe("tui fleet-handle effects", () => {
+  test("⌥⏎ is a newline even while the target is working; ⌥q is the queue", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning })));
+      handle.handleKey("", { return: true } as Key); // open send
+      handle.handleKey("a", {} as Key);
+      handle.handleKey("", { meta: true, return: true } as Key);
+      handle.handleKey("b", {} as Key);
+      const overlay = handle.getView().ui.overlay;
+      assert.equal(overlay.t, "prompt");
+      if (overlay.t !== "prompt") return;
+      assert.equal(overlay.prompt.buffer.text, "a\nb", "⌥⏎ inserted a newline, nothing was sent");
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), []);
+      assert.equal(fake.of("session.send").length, 0);
+
+      handle.handleKey("q", { meta: true } as Key);
+      assert.equal(handle.getView().ui.overlay.t, "browse", "⌥q closed the prompt");
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["a\nb"]);
+      assert.equal(fake.of("session.send").length, 0, "queued, not sent, while running");
+    } finally {
+      teardown();
+    }
+  });
+  test("⌥q on an idle target is a plain send", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+      handle.handleKey("", { return: true } as Key);
+      for (const ch of "go") handle.handleKey(ch, {} as Key);
+      handle.handleKey("q", { meta: true } as Key);
+      assert.equal(fake.of("session.send").length, 1, "sent on the wire immediately");
+      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), []);
+    } finally {
+      teardown();
+    }
+  });
   test("what is not on screen is not animation", async () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });

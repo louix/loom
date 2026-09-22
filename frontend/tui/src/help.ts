@@ -6,7 +6,7 @@ const GRAMMAR_ROWS: Array<[string, string]> = [
   ["Ctrl + key", "text editing only, in the prompt (⌃a ⌃e ⌃b ⌃f ⌃u ⌃k ⌃w) — ⌃c quits"],
   [
     "Alt + key",
-    "run an action without leaving the prompt — ⌥e ⌥o ⌥x; ⌥m / ⌥p switch the model / provider (also from the fleet view)",
+    "run an action without leaving the prompt — ⌥e ⌥o ⌥q ⌥x; ⌥m / ⌥p switch the model / provider (also from the fleet view)",
   ],
   ["⇧⇥", "cycle the permission mode — on the selection, or inside a prompt (mid-message)"],
   ["Space", "the command palette — everything valid right now, fuzzy, with its key"],
@@ -26,7 +26,11 @@ const EDIT_ROWS: Array<[string, string]> = [
     "⇧⇥  ·  ⌥m  ·  ⌥p",
     "cycle the permission mode  ·  switch the model  ·  switch the provider + model — the new session's, or the one you're messaging (aisdk↔aisdk carries the transcript; Claude isn't supported yet)",
   ],
-  ["⌥x  ·  ↑ / ↓", "clear the queued messages (send)  ·  walk the prompt history"],
+  [
+    "⌥q  ·  ⌥x",
+    "queue for turn end while the session is working, send when idle  ·  clear the queued messages (send)",
+  ],
+  ["↑ / ↓", "walk the prompt history"],
 ];
 
 export const helpLines = (width: number): string[] =>

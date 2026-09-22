@@ -103,7 +103,7 @@ export const fleetDaemon = (s: Pick<TuiState, "fleet">): DaemonInfo | null =>
  *   • bare key  → act on the selected session, or move
  *   • Shift+key → the heavier / structural sibling (Q quit-all · R restart · X delete · F fork)
  *   • Ctrl+key  → text editing only, inside the prompt (⌃a/⌃e/⌃b/⌃f/⌃u/⌃k/⌃w); ⌃c quits
- *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥t ⌥x)
+ *   • Alt+key   → run an action without leaving the prompt (⌥e ⌥o ⌥p ⌥m ⌥t ⌥q ⌥x)
  *   • Space     → the command palette: everything valid right now, fuzzy, with its key
  */
 

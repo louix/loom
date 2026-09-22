@@ -111,9 +111,9 @@ export const applyKey = (
   if (key.tab) return { kind: "ignore" }; // Tab is navigation-only; ⇧⇥ (mode) is app-intercepted before this
   if (key.return) {
     // ⇧⏎ / ⌥⏎ insert a newline; bare ⏎ submits. (Shift+Enter only reaches us in
-    // terminals that send a distinct code — Alt+Enter is the portable one; ⌥e
-    // still opens $EDITOR for heavier editing.) A single-line input line has
-    // neither — ⇧/⌥⏎ is ignored there.
+    // terminals that send a distinct code — Alt+Enter is the portable one, so
+    // nothing above this may overload it; ⌥e still opens $EDITOR for heavier
+    // editing.) A single-line input line has neither — ⇧/⌥⏎ is ignored there.
     if (key.shift || key.meta) {
       if (!multiline) return { kind: "ignore" };
       return edit(text.slice(0, cursor) + "\n" + text.slice(cursor), cursor + 1);

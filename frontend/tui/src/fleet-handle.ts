@@ -1695,7 +1695,7 @@ export const mkFleetHandle = ({
       });
   };
 
-  // ⌥⏎ on a `send` prompt targeting a running/starting session: queue for
+  // ⌥q on a `send` prompt targeting a running/starting session: queue for
   // turn end instead of the normal bare-⏎ "send now" path. Also reused when a
   // send is typed during a compaction (`why` overrides the status line).
   const queueSend = (sessionId: string, text: string, why = "queued for turn end"): void => {
@@ -2069,19 +2069,23 @@ export const mkFleetHandle = ({
       if (key.meta && input === "x" && sendTo) {
         return void composer.clear(sendTo);
       }
-      // ⌥⏎ while the target is still working queues for turn end instead of its
-      // usual "insert a newline" meaning; bare ⏎ below sends now regardless.
-      if (key.meta && key.return && sendTo) {
+      // ⌥q: queue for turn end while the target is still working; on an idle
+      // target it is just a send. Bare ⏎ (applyKey's "submit") always sends
+      // now — mid-turn that lands after the current tool call — and ⌥⏎ is
+      // always a newline, never a send: the one portable newline chord must
+      // not depend on what the target happens to be doing at that instant.
+      if (key.meta && input === "q" && sendTo) {
         const target = fleetSessions(state).find((x) => x.id === sendTo);
-        if (
-          target &&
+        const busy =
+          target !== undefined &&
           (target.status.kind === "running" ||
             target.status.kind === "starting" ||
-            target.status.kind === "working_background")
-        ) {
-          const text = p.buffer.text.trim();
-          return void (text && queueSend(sendTo, text));
-        }
+            target.status.kind === "working_background");
+        const text = p.buffer.text.trim();
+        if (!text) return;
+        if (busy) return void queueSend(sendTo, text);
+        promptSubmittedAt = Date.now();
+        return void submitPrompt();
       }
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {

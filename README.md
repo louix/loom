@@ -185,11 +185,12 @@ tool calls`, thinking to `· thought for Ns`). `PgUp`/`PgDn` scroll it (`Home`/`
   place — type to narrow the list (ranked: titles first, then your messages,
   then the agent's; `'text` pins a literal substring), `↑↓` keep moving the
   selection, `enter` accepts, `esc` clears.
-  Sending to a session that's still working: `Enter` sends now, `⌥⏎` queues it
-  for when the turn ends. On an aisdk session "sends now" splices the message
-  into the running turn right after the current tool result (the model sees it
-  on its next step); on a Claude session the SDK queues it for the next turn
-  boundary. Queued messages drain automatically and `⌥x` (in the send prompt)
+  Sending to a session that's still working: `Enter` sends now, `⌥q` queues it
+  for when the turn ends (on an idle session `⌥q` is just a send). "Sends now"
+  splices the message into the running turn right after the current tool
+  result, so the model sees it on its next step — aisdk does this in Loom's own
+  loop, the Claude Agent SDK does it itself. `⌥⏎` is always a newline. Queued
+  messages drain automatically and `⌥x` (in the send prompt)
   or the palette clears them. In a prompt — and on a picker's filter line — `Ctrl` carries the readline
   motions; `⌥e` hands the text to `$EDITOR` (set `tui.include_event_log_in_editor` to `true`
   to include the event log; defaults to `false`; nothing is sent until you press enter back in the UI), `⌥o` opens just the log

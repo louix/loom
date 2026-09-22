@@ -131,18 +131,18 @@ agent. Free-form replies are also accepted and sent as typed.
 
 `Ctrl` carries the readline motions and nothing else:
 
-| key                              | motion                                                                                                                           |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `⌃a` / `⌃e`                      | start / end of line                                                                                                              |
-| `⌃b` / `⌃f`                      | one char back / forward                                                                                                          |
-| `⌃←` / `⌃→`                      | one word back / forward                                                                                                          |
-| `⌃u` / `⌃k`                      | kill to start / end of line — a second `⌃u` (nothing left on the line) clears the whole input, pasted wall of text and all       |
-| `⌃w`                             | delete the word before the cursor                                                                                                |
-| `↑` / `↓`                        | walk the prompt history (vertical caret move in multi-line text)                                                                 |
-| `Enter`                          | submit · `Esc` cancel — on a _send_ prompt targeting a still-running session, sends now (lands after the current tool call)      |
-| `Esc` on a _new_ / _send_ prompt | keeps the typed text as a draft — reopening either prompt (whichever you meant) restores it, until it's actually sent            |
-| `⇧⏎`                             | insert a newline (only in terminals that send a distinct code for Shift+Enter)                                                   |
-| `⌥⏎`                             | insert a newline — except on a _send_ prompt targeting a still-running session, where it queues the message for turn end instead |
+| key                              | motion                                                                                                                      |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `⌃a` / `⌃e`                      | start / end of line                                                                                                         |
+| `⌃b` / `⌃f`                      | one char back / forward                                                                                                     |
+| `⌃←` / `⌃→`                      | one word back / forward                                                                                                     |
+| `⌃u` / `⌃k`                      | kill to start / end of line — a second `⌃u` (nothing left on the line) clears the whole input, pasted wall of text and all  |
+| `⌃w`                             | delete the word before the cursor                                                                                           |
+| `↑` / `↓`                        | walk the prompt history (vertical caret move in multi-line text)                                                            |
+| `Enter`                          | submit · `Esc` cancel — on a _send_ prompt targeting a still-running session, sends now (lands after the current tool call) |
+| `Esc` on a _new_ / _send_ prompt | keeps the typed text as a draft — reopening either prompt (whichever you meant) restores it, until it's actually sent       |
+| `⇧⏎`                             | insert a newline (only in terminals that send a distinct code for Shift+Enter)                                              |
+| `⌥⏎`                             | insert a newline (always — it never sends)                                                                                  |
 
 `Alt` runs an action without dropping what you've typed:
 
@@ -154,6 +154,7 @@ agent. Free-form replies are also accepted and sent as typed.
 | `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
 | `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
 | `⌥p` | pick the provider / model _(new-session prompt only)_ — a model that takes a thinking-effort level asks for one as a third step                                                            |
+| `⌥q` | queue the message for turn end while the session is still working; on an idle session, plain send _(send prompt only)_                                                                     |
 | `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                                                                   |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
