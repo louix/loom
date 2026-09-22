@@ -128,6 +128,15 @@ They are not needed for automatic Nix activation:
 Local sessions use automatic detection and host resources; these advanced VM
 settings do not apply to them.
 
+On Linux, large installs can exhaust the **host VM process's** open-file limit
+even when the guest's `ulimit -n` is high. Virtiofs retains host descriptors for
+guest inode lookups. If an install reports `EMFILE`, inspect
+`/proc/<host-vmm-pid>/limits` as well as the guest limit. A limit of 100,000 was
+insufficient for a tested pnpm monorepo; 1,048,576 allowed it to complete.
+Set an adequate soft and hard limit for the login or service that launches Loom,
+then restart that launcher and its VMs. Raising a guest limit alone will not
+change the host limit. Loom does not raise host hard limits itself.
+
 ## Migrating older configuration
 
 Replace `session.environment.nix.auto_activate` with `session.auto_nix`, and

@@ -86,15 +86,58 @@ rather than relying on pnpm's import log message.
   approximately 1.4–1.6 seconds.
 - A disposable clone of gridshare-edge at `41425ca42695` exercised its actual
   Nix environment and bootstrap hook. Cold Nix activation requested 623 paths
-  (1.7 GiB compressed, 6.2 GiB unpacked). The bootstrap then failed with
-  `ERR_PNPM_EMFILE`, and preparation correctly declined to publish the base
-  after 963.6 seconds. Full-project startup/resume timings remain unverified.
-- The guest descriptor limit was 1,048,576; the host launcher and normal user
-  terminal both had soft/hard limits of 100,000. Separate disposable probes
-  successfully created 130,000 files, including a probe using 8 GiB RAM and
-  hard-link/stat operations. These results do not establish that the host
-  limit caused the pnpm failure. No host-limit or pnpm-specific workaround was
-  added to Loom.
+  (1.7 GiB compressed, 6.2 GiB unpacked). The first bootstrap failed with
+  `ERR_PNPM_EMFILE`, and preparation correctly declined to publish the base.
+- The failure reproduced with pinned SmolVM 1.16.2. The guest descriptor limit
+  was 1,048,576, but the host VMM had a soft/hard limit of 100,000. Its allocated
+  descriptor table grew from 1,024 to 131,072 slots during pnpm installation.
+  Raising only that VMM's limit to 1,048,576 allowed the same bootstrap to
+  complete and publish the diagnostic base. The retry checked 145,476 files;
+  pnpm reported 29.1 seconds, followed by the repository's bootstrap steps.
+  This was a warm retry, not a clean-install benchmark.
+- Linux virtiofs passthrough retains host descriptors for guest inode lookups.
+  The host VMM therefore needs its own adequate descriptor limit; the guest's
+  limit alone does not suffice. Configure the launching service/login limit
+  before creating VMs. The diagnostic used temporary `prlimit` changes with
+  the user's help; no limit escalation or pnpm-specific workaround was added
+  to Loom.
+- Preparation logs now stream without truncating the final failure. A regression
+  test verifies that a failure after more than 9,000 bytes remains visible.
 - The project's `NIX_EXCLUDE_CHROMIUM=1` export occurs inside the bootstrap
   hook, after activation, so it does not prevent the cold shell from fetching
   Chromium.
+
+## Gridshare-edge lifecycle validation
+
+The real bootstrap completed in preparation and in blocking startup hooks on
+mock connector creation and resume. The test advanced the host HEAD after
+preparation, then verified that both launches used that commit. Ordinary
+`git rev-parse --show-toplevel` and
+`git rev-parse --path-format=absolute --git-common-dir` reported the private
+checkout and its own `.git`. An uncommitted file and the startup-hook markers
+survived VM replacement.
+
+On this host (ext4, ordinary copies), the measured times were:
+
+| Step                                                              |    Time |
+| ----------------------------------------------------------------- | ------: |
+| Copy prepared workspace into the new session                      | 240.6 s |
+| New worker ready, including activation and blocking startup hooks |  75.2 s |
+| Resume ready, including activation and blocking startup hooks     |  47.4 s |
+
+First-session startup therefore took about 316 seconds including copying.
+These are individual runs, not controlled benchmarks. The configured async
+install hook was made blocking for validation so the measurements include its
+completion. The mock worker itself connected after 45.2 seconds on creation
+and 14.8 seconds on resume, before startup hooks.
+
+The prepared workspace occupied 4.3 GB. A sampled pnpm package and its cache
+entry shared an inode within each workspace; the session's inode differed
+from the prepared base's inode. No cross-session writable hard links were
+introduced. Resume did not copy the workspace again. Initial workspace copying
+is a significant remaining performance cost on filesystems without reflinks.
+
+The disposable VMs, source clone, prepared base and session data were removed
+after validation. User configuration still needs the documented hook migration
+when switching to the new Loom build; the existing installation's config was
+not prematurely migrated.
