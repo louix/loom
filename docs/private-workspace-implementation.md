@@ -70,3 +70,31 @@ rather than relying on pnpm's import log message.
 - Existing local-provider sessions remain outside idle VM suspension. MCP
   execution and egress remain separate; a new fs/network capability taxonomy and
   automatic workspace/cache eviction are explicitly deferred.
+
+## Workspace-hook follow-up
+
+- Replaced hook event `init` and environment setup commands with
+  `workspace_prepare` and `workspace_start`. Startup hooks run for creation,
+  resume, and environment refresh; `LOOM_START_REASON` identifies the trigger.
+- Typecheck and lint passed. The full suite passed 1,039 tests and 127 steps
+  with one stale timeout assertion; its corrected expectation and affected
+  lifecycle tests passed separately. Async startup and preparation checks also
+  passed after the final event-name correction.
+- The updated real-KVM private-workspace fixture passed preparation, current
+  host branch checkout, independent hard links/writes, and repeated startup.
+  Preparation took 139.6 seconds; prepared mock workers became ready in
+  approximately 1.4–1.6 seconds.
+- A disposable clone of gridshare-edge at `41425ca42695` exercised its actual
+  Nix environment and bootstrap hook. Cold Nix activation requested 623 paths
+  (1.7 GiB compressed, 6.2 GiB unpacked). The bootstrap then failed with
+  `ERR_PNPM_EMFILE`, and preparation correctly declined to publish the base
+  after 963.6 seconds. Full-project startup/resume timings remain unverified.
+- The guest descriptor limit was 1,048,576; the host launcher and normal user
+  terminal both had soft/hard limits of 100,000. Separate disposable probes
+  successfully created 130,000 files, including a probe using 8 GiB RAM and
+  hard-link/stat operations. These results do not establish that the host
+  limit caused the pnpm failure. No host-limit or pnpm-specific workaround was
+  added to Loom.
+- The project's `NIX_EXCLUDE_CHROMIUM=1` export occurs inside the bootstrap
+  hook, after activation, so it does not prevent the cold shell from fetching
+  Chromium.
