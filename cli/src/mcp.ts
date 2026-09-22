@@ -26,7 +26,7 @@ export const mcpCommand = async (
     try {
       if (entry.source.kind === "http") {
         const credential = entry.auth?.bearer_token_env;
-        if (credential && !Deno.env.get(credential))
+        if (!entry.auth?.bearer_token && credential && !Deno.env.get(credential))
           throw new Error(`Missing credential environment variable ${credential}`);
         rows.push({
           name,

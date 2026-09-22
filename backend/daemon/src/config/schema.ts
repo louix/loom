@@ -70,7 +70,12 @@ export const mcpDefinitionSchema = z
     source: mcpSourceSchema,
     execution: z.literal("vm").optional(),
     grants: mcpGrantsSchema.optional(),
-    auth: z.strictObject({ bearer_token_env: requiredText }).optional(),
+    auth: z
+      .strictObject({
+        bearer_token_env: requiredText.optional(),
+        bearer_token: z.string().optional(),
+      })
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (value.source.kind === "http") {

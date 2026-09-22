@@ -108,9 +108,11 @@
             "properties": {
               "bearer_token_env": {
                 "type": "string"
+              },
+              "bearer_token": {
+                "type": "string"
               }
             },
-            "required": ["bearer_token_env"],
             "additionalProperties": false
           }
         },
@@ -1380,9 +1382,11 @@
                   "properties": {
                     "bearer_token_env": {
                       "type": "string"
+                    },
+                    "bearer_token": {
+                      "type": "string"
                     }
                   },
-                  "required": ["bearer_token_env"],
                   "additionalProperties": false
                 }
               },

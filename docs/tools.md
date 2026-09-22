@@ -27,6 +27,8 @@ of the agent's execution mode.
 Tilth uses the bundled, pinned Nix runtime. Kagi uses the existing authenticated
 HTTP relay: its API key stays in the relay and is omitted from provider child
 environments. No Kagi-specific tools or argument adapters are involved.
+Existing inline credentials can use `auth.bearer_token`; a nonempty inline token
+takes precedence over `auth.bearer_token_env`.
 
 ## Permissions
 

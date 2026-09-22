@@ -241,3 +241,14 @@ test("named MCP preparation can inspect unselected definitions without connectin
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+test("inline HTTP credentials survive migration and override environment references", () => {
+  const config = normalizeConfig({
+    mcp_servers: {
+      kagi: { ...kagi, auth: { bearer_token: "fixture-token", bearer_token_env: "MISSING_TOKEN" } },
+    },
+    session: { mcp_servers: ["kagi"] },
+  });
+  assert.equal(config.httpMcp[0]!.bearerToken, "fixture-token");
+  assert.equal(config.httpMcp[0]!.bearerTokenEnv, "MISSING_TOKEN");
+});
