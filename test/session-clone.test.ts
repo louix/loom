@@ -50,6 +50,9 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
   const { git: _, ...mounted } = b;
   assert.deepEqual(vmGitArguments(mounted), []);
 
+  for (const state of [dirname(path), join(dirname(path), "cache/private")])
+    assert.throws(() => vmCreateArguments({ ...b, state }), /private workspace/);
+
   const git = b.git!;
   for (const broken of [
     { ...b, mounts: ["/home/test/repo"] },

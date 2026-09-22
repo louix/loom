@@ -106,7 +106,13 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     );
     const options: CreateSessionOptions = {
       sessionId: "session",
-      cwd,
+      cwd: join(root, "workspace/checkout"),
+      workspaceRoot: join(root, "workspace/checkout"),
+      systemPromptAppend: "Work in " + join(root, "workspace/checkout"),
+      initHooks: {
+        hooks: [],
+        env: { LOOM_REPO_ROOT: root, LOOM_WORKTREE: join(root, "workspace/checkout") },
+      },
       prompt: "hello",
       mode: "default",
       mcpServers: [
@@ -157,6 +163,13 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         frames.find((f) => f.method === "create").args[0].mcpServers[0].spec.url,
         "http://127.0.0.1:3130/mcp",
       );
+      const guestOptions = frames.find((f) => f.method === "create").args[0];
+      assert.equal(guestOptions.cwd, "/workspace/checkout");
+      assert.equal(guestOptions.workspaceRoot, "/workspace/checkout");
+      assert.equal(guestOptions.initHooks.env.LOOM_WORKTREE, "/workspace/checkout");
+      assert.equal(guestOptions.initHooks.env.LOOM_REPO_ROOT, "/workspace/checkout");
+      assert.equal(guestOptions.systemPromptAppend, "Work in /workspace/checkout");
+      assert.equal(launches[0]!.workspace, options.cwd);
       assert(progress.includes("booting fixture") && progress.includes("Session ready."));
       assert.deepEqual(generations, ["generation-1"]);
       const dir = sessionVmDirectory(root, "session");

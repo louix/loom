@@ -45,7 +45,7 @@ try {
   Deno.env.set("LOOM_WORKSPACE", workspace);
   Deno.env.set("LOOM_CHECKOUT", workspace + "/checkout");
   Deno.env.set("LOOM_CACHE", workspace + "/cache");
-  Deno.env.set("XDG_CACHE_HOME", workspace + "/cache");
+  // Keep XDG_CACHE_HOME guest-owned: Nix Git caches reject virtiofs ownership.
 } catch (error) {
   if (!(error instanceof Deno.errors.NotFound)) throw error;
 }

@@ -207,6 +207,17 @@
                     }
                   ]
                 },
+                "init": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 65536
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "timeout_seconds": {
                   "anyOf": [
                     {
@@ -246,6 +257,13 @@
               },
               "additionalProperties": false
             },
+            "idle_timeout_minutes": {
+              "default": 10,
+              "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1440
+            },
             "checkout": {
               "type": "object",
               "properties": {
@@ -257,7 +275,7 @@
                 },
                 "visible_refs": {
                   "default": [],
-                  "description": "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+                  "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
                   "maxItems": 32,
                   "type": "array",
                   "items": {
@@ -1358,6 +1376,17 @@
                           }
                         ]
                       },
+                      "init": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 65536
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "timeout_seconds": {
                         "anyOf": [
                           {
@@ -1397,6 +1426,13 @@
                     },
                     "additionalProperties": false
                   },
+                  "idle_timeout_minutes": {
+                    "default": 10,
+                    "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1440
+                  },
                   "checkout": {
                     "type": "object",
                     "properties": {
@@ -1408,7 +1444,7 @@
                       },
                       "visible_refs": {
                         "default": [],
-                        "description": "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+                        "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
                         "maxItems": 32,
                         "type": "array",
                         "items": {

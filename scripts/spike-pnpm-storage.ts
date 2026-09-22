@@ -5,6 +5,7 @@
  * The optional guest image must already contain node and pnpm on PATH.
  */
 import assert from "node:assert/strict";
+import { copyWorkspace } from "../runtime/src/session-vm/workspace.ts";
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
@@ -114,14 +115,14 @@ try {
           err: "Strict clone probe currently supports Linux only",
         };
   report.clone = { ...clone, err: clone.err.slice(0, 1200), method: "reflink-always" };
-  if (!clone.ok) {
-    await Deno.remove(left, { recursive: true }).catch((error) => {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    });
-    report.fullCopyFallback = await must("cp", ["-a", seed, left]);
-  }
+  await Deno.remove(left, { recursive: true }).catch((error) => {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  });
+  const copied = performance.now();
+  await copyWorkspace(seed, left);
+  report.workspaceCopyMs = Math.round(performance.now() - copied);
   const right = join(root, "right");
-  await must("cp", clone.ok ? ["-a", "--reflink=always", seed, right] : ["-a", seed, right]);
+  await copyWorkspace(seed, right);
   report.hostWarmLeft = await hostProbe(left);
   report.hostWarmRight = await hostProbe(right);
   const payload = (path: string) =>

@@ -224,7 +224,73 @@ garbage collection. Released Nix store paths are reclaimed by normal Nix GC,
 provided no other roots (such as older profile generations) still retain them.
 Host worktrees, conversation profiles and package-manager caches are preserved.
 
-## Host package caches
+## Private prepared workspaces
+
+With `session.isolation.checkout.mode: "clone"`, preparation builds a clean
+independent clone and a sibling cache directory. A new session gets a private
+copy of both, mounted together at `/workspace`. Its working directory is
+`/workspace/checkout`; `LOOM_WORKSPACE`, `LOOM_CHECKOUT`, and `LOOM_CACHE`
+expose these paths. The host repository and Git directory are not mounted.
+Git fetch/push goes through the host relay; only the session's branch is writable.
+Repository history must be considered readable, regardless of advertised refs.
+
+Configure installation using generic commands in your trusted repo settings:
+
+```jsonc
+"session": {
+  "isolation": {
+    "checkout": { "mode": "clone" },
+    "network_presets": ["javascript"],
+    "idle_timeout_minutes": 10,
+    "environment": {
+      "prepare": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
+      "init": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
+    },
+  },
+}
+```
+
+The example requires pnpm in the project shell or runtime. `prepare` runs during
+`loom vm prepare`, without provider credentials. `environment.init` runs after
+checkout and activation on every VM start, including resume, and must be safe to
+repeat. Failure stops startup. This differs from conversation `init` hooks above,
+which run once and report failures to the agent. Preparation must leave tracked
+files unchanged; generated dependencies and caches are retained.
+
+New sessions start at their host branch's current tip even if preparation is
+older. Existing sessions retain local edits and commits. A new preparation does
+not overwrite existing workspaces; their next init reconciles dependencies.
+
+Copying preserves hard links inside each private workspace, allowing pnpm or uv
+to link between the cache and checkout on one guest device. Sessions and the
+prepared base never share writable inodes. Files use reflinks when available
+and ordinary copies otherwise. On ext4 without reflink support, each session
+still needs a full private copy; idle shutdown does not reclaim those files.
+Other package managers use the same model, with their own cache options and
+prepare/init commands. Keep relocatable state under the stable guest paths.
+
+Filesystem MCP VMs mount the same private workspace and retain separate
+execution, credentials and egress policies. This does not introduce new
+fs/network MCP kinds or combine tool network grants.
+
+Idle session VMs stop after ten minutes plus up to one sweep interval (30 seconds).
+Open shells, active work, outstanding requests, background tasks and keep-warm
+sessions prevent suspension. Set `idle_timeout_minutes: 0` to disable it.
+The next message resumes the provider using its saved history and workspace.
+Local-provider sessions are not suspended by this policy. Confirmed-clean
+stopped inventory records are pruned after an hour; recoverable states remain.
+
+Archiving retains clone files unless forced. Removing a clone requires explicit
+force because host code does not run Git in guest-writable repositories.
+Failed automatic publication is reported in the conversation; push successfully
+before discarding the workspace. Package caches and ignored files are never
+silently evicted.
+
+Upgrade/rebuild the session runtime (environment version 6), then run
+`loom vm prepare` to populate the new layout. Existing legacy clone paths and
+mounted sessions retain their original layout.
+
+## Host package caches (legacy mounted sessions)
 
 Session and preparation VMs use `<repo>/.loom/package-cache`, through the
 existing repository mount. It is shared by the repo's VMs and survives failed

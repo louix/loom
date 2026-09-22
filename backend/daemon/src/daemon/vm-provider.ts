@@ -215,6 +215,18 @@ export const withVmSessions = async <T extends AgentProvider>(
           ...input,
           cwd: guestCwd,
           ...(input.workspaceRoot ? { workspaceRoot: guestCwd } : {}),
+          ...(clone && input.initHooks
+            ? {
+                initHooks: {
+                  ...input.initHooks,
+                  env: {
+                    ...input.initHooks.env,
+                    LOOM_REPO_ROOT: guestCwd,
+                    LOOM_WORKTREE: guestCwd,
+                  },
+                },
+              }
+            : {}),
           ...(input.systemPromptAppend
             ? { systemPromptAppend: input.systemPromptAppend.replaceAll(input.cwd, guestCwd) }
             : {}),

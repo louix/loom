@@ -58,4 +58,15 @@ rather than relying on pnpm's import log message.
 
 ## Progress
 
-- Plan recorded; repository integration investigation underway.
+- Implemented and committed workspace copying, generic prepare/init, stable mounts,
+  publication/removal safeguards, idle suspension and inventory pruning.
+- Added real-KVM acceptance probes and configuration documentation.
+- Live preparation plus two sessions and resume passed: current host branch,
+  stable paths, preserved internal hard links and independent writes.
+- Small-fixture prepared worker startup was 1.5–3.2 seconds; cold preparation
+  took 162 seconds on this host. These are not monorepo performance estimates.
+- The production copier passed the offline pnpm storage probe: single-mount
+  hard links, split-mount EXDEV, independent sessions; ext4 used full copies.
+- Existing local-provider sessions remain outside idle VM suspension. MCP
+  execution and egress remain separate; a new fs/network capability taxonomy and
+  automatic workspace/cache eviction are explicitly deferred.

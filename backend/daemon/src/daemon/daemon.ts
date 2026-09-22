@@ -767,13 +767,10 @@ export class Daemon {
     const directory = sessionVmDirectory(this.repoRoot, id);
     const path = sessionCheckoutPath(directory);
     if (workspaceMount(path).host !== path) {
-      let kind: "claude" | "codex" | "aisdk" = "aisdk";
-      if (isClaudeId(provider)) kind = "claude";
-      else if (this.config.providers.aisdk[provider]?.sdk === "chatgpt") kind = "codex";
       await seedRepoWorkspace(
         repoBaseDirectory(this.repoRoot),
         directory,
-        this.config.isolation[kind]?.artifact,
+        this.#providers.vmPolicy(provider)?.artifact,
       );
     } else mkdirSync(path, { recursive: true, mode: 0o700 });
     return path;

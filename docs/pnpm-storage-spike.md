@@ -75,6 +75,19 @@ a separate solution for tool-VM and host file access. This spike does not valida
 that integration. Reflinked private workspace directories are another candidate
 on supporting host filesystems.
 
+## Implementation follow-up
+
+The probe now exercises `copyWorkspace`, Loom's production private workspace
+copier, for both host copies. A repeat on the same ext4 host passed independent
+writes and the guest single/split-mount checks. The 32 MiB fixture copy took
+83 ms, warm host installs 1.1–1.2 seconds, and the single-mount guest install
+1.85 seconds excluding VM boot. Reflinks remained unsupported.
+
+`scripts/test-private-workspace-vm.ts` separately exercises real session runtime
+preparation, publication, seeding two private workspaces, fetching an updated
+host branch, generic init and resume. Its dependency fixture verifies preserved
+hard links directly; the pnpm probe verifies package-manager behavior.
+
 ## Reproduce
 
 Host probe (requires Node, pnpm, tar, and cp):

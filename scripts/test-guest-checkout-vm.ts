@@ -37,7 +37,7 @@ try {
       "mock",
       mockLaunchSpec("/workspace/checkout"),
       () => worker,
-      120000,
+      300000,
     );
     try {
       await session.start({

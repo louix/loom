@@ -143,7 +143,7 @@ export const prepareRepoEnvironment = async (repo: string) => {
   );
 };
 
-const prepareRuntimeEnvironment = async (
+export const prepareRuntimeEnvironment = async (
   repo: string,
   config: LoomConfig,
   policy: { artifact: string; smolvm: string },

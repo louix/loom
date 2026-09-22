@@ -122,6 +122,10 @@ export const vmArguments = (b: VmBinding) => {
       (b.mounts ?? []).length ||
       b.packageCache ||
       !isAbsolute(b.privateWorkspace) ||
+      b.privateWorkspace === "/" ||
+      b.state === b.privateWorkspace ||
+      b.state.startsWith(b.privateWorkspace + "/") ||
+      b.privateWorkspace.startsWith(b.state + "/") ||
       /[:,;|\n\0]/.test(b.privateWorkspace) ||
       (b.sessionDirectory && b.privateWorkspace !== join(b.sessionDirectory, "workspace"))
     )

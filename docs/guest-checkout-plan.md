@@ -1,5 +1,10 @@
 # Guest checkouts and the Git relay
 
+The workspace layout and lifecycle below have been extended by
+[private prepared workspaces](session-environments.md#private-prepared-workspaces).
+New clones use `/workspace/checkout` with a sibling private cache; legacy paths
+remain supported. See that guide for preparation, per-start init and idle shutdown.
+
 Status: the first phase is implemented behind
 `session.isolation.checkout.mode = "clone"`. The default is still `"mount"`.
 
