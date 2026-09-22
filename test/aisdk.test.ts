@@ -2034,7 +2034,7 @@ test("async init lets AI SDK answer immediately and reports completion on a late
           name: "install",
           async: true,
           timeoutMs: 5000,
-          run: 'echo once >> count; while [ ! -f release ]; do sleep 0.02; done; echo "$INIT_MARKER"; echo done > done',
+          run: 'echo once >> count; while [ ! -f release ]; do sleep 0.02; done; echo "$INIT_MARKER:$LOOM_HOOK_EVENT"; echo done > done',
         },
       ],
     },
@@ -2067,7 +2067,9 @@ test("async init lets AI SDK answer immediately and reports completion on a late
       seen
         .slice(1)
         .some(
-          (prompt) => prompt.includes("Initialization finished:") && prompt.includes("initialized"),
+          (prompt) =>
+            prompt.includes("Initialization finished:") &&
+            prompt.includes("initialized:workspace_start"),
         ),
     );
     await s.close();

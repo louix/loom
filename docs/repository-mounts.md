@@ -1,5 +1,8 @@
 # Repository mounts and Git
 
+This section describes legacy `checkout.mode: "mount"` sessions. For private
+clone sessions and prepared workspaces, see [Session environments](session-environments.md).
+
 Each agent session retains its own VM and worktree. Loom mounts the full host
 repository and the selected worktree at their original absolute paths. External
 Git common directories are mounted too, so linked worktree pointers remain valid.
@@ -19,7 +22,7 @@ Use native Git hooks for commit checks. Loom's worktree hooks forward `pre-commi
 its `pre-push` hook blocks session pushes. In VM sessions these hooks execute
 inside the guest and their commands must be available there. A rejecting
 `pre-commit` hook fails the Git command and returns its output to the agent.
-Loom's `init` hook handles initial session setup in both VM and host sessions.
+Loom's `workspace_start` hook runs on worker creation and resume in both VM and host sessions.
 
 This trusts agents with the mounted repository: shared hooks/config and sibling
 worktrees are accessible. Changes to hooks/config can execute code when Git later

@@ -22,7 +22,7 @@ Clone mode remains opt-in during the migration.
    repository plus a sibling cache directory; publish only after the VM stops.
    Seed new sessions before tools start. Give preparation and sessions consistent
    guest paths, expose generic workspace/cache environment variables, and add an
-   explicit environment init command. Configure package managers through project
+   explicit workspace startup hook. Configure package managers through project
    commands rather than a pnpm mode. Mount the same private workspace into
    filesystem tool VMs without combining execution, credentials, or egress.
 3. **Publication and deletion safety.** Make publication failures observable.
@@ -58,7 +58,7 @@ rather than relying on pnpm's import log message.
 
 ## Progress
 
-- Implemented and committed workspace copying, generic prepare/init, stable mounts,
+- Implemented and committed workspace copying, generic workspace preparation/startup hooks, stable mounts,
   publication/removal safeguards, idle suspension and inventory pruning.
 - Added real-KVM acceptance probes and configuration documentation.
 - Live preparation plus two sessions and resume passed: current host branch,
