@@ -1372,6 +1372,35 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
+  test("shrinking the terminal keeps an active reply visible and editable", async () => {
+    const { stdout, stdin, app } = await mountFleet(
+      [snap({ id: "resize", title: "resize layout task", status: "idle" })],
+      { columns: 120 },
+    );
+    try {
+      await waitFor(stdout, (s) => /FLEET/.test(s) && /EVENTS/.test(s));
+      stdin.feed("\r");
+      await waitFor(stdout, /send \[manual\]/);
+      stdin.feed("draft survives");
+      await waitFor(stdout, /draft survives/);
+      assert.match(stdout.last, /FLEET/);
+
+      stdout.columns = 60;
+      stdout.emit("resize");
+      await waitFor(stdout, (s) => /EVENTS/.test(s) && !/FLEET/.test(s));
+      assert.match(stdout.last, /draft survives/);
+      stdin.feed(" resizing");
+      await waitFor(stdout, /draft survives resizing/);
+
+      stdin.feed(ESC);
+      await waitFor(stdout, (s) => !/send \[manual\]/.test(s));
+      stdin.feed("\t");
+      await waitFor(stdout, (s) => /FLEET/.test(s) && !/EVENTS/.test(s));
+    } finally {
+      app.unmount();
+    }
+  });
+
   test("→ still only drills into children — the layout zoom is on ⇥, not the arrows", async () => {
     const { stdout, stdin, app, settle } = await mountFleet(
       [

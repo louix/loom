@@ -2406,6 +2406,9 @@ export const mkFleetHandle = ({
       }),
       term.onResize(() => {
         dims = term.getSize();
+        // Keep an active reply visible when the split no longer fits.
+        if (dims.cols < NARROW_COLS && promptOnPane(openPrompt(state.overlay)))
+          layoutView = "session";
         // A narrower pane wraps into more rows, a wider one into fewer: the
         // offset has to be re-clamped against what the pane now draws.
         publish();
