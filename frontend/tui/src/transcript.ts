@@ -1180,13 +1180,10 @@ const lineLayout = (
     l.kind === "question" ||
     l.kind === "thinking"
   ) {
+    const literal = l.kind === "user_message" || l.kind === "echo" || l.kind === "answer";
     let doc = documentCache.get(l);
     if (!doc) {
-      const format =
-        l.kind === "user_message" || l.kind === "echo" || l.kind === "answer"
-          ? plainText
-          : markdownText;
-      doc = format(source);
+      doc = (literal ? plainText : markdownText)(source);
       documentCache.set(l, doc);
     }
     const rows = doc.layout(width);
@@ -1195,7 +1192,8 @@ const lineLayout = (
       ts,
       indent,
       segs: rows.map((r) => r.text),
-      spans: rows.map((r) => r.spans),
+      // Literal messages inherit their role color instead of document styling.
+      ...(literal ? {} : { spans: rows.map((r) => r.spans) }),
     };
     layoutCache.set(l, entry);
     return entry;

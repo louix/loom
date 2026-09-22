@@ -224,6 +224,7 @@ test("human messages and queued input retain literal lines while questions use M
     const event = { type: kind, text: source, ts: 0, sessionId: "s", id: "a", injected: false };
     const line: LogLine = { id: null, sessionId: "s", kind, ts: 0, ...formatEvent(event) };
     const ctx = logContext([line], 100);
+    assert.ok(windowRows(ctx, 0, totalRows(ctx)).every((r) => r.tone === "accent" && !r.spans));
     assert.equal(
       windowRows(ctx, 0, totalRows(ctx))
         .map((r) => r.seg)
@@ -233,6 +234,7 @@ test("human messages and queued input retain literal lines while questions use M
   }
   const queued = queuedLine("s", source);
   const ctx = logContext([queued], 100);
+  assert.ok(windowRows(ctx, 0, totalRows(ctx)).every((r) => r.tone === "dim" && !r.spans));
   assert.equal(
     windowRows(ctx, 0, totalRows(ctx))
       .map((r) => r.seg)
