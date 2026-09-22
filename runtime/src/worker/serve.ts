@@ -20,7 +20,7 @@ export const serveWorker = async (
   load: (binding: WorkerBinding, transcript: WorkerTranscript) => Promise<AgentProvider>,
   onShutdown: () => void = () => {},
   /** Runs before an event is forwarded; the guest publishes its branch before a turn ends. */
-  beforeEvent: (event: HarnessEvent) => Promise<void> = async () => {},
+  beforeEvent: (event: HarnessEvent) => Promise<HarnessEvent | void> = async () => {},
 ): Promise<void> => {
   const writer = new FrameWriter(output);
   const stop = new AbortController();
@@ -58,7 +58,12 @@ export const serveWorker = async (
       if ("dropped" in stream && stream.dropped !== 0) throw new Error("connector event overflow");
       if (event.sessionId !== binding?.sessionId)
         throw new Error("connector emitted wrong session");
-      await beforeEvent(event);
+      const diagnostic = await beforeEvent(event);
+      if (diagnostic && !closing) {
+        if (diagnostic.sessionId !== event.sessionId)
+          throw new Error("pre-event diagnostic emitted wrong session");
+        await writer.send({ kind: "event", seq: ++seq, event: diagnostic });
+      }
       await publish();
       if (!closing) await writer.send({ kind: "event", seq: ++seq, event });
     }

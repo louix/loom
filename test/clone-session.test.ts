@@ -164,7 +164,11 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     assert.equal(resumed.worktree, clonePath);
     assert.equal(cwds.get(created.id), clonePath);
 
-    await c.request("session.remove", { id: created.id });
+    await assert.rejects(
+      c.request("session.remove", { id: created.id }),
+      /uncommitted or unpublished/,
+    );
+    await c.request("session.remove", { id: created.id, force: true });
     assert.ok(!existsSync(clonePath), "removing the session removes its clone");
     assert.equal(git("rev-parse", created.branch!), tip, "the branch outlives the session");
     assert.ok(!existsSync(marker), "the clone's Git config ran on the host");

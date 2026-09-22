@@ -243,7 +243,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
                 "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
               ),
             visible_refs: gitVisibleRefsSchema.describe(
-              "Extra ref prefixes a clone session may read, such as refs/tags/. It always reads its base branch and its own branch.",
+              "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
             ),
             max_push_bytes: z
               .number()

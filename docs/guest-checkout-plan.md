@@ -189,10 +189,13 @@ git -c transfer.hideRefs=HEAD
 Later `hideRefs` entries win, so `refs/` hides everything and the negated
 entries expose the parent branch and the session branch, and nothing else.
 Sibling sessions' branches, the user's other branches, tags and anything under
-`refs/loom` are neither advertised nor fetchable by hash.
+`refs/loom` are not advertised. **This is not a confidentiality boundary.** A
+client that knows a hidden commit ID can push it to its own allowed ref and then
+fetch it. Prepared clones can also contain additional repository history.
+Guests must be trusted to read the repository; isolation restricts host filesystem
+access and writes to other branches.
 
-Three details carry that guarantee. Each was checked against real Git with a
-throwaway repository before being written down:
+The following settings reduce accidental exposure in fetches:
 
 - `HEAD` is hidden separately. `refs/` does not cover it, and an advertised
   `HEAD` discloses whatever commit the host checkout is on, which may be a

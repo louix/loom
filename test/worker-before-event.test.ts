@@ -21,6 +21,13 @@ Deno.test("worker finishes its pre-event work before the daemon sees a turn end"
       order.push("publish started");
       await published.promise;
       order.push("publish finished");
+      return {
+        type: "error" as const,
+        sessionId: event.sessionId,
+        ts: Date.now(),
+        message: "Publication failed",
+        fatal: false,
+      };
     },
   );
   const send = new FrameWriter(requests.writable);
@@ -77,6 +84,9 @@ Deno.test("worker finishes its pre-event work before the daemon sees a turn end"
   published.resolve();
   await seen;
   assert.deepEqual(order, ["publish started", "publish finished", "daemon saw result"]);
+  const diagnostic = log.findIndex((f) => f.kind === "event" && f.event.type === "error");
+  const result = log.findIndex((f) => f.kind === "event" && f.event.type === "result");
+  assert.ok(diagnostic >= 0 && diagnostic < result);
 
   await send.send({ kind: "request", id: 3, method: "close", args: [] });
   await serving;

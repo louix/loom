@@ -3505,6 +3505,16 @@ export class Daemon {
         // work silently. Make the caller opt in, the way `gc` already threads
         // `force` — the row / transcript deletion is inherently destructive, but
         // live file changes deserve an explicit ack.
+        if (
+          !force &&
+          s.checkout === "clone" &&
+          existsSync(sessionCheckoutPath(sessionVmDirectory(this.repoRoot, id)))
+        ) {
+          throw new RpcError(
+            "bad_request",
+            "The private clone may contain uncommitted or unpublished work. Inspect it in the session and pass force to remove it.",
+          );
+        }
         if (!force && s.worktree && s.checkout !== "clone" && this.#worktrees.isDirty(s.worktree)) {
           throw new RpcError(
             "bad_request",

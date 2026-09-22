@@ -226,7 +226,14 @@ if (preparationOnly) {
           ),
         );
       } catch {
-        /* the host shows the branch as unpublished */
+        return {
+          type: "error" as const,
+          sessionId: event.sessionId,
+          ts: Date.now(),
+          fatal: false,
+          message:
+            "Git publication failed. Commits are still in this session's private checkout; the host branch may be out of date. Retry git push before removing the session.",
+        };
       }
     },
   );
