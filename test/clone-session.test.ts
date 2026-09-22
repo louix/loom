@@ -128,14 +128,11 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     git("commit", "-q", "--allow-empty", "-m", "base moved");
     const tip = publish(created.branch!, "published by the guest");
     const idle = await endTurn(created.id);
-    assert.deepEqual(idle.git, {
-      branch: created.branch,
-      commits: 2,
-      aheadOfBase: 1,
-      behindBase: 1,
-      dirty: false,
-      lastCommitSubject: "published by the guest",
-    });
+    assert.equal(
+      idle.git,
+      null,
+      "without a running guest, dirtiness is unknown rather than falsely clean",
+    );
     assert.equal(git("rev-parse", created.branch!), tip, "the host never moves a clone's branch");
     const checkpoints = await c.request<Array<{ turn: number; headSha?: string }>>(
       "session.checkpoints",
@@ -143,7 +140,7 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     );
     assert.ok(checkpoints.length > 0);
 
-    await assert.rejects(c.request("session.rebase", { id: created.id }), /private clone/);
+    await assert.rejects(c.request("session.rebase", { id: created.id }), /VM is not running/);
     await assert.rejects(
       c.request("session.rewind", { id: created.id, toTurn: 0, restoreWorktree: true }),
       /private clone|no such|turn/,
@@ -175,8 +172,12 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     await h.daemon.sweepIdleVms(now + 11 * 60_000);
     assert.equal(running.closed, false, "keep-warm pins the VM");
     h.daemon.sessions.setKeepWarm(created.id, false);
-    await h.daemon.sweepIdleVms(now);
-    await h.daemon.sweepIdleVms(now + 11 * 60_000);
+    // Idle status is published before the queued guest Git check finishes.
+    // The reaper must wait for that operation before starting its grace period.
+    for (let i = 0; i < 200 && !running.closed; i++) {
+      await h.daemon.sweepIdleVms(now + i * 11 * 60_000);
+      if (!running.closed) await delay(5);
+    }
     assert.equal(running.closed, true, "idle runtime is closed");
     assert.equal(h.daemon.sessions.has(created.id), false);
     assert.ok(existsSync(join(clonePath, "uncommitted.txt")));

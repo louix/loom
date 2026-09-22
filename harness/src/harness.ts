@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ConnectorManifest } from "@loom/core/connector";
 import { loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
-import { Daemon } from "@loom/daemon/daemon/daemon";
+import { Daemon, type DaemonStartOptions } from "@loom/daemon/daemon/daemon";
 
 /** Every connector, for a harness daemon that may exercise any provider. */
 const CONNECTORS: ConnectorManifest = {
@@ -34,7 +34,12 @@ export interface Harness {
 
 /** A throwaway git repo with a standalone daemon running against it. */
 export const makeHarness = async (
-  opts: { git?: boolean; config?: string; connectors?: ConnectorManifest } = {},
+  opts: {
+    git?: boolean;
+    config?: string;
+    connectors?: ConnectorManifest;
+    guestCommand?: DaemonStartOptions["guestCommand"];
+  } = {},
 ): Promise<Harness> => {
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-h-"));
   const configDir = mkdtempSync(join(tmpdir(), "loom-h-config-"));
@@ -55,6 +60,7 @@ export const makeHarness = async (
   let daemon = await Daemon.start({
     repoRoot,
     configFile: configPath,
+    ...(opts.guestCommand ? { guestCommand: opts.guestCommand } : {}),
     standalone: true,
     connectors: opts.connectors ?? CONNECTORS,
   });
@@ -71,6 +77,7 @@ export const makeHarness = async (
       daemon = await Daemon.start({
         repoRoot,
         configFile: configPath,
+        ...(opts.guestCommand ? { guestCommand: opts.guestCommand } : {}),
         standalone: true,
         connectors: opts.connectors ?? CONNECTORS,
       });

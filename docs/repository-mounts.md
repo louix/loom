@@ -48,9 +48,15 @@ kept current at every turn end; take commits from it with ordinary Git.
 { "session": { "isolation": { "checkout": { "mode": "clone" } } } }
 ```
 
-Existing sessions keep the mode they were created with. Auto-rebase, undo's
-worktree restore, the commit reminder and `check` hooks are not yet available
-in clone mode. See [guest checkouts](guest-checkout-plan.md) for the design and
+Existing sessions keep the mode they were created with. Auto-rebase, the `r`
+key, dirty flags and commit reminders run Git through the existing VM shell
+execution path. `check` hooks run in that same VM with its activated environment;
+notification hooks stay on the host. Manual rebase resumes a sleeping session,
+and refuses to run while the agent, background work, checks or open shells are
+active. Git state is last-observed while a VM is stopped; before the first
+successful guest probe it is unknown. Undo's worktree restore remains unavailable
+for clones. See [guest checkouts](guest-checkout-plan.md) for the design and
 the current status. Validate with test/git-relay.test.ts,
-test/guest-checkout.test.ts, test/clone-session.test.ts and
-scripts/test-guest-checkout-vm.ts.
+test/guest-checkout.test.ts, test/clone-session.test.ts, test/clone-git.test.ts,
+test/clone-features.test.ts, scripts/test-guest-checkout-vm.ts and
+scripts/test-clone-git-vm.ts.

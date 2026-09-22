@@ -4,6 +4,7 @@
  */
 import { executeShellHook, type HookAttempt as Attempt } from "../../../../core/src/shell-hook.ts";
 import { isAbsolute, relative, resolve } from "node:path";
+import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
 import type { Logger } from "@loom/core/logger";
 import { writtenPaths } from "@loom/core/tool-paths";
@@ -21,6 +22,7 @@ export interface HookSession {
   branch: string | null;
   /** The worktree is a private clone: agent-written, and never a place to run host commands. */
   clone?: boolean;
+  guestCwd?: string | undefined;
 }
 
 /** A session snapshot, reduced to what a hook needs. */
@@ -32,12 +34,21 @@ export const hookSessionOf = (s: SessionSnapshot): HookSession => ({
   status: s.status.kind,
   worktree: s.worktree,
   branch: s.branch,
-  ...(s.checkout === "clone" ? { clone: true } : {}),
+  ...(s.checkout === "clone"
+    ? { clone: true, guestCwd: s.worktree ? workspaceMount(s.worktree).checkout : undefined }
+    : {}),
 });
 
 export interface HookRunnerOptions {
   repoRoot: string;
   log: Logger;
+  runGuest?: (
+    session: HookSession,
+    command: string,
+    env: Record<string, string>,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ) => Promise<Attempt>;
   /** Deliver a failed write hook's output to the agent (the commit-nudge path). */
   onFeedback: (sessionId: string, text: string, signal: AbortSignal) => Promise<void>;
   /** Surface an operator-facing advisory (a waiting hook that failed). */
@@ -165,8 +176,12 @@ export class HookRunner {
     if (!ev.ok) return;
 
     const snap = session();
-    const cwd = snap?.worktree ?? this.#opts.repoRoot;
-    const abs = paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p)));
+    const cwd = snap?.guestCwd ?? snap?.worktree ?? this.#opts.repoRoot;
+    const abs = paths.map((p) => {
+      if (snap?.clone && snap.worktree && p.startsWith(snap.worktree + "/"))
+        return resolve(cwd, relative(snap.worktree, p));
+      return isAbsolute(p) ? p : resolve(cwd, p);
+    });
     const turn = this.#turnFiles.get(ev.sessionId) ?? [];
     for (const p of abs) if (!turn.includes(p)) turn.push(p);
     this.#turnFiles.set(ev.sessionId, turn);
@@ -211,15 +226,12 @@ export class HookRunner {
     session: HookSession,
     ctx: { files?: string[]; reason?: AwaitReason; detail?: string } = {},
   ): void {
-    // Hooks run on the host. For a clone session that rules out check hooks, which run
-    // project commands over agent-written files, and any path into the clone, which a
-    // symlink could point elsewhere. Notify hooks still fire, from the repository root.
-    if (session.clone && event === "file_write") return;
-    const files = session.clone ? [] : (ctx.files ?? []);
+    // Clone checks run through the VM shell. Notifications stay on the host.
+    const files = ctx.files ?? [];
     const write = event === "file_write" || event === "turn_end";
     for (const hook of this.#hooks) {
       if (!hook.on.some((e) => e === event)) continue;
-      if (session.clone && hook.kind === "check") continue;
+      if (session.clone && hook.kind === "notify" && event === "file_write") continue;
       if (hook.kind === "notify" && hook.when !== "always") {
         const presence = this.#opts.tuiPresence?.();
         if (hook.when === "unfocused" && presence?.focused) continue;
@@ -238,7 +250,7 @@ export class HookRunner {
 
   /** Does any written file match the hook's `match` globs? */
   #matchesAny(hook: HookConfig, session: HookSession, files: string[]): boolean {
-    const cwd = session.clone ? this.#opts.repoRoot : (session.worktree ?? this.#opts.repoRoot);
+    const cwd = session.guestCwd ?? session.worktree ?? this.#opts.repoRoot;
     return files.some((f) => {
       const rel = relative(cwd, f);
       return hook.match.some((g) => matchGlob(g, f) || matchGlob(g, rel));
@@ -294,18 +306,22 @@ export class HookRunner {
     ctx: { reason?: AwaitReason; detail?: string },
     signal: AbortSignal,
   ): Promise<Attempt> {
-    const cwd = session.clone ? this.#opts.repoRoot : (session.worktree ?? this.#opts.repoRoot);
+    const guest = session.clone && hook.kind === "check";
+    let worktree = session.clone ? "" : (session.worktree ?? "");
+    if (guest) worktree = session.guestCwd ?? "";
+    const cwd = worktree || this.#opts.repoRoot;
+    if (session.clone && !guest) files = [];
     const env: Record<string, string> = {
-      ...Deno.env.toObject(),
+      ...(guest ? {} : Deno.env.toObject()),
       LOOM_HOOK: hook.name,
       LOOM_HOOK_EVENT: event,
-      LOOM_REPO_ROOT: this.#opts.repoRoot,
+      LOOM_REPO_ROOT: guest ? cwd : this.#opts.repoRoot,
       LOOM_SESSION_ID: session.id,
       LOOM_SESSION_TITLE: session.title ?? "",
       LOOM_SESSION_PROVIDER: session.provider,
       LOOM_SESSION_MODEL: session.model ?? "",
       LOOM_SESSION_STATUS: session.status,
-      LOOM_WORKTREE: session.clone ? "" : (session.worktree ?? ""),
+      LOOM_WORKTREE: worktree,
       LOOM_BRANCH: session.branch ?? "",
       LOOM_FILES: files.join("\n"),
       LOOM_FILE: files[0] ?? "",
@@ -316,6 +332,11 @@ export class HookRunner {
       LOOM_MESSAGE: describe(event, session, files, ctx),
     };
 
+    if (guest) {
+      if (!this.#opts.runGuest || !worktree)
+        throw new Error("Clone check requires a running session VM");
+      return this.#opts.runGuest(session, hook.run, env, hook.timeoutMs, signal);
+    }
     return executeShellHook(hook.run, cwd, env, hook.timeoutMs, signal);
   }
 

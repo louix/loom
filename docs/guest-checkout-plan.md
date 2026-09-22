@@ -19,26 +19,29 @@ Built and tested:
 - `runtime/src/session-vm/clone.ts`, `VmBinding.git`, the supervisor and `guest.ts`:
   a clone session mounts its clone and the relay socket and nothing of the repository.
 - Daemon: `sessions.checkout`, session create, resume, fork, archive, remove and gc,
-  facts and checkpoints from host refs, title renames republished to a running guest,
+  checkpoints from host refs, guest Git facts, title renames republished to a running guest,
   and repo instructions read from the host checkout only.
 - `WorktreeManager` refuses to run Git in or on any path under the clone root, so a
   call site that is missed fails instead of executing a clone's config.
 - `scripts/test-guest-checkout-vm.ts` passes in a real guest.
 
-Deferred, and how clone sessions behave until then:
+Current clone-session behaviour (the full design below includes deferred work):
 
-| area                                     | behaviour today                                                              |
-| ---------------------------------------- | ---------------------------------------------------------------------------- |
-| auto-rebase, `r`, `session.rebase`       | skipped; the RPC says to ask the agent to rebase                             |
-| undo with `restoreWorktree`              | refused; drift is still reported from published refs                         |
-| commit reminder, `dirty` on the git line | off; only the guest knows, and `git.facts` is not built                      |
-| `check` hooks                            | not run; `notify` hooks run from the repository root with no file paths      |
-| fork                                     | starts from the parent's published tip; uncommitted work is not carried over |
-| archive                                  | keeps the clone on disk unless forced, because dirtiness is unknown          |
-| `commit` tool                            | commits only; the push happens at turn end                                   |
-| packaged MCP VMs (Tilth)                 | unchanged; they still mount what `workspaceMounts` returns                   |
+| area                                     | behaviour today                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| auto-rebase, `r`, `session.rebase`       | Git runs through the existing VM shell; successful changes publish the session branch  |
+| undo with `restoreWorktree`              | refused; drift is still reported from published refs                                   |
+| commit reminder, `dirty` on the git line | guest status probes; last observed while stopped, unknown before the first probe       |
+| `check` hooks                            | run in the session VM; `notify` hooks remain on the host with no clone file paths      |
+| fork                                     | starts from the parent's published tip; uncommitted work is not carried over           |
+| archive                                  | keeps the clone on disk unless forced; cached Git facts do not authorize deleting work |
+| `commit` tool                            | commits only; the push happens at turn end                                             |
+| packaged MCP VMs (Tilth)                 | unchanged; they still mount what `workspaceMounts` returns                             |
 
-The sections below are the full design, including the deferred parts.
+The sections below are the original full design, including deferred parts.
+Git status, sync and checks currently reuse SmolVM machine exec rather than the
+proposed worker Git RPCs. No separate service or guest agent was introduced.
+See `scripts/test-clone-git-vm.ts` for live Git, environment and cancellation checks.
 
 ## Goal
 

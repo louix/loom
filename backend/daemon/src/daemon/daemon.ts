@@ -1,3 +1,6 @@
+import { CloneGit, type CloneFacts } from "./clone-git.ts";
+import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
+import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
 import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
 import { stateInterrupted } from "@loom/core/session-state";
@@ -188,6 +191,14 @@ export const keepWarmMove = (
 };
 
 export interface DaemonStartOptions {
+  /** Embedded runtimes/tests may supply the VM command transport. */
+  guestCommand?: (
+    session: SessionSnapshot,
+    command: string,
+    timeoutMs: number,
+    signal: AbortSignal,
+    env?: Record<string, string>,
+  ) => Promise<HookAttempt>;
   repoRoot: string;
   /** Explicit trusted config file for embedded daemons/tests; otherwise the XDG user config. */
   configFile?: string;
@@ -198,6 +209,9 @@ export interface DaemonStartOptions {
 }
 
 export class Daemon {
+  readonly #guestStop = new AbortController();
+  readonly #cloneFacts = new Map<string, CloneFacts>();
+  readonly #guestCommand: NonNullable<DaemonStartOptions["guestCommand"]>;
   readonly repoRoot: string;
   readonly paths: LoomPaths;
   readonly config: LoomConfig;
@@ -275,6 +289,24 @@ export class Daemon {
   #signalHandlers: Array<[Deno.Signal, () => void]> = [];
 
   private constructor(opts: DaemonStartOptions) {
+    this.#guestCommand =
+      opts.guestCommand ??
+      (async (session, command, timeoutMs, signal, env) => {
+        const binding = await readRecovery(sessionVmDirectory(opts.repoRoot, session.id));
+        if (
+          !binding?.recovery.ready ||
+          binding.recovery.reaped ||
+          binding.workspace !== session.worktree
+        )
+          throw new Error("The session VM is not running. Resume it first.");
+        return vmCommand(
+          binding,
+          command,
+          timeoutMs,
+          AbortSignal.any([signal, this.#guestStop.signal]),
+          env,
+        );
+      });
     opts = { ...opts, repoRoot: tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot };
     this.repoRoot = opts.repoRoot;
     this.#configFile = resolve(opts.configFile ?? userConfigPath());
@@ -365,12 +397,21 @@ export class Daemon {
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,
       log: this.#log.child("hooks"),
+      runGuest: async (session, command, env, timeoutMs, signal) => {
+        const snap = this.#registry.mustGet(session.id);
+        const result = await this.#guestCommand(snap, command, timeoutMs, signal, env);
+        return { ...result, output: result.output.slice(0, 8000).trim() };
+      },
       // A failed write hook talks to the agent through the same path as the
       // commit nudge: emitted so every client sees it land, and kept out of
       // `#lastSend` so it seeds neither the undo picker nor the auto-title.
       onFeedback: async (id, text, signal) => {
         if (this.#stopping || signal.aborted) return;
-        const { injected } = await this.#sessions.send(id, text, { signal });
+        const send = () => this.#sessions.send(id, text, { signal });
+        const { injected } =
+          this.#registry.get(id)?.checkout === "clone"
+            ? await this.#queue.run(id, send)
+            : await send();
         if (this.#stopping || signal.aborted) return;
         this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
       },
@@ -619,6 +660,7 @@ export class Daemon {
   async stop(reason: string): Promise<void> {
     if (this.#stopping) return this.#closed;
     this.#stopping = true;
+    this.#guestStop.abort();
     this.#hooks.close();
     this.#log.info("daemon stopping", { reason });
 
@@ -789,6 +831,42 @@ export class Daemon {
     return this.#worktrees.isClone(cwd) ? this.repoRoot : cwd;
   }
 
+  #cloneGit(snap: SessionSnapshot): CloneGit {
+    return new CloneGit((command, timeoutMs, signal, env) =>
+      this.#guestCommand(snap, command, timeoutMs, signal, env),
+    );
+  }
+
+  #cloneCanSync(id: string): boolean {
+    const snap = this.#registry.get(id);
+    return (
+      !!snap &&
+      ["idle", "interrupted", "error"].includes(snap.status.kind) &&
+      !this.#sessions.isStopping(id) &&
+      !this.#sessions.isRestructuring(id) &&
+      this.#sessions.backgroundTasksOf(id).length === 0 &&
+      this.#sessions.requestsOf(id).length === 0 &&
+      !this.#shells.has(id) &&
+      !this.#hooks.isRunning(id)
+    );
+  }
+
+  async #syncClone(
+    id: string,
+    nudge: boolean,
+  ): Promise<{ outcome: RebaseOutcome; nudged: boolean }> {
+    const snap = this.#registry.mustGet(id);
+    const mode = this.config.autoRebase.mode;
+    const res = await this.#cloneGit(snap).sync(
+      snap.branch!,
+      snap.baseBranch,
+      mode,
+      this.#guestStop.signal,
+    );
+    await this.#refreshGitFacts(id);
+    return this.#reportBaseSync(id, snap, mode, res, nudge);
+  }
+
   /** Facts-cache key: a host path Git may open, or `ref:<branch>` for a clone session. */
   #gitKey(s: SessionSnapshot): string | null {
     if (s.checkout === "clone") return s.branch ? `ref:${s.branch}` : null;
@@ -801,12 +879,21 @@ export class Daemon {
     if (!s) return;
     const gitPath = this.#gitKey(s);
     if (!gitPath) return;
+    if (s.checkout === "clone") {
+      try {
+        const facts = await this.#cloneGit(s).facts(s.baseBranch, this.#guestStop.signal);
+        if (this.#stopping || this.#registry.get(id)?.worktree !== s.worktree) return;
+        const previous = this.#cloneFacts.get(id);
+        this.#cloneFacts.set(id, facts);
+        if (JSON.stringify(previous) !== JSON.stringify(facts)) this.#publishState(id);
+      } catch {
+        /* A sleeping VM retains its last observed facts; never probe on the host. */
+      }
+      return;
+    }
     const before = this.#worktrees.cachedFacts(gitPath);
     // A clone is never opened by host Git: its facts are what it has published.
-    const after =
-      s.checkout === "clone"
-        ? this.#worktrees.refFacts(s.branch!, s.baseBranch)
-        : await this.#worktrees.factsAsync(gitPath, s.baseBranch);
+    const after = await this.#worktrees.factsAsync(gitPath, s.baseBranch);
     if (
       !this.#stopping &&
       this.#registry.get(id) &&
@@ -885,9 +972,7 @@ export class Daemon {
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = this.#gitKey(out);
     if (gitPath && out.checkout === "clone") {
-      const git = withGit
-        ? this.#worktrees.refFacts(out.branch!, out.baseBranch)
-        : this.#worktrees.cachedFacts(gitPath);
+      const git = this.#cloneFacts.get(out.id)?.git;
       if (git) out = { ...out, git };
     } else if (gitPath) {
       // `withGit` false (the per-usage stream) still carries the last-known
@@ -1632,6 +1717,32 @@ export class Daemon {
       if (ended?.checkout === "clone" && ended.branch)
         this.#worktrees.invalidateFacts(`ref:${ended.branch}`);
     }
+    if (state.kind === "idle" && snap.checkout === "clone") {
+      void this.#queue
+        .run(id, async () => {
+          if (
+            this.#stopping ||
+            this.#registry.get(id)?.status.kind !== "idle" ||
+            this.#registry.get(id)?.turns !== snap.turns
+          )
+            return;
+          try {
+            await this.#refreshGitFacts(id);
+            const nudged =
+              this.config.autoRebase.enabled && this.#cloneCanSync(id)
+                ? (await this.#syncClone(id, true)).nudged
+                : false;
+            if (!nudged) this.#maybeCommitNudge(id);
+          } catch (error) {
+            this.#emitNotice(String(error), "warn");
+          }
+          this.#fireStatusHooks(snap, state);
+        })
+        .catch((error) =>
+          this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
+        );
+      return;
+    }
     if (state.kind === "idle" && !this.#maybeAutoRebase(id)) this.#maybeCommitNudge(id);
 
     this.#fireStatusHooks(snap, state);
@@ -1700,6 +1811,16 @@ export class Daemon {
 
     const { mode } = this.config.autoRebase;
     const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
+    return this.#reportBaseSync(id, snap, mode, res, nudge);
+  }
+
+  #reportBaseSync(
+    id: string,
+    snap: SessionSnapshot,
+    mode: "rebase" | "merge",
+    res: RebaseOutcome,
+    nudge: boolean,
+  ): { outcome: RebaseOutcome; nudged: boolean } {
     if (res.outcome === "no-base" || res.outcome === "current") {
       return { outcome: res, nudged: false };
     }
@@ -1762,19 +1883,18 @@ export class Daemon {
     if (this.#stopping || !this.config.commitReminder.enabled) return;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return; // in-place sessions have no isolated tree
-    // Only the guest knows whether a clone is dirty.
-    if (snap.checkout === "clone") return;
-
+    const clone = snap.checkout === "clone" ? this.#cloneFacts.get(id) : undefined;
+    if (snap.checkout === "clone" && !clone) return;
     const store = this.#registry.store;
-    if (!this.#worktrees.isDirty(snap.worktree)) {
+    if (!(clone ? clone.git.dirty : this.#worktrees.isDirty(snap.worktree))) {
       if (store.commitNudgedSha(id) !== "") store.setCommitNudgedSha(id, "");
       return;
     }
     // A paused rebase / merge / cherry-pick reads as "dirty" too, but "commit
     // this" is the wrong advice mid-operation — leave it alone.
-    if (this.#worktrees.pendingGitOp(snap.worktree)) return;
+    if (clone ? clone.operation : this.#worktrees.pendingGitOp(snap.worktree)) return;
 
-    const head = this.#worktrees.headSha(snap.worktree) ?? "";
+    const head = clone ? clone.head : (this.#worktrees.headSha(snap.worktree) ?? "");
     if (head !== "" && store.commitNudgedSha(id) === head) return; // already nudged since the last commit
     store.setCommitNudgedSha(id, head);
 
@@ -1827,21 +1947,26 @@ export class Daemon {
       // Read the current row: generation may race a manual title, archive, or removal.
       this.#titling.delete(id);
       if (!this.#stopping) {
-        this.#maybeNameBranch(id);
+        await this.#maybeNameBranch(id);
         if (this.#registry.get(id)) this.#publishState(id);
       }
     }
   }
 
   /** Naming the branch must not depend on a successful model request. */
-  #maybeNameBranch(id: string): void {
-    const snap = this.#registry.get(id);
-    if (!snap?.title || !snap.worktree || snap.status.kind === "done") return;
-    if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
-    const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
-    if (branch === snap.branch) return;
-    this.#registry.setFields(id, { branch });
-    if (snap.checkout === "clone") void this.#publishCloneBranch(id).catch(() => {});
+  async #maybeNameBranch(id: string): Promise<void> {
+    const rename = async () => {
+      const snap = this.#registry.get(id);
+      if (this.#stopping || !snap?.title || !snap.worktree || snap.status.kind === "done") return;
+      if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
+      const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
+      if (branch === snap.branch) return;
+      this.#registry.setFields(id, { branch });
+      if (snap.checkout === "clone") await this.#publishCloneBranch(id);
+    };
+    // A guest sync must finish publishing before its relay branch policy changes.
+    if (this.#registry.get(id)?.checkout === "clone") await this.#queue.run(id, rename);
+    else await rename();
   }
 
   /**
@@ -2689,6 +2814,11 @@ export class Daemon {
         // a distinct `code` the TUI recognises and re-routes to its own outgoing
         // queue (which drains when the compaction boundary lands).
         while (this.#revivals.has(id)) await this.#revivals.get(id);
+        if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+          throw new RpcError(
+            "busy",
+            "The session is completing a workspace operation; retry in a moment.",
+          );
         const restructuring = this.#sessions.isRestructuring(id);
         if (this.#sessions.isStopping(id))
           throw new RpcError("busy", "session is stopping — the message was not sent");
@@ -3169,11 +3299,17 @@ export class Daemon {
       if (!snap) throw new RpcError("not_found", `no such session: ${id}`);
       if (!snap.worktree)
         throw new RpcError("bad_request", "session runs in place — no branch to rebase");
-      if (snap.checkout === "clone")
-        throw new RpcError(
-          "bad_request",
-          "this session works in a private clone — ask the agent to rebase onto its base branch",
-        );
+      if (snap.checkout === "clone") {
+        if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) await this.#reviveSession(id);
+        return this.#queue.run(id, async () => {
+          if (!this.#cloneCanSync(id))
+            throw new RpcError(
+              "busy",
+              "Wait for the agent, checks and open shells to stop before rebasing.",
+            );
+          return (await this.#syncClone(id, false)).outcome;
+        });
+      }
       return this.#syncOntoBase(id, false).outcome ?? { outcome: "no-base" as const };
     });
 
@@ -3491,13 +3627,13 @@ export class Daemon {
       });
     });
 
-    d.register("session.setTitle", (params) => {
+    d.register("session.setTitle", async (params) => {
       const id = params.id;
       const title = params.title;
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
-      if (this.config.titles.enabled) this.#maybeNameBranch(id);
+      if (this.config.titles.enabled) await this.#maybeNameBranch(id);
       this.#publishState(snap.id);
       return this.#enrich(this.#registry.mustGet(id));
     });
@@ -3630,6 +3766,7 @@ export class Daemon {
           }
           await removeSessionVmProfile(this.repoRoot, id);
           this.#registry.remove(id);
+          this.#cloneFacts.delete(id);
           this.#hooks.forget(id);
           this.#publishState();
           this.#worktrees.prune();
