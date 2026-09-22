@@ -235,6 +235,15 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           extra_allowed_hosts: extraHostsSchema,
           network_presets: networkPresetsSchema,
           environment: sessionEnvironmentSchema,
+          idle_timeout_minutes: z
+            .number()
+            .int()
+            .min(0)
+            .max(1440)
+            .default(10)
+            .describe(
+              "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+            ),
           checkout: section({
             mode: z
               .enum(["mount", "clone"])

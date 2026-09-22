@@ -225,6 +225,7 @@ export interface LoomConfig {
     aisdk?: { artifact: string; smolvm: string };
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
+    idleTimeoutMinutes?: number;
     environment?: SessionEnvironment;
     /** How new VM sessions reach the repository. Absent means mount. */
     checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
@@ -693,6 +694,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
       enabled: vmEnabled,
+      idleTimeoutMinutes: isolation.idle_timeout_minutes,
       runtimes,
       extraAllowedHosts: [
         ...new Set([

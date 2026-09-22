@@ -164,6 +164,26 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     assert.equal(resumed.worktree, clonePath);
     assert.equal(cwds.get(created.id), clonePath);
 
+    const running = fakes.get(created.id)!.session(created.id)!;
+    const now = Date.now();
+    await h.daemon.sweepIdleVms(now);
+    await h.daemon.sweepIdleVms(now + 11 * 60_000);
+    assert.equal(running.closed, false, "active turns are not reaped");
+    await endTurn(created.id);
+    h.daemon.sessions.setKeepWarm(created.id, true);
+    await h.daemon.sweepIdleVms(now);
+    await h.daemon.sweepIdleVms(now + 11 * 60_000);
+    assert.equal(running.closed, false, "keep-warm pins the VM");
+    h.daemon.sessions.setKeepWarm(created.id, false);
+    await h.daemon.sweepIdleVms(now);
+    await h.daemon.sweepIdleVms(now + 11 * 60_000);
+    assert.equal(running.closed, true, "idle runtime is closed");
+    assert.equal(h.daemon.sessions.has(created.id), false);
+    assert.ok(existsSync(join(clonePath, "uncommitted.txt")));
+    await c.request("session.send", { id: created.id, text: "wake after idle" });
+    assert.notEqual(fakes.get(created.id)!.session(created.id), running);
+    assert.equal(cwds.get(created.id), clonePath);
+
     await assert.rejects(
       c.request("session.remove", { id: created.id }),
       /uncommitted or unpublished/,

@@ -7,6 +7,8 @@ import type { ConnectorContext } from "@loom/core/connector";
 import type { SessionSnapshot } from "@loom/core/wire";
 import {
   registerVm,
+  pruneVmInventory,
+  listVms,
   stopVm,
   type VmOwner,
   type VmRecord,
@@ -95,6 +97,10 @@ Deno.test("VM control stops the daemon session, preserves edits, and cannot stop
     await lifecycle.stop(created.id, () => !session.closed);
     assert.equal(replacement.closed, false);
     assert(h.daemon.sessions.has(created.id));
+    assert.equal(await pruneVmInventory(h.repoRoot, home), 0, "recent records remain inspectable");
+    assert.equal(await pruneVmInventory(h.repoRoot, home, Date.now() + 61 * 60_000), 1);
+    assert.deepEqual((await listVms(h.repoRoot, home)).vms, []);
+    assert.equal(await Deno.readTextFile(join(created.worktree!, "dirty")), "keep edits");
   } finally {
     await owner?.finish();
     await client.close();

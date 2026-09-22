@@ -1,3 +1,4 @@
+import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
 import { stateInterrupted } from "@loom/core/session-state";
 import type { RpcParams } from "@loom/core/rpc-params";
@@ -259,6 +260,8 @@ export class Daemon {
   #sweepingWarm = false;
   /** Periodic sweep that re-derives git facts for worktree / in-place sessions. */
   #gitSweep: NodeJS.Timeout | null = null;
+  #vmIdleSweep: NodeJS.Timeout | undefined;
+  readonly #vmIdleSince = new Map<string, number>();
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
   /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
@@ -398,7 +401,10 @@ export class Daemon {
         }
         this.emitEvent(ev);
       },
-      onStatus: (id, state, note) => this.#onDerivedStatus(id, state, note),
+      onStatus: (id, state, note) => {
+        this.#vmIdleSince.delete(id);
+        this.#onDerivedStatus(id, state, note);
+      },
       onUsage: (id, delta) => {
         if (this.#stopping) return;
         const priced = this.#priceUsage(id, delta);
@@ -591,6 +597,15 @@ export class Daemon {
 
     this.#gitSweep = setInterval(() => void this.#sweepGitFacts(), GIT_FACTS_SWEEP_MS);
     this.#gitSweep.unref();
+    const sweep = () => {
+      void this.sweepIdleVms();
+      void pruneVmInventory(this.repoRoot).catch((error) =>
+        this.#log.warn("VM inventory cleanup failed", { error: String(error) }),
+      );
+    };
+    sweep();
+    this.#vmIdleSweep = setInterval(sweep, 30_000);
+    this.#vmIdleSweep.unref();
 
     this.#log.info("daemon up", {
       pid: Deno.pid,
@@ -610,6 +625,7 @@ export class Daemon {
     this.#idle.stop();
     if (this.#warmSweep) clearInterval(this.#warmSweep);
     if (this.#gitSweep) clearInterval(this.#gitSweep);
+    clearInterval(this.#vmIdleSweep);
     unwatchFile(this.#configFile, this.#onConfigChange);
     clearInterval(this.#environmentPoll);
     for (const [sig, fn] of this.#signalHandlers) Deno.removeSignalListener(sig, fn);
@@ -2169,6 +2185,70 @@ export class Daemon {
   // live config reload
   // -------------------------------------------------------------------------
 
+  /** Stop disposable runtime generations, keeping the session's files and history. */
+  async sweepIdleVms(now = Date.now()): Promise<void> {
+    const grace = (this.config.isolation.idleTimeoutMinutes ?? 10) * 60_000;
+    if (this.#stopping || grace === 0) {
+      this.#vmIdleSince.clear();
+      return;
+    }
+    const eligible = (id: string) => {
+      const s = this.#registry.get(id);
+      return (
+        s?.isolation === "vm" &&
+        !!this.#registry.store.providerRef(id) &&
+        this.#sessions.canRefresh(id) &&
+        !this.#sessions.keepWarm(id) &&
+        !this.#shells.has(id) &&
+        !this.#hooks.isRunning(id) &&
+        !this.#revivals.has(id) &&
+        !this.#queue.activeKeys.includes(id)
+      );
+    };
+    for (const id of this.#vmIdleSince.keys()) {
+      if (!eligible(id)) this.#vmIdleSince.delete(id);
+    }
+    const stopping: Promise<unknown>[] = [];
+    for (const s of this.#registry.listSorted()) {
+      const id = s.id;
+      if (!eligible(id)) continue;
+      const since = this.#vmIdleSince.get(id);
+      if (since === undefined) {
+        this.#vmIdleSince.set(id, now);
+        continue;
+      }
+      if (now - since < grace) continue;
+      // Publish the pending lifecycle operation synchronously, just like an
+      // environment refresh, so sends wait and then transparently revive.
+      const operation = this.#queue
+        .run(id, async () => {
+          if (
+            !this.#stopping &&
+            !this.#shells.has(id) &&
+            !this.#hooks.isRunning(id) &&
+            !this.#sessions.keepWarm(id) &&
+            this.#sessions.canRefresh(id)
+          ) {
+            await this.#sessions.suspendIdle(id);
+            this.#vmGenerations.delete(id);
+          }
+          return this.#registry.mustGet(id);
+        })
+        .catch((error: unknown) => {
+          this.#log.warn("idle VM shutdown failed", { id, error: String(error) });
+          return this.#registry.mustGet(id);
+        })
+        .finally(() => {
+          this.#revivals.delete(id);
+          this.#vmIdleSince.delete(id);
+          if (!this.#stopping) this.#publishState(id);
+        });
+      this.#revivals.set(id, operation);
+      stopping.push(operation);
+    }
+    await Promise.allSettled(stopping);
+  }
+
   /** A successful publication is the only signal to replace idle VMs. */
   async #checkEnvironment(): Promise<void> {
     if (this.#stopping || this.#checkingEnvironment || this.#vmGenerations.size === 0) return;
@@ -2455,6 +2535,7 @@ export class Daemon {
         const session = this.#registry.get(params.id);
         if (!session) throw new RpcError("not_found", `no such session: ${params.id}`);
         if (this.#revivals.has(params.id)) throw new RpcError("busy", "The session is starting.");
+        this.#vmIdleSince.delete(params.id);
         return await this.#shells.open(this.repoRoot, session, conn, (cwd) =>
           this.#providers.shellEnvironment(session.id, cwd, conn.signal),
         );

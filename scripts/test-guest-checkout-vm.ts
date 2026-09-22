@@ -35,7 +35,7 @@ try {
     const { session } = await RemoteWorkerSession.connect(
       "clone-test",
       "mock",
-      mockLaunchSpec(checkout),
+      mockLaunchSpec("/workspace/checkout"),
       () => worker,
       120000,
     );
@@ -45,7 +45,7 @@ try {
         args: [
           {
             sessionId: "clone-test",
-            cwd: checkout,
+            cwd: "/workspace/checkout",
             prompt: "test",
             mode: "default",
             mcpServers: [],
@@ -81,7 +81,7 @@ echo enforced > policy`,
         ],
       });
       const read = async (name: string) => (await Deno.readTextFile(join(checkout, name))).trim();
-      assert.equal(await read("git-root"), checkout);
+      assert.equal(await read("git-root"), "/workspace/checkout");
       assert.equal(await read("branch"), "loom/livetest");
       assert.equal(await read("refs"), "refs/heads/loom/livetest\nrefs/heads/main");
       assert.equal(await read("policy"), "enforced");

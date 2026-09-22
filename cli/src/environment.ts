@@ -338,7 +338,7 @@ export const repoEnvironmentWarning = async (
         const version = (
           await Deno.readTextFile(join(artifact, "session-environment-version"))
         ).trim();
-        if (!manifest.environmentCompatibility || version !== "5") {
+        if (!manifest.environmentCompatibility || version !== "6") {
           missing = true;
         }
       } catch {

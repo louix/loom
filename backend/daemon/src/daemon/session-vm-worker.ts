@@ -195,9 +195,9 @@ const launchSessionVmOwned = async (
       "Session VM runtime is missing or incompatible; upgrade the Loom package, or rebuild the configured provider runtime with this Loom version",
     );
   }
-  if (environmentEnabled(options.environment)) {
+  if (privateWorkspace || environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "5")
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "6")
         throw new Error();
     } catch {
       throw new Error(

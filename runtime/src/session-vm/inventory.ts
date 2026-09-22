@@ -343,6 +343,28 @@ export const removeVm = async (id: string, home = vmInventoryHome()) => {
   }
 };
 
+/** Forget old, confirmed-clean runtime records; never delete workspace or profile data. */
+export const pruneVmInventory = async (
+  repo?: string,
+  home = vmInventoryHome(),
+  now = Date.now(),
+) => {
+  const { vms } = await listVms(repo, home);
+  let removed = 0;
+  for (const vm of vms) {
+    if (vm.state !== "stopped" || !vm.stoppedAt || now - Date.parse(vm.stoppedAt) < 60 * 60_000)
+      continue;
+    try {
+      // Rechecks state and missing runtime directory under the owner lock.
+      await removeVm(vm.id, home);
+      removed++;
+    } catch {
+      /* Keep active, damaged and recoverable states for explicit recovery. */
+    }
+  }
+  return removed;
+};
+
 /** Report pre-inventory temporary states explicitly; never infer ownership from a PID. */
 export const legacyVmStates = async (known: VmRecord[], temporary = "/tmp") => {
   const paths: string[] = [];
