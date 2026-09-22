@@ -279,23 +279,22 @@ export class ProviderRegistry {
               ...options,
               ...(environment ? { [localSessionEnvironment]: environment } : {}),
             };
-            if (prop === "resumeSession" && !options.initHooks) {
-              const session = await target.resumeSession(options as SessionRef);
-              this.#localEnvironments.set(options.sessionId, environment);
-              return session;
-            }
             const hooks =
               "oneShot" in options && options.oneShot
                 ? []
                 : this.#config.hooks.filter(
                     (h) =>
-                      h.on.includes("init") && (!h.project || matchGlob(h.project, this.#repoRoot)),
+                      h.on.includes("workspace_start") &&
+                      (!h.project || matchGlob(h.project, this.#repoRoot)),
                   );
             const configured = {
               ...options,
               initHooks: {
                 hooks,
                 env: {
+                  LOOM_START_REASON:
+                    options.initHooks?.env.LOOM_START_REASON ??
+                    (prop === "createSession" ? "create" : "resume"),
                   LOOM_REPO_ROOT: this.#repoRoot,
                   LOOM_WORKTREE: options.cwd,
                   LOOM_SESSION_PROVIDER: id,

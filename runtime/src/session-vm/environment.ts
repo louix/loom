@@ -25,7 +25,7 @@ export const prepareEnvironment = async (
   const activation = config!.commandPrefix.length
     ? undefined
     : detectNixActivation(options.cwd ?? Deno.cwd(), config!.autoNix);
-  if (!activation && !config!.commandPrefix.length && !config!.prepare) return;
+  if (!activation && !config!.commandPrefix.length) return;
   const directory = await Deno.makeTempDir({ prefix: "loom-environment-" });
   const snapshot = directory + "/environment.json";
   let child: Deno.ChildProcess | undefined;
@@ -54,7 +54,7 @@ export const prepareEnvironment = async (
       'set -e\nif [ -n "$2" ]; then if [ -n "$1" ]; then printf "\\nRunning repo setup…\\n" >&2; else printf \'{"loomStartup":"prepare"}\\n\' >&2; fi; fi\nshift\neval "$1"\nshift\nexec "$@"',
       "loom-prepare",
       options.output ?? "",
-      config!.prepare,
+      "",
       Deno.execPath(),
       "run",
       "--no-config",
@@ -123,8 +123,7 @@ export const prepareEnvironment = async (
 export const activateSessionEnvironment = (
   config: SessionEnvironment | undefined,
   options: Parameters<typeof prepareEnvironment>[1],
-): Promise<Record<string, string> | undefined> =>
-  prepareEnvironment(config ? { ...config, prepare: config.init ?? "" } : undefined, options);
+): Promise<Record<string, string> | undefined> => prepareEnvironment(config, options);
 
 /** The immutable artifact supplies both store files and their reference metadata. */
 export const initializeGuestNix = async (signal: AbortSignal): Promise<void> => {

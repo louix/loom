@@ -139,8 +139,9 @@ export interface ClaudeProfile {
 }
 
 /**
- * What a `hooks` entry can fire on. Two families:
+ * What a `hooks` entry can fire on:
  *
+ *  - *Workspace* events — preparation of a reusable base and every worker start.
  *  - *Write* events — `file_write` (one tool call that wrote files, fired as
  *    soon as its result lands) and `turn_end` (once per turn, with every file
  *    the turn wrote). A linter usually wants `turn_end`; a formatter that
@@ -153,7 +154,8 @@ export interface ClaudeProfile {
  * `turn_end` fires on any completed turn, including one that wrote nothing.
  */
 export type HookEvent =
-  | "init"
+  | "workspace_prepare"
+  | "workspace_start"
   | "file_write"
   | "turn_end"
   | "waiting"
@@ -165,7 +167,8 @@ export type HookEvent =
   | "interrupted";
 
 export const HOOK_EVENTS: readonly HookEvent[] = [
-  "init",
+  "workspace_prepare",
+  "workspace_start",
   "file_write",
   "turn_end",
   "waiting",
@@ -178,7 +181,7 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
 ];
 
 /** One `hooks` entry, normalized. */
-export type WriteHookEvent = "file_write" | "turn_end" | "init";
+export type WriteHookEvent = "file_write" | "turn_end" | "workspace_prepare" | "workspace_start";
 
 export type HookConfig = HookFields &
   ({ kind: "check"; on: WriteHookEvent[] } | { kind: "notify"; on: HookEvent[] });
@@ -208,7 +211,7 @@ interface HookFields {
    * waiting events, which have no files.
    */
   match: string[];
-  /** Wall-clock ceiling for the command, in ms. Default 30s, clamped 1s–10min. */
+  /** Wall-clock ceiling for the command, in ms. Default 30s, clamped 1s–1h. */
   timeoutMs: number;
 }
 

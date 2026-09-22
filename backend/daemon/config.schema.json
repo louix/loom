@@ -196,28 +196,6 @@
                     }
                   ]
                 },
-                "prepare": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 65536
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "init": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 65536
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
                 "timeout_seconds": {
                   "anyOf": [
                     {
@@ -1050,7 +1028,7 @@
           },
           "async": {
             "default": false,
-            "description": "Run init alongside the agent; only valid for init hooks.",
+            "description": "Run workspace_start alongside the agent; preparation must block.",
             "type": "boolean"
           },
           "kind": {
@@ -1062,7 +1040,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "init",
+                  "workspace_prepare",
+                  "workspace_start",
                   "file_write",
                   "turn_end",
                   "waiting",
@@ -1080,7 +1059,8 @@
                 "items": {
                   "type": "string",
                   "enum": [
-                    "init",
+                    "workspace_prepare",
+                    "workspace_start",
                     "file_write",
                     "turn_end",
                     "waiting",
@@ -1124,7 +1104,7 @@
           },
           "timeout": {
             "default": 30,
-            "description": "Hook timeout in seconds; clamped to 1–600.",
+            "description": "Hook timeout in seconds; clamped to 1–3600.",
             "type": "number"
           }
         },
@@ -1359,28 +1339,6 @@
                               "minLength": 1,
                               "maxLength": 4096
                             }
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "prepare": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "maxLength": 65536
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "init": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "maxLength": 65536
                           },
                           {
                             "type": "null"
@@ -2219,7 +2177,7 @@
                 },
                 "async": {
                   "default": false,
-                  "description": "Run init alongside the agent; only valid for init hooks.",
+                  "description": "Run workspace_start alongside the agent; preparation must block.",
                   "type": "boolean"
                 },
                 "kind": {
@@ -2231,7 +2189,8 @@
                     {
                       "type": "string",
                       "enum": [
-                        "init",
+                        "workspace_prepare",
+                        "workspace_start",
                         "file_write",
                         "turn_end",
                         "waiting",
@@ -2249,7 +2208,8 @@
                       "items": {
                         "type": "string",
                         "enum": [
-                          "init",
+                          "workspace_prepare",
+                          "workspace_start",
                           "file_write",
                           "turn_end",
                           "waiting",
@@ -2293,7 +2253,7 @@
                 },
                 "timeout": {
                   "default": 30,
-                  "description": "Hook timeout in seconds; clamped to 1–600.",
+                  "description": "Hook timeout in seconds; clamped to 1–3600.",
                   "type": "number"
                 }
               },

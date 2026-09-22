@@ -57,8 +57,6 @@ try {
       'exec nix develop path:. --no-write-lock-file --command "$@" > .environment-setup.log 2>&1',
       "environment-check",
     ],
-    prepare:
-      'command -v node > /storage/environment-node; test -n "$COREPACK_HOME"; echo 1 > /storage/loom-env-count',
     timeout_seconds: 900,
   });
   const home = repoBaseDirectory(f.repo);
@@ -67,6 +65,13 @@ try {
   const preparation = await launchSessionVm({
     sessionDirectory: candidate,
     preparationOnly: true,
+    prepareHooks: [
+      {
+        name: "fixture",
+        run: 'command -v node > /storage/environment-node; test -n "$COREPACK_HOME"; echo 1 > /storage/loom-env-count',
+        timeoutMs: 900_000,
+      },
+    ],
     repoRoot: f.repo,
     workspace: f.workspace,
     artifact,

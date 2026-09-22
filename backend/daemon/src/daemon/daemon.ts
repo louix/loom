@@ -1471,7 +1471,7 @@ export class Daemon {
     return this.#queue.run(id, () => this.#reviveLocked(id));
   }
 
-  async #reviveLocked(id: string): Promise<SessionSnapshot> {
+  async #reviveLocked(id: string, startReason = "resume"): Promise<SessionSnapshot> {
     if (this.#sessions.isEnded(id)) await this.#sessions.close(id);
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
@@ -1531,6 +1531,7 @@ export class Daemon {
     );
     try {
       await this.#sessions.resume(await this.#providers.get(row.provider, row.isolation), {
+        initHooks: { hooks: [], env: { LOOM_START_REASON: startReason } },
         sessionId: id,
         providerRef,
         cwd,
@@ -2298,7 +2299,7 @@ export class Daemon {
             this.#publishState(id);
             await stopped;
             if (this.#stopping) return this.#registry.mustGet(id);
-            const snap = await this.#reviveLocked(id);
+            const snap = await this.#reviveLocked(id, "refresh");
             if (warm) this.#sessions.setKeepWarm(id, true);
             return snap;
           })
@@ -3056,7 +3057,7 @@ export class Daemon {
           });
         } else
           await this.#sessions.resume(parentProvider, {
-            initHooks: { hooks: [], env: {} }, // A new conversation despite copying its transcript.
+            initHooks: { hooks: [], env: { LOOM_START_REASON: "create" } },
             sessionId: newId,
             providerRef: newId,
             cwd: wt.path,

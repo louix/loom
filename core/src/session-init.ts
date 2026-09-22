@@ -28,7 +28,7 @@ export const runSessionInit = async <T extends CreateSessionOptions | SessionRef
           ...(environment ?? Deno.env.toObject()),
           ...initHooks.env,
           LOOM_HOOK: hook.name,
-          LOOM_HOOK_EVENT: "init",
+          LOOM_HOOK_EVENT: "workspace_start",
           LOOM_SESSION_ID: options.sessionId,
         },
         hook.timeoutMs,

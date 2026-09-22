@@ -19,14 +19,21 @@ assert(artifact && smolvm, "Pass rebuilt session runtime and smolvm");
 const f = await gitFixture();
 const home = repoBaseDirectory(f.repo);
 const config = normalizeConfig({
+  hooks: [
+    {
+      name: "prepare fixture",
+      on: "workspace_prepare",
+      run: 'mkdir -p "$LOOM_CACHE/fixture" node_modules; printf prepared > "$LOOM_CACHE/fixture/payload"; ln "$LOOM_CACHE/fixture/payload" node_modules/payload; git rev-parse --show-toplevel > "$LOOM_CACHE/prepared-path"',
+    },
+    {
+      name: "start fixture",
+      on: "workspace_start",
+      run: 'test -f node_modules/payload; test "$LOOM_CHECKOUT" = "$PWD"; echo initialized >> "$LOOM_CACHE/init-count"; git rev-parse HEAD > "$LOOM_CACHE/started-head"',
+    },
+  ],
   session: {
     isolation: {
       checkout: { mode: "clone" },
-      environment: {
-        prepare:
-          'mkdir -p "$LOOM_CACHE/fixture" node_modules; printf prepared > "$LOOM_CACHE/fixture/payload"; ln "$LOOM_CACHE/fixture/payload" node_modules/payload; git rev-parse --show-toplevel > "$LOOM_CACHE/prepared-path"',
-        init: 'test -f node_modules/payload; test "$LOOM_CHECKOUT" = "$PWD"; echo initialized >> "$LOOM_CACHE/init-count"; git rev-parse HEAD > "$LOOM_CACHE/started-head"',
-      },
     },
   },
 });
@@ -61,6 +68,10 @@ const boot = async (directory: string, branch: string) => {
             prompt: "test",
             mode: "default",
             mcpServers: [],
+            initHooks: {
+              hooks: config.hooks.filter((h) => h.on.includes("workspace_start")),
+              env: {},
+            },
           },
         ],
       });

@@ -111,12 +111,12 @@ export const initHookSchema = z.object({
   async: z.boolean().optional(),
   name: z.string(),
   run: z.string().max(65536),
-  timeoutMs: z.number().min(1000).max(600000),
+  timeoutMs: z.number().min(1000).max(3600000),
 });
 export type InitHook = z.infer<typeof initHookSchema>;
 
 export const createSessionOptionsSchema = z.object({
-  /** Trusted lifecycle commands, consumed once before the opening turn. Never passed on resume. */
+  /** Trusted workspace_start commands, consumed once per worker start, including resume. */
   initHooks: z
     .object({
       hooks: z.array(initHookSchema).max(64),
@@ -163,7 +163,7 @@ export const createSessionOptionsSchema = z.object({
 export type CreateSessionOptions = z.infer<typeof createSessionOptionsSchema>;
 
 export const sessionRefSchema = z.object({
-  /** Only a newly created fork initializes here; ordinary resumes omit this. */
+  /** Workspace startup hooks are recomputed for every worker launch, including resumes. */
   initHooks: createSessionOptionsSchema.shape["initHooks"].optional(),
   sessionId: z.string(),
   /** The provider's own persisted session identifier. */

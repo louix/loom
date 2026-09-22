@@ -41,12 +41,20 @@ const frames = readFrames(Deno.stdin.readable, (value) => value);
 const first = await frames.next();
 clearTimeout(bootstrap);
 if (first.done) Deno.exit(0);
-const { binding, auth, extraAllowedHosts, providerHosts, environment } = first.value as {
+const {
+  binding,
+  auth,
+  extraAllowedHosts,
+  providerHosts,
+  environment,
+  prepareHooks = [],
+} = first.value as {
   binding: RecoverableBinding;
   auth: SessionAuth;
   extraAllowedHosts?: string[];
   providerHosts?: string[];
   environment?: SessionEnvironment;
+  prepareHooks?: import("../../../core/src/types.ts").InitHook[];
 };
 let child: Deno.ChildProcess | undefined;
 if (binding.preparationOnly) Deno.env.set("LOOM_PREPARATION_ONLY", "1");
@@ -66,7 +74,10 @@ const stop = () => {
 };
 Deno.addSignalListener("SIGTERM", stop);
 Deno.addSignalListener("SIGINT", stop);
-const deadline = setTimeout(stop, sessionStartupTimeout(environment));
+const deadline = setTimeout(
+  stop,
+  sessionStartupTimeout(environment) + prepareHooks.reduce((sum, h) => sum + h.timeoutMs, 0),
+);
 const network: Array<{ host: string; allowed: boolean }> = [];
 const blockedHosts = new Set<string>();
 let phase = "starting";
@@ -185,6 +196,10 @@ try {
       extraAllowedHosts: extraAllowedHosts ?? [],
       providerHosts: providerHosts ?? ["api.anthropic.com"],
     },
+  );
+  await Deno.writeTextFile(
+    join(binding.state, "private/prepare-hooks.json"),
+    JSON.stringify(prepareHooks),
   );
   const create = vmCreateArguments(binding, environment);
   create.push(...sessionDiskSizes);

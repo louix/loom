@@ -411,7 +411,7 @@ test("[[hooks]] rejects invalid entries and clamps timeout", () => {
     }
   ]
 }`).hooks[0]?.timeoutMs,
-    600_000,
+    3_600_000,
   );
 });
 

@@ -223,7 +223,7 @@ export class AisdkSession implements AgentSession {
           env: {
             ...opts.initHooks.env,
             LOOM_HOOK: hook.name,
-            LOOM_HOOK_EVENT: "init",
+            LOOM_HOOK_EVENT: "workspace_start",
             LOOM_SESSION_ID: this.id,
           },
           keepOnInterrupt: true,

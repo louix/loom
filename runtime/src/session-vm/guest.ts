@@ -1,4 +1,5 @@
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
+import { runWorkspacePrepare } from "../../../core/src/workspace-prepare.ts";
 import { sessionAuth } from "./auth.ts";
 import {
   prepareEnvironment,
@@ -177,6 +178,11 @@ if (preparationOnly) {
   Deno.env.set("LOOM_PREPARATION_ONLY", "1");
   try {
     await prepare("inherit");
+    await runWorkspacePrepare(
+      JSON.parse(await Deno.readTextFile("/run/loom/private/prepare-hooks.json")),
+      Deno.cwd(),
+      new AbortController().signal,
+    );
     if (Deno.env.get("LOOM_WORKSPACE")) {
       const clean = await new Deno.Command("git", {
         args: ["diff", "--quiet", "HEAD", "--"],

@@ -31,8 +31,8 @@ test("base updates wait for idle, preserve the session, and queue messages throu
     config: `{
   "hooks": [
     {
-      "on": "init",
-      "run": "echo initialized >> init-count"
+      "on": "workspace_start",
+      "run": "echo $LOOM_START_REASON >> init-count"
     }
   ],
   "session": {
@@ -130,8 +130,8 @@ test("base updates wait for idle, preserve the session, and queue messages throu
     assert.equal(await Deno.readTextFile(join(created.worktree!, "dirty")), "unfinished edits");
     assert.equal(
       await Deno.readTextFile(join(created.worktree!, "init-count")),
-      "initialized\n",
-      "VM replacement does not rerun init",
+      "create\nrefresh\n",
+      "VM replacement reruns workspace_start",
     );
     resumed.finishTurn();
     await delay(1100);
@@ -164,7 +164,7 @@ test("init failures reach non-VM agents before the first turn and do not block c
   "hooks": [
     {
       "kind": "check",
-      "on": "init",
+      "on": "workspace_start",
       "run": "echo broken-package >&2; exit 7"
     }
   ]
@@ -198,7 +198,6 @@ test("session activation evaluates its current prefix but never reruns preparati
   try {
     const config = normalizeSessionEnvironment({
       command_prefix: ["/bin/sh", "-c", 'export PROJECT_ROOT="$PWD"; exec "$@"', "activation"],
-      prepare: "exit 99",
     });
     const options = { cwd: directory, shell: "/bin/sh" };
     assert.equal((await activateSessionEnvironment(config, options))?.PROJECT_ROOT, directory);
@@ -220,7 +219,7 @@ test("a fork initializes its new worktree once even when its transcript is resum
     config: `{
   "hooks": [
     {
-      "on": "init",
+      "on": "workspace_start",
       "run": "echo init >> initialized"
     }
   ],
@@ -252,7 +251,10 @@ test("a fork initializes its new worktree once even when its transcript is resum
     assert.equal(await Deno.readTextFile(join(parent.worktree!, "initialized")), "init\n");
     await h.daemon.sessions.close(fork.id);
     await c.request("session.resume", { id: fork.id });
-    assert.equal(await Deno.readTextFile(join(fork.worktree!, "initialized")), "init\ninit\n");
+    assert.equal(
+      await Deno.readTextFile(join(fork.worktree!, "initialized")),
+      "init\ninit\ninit\n",
+    );
   } finally {
     await c.close();
     await h.cleanup();
@@ -299,7 +301,7 @@ test("provider startup failure preserves files written by init", async () => {
     config: `{
   "hooks": [
     {
-      "on": "init",
+      "on": "workspace_start",
       "run": "echo keep-me > initialized"
     }
   ]

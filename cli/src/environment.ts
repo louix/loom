@@ -1,4 +1,5 @@
 /** Foreground, credential-free preparation. The published base is never writable. */
+import { matchGlob } from "../../backend/daemon/src/daemon/hooks.ts";
 import { initializeWorkspace } from "../../runtime/src/session-vm/workspace.ts";
 import { join, resolve } from "node:path";
 import {
@@ -120,13 +121,15 @@ export const prepareRepoEnvironment = async (repo: string) => {
   if (
     !detectNixActivation(repo, config.autoNix, true) &&
     !config.isolation.environment?.commandPrefix.length &&
-    !config.isolation.environment?.prepare
+    !config.hooks.some(
+      (h) => h.on.includes("workspace_prepare") && (!h.project || matchGlob(h.project, repo)),
+    )
   ) {
     const reason = config.autoNix
       ? "No devenv.nix, flake.nix, shell.nix or default.nix found at the repository root in committed HEAD (also used for bare repos)."
       : "Nix auto-activation is disabled (session.auto_nix).";
     throw new Error(
-      `No session environment found. ${reason} Enable session.auto_nix for a project shell, or configure an advanced preparation command.`,
+      `No session environment found. ${reason} Enable session.auto_nix for a project shell, or configure a workspace_prepare hook.`,
     );
   }
   const runtimes = environmentPreparationRuntimes(config);
@@ -242,6 +245,9 @@ export const prepareRuntimeEnvironment = async (
       repoRoot: repo,
       sessionDirectory: candidate,
       preparationOnly: true,
+      prepareHooks: config.hooks.filter(
+        (h) => h.on.includes("workspace_prepare") && (!h.project || matchGlob(h.project, repo)),
+      ),
       ...(privateWorkspace ? { privateWorkspace } : {}),
       onStop: async () => {
         cancelled.abort();
@@ -338,7 +344,7 @@ export const repoEnvironmentWarning = async (
         const version = (
           await Deno.readTextFile(join(artifact, "session-environment-version"))
         ).trim();
-        if (!manifest.environmentCompatibility || version !== "6") {
+        if (!manifest.environmentCompatibility || version !== "7") {
           missing = true;
         }
       } catch {

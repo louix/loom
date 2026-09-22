@@ -227,7 +227,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       session: { auto_nix: true },
       hooks: [
         {
-          on: "init",
+          on: "workspace_start",
           run: "project-tool > init-environment; printf x >> init-count",
         },
       ],
@@ -288,7 +288,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       }),
     );
     assert.equal(await Deno.readTextFile(join(cwd, "worker-environment")), "resumed");
-    assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "x");
+    assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "xx");
     assert.equal(
       (await registry.shellEnvironment("activated", cwd, signal()))?.set.PROJECT_VALUE,
       "resumed",
@@ -304,7 +304,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       }),
       /Nix activation exited/,
     );
-    assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "x");
+    assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "xx");
   } finally {
     for (const session of sessions) await session.close();
     await registry?.close();
@@ -316,17 +316,12 @@ test("VM activation is fresh without preparation, and explicit prefixes take pre
   const f = await fixture();
   try {
     const cwd = await f.checkout("vm");
-    const environment = normalizeSessionEnvironment(
-      {
-        prepare: "echo prepared > prepared",
-      },
-      true,
-    );
+    const environment = normalizeSessionEnvironment({}, true);
     const options = { cwd, shell: "/bin/sh" };
     assert.equal((await activateSessionEnvironment(environment, options))?.PROJECT_VALUE, "vm");
     await assert.rejects(Deno.stat(join(cwd, "prepared")), Deno.errors.NotFound);
     await prepareEnvironment(environment, options);
-    assert.equal(await Deno.readTextFile(join(cwd, "prepared")), "prepared\n");
+    await assert.rejects(Deno.stat(join(cwd, "prepared")), Deno.errors.NotFound);
     await Deno.writeTextFile(join(cwd, ".value"), "changed\n");
     assert.equal(
       (await activateSessionEnvironment(environment, options))?.PROJECT_VALUE,

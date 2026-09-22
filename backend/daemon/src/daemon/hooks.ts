@@ -383,7 +383,8 @@ const describe = (
 ): string => {
   const who = session.title?.trim() || session.id.slice(0, 8);
   switch (event) {
-    case "init":
+    case "workspace_prepare":
+    case "workspace_start":
       return `${who}: session initializing`;
     case "file_write":
     case "turn_end":

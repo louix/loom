@@ -37,7 +37,7 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
   ${pkgs.lib.optionalString (sessionVersion != null) ''
     cp ${guestImage} $out/guest-image.tar
     cp ${closure}/registration $out/registration
-    echo 6 > $out/session-environment-version
+    echo 7 > $out/session-environment-version
   ''}
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json

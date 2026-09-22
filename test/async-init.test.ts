@@ -26,12 +26,15 @@ const until = async (ready: () => boolean | Promise<boolean>) => {
 
 test("async init is opt-in and cannot be applied to other hook events", () => {
   const config = (hook: unknown) => normalizeConfig(parseConfig(JSON.stringify({ hooks: [hook] })));
-  assert.equal(config({ on: "init", run: "install" }).hooks[0]?.async, false);
-  assert.equal(config({ on: "init", run: "install", async: true }).hooks[0]?.async, true);
-  for (const on of ["file_write", ["init", "turn_end"]]) {
+  assert.equal(config({ on: "workspace_start", run: "install" }).hooks[0]?.async, false);
+  assert.equal(
+    config({ on: "workspace_start", run: "install", async: true }).hooks[0]?.async,
+    true,
+  );
+  for (const on of ["file_write", "workspace_prepare", ["workspace_start", "turn_end"]]) {
     assert.throws(
       () => config({ on, run: "install", async: true }),
-      /async is only supported for init/,
+      /async is only supported for workspace_start/,
     );
   }
 });
@@ -154,7 +157,7 @@ test("Claude async wrapper preserves shell data, bounds output, and runs only on
     assert.match(context, /Initialization failed/);
     assert.equal((await Deno.readTextFile(join(cwd, "0.status"))).trim(), "7");
     const output = await Deno.readTextFile(join(cwd, "0.log"));
-    assert(output.startsWith("literal ' $(touch injected)\ninit\ninit-test"));
+    assert(output.startsWith("literal ' $(touch injected)\nworkspace_start\ninit-test"));
     assert.equal((await Deno.stat(join(cwd, "0.log"))).size, 8000);
     await assert.rejects(Deno.stat(join(cwd, "injected")), Deno.errors.NotFound);
     await execute();

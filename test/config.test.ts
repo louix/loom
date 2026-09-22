@@ -610,7 +610,7 @@ test("repo hooks append to global hooks without changing other array inheritance
     when: "unfocused",
     run: "true",
   };
-  const repoHook = { name: "shared", on: "init", run: "echo setup" };
+  const repoHook = { name: "shared", on: "workspace_start", run: "echo setup" };
   const write = (hooks: unknown, repo: Record<string, unknown>) =>
     writeFileSync(
       user,

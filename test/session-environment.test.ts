@@ -4,11 +4,7 @@ import {
   normalizeSessionEnvironment,
   sessionStartupTimeout,
 } from "../core/src/session-environment.ts";
-import {
-  prepareEnvironment,
-  activateSessionEnvironment,
-  guestPathProfile,
-} from "../runtime/src/session-vm/environment.ts";
+import { prepareEnvironment, guestPathProfile } from "../runtime/src/session-vm/environment.ts";
 import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
 import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
 import { vmArguments, vmCreateArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
@@ -87,13 +83,13 @@ test("environment configuration validates commands and bounded setup time", () =
   assert.equal(sessionStartupTimeout(normalizeSessionEnvironment(undefined)), 120_000);
   assert.equal(
     sessionStartupTimeout(
-      normalizeSessionEnvironment({ prepare: "setup", timeout_seconds: 2_073_600 }),
+      normalizeSessionEnvironment({ command_prefix: ["/bin/sh"], timeout_seconds: 2_073_600 }),
     ),
     2_073_720_000,
   );
   assert.equal(
     sessionStartupTimeout(
-      normalizeSessionEnvironment({ prepare: "custom setup", timeout_seconds: 20 }),
+      normalizeSessionEnvironment({ command_prefix: ["/bin/sh"], timeout_seconds: 20 }),
     ),
     140_000,
   );
@@ -115,7 +111,7 @@ test("environment and presets belong to the selected trusted repo", async () => 
             "javascript"
           ],
           "environment": {
-            "prepare": "custom setup"
+            "command_prefix": ["/bin/sh"]
           }
         }
       }
@@ -123,86 +119,51 @@ test("environment and presets belong to the selected trusted repo", async () => 
   ]
 }`,
     );
-    assert.equal(loadConfig(dir, file).isolation.environment?.prepare, "custom setup");
-    assert.equal(loadConfig(dir + "/other", file).isolation.environment?.prepare, "");
+    assert.deepEqual(loadConfig(dir, file).isolation.environment?.commandPrefix, ["/bin/sh"]);
+    assert.deepEqual(loadConfig(dir + "/other", file).isolation.environment?.commandPrefix, []);
     assert.deepEqual(loadConfig(dir + "/other", file).isolation.extraAllowedHosts, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-test("configured activation precedes arbitrary setup and preserves exports for the session", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    const config = normalizeSessionEnvironment({
-      command_prefix: [
-        "/bin/sh",
-        "-c",
-        "export LOOM_TEST_ACTIVATED='a b; $(literal)'; echo not-a-worker-frame; exec \"$@\"",
-        "activation",
-      ],
-      prepare:
-        "test \"$LOOM_TEST_ACTIVATED\" = 'a b; $(literal)'\nprintf ready > result\nexport LOOM_TEST_PREPARED=yes\necho setup-output",
-    });
-    const env = await prepareEnvironment(config, { shell: "/bin/sh", cwd: dir });
-    assert.equal(await Deno.readTextFile(dir + "/result"), "ready");
-    assert.equal(env?.LOOM_TEST_ACTIVATED, "a b; $(literal)");
-    assert.equal(env?.LOOM_TEST_PREPARED, "yes");
-    assert.equal(await prepareEnvironment(undefined, { shell: "/missing" }), undefined);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
+test("activation captures exports and keeps command output off the worker protocol", async () => {
+  const config = normalizeSessionEnvironment({
+    command_prefix: [
+      "/bin/sh",
+      "-c",
+      'export LOOM_TEST_ACTIVATED=yes; echo not-a-frame; exec "$@"',
+      "activation",
+    ],
+  });
+  assert.equal(
+    (await prepareEnvironment(config, { shell: "/bin/sh" }))?.LOOM_TEST_ACTIVATED,
+    "yes",
+  );
+  assert.equal(await prepareEnvironment(undefined, { shell: "/missing" }), undefined);
 });
 
-test("session init runs after activation without repeating preparation", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    const config = normalizeSessionEnvironment({
-      command_prefix: ["/bin/sh", "-c", 'export LOOM_TEST_ACTIVATED=yes; exec "$@"', "activation"],
-      prepare: "echo prepared >> prepare-count",
-      init: 'test "$LOOM_TEST_ACTIVATED" = yes; echo initialized >> init-count',
-    });
-    await prepareEnvironment(config, { shell: "/bin/sh", cwd: dir });
-    await activateSessionEnvironment(config, { shell: "/bin/sh", cwd: dir });
-    await activateSessionEnvironment(config, { shell: "/bin/sh", cwd: dir });
-    assert.equal(await Deno.readTextFile(dir + "/prepare-count"), "prepared\n");
-    assert.equal(await Deno.readTextFile(dir + "/init-count"), "initialized\ninitialized\n");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-test("activation and preparation can create Git dependencies", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    const config = normalizeSessionEnvironment({
-      command_prefix: ["/bin/sh", "-ec", 'git init --bare source; exec "$@"', "activation"],
-      prepare:
-        "git clone ./source dependency; git -C dependency rev-parse --is-inside-work-tree > result",
-    });
-    await prepareEnvironment(config, { shell: "/bin/sh", cwd: dir });
-    assert.equal(await Deno.readTextFile(dir + "/result"), "true\n");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-test("failed and timed-out setup never yields a ready environment or raw command output", async () => {
+test("failed and timed-out activation is bounded and redacts command output", async () => {
   await assert.rejects(
-    prepareEnvironment(normalizeSessionEnvironment({ prepare: "echo private-token >&2; exit 7" }), {
-      shell: "/bin/sh",
-    }),
+    prepareEnvironment(
+      normalizeSessionEnvironment({
+        command_prefix: ["/bin/sh", "-c", "echo private-token >&2; exit 7"],
+      }),
+      { shell: "/bin/sh" },
+    ),
     (error: Error) =>
       /preparation failed/.test(error.message) && !error.message.includes("private-token"),
   );
   await assert.rejects(
-    prepareEnvironment(normalizeSessionEnvironment({ command_prefix: ["/missing-command"] }), {
-      shell: "/bin/sh",
-    }),
-    /preparation failed/,
+    prepareEnvironment(
+      normalizeSessionEnvironment({
+        command_prefix: ["/bin/sh", "-c", "exec sleep 10"],
+        timeout_seconds: 1,
+      }),
+      { shell: "/bin/sh" },
+    ),
+    /timed out/,
   );
-  const config = normalizeSessionEnvironment({ prepare: "exec sleep 10", timeout_seconds: 1 });
-  await assert.rejects(prepareEnvironment(config, { shell: "/bin/sh" }), /timed out/);
 });
 
 test("writable Nix uses a read-only artifact and private ext4 upper on both closure formats", () => {

@@ -44,6 +44,7 @@ import {
 } from "../../../../runtime/src/session-vm/auth.ts";
 
 export interface SessionVmOptions {
+  prepareHooks?: import("../../../../core/src/types.ts").InitHook[];
   sessionId?: string;
   provider?: string;
   onStop?: (isCurrent: () => boolean) => Promise<void>;
@@ -195,9 +196,9 @@ const launchSessionVmOwned = async (
       "Session VM runtime is missing or incompatible; upgrade the Loom package, or rebuild the configured provider runtime with this Loom version",
     );
   }
-  if (privateWorkspace || environmentEnabled(options.environment)) {
+  if (privateWorkspace || options.preparationOnly || environmentEnabled(options.environment)) {
     try {
-      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "6")
+      if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "7")
         throw new Error();
     } catch {
       throw new Error(
@@ -311,6 +312,7 @@ const launchSessionVmOwned = async (
         binding,
         extraAllowedHosts,
         environment: options.environment,
+        prepareHooks: options.prepareHooks,
         providerHosts: normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
         auth,
       }) + "\n",

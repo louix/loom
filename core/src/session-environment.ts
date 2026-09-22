@@ -5,9 +5,6 @@ export interface SessionEnvironment {
   /** Permission to activate the current checkout, independent of VM configuration. */
   autoNix: boolean;
   commandPrefix: string[];
-  prepare: string;
-  /** Reconcile the current checkout on each VM start. */
-  init?: string;
   timeoutMs: number;
   memoryMiB: number;
   cpus: number;
@@ -27,18 +24,6 @@ export const sessionEnvironmentSchema = z
       .max(64)
       .nullish()
       .transform((v) => v ?? []),
-    prepare: z
-      .string()
-      .max(65536)
-      .refine((v) => !v.includes("\0"))
-      .nullish()
-      .transform((v) => v ?? ""),
-    init: z
-      .string()
-      .max(65536)
-      .refine((v) => !v.includes("\0"))
-      .nullish()
-      .transform((v) => v ?? ""),
     timeout_seconds: z
       .number()
       .int()
@@ -79,8 +64,6 @@ export const normalizeSessionEnvironment = (
   return {
     autoNix,
     commandPrefix: r.command_prefix,
-    prepare: r.prepare,
-    init: r.init,
     timeoutMs: r.timeout_seconds * 1000,
     memoryMiB: r.memory_mib,
     cpus: r.cpus,
@@ -88,7 +71,7 @@ export const normalizeSessionEnvironment = (
 };
 
 export const environmentEnabled = (env?: SessionEnvironment): boolean =>
-  !!env && (env.autoNix || env.commandPrefix.length > 0 || env.prepare.length > 0 || !!env.init);
+  !!env && (env.autoNix || env.commandPrefix.length > 0);
 
 export const sessionStartupTimeout = (env?: SessionEnvironment): number =>
   120_000 + (environmentEnabled(env) ? env!.timeoutMs : 0);

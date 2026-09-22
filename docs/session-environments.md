@@ -40,7 +40,7 @@ Loom checks the current checkout root in this order:
 
 No matching file means ordinary startup. `.envrc` never triggers activation.
 Loom reports the selected environment. Missing tools or a broken selected shell
-stop startup before init hooks; Loom does not silently try another file. Devenv
+stop startup before workspace hooks; Loom does not silently try another file. Devenv
 activation enters its shell; Loom does not run `devenv up`.
 
 Every new session worker, including resume and VM replacement, activates its own
@@ -75,24 +75,26 @@ sessions start from the bundled runtime and build/download what they need under
 the configured network policy. This may make first startup slower. Refreshing
 the cache after dependency changes is useful but not required for activation.
 
-Use an init hook for worktree dependencies:
+Use a `workspace_start` hook for checkout dependencies:
 
 ```jsonc
 "hooks": [
-  { "on": "init", "run": "deno install --frozen", "timeout": 600 },
+  { "on": "workspace_start", "run": "deno install --frozen", "timeout": 600 },
 ]
 ```
 
-Init runs once when a conversation is created, after activation and before its
-opening turn. It does not repeat on resume or VM replacement. Init failures are
-reported to the agent so it can repair the project. Worktree dependencies and
-conversation history survive VM replacement.
+`workspace_start` runs after checkout and activation whenever a worker starts:
+creation, resume, or VM replacement, including local workers. It does not repeat
+for another message to an already-running worker. Failures are reported to the
+agent so it can repair the project. Hooks must be safe to repeat. Dependencies
+and conversation history survive VM replacement. `LOOM_START_REASON` is
+`create`, `resume`, or `refresh`.
 
 For setup that can overlap with agent work, opt into background initialization:
 
 ```jsonc
 "hooks": [
-  { "on": "init", "run": "pnpm install --frozen-lockfile", "timeout": 600, "async": true },
+  { "on": "workspace_start", "run": "pnpm install --frozen-lockfile", "timeout": 600, "async": true },
 ]
 ```
 
@@ -104,10 +106,9 @@ file paths in its context. Claude's wrapper uses Bash and GNU `timeout`
 (included in Loom's runtime). Hook timeouts still apply. AI SDK init tasks
 survive turn interruption and are stopped when the session closes.
 
-`async` is only valid for hooks whose event is `init`. Claude and AI SDK
-providers support it; other connectors retain blocking initialization. Async
-init is not rerun on resume or VM replacement, including if replacement
-interrupted it.
+`async` is only valid for hooks whose sole event is `workspace_start`. Claude
+and AI SDK providers support it; other connectors retain blocking initialization.
+Async hooks run again on resume or VM replacement.
 
 ## Advanced VM setup
 
@@ -119,11 +120,7 @@ They are not needed for automatic Nix activation:
   status. A nonempty prefix takes precedence over automatic detection. A named
   flake shell can use
   `["nix", "develop", "path:.#ci", "--no-write-lock-file", "--command"]`.
-- `prepare`: a shell command run only during explicit preparation, inside the
-  selected environment. Use it for reusable files in guest storage. Its exports
-  are not saved for sessions; put session exports in the project shell or
-  prefix.
-- `timeout_seconds`: activation/preparation budget, 1–2073600 seconds (default
+- `timeout_seconds`: activation budget, 1–2073600 seconds (default
   900).
 - `memory_mib`: VM memory, 512–65536 MiB (default 2048).
 - `cpus`: VM virtual CPUs, 1–64 (default 1).
@@ -140,14 +137,20 @@ remove `session.environment`. Automatic activation now defaults to false. Remove
 
 Preparation no longer saves exported variables for later sessions. Move exports
 from a custom `prepare` command into the project shell or `command_prefix`.
-Updated guest runtimes use environment format 5 and include devenv.
+Replace hook event `init` with `workspace_start`. Move
+`session.isolation.environment.prepare` into a `workspace_prepare` hook and
+`environment.init` into a `workspace_start` hook, then remove those settings.
+A hook can select both workspace events if it is blocking. Preparation hooks
+run in configuration order after activation, without provider credentials;
+failure aborts publication. Each hook has its own `timeout` (up to 3600 seconds).
+Updated guest runtimes use environment format 7 and include devenv.
 Upgrade/rebuild older runtimes; older prepared disks are incompatible, but a new
 preparation is optional. On Apple Silicon, rebuilding the packaged runtime
 requires regenerating the macOS runtime hashes.
 
 ## Updating the base
 
-Preparation uses a disposable worktree at committed HEAD, with no provider
+Preparation uses a disposable checkout at committed HEAD, with no provider
 credentials. Output streams to the terminal. Existing sessions and new launches
 can continue using the previous base during preparation. Failure or cancellation
 keeps that base and all existing sessions intact.
@@ -163,10 +166,9 @@ Linux uses small qcow2 writable layers; macOS uses APFS clones. Old backing
 bytes remain available to VMs still using them and are reclaimed when those VMs
 close. This temporarily requires room for both old and new bases. Guest-only
 files and processes are disposable. Host worktrees, including staged, unstaged
-and untracked changes, and native conversation profiles persist. Init is not
-rerun during this handover; dependencies such as `node_modules` and `.venv`
-should live in the worktree. If a new base changes the interpreter/ABI they
-need, the agent may need to reinstall them.
+and untracked changes, and native conversation profiles persist.
+`workspace_start` runs during this handover to reconcile dependencies such as
+`node_modules` and `.venv`, which should live in the checkout.
 
 There is one current base per repo and runtime. Bundled providers use the same
 base; distinct custom runtimes keep separate bases. The shared image contains
@@ -242,24 +244,27 @@ Configure installation using generic commands in your trusted repo settings:
     "checkout": { "mode": "clone" },
     "network_presets": ["javascript"],
     "idle_timeout_minutes": 10,
-    "environment": {
-      "prepare": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
-      "init": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
-    },
   },
-}
+},
+"hooks": [
+  {
+    "on": ["workspace_prepare", "workspace_start"],
+    "run": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
+    "timeout": 600,
+  },
+]
 ```
 
-The example requires pnpm in the project shell or runtime. `prepare` runs during
-`loom vm prepare`, without provider credentials. `environment.init` runs after
-checkout and activation on every VM start, including resume, and must be safe to
-repeat. Failure stops startup. This differs from conversation `init` hooks above,
-which run once and report failures to the agent. Preparation must leave tracked
-files unchanged; generated dependencies and caches are retained.
+The example requires pnpm in the project shell or runtime. `workspace_prepare`
+runs during `loom vm prepare`, without provider credentials. `workspace_start`
+runs after checkout and activation on every worker start, including resume.
+Preparation must leave tracked files unchanged; generated dependencies and
+caches are retained. A preparation failure aborts publication; a startup hook
+failure is reported to the agent for repair.
 
 New sessions start at their host branch's current tip even if preparation is
 older. Existing sessions retain local edits and commits. A new preparation does
-not overwrite existing workspaces; their next init reconciles dependencies.
+not overwrite existing workspaces; their next `workspace_start` reconciles dependencies.
 
 Copying preserves hard links inside each private workspace, allowing pnpm or uv
 to link between the cache and checkout on one guest device. Sessions and the
@@ -267,7 +272,7 @@ prepared base never share writable inodes. Files use reflinks when available
 and ordinary copies otherwise. On ext4 without reflink support, each session
 still needs a full private copy; idle shutdown does not reclaim those files.
 Other package managers use the same model, with their own cache options and
-prepare/init commands. Keep relocatable state under the stable guest paths.
+workspace hooks. Keep relocatable state under the stable guest paths.
 
 Filesystem MCP VMs mount the same private workspace and retain separate
 execution, credentials and egress policies. This does not introduce new
@@ -286,7 +291,7 @@ Failed automatic publication is reported in the conversation; push successfully
 before discarding the workspace. Package caches and ignored files are never
 silently evicted.
 
-Upgrade/rebuild the session runtime (environment version 6), then run
+Upgrade/rebuild the session runtime (environment version 7), then run
 `loom vm prepare` to populate the new layout. Existing legacy clone paths and
 mounted sessions retain their original layout.
 
@@ -322,7 +327,7 @@ For pnpm, an init command can explicitly select a shared store and copy imports:
       "hooks": [
         {
           "name": "install dependencies",
-          "on": "init",
+          "on": "workspace_start",
           "run": "pnpm install --frozen-lockfile --store-dir=\"$XDG_DATA_HOME/pnpm/store\" --package-import-method=copy",
           "timeout": 600,
         },
