@@ -855,7 +855,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     });
     const { stdout, stdin, app } = mount(first, {}, { rows: 22 });
     try {
-      await waitFor(stdout, /EVENTS/);
+      await waitFor(stdout, /Chat/);
       // Thirty short lines, streamed in after the client subscribed.
       for (let i = 1; i <= 30; i++) {
         await first.request("dev.emit", {
@@ -877,7 +877,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       // are now in view, the live tail is gone.
       stdin.feed("\x1b[5~");
       stdin.feed("\x1b[5~");
-      await waitFor(stdout, /pinline-18/);
+      await waitFor(stdout, (frame) => /pinline-2[0-6]/.test(frame) && !/pinline-27/.test(frame));
       assert.doesNotMatch(stdout.last, /pinline-30/, "scrolled off the live tail");
       const visible = (frame: string): string[] =>
         [...frame.matchAll(/pinline-\d\d/g)].map((m) => m[0]);
@@ -1213,7 +1213,7 @@ describe("tui-render", { concurrency: 4 }, () => {
         "the scroll-position indicator",
       );
 
-      stdin.feed("\x1b[<65;10;10M"); // wheel down, same three-row step as EVENTS
+      stdin.feed("\x1b[<65;10;10M"); // wheel down, same three-row step as Chat
       await delay(120);
       assert.match(stdout.last, /↕ lines 4–/);
       stdin.feed("\x1b[<64;10;10M"); // wheel up
@@ -1279,7 +1279,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
-  test("→ drills into a session's children; EVENTS follows the focused child", async () => {
+  test("→ drills into a session's children; Chat follows the focused child", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -1305,14 +1305,14 @@ describe("tui-render", { concurrency: 4 }, () => {
       // Breadcrumb + events header name the focused child; the pane narrows to
       // just that sub-agent's stream.
       assert.match(stdout.last, /FLEET · \S+ ▸ ⑂ reviewer/);
-      assert.match(stdout.last, /EVENTS · ⑂ reviewer/);
+      assert.match(stdout.last, /Chat · ⑂ reviewer/);
       assert.match(stdout.last, /reviewing the diff/);
       assert.doesNotMatch(stdout.last, /mainline chatter/);
 
       stdin.feed("\x1b"); // esc — back out to the fleet
       await delay(220);
       assert.match(stdout.last, /mainline chatter/, "the full session stream returns");
-      assert.doesNotMatch(stdout.last, /EVENTS · ⑂/, "the events header is back to plain");
+      assert.doesNotMatch(stdout.last, /Chat · ⑂/, "the events header is back to plain");
     } finally {
       app.unmount();
       await client.close();
@@ -1357,16 +1357,16 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       // overview: the fleet list alone — no detail, no events, no switcher bar.
       await waitFor(stdout, /FLEET/);
-      assert.doesNotMatch(stdout.last, /EVENTS/);
+      assert.doesNotMatch(stdout.last, /Chat/);
       assert.doesNotMatch(stdout.last, /engine fake/);
       assert.doesNotMatch(stdout.last, /⇥ next/);
 
       stdin.feed("\t"); // → the session pane: detail + events, full width
-      await waitFor(stdout, (t) => /EVENTS/.test(t) && /one column now/.test(t));
+      await waitFor(stdout, (t) => /Chat/.test(t) && /one column now/.test(t));
       assert.doesNotMatch(stdout.last, /FLEET/);
 
       stdin.feed("\t"); // → back to the fleet list
-      await waitFor(stdout, (t) => /FLEET/.test(t) && !/EVENTS/.test(t));
+      await waitFor(stdout, (t) => /FLEET/.test(t) && !/Chat/.test(t));
     } finally {
       app.unmount();
     }
@@ -1378,7 +1378,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       { columns: 120 },
     );
     try {
-      await waitFor(stdout, (s) => /FLEET/.test(s) && /EVENTS/.test(s));
+      await waitFor(stdout, (s) => /FLEET/.test(s) && /Chat/.test(s));
       stdin.feed("\r");
       await waitFor(stdout, /send \[manual\]/);
       stdin.feed("draft survives");
@@ -1387,7 +1387,7 @@ describe("tui-render", { concurrency: 4 }, () => {
 
       stdout.columns = 60;
       stdout.emit("resize");
-      await waitFor(stdout, (s) => /EVENTS/.test(s) && !/FLEET/.test(s));
+      await waitFor(stdout, (s) => /Chat/.test(s) && !/FLEET/.test(s));
       assert.match(stdout.last, /draft survives/);
       stdin.feed(" resizing");
       await waitFor(stdout, /draft survives resizing/);
@@ -1395,7 +1395,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed(ESC);
       await waitFor(stdout, (s) => !/send \[manual\]/.test(s));
       stdin.feed("\t");
-      await waitFor(stdout, (s) => /FLEET/.test(s) && !/EVENTS/.test(s));
+      await waitFor(stdout, (s) => /FLEET/.test(s) && !/Chat/.test(s));
     } finally {
       app.unmount();
     }
@@ -1421,7 +1421,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\x1b[C");
       await waitFor(stdout, /▸ ⑂ reviewer/);
       assert.match(stdout.last, /FLEET/);
-      assert.doesNotMatch(stdout.last, /EVENTS/);
+      assert.doesNotMatch(stdout.last, /Chat/);
 
       // ← backs out of the drill-down, still on the fleet list.
       stdin.feed("\x1b[D");
@@ -1848,7 +1848,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\r"); // enter → undo turn 2
       // the compose prompt is back (as if Enter had been pressed on the session),
       // pre-filled with turn 2's full message, ready to edit and re-send — it
-      // draws on the session's EVENTS pane (label row, then the input line)
+      // draws on the session's Chat pane (label row, then the input line)
       await waitFor(stdout, /send \[manual\][\s\S]*?▍ the second prompt we will redo/);
       assert.match(stdout.last, /↶ rewound to turn 1/); // the rewind landed
 
@@ -3045,7 +3045,7 @@ test("cold send dismisses the prompt for startup and recovers an unaccepted draf
   }
 });
 
-test("startup progress reaches EVENTS while the session is still starting", async () => {
+test("startup progress reaches Chat while the session is still starting", async () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
   const teardown = handle.effectStart();
@@ -3351,15 +3351,17 @@ test("Detail keeps ChatGPT model limits visible on separate rows", async () => {
   assert.equal(rows.filter((row) => /codex|gpt-6-astra/.test(row)).length, 3);
 });
 
-test("v cycles EVENTS verbosity and the palette can change it too", async () => {
+test("v cycles Chat verbosity and the palette can change it too", async () => {
   const { stdout, stdin, app, settle } = await mountFleet([snap({ title: "filter test" })]);
   try {
-    assert.match(stdout.last, /EVENTS[^\n]*full/);
+    assert.match(stdout.last, /Chat[^\n]*full/);
     for (const tag of ["chat", "chat+tools", "full"]) {
       stdin.feed("v");
       await settle();
-      const header = stdout.last.split("\n").find((line) => line.includes("EVENTS"));
-      assert.equal(header?.match(/EVENTS\s+(chat\+tools|chat|full)\b/)?.[1], tag, header);
+      const header = stdout.last
+        .split("\n")
+        .find((line) => /Chat\s+(chat\+tools|chat|full)\b/.test(line));
+      assert.equal(header?.match(/Chat\s+(chat\+tools|chat|full)\b/)?.[1], tag, header);
     }
     stdin.feed(" ");
     await settle();
@@ -3367,7 +3369,7 @@ test("v cycles EVENTS verbosity and the palette can change it too", async () => 
     await settle();
     stdin.feed("\r");
     await settle();
-    assert.match(stdout.last, /EVENTS[^\n]*chat/);
+    assert.match(stdout.last, /Chat[^\n]*chat/);
     assert.doesNotMatch(stdout.last, /COMMANDS/);
   } finally {
     app.unmount();
@@ -3822,5 +3824,149 @@ test("startup repository menu selects and cancels without a daemon", async () =>
     } finally {
       app.unmount();
     }
+  }
+});
+
+test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(snap({ id: "a", subagents: [{ id: "child", name: "Scout", active: true }] })),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  try {
+    assert.equal(handle.getView().ui.sessionTab, "chat");
+    press("2", { meta: true });
+    assert.equal(handle.getView().ui.sessionTab, "chat");
+    press("2");
+    assert.equal(handle.getView().ui.sessionTab, "changes");
+    fake
+      .of("session.inspect")
+      .at(-1)!
+      .resolve({
+        text: Array.from({ length: 60 }, (_, i) => "file " + i).join("\n"),
+        sampledAt: 1,
+      });
+    await delay(0);
+    press("", { pageDown: true });
+    assert.ok(handle.getView().inspectionScroll > 0);
+    const offset = handle.getView().inspectionScroll;
+    press("3");
+    assert.equal(handle.getView().inspectionScroll, 0);
+    press("2");
+    assert.equal(handle.getView().inspectionScroll, offset);
+    press("", { rightArrow: true });
+    assert.ok(handle.getView().ui.selectedChild);
+    press("", { leftArrow: true });
+    assert.equal(handle.getView().ui.selectedChild, null);
+    press("", { return: true });
+    assert.equal(handle.getView().ui.sessionTab, "chat");
+    press("123");
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "123");
+    press("", { escape: true });
+    press("/");
+    press("2");
+    assert.equal(handle.searches.get()?.buffer.text, "2");
+    assert.equal(handle.getView().ui.sessionTab, "chat");
+    press("", { escape: true });
+    press("?");
+    press("3");
+    assert.equal(handle.getView().ui.sessionTab, "chat");
+  } finally {
+    stop();
+  }
+});
+
+test("inspection responses cannot leak across sessions and Changes opens a patch", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(snap({ id: "a" }), snap({ id: "b" })));
+  const opened: string[] = [];
+  const handle = mkFleetHandle({
+    client: fake.client,
+    term: fakeTerm,
+    openEditorOverride: async (text) => {
+      opened.push(text);
+      return null;
+    },
+  });
+  const stop = handle.effectStart();
+  try {
+    handle.handleKey("2", {} as Key);
+    const old = fake.of("session.inspect").at(-1)!;
+    const before = handle.getView().ui.selectedId;
+    handle.handleKey("", { downArrow: true } as Key);
+    if (handle.getView().ui.selectedId === before) handle.handleKey("", { upArrow: true } as Key);
+    const next = fake.of("session.inspect").at(-1)!;
+    assert.notEqual(old.params["id"], next.params["id"]);
+    next.resolve({ text: "new session changes", sampledAt: 1 });
+    await delay(0);
+    old.resolve({ text: "wrong session changes", sampledAt: 1 });
+    await delay(0);
+    assert.match(handle.getView().inspectionText, /new session changes/);
+    assert.doesNotMatch(handle.getView().inspectionText, /wrong session/);
+    handle.handleKey("o", {} as Key);
+    const patch = fake.of("session.inspect").at(-1)!;
+    assert.equal(patch.params["patch"], true);
+    patch.resolve({ text: "diff --git a/file b/file", sampledAt: 1 });
+    await delay(0);
+    assert.deepEqual(opened, ["diff --git a/file b/file"]);
+  } finally {
+    stop();
+  }
+});
+
+test("tabs render in overview and narrow session panes", async () => {
+  for (const columns of [60, 120]) {
+    const fake = mkFakeClient();
+    fake.deliver(fleetOf(snap({ id: "tabs" })));
+    const { app, stdin, stdout } = mount(fake.client, {}, { columns });
+    try {
+      stdin.feed("2");
+      await waitFor(stdout, /2 Changes/);
+      fake.of("session.inspect").at(-1)!.resolve({ text: "changed-file.ts", sampledAt: 1 });
+      await waitFor(stdout, /changed-file.ts/);
+      assert.match(stdout.last, /1 Chat/);
+      assert.match(stdout.last, /3 Monitor/);
+      stdin.feed("1");
+      await waitFor(stdout, /\[1 Chat\]/);
+    } finally {
+      app.unmount();
+    }
+  }
+});
+
+test("session inspection RPC reads the selected local checkout and reports missing worktrees", async () => {
+  const { h, connect, cleanup } = await harness();
+  const client = await connect();
+  try {
+    const s = await client.request<SessionSnapshot>("session.create", {
+      provider: "fake",
+      prompt: "inspect local files",
+      worktree: false,
+    });
+    writeFileSync(join(h.repoRoot, "inspection-file.txt"), "local edit");
+    const changes = await client.request<{ text: string }>("session.inspect", {
+      id: s.id,
+      tab: "changes",
+    });
+    assert.match(changes.text, /inspection-file.txt/);
+    const monitor = await client.request<{ text: string }>("session.inspect", {
+      id: s.id,
+      tab: "monitor",
+    });
+    assert.match(monitor.text, /DAEMON HOST/);
+    await assert.rejects(client.request("session.inspect", { id: "missing", tab: "changes" }));
+    const stub = await client.request<SessionSnapshot>("session.createStub", {
+      provider: "fake",
+      prompt: "no checkout",
+    });
+    await assert.rejects(
+      client.request("session.inspect", { id: stub.id, tab: "changes" }),
+      /no working directory/,
+    );
+  } finally {
+    await client.close();
+    await cleanup();
   }
 });

@@ -1,3 +1,4 @@
+import { InspectionPane } from "./session-tabs.tsx";
 /**
  * Root Ink component. All logic — state, keymap, daemon round-trips — lives in
  * {@link mkFleetHandle}; this file gathers the terminal capabilities the handle
@@ -345,6 +346,16 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
     () => <Working handle={handle} starting={starting} />,
     [handle, starting],
   );
+  if (view.ui.sessionTab !== "chat")
+    return (
+      <InspectionPane
+        tab={view.ui.sessionTab}
+        text={view.inspectionText}
+        scroll={view.inspectionScroll}
+        width={width}
+        height={view.splitLogH}
+      />
+    );
   return <EventLog view={pane} width={width} spinner={spinner} />;
 };
 

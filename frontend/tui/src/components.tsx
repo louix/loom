@@ -1,3 +1,4 @@
+import { SessionTabs } from "./session-tabs.tsx";
 /**
  * Ink components for the TUI. Written in JSX and run with no bundler — `@oxc-node`
  * transforms `.tsx` on the fly (the `loom`/`loomd` bins and the test runner both
@@ -705,9 +706,9 @@ export const EventLog = memo(
       : "  (quiet)";
     if (view.loading) empty = "  (loading history…)";
     // Pane title: the focused child's name while drilled in, else the plain header.
-    let title = "EVENTS";
+    let title = "Chat";
     if (child) {
-      title = `EVENTS · ${childGlyph(child)} ${truncate(
+      title = `Chat · ${childGlyph(child)} ${truncate(
         child.label.replace(/\s+/g, " ").trim(),
         Math.max(8, inside(width) - 24),
       )}`;
@@ -715,6 +716,7 @@ export const EventLog = memo(
 
     return (
       <Panel width={width} tone={view.scrolled ? "accentDim" : "faint"} flexGrow={1}>
+        <SessionTabs active="chat" />
         <Box justifyContent="space-between">
           <Line tone="dim">{title}</Line>
           <Text tone="faint">{view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}</Text>

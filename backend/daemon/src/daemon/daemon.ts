@@ -1,3 +1,5 @@
+import { changesCommand, hostMonitorText } from "./session-inspection.ts";
+import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { CloneGit, type CloneFacts } from "./clone-git.ts";
 import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
 import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
@@ -2669,6 +2671,39 @@ export class Daemon {
       this.#shells.close(params.token, conn);
       this.#publishState("all");
       return {};
+    });
+
+    d.register("session.inspect", async (params, { conn }) => {
+      const s = this.#registry.mustGet(params.id);
+      if (params.tab === "monitor") {
+        return { text: hostMonitorText(), sampledAt: Date.now() };
+      }
+      const cwd = s.inPlace ? this.repoRoot : s.worktree;
+      if (!cwd) throw new RpcError("not_found", "This session has no working directory.");
+      const base =
+        s.baseBranch && s.checkout === "clone"
+          ? "refs/remotes/origin/" + s.baseBranch
+          : s.baseBranch;
+      const command = changesCommand(base, params.patch ?? false);
+      const result =
+        s.checkout === "clone"
+          ? await this.#guestCommand(s, command, 15000, conn.signal)
+          : await executeShellHook(command, cwd, Deno.env.toObject(), 15000, conn.signal);
+      if (result.code !== 0 || result.timedOut)
+        throw new RpcError(
+          "inspection_failed",
+          result.timedOut
+            ? "Git inspection timed out."
+            : result.output || "Could not inspect changes.",
+        );
+      return {
+        text:
+          result.output +
+          (s.checkout === "clone" && result.output.length >= 65536
+            ? "\n… [truncated — use the session shell for the complete diff]"
+            : ""),
+        sampledAt: Date.now(),
+      };
     });
 
     d.register("session.get", (params) => {

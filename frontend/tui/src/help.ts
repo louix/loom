@@ -40,6 +40,8 @@ export const helpLines = (width: number): string[] =>
     "the grammar",
     ...GRAMMAR_ROWS.map(([key, text]) => key + "  " + text),
     "",
+    "1 / 2 / 3  Chat / Changes / Monitor (outside editing)",
+    "PgUp / PgDn · Home / End  scroll the active tab",
     ...commandHelp().map(([key, text]) => key + "  " + text),
     "",
     "in the prompt",

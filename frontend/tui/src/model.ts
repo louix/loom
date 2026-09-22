@@ -120,6 +120,7 @@ export const NOTICE_TTL_MS = 4_000;
 const mkNotice = (text: string, tone: Tone): Notice => ({ text, tone, at: Date.now() });
 
 export interface TuiState {
+  sessionTab: import("../../../core/src/session-inspection.ts").SessionTab;
   theme: ThemeMode;
   /**
    * The daemon's authoritative state, exactly as the client hands it over.
@@ -170,6 +171,7 @@ export const initialState = (): TuiState => {
   return {
     // The active theme — a theme restored from `.loom/tui.json` was applied
     // via `setThemeMode` before the handle built its initial state.
+    sessionTab: "chat",
     theme: themeMode(),
     fleet: loadableIdle,
     selectedId: null,
@@ -210,6 +212,7 @@ export const versionMismatchAction = (o: {
 // ---------------------------------------------------------------------------
 
 export type Action =
+  | { t: "sessionTab"; tab: TuiState["sessionTab"] }
   | { t: "state"; state: ClientState }
   | { t: "push"; frame: PushFrame }
   | { t: "archivePending"; id: string; pending: boolean }
@@ -249,6 +252,8 @@ const withPrompt = (s: TuiState, prompt: Prompt): TuiState =>
 
 export const reduce = (s: TuiState, a: Action): TuiState => {
   switch (a.t) {
+    case "sessionTab":
+      return { ...s, sessionTab: a.tab };
     case "state":
       return applyClientState(s, a.state);
 

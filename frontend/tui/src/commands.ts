@@ -10,7 +10,7 @@ const globalCommands = {
   doctor: ["", "doctor — tools, connectors, daemon"],
   prepareEnvironment: ["", "Prepare repo environment — warm dependency cache for future sessions"],
   switchRepository: ["", "Switch repository"],
-  viewlog: ["o", "view the log in $EDITOR"],
+  viewlog: ["o", "view the active tab / pending request in $EDITOR"],
   logs: ["", "view the daemon + TUI logs in $EDITOR"],
   theme: ["t", "cycle theme"],
   restart: ["R", "restart the daemon"],

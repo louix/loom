@@ -46,6 +46,15 @@ Consequences:
 
 ### Navigation
 
+The session pane has **1 Chat**, **2 Changes**, and **3 Monitor** tabs. Press the
+number outside prompts, search, and overlays to switch directly. Arrow navigation
+and the overview/full-width toggle are unchanged. Changes lists working-tree
+status and tracked changes since the branch point; `o` opens the patch (untracked
+files are listed by name). Monitor shows session activity and explicitly labelled
+host/daemon resource counters, refreshed while visible. `PgUp`/`PgDn`, `Home`/`End`,
+and the mouse wheel scroll the active tab. Opening a reply or drilling into a child
+returns to Chat. Large inspection output is bounded and marked when truncated.
+
 | key                  | action                                                                                                                                             |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
@@ -94,7 +103,7 @@ view. Ctrl-C belongs to the shell while it is open. You can also run
 | —    | add / edit a comment — a user-authored note on the session, meta, not part of the event log (palette only)   |
 | `s`  | open an interactive shell in the session's environment; exit to return                                       |
 | `y`  | copy the session's branch name to the clipboard                                                              |
-| `o`  | open the pending request — or the transcript — in `$EDITOR`, read-only                                       |
+| `o`  | open the active tab (Chat: pending request or transcript) in `$EDITOR`, read-only                            |
 | `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |
 | `t`  | cycle theme: dark → light → argonext (remembered across restarts)                                            |
 

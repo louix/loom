@@ -103,6 +103,18 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
       provider: "claude",
       prompt: "test",
     });
+    const inspection = await c.request<{ text: string }>("session.inspect", {
+      id: s.id,
+      tab: "changes",
+    });
+    assert.match(inspection.text, /Working tree status/);
+    assert(
+      calls.some(
+        (c) =>
+          c.command.includes("git --no-pager diff") &&
+          c.command.includes("refs/remotes/origin/main"),
+      ),
+    );
     const session = fake.session(s.id)!;
     git(repo, "commit", "--allow-empty", "-m", "advanced base");
     session.finishTurn();

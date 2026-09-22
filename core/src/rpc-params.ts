@@ -52,6 +52,10 @@ export const rpcParamsSchemas = {
   "daemon.doctor": empty,
   "session.list": empty,
   "session.get": session,
+  "session.inspect": session.extend({
+    tab: z.enum(["changes", "monitor"]),
+    patch: z.boolean().optional(),
+  }),
   "session.openShell": session,
   "session.closeShell": z.object({ token: text }),
   "session.history": session,

@@ -1,3 +1,4 @@
+import type { SessionInspection } from "../../../core/src/session-inspection.ts";
 import { repositoryPicker } from "./repositories.ts";
 import { bindCommand, keyCommand } from "./commands.ts";
 import { helpLines } from "./help.ts";
@@ -198,6 +199,8 @@ export type BodyKind =
   | { t: "sessionPane" };
 /** Layout and UI coordination only. Feature values stay in their handles. */
 export interface FleetView {
+  readonly inspectionText: string;
+  readonly inspectionScroll: number;
   readonly environmentWarning?: string | null;
   readonly ui: TuiState;
   readonly fleetLayout: FleetLayout;
@@ -296,7 +299,7 @@ const deriveView = (
   planScroll: number,
   layoutView: LayoutView,
   dims: { cols: number; rows: number },
-): FleetView => {
+): Omit<FleetView, "inspectionText" | "inspectionScroll"> => {
   const sel = selectedSession(state);
   mode ??= sel?.pendingMode ?? null;
   // The panel shows what the turn is parked on, straight off the snapshot: the
@@ -379,7 +382,7 @@ const deriveView = (
   // label + editor rows) — budget them against the log's height.
   const paneH = promptPaneRows(state, eventsW);
   const splitLogH = Math.max(4, bodyH - detailH - 1 - paneH - (requestInPane ? requestH : 0));
-  const logPage = Math.max(1, splitLogH - 3);
+  const logPage = Math.max(1, splitLogH - 4);
 
   const layout = fleetLayout({ ...state, find }, fleetRowBudget(bodyH, find !== null));
 
@@ -511,6 +514,14 @@ export const mkFleetHandle = ({
   const connected = (): boolean => state.fleet.tag === "data";
   const animation = mkStore({ tick: 0, now: Date.now() });
   let planScroll = 0;
+  let inspection: { key: string; text: string } | null = null;
+  let inspectionPending: string | null = null;
+  let inspectionGeneration = 0;
+  const inspectionOffsets = { changes: 0, monitor: 0 };
+  const inspectionOffset = () =>
+    state.sessionTab === "chat" ? 0 : inspectionOffsets[state.sessionTab];
+  let inspectionUpdated = 0;
+  let inspectionDisposed = false;
   // Fleet toggle: `⇥` swaps the overview split ↔ the session's detail + events,
   // `Esc` snaps back to overview. On a narrow terminal overview is the list alone.
   let layoutView: LayoutView = "overview";
@@ -607,7 +618,86 @@ export const mkFleetHandle = ({
     pageRows: () => store.get().logPage,
   });
 
+  const inspectionKey = () => state.selectedId + ":" + state.sessionTab;
+  const inspectionText = (): string => {
+    const s = selectedSession(state);
+    if (!s) return "Select a session with ↑/↓.";
+    const body = inspection?.key === inspectionKey() ? inspection.text : "Loading…";
+    if (state.sessionTab === "changes")
+      return [
+        `Branch  ${s.git?.branch ?? s.branch ?? "(detached)"}`,
+        `Base    ${s.baseBranch ?? "—"}`,
+        ...(s.git
+          ? [
+              `${s.git.aheadOfBase} ahead · ${s.git.behindBase} behind base · ${s.git.dirty ? "dirty" : "clean"}`,
+            ]
+          : []),
+        "",
+        body,
+      ].join("\n");
+    return [
+      `SESSION · ${s.id.slice(0, 8)} · ${s.status.kind}`,
+      `${s.subagents.filter((a) => a.active).length} active subagents · ${s.backgroundTasks.length} background tasks`,
+      "",
+      body,
+    ].join("\n");
+  };
+  const refreshInspection = (): void => {
+    if (
+      inspectionDisposed ||
+      !connected() ||
+      state.sessionTab === "chat" ||
+      !state.selectedId ||
+      state.overlay.t !== "browse" ||
+      (dims.cols < NARROW_COLS && layoutView === "overview")
+    )
+      return;
+    const key = inspectionKey();
+    if (
+      inspectionPending === key ||
+      (inspection?.key === key && Date.now() - inspectionUpdated < 3000)
+    )
+      return;
+    const generation = ++inspectionGeneration;
+    inspectionPending = key;
+    void client
+      .request<SessionInspection>("session.inspect", {
+        id: state.selectedId,
+        tab: state.sessionTab,
+      })
+      .then((result) => {
+        if (generation !== inspectionGeneration || inspectionDisposed || key !== inspectionKey())
+          return;
+        inspection = { key, text: result.text };
+        inspectionUpdated = Date.now();
+      })
+      .catch((error: unknown) => {
+        if (generation !== inspectionGeneration || inspectionDisposed || key !== inspectionKey())
+          return;
+        inspection = {
+          key,
+          text: `Unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        };
+        inspectionUpdated = Date.now();
+      })
+      .finally(() => {
+        if (generation !== inspectionGeneration || inspectionDisposed) return;
+        inspectionPending = null;
+        publish();
+      });
+  };
+  const scrollInspection = (by: number): void => {
+    const max = Math.max(
+      0,
+      inspectionText().split("\n").length - Math.max(1, store.get().splitLogH - 4),
+    );
+    if (state.sessionTab !== "chat")
+      inspectionOffsets[state.sessionTab] = Math.max(0, Math.min(max, inspectionOffset() + by));
+    publish();
+  };
   const view = (): FleetView => ({
+    inspectionText: inspectionText(),
+    inspectionScroll: inspectionOffset(),
     environmentWarning,
     ...deriveView(
       state,
@@ -626,6 +716,7 @@ export const mkFleetHandle = ({
     if (now - frame.now >= AGE_MS) animation.set({ ...frame, now });
     store.set(view());
     clock.settle();
+    refreshInspection();
   };
 
   // One shared beat for every animated thing on screen, and none at all when
@@ -672,6 +763,20 @@ export const mkFleetHandle = ({
         : a,
     );
     if (state === prev) return;
+    if (state.selectedId !== prev.selectedId) {
+      inspectionOffsets.changes = 0;
+      inspectionOffsets.monitor = 0;
+    }
+    if (!connected()) {
+      inspectionGeneration++;
+      inspectionPending = null;
+      inspection = null;
+    }
+    if (
+      promptOnPane(openPrompt(state.overlay)) ||
+      ((a.t === "childEnter" || a.t === "selectChild") && state.selectedChild !== null)
+    )
+      state = { ...state, sessionTab: "chat" };
     // A different plan review (or the overlay opening / closing) re-anchors the
     // plan body at its top.
     if (
@@ -845,6 +950,22 @@ export const mkFleetHandle = ({
   /** `o` / `⌥o` — open the pending request, or the event log, in `$EDITOR` read-only. */
   const viewInEditor = async (): Promise<void> => {
     const s = selectedSession(state);
+    if (s && state.overlay.t === "browse" && state.sessionTab !== "chat") {
+      const tab = state.sessionTab;
+      try {
+        const result = await client.request<SessionInspection>("session.inspect", {
+          id: s.id,
+          tab,
+          patch: tab === "changes",
+        });
+        if (state.selectedId !== s.id || state.sessionTab !== tab || state.overlay.t !== "browse")
+          return;
+        await openEditor(result.text, { ext: tab === "changes" ? "diff" : "txt" });
+      } catch (error) {
+        note(error instanceof Error ? error.message : String(error), "bad");
+      }
+      return;
+    }
     const r = s ? activeRequest(fleetSessions(state), s.id) : null;
     if (r === null) {
       await openEditor(logText(), { ext: "log" });
@@ -1950,6 +2071,8 @@ export const mkFleetHandle = ({
         // One wheel step for both readers. Plans count from the top; events
         // count backwards from the live tail.
         const delta = base === 64 ? -3 : 3;
+        if (state.overlay.t === "browse" && state.sessionTab !== "chat")
+          return scrollInspection(delta);
         return state.overlay.t === "plan" ? planScrollBy(delta) : transcripts.scrollBy(-delta);
       }
       // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
@@ -2254,6 +2377,20 @@ export const mkFleetHandle = ({
         return; // unbound modified keys — ignore
       }
     }
+    if (!key.ctrl && !key.meta && ["1", "2", "3"].includes(input)) {
+      if (dims.cols < NARROW_COLS && sel) layoutView = "session";
+      dispatch({
+        t: "sessionTab",
+        tab: (["chat", "changes", "monitor"] as const)[Number(input) - 1]!,
+      });
+      return;
+    }
+    if (state.sessionTab !== "chat") {
+      if (key.pageUp) return scrollInspection(-Math.max(1, logPage - 1));
+      if (key.pageDown) return scrollInspection(Math.max(1, logPage - 1));
+      if (key.home) return scrollInspection(-Infinity);
+      if (key.end) return scrollInspection(Infinity);
+    }
     if (key.pageUp) return transcripts.scrollBy(Math.max(1, logPage - 1));
     if (key.pageDown) return transcripts.scrollBy(-Math.max(1, logPage - 1));
     // Home → the oldest line held (which prefetches the next older history page
@@ -2338,6 +2475,9 @@ export const mkFleetHandle = ({
     });
     void reconcileVersion();
     let stopped = false;
+    inspectionDisposed = false;
+    const inspectionTimer = setInterval(refreshInspection, 3000);
+    inspectionTimer.unref();
     // Compatibility checks can invoke external tools; draw and accept input first.
     if (checkEnvironment && initialEnvironmentWarning === undefined) {
       const check = ++environmentCheck;
@@ -2420,6 +2560,9 @@ export const mkFleetHandle = ({
     // frame that was just published; nothing to start here.
     return () => {
       stopped = true;
+      inspectionDisposed = true;
+      inspectionGeneration++;
+      clearInterval(inspectionTimer);
       composer.dispose();
       clock.dispose();
       notices.dispose();

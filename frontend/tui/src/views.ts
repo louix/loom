@@ -157,7 +157,7 @@ export const logView = (
   height: number,
   scroll: number,
 ): LogView => {
-  const capacity = Math.max(1, height - 3);
+  const capacity = Math.max(1, height - 4);
   const lines = [
     ...transcriptLines(transcript),
     ...waiting(box).map((text) => queuedLine(sessionId ?? "", text)),
