@@ -30,7 +30,12 @@ export const vmMonitorText = async (
   sample = sampleVmUsage,
 ): Promise<string> => {
   const { vms, errors } = await inventory(repo);
-  const selected = vms.filter((vm) => vm.sessionId === sessionId);
+  const selected = vms.filter((vm) => vm.sessionId === sessionId && vm.state !== "stopped");
+  if (!selected.length) {
+    return errors.length
+      ? errors.map((error) => "Inventory unavailable: " + error).join("\n")
+      : "No VMs running for this session.";
+  }
   const sections = await Promise.all(
     selected.map(async (vm: VmRecord) => {
       let usage: VmUsage | undefined;
@@ -54,7 +59,7 @@ export const vmMonitorText = async (
     }),
   );
   return [
-    ...(sections.length ? sections : ["No VMs associated with this session."]),
+    ...sections,
     "CPU: % of VM capacity · RAM: guest used / total",
     "DISK: guest /storage used / total · — unavailable",
     ...errors.map((error) => "Inventory unavailable: " + error),

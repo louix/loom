@@ -3955,7 +3955,7 @@ test("session inspection RPC reads the selected local checkout and reports missi
       id: s.id,
       tab: "monitor",
     });
-    assert.match(monitor.text, /No VMs associated with this session/);
+    assert.equal(monitor.text, "No VMs running for this session.");
     await assert.rejects(client.request("session.inspect", { id: "missing", tab: "changes" }));
     const stub = await client.request<SessionSnapshot>("session.createStub", {
       provider: "fake",

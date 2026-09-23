@@ -635,12 +635,7 @@ export const mkFleetHandle = ({
         "",
         body,
       ].join("\n");
-    return [
-      `SESSION · ${s.id.slice(0, 8)} · ${s.status.kind}`,
-      `${s.subagents.filter((a) => a.active).length} active subagents · ${s.backgroundTasks.length} background tasks`,
-      "",
-      body,
-    ].join("\n");
+    return body;
   };
   const refreshInspection = (): void => {
     if (

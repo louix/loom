@@ -55,6 +55,7 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
       ["selected", "mcp", "running"],
       ["selected", "prepare", "stopped"],
       ["other", "session", "running"],
+      ["stopped-only", "session", "stopped"],
     ] as const) {
       owners.push(
         await registerVm(
@@ -106,7 +107,7 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
     );
     assert.match(text, /AGENT · test/);
     assert.match(text, /MCP · tilth/);
-    assert.match(text, /PREPARATION/);
+    assert.doesNotMatch(text, /PREPARATION|DAEMON HOST|LOOM DAEMON/);
     assert.match(text, /CPU\s+25.0%/);
     assert.match(text, /RAM\s+1 MiB \/ 2 MiB/);
     assert.match(text, /DISK\s+3 MiB \/ 4 MiB/);
@@ -115,7 +116,14 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
     const empty = await vmMonitorText(home, "absent", new AbortController().signal, (repo) =>
       listVms(repo, home),
     );
-    assert.match(empty, /No VMs associated/);
+    assert.equal(empty, "No VMs running for this session.");
+    const stopped = await vmMonitorText(
+      home,
+      "stopped-only",
+      new AbortController().signal,
+      (repo) => listVms(repo, home),
+    );
+    assert.equal(stopped, empty);
   } finally {
     for (const owner of owners) await owner.finish();
     await Deno.remove(home, { recursive: true });
