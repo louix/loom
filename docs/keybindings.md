@@ -29,10 +29,11 @@ Consequences:
 
 - `Ctrl` never triggers an app action, so `⌃e` is line-end again (it used to be
   stolen for "$EDITOR").
-- `Shift` is never a decorative "variant of" — it always means _bigger blast
-  radius_: `q`→`Q` (also stops the daemon), `r`→`R` (restarts the daemon), `x`
-  (archive, reversible) →`X` (delete, permanent). `F` (hard fork) stands with
-  them as a structural op.
+- `Shift` is never a decorative "variant of" — it means the heavier sibling of
+  the lowercase, almost always _bigger blast radius_: `q`→`Q` (also stops the
+  daemon), `r`→`R` (restarts the daemon), `x` (archive, reversible) →`X`
+  (delete, permanent). `F` (hard fork) stands with them as a structural op;
+  the one label-only pair is `y`→`Y` — branch name → session id.
 - Rare actions don't need a memorised key — they're one `Space`, a few letters,
   `Enter` away, and the palette teaches you the key for next time.
 - The footer only ever shows the few most pertinent verbs for the current state,
@@ -103,6 +104,7 @@ view. Ctrl-C belongs to the shell while it is open. You can also run
 | —    | add / edit a comment — a user-authored note on the session, meta, not part of the event log (palette only)   |
 | `s`  | open an interactive shell in the session's environment; exit to return                                       |
 | `y`  | copy the session's branch name to the clipboard                                                              |
+| `Y`  | copy the session's id to the clipboard                                                                       |
 | `o`  | open the active tab (Chat: pending request or transcript) in `$EDITOR`, read-only                            |
 | `v`  | event log: cycle chat only → chat + tool calls → everything                                                  |
 | `t`  | cycle theme: dark → light → argonext (remembered across restarts)                                            |

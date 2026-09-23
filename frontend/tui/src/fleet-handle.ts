@@ -1122,6 +1122,10 @@ export const mkFleetHandle = ({
         const nm = s.branch ?? (s.worktree ? (s.worktree.split("/").pop() ?? s.worktree) : s.id);
         return copyToClipboard(nm, nm);
       }
+      case "copyid": {
+        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+        return copyToClipboard(s.id, s.id);
+      }
       case "clearqueue": {
         const box = s && outboxOf(composer.get(), s.id);
         if (!box || pending(box).length === 0) {

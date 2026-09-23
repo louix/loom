@@ -39,6 +39,7 @@ const sessionCommands = {
   delete: ["X", "delete"],
   shell: ["s", "open shell"],
   copybranch: ["y", "copy branch"],
+  copyid: ["Y", "copy session id"],
   clearqueue: ["⌥x", "clear the queued messages"],
 } as const;
 

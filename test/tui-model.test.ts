@@ -1337,7 +1337,18 @@ test("actionsFor offers the right verbs per session state, plus the globals", ()
   const acts = (o: Parameters<typeof snap>[0]) => allowedActs(snap(o));
   const G = ["find", "help", "new", "quit"]; // globals, always present
   // a settled selected session also gets mode + model + effort + provider + title + delete
-  const S = ["mode", "model", "effort", "provider", "fork", "title", "comment", "delete", ...G];
+  const S = [
+    "mode",
+    "model",
+    "effort",
+    "provider",
+    "fork",
+    "title",
+    "comment",
+    "copyid",
+    "delete",
+    ...G,
+  ];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
   // plus interrupt and the globals. No mode / model / rename / fork.

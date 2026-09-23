@@ -85,6 +85,19 @@ test("shortcuts resolve the current decision and bind session commands to their 
   assert.equal(keyCommand(commandHints(state), "", { tab: true, shift: true }), "mode");
 });
 
+test("y copies the branch and shift+y copies the session id", () => {
+  const s = snap({ id: "one", branch: "loom/one" });
+  const state = reduce(initialState(), fleet([s]));
+  const hints = commandHints(state);
+  assert.equal(keyCommand(hints, "y", {}), "copybranch");
+  assert.equal(keyCommand(hints, "Y", {}), "copyid");
+  assert.deepEqual(bindCommand("copyid", s.id), {
+    tag: "session",
+    name: "copyid",
+    sessionId: "one",
+  });
+});
+
 test("detail budgets and click regions match rendered panes across widths and expiry", () => {
   const plain = snap({ mode: "default" });
   const full = snap({

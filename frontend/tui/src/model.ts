@@ -1374,9 +1374,12 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     // Palette-only, like keepwarm — a rarely-used per-session note, not a
     // footer verb. No dedicated key.
     local.push(commandHint("comment", { label: session.comment ? "edit comment" : "add comment" }));
+    // Copy helpers: `y` takes the branch when there is one, `Y` the session's
+    // id — every session has one. Palette / `?` verbs, not footer chips.
     if (session.branch || session.worktree) {
       local.push(commandHint("copybranch"));
     }
+    local.push(commandHint("copyid"));
     // Any worktree session can rebase onto its base — `syncOntoBase` is the
     // manual side of `[auto_rebase]`. Offered even when `behindBase` reads 0:
     // that count is a snapshot fact that lags a base branch advanced from
