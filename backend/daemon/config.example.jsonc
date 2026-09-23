@@ -57,7 +57,12 @@
   // Definitions are inert until selected in session.mcp_servers.
   "mcp_servers": {
     "tilth": {
-      "source": { "kind": "runtime", "ref": "tilth" }, // bundled Nix artifact
+      "source": {
+        "kind": "nix",
+        "ref": "path:/absolute/path/to/tilth-package#default",
+        "executable": "tilth",
+        "args": ["--mcp", "--edit"],
+      }, // copy examples/mcp/tilth and set its absolute path
       "execution": "vm",
       "grants": { "workspace": "read-write", "network": [] },
       "default_for": ["read", "write", "edit", "find", "grep"],

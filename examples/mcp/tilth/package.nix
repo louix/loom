@@ -1,4 +1,4 @@
-# Shared by the Loom package and standalone runtime preparation.
+# Example MCP package, deliberately independent of Loom installation.
 { tilth, system }: let
   pkgs = tilth.inputs.nixpkgs.legacyPackages.${system};
   # The registry's API download endpoint can reject archived versions (403).
@@ -20,12 +20,4 @@
       wrapProgram $out/bin/tilth --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]}
     '';
   });
-in rec {
-  default = tilth-runtime;
-  tilth-runtime = import ./mk-runtime.nix {
-    inherit pkgs package;
-    executable = "tilth";
-    args = [ "--mcp" "--edit" ];
-  };
-  tilth = package;
-}
+in package

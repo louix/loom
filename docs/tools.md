@@ -9,7 +9,12 @@ of the agent's execution mode.
 {
   "mcp_servers": {
     "tilth": {
-      "source": { "kind": "runtime", "ref": "tilth" },
+      "source": {
+        "kind": "nix",
+        "ref": "path:/absolute/path/to/tilth-package#default",
+        "executable": "tilth",
+        "args": ["--mcp", "--edit"],
+      },
       "execution": "vm",
       "grants": { "workspace": "read-write", "network": [] },
       "default_for": ["read", "write", "edit", "find", "grep"],
@@ -24,7 +29,8 @@ of the agent's execution mode.
 }
 ```
 
-Tilth uses the bundled, pinned Nix runtime. Kagi uses the existing authenticated
+Tilth uses the standalone [example Nix package](../examples/mcp/tilth/README.md).
+Copy that package to a durable directory and replace the absolute path above. Kagi uses the existing authenticated
 HTTP relay: its API key stays in the relay and is omitted from provider child
 environments. No Kagi-specific tools or argument adapters are involved.
 Existing inline credentials can use `auth.bearer_token`; a nonempty inline token
@@ -82,8 +88,7 @@ using Loom's pinned nixpkgs and runtime helper. Package lookup checks
 `packages.<linux-system>.<attribute>`, then `legacyPackages`, then the full
 attribute path. No fragment means `default`. Arguments are data, never shell
 commands or Nix expressions. Guest packages target the matching Linux CPU;
-custom builds on macOS need a configured Linux builder. The maintained Tilth
-bundle avoids that build step.
+builds on macOS need a configured Linux builder.
 
 ```sh
 loom mcp prepare my-tools
@@ -102,9 +107,9 @@ Failed updates preserve the previous selection. Source/entrypoint/argument chang
 get a new artifact identity; permission changes do not rebuild the package.
 Launch never installs dependencies.
 
-`source: { "kind": "runtime", "ref": "tilth" }` selects a bundled artifact.
-A custom flake producing a Loom artifact can also be used as a runtime reference.
-Bundled runtimes update with Loom, not through `mcp update`.
+`source: { "kind": "runtime", "ref": "github:your-org/tools/<revision>#loom-runtime" }`
+selects a flake producing a complete Loom artifact. There are no built-in MCP
+server aliases; Tilth and Kagi are ordinary configured servers.
 `loom runtime prepare|status|update|prune` remains available.
 `loom vm prepare` exclusively prepares the repository development environment.
 

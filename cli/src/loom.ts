@@ -85,7 +85,8 @@ const USAGE: Record<string, string> = {
   --smolvm PATH                Nix-packaged smolvm executable to pin during preparation
   --json                       machine-readable results
 
-  Built-in recipe: tilth. Custom Nix flake references must produce Loom runtime artifacts.
+  Runtime references must produce Loom runtime artifacts.
+  For ordinary Nix packages, configure mcp_servers and use loom mcp prepare <name>.
   Updates retain previous generations for active sessions.`,
   run: `loom run <prompt...>  — start a session
 

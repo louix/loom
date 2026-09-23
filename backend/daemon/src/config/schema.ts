@@ -344,7 +344,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
         (v) => {
           if (v === "kagi")
             throw new Error(
-              "Configure Kagi under remote_tools.kagi and select it in session.remote_tools",
+              "Configure Kagi under mcp_servers.kagi and select it in session.mcp_servers",
             );
           return v;
         },

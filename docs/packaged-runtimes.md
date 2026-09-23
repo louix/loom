@@ -11,151 +11,58 @@ See [MCP server configuration](tools.md) for the unified schema and
 `loom mcp prepare|status|update`. Generic Nix packages can now be wrapped by Loom;
 the artifact-level workflow below remains available.
 
-## Use tilth
+## Prepare MCP servers
 
-The default Linux and Apple Silicon Nix packages bundle Tilth, Claude, Codex and
-AISDK runtimes and smolvm. Session isolation remains opt-in through
-configuration.
+Configure an ordinary Nix package under `mcp_servers`, then run
+`loom mcp prepare <name>`. Loom wraps its executable and closure as an immutable
+runtime. The [Tilth example](../examples/mcp/tilth/README.md) includes its Git
+dependency and patch. Tilth is not bundled with Loom and has no built-in runtime
+recipe. HTTP servers such as Kagi need only configuration and credentials.
 
-Nix configurations can omit individual runtimes with
-`loom.override {
-withTilth = false; withClaude = false; withCodex = false; withAisdk = false;
-}`.
-All four default to true. `withClaude` includes the proprietary Claude Code
-executable for the guest and the native host CLI used for authentication.
-`withCodex` also includes its native host CLI.
+Preparation is the network-enabled installation step; session launch never runs
+Nix or downloads dependencies. Missing artifacts fail launch. Updates are
+explicit through `loom mcp update <name>`; failed updates preserve the previous
+selection. Existing sessions keep their running servers.
 
-For session VMs, set `session.isolation.enabled = true` globally or
-`repos[].session.isolation.enabled = true` for a project. Loom resolves the runtime and smolvm
-from its package, so `nix profile upgrade loom` updates them together. Remove
-old `artifact` and `smolvm` pins to use these package defaults; explicit paths
-remain available for development builds.
+Preparation pins smolvm from PATH, or from `--smolvm /nix/store/.../bin/smolvm`.
+These commands work outside a repository using user configuration and never
+start the daemon. Doctor enumerates selected servers and reports their prepared
+artifacts and filesystem/network grants.
 
-Configure Tilth with:
+Each prepared source has a versioned `lock.json` under
+`$XDG_DATA_HOME/loom/runtimes` (default `~/.local/share/loom/runtimes`).
+A `current` symlink switches atomically after validation. Artifacts and the
+backend are rooted against Nix garbage collection; active generations survive
+runtime pruning.
 
-```jsonc
-{
-  "vm_tools": {
-    "tilth": {
-      "runtime": "tilth",
-      "default_for": ["read", "write", "edit", "find", "grep"],
-    },
-  },
-  "session": {
-    "local_tools": [],
-    "vm_tools": ["tilth"],
-  },
-}
-```
+## Agent runtimes and custom artifacts
 
-Select Tilth from only one group: host `tools` or `vm_tools`. The
-runtime supplies its own `--mcp --edit` arguments. `default_for` remains a
-capability preference, not a tool-name or schema adapter.
+The default Loom Nix package bundles Claude, Codex and AISDK session runtimes
+and smolvm. The `withClaude`, `withCodex` and `withAisdk` overrides control
+those bundles. Session isolation remains opt-in through
+`session.isolation.enabled`. Bundled agent runtimes update with Loom.
 
-Installed Loom is ready to use this runtime immediately; no separate preparation
-or host Nix invocation happens at session launch. `nix profile upgrade loom`
-builds and selects Loom, Tilth and smolvm together. Profile generations retain
-the older bundle for existing sessions and rollback; restart the daemon/resume
-sessions to use the new package. The package wrapper selects its immutable
-bundle ahead of any older development pin. Bundling does not enable Tilth unless
-it is configured.
+For an existing flake producing a complete Loom artifact, use
+`source.kind: "runtime"` with its explicit flake reference.
+`loom runtime prepare|status|update` remains the artifact-level interface;
+without a reference it operates only on configured runtime sources.
 
-For Linux source-checkout development, `nix develop` includes smolvm:
-
-```sh
-deno task runtime:update  # rebuild Tilth and every configured packaged runtime
-loom runtime status
-```
-
-The Apple Silicon development shell also includes smolvm. Its maintained VM
-runtimes currently come from the root Loom package; the standalone Tilth flake
-used by `runtime prepare tilth` remains Linux-only.
-
-The task accepts an optional runtime name. It uses the pinned recipes; it does
-not bump upstream source revisions. Custom runtimes can still be prepared
-explicitly with `loom runtime prepare <runtime>`. Bundled runtimes are updated
-by upgrading Loom; `loom runtime update tilth` explains this when invoked from
-an installed bundle.
-
-Preparation finds smolvm on PATH and pins its real Nix store executable. If it
-isn't on PATH, pass `--smolvm /nix/store/.../bin/smolvm`. You can prepare just
-one runtime with `loom runtime prepare tilth`. These commands also work outside
-a repository, using the user config, and never connect to or start the daemon.
-`--json` produces structured results. `status` reports missing artifacts with a
-nonzero exit status. The doctor view includes prepared-runtime diagnostics.
-
-For development/custom runtimes, preparation is the network-enabled step. It
-invokes Nix, builds/downloads the runtime closure, validates its manifest, and
-roots both the artifact and smolvm against Nix garbage collection. Loom passes
-`--extra-experimental-features "nix-command flakes"` for builds, so global
-feature settings are unnecessary. Nothing runs Nix or downloads dependencies
-when a session starts. If an artifact or backend is missing, the session fails
-with an actionable error; there is no fallback to host execution.
-
-```sh
-loom runtime update tilth
-```
-
-Updates are explicit. For `tilth`, this selects the recipe pinned by your
-installed Loom version, not upstream `main`. For a custom flake reference, it
-reevaluates that reference. A successful prepare is reused unchanged; a damaged
-selection requires restoration or an explicit update. Install a newer Loom to
-receive a new maintained tilth pin.
-
-Updates reuse the selected smolvm executable unless `--smolvm` supplies a
-replacement.
-
-Each selected runtime has a versioned `lock.json` under
-`$XDG_DATA_HOME/loom/runtimes` (default `~/.local/share/loom/runtimes`). It
-records the configured source, immutable artifact path, backend executable, and
-preparation time. A `current` symlink switches atomically after successful
-validation. Old generations and GC roots remain for active sessions and
-recovery. Automatic runtime GC and a rollback CLI are not implemented yet.
-
-## Package another MCP
-
-Use a Nix flake reference as the runtime value, for example:
-
-```jsonc
-{
-  "vm_tools": {
-    "my-tools": {
-      "runtime": "github:your-org/your-tools/<revision>#loom-runtime",
-      "isolation": "vm",
-    },
-  },
-  "session": {
-    "vm_tools": ["my-tools"],
-  },
-}
-```
-
-The selected output must be a **Loom runtime artifact**, not just an arbitrary
-binary package. Loom exports a reusable Nix helper:
+Loom exports `lib.mkRuntime` from both the root flake and the server-independent
+`packaging/runtimes` flake:
 
 ```nix
 packages.x86_64-linux.loom-runtime = loom.lib.mkRuntime {
   inherit pkgs;
   package = myMcpPackage;
-  executable = "my-mcp"; # package/bin/my-mcp
+  executable = "my-mcp";
   args = [ "--stdio" ];
 };
 ```
 
-Package the executable's complete runtime dependencies, including programs it
-launches. Nix cannot discover arbitrary subprocesses looked up on PATH: wrap the
-executable to add those dependencies. Tilth includes real Git on its runtime PATH.
-
-The maintained recipe is also an independent flake:
-
-```sh
-nix build ./packaging/runtimes#tilth-runtime
-```
-
-Its default output is the same runtime artifact; `#tilth` is the binary package.
-Installing the base Loom package does not build or install these optional
-outputs. The helper is available as `lib.mkRuntime` from both Loom and the
-runtime flake.
+Package all interpreters and subprocess dependencies, wrapping PATH when needed.
+Custom MCP packages target Linux; preparation on macOS requires a configured
+Linux builder. The automatic macOS builder below applies to bundled agent
+runtimes.
 
 ## Artifact and execution contracts
 
@@ -192,8 +99,8 @@ sampling or elicitation capabilities. Neither artifact paths nor native launch
 commands are sent to the connector worker.
 
 The native guest has one CPU and 512 MiB. It sees the prepared closure read-only
-at `/nix/store` and the repository/worktree read-write at their original absolute
-paths. Its HOME/cache are guest-local and disposable. Host home configuration,
+at `/nix/store`. Repository/worktree mounts follow the configured workspace
+grant: absent, read-only, or read-write, at their original absolute paths. Its HOME/cache are guest-local and disposable. Host home configuration,
 credentials, and the host's complete Nix store are not mounted. Native command
 permissions come from smolvm; Deno permissions alone do not constrain native
 subprocesses.
@@ -204,9 +111,10 @@ reaps after supervisor death. Cleanup has bounded retries for smolvm's
 asynchronous registry removal; unresolved state is retained with its path in the
 error.
 
-The whole repository and the selected worktree are mounted at their host paths.
+When workspace access is granted, the whole repository and selected worktree
+are mounted at their host paths.
 Git metadata is shared, so native Git, hooks and config work normally and commits
-are immediately visible on the host. Sessions can modify shared Git metadata and
+are immediately visible on the host. With read-write access, sessions can modify shared Git metadata and
 other worktrees within the mounted repo. Hooks/config modified by an agent can
 affect later host Git commands. Secrets inside the repo are also accessible.
 

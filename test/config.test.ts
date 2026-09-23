@@ -833,7 +833,7 @@ test("[search] parses a backend + key env + base; unknown backend → none", () 
     "backend": "kagi"
   }
 }`),
-    /remote_tools/,
+    /mcp_servers\.kagi.*session\.mcp_servers/,
   );
   assert.equal(
     cfg(`{

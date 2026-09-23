@@ -2,7 +2,6 @@ import { parseNixMcpRuntime } from "../../core/src/mcp-config.ts";
 import { nixMcpBuildArgs } from "./mcp-package.ts";
 /** Network-enabled installation commands, deliberately outside the daemon. */
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { onPath } from "@loom/core/paths";
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
 import { lockSessionState } from "../../runtime/src/session-vm/persistence.ts";
@@ -18,11 +17,9 @@ import {
 } from "../../runtime/src/packaged/artifact.ts";
 
 const recipe = (source: string): string => {
-  if (source === "tilth")
-    return `path:${fileURLToPath(new URL("../../packaging/runtimes", import.meta.url))}`;
   if (!/^(github:|gitlab:|git\+https:\/\/|path:\/)/.test(source))
     throw new Error(
-      `Unknown runtime ${source}; use tilth or a Nix flake reference producing a Loom runtime artifact`,
+      `Unknown runtime ${source}; use a Nix flake reference producing a Loom runtime artifact, or configure a Nix package under mcp_servers`,
     );
   return source;
 };
@@ -170,12 +167,7 @@ export const runtimeCommand = async (
   const config = loadConfig(repoRoot);
   const sources = name
     ? [name]
-    : [
-        ...new Set([
-          ...(action === "update" ? ["tilth"] : []),
-          ...config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : [])),
-        ]),
-      ];
+    : [...new Set(config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : [])))];
   const rows = [];
   for (const source of sources) {
     try {

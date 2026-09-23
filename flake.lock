@@ -66,27 +66,10 @@
         "type": "github"
       }
     },
-    "nixpkgs_3": {
-      "locked": {
-        "lastModified": 1770843696,
-        "narHash": "sha256-LovWTGDwXhkfCOmbgLVA10bvsi/P8eDDpRudgk68HA8=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "2343bbb58f99267223bc2aac4fc9ea301a155a16",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixpkgs-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "smolvm": "smolvm",
-        "tilth": "tilth"
+        "smolvm": "smolvm"
       }
     },
     "smolvm": {
@@ -107,25 +90,6 @@
         "owner": "smol-machines",
         "repo": "smolvm",
         "rev": "ebffebe0ca924f9f59c3c0c79e551916319c8da5",
-        "type": "github"
-      }
-    },
-    "tilth": {
-      "inputs": {
-        "nixpkgs": "nixpkgs_3"
-      },
-      "locked": {
-        "lastModified": 1788125048,
-        "narHash": "sha256-BC9JOn4qD7bL+8ALIFjVi/xS1JhpOzFE1sPLLZ4ZarI=",
-        "owner": "jahala",
-        "repo": "tilth",
-        "rev": "f5c0afa97c6666a3d68dcbd965a4db5a44bc0905",
-        "type": "github"
-      },
-      "original": {
-        "owner": "jahala",
-        "repo": "tilth",
-        "rev": "f5c0afa97c6666a3d68dcbd965a4db5a44bc0905",
         "type": "github"
       }
     }

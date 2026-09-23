@@ -28,7 +28,9 @@ const recipe = await currentRecipe();
 const destination = join(root, "packaging/macos/runtime-hashes.json");
 const previous = JSON.parse(await Deno.readTextFile(destination));
 const runtimes: Record<string, string> =
-  previous.source === source && previous.recipe === recipe ? previous.runtimes : {};
+  previous.source === source && previous.recipe === recipe && previous.runtimes["session-runtime"]
+    ? { "session-runtime": previous.runtimes["session-runtime"] }
+    : {};
 const publish = async () => {
   if ((await currentSource()) !== source || (await currentRecipe()) !== recipe)
     throw new Error("Guest source changed during the builds; hashes were not updated");
@@ -48,7 +50,7 @@ const publish = async () => {
     });
   }
 };
-for (const runtime of ["tilth-runtime", "session-runtime"]) {
+for (const runtime of ["session-runtime"]) {
   const hash = runtimes[runtime];
   if (hash && /^sha256-[A-Za-z0-9+/]{43}=$/.test(hash)) {
     const path = await Deno.spawnAndWait(

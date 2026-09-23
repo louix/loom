@@ -8,7 +8,14 @@ import {
 } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { resolveRuntime } from "../runtime/src/packaged/artifact.ts";
 import { checkRuntimeIsolation } from "./runtime-vm-isolation.ts";
-const runtime = Deno.args[0] ?? "tilth";
+const name = Deno.args[0] ?? "tilth";
+const { loadConfig } = await import("../backend/daemon/src/config/config.ts");
+const configured = loadConfig(Deno.cwd()).mcp.find((m) => m.name === name);
+if (!configured || !("runtime" in configured))
+  throw new Error(
+    `Configure and select a Tilth MCP named ${name}, then run loom mcp prepare ${name}`,
+  );
+const runtime = configured.runtime;
 const prepared = await resolveRuntime(runtime);
 const scratch = await Deno.realPath(
   await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-vm-accept-" }),

@@ -9,6 +9,8 @@ import {
   type VmBinding,
 } from "../runtime/src/packaged/vm.ts";
 import { mcpBuildExpression, nixString, nixMcpBuildArgs } from "../cli/src/mcp-package.ts";
+import { runtimeMcpDiagnostic } from "../backend/daemon/src/daemon/mcp-runtime-diagnostics.ts";
+import { runtimeCommand } from "../cli/src/runtime.ts";
 import { mcpCommand } from "../cli/src/mcp.ts";
 
 const tilth = {
@@ -251,4 +253,66 @@ test("inline HTTP credentials survive migration and override environment referen
   });
   assert.equal(config.httpMcp[0]!.bearerToken, "fixture-token");
   assert.equal(config.httpMcp[0]!.bearerTokenEnv, "MISSING_TOKEN");
+});
+
+test("doctor describes arbitrary MCP names and grants without exposing arguments", async () => {
+  const runtime = nixMcpRuntime({
+    kind: "nix",
+    ref: "github:org/tools/rev#tool",
+    executable: "tool",
+    args: ["private-argument"],
+  });
+  for (const workspace of ["none", "read-only", "read-write"] as const) {
+    for (const network of [[], ["api.example.com"]]) {
+      const server = {
+        name: "inspector",
+        isolation: "vm" as const,
+        runtime,
+        required: true,
+        grants: { workspace, network },
+      };
+      const missing = await runtimeMcpDiagnostic(server, () =>
+        Promise.reject(new Error(`Runtime ${runtime} missing. Run loom runtime prepare.`)),
+      );
+      assert.equal(missing.name, "inspector");
+      assert.equal(missing.status, "missing");
+      assert.match(missing.note!, new RegExp("workspace: " + workspace));
+      assert(
+        missing.note!.includes(network.length ? "api.example.com (all ports)" : "network disabled"),
+      );
+      assert(missing.note!.includes("loom mcp prepare inspector"));
+      assert(!JSON.stringify(missing).includes("private-argument"));
+      const ready = await runtimeMcpDiagnostic(server, () =>
+        Promise.resolve({
+          lock: {
+            version: 1,
+            source: runtime,
+            artifact: "/artifact",
+            smolvm: "/backend",
+            preparedAt: "now",
+          },
+          manifest: binding.manifest,
+        }),
+      );
+      assert.equal(ready.status, "ok");
+      assert.equal(ready.resolved, binding.manifest.entrypoint);
+    }
+  }
+});
+
+test("runtime update does not implicitly prepare any server", async () => {
+  const dir = await Deno.makeTempDir();
+  const keys = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] as const;
+  const before = keys.map((k) => Deno.env.get(k));
+  try {
+    for (const k of keys) Deno.env.set(k, dir);
+    await Deno.mkdir(dir + "/loom");
+    await Deno.writeTextFile(dir + "/loom/config.jsonc", "{}");
+    assert.deepEqual(JSON.parse(await runtimeCommand(["update"], dir, { json: true })), []);
+  } finally {
+    keys.forEach((k, i) =>
+      before[i] === undefined ? Deno.env.delete(k) : Deno.env.set(k, before[i]!),
+    );
+    await Deno.remove(dir, { recursive: true });
+  }
 });

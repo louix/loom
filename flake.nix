@@ -10,10 +10,8 @@
   inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/d2b7c30f83382849b17c47df87862b56322c2bd4";
   inputs.smolvm.inputs.libkrunfw-src.url = "github:smol-machines/libkrunfw/6ec329e11154814a4df9963a3f94f2a430f55723";
 
-  inputs.tilth.url = "github:jahala/tilth/f5c0afa97c6666a3d68dcbd965a4db5a44bc0905";
-
   outputs =
-    { self, nixpkgs, smolvm, tilth }:
+    { self, nixpkgs, smolvm }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -89,11 +87,8 @@
             inherit system;
             config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
           };
-          loom = self.packages.${system}.loom.override { withTilth = false; withClaude = false; withCodex = false; withAisdk = false; };
+          loom = self.packages.${system}.loom.override { withClaude = false; withCodex = false; withAisdk = false; };
         };
-        tilth-runtime = (import ./packaging/runtimes/tilth.nix {
-          inherit tilth system;
-        }).tilth-runtime;
       });
 
       # Exclude output hashes to avoid a source/hash cycle. Tests, docs and
@@ -166,8 +161,6 @@
           default = loom;
           smolvm = hostSmolvm;
           session-runtime = hostRuntimes.session-runtime;
-          tilth-runtime = hostRuntimes.tilth-runtime;
-
 
           # A fixed-output derivation holding a populated `DENO_DIR`: every
           # npm tarball + esm module `deno.lock` pins, fetched once under a
@@ -245,7 +238,7 @@
             }.${hostSystem};
           };
 
-          loom = pkgs.lib.makeOverridable ({ withTilth ? true, withClaude ? true, withCodex ? true, withAisdk ? true }:
+          loom = pkgs.lib.makeOverridable ({ withClaude ? true, withCodex ? true, withAisdk ? true }:
             let
               entry = source: artifact: {
                 version = 1;
@@ -254,8 +247,7 @@
                 preparedAt = "bundled";
               };
               bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON (
-                pkgs.lib.optionalAttrs withTilth { tilth = entry "tilth" "${tilth-runtime}"; }
-                // pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${session-runtime}"; }
+                pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${session-runtime}"; }
                 // pkgs.lib.optionalAttrs withCodex { codex = entry "codex" "${session-runtime}"; }
                 // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk" "${session-runtime}"; }
               ));
@@ -308,7 +300,7 @@
                   --set DENO_NO_UPDATE_CHECK 1 \
                   --prefix PATH : ${pkgs.lib.makeBinPath ([ pkgs.git pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.nix ] ++ pkgs.lib.optional withClaude hostClaude ++ pkgs.lib.optional withCodex pkgs.codex)} \
                   --set LOOM_BUILD_VER ${finalAttrs.version} \
-                  ${if (withTilth || withClaude || withCodex || withAisdk) && bundleSupported
+                  ${if (withClaude || withCodex || withAisdk) && bundleSupported
                     then "--set LOOM_BUNDLED_RUNTIMES ${bundledRuntimes}"
                     else "--unset LOOM_BUNDLED_RUNTIMES"}
               done

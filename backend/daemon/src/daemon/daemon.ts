@@ -39,7 +39,7 @@ import {
   type LoomPaths,
 } from "@loom/core/paths";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
-import { resolveRuntime } from "../../../../runtime/src/packaged/artifact.ts";
+import { runtimeMcpDiagnostic } from "./mcp-runtime-diagnostics.ts";
 import { preflightTools } from "./tool-preflight.ts";
 import {
   claudeProfileId,
@@ -4053,26 +4053,7 @@ export class Daemon {
   async #doctorReport(): Promise<DoctorReport> {
     const mcp: DoctorMcpServer[] = await Promise.all(
       this.config.mcp.map(async (m): Promise<DoctorMcpServer> => {
-        if ("runtime" in m) {
-          try {
-            const prepared = await resolveRuntime(m.runtime);
-            return {
-              name: m.name,
-              command: `runtime ${m.runtime}`,
-              resolved: prepared.manifest.entrypoint,
-              status: "ok",
-              note: `Separate tool VM; network disabled. ${m.required ? "Required. " : ""}VM boot checked at session startup.`,
-            };
-          } catch (error) {
-            return {
-              name: m.name,
-              command: `runtime ${m.runtime}`,
-              resolved: "",
-              status: "missing",
-              note: error instanceof Error ? error.message : String(error),
-            };
-          }
-        }
+        if ("runtime" in m) return await runtimeMcpDiagnostic(m);
         const { command, args = [] } = m;
         return {
           name: m.name,
