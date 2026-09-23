@@ -572,12 +572,17 @@ export const lintConfig = (
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string[] => {
   const w: string[] = [];
+  const enabled = (id: string) =>
+    (!cfg.providerAccess.only || cfg.providerAccess.only.includes(id)) &&
+    !cfg.providerAccess.disabled.includes(id);
   for (const p of cfg.claudeProfiles) {
+    if (!enabled(claudeProfileId(p))) continue;
     if (!existsSync(p.dir)) {
       w.push(`claude profile "${claudeProfileId(p)}": dir ${p.dir} does not exist`);
     }
   }
   for (const [id, p] of Object.entries(cfg.providers.aisdk)) {
+    if (!enabled(id)) continue;
     if (p.sdk === "openai" && p.baseUrl === "") {
       w.push(`provider "${id}": sdk = "openai" needs a base_url`);
     }
@@ -588,9 +593,17 @@ export const lintConfig = (
       w.push(`provider "${id}": sdk = "${p.sdk}" needs an api_key / api_key_env`);
     }
     if (p.autoModels && p.model === "" && p.models.length === 0) {
+      const source =
+        p.sdk === "chatgpt"
+          ? "the authenticated Codex catalog"
+          : p.baseUrl.replace(/\/$/, "") + "/models";
+      const reason =
+        p.sdk === "chatgpt"
+          ? "catalog unavailable or empty"
+          : "endpoint unreachable, or it has no /models";
       w.push(
-        `provider "${id}": no models — auto-detection from ${p.baseUrl}/models found none ` +
-          "(endpoint unreachable, or it has no /models); set `model` / `models` to pin one",
+        `provider "${id}": no models — auto-detection from ${source} found none ` +
+          `(${reason}); set \`model\` / \`models\` to pin one`,
       );
     }
   }
@@ -599,8 +612,13 @@ export const lintConfig = (
     // probing — a pipeline, a `VAR=x cmd`, or an absolute path is the user's
     // business. This catches the common miss: `notify-send` on a box without it.
     const word = h.run.split(/\s+/)[0] ?? "";
-    if (/^[\w.-]+$/.test(word) && !SH_BUILTINS.has(word) && !onPath(word, env)) {
-      w.push(`hook "${h.name}": \`${word}\` is not on PATH — the hook will fail every time`);
+    // Workspace lifecycle hooks run after activation regardless of kind. Other
+    // checks also belong to the session; its PATH cannot be inferred here.
+    const host =
+      h.kind === "notify" &&
+      h.on.some((event) => event !== "workspace_start" && event !== "workspace_prepare");
+    if (host && /^[\w.-]+$/.test(word) && !SH_BUILTINS.has(word) && !onPath(word, env)) {
+      w.push(`hook "${h.name}": \`${word}\` is not on the daemon's PATH`);
     }
     if (h.match.length > 0 && !h.on.some((e) => e === "file_write" || e === "turn_end")) {
       w.push(
@@ -625,6 +643,7 @@ export const lintConfig = (
     ...cfg.claudeProfiles.map(claudeProfileId),
     ...Object.keys(cfg.providers.aisdk),
   ]) {
+    if (!enabled(id)) continue;
     const error = toolExecutionError(cfg, id);
     if (error) w.push(error);
   }

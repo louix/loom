@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { HookRunner } from "../backend/daemon/src/daemon/hooks.ts";
+import { runSessionCommand } from "../backend/daemon/src/daemon/session-command.ts";
+import { makeLogger } from "../core/src/logger.ts";
+import type { SessionSnapshot } from "../core/src/wire.ts";
 import { test } from "node:test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -258,6 +262,73 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       cwd,
     );
     const provider = await registry.get("fake");
+    const activeRegistry = registry;
+    const check = async (expected: string) => {
+      const errors: string[] = [];
+      const runner = new HookRunner({
+        repoRoot: cwd,
+        log: makeLogger("test"),
+        onFeedback: async (_id, text) => {
+          errors.push(text);
+        },
+        onNotice: (text) => {
+          errors.push(text);
+        },
+        runSession: (session, command, env, timeoutMs, signal) =>
+          runSessionCommand({
+            session: {
+              ...session,
+              status: { kind: "running" },
+              isolation: "local",
+              inPlace: false,
+            } as SessionSnapshot,
+            repoRoot: cwd,
+            command,
+            env,
+            timeoutMs,
+            signal,
+            localEnvironment: (id) => activeRegistry.commandEnvironment(id),
+            runGuest: async () => assert.fail("local check entered VM"),
+          }),
+      });
+      runner.setHooks(
+        normalizeConfig({
+          hooks: [
+            { kind: "check", on: "file_write", run: "project-tool > check-environment" },
+            { on: "turn_end", run: 'printf "%s" "$PATH" > notify-path' },
+          ],
+        }).hooks,
+      );
+      const session = {
+        id: "activated",
+        title: null,
+        provider: "fake",
+        model: null,
+        status: "running",
+        worktree: cwd,
+        branch: null,
+      };
+      const before = await Deno.readTextFile(join(cwd, ".activation-log"));
+      try {
+        runner.fire("file_write", session, { files: [join(cwd, "a.ts")] });
+        runner.turnEnded(session);
+        const deadline = Date.now() + 3000;
+        while (runner.isRunning(session.id)) {
+          assert.ok(Date.now() < deadline, "hook timed out");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.deepEqual(errors, []);
+        assert.equal(await Deno.readTextFile(join(cwd, "check-environment")), expected);
+        assert.equal(await Deno.readTextFile(join(cwd, "notify-path")), Deno.env.get("PATH"));
+        assert.equal(
+          await Deno.readTextFile(join(cwd, ".activation-log")),
+          before,
+          "checks must reuse activation",
+        );
+      } finally {
+        runner.close();
+      }
+    };
     sessions.push(
       await provider.createSession({
         sessionId: "activated",
@@ -278,6 +349,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       stdout: "piped",
     }).output();
     assert.equal(new TextDecoder().decode(result.stdout), "session");
+    await check("session");
     await sessions[0]!.close();
     await Deno.writeTextFile(join(cwd, ".value"), "resumed\n");
     sessions.push(
@@ -289,10 +361,12 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
     );
     assert.equal(await Deno.readTextFile(join(cwd, "worker-environment")), "resumed");
     assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "xx");
+    await check("resumed");
     assert.equal(
       (await registry.shellEnvironment("activated", cwd, signal()))?.set.PROJECT_VALUE,
       "resumed",
     );
+    assert.throws(() => registry!.commandEnvironment("missing"), /environment is unavailable/);
     await Deno.writeTextFile(join(cwd, ".fail"), "");
     await assert.rejects(
       provider.createSession({

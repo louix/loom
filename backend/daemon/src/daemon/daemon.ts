@@ -1,3 +1,4 @@
+import { runSessionCommand } from "./session-command.ts";
 import { changesCommand, vmMonitorText } from "./session-inspection.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { CloneGit, type CloneFacts } from "./clone-git.ts";
@@ -298,7 +299,7 @@ export class Daemon {
         if (
           !binding?.recovery.ready ||
           binding.recovery.reaped ||
-          binding.workspace !== session.worktree
+          binding.workspace !== (session.inPlace ? opts.repoRoot : session.worktree)
         )
           throw new Error("The session VM is not running. Resume it first.");
         return vmCommand(
@@ -400,9 +401,18 @@ export class Daemon {
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,
       log: this.#log.child("hooks"),
-      runGuest: async (session, command, env, timeoutMs, signal) => {
+      runSession: async (session, command, env, timeoutMs, signal) => {
         const snap = this.#registry.mustGet(session.id);
-        const result = await this.#guestCommand(snap, command, timeoutMs, signal, env);
+        const result = await runSessionCommand({
+          session: snap,
+          repoRoot: this.repoRoot,
+          command,
+          env,
+          timeoutMs,
+          signal,
+          localEnvironment: (id) => this.#providers.commandEnvironment(id),
+          runGuest: this.#guestCommand,
+        });
         return { ...result, output: result.output.slice(0, 8000).trim() };
       },
       // A failed write hook talks to the agent through the same path as the

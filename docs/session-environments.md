@@ -75,6 +75,19 @@ sessions start from the bundled runtime and build/download what they need under
 the configured network policy. This may make first startup slower. Refreshing
 the cache after dependency changes is useful but not required for activation.
 
+Project hooks use the activated project environment. `workspace_prepare` runs
+in the preparation environment; `workspace_start` runs in the session environment,
+regardless of the hook's `kind`. Hooks with `kind: "check"` on `file_write` or
+`turn_end` reuse the running session's environment: locally with `auto_nix`,
+or inside its VM for both mounted worktrees and private clones. Activation is
+refreshed on session startup/resume, not on each check.
+
+Other notification hooks run on the host with the daemon's environment. Since
+`kind` defaults to `notify`, set `kind: "check"` explicitly for formatters and
+linters. Doctor checks host notification executables against the daemon's PATH;
+project executable availability remains unverified until execution. Doctor does
+not activate project shells or infer their tools from the host PATH.
+
 Use a `workspace_start` hook for checkout dependencies:
 
 ```jsonc

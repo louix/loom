@@ -22,6 +22,7 @@ export interface HookSession {
   branch: string | null;
   /** The worktree is a private clone: agent-written, and never a place to run host commands. */
   clone?: boolean;
+  isolation?: "vm" | "local" | undefined;
   guestCwd?: string | undefined;
 }
 
@@ -34,6 +35,7 @@ export const hookSessionOf = (s: SessionSnapshot): HookSession => ({
   status: s.status.kind,
   worktree: s.worktree,
   branch: s.branch,
+  isolation: s.isolation,
   ...(s.checkout === "clone"
     ? { clone: true, guestCwd: s.worktree ? workspaceMount(s.worktree).checkout : undefined }
     : {}),
@@ -42,7 +44,8 @@ export const hookSessionOf = (s: SessionSnapshot): HookSession => ({
 export interface HookRunnerOptions {
   repoRoot: string;
   log: Logger;
-  runGuest?: (
+  /** Execute checks in the running session environment; never fall back to the host. */
+  runSession?: (
     session: HookSession,
     command: string,
     env: Record<string, string>,
@@ -226,7 +229,7 @@ export class HookRunner {
     session: HookSession,
     ctx: { files?: string[]; reason?: AwaitReason; detail?: string } = {},
   ): void {
-    // Clone checks run through the VM shell. Notifications stay on the host.
+    // Checks use the session environment. Notifications stay on the host.
     const files = ctx.files ?? [];
     const write = event === "file_write" || event === "turn_end";
     for (const hook of this.#hooks) {
@@ -306,13 +309,14 @@ export class HookRunner {
     ctx: { reason?: AwaitReason; detail?: string },
     signal: AbortSignal,
   ): Promise<Attempt> {
-    const guest = session.clone && hook.kind === "check";
+    const check = hook.kind === "check";
+    const guest = check && (session.isolation === "vm" || session.clone);
     let worktree = session.clone ? "" : (session.worktree ?? "");
-    if (guest) worktree = session.guestCwd ?? "";
+    if (guest) worktree = session.guestCwd ?? session.worktree ?? "";
     const cwd = worktree || this.#opts.repoRoot;
     if (session.clone && !guest) files = [];
     const env: Record<string, string> = {
-      ...(guest ? {} : Deno.env.toObject()),
+      ...(check ? {} : Deno.env.toObject()),
       LOOM_HOOK: hook.name,
       LOOM_HOOK_EVENT: event,
       LOOM_REPO_ROOT: guest ? cwd : this.#opts.repoRoot,
@@ -332,10 +336,10 @@ export class HookRunner {
       LOOM_MESSAGE: describe(event, session, files, ctx),
     };
 
-    if (guest) {
-      if (!this.#opts.runGuest || !worktree)
-        throw new Error("Clone check requires a running session VM");
-      return this.#opts.runGuest(session, hook.run, env, hook.timeoutMs, signal);
+    if (check) {
+      if (!this.#opts.runSession)
+        throw new Error("Check hook requires a running session environment");
+      return this.#opts.runSession(session, hook.run, env, hook.timeoutMs, signal);
     }
     return executeShellHook(hook.run, cwd, env, hook.timeoutMs, signal);
   }

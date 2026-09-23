@@ -148,6 +148,7 @@ test("waiting, removal, reload, and shutdown invalidate feedback waiting for del
     const runner = new HookRunner({
       repoRoot: "/tmp",
       log: makeLogger("test"),
+      runSession: async () => ({ code: 1, output: "", timedOut: false }),
       onFeedback: async (_id, _text, pending) => {
         signal = pending;
         await delivery.promise;
@@ -433,7 +434,7 @@ test("lintConfig flags a hook command that isn't on PATH and a match that can't 
   ]
 }`);
   const warnings = lintConfig(c, {}).join("\n");
-  assert.match(warnings, /definitely-not-a-real-binary` is not on PATH/);
+  assert.match(warnings, /definitely-not-a-real-binary` is not on the daemon's PATH/);
   assert.match(warnings, /dead-filter.*match.* does nothing for waiting/s);
   // shell builtins aren't on PATH but always run
   assert.deepEqual(

@@ -65,6 +65,13 @@ export class ProviderRegistry {
 
   readonly #localEnvironments = new Map<string, EnvironmentChanges | undefined>();
 
+  /** Only reuse startup activation for checks: missing state must not trigger a new shell. */
+  commandEnvironment(sessionId: string): EnvironmentChanges | undefined {
+    if (!this.#localEnvironments.has(sessionId))
+      throw new Error("The session environment is unavailable. Resume it first.");
+    return this.#localEnvironments.get(sessionId);
+  }
+
   async shellEnvironment(sessionId: string, cwd: string, signal: AbortSignal) {
     return this.#localEnvironments.has(sessionId)
       ? this.#localEnvironments.get(sessionId)
@@ -265,6 +272,7 @@ export class ProviderRegistry {
             if (!oneShot) await preflightTools(effectiveConfig, id);
             const progress = (message: string) =>
               context.onStartupProgress?.(options.sessionId, message);
+            if (!oneShot) this.#localEnvironments.delete(options.sessionId);
             const environment =
               !context.config.sessionVm && !oneShot
                 ? await activateLocalEnvironment(
@@ -315,12 +323,16 @@ export class ProviderRegistry {
                   [CLAUDE, GENERIC, GEMINI].includes(pkg),
                 );
             signal?.throwIfAborted();
-            const session =
-              prop === "createSession"
+            // Workers can emit writes before create/resume resolves.
+            if (!oneShot) this.#localEnvironments.set(options.sessionId, environment);
+            try {
+              return prop === "createSession"
                 ? await target.createSession(ready as CreateSessionOptions)
                 : await target.resumeSession(ready as SessionRef);
-            if (!oneShot) this.#localEnvironments.set(options.sessionId, environment);
-            return session;
+            } catch (error) {
+              this.#localEnvironments.delete(options.sessionId);
+              throw error;
+            }
           };
         const value = Reflect.get(target, prop, target);
         return typeof value === "function" ? value.bind(target) : value;
