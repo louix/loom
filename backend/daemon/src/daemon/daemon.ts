@@ -1,4 +1,4 @@
-import { changesCommand, hostMonitorText } from "./session-inspection.ts";
+import { changesCommand, vmMonitorText } from "./session-inspection.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { CloneGit, type CloneFacts } from "./clone-git.ts";
 import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
@@ -2676,7 +2676,10 @@ export class Daemon {
     d.register("session.inspect", async (params, { conn }) => {
       const s = this.#registry.mustGet(params.id);
       if (params.tab === "monitor") {
-        return { text: hostMonitorText(), sampledAt: Date.now() };
+        return {
+          text: await vmMonitorText(this.repoRoot, s.id, conn.signal),
+          sampledAt: Date.now(),
+        };
       }
       const cwd = s.inPlace ? this.repoRoot : s.worktree;
       if (!cwd) throw new RpcError("not_found", "This session has no working directory.");

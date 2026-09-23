@@ -85,6 +85,7 @@ const startRuntimeMcpOwned = async (
       kind: "mcp",
       sessionId: identity?.sessionId ?? null,
       provider: identity?.provider ?? null,
+      smolvm: binding.smolvm,
       workload: name,
       state: "starting",
       createdAt: now,

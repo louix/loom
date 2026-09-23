@@ -3923,13 +3923,13 @@ test("tabs render in overview and narrow session panes", async () => {
     const { app, stdin, stdout } = mount(fake.client, {}, { columns });
     try {
       stdin.feed("2");
-      await waitFor(stdout, /2 Changes/);
+      await waitFor(stdout, /2 CHANGES/);
       fake.of("session.inspect").at(-1)!.resolve({ text: "changed-file.ts", sampledAt: 1 });
       await waitFor(stdout, /changed-file.ts/);
-      assert.match(stdout.last, /1 Chat/);
-      assert.match(stdout.last, /3 Monitor/);
+      assert.match(stdout.last, /1 CHAT/);
+      assert.match(stdout.last, /3 VM MONITOR/);
       stdin.feed("1");
-      await waitFor(stdout, /\[1 Chat\]/);
+      await waitFor(stdout, /\[1 CHAT\]/);
     } finally {
       app.unmount();
     }
@@ -3955,7 +3955,7 @@ test("session inspection RPC reads the selected local checkout and reports missi
       id: s.id,
       tab: "monitor",
     });
-    assert.match(monitor.text, /DAEMON HOST/);
+    assert.match(monitor.text, /No VMs associated with this session/);
     await assert.rejects(client.request("session.inspect", { id: "missing", tab: "changes" }));
     const stub = await client.request<SessionSnapshot>("session.createStub", {
       provider: "fake",

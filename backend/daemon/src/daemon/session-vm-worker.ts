@@ -268,6 +268,7 @@ const launchSessionVmOwned = async (
       kind: options.preparationOnly ? "prepare" : "session",
       sessionId: options.sessionId ?? null,
       provider: options.provider ?? null,
+      smolvm: binding.smolvm,
       workload: options.preparationOnly ? "dependency cache" : (options.activity?.() ?? "starting"),
       state: "starting",
       createdAt: new Date().toISOString(),

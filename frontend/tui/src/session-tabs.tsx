@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 import type { SessionTab } from "../../../core/src/session-inspection.ts";
 import { Line, Text, Panel } from "./ui.tsx";
-
+import { ChangeLine } from "./changes-pane.tsx";
 export const SessionTabs = ({ active }: { active: SessionTab }): ReactNode => (
   <Line>
     {(["chat", "changes", "monitor"] as const).map((tab, index) => (
       <Text key={tab} tone={active === tab ? "accent" : "dim"} bold={active === tab}>
         {index ? "  " : ""}
         {active === tab ? "[" : " "}
-        {index + 1} {tab[0]!.toUpperCase() + tab.slice(1)}
+        {index + 1} {tab === "monitor" ? "VM MONITOR" : tab.toUpperCase()}
         {active === tab ? "]" : " "}
       </Text>
     ))}
@@ -35,9 +35,15 @@ export const InspectionPane = ({
     <Panel width={width} height={height} flexShrink={0} overflow="hidden">
       <SessionTabs active={tab} />
       <Line tone="faint">{`o editor · PgUp/PgDn scroll${lines.length > room ? ` · ${start + 1}–${Math.min(lines.length, start + room)}/${lines.length}` : ""}`}</Line>
-      {lines.slice(start, start + room).map((line, i) => (
-        <Line key={i}>{line || " "}</Line>
-      ))}
+      {lines
+        .slice(start, start + room)
+        .map((line, i) =>
+          tab === "changes" ? (
+            <ChangeLine key={i} line={line} />
+          ) : (
+            <Line key={i}>{line || " "}</Line>
+          ),
+        )}
     </Panel>
   );
 };

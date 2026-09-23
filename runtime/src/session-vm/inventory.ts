@@ -13,6 +13,8 @@ export interface VmRecord {
   kind: "session" | "prepare" | "mcp";
   sessionId: string | null;
   provider: string | null;
+  /** Host executable used to inspect this instance; absent in older records. */
+  smolvm?: string;
   workload: string;
   state: VmState;
   createdAt: string;
@@ -78,6 +80,7 @@ const read = async (home: string, id: string): Promise<VmRecord> => {
     !["starting", "running", "stopping", "stopped", "orphaned", "unknown"].includes(r.state) ||
     typeof r.repo !== "string" ||
     !isAbsolute(r.repo) ||
+    (r.smolvm !== undefined && (typeof r.smolvm !== "string" || !isAbsolute(r.smolvm))) ||
     typeof r.workload !== "string" ||
     typeof r.createdAt !== "string" ||
     !Number.isFinite(Date.parse(r.createdAt)) ||
