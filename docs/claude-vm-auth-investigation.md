@@ -128,3 +128,19 @@ fresh descriptor budget; re-login does not address that budget.
 The earlier OAuth renewal fixes should remain separate. These experiments do
 not establish the cause of the original roughly eight-hour host-profile expiry
 symptom and do not justify changing renewal behavior again.
+
+## Error reporting
+
+Loom now adds a file-limit explanation to explicit EMFILE failures in VM provider
+errors/results, failed tool results, and noninteractive VM commands. Tool payloads
+and command exit codes are preserved; repeated failed tools produce one nonfatal
+warning per mounted session. Successful output mentioning EMFILE is not diagnosed.
+
+Backend stderr is reduced to a fixed file-limit category, including fragmented
+or long diagnostics, without exposing raw vendor output. This category is also
+available when reporting startup/connection failure.
+
+The wording identifies descriptor exhaustion while leaving its location open:
+the limit may belong to a guest process or the host backend. Generic authentication
+failures, ESTALE, and bare numeric exit codes are not sufficient evidence. Errors
+swallowed entirely by a provider remain undetectable through these paths.

@@ -275,7 +275,11 @@ try {
   // Never expose raw vendor stderr: it can contain credentials.
   const diagnostics = binding.preparationOnly
     ? child.stderr.pipeTo(Deno.stderr.writable, { preventClose: true })
-    : readStartupProgress(child.stderr, (stage, elapsed) => reportStartup(stage, elapsed));
+    : readStartupProgress(
+        child.stderr,
+        (stage, elapsed) => reportStartup(stage, elapsed),
+        (code) => console.error(JSON.stringify({ loomStartupFailure: code })),
+      );
   void diagnostics.catch(stop);
   const output = child.stdout
     .pipeThrough(

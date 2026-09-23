@@ -1,6 +1,7 @@
 import { startWorker, signalOf } from "./startup.ts";
 import { sessionStartupTimeout } from "../../../../core/src/session-environment.ts";
 import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
+import { withVmDiagnostics } from "./vm-diagnostics.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import { homedir } from "node:os";
@@ -244,9 +245,11 @@ export const withVmSessions = async <T extends AgentProvider>(
           await Deno.writeTextFile(join(sessionDirectory, "aisdk"), "1", { mode: 0o600 });
         ctx.onVmStarted?.(input.sessionId, await sessionVmGeneration(worker.binding.state));
         ctx.onStartupProgress?.(input.sessionId, "Session ready.");
-        return kind === "claude" && owner
-          ? refreshOnAuthFailure(session, () => owner!.current(true))
-          : session;
+        return withVmDiagnostics(
+          kind === "claude" && owner
+            ? refreshOnAuthFailure(session, () => owner!.current(true))
+            : session,
+        );
       } catch (error) {
         worker.terminate();
         await worker.cleanup?.();

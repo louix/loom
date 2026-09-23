@@ -7,6 +7,8 @@ import {
 } from "../packaged/vm.ts";
 import { guestShellEnvironmentPath } from "./shell.ts";
 import type { HookAttempt } from "../../../core/src/shell-hook.ts";
+import { isFileLimitError, fileLimitDiagnostic } from "./file-limit.ts";
+import { fileLimitScanner } from "./file-limit-scanner.ts";
 
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 export const vmCommand = async (
@@ -55,15 +57,27 @@ exec env ${overrides} sh -c ${quote(command)}`,
       signal: cancel.signal,
     }).spawn();
     let output = "";
+    let fileLimit = false;
     const drain = async (stream: ReadableStream<Uint8Array>) => {
       const decoder = new TextDecoder();
+      const scan = fileLimitScanner();
       for await (const chunk of stream) {
         const text = decoder.decode(chunk, { stream: true });
+        fileLimit = scan(text) || fileLimit;
         if (output.length < 65536) output += text.slice(0, 65536 - output.length);
       }
+      fileLimit = scan("", true) || fileLimit;
     };
     const [status] = await Promise.all([child.status, drain(child.stdout), drain(child.stderr)]);
-    return { code: status.code, output, timedOut };
+    return {
+      code: status.code,
+      output: !status.success && fileLimit ? output + "\n\n" + fileLimitDiagnostic : output,
+      timedOut,
+    };
+  } catch (error) {
+    if (isFileLimitError(error))
+      throw new Error(String(error) + "\n\n" + fileLimitDiagnostic, { cause: error });
+    throw error;
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);

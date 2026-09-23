@@ -1,5 +1,7 @@
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
 import { decodeTextStream } from "../../../core/src/text-stream.ts";
+import { isFileLimitError, fileLimitDiagnostic } from "./file-limit.ts";
+import { fileLimitScanner } from "./file-limit-scanner.ts";
 export const startupStages = {
   init: "Running session init hooks…",
   runtime: "Preparing VM runtime…",
@@ -21,6 +23,7 @@ export const startupStages = {
 } as const;
 export type StartupStage = keyof typeof startupStages;
 export const startupFailures = {
+  files: fileLimitDiagnostic,
   devices:
     "The VM backend ran out of virtual devices (IRQs). Use a worktree inside the repo to reduce filesystem mounts.",
   space: "The VM backend ran out of disk space. Free space on the host before retrying.",
@@ -33,6 +36,7 @@ export type StartupFailure = keyof typeof startupFailures;
 /** Classify host backend errors; raw stderr never crosses the credential boundary. */
 export const classifyStartupFailure = (error: unknown): StartupFailure => {
   const message = error instanceof Error ? error.message : String(error);
+  if (isFileLimitError(error)) return "files";
   if (/no more IRQs|too many.*devices/i.test(message)) return "devices";
   if (/no space left|ENOSPC/i.test(message)) return "space";
   if (/permission denied|EACCES|operation not permitted/i.test(message)) {
@@ -71,7 +75,14 @@ export const readStartupProgress = async (
 ) => {
   let line = "";
   let overflow = false;
+  const scan = fileLimitScanner();
+  let reportedFiles = false;
   for await (const chunk of decodeTextStream(stream)) {
+    // Recognize split/long stderr diagnostics without forwarding any vendor text.
+    if (!reportedFiles && scan(chunk)) {
+      reportedFiles = true;
+      failure?.("files");
+    }
     for (const part of chunk.split(/(?<=\n)/)) {
       if (!overflow) {
         line += part;
@@ -109,4 +120,5 @@ export const readStartupProgress = async (
       overflow = false;
     }
   }
+  if (!reportedFiles && scan("", true)) failure?.("files");
 };
