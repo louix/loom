@@ -126,8 +126,8 @@ socket; networked provider, catalog and title work runs in children.
 ## Renewable authentication
 
 `launchSessionVm` accepts a shared `ClaudeAuthOwner` instead of static `auth`.
-This keeps refresh tokens in the host profile, refreshes through the pinned Claude
-CLI before expiry, and distributes access-only snapshots to active sessions.
+This keeps refresh tokens in the host profile, renews before expiry, and
+distributes access-only snapshots to active sessions.
 The follow-up implementation is `ClaudeAuthOwner` in the daemon package. Callers
 share one owner per provider profile and pass it as `authOwner` to
 `launchSessionVm`. Close the owner when its provider shuts down. The VM launcher
@@ -136,20 +136,28 @@ publication cannot recreate a removed session directory.
 
 The owner reads the host Claude profile, refreshes five minutes before expiry,
 and polls once per second for credentials updated by other host Claude processes.
-`current(true)` requests an immediate refresh. It invokes the pinned CLI's
-`claude auth login --claudeai` with the refresh token and scopes in the child
-environment; the CLI persists any rotated refresh token. It never logs raw CLI
-output or passes a refresh token into a VM. A per-profile OS file lock serializes
-Loom owners across processes, with a second credential read after locking to avoid
-repeating a completed refresh. This lock does not coordinate unrelated Claude
-processes; the owner rereads persisted credentials after failures to recognize
-concurrent or partially completed rotations.
+`current(true)` requests an immediate refresh. A narrow Deno subprocess exchanges
+the refresh token directly at `https://platform.claude.com/v1/oauth/token`; the
+daemon retains `--deny-net`. The helper can access only the selected profile,
+its native refresh lock, and that HTTPS endpoint (plus Keychain on macOS).
+It neither runs `claude auth login` nor clears account configuration. It preserves
+unrelated credential fields and writes the existing storage backend: atomic
+mode-0600 file replacement, or the exact Keychain entry used to read credentials.
+
+A per-profile OS file lock serializes Loom owners. The helper additionally uses
+Claude's `proper-lockfile` directory convention, `realpath(profile) + ".lock"`,
+with a five-second heartbeat and ten-second stale threshold. It rereads after
+acquiring that lock and immediately before persistence, recognizing another
+process's rotation or explicit login. Refresh tokens never enter VM snapshots.
+No model request, user hook, plugin, or MCP server runs during renewal.
 
 Refresh attempts have a 60-second timeout; waiting for the profile lock has a
 70-second timeout and is cancellable. Transient failures retain a still-valid
-token and retry with exponential backoff up to 60 seconds. A rejected refresh
-token requires login instead of repeated automatic exchanges. A changed host
-credential is picked up automatically. Independent per-subscriber expiry timers
+token and retry with exponential backoff up to 60 seconds. Only a structured
+`invalid_grant` response from the token endpoint on HTTP 400/401 stops retries
+and requires login; bare HTTP statuses remain retryable. Logs retain status and
+allowlisted error codes, never raw response bodies. A changed host credential
+is picked up automatically. Independent per-subscriber expiry timers
 stop a session whose last published credential expires, even during a blocked
 refresh or failed publication. Closing the owner revokes its attached sessions.
 
@@ -171,9 +179,11 @@ deno run -A scripts/test-claude-auth-vm.ts \
   /path/to/claude-artifact /path/to/smolvm /path/to/host-claude
 ```
 
-Unlike the earlier replacement-only spikes, this command **does refresh the host
-Claude profile** using the CLI's normal credential persistence. The narrow
-`spike-claude-refresh.ts /path/to/host-claude` command exercises just that exchange.
+Unlike replacement-only spikes, these commands **refresh the host Claude
+profile**. Run `deno run -A --deny-net scripts/spike-claude-refresh.ts /path/to/profile`
+to verify the direct exchange, access-only snapshot, and preservation of account
+configuration and unrelated credential metadata. The previous live two-VM check
+used CLI login-based renewal; repeat it with the updated artifact for VM acceptance.
 
 ## Daemon integration
 

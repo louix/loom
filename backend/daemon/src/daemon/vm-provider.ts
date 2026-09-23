@@ -102,7 +102,6 @@ export const withVmSessions = async <T extends AgentProvider>(
     connector = "@loom/connector-chatgpt";
     providerHosts = ["chatgpt.com"];
   } else {
-    const cli = await executable(ctx.config.cliPath || "claude");
     const profile =
       ctx.config.configDir || Deno.env.get("CLAUDE_CONFIG_DIR") || join(homedir(), ".claude");
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
@@ -112,7 +111,6 @@ export const withVmSessions = async <T extends AgentProvider>(
         ? undefined
         : new ClaudeAuthOwner({
             profile,
-            cli,
             report: (code, detail) => ctx.logger.warn("Claude VM authentication", { code, detail }),
           });
     config = {

@@ -1,8 +1,9 @@
 import { CredentialOwner, CredentialAuthError as ClaudeAuthError } from "./credential-owner.ts";
 export { CredentialAuthError as ClaudeAuthError } from "./credential-owner.ts";
-/** Host-only Claude credential owner. Refresh tokens never enter VM snapshots. */
 import { readClaudeCredentials } from "./claude-credentials.ts";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import type { ClaudeAccess } from "../../../../runtime/src/session-vm/auth.ts";
 export type { ClaudeAccess } from "../../../../runtime/src/session-vm/auth.ts";
@@ -44,31 +45,43 @@ const snapshot = (value: ClaudeAccess): ClaudeAuthSnapshot => ({
     scopes: [...value.scopes],
   },
 });
-/** The CLI owns its credential format and persists rotated refresh tokens itself. */
+
+/** Exchange in a separate, narrowly permissioned process; never run auth login. */
 const runRefresh = async (
   profile: string,
-  cli: string,
+  _cli: string,
   credential: ClaudeAccess & { refreshToken?: string },
   signal: AbortSignal,
 ) => {
   if (!credential.refreshToken) throw new ClaudeAuthError("needs_login");
   signal.throwIfAborted();
-  const child = new Deno.Command(cli, {
-    args: ["auth", "login", "--claudeai"],
+  profile = resolve(profile);
+  const canonical = await Deno.realPath(profile);
+  const paths = [...new Set([profile, canonical, canonical + ".lock"])];
+  if (paths.some((path) => path.includes(",")))
+    throw new ClaudeAuthError("refresh_failed", "Unsupported profile path");
+  const child = new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--quiet",
+      "--no-config",
+      "--no-lock",
+      "--no-prompt",
+      "--cached-only",
+      "--allow-read=" + paths.join(","),
+      "--allow-write=" + paths.join(","),
+      "--allow-net=platform.claude.com:443",
+      "--allow-env=HOME",
+      "--allow-sys",
+      ...(Deno.build.os === "darwin" ? ["--allow-run=/usr/bin/security"] : []),
+      fileURLToPath(new URL("./claude-refresh-worker.ts", import.meta.url)),
+    ],
     cwd: profile,
     clearEnv: true,
-    env: {
-      HOME: homedir(),
-      PATH: Deno.env.get("PATH") ?? "",
-      CLAUDE_CONFIG_DIR: profile,
-      CLAUDE_CODE_OAUTH_REFRESH_TOKEN: credential.refreshToken,
-      CLAUDE_CODE_OAUTH_SCOPES: credential.scopes.join(" "),
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      DISABLE_AUTOUPDATER: "1",
-    },
-    stdin: "null",
+    env: { HOME: homedir(), DENO_TLS_CA_STORE: "system,mozilla", DENO_NO_UPDATE_CHECK: "1" },
+    stdin: "piped",
     stdout: "piped",
-    stderr: "piped",
+    stderr: "null",
   }).spawn();
   const kill = () => {
     try {
@@ -78,61 +91,54 @@ const runRefresh = async (
     }
   };
   signal.addEventListener("abort", kill, { once: true });
-  let diagnostics = "";
-  const drain = (stream: ReadableStream<Uint8Array>) =>
-    stream
-      .pipeTo(
-        new WritableStream({
-          write(bytes) {
-            diagnostics = (diagnostics + new TextDecoder().decode(bytes)).slice(-8192);
-          },
-        }),
-      )
-      .catch(() => {});
-  const drains = Promise.all([drain(child.stdout), drain(child.stderr)]);
+  if (signal.aborted) kill();
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     kill();
   }, 60_000);
+  const output = child.output();
   try {
-    const result = await child.status;
-    await drains;
-    if (timedOut) throw new ClaudeAuthError("refresh_timeout");
-    if (signal.aborted) throw new ClaudeAuthError("closed");
-    if (!result.success) {
-      const status = /status code (\d{3})/i.exec(diagnostics)?.[1];
-      const categories = [
-        "certificate",
-        "TLS",
-        "ENOTFOUND",
-        "ECONNREFUSED",
-        "ECONNRESET",
-        "EACCES",
-        "ENOENT",
-        "invalid_scope",
-        "invalid_grant",
-        "unauthorized_client",
-      ].filter((code) => diagnostics.includes(code));
-      throw new ClaudeAuthError(
-        /invalid_grant|revoked|invalid refresh token/i.test(diagnostics)
-          ? "needs_login"
-          : "refresh_failed",
-        [`CLI exit ${result.code}`, ...(status ? [`HTTP ${status}`] : []), ...categories].join(
-          ", ",
-        ),
+    const writer = child.stdin.getWriter();
+    try {
+      await writer.write(
+        new TextEncoder().encode(JSON.stringify({ profile, accessToken: credential.accessToken })),
       );
+      await writer.close();
+    } finally {
+      writer.releaseLock();
     }
+    const result = await output;
+    if (signal.aborted) throw new ClaudeAuthError("closed");
+    if (timedOut) throw new ClaudeAuthError("refresh_timeout");
+    let reply;
+    try {
+      reply = JSON.parse(new TextDecoder().decode(result.stdout));
+    } catch {
+      throw new ClaudeAuthError("refresh_failed", "Refresh worker exited without a result");
+    }
+    if (!result.success || reply.ok !== true) {
+      const code = ["needs_login", "refresh_failed", "refresh_timeout"].includes(reply.code)
+        ? reply.code
+        : "refresh_failed";
+      throw new ClaudeAuthError(code, typeof reply.detail === "string" ? reply.detail : "");
+    }
+  } catch (error) {
+    if (signal.aborted) throw new ClaudeAuthError("closed");
+    if (timedOut) throw new ClaudeAuthError("refresh_timeout");
+    throw error;
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", kill);
+    kill();
+    await output.catch(() => {});
   }
 };
 export interface ClaudeAuthOptions {
   profile: string;
-  cli: string;
+  /** Retained for injected refresh implementations; production does not invoke the CLI. */
+  cli?: string;
   report?: (code: ClaudeAuthError["code"] | "publish_failed", detail?: string) => void;
-  /** Test seam; production always uses the pinned Claude CLI. */
   refresh?: typeof runRefresh;
   pollMs?: number;
   refreshAheadMs?: number;
@@ -144,6 +150,7 @@ export class ClaudeAuthOwner extends CredentialOwner<
   constructor(options: ClaudeAuthOptions) {
     super({
       ...options,
+      cli: options.cli ?? "",
       read,
       snapshot,
       expiresAt: (s) => s.claudeAiOauth.expiresAt,

@@ -6,6 +6,11 @@ import {
   type ClaudeAccess,
 } from "../backend/daemon/src/daemon/claude-auth.ts";
 import { sessionAuth, writeSessionAuth } from "../runtime/src/session-vm/auth.ts";
+import {
+  refreshClaudeProfile,
+  CLAUDE_TOKEN_URL,
+} from "../backend/daemon/src/daemon/claude-refresh.ts";
+import { withClaudeRefreshLock } from "../backend/daemon/src/daemon/claude-refresh-lock.ts";
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const fixture = async () => {
   const profile = await Deno.makeTempDir();
@@ -283,83 +288,304 @@ Deno.test("Claude watcher renews before expiry and publishes the new access toke
   }
 });
 
-Deno.test({
-  name: "Claude refresh rejection is actionable without leaking native diagnostics",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const f = await fixture();
-    const cli = join(f.profile, "fake-claude");
-    await Deno.writeTextFile(
-      cli,
-      '#!/bin/sh\necho "Login failed: invalid_grant (status code 400)" >&2\necho "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" >&2\nexit 1\n',
-      { mode: 0o700 },
+const renewedResponse = () =>
+  Response.json({
+    access_token: "renewed",
+    refresh_token: "rotated-refresh",
+    expires_in: 28800,
+    scope: "user:profile user:inference",
+  });
+const refreshWith =
+  (request: typeof fetch) =>
+  (profile: string, _cli: string, credential: ClaudeAccess, signal: AbortSignal) =>
+    refreshClaudeProfile(profile, credential.accessToken, signal, request);
+
+Deno.test("Claude direct renewal preserves account, unrelated credentials, and private storage", async () => {
+  const f = await fixture();
+  const path = join(f.profile, ".credentials.json");
+  const account = '{"oauthAccount":{"organizationUuid":"work"},"hasCompletedOnboarding":true}';
+  await Deno.writeTextFile(join(f.profile, ".claude.json"), account);
+  const original = JSON.parse(await Deno.readTextFile(path));
+  original.claudeAiOauth.subscriptionType = "team";
+  original.claudeAiOauth.rateLimitTier = "tier";
+  original.mcpOAuth = { other: "keep" };
+  await Deno.writeTextFile(path, JSON.stringify(original));
+  let requests = 0;
+  const request: typeof fetch = async (url, init) => {
+    requests++;
+    assert.equal(url, CLAUDE_TOKEN_URL);
+    assert.equal(init?.redirect, "error");
+    const body = JSON.parse(init?.body as string);
+    assert.equal(body.grant_type, "refresh_token");
+    assert.equal(body.refresh_token, "test-refresh-secret");
+    assert(body.scope.includes("user:inference"));
+    assert(body.scope.includes("user:file_upload"));
+    assert((await Deno.stat((await Deno.realPath(f.profile)) + ".lock")).isDirectory);
+    assert.deepEqual(
+      JSON.parse(await Deno.readTextFile(path)),
+      original,
+      "No logout before exchange",
     );
-    const owner = new ClaudeAuthOwner({ profile: f.profile, cli });
-    try {
-      await assert.rejects(owner.current(true), (error: unknown) => {
-        assert(error instanceof ClaudeAuthError);
-        assert.equal(error.code, "needs_login");
-        assert(error.message.includes("HTTP 400"));
-        assert(!error.message.includes("test-refresh-secret"));
-        return true;
-      });
-    } finally {
-      await owner.close();
-      await f.close();
-    }
-  },
+    // Simulate another subsystem adding an unrelated credential.
+    await Deno.writeTextFile(path, JSON.stringify({ ...original, added: "preserve" }));
+    return renewedResponse();
+  };
+  const owner = new ClaudeAuthOwner({ profile: f.profile, refresh: refreshWith(request) });
+  try {
+    const fresh = await owner.current(true);
+    assert.equal(requests, 1);
+    assert.equal(fresh.claudeAiOauth.accessToken, "renewed");
+    assert(!JSON.stringify(fresh).includes("rotated-refresh"));
+    const saved = JSON.parse(await Deno.readTextFile(path));
+    assert.equal(saved.claudeAiOauth.refreshToken, "rotated-refresh");
+    assert.deepEqual(saved.claudeAiOauth.scopes, ["user:profile", "user:inference"]);
+    assert.equal(saved.claudeAiOauth.subscriptionType, "team");
+    assert.equal(saved.claudeAiOauth.rateLimitTier, "tier");
+    assert.deepEqual(saved.mcpOAuth, original.mcpOAuth);
+    assert.equal(saved.added, "preserve");
+    assert.equal(await Deno.readTextFile(join(f.profile, ".claude.json")), account);
+    if (Deno.build.os !== "windows") assert.equal((await Deno.stat(path)).mode! & 0o777, 0o600);
+    await assert.rejects(Deno.stat(f.profile + ".lock"), Deno.errors.NotFound);
+  } finally {
+    await owner.close();
+    await f.close();
+  }
 });
 
 for (const status of [400, 401]) {
-  Deno.test({
-    name: "Claude retries ambiguous HTTP " + status + " with sanitized diagnostics",
-    ignore: Deno.build.os === "windows",
-    fn: async () => {
+  Deno.test(
+    "Claude retries ambiguous HTTP " + status + " and reports only safe fields",
+    async () => {
       const f = await fixture();
-      const cli = join(f.profile, "fake-claude");
-      const reports: Array<{ code: string; detail: string | undefined }> = [];
       await f.write("initial", Date.now() + 60_000);
-      await Deno.writeTextFile(
-        cli,
-        '#!/bin/sh\necho "Login failed: Request failed with status code STATUS" >&2\necho "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" >&2\nexit 1\n'.replace(
-          "STATUS",
-          String(status),
-        ),
-        { mode: 0o700 },
-      );
+      const reports: Array<{ code: string; detail: string | undefined }> = [];
+      let calls = 0;
       const owner = new ClaudeAuthOwner({
         profile: f.profile,
-        cli,
+        refresh: refreshWith(async () => {
+          calls++;
+          return calls === 1
+            ? Response.json({ error_description: "test-refresh-secret" }, { status })
+            : renewedResponse();
+        }),
         report: (code, detail) => {
           reports.push({ code, detail });
         },
       });
       try {
         assert.equal((await owner.current()).claudeAiOauth.accessToken, "initial");
-        assert.deepEqual(reports, [
-          { code: "refresh_failed", detail: "CLI exit 1, HTTP " + status },
-        ]);
+        assert.deepEqual(reports, [{ code: "refresh_failed", detail: "HTTP " + status }]);
         await owner.current();
-        assert.equal(reports.length, 1, "Backoff must still apply");
-        // The next native invocation persists renewed credentials.
-        await Deno.writeTextFile(
-          join(f.profile, "renewed.json"),
-          JSON.stringify({
-            claudeAiOauth: {
-              accessToken: "renewed",
-              refreshToken: "new-refresh-secret",
-              expiresAt: Date.now() + 3600_000,
-              scopes: ["user:inference"],
-            },
-          }),
-        );
-        await Deno.writeTextFile(cli, "#!/bin/sh\ncp renewed.json .credentials.json\n");
+        assert.equal(calls, 1);
         await pause(1100);
         assert.equal((await owner.current()).claudeAiOauth.accessToken, "renewed");
+        assert.equal(calls, 2);
       } finally {
         await owner.close();
         await f.close();
       }
     },
-  });
+  );
 }
+
+Deno.test("Claude classifies structured grant rejection without modifying credentials", async () => {
+  const f = await fixture();
+  const path = join(f.profile, ".credentials.json");
+  const before = await Deno.readTextFile(path);
+  try {
+    for (const [status, error, code] of [
+      [400, "invalid_grant", "needs_login"],
+      [401, "invalid_grant", "needs_login"],
+      [400, "invalid_scope", "refresh_failed"],
+      [500, "invalid_grant", "refresh_failed"],
+      [429, "rate_limited", "refresh_failed"],
+    ] as const) {
+      await assert.rejects(
+        refreshClaudeProfile(f.profile, "initial", new AbortController().signal, async () =>
+          Response.json({ error, error_description: "test-refresh-secret" }, { status }),
+        ),
+        (e: unknown) => {
+          assert(e instanceof ClaudeAuthError);
+          assert.equal(e.code, code);
+          assert(!e.message.includes("test-refresh-secret"));
+          return true;
+        },
+      );
+      assert.equal(await Deno.readTextFile(path), before);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("Claude reuses a concurrent native renewal after waiting for the shared directory lock", async () => {
+  const f = await fixture();
+  const locked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const native = withClaudeRefreshLock(f.profile, new AbortController().signal, async () => {
+    locked.resolve();
+    await release.promise;
+    await f.write("native-renewal");
+  });
+  await locked.promise;
+  let calls = 0;
+  const renewal = refreshClaudeProfile(
+    f.profile,
+    "initial",
+    new AbortController().signal,
+    async () => {
+      calls++;
+      return renewedResponse();
+    },
+  );
+  try {
+    await pause(30);
+    assert.equal(calls, 0);
+    release.resolve();
+    await native;
+    await renewal;
+    assert.equal(calls, 0);
+  } finally {
+    release.resolve();
+    await native;
+    await renewal;
+    await f.close();
+  }
+});
+
+Deno.test("Claude renewal recovers stale native locks and preserves refresh token when unrotated", async () => {
+  const f = await fixture();
+  const path = (await Deno.realPath(f.profile)) + ".lock";
+  await Deno.mkdir(path);
+  await Deno.utime(path, new Date(0), new Date(0));
+  try {
+    await refreshClaudeProfile(f.profile, "initial", new AbortController().signal, async () =>
+      Response.json({ access_token: "renewed", expires_in: 3600, scope: "user:inference" }),
+    );
+    const value = JSON.parse(await Deno.readTextFile(join(f.profile, ".credentials.json")));
+    assert.equal(value.claudeAiOauth.refreshToken, "test-refresh-secret");
+    await assert.rejects(Deno.stat(path), Deno.errors.NotFound);
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("Claude waiting for a native lock can be cancelled without deleting it", async () => {
+  const f = await fixture();
+  const path = (await Deno.realPath(f.profile)) + ".lock";
+  await Deno.mkdir(path);
+  const abort = new AbortController();
+  try {
+    const pending = refreshClaudeProfile(f.profile, "initial", abort.signal, async () => {
+      throw new Error("must not exchange");
+    });
+    const rejected = assert.rejects(pending);
+    await pause(20);
+    abort.abort();
+    await rejected;
+    assert((await Deno.stat(path)).isDirectory);
+  } finally {
+    await Deno.remove(path);
+    await f.close();
+  }
+});
+
+Deno.test("Claude does not overwrite an explicit login racing with renewal", async () => {
+  const f = await fixture();
+  try {
+    await refreshClaudeProfile(f.profile, "initial", new AbortController().signal, async () => {
+      await f.write("different-login");
+      return renewedResponse();
+    });
+    const value = JSON.parse(await Deno.readTextFile(join(f.profile, ".credentials.json")));
+    assert.equal(value.claudeAiOauth.accessToken, "different-login");
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("Claude invalid token responses leave the credential store intact", async () => {
+  const f = await fixture();
+  const path = join(f.profile, ".credentials.json");
+  const before = await Deno.readTextFile(path);
+  try {
+    for (const body of [
+      {},
+      { access_token: "new", expires_in: -1, scope: "user:inference" },
+      { access_token: "new", expires_in: 3600, scope: "user:inference", refresh_token: "" },
+    ]) {
+      await assert.rejects(
+        refreshClaudeProfile(f.profile, "initial", new AbortController().signal, async () =>
+          Response.json(body),
+        ),
+        ClaudeAuthError,
+      );
+      assert.equal(await Deno.readTextFile(path), before);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("Claude detects a replaced native lock before writing credentials", async () => {
+  const f = await fixture();
+  const path = f.profile + ".lock";
+  const before = await Deno.readTextFile(join(f.profile, ".credentials.json"));
+  try {
+    await assert.rejects(
+      refreshClaudeProfile(f.profile, "initial", new AbortController().signal, async () => {
+        // A non-cooperating process changes the lock's ownership marker.
+        await Deno.utime(path, new Date(0), new Date(0));
+        return renewedResponse();
+      }),
+      (e: unknown) => {
+        assert(e instanceof ClaudeAuthError);
+        assert.equal(e.detail, "Claude lock lost");
+        return true;
+      },
+    );
+    assert.equal(await Deno.readTextFile(join(f.profile, ".credentials.json")), before);
+    assert((await Deno.stat(path)).isDirectory, "Do not remove another owner's lock");
+  } finally {
+    await Deno.remove(path);
+    await f.close();
+  }
+});
+
+Deno.test("Claude lock heartbeat keeps a slow exchange from appearing stale", async () => {
+  const f = await fixture();
+  const path = f.profile + ".lock";
+  try {
+    await withClaudeRefreshLock(f.profile, new AbortController().signal, async () => {
+      const first = (await Deno.stat(path)).mtime!.getTime();
+      await pause(5200);
+      assert((await Deno.stat(path)).mtime!.getTime() > first);
+    });
+    await assert.rejects(Deno.stat(path), Deno.errors.NotFound);
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("Claude refresh subprocess cancellation reaps the worker and preserves a native lock", async () => {
+  const f = await fixture();
+  const path = f.profile + ".lock";
+  await Deno.mkdir(path);
+  const owner = new ClaudeAuthOwner({ profile: f.profile });
+  try {
+    const pending = owner.current(true);
+    const rejected = assert.rejects(pending, (e: unknown) => {
+      assert(e instanceof ClaudeAuthError);
+      assert.equal(e.code, "closed");
+      return true;
+    });
+    await pause(200);
+    await owner.close();
+    await rejected;
+    assert((await Deno.stat(path)).isDirectory);
+  } finally {
+    await owner.close();
+    await Deno.remove(path);
+    await f.close();
+  }
+});

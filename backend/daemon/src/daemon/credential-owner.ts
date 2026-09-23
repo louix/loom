@@ -110,8 +110,8 @@ export class CredentialOwner<T extends AccessCredential, S> {
         this.#retryAt = 0;
         this.#terminalToken = undefined;
       } catch (error) {
-        // The CLI can persist a rotation before a later login step fails, or an
-        // external provider process can refresh concurrently. Never discard that token.
+        // Renewal may persist tokens before a later step fails, or an external
+        // provider process can refresh concurrently. Never discard that token.
         const updated = await this.#options.read(profile).catch(() => undefined);
         if (
           !this.#abort.signal.aborted &&
