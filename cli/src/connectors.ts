@@ -17,6 +17,13 @@ export const CONNECTORS: ConnectorManifest = {
   "@loom/connector-mock": async () => ({
     createProvider: (ctx) => WorkerProvider.create(ctx.id, mockLaunchSpec),
   }),
+  "@loom/connector-echo": async () => ({
+    createProvider: (ctx) =>
+      WorkerProvider.create(ctx.id, mockLaunchSpec, undefined, {
+        connector: "@loom/connector-echo",
+        config: {},
+      }),
+  }),
   "@loom/connector-claude": async () => ({ createProvider: createClaudeWorkerProvider }),
   "@loom/connector-generic": async () => ({
     createProvider: (ctx) => createProviderWorker("@loom/connector-generic", ctx),

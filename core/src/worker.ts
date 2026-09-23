@@ -60,6 +60,7 @@ export const workerBindingSchema = z.object({
   sessionId: z.string(),
   connector: z.enum([
     "@loom/connector-mock",
+    "@loom/connector-echo",
     "@loom/connector-claude",
     "@loom/connector-generic",
     "@loom/connector-gemini",

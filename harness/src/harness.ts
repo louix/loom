@@ -9,6 +9,7 @@ import { Daemon, type DaemonStartOptions } from "@loom/daemon/daemon/daemon";
 
 /** Every connector, for a harness daemon that may exercise any provider. */
 const CONNECTORS: ConnectorManifest = {
+  "@loom/connector-echo": () => import("@loom/connector-echo"),
   "@loom/connector-mock": () => import("@loom/connector-mock"),
   "@loom/connector-claude": () => import("@loom/connector-claude"),
   "@loom/connector-generic": () => import("@loom/connector-generic"),

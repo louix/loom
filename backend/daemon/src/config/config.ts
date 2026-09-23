@@ -314,6 +314,8 @@ export interface LoomConfig {
     };
     /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
+    /** Expose the built-in echo provider in the TUI when explicitly configured. */
+    echo?: { enabled: boolean };
   };
   mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
@@ -528,7 +530,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
     for (const [name, overrides] of Object.entries(entries)) {
       let id = name;
       if (family !== "openai_compatible") id = name === "default" ? family : `${family}:${name}`;
-      if (isClaudeId(id) || id === "fake" || id === "mock" || id in out)
+      if (isClaudeId(id) || id === "fake" || id === "mock" || id === "echo" || id in out)
         throw new Error(`Reserved or duplicate provider id: ${id}`);
       const profile = buildAisdkProfile(id, deepMerge(defaults, asRecord(overrides)), sdk);
       if (profile) out[id] = profile;
@@ -706,7 +708,10 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   // The default provider must actually be configured; fall back to claude.
   const wantDefault = settings.default_provider;
   const defaultProvider =
-    claudeIds.has(wantDefault) || wantDefault in aisdk || ["fake", "mock"].includes(wantDefault)
+    claudeIds.has(wantDefault) ||
+    wantDefault in aisdk ||
+    ["fake", "mock"].includes(wantDefault) ||
+    (wantDefault === "echo" && settings.providers.echo?.enabled === true)
       ? wantDefault
       : "claude";
 
@@ -761,6 +766,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
         promptCacheTtl: claude.prompt_cache_ttl,
       },
       aisdk,
+      ...(settings.providers.echo ? { echo: settings.providers.echo } : {}),
     },
     mcp,
     httpMcp,

@@ -10,6 +10,8 @@
   // Include the event log as a second file on Alt+E (Vim/Neovim may need :wq!).
   "tui": { "include_event_log_in_editor": false },
   "providers": {
+    // Show the local-only Echo provider in the TUI (no API calls or cost).
+    // "echo": {},
     "claude": {
       "permission_default": "manual",
       // "cli_path": "/path/to/claude",

@@ -33,6 +33,69 @@ const next = async <T>(iterator: AsyncIterator<T>): Promise<T> => {
   return result.value;
 };
 
+test(
+  "echo plugin completes opening, follow-up, resumed and one-shot turns through a worker",
+  { timeout: 15000 },
+  async () => {
+    const provider = await WorkerProvider.create("echo", mockLaunchSpec, undefined, {
+      connector: "@loom/connector-echo",
+      config: {},
+    });
+    assert.deepEqual(provider.capabilities.models, ["echo"]);
+    assert.equal(provider.capabilities.rewind, false);
+    const checkTurn = async (
+      session: import("../core/src/types.ts").AgentSession,
+      input: string,
+    ) => {
+      const events = session.events()[Symbol.asyncIterator]();
+      try {
+        const text = await next(events);
+        assert.equal(text.type, "assistant_text");
+        if (text.type === "assistant_text") assert.equal(text.text, `Echo: ${input}`);
+        const usage = await next(events);
+        assert.equal(usage.type, "usage");
+        if (usage.type === "usage") {
+          assert.equal(usage.costDeltaUsd, 0);
+          assert.deepEqual(usage.tokens, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+        }
+        const result = await next(events);
+        assert.equal(result.type, "result");
+        if (result.type === "result") assert.equal(result.kind, "ok");
+        assert.equal(session.snapshot().costUsd, 0);
+      } finally {
+        await events.return?.();
+      }
+    };
+    const session = await provider.createSession(opts("echo-turns"));
+    try {
+      await checkTurn(session, "hello");
+      await session.send("line one\nline two 🦊");
+      await checkTurn(session, "line one\nline two 🦊");
+      assert.equal(session.snapshot().turns, 2);
+    } finally {
+      await session.close();
+    }
+    const resumed = await provider.resumeSession({
+      ...opts("echo-turns"),
+      providerRef: session.providerRef!,
+    });
+    try {
+      await resumed.send("after resume");
+      await checkTurn(resumed, "after resume");
+    } finally {
+      await resumed.close();
+    }
+    const once = await provider.createSession({ ...opts("echo-once"), oneShot: true });
+    try {
+      await checkTurn(once, "hello");
+      const iterator = once.events()[Symbol.asyncIterator]();
+      assert.equal((await iterator.next()).done, true);
+    } finally {
+      await once.close();
+    }
+  },
+);
+
 test("worker EOF waits for the supervisor diagnostic instead of hiding its cause", async () => {
   const diagnosis = Promise.withResolvers<Error>();
   const failed = RemoteWorkerSession.connect("failed-vm", "fake", mockLaunchSpec(cwd), () => ({

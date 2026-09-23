@@ -153,7 +153,7 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
   };
 };
 
-/** Mock has no native children, provider credentials, network or write grants. */
+/** SDK-free mock and echo workers need no native children, credentials, network or write grants. */
 export const mockLaunchSpec = (cwd: string): WorkerLaunchSpec => {
   const root = new URL("../../../../", import.meta.url);
   return {

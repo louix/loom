@@ -148,7 +148,21 @@ loads a connector's code lazily by name at runtime, so an unconfigured
 provider never actually executes.
 
 `@loom/connector-mock` is the scriptable, SDK-free provider the test suite and
-`loom run --provider fake` use.
+`loom run --provider fake` use. Mock and fake remain manually driven test providers.
+
+To show **Echo** in the TUI provider picker, add this to your Loom config:
+
+```jsonc
+{
+  "providers": {
+    "echo": {},
+  },
+}
+```
+
+Echo replies with `Echo: <your message>` and finishes each turn with zero usage
+and cost. It needs no credentials and runs locally (no VM backend). Omit the
+entry or set `"enabled": false` to hide it. Provider access rules still apply.
 
 ## The layers
 
@@ -176,6 +190,9 @@ never evaluates `@anthropic-ai/claude-agent-sdk`. `test/lazy-providers.test.ts`
 guards it.
 
 ## Writing a connector
+
+For a complete SDK-free example, see the [Echo plugin](../connectors/echo/README.md).
+It implements the session interface directly and runs through the same worker path.
 
 A connector package exports one function:
 
@@ -232,6 +249,7 @@ No build step — source is `.ts`.
 | ---------------------------------------------------- | ------------------------- |
 | `providers.claude`                                   | `@loom/connector-claude`  |
 | `fake` / `mock`                                      | `@loom/connector-mock`    |
+| `providers.echo`                                     | `@loom/connector-echo`    |
 | `providers.codex`                                    | `@loom/connector-chatgpt` |
 | `providers.google`                                   | `@loom/connector-gemini`  |
 | `providers.openai_compatible`, `providers.anthropic` | `@loom/connector-generic` |

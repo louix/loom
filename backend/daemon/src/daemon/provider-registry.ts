@@ -98,6 +98,7 @@ export class ProviderRegistry {
       // header comment promises both are always known.
       "fake",
       "mock",
+      ...(config.providers.echo?.enabled ? ["echo"] : []),
       ...config.claudeProfiles.map(claudeProfileId),
       ...Object.keys(config.providers.aisdk),
     ]);
@@ -141,7 +142,9 @@ export class ProviderRegistry {
 
   /** Configured default for new sessions; existing sessions keep their recorded mode. */
   defaultIsolation(id: string): "vm" | "local" {
-    return this.#config.isolation.enabled && id !== "fake" && id !== "mock" ? "vm" : "local";
+    return this.#config.isolation.enabled && id !== "fake" && id !== "mock" && id !== "echo"
+      ? "vm"
+      : "local";
   }
 
   #vmKind(id: string): "claude" | "aisdk" | "codex" {
@@ -200,6 +203,7 @@ export class ProviderRegistry {
 
   /** The connector package name that serves `id`. */
   #packageFor(id: string): string {
+    if (id === "echo") return "@loom/connector-echo";
     if (id === "fake" || id === "mock") return MOCK;
     if (isClaudeId(id)) return CLAUDE;
     const profile = this.#config.providers.aisdk[id];
@@ -367,7 +371,7 @@ export class ProviderRegistry {
     const logger = makeLogger("connector").child(id);
     const search = this.#resolveSearch();
     const baseBranch = this.#config.baseBranch;
-    if (id === "fake" || id === "mock") {
+    if (id === "fake" || id === "mock" || id === "echo") {
       return { id, config: {}, logger, baseBranch, ...(search ? { search } : {}) };
     }
     if (isClaudeId(id)) {

@@ -332,6 +332,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             ),
           ),
         }),
+        echo: z.strictObject({ enabled: z.boolean().default(true) }).optional(),
         codex: providerFamilySchema.optional(),
         google: providerFamilySchema.optional(),
         anthropic: providerFamilySchema.optional(),

@@ -1,0 +1,6 @@
+{
+  "name": "@loom/connector-echo",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

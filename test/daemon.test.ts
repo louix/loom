@@ -513,6 +513,9 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
 
     const byId = new Map(list.map((p) => [p.id, p]));
     assert.ok(byId.has("claude"));
+    assert.equal(byId.has("mock"), false);
+    assert.equal(byId.has("echo"), false);
+    assert.equal(byId.has("fake"), false);
     assert.deepEqual(byId.get("openai")?.models, ["gpt-5", "gpt-5-mini"]);
     // no model has run yet → the config pin is the default
     assert.equal(byId.get("openai")?.defaultModel, "gpt-5");
@@ -529,6 +532,68 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
     assert.equal(byId.get("deepseek")?.color, "red");
   } finally {
     await hh.cleanup();
+  }
+});
+
+test("providers.list exposes opt-in echo and respects visibility and access settings", async () => {
+  for (const [echo, access, visible] of [
+    [{}, {}, true],
+    [{ enabled: true }, {}, true],
+    [{ enabled: false }, {}, false],
+    [{}, { disabled: ["echo"] }, false],
+    [{}, { only: ["claude"] }, false],
+  ] as const) {
+    const hh = await makeHarness({
+      config: JSON.stringify({
+        default_provider: "echo",
+        providers: { echo },
+        session: { provider_access: access, isolation: { enabled: true } },
+      }),
+    });
+    try {
+      const c = await LoomClient.connect({
+        repoRoot: hh.repoRoot,
+        sockPath: hh.sockPath,
+        autospawn: false,
+      });
+      try {
+        const list = await c.request<import("@loom/core/wire").ProviderInfo[]>("providers.list");
+        const provider = list.find((p) => p.id === "echo");
+        assert.equal(!!provider, visible);
+        assert.equal(
+          list.some((p) => p.id === "fake"),
+          false,
+        );
+        const state = c.getState();
+        assert.equal(state.tag, "data");
+        if (state.tag === "data") assert.deepEqual(state.value.providers, list);
+        if (provider) {
+          assert.deepEqual(provider.models, ["echo"]);
+          assert.equal(provider.defaultModel, "echo");
+          assert.equal(provider.defaultIsolation, "local");
+          assert.ok(provider.vmUnavailableReason);
+          assert.equal(provider.isDefault, true);
+          const created = await c.request<SessionSnapshot>("session.create", {
+            provider: "echo",
+            prompt: "hello echo",
+            worktree: false,
+          });
+          await waitFor(async () => {
+            const session = await c.request<SessionSnapshot>("session.get", { id: created.id });
+            return session.status.kind === "idle" && session.turns === 1;
+          });
+          const session = await c.request<SessionSnapshot>("session.get", { id: created.id });
+          assert.equal(session.model, "echo");
+          assert.equal(session.isolation, "local");
+          assert.equal(session.costUsd, 0);
+          assert.deepEqual(session.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+        }
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await hh.cleanup();
+    }
   }
 });
 

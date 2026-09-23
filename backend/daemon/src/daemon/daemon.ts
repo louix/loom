@@ -1257,6 +1257,20 @@ export class Daemon {
         isDefault: def === id,
       });
     }
+    if (this.config.providers.echo?.enabled) {
+      out.push({
+        id: "echo",
+        models: ["echo"],
+        defaultModel: "echo",
+        defaultEffort: this.#defaultEffortFor("echo"),
+        defaultMode: mode,
+        defaultIsolation: "local",
+        vmUnavailableReason: this.#providers.vmUnavailableReason("echo")!,
+        tag: "Echo",
+        color: "",
+        isDefault: def === "echo",
+      });
+    }
     return out.filter((provider) => this.#providers.has(provider.id));
   }
 
@@ -1289,6 +1303,7 @@ export class Daemon {
    * of the provider's detected list is ignored.
    */
   #defaultModelFor(providerId: string): string {
+    if (providerId === "echo") return "echo";
     if (isClaudeId(providerId)) {
       // Shared model pin / catalog, but each profile remembers its own last model.
       const c = this.config.providers.claude;

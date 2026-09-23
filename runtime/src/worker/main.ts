@@ -20,6 +20,7 @@ export const runWorker = async (
         "@loom/connector-generic": () => import("../../../connectors/generic/src/index.ts"),
         "@loom/connector-gemini": () => import("../../../connectors/gemini/src/index.ts"),
         "@loom/connector-chatgpt": () => import("../../../connectors/chatgpt/src/index.ts"),
+        "@loom/connector-echo": () => import("../../../connectors/echo/src/index.ts"),
         "@loom/connector-mock": () => import("../../../connectors/mock/src/index.ts"),
       };
       const { createProvider } = await loaders[binding.connector]();

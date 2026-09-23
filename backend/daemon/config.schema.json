@@ -617,6 +617,16 @@
           },
           "additionalProperties": false
         },
+        "echo": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
         "codex": {
           "type": "object",
           "properties": {
@@ -1887,6 +1897,16 @@
                       },
                       "additionalProperties": false
                     }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "echo": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
