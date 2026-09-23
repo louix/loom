@@ -21,7 +21,10 @@ try {
   );
   assert(fresh.claudeAiOauth.expiresAt > Date.now(), "Refreshed token is expired");
   assert(!("refreshToken" in fresh.claudeAiOauth));
-  assert((await Deno.readTextFile(config).catch(() => undefined)) === configBefore, "Account configuration changed");
+  assert(
+    (await Deno.readTextFile(config).catch(() => undefined)) === configBefore,
+    "Account configuration changed",
+  );
   const after = (await readClaudeCredentials(profile)) as Record<string, any>;
   const metadata = (value: Record<string, any>) => {
     const {
@@ -33,7 +36,10 @@ try {
     } = value.claudeAiOauth;
     return { ...value, claudeAiOauth: rest };
   };
-  assert(JSON.stringify(metadata(after)) === JSON.stringify(metadata(before)), "Unrelated credential metadata changed");
+  assert(
+    JSON.stringify(metadata(after)) === JSON.stringify(metadata(before)),
+    "Unrelated credential metadata changed",
+  );
   console.log(
     JSON.stringify({
       refreshed: true,
