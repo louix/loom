@@ -113,7 +113,7 @@ export const withVmSessions = async <T extends AgentProvider>(
         : new ClaudeAuthOwner({
             profile,
             cli,
-            report: (code) => ctx.logger.warn("Claude VM authentication", { code }),
+            report: (code, detail) => ctx.logger.warn("Claude VM authentication", { code, detail }),
           });
     config = {
       cliPath: "",

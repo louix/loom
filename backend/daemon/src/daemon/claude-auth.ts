@@ -115,9 +115,7 @@ const runRefresh = async (
         "unauthorized_client",
       ].filter((code) => diagnostics.includes(code));
       throw new ClaudeAuthError(
-        status === "400" ||
-          status === "401" ||
-          /invalid_grant|revoked|invalid refresh token/i.test(diagnostics)
+        /invalid_grant|revoked|invalid refresh token/i.test(diagnostics)
           ? "needs_login"
           : "refresh_failed",
         [`CLI exit ${result.code}`, ...(status ? [`HTTP ${status}`] : []), ...categories].join(
@@ -133,7 +131,7 @@ const runRefresh = async (
 export interface ClaudeAuthOptions {
   profile: string;
   cli: string;
-  report?: (code: ClaudeAuthError["code"] | "publish_failed") => void;
+  report?: (code: ClaudeAuthError["code"] | "publish_failed", detail?: string) => void;
   /** Test seam; production always uses the pinned Claude CLI. */
   refresh?: typeof runRefresh;
   pollMs?: number;

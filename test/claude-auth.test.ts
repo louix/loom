@@ -291,7 +291,7 @@ Deno.test({
     const cli = join(f.profile, "fake-claude");
     await Deno.writeTextFile(
       cli,
-      '#!/bin/sh\necho "Login failed: Request failed with status code 400" >&2\necho "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" >&2\nexit 1\n',
+      '#!/bin/sh\necho "Login failed: invalid_grant (status code 400)" >&2\necho "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" >&2\nexit 1\n',
       { mode: 0o700 },
     );
     const owner = new ClaudeAuthOwner({ profile: f.profile, cli });
@@ -309,3 +309,57 @@ Deno.test({
     }
   },
 });
+
+for (const status of [400, 401]) {
+  Deno.test({
+    name: "Claude retries ambiguous HTTP " + status + " with sanitized diagnostics",
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const f = await fixture();
+      const cli = join(f.profile, "fake-claude");
+      const reports: Array<{ code: string; detail: string | undefined }> = [];
+      await f.write("initial", Date.now() + 60_000);
+      await Deno.writeTextFile(
+        cli,
+        '#!/bin/sh\necho "Login failed: Request failed with status code STATUS" >&2\necho "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" >&2\nexit 1\n'.replace(
+          "STATUS",
+          String(status),
+        ),
+        { mode: 0o700 },
+      );
+      const owner = new ClaudeAuthOwner({
+        profile: f.profile,
+        cli,
+        report: (code, detail) => {
+          reports.push({ code, detail });
+        },
+      });
+      try {
+        assert.equal((await owner.current()).claudeAiOauth.accessToken, "initial");
+        assert.deepEqual(reports, [
+          { code: "refresh_failed", detail: "CLI exit 1, HTTP " + status },
+        ]);
+        await owner.current();
+        assert.equal(reports.length, 1, "Backoff must still apply");
+        // The next native invocation persists renewed credentials.
+        await Deno.writeTextFile(
+          join(f.profile, "renewed.json"),
+          JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "renewed",
+              refreshToken: "new-refresh-secret",
+              expiresAt: Date.now() + 3600_000,
+              scopes: ["user:inference"],
+            },
+          }),
+        );
+        await Deno.writeTextFile(cli, "#!/bin/sh\ncp renewed.json .credentials.json\n");
+        await pause(1100);
+        assert.equal((await owner.current()).claudeAiOauth.accessToken, "renewed");
+      } finally {
+        await owner.close();
+        await f.close();
+      }
+    },
+  });
+}

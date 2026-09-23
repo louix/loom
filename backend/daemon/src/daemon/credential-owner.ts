@@ -6,9 +6,12 @@ export interface AccessCredential {
 }
 export class CredentialAuthError extends Error {
   readonly code: "needs_login" | "refresh_failed" | "refresh_timeout" | "closed";
+  /** Only sanitized, provider-selected diagnostics belong in detail. */
+  readonly detail: string;
   constructor(code: CredentialAuthError["code"], detail = "") {
     super(`Provider authentication: ${code.replaceAll("_", " ")}${detail ? ` (${detail})` : ""}`);
     this.code = code;
+    this.detail = detail;
   }
 }
 const delay = (ms: number, signal: AbortSignal) =>
@@ -31,7 +34,7 @@ export interface CredentialOwnerOptions<T extends AccessCredential, S> {
   snapshot(value: T): S;
   expiresAt(value: S): number;
   refresh(profile: string, cli: string, value: T, signal: AbortSignal): Promise<void>;
-  report?: (code: CredentialAuthError["code"] | "publish_failed") => void;
+  report?: (code: CredentialAuthError["code"] | "publish_failed", detail?: string) => void;
   pollMs?: number;
   refreshAheadMs?: number;
 }
@@ -123,7 +126,7 @@ export class CredentialOwner<T extends AccessCredential, S> {
         }
         const failure =
           error instanceof CredentialAuthError ? error : new CredentialAuthError("refresh_failed");
-        this.#options.report?.(failure.code);
+        this.#options.report?.(failure.code, failure.detail);
         if (failure.code === "needs_login") this.#terminalToken = initial;
         this.#retryAt = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(this.#failures++, 6));
         // Preserve a still-valid token during transient refresh failures.
