@@ -67,7 +67,10 @@ test("short plans keep controls anchored with optional context and fork metadata
         ),
       ).split("\n");
       assert.equal(rows.length, 40);
-      assert.match(rows[3]!, /# Short plan/);
+      // The body renders as Markdown, so the heading sheds its `#` marker.
+      assert.match(rows[3]!, /Short plan/);
+      assert.doesNotMatch(rows[3]!, /#/);
+      assert.match(rows[4]!, /Implement this\./);
       assert.match(rows.at(-2)!, /view read-only/);
       assert.equal(
         rows.some((row) => row.includes("fresh forked session")),

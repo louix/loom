@@ -107,12 +107,15 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
       id: s.id,
       tab: "changes",
     });
-    assert.match(inspection.text, /Working tree status/);
+    assert.match(inspection.text, /WORKING TREE\nWorking tree clean/);
+    assert.match(
+      inspection.text,
+      /SESSION DIFF · since branching from refs\/remotes\/origin\/main/,
+    );
     assert(
       calls.some(
         (c) =>
-          c.command.includes("git --no-pager diff") &&
-          c.command.includes("refs/remotes/origin/main"),
+          c.command.includes("--no-pager diff") && c.command.includes("refs/remotes/origin/main"),
       ),
     );
     const session = fake.session(s.id)!;
