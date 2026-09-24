@@ -22,6 +22,40 @@ This is a capability for standards-compatible HTTP MCPs, not a guarantee that
 Atlassian, Slack, Vanta or AWS endpoints work. Real provider compatibility must be
 verified independently before documenting examples as supported.
 
+## OAuth implementation dependency
+
+Use [`oauth4webapi`](https://github.com/panva/oauth4webapi) as the single direct
+OAuth protocol dependency, behind a small Loom-owned adapter. It supports Deno
+and ESM and currently has no runtime dependencies. Pin a reviewed release in
+Loom's dependency configuration and lockfile during implementation; this spec
+does not select an untested version.
+
+Delegate authorization-server and resource metadata discovery primitives,
+PKCE generation, authorization-response validation, code exchange, client
+authentication, dynamic registration, refresh and revocation to the library.
+Use its request and response-processing APIs together so protocol validation is
+not bypassed. Do not duplicate supported OAuth protocol routines in Loom.
+
+Loom retains MCP challenge handling and discovery orchestration, issuer/resource
+binding, scope policy, endpoint restrictions, browser and callback lifecycle,
+secret resolution, storage, locking, refresh scheduling, failure classification,
+logout and relay publication. The library performs protocol operations when
+called; Loom decides when those operations are authorized. Library support for
+additional grants or features does not expand this spec's scope.
+
+Import the adapter only in host login and OAuth network helpers. Do not add it
+to the HTTP relay or guest runtime. The daemon continues to coordinate credentials
+without network access. No higher-level OAuth client or MCP SDK authentication
+orchestration is required for this feature.
+
+All library network operations must use Loom's controlled fetch implementation,
+with the endpoint, redirect, timeout, response-size and connection-time address
+restrictions described below. A custom fetch hook alone does not establish those
+guarantees. Verify the selected release's hooks and behavior in Deno before
+integrating it; do not relax network boundaries to accommodate library defaults.
+Keep MCP request forwarding outside the library so authentication handling cannot
+replay tool calls.
+
 ## Configuration
 
 OAuth is available only under trusted `mcp_servers` HTTP definitions:
@@ -367,9 +401,11 @@ undoes earlier requests. Logout of an already absent credential is successful.
 1. **Schema and storage:** extend trusted HTTP auth schema and generated config
    schema; preserve OAuth descriptors in config normalization/tool selection.
    Implement identity, storage, generation/locking and read-only auth status.
-2. **Interactive login:** add CLI parsing and discovery/PKCE/registration/exchange,
-   callback lifecycle and secret resolution. Keep incomplete support clearly
-   marked until runtime refresh and invalidation are present.
+2. **Protocol adapter and interactive login:** pin and integrate `oauth4webapi`.
+   First verify controlled fetch and protocol operations against the fake server
+   in Deno, then add CLI parsing, discovery orchestration, callback lifecycle and
+   secret resolution. Keep incomplete support clearly marked until runtime
+   refresh and invalidation are present.
 3. **Runtime ownership:** integrate local checks in `tool-preflight.ts`, acquire
    credentials at session launch in `mcp-provider.ts`, add refresh helper and
    shared owners. Keep access credentials out of connector-facing handles.
@@ -389,6 +425,11 @@ OAuth server does not select it or initiate any network access.
 
 Use a local fake resource/authorization server for deterministic integration tests:
 
+- The pinned `oauth4webapi` release works in Deno through the adapter for
+  discovery, registration, code exchange, refresh and revocation. Tests exercise
+  real library response validation and the controlled fetch boundary, including
+  redirects, timeouts and oversized responses. No library path bypasses network
+  restrictions or triggers login/request replay implicitly.
 - Configuration rejects mixed auth, invalid secret sources, non-HTTP OAuth and
   invalid callbacks; existing bearer precedence and selections remain unchanged.
 - Discovery covers challenge and well-known paths, issuer/resource mismatch,
