@@ -2,13 +2,19 @@ import type { ReactNode } from "react";
 import type { SessionTab } from "../../../core/src/session-inspection.ts";
 import { Line, Text, Panel } from "./ui.tsx";
 import { ChangeLine } from "./changes-pane.tsx";
+export const SESSION_TABS = [
+  { tab: "chat", label: "1 CHAT" },
+  { tab: "changes", label: "2 CHANGES" },
+  { tab: "monitor", label: "3 VM MONITOR" },
+] as const;
+
 export const SessionTabs = ({ active }: { active: SessionTab }): ReactNode => (
   <Line>
-    {(["chat", "changes", "monitor"] as const).map((tab, index) => (
+    {SESSION_TABS.map(({ tab, label }, index) => (
       <Text key={tab} tone={active === tab ? "accent" : "dim"} bold={active === tab}>
         {index ? "  " : ""}
         {active === tab ? "[" : " "}
-        {index + 1} {tab === "monitor" ? "VM MONITOR" : tab.toUpperCase()}
+        {label}
         {active === tab ? "]" : " "}
       </Text>
     ))}

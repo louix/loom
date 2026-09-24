@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
+import { stripVTControlCharacters } from "node:util";
 import { render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
 import { RepositoryMenu } from "@loom/tui/run";
@@ -3936,6 +3937,40 @@ test("tabs render in overview and narrow session panes", async () => {
   }
 });
 
+test("clicking rendered tabs switches views in overview and narrow session panes", async () => {
+  for (const columns of [60, 120]) {
+    const fake = mkFakeClient();
+    fake.deliver(fleetOf(snap({ id: "tabs" })));
+    const { app, stdin, stdout } = mount(fake.client, {}, { columns });
+    try {
+      stdin.feed("1");
+      await waitFor(stdout, /\[1 CHAT\]/);
+      const clickLabel = async (label: string, button = 0, ending = "M") => {
+        const lines = stripVTControlCharacters(stdout.last).split("\n");
+        const y = lines.findIndex((line) => line.includes(label));
+        assert.ok(y >= 0, label);
+        const x = lines[y]!.indexOf(label);
+        stdin.feed(`\x1b[<${button};${x + 1};${y + 1}${ending}`);
+        await delay(30);
+        await app.waitUntilRenderFlush();
+      };
+      await clickLabel("2 CHANGES", 0, "m");
+      assert.match(stdout.last, /\[1 CHAT\]/);
+      await clickLabel("2 CHANGES", 32);
+      assert.match(stdout.last, /\[1 CHAT\]/);
+      await clickLabel("2 CHANGES");
+      await waitFor(stdout, /\[2 CHANGES\]/);
+      assert.equal(fake.of("session.inspect").at(-1)!.params["tab"], "changes");
+      await clickLabel("3 VM MONITOR");
+      await waitFor(stdout, /\[3 VM MONITOR\]/);
+      assert.equal(fake.of("session.inspect").at(-1)!.params["tab"], "monitor");
+      await clickLabel("1 CHAT");
+      await waitFor(stdout, /\[1 CHAT\]/);
+    } finally {
+      app.unmount();
+    }
+  }
+});
 test("session inspection RPC reads the selected local checkout and reports missing worktrees", async () => {
   const { h, connect, cleanup } = await harness();
   const client = await connect();

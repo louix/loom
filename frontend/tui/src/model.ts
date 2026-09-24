@@ -1087,6 +1087,7 @@ export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
  *  use). Built by {@link fleetHits} / `modeChipHit`, carried on the `FleetView`
  *  so the keymap can hit-test a click without any Ink measurement API. */
 export type FleetHit =
+  | { kind: "sessionTab"; y: number; x0: number; x1: number; tab: TuiState["sessionTab"] }
   | { kind: "session"; y: number; x0: number; x1: number; id: string }
   | { kind: "child"; y: number; x0: number; x1: number; sessionId: string; key: string }
   | { kind: "childMore"; y: number; x0: number; x1: number; sessionId: string }

@@ -1,5 +1,6 @@
 import type { SessionInspection } from "../../../core/src/session-inspection.ts";
 import { repositoryPicker } from "./repositories.ts";
+import { SESSION_TABS } from "./session-tabs.tsx";
 import { bindCommand, keyCommand } from "./commands.ts";
 import { helpLines } from "./help.ts";
 /**
@@ -400,6 +401,19 @@ const deriveView = (
     hits.push(...detail.hits({ x: 1, y: 2 }));
   }
 
+  if (body.t === "split" || body.t === "sessionPane") {
+    const originX = body.t === "split" ? leftW + 2 : 1;
+    const y = detailH + 3; // Header, Detail, then the log panel border.
+    const right = originX + eventsW - 3; // Exclude panel border and padding.
+    let x0 = originX + 2;
+    if (y <= bodyH + 1) {
+      for (const { tab, label } of SESSION_TABS) {
+        const x1 = x0 + label.length + 1; // Include the selection brackets.
+        if (x0 <= right) hits.push({ kind: "sessionTab", tab, y, x0, x1: Math.min(x1, right) });
+        x0 = x1 + 3; // Two spaces between tabs.
+      }
+    }
+  }
   const prompt = openPrompt(state.overlay);
   // The modal owns pointer interaction, including cells over fleet rows.
   if (prompt?.t === "new" || state.overlay.t === "picker" || state.overlay.t === "confirm")
@@ -2088,6 +2102,7 @@ export const mkFleetHandle = ({
         if (!hit) return;
         if (hit.kind === "promptMode") return handleKey("", { tab: true, shift: true } as Key);
         if (state.overlay.t !== "browse") return;
+        if (hit.kind === "sessionTab") return void dispatch({ t: "sessionTab", tab: hit.tab });
         if (hit.kind === "session") return void dispatch({ t: "select", id: hit.id });
         if (hit.kind === "child")
           return void dispatch({ t: "selectChild", sessionId: hit.sessionId, key: hit.key });
