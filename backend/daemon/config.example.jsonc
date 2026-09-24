@@ -88,7 +88,7 @@
     //     "mcp_servers": ["tilth"],
     //     "provider_access": { "only": ["claude:work"] },
     //   },
-    //   "hooks": [{ "on": "init", "run": "deno install --frozen", "timeout": 600 }],
+    //   "hooks": [{ "on": "workspace_start", "run": "deno install --frozen", "timeout": 600 }],
     // },
   ],
 }
